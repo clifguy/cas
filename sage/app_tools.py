@@ -240,13 +240,17 @@ def register_app_tools(
 
         Per-file precondition surface: every per-file ingest runs the full
         ``ingest_document`` precondition pipeline. Failures surface as
-        ``summary.errors[]`` entries and include — by inherited shape from
-        ``ingest_document`` — ``adapter_not_found``, ``document_not_found``,
-        ``source_file_not_found``, ``identical_content_supersede``,
-        ``duplicate_content``, ``supersede_target_not_active``,
-        ``tier3_unique_constraint_violation``, and ``tier3_schema_violation``.
-        See ``ingest_document`` for the authoritative surface. Each such
-        entry carries that error's ``code`` and ``detail``; a
+        ``summary.errors[]`` entries carrying the code ``ingest_document``
+        returns for the same failure. Each file's request carries only its
+        source, source type and parsed metadata -- never a predecessor, a
+        force re-ingest, a chain-head token or a relocation pointer -- so the
+        codes an entry can carry are ``adapter_not_found``,
+        ``duplicate_content``, ``invalid_doc_type``,
+        ``invalid_document_date``, ``reserved_transition``,
+        ``source_file_not_found``, ``tier3_schema_violation``,
+        ``tier3_unique_constraint_violation``, ``vault_source_path_refused``,
+        ``vault_source_store_refused`` and ``vault_source_store_unavailable``.
+        Each such entry carries that error's ``code`` and ``detail``; a
         ``vault_source_path_refused`` entry's ``detail.source_path`` names
         the caller's own file, never the staging location a redeemed upload
         was written to.

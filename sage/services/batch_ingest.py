@@ -28,7 +28,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sage.api.errors import SAGEError
+from pydantic import ValidationError
+
+from sage.api.errors import SAGEError, translate_validation_error
 from sage.models.enums import SourceType
 from sage.models.schemas import (
     BatchIngestFileError,
@@ -366,9 +368,10 @@ class BatchIngestService:
 
             except Exception as exc:
                 summary.error_count += 1
-                summary.errors.append(_error_entry(i, filename, fd, exc))
+                entry = _error_entry(i, filename, fd, exc)
+                summary.errors.append(entry)
                 if on_file_error is not None:
-                    await on_file_error(i, total, filename, str(exc))
+                    await on_file_error(i, total, filename, entry.message)
 
         # Phase 3: Post-ingest edge creation
         if edge_plan is not None:
@@ -466,7 +469,16 @@ def _error_entry(
     caller of the pipeline carries the same validated contract: the streaming
     leg validated its entries when it built the summary event, while the
     non-streaming leg serialized whatever the collection held.
+
+    A request that fails its own validation -- a parsed date that is not a
+    calendar date -- is reported under the code the single-document ingest
+    returns for the same value, by the translation that surface applies at
+    its boundary. The batch builds the request inside its per-file loop, so
+    that boundary never sees it, and without the translation the entry would
+    carry no code and a message naming the staged location.
     """
+    if isinstance(exc, ValidationError):
+        exc = translate_validation_error(exc) or exc
     if isinstance(exc, SAGEError):
         # ``or None`` so an empty detail drops out on serialization rather
         # than reaching a caller as an empty object.
