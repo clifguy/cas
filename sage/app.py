@@ -16,6 +16,9 @@ from pathlib import Path
 
 import yaml
 from fastapi import FastAPI
+from starlette.requests import Request
+from starlette.responses import JSONResponse
+from starlette.routing import Route
 
 from app.backend.auth.router import router as auth_router
 from app.backend.router import router as app_backend_router
@@ -164,6 +167,57 @@ async def _initialize_services(app: FastAPI, config: VaultConfig, **overrides) -
 # suppression filter in ``sage.__main__``.
 
 
+#: Sent when a standalone GET arrives on a mount. Named rather than inlined so
+#: the access-log filter and the tests can recognize this exact answer without
+#: matching on a status a transport also returns for other reasons.
+EVENT_STREAM_DECLINED_MESSAGE = (
+    "Method Not Allowed: this endpoint serves JSON-RPC over POST and offers no "
+    "standalone event stream"
+)
+
+
+async def _decline_event_stream(request: Request) -> JSONResponse:
+    """Answer a standalone GET on a mount with the protocol's own refusal.
+
+    Shaped like the transport's other errors -- a JSON-RPC envelope carrying
+    ``-32600`` -- so a client parsing the body finds what it expects rather
+    than an HTML error page.
+    """
+    return JSONResponse(
+        {
+            "jsonrpc": "2.0",
+            "id": "server-error",
+            "error": {"code": -32600, "message": EVENT_STREAM_DECLINED_MESSAGE},
+        },
+        status_code=405,
+        headers={"Allow": "POST"},
+    )
+
+
+def _event_stream_decline_route(server: object, path: str) -> Route:
+    """Build the GET-only decline route for one mount.
+
+    ``methods=["GET"]`` is load-bearing twice over. It keeps POST -- the method
+    every JSON-RPC call travels on -- falling through to the transport route
+    registered after this one, and it is the reason this route may sit first at
+    the same path at all.
+
+    The statelessness check is the licence for declining. A stateless transport
+    is built per request holding no session id and no event store, so a stream
+    opened on it can never be written to; a stateful server could serve that
+    same stream legitimately. Failing here rather than refusing on is what
+    keeps a later change to the transport settings from silently stranding a
+    capability the server had regained.
+    """
+    if not getattr(server, "settings").stateless_http:
+        raise RuntimeError(
+            f"refusing to decline the event stream on {path}: the server is not "
+            "stateless, so it can serve a standalone stream and this route would "
+            "withhold a capability it has"
+        )
+    return Route(path, endpoint=_decline_event_stream, methods=["GET"])
+
+
 def _mount_partitioned_mcp(app: FastAPI) -> None:
     """Serve the ordinary and maintenance MCP surfaces over Streamable HTTP.
 
@@ -191,6 +245,15 @@ def _mount_partitioned_mcp(app: FastAPI) -> None:
     sub-application's own lifespan never runs under FastAPI). The
     partitioned server for each path is recorded on ``app.state.mcp_mounts``
     (mirroring ``app.state.vault_registry``) so the wiring is inspectable.
+
+    Each mount also carries a GET-only route, registered ahead of the
+    transport's, that declines the standalone event stream with ``405``. The
+    transport would otherwise open one: its GET handler does not consult the
+    stateless setting, so it answers ``200`` and holds a stream that -- built
+    per request with no session id and no event store -- can never be written
+    to. Declining on the method rather than on ``Accept`` gives one answer to
+    every client that asks, whether it asks for an event stream or is merely
+    probing the path for an authentication challenge.
     """
     from sage.mcp_server import build_partitioned_server
 
@@ -198,6 +261,9 @@ def _mount_partitioned_mcp(app: FastAPI) -> None:
     for path, surface in MCP_HTTP_MOUNTS:
         server = build_partitioned_server(surface)
         server.settings.streamable_http_path = path
+        # Ahead of the transport's own routes, so a GET is answered here and
+        # every other method falls through to them.
+        app.router.routes.append(_event_stream_decline_route(server, path))
         app.router.routes.extend(server.streamable_http_app().routes)
         mounts[path] = server
     app.state.mcp_mounts = mounts
