@@ -460,6 +460,8 @@ def register_sage_tools(
           ``document_id``, ``pinned_source_content_hash`` (null when no
           document has that id), ``source_content_hash``, and
           ``existing_document_id`` (null when no document holds the hash).
+        - ``document_not_found`` (404): ``predecessor_id`` names no document
+          in the vault.
         - ``supersede_target_not_active`` (409): ``predecessor_id`` was set
           but the vault's lifecycle transition table does not permit
           ``supersede`` from the predecessor's current state. Detail

@@ -49,7 +49,7 @@ router = APIRouter(tags=["Ingestion"])
         },
         400: boundary_400(
             path=("invalid_vault_id",),
-            request=("invalid_document_id", "invalid_sha256"),
+            request=("invalid_document_id", "invalid_sha256", "invalid_document_date"),
             extra="`adapter_not_found`: no source adapter is registered for "
             "`source_type`.\n\n"
             "`vault_source_path_refused`: the vault-source store refused "
@@ -94,7 +94,9 @@ router = APIRouter(tags=["Ingestion"])
             "model": ErrorResponse,
             "description": (
                 "`source_file_not_found`: `source` does not resolve to a "
-                "readable file on disk; or vault not found."
+                "readable file on disk; or vault not found.\n\n"
+                "`document_not_found`: `predecessor_id` names no document in "
+                "the vault."
             ),
         },
         409: {
@@ -163,7 +165,13 @@ router = APIRouter(tags=["Ingestion"])
                 "and did not match the predecessor's current `updated_at` "
                 "at supersede time. Detail carries the current head id and "
                 "version so the caller can pivot through the chain and "
-                "retry (CAS-ADR-038 Primitive C)."
+                "retry (CAS-ADR-038 Primitive C).\n\n"
+                "`tier3_unique_constraint_violation`: the resolved doc_type "
+                "declares a tier3 field `unique`, and another document in the "
+                "vault already holds this document's value for it. Checked in "
+                "the same transaction as the insert, so the existing document "
+                "is never disturbed. Detail carries `doc_type`, `field`, "
+                "`colliding_value` and `existing_document_id`."
             ),
         },
         422: {

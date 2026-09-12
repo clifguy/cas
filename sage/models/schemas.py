@@ -5161,8 +5161,18 @@ class BatchIngestFileError(BaseModel):
         description=(
             "Machine-readable error code, present only when the failure was a "
             "typed SAGE error. The same code the single-document ingest "
-            "surface returns for that error (e.g. `vault_source_path_refused`, "
-            "`source_file_not_found`, `adapter_not_found`)."
+            "surface returns for that error. A batch builds each file's "
+            "request from its source, source type and parsed metadata alone, "
+            "so the codes that can appear are the single-document codes that "
+            "depend on none of a predecessor, a force re-ingest, a chain-head "
+            "token or a relocation pointer: `adapter_not_found`, "
+            "`duplicate_content`, `invalid_doc_type`, `invalid_document_date`, "
+            "`reserved_transition`, `source_file_not_found`, "
+            "`tier3_schema_violation`, `tier3_unique_constraint_violation`, "
+            "`vault_source_path_refused`, `vault_source_store_refused` and "
+            "`vault_source_store_unavailable`. Of these, "
+            "`vault_source_store_unavailable` is the one a later attempt at the "
+            "same file may succeed past."
         ),
     )
     detail: dict[str, Any] | None = Field(

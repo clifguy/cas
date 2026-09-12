@@ -28,7 +28,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from sage.api.errors import SAGEError
+from pydantic import ValidationError
+
+from sage.api.errors import SAGEError, translate_validation_error
 from sage.models.enums import SourceType
 from sage.models.schemas import (
     BatchIngestFileError,
@@ -316,18 +318,31 @@ class BatchIngestService:
 
             try:
                 metadata_dict = _metadata_dict_from_parsed(fd.parsed_metadata)
-                request = IngestRequest(
-                    source=fd.file_path,
-                    source_type=SourceType(fd.source_type),
-                    metadata=metadata_dict,
-                    # CAS-ADR-021: SAGE's default is to commit caller-
-                    # supplied metadata as authoritative. The CAS bulk-
-                    # ingest workflow surfaces inferred values for human
-                    # confirmation, so it opts the document into the
-                    # metadata-review queue (needs_review defaults True).
-                    needs_review=needs_review,
-                    dry_run=dry_run,
-                )
+                source_type = SourceType(fd.source_type)
+                try:
+                    request = IngestRequest(
+                        source=fd.file_path,
+                        source_type=source_type,
+                        metadata=metadata_dict,
+                        # CAS-ADR-021: SAGE's default is to commit caller-
+                        # supplied metadata as authoritative. The CAS bulk-
+                        # ingest workflow surfaces inferred values for human
+                        # confirmation, so it opts the document into the
+                        # metadata-review queue (needs_review defaults True).
+                        needs_review=needs_review,
+                        dry_run=dry_run,
+                    )
+                except ValidationError as exc:
+                    # The single-document surface validates this request at
+                    # its boundary and returns the typed refusal; here the
+                    # request is built inside the loop, so the same
+                    # translation is applied where it is built. Without it the
+                    # entry carries no code and a message rendering the whole
+                    # request, staged location included.
+                    translated = translate_validation_error(exc)
+                    if translated is None:
+                        raise
+                    raise translated from exc
                 ingest_result = await vault_services.ingestion_service.ingest(
                     request,
                     # The staged path is where the bytes are; the caller's
@@ -366,9 +381,10 @@ class BatchIngestService:
 
             except Exception as exc:
                 summary.error_count += 1
-                summary.errors.append(_error_entry(i, filename, fd, exc))
+                entry = _error_entry(i, filename, fd, exc)
+                summary.errors.append(entry)
                 if on_file_error is not None:
-                    await on_file_error(i, total, filename, str(exc))
+                    await on_file_error(i, total, filename, entry.message)
 
         # Phase 3: Post-ingest edge creation
         if edge_plan is not None:

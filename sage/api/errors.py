@@ -2228,15 +2228,19 @@ def _strip_transport_segment(loc: tuple) -> tuple:
 def translate_validation_error(
     exc: ValidationError | RequestValidationError,
 ) -> SAGEError | None:
-    """Map a Pydantic ValidationError on DiscoverRequest/RetrievalFilters to a
-    typed ADR-028 SAGEError.
+    """Map a Pydantic validation failure to a typed ADR-028 SAGEError.
 
     Walks ``exc.errors()`` and returns the first matching SAGEError. Returns
     ``None`` when no rule matches, signaling the caller to fall back to the
     default validation-error path (FastAPI's 422 on HTTP, ``internal_error``
-    on MCP). The translator is intentionally scoped: it only fires on
-    ``mode``/``filters``-rooted errors so non-discover endpoints are
-    unaffected.
+    on MCP). Two kinds of rule apply. Custom error types a leaf validator
+    raises with a structured ``ctx`` -- ``mode_parameter_mismatch``,
+    ``legacy_form``, and the typed-alias family (``invalid_document_id``,
+    ``invalid_vault_id``, ``invalid_document_date`` and the rest) -- are
+    rebuilt wherever they occur, on any request model. The remaining rules are
+    scoped to the discover request: they fire only on ``mode``- or
+    ``filters``-rooted errors, so other models' built-in validation failures
+    are left to the fallback.
 
     Both ``pydantic.ValidationError`` and ``fastapi.exceptions.RequestValidationError``
     expose ``.errors()`` with the same dict shape, so one function serves
