@@ -1112,8 +1112,12 @@ class IngestRequest(BaseModel):
             "rejected with 409 `force_reingest_path_mismatch` unless this "
             "field names the record the caller intends to overwrite (for "
             "example, re-ingesting a document whose file legitimately moved). "
-            "Consulted only when `force=true` and a content-hash collision "
-            "exists; ignored otherwise."
+            "Where several documents carry the delivered content hash, this "
+            "field selects any one of them, not only the one a duplicate "
+            "refusal would name. A value naming a document that does not "
+            "carry the delivered content hash, or no document at all, is "
+            "rejected with 409 `force_reingest_pin_mismatch`. Consulted only "
+            "when `force=true`; ignored otherwise."
         ),
     )
     dry_run: bool = Field(

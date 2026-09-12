@@ -627,8 +627,12 @@ paths:
         collide before the real call arrives;
         `force_reingest_path_mismatch`, which turns on the colliding
         record's own source path; and `stale_chain_head` on an
-        `expected_head_version` that no longer matches. A clean preview
-        is not a promise that the real run commits.
+        `expected_head_version` that no longer matches. A
+        `force_reingest_pin_mismatch` is checked only where the preview
+        holds the content hash; it goes unchecked for a source resident in
+        the store with no prior document record, which has no hash to judge
+        the pin against. A clean preview is not a promise that the real run
+        commits.
       tags: [Ingestion]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -750,6 +754,17 @@ paths:
             document; pass `document_id` to confirm the intended record.
             Detail carries `existing_document_id`, `existing_source_path`,
             `new_source_path`, and `source_content_hash`.
+
+
+            `force_reingest_pin_mismatch`: `force: true` and
+            `document_id` names a document that does not carry the
+            delivered content hash, or no document at all. A pin may
+            select any document holding these bytes, never a record
+            holding other bytes, and is refused whether or not another
+            document holds them. Detail carries `document_id`,
+            `pinned_source_content_hash` (null when no document has that
+            id), `source_content_hash`, and `existing_document_id` (null
+            when no document holds the hash).
 
 
             `supersede_target_not_active`: `predecessor_id` was set but
@@ -4992,8 +5007,12 @@ components:
             `force_reingest_path_mismatch` unless this field names the
             record the caller intends to overwrite (for example,
             re-ingesting a document whose file legitimately moved).
-            Consulted only when `force=true` and a content-hash
-            collision exists; ignored otherwise.
+            Where several documents carry the delivered content hash,
+            this field selects any one of them, not only the one a
+            duplicate refusal would name. A value naming a document that
+            does not carry the delivered content hash, or no document at
+            all, is rejected with 409 `force_reingest_pin_mismatch`.
+            Consulted only when `force=true`; ignored otherwise.
         dry_run:
           type: boolean
           default: false

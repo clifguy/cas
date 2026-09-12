@@ -17,7 +17,11 @@ from pathlib import Path
 import pytest
 
 from sage.adapters.interfaces import Chunk, DocumentSurface
-from sage.api.errors import DuplicateContentError, ForceReingestPathMismatchError
+from sage.api.errors import (
+    DuplicateContentError,
+    ForceReingestPathMismatchError,
+    ForceReingestPinMismatchError,
+)
 from sage.config import VaultConfig
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document, IngestRequest
@@ -1202,6 +1206,262 @@ async def test_force_reingest_cross_document_collision_raises(
     assert fetched_a is not None
     assert fetched_a.source_path == "reports/collide_a.md"
     assert fetched_a.title == title_a
+
+
+# ---------------------------------------------------------------------------
+# Force-reingest pin: a document_id pin selects any holder of the delivered
+# hash, and a pin naming a document without it is refused.
+#
+# Every other force-reingest test holds one document per hash, where the pin
+# and the hash lookup's representative can only coincide. The second holder
+# is seeded at the store level because the service refuses to create one.
+# ---------------------------------------------------------------------------
+
+_SHARED_BODY = "# Shared\n\nBytes two records hold."
+
+
+async def _ingest_shared_holder(tmp_vault_dir, ingestion_service) -> Document:
+    """Ingest the representative holder of the shared bytes."""
+    _create_test_file(tmp_vault_dir, "reports/shared.md", _SHARED_BODY)
+    result = await ingestion_service.ingest(
+        IngestRequest(source="reports/shared.md", source_type=SourceType.MARKDOWN)
+    )
+    return result.document
+
+
+async def test_force_reingest_pin_reaches_a_holder_the_tie_break_did_not_choose(
+    tmp_vault_dir, graph_store, stub_content_store, ingestion_service, minimal_config
+):
+    """A pin on the higher-id holder is honored over the lowest-id one.
+
+    Delivered at the representative's own path, which is the silent shape:
+    no path guard fires, so a pin that falls through overwrites the
+    representative and reports success. The precondition asserts the lookup
+    really prefers the other document -- a fixture where the pin happened to
+    be the representative would pass on code that ignores the pin.
+    """
+    representative = await _ingest_shared_holder(tmp_vault_dir, ingestion_service)
+    sibling = representative.model_copy(
+        update={"id": "ffffffff_pinned_sibling", "source_path": "reports/pinned_sibling.md"}
+    )
+    await graph_store.insert_document(sibling)
+    shared_hash = representative.source_content_hash
+    lookup = await graph_store.find_documents_by_hashes(
+        [shared_hash],
+        prefer_lifecycle_statuses=minimal_config.lifecycle.supersession_surviving_states(),
+    )
+    assert lookup == {shared_hash: representative.id}
+
+    result = await ingestion_service.ingest(
+        IngestRequest(
+            source="reports/shared.md",
+            source_type=SourceType.MARKDOWN,
+            force=True,
+            document_id=sibling.id,
+        )
+    )
+
+    assert result.is_new is False
+    assert result.document.id == sibling.id
+    assert result.document.projected_at != sibling.projected_at
+    untouched = await graph_store.get_document(representative.id)
+    assert untouched.projected_at == representative.projected_at
+    assert untouched.source_path == "reports/shared.md"
+    assert await stub_content_store.has_chunks(representative.id)
+
+
+async def test_force_reingest_pin_reaches_a_holder_the_lifecycle_rank_did_not_choose(
+    tmp_vault_dir, graph_store, ingestion_service, minimal_config
+):
+    """A pin on a retired holder is honored over the surviving one.
+
+    The retired sibling's id sorts below every service-generated id, so it
+    would win the tie-break alone; only the lifecycle rank makes the other
+    document the representative. Together with the tie-break test this covers
+    both halves of the ranking rule the pin has to see past.
+    """
+    representative = await _ingest_shared_holder(tmp_vault_dir, ingestion_service)
+    _create_test_file(tmp_vault_dir, "reports/retired_sibling.md", _SHARED_BODY)
+    retired = representative.model_copy(
+        update={
+            "id": "00000000_retired_pinned_sibling",
+            "source_path": "reports/retired_sibling.md",
+            "lifecycle_status": "archived",
+        }
+    )
+    await graph_store.insert_document(retired)
+    shared_hash = representative.source_content_hash
+    lookup = await graph_store.find_documents_by_hashes(
+        [shared_hash],
+        prefer_lifecycle_statuses=minimal_config.lifecycle.supersession_surviving_states(),
+    )
+    assert lookup == {shared_hash: representative.id}
+
+    result = await ingestion_service.ingest(
+        IngestRequest(
+            source="reports/retired_sibling.md",
+            source_type=SourceType.MARKDOWN,
+            force=True,
+            document_id=retired.id,
+        )
+    )
+
+    assert result.document.id == retired.id
+    untouched = await graph_store.get_document(representative.id)
+    assert untouched.projected_at == representative.projected_at
+
+
+async def test_force_reingest_pin_naming_a_document_without_the_hash_is_refused(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    """A pin on a document holding other bytes is refused, not ignored.
+
+    Ignored, the call overwrites the hash's representative at its own path
+    and succeeds. The detail is compared whole so a refusal naming only the
+    pin -- and not what the vault actually holds -- does not pass.
+    """
+    holder = await _ingest_shared_holder(tmp_vault_dir, ingestion_service)
+    _create_test_file(tmp_vault_dir, "reports/other.md", "# Other\n\nDifferent bytes.")
+    other = (
+        await ingestion_service.ingest(
+            IngestRequest(source="reports/other.md", source_type=SourceType.MARKDOWN)
+        )
+    ).document
+
+    with pytest.raises(ForceReingestPinMismatchError) as exc_info:
+        await ingestion_service.ingest(
+            IngestRequest(
+                source="reports/shared.md",
+                source_type=SourceType.MARKDOWN,
+                force=True,
+                document_id=other.id,
+            )
+        )
+
+    err = exc_info.value
+    assert err.status_code == 409
+    assert err.code == "force_reingest_pin_mismatch"
+    assert err.detail == {
+        "document_id": other.id,
+        "pinned_source_content_hash": other.source_content_hash,
+        "source_content_hash": holder.source_content_hash,
+        "existing_document_id": holder.id,
+    }
+    assert (await graph_store.get_document(holder.id)).projected_at == holder.projected_at
+    assert (await graph_store.get_document(other.id)).projected_at == other.projected_at
+
+
+async def test_force_reingest_pin_naming_no_document_is_refused(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    """A pin naming no document at all is refused with a null pinned hash.
+
+    Separates "the pin must carry the hash" from "a pin on a document with a
+    different hash is refused", which a check skipping unknown ids satisfies.
+    """
+    holder = await _ingest_shared_holder(tmp_vault_dir, ingestion_service)
+
+    with pytest.raises(ForceReingestPinMismatchError) as exc_info:
+        await ingestion_service.ingest(
+            IngestRequest(
+                source="reports/shared.md",
+                source_type=SourceType.MARKDOWN,
+                force=True,
+                document_id="00000000_no_such_document",
+            )
+        )
+
+    assert exc_info.value.detail == {
+        "document_id": "00000000_no_such_document",
+        "pinned_source_content_hash": None,
+        "source_content_hash": holder.source_content_hash,
+        "existing_document_id": holder.id,
+    }
+    assert (await graph_store.get_document(holder.id)).projected_at == holder.projected_at
+
+
+async def test_force_reingest_pin_is_refused_when_no_document_holds_the_hash(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    """A pin with bytes nobody holds is refused rather than minting a document.
+
+    Ignored, the pin is dropped and a new record is created under a call
+    that named an existing one. Separates a check that runs only when the
+    hash has a holder from one that runs whenever a pin is supplied.
+    """
+    holder = await _ingest_shared_holder(tmp_vault_dir, ingestion_service)
+    _create_test_file(tmp_vault_dir, "reports/novel.md", "# Novel\n\nBytes no record holds.")
+    count_before = len(await graph_store.list_all_documents())
+
+    with pytest.raises(ForceReingestPinMismatchError) as exc_info:
+        await ingestion_service.ingest(
+            IngestRequest(
+                source="reports/novel.md",
+                source_type=SourceType.MARKDOWN,
+                force=True,
+                document_id=holder.id,
+            )
+        )
+
+    detail = exc_info.value.detail
+    assert detail["document_id"] == holder.id
+    assert detail["pinned_source_content_hash"] == holder.source_content_hash
+    assert detail["existing_document_id"] is None
+    assert detail["source_content_hash"] != holder.source_content_hash
+    assert len(await graph_store.list_all_documents()) == count_before
+
+
+async def test_force_reingest_pin_refusal_retains_nothing(
+    tmp_vault_dir, graph_store, ingestion_service, tmp_path
+):
+    """A refused pin leaves no copy of the caller's bytes in the import area.
+
+    Retention is the first irreversible act of an ingest. Bytes no document
+    holds are copied in fresh rather than reused, so a refusal raised after
+    retention leaves a retained file with no row, which no audit walks. An
+    external source is what makes the copy observable: a vault-relative one
+    is retained in place, and its presence proves nothing.
+    """
+    holder = await _ingest_shared_holder(tmp_vault_dir, ingestion_service)
+    external = tmp_path / "pin_refused_external.md"
+    external.write_text("# External\n\nBytes no record holds, delivered from outside.")
+    imports_dir = tmp_vault_dir / "sources" / "imports"
+    before = sorted(imports_dir.rglob("*")) if imports_dir.exists() else []
+
+    with pytest.raises(ForceReingestPinMismatchError):
+        await ingestion_service.ingest(
+            IngestRequest(
+                source=str(external),
+                source_type=SourceType.MARKDOWN,
+                force=True,
+                document_id=holder.id,
+            )
+        )
+
+    after = sorted(imports_dir.rglob("*")) if imports_dir.exists() else []
+    assert after == before
+
+
+async def test_non_force_ingest_still_ignores_a_pin(tmp_vault_dir, graph_store, ingestion_service):
+    """The pin is a force-reingest argument; without ``force`` it is ignored.
+
+    Green before and after the pin refusal landed -- a guard that the refusal
+    did not widen to ordinary ingests, not a red-first test.
+    """
+    holder = await _ingest_shared_holder(tmp_vault_dir, ingestion_service)
+    _create_test_file(tmp_vault_dir, "reports/unforced.md", "# Unforced\n\nNovel bytes.")
+
+    result = await ingestion_service.ingest(
+        IngestRequest(
+            source="reports/unforced.md",
+            source_type=SourceType.MARKDOWN,
+            document_id=holder.id,
+        )
+    )
+
+    assert result.is_new is True
+    assert result.document.id != holder.id
+    assert (await graph_store.get_document(holder.id)).projected_at == holder.projected_at
 
 
 # ---------------------------------------------------------------------------

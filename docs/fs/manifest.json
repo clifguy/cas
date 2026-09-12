@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.50",
+      "version": "0.51",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.94",
+  "substrate_version": "1.95",
   "revision_history": [
+    {
+      "version": "1.95",
+      "date": "2026-09-12",
+      "summary": "Let a force-reingest `document_id` pin reach any document carrying the delivered bytes, and refuse one that names a document without them (sage_core_api.openapi.yaml 0.50 -> 0.51). The hash lookup collapses several documents on one hash to a single representative, and the force branch honored the pin only when it named that representative -- so a pin on any other holder fell through silently, overwriting the representative at its own path or raising force_reingest_path_mismatch at a different one, which the pin exists to resolve. IngestRequest.document_id's description now states that the pin selects any holder and that a pin naming a document without the delivered hash, or no document at all, is rejected with the new 409 `force_reingest_pin_mismatch`; the ingest operation's 409 response gains the code, with detail `document_id`, `pinned_source_content_hash` (null when no document has that id), `source_content_hash` and `existing_document_id` (null when no document holds the hash). The refusal applies whether or not another document holds the bytes: ignoring the pin in the no-holder case minted a new document under a call that named an existing one. Without `force` the pin is still ignored. Code (not in this spec): no GraphStore port change. Membership of one caller-named id among a hash's holders is the pinned document's own source_content_hash compared with the delivered one, a single point read, so neither widening find_documents_by_hashes nor adding an every-holder companion was needed; the singular caller-facing fields (existing_document_id, duplicate_of, HashCheckMatch.document_id) are unchanged. IngestionService._resolve_force_pin runs above retention whenever the caller's bytes carry a digest, beside the relocation guard and for its reason: bytes no document holds would otherwise be copied into the import area and then refused, leaving a retained file with no row. Only an unrecorded store-resident source, which has no digest before projection and nothing to retain, is judged after projection instead. The preview runs the same check wherever it holds the content hash, refusing the same pin with the same detail, while a valid pin leaves `duplicate_of` naming the representative; an unrecorded store-resident source gives the preview no hash, so a pin on it goes unchecked there, and the ingest operation's dry-run prose says so. Tests: two holders of one hash seeded at the store level, pinning the holder the id tie-break rejects (delivered at the representative's own path, the silent shape) and the holder the lifecycle rank rejects, each behind a precondition that the lookup really prefers the other; refusals for a pin on other bytes, on no document, and on bytes no document holds; a refused pin on an external source leaving the import area unchanged; the same refusal on an unrecorded resident source, judged by the projected digest; a guard that a non-force ingest still ignores the pin; and a preview pair (refused with detail equal to the real run's, accepted on a non-representative holder)."
+    },
     {
       "version": "1.94",
       "date": "2026-09-12",
