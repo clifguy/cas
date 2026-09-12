@@ -7,6 +7,7 @@ GET /sage_vaults/{vault_id}/pending-metadata -- documents awaiting metadata
 from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_metadata_service, get_vault_id
+from sage.api.response_docs import boundary_400
 from sage.models.schemas import ErrorResponse, PendingMetadataItem, VaultIdStr
 from sage.services.metadata import MetadataService
 
@@ -17,6 +18,7 @@ router = APIRouter(tags=["pending_metadata"])
     "/pending-metadata",
     response_model=list[PendingMetadataItem],
     responses={
+        400: boundary_400(path=("invalid_vault_id",)),
         404: {
             "model": ErrorResponse,
             "description": "Vault not found.",

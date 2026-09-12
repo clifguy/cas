@@ -25,6 +25,7 @@ from app.backend.models import (
     ScanResponse,
 )
 from app.backend.scan_service import ScanService
+from sage.api.response_docs import boundary_400
 
 router = APIRouter(prefix="/app", tags=["app"])
 
@@ -33,10 +34,10 @@ router = APIRouter(prefix="/app", tags=["app"])
     "/scan",
     response_model=ScanResponse,
     responses={
-        400: {
-            "model": ErrorResponse,
-            "description": ("`invalid_directory`: `directory` does not exist or is not readable."),
-        },
+        400: boundary_400(
+            request=("invalid_vault_id",),
+            extra="`invalid_directory`: `directory` does not exist or is not readable.",
+        ),
         404: {
             "model": ErrorResponse,
             "description": "`vault_not_found`: no vault with that id.",
@@ -54,12 +55,12 @@ async def scan_endpoint(
 @router.post(
     "/ingest",
     responses={
-        400: {
-            "model": ErrorResponse,
-            "description": (
+        400: boundary_400(
+            request=("invalid_vault_id", "invalid_document_date"),
+            extra=(
                 "`empty_file_list`: `files` was empty. Choose at least one file or skip the call."
             ),
-        },
+        ),
         404: {
             "model": ErrorResponse,
             "description": "`vault_not_found`: no vault with that id.",

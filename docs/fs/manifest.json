@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.48",
+      "version": "0.49",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -91,7 +91,7 @@
       "path": "cas_app_api.openapi.yaml",
       "title": "CAS Application API",
       "status": "draft",
-      "version": "0.10",
+      "version": "0.11",
       "role": "OpenAPI 3.1.0 specification for the CAS Application backend HTTP surface (mounted at the /app prefix). Defines directory scan and batch-ingest endpoints used by the CAS Application UI. Architecturally distinct from the SAGE Core API; the two specs are validated together by tests/sage/test_openapi_conformance.py and must respect URL-prefix boundaries (sage_core_api owns /sage_vaults/*, cas_app_api owns /app/*).",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.92",
+  "substrate_version": "1.93",
   "revision_history": [
+    {
+      "version": "1.93",
+      "date": "2026-09-12",
+      "summary": "Every operation that can refuse a malformed identifier now says so (sage_core_api.openapi.yaml 0.48 -> 0.49, cas_app_api.openapi.yaml 0.10 -> 0.11). A value bound through a typed alias is validated at request binding, and a malformed one surfaces as a structured per-field 400 rather than a framework-native 422, so the refusal is a branch the operation has always had. One operation declared it. Eleven of the fifteen carrying a document or edge identifier in their path declared no 400 at all and three declared one for an unrelated code; the vault identifier, which every vault-scoped route validates the same way, was undeclared on all of them; and ten operations reach the same refusal through a request body or a query string, including one whose only carrier is a field nested in a list of items. The specification is served unauthenticated, so a client generated from it had no branch for a refusal the operation can return. All thirty-nine vault-scoped operations now declare what their path can refuse, the ten that bind an alias elsewhere declare that too, and where an operation already declared a 400 for its own reasons the two reconcile into one description rather than a second entry -- the operation's own prose first, the shared refusals after. Each code has two wordings, one naming the path parameter and one naming the shape, because a body may carry the same shape at several names and naming one of them would be false for the others. The sentences are written once in the router layer and composed at each route rather than copied forty-nine times, since a per-route copy drifts one route at a time while the published contract has to match it word for word; the live-versus-committed comparison gates every description against its router entry. The two editor operations are forward-declared with no route behind them and gain the declaration alongside the rest. The MCP surface is swept to the same rule its own convention already stated: twenty-three tools gained the boundary bullet their Error modes list omitted, and one tool's call-level refusals move out of narrative prose into a list of their own. Tests: both gates assert the property rather than the instances. The rosters are reflected from the live routes and the registered tools, and each code is read by provoking the validator rather than derived from a parameter's spelling, so a route whose alias had been dropped contributes no row instead of being reported as covered. The walk reads a field's pydantic metadata as well as its annotation -- pydantic lifts an annotated field's validators onto the FieldInfo and leaves the annotation a bare str, and a walk that reads annotations alone reports every request body as carrying no alias, silently, the roster simply being shorter; a control asserts a live request model against that. Floors and named representatives refuse a roster that has collapsed, which would pass every per-row case vacuously, and the detectors' teeth tests pin the ways a declaration can be absent or misplaced, including a code named in the 404 prose or in an Args description, since containment says nothing about which surface names it. The docstring detector reads every error-mode list a tool declares rather than the first, because a tool that separates its call-level refusals from its per-item ones declares two. Two boundary rejections are driven over HTTP for the first time, on the staging-edge routes and the projection read, so the new sentences are checked against what the routes raise rather than only against each other. Two disclosure-parity pins fall by one: the docstrings now cover a contract claim each was stating alone. A third fell for an artifact and says so inline -- coverage there is a bag of words over the whole surface, and a boundary sentence supplied the one word a claim was missing. The CAS Application's two operations are swept alongside the Core API's: its router module carries postponed annotations, which hand every parameter annotation back as a string, so the gate's first form walked past both of them and reported clean over a surface it had not examined; the walk now resolves annotations, each row is checked against the specification that owns its path, and a control names those two operations rather than leaving them to a floor a two-row shortfall clears. No allowlist gains an entry."
+    },
     {
       "version": "1.92",
       "date": "2026-09-11",

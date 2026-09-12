@@ -16,6 +16,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from sage.api.dependencies import get_maintenance_service, get_vault_id
+from sage.api.response_docs import boundary_400
 from sage.models.schemas import (
     DriftReport,
     ErrorResponse,
@@ -62,6 +63,7 @@ async def _format_reabstract_stream(
     "/maintenance/migrate",
     response_model=MigrationReport,
     responses={
+        400: boundary_400(path=("invalid_vault_id",)),
         404: {
             "model": ErrorResponse,
             "description": "`vault_not_found`: no vault registered with that id.",
@@ -79,6 +81,7 @@ async def migrate_vault(
     "/maintenance/detect-drift",
     response_model=DriftReport,
     responses={
+        400: boundary_400(path=("invalid_vault_id",)),
         404: {
             "model": ErrorResponse,
             "description": "`vault_not_found`: no vault registered with that id.",
@@ -95,6 +98,7 @@ async def detect_drift(
 @router.post(
     "/maintenance/reabstract-deferred",
     responses={
+        400: boundary_400(path=("invalid_vault_id",)),
         200: {
             "content": {"text/event-stream": {}},
             "description": (
@@ -142,6 +146,7 @@ async def reabstract_deferred(
     "/maintenance/optimize-content-store",
     response_model=OptimizeContentStoreReport,
     responses={
+        400: boundary_400(path=("invalid_vault_id",)),
         404: {
             "model": ErrorResponse,
             "description": "`vault_not_found`: no vault registered with that id.",
@@ -162,6 +167,7 @@ async def optimize_content_store(
     "/maintenance/verify-source-files",
     response_model=SourceFileIntegrityReport,
     responses={
+        400: boundary_400(path=("invalid_vault_id",)),
         404: {
             "model": ErrorResponse,
             "description": "`vault_not_found`: no vault registered with that id.",
@@ -197,16 +203,15 @@ async def verify_vault_source_files(
     "/maintenance/restore-source-file",
     response_model=SourceFileRestoreReport,
     responses={
-        400: {
-            "model": ErrorResponse,
-            "description": (
-                "`restore_provenance_mismatch`: the pinned document was not "
-                "ingested from the delivered bytes. "
-                "`restore_source_not_absolute`: the source path is not absolute. "
-                "`vault_source_path_refused`: the document's source_path cannot be "
-                "written at the path it names."
-            ),
-        },
+        400: boundary_400(
+            path=("invalid_vault_id",),
+            request=("invalid_document_id",),
+            extra="`restore_provenance_mismatch`: the pinned document was not "
+            "ingested from the delivered bytes. "
+            "`restore_source_not_absolute`: the source path is not absolute. "
+            "`vault_source_path_refused`: the document's source_path cannot be "
+            "written at the path it names.",
+        ),
         404: {
             "model": ErrorResponse,
             "description": (

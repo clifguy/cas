@@ -366,6 +366,12 @@ def register_sage_tools(
         preview is not a promise that the real run commits.
 
         Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
+        - ``invalid_document_id`` (400): a document id the call names is not
+          well-formed.
+        - ``invalid_document_date`` (400): the supplied document_date is not a
+          well-formed calendar date (YYYY-MM-DD).
         - ``misplaced_metadata`` (400): a recognized ``metadata`` key was
           passed as a top-level argument instead of nested under
           ``metadata``. Detail carries ``fields`` (every misplaced key, so a
@@ -708,6 +714,8 @@ def register_sage_tools(
         ``doc_date``, ``project``, ``doc_code``, ``title``, and ``version``.
 
         Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
         - ``adapter_not_found`` (400): no source adapter is registered for
           ``source_type``.
 
@@ -753,6 +761,8 @@ def register_sage_tools(
           exceed MCP tool-result size ceilings.
 
         Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
         - ``invalid_document_id`` (400): the supplied document_id is not a
           well-formed id; rejected at the boundary before any lookup.
         - ``document_not_found`` (404): no document with that id.
@@ -943,6 +953,10 @@ def register_sage_tools(
         ``response_mode``). Empty ``items`` is valid: empty ``results``,
         zero counts.
 
+        Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
+
         Args:
             vault_id: Target vault identifier.
             items: List of per-item transition requests, each conforming to
@@ -1062,12 +1076,8 @@ def register_sage_tools(
         returns a success envelope whenever at least one item is processed,
         so inspect each ``BulkLinkItemResult.status`` and the aggregate
         ``success_count`` / ``error_count``. An error envelope is returned
-        only when up-front validation rejects the call: ``invalid_vault_id``
-        (malformed ``vault_id``), ``invalid_sha256`` (a per-item
-        ``synced_from_content_hash`` is not a well-formed hash), another
-        malformed ``items`` shape, ``unknown_vault``, or invalid
-        ``response_mode``. Empty ``items`` is valid: empty ``results``,
-        zero counts.
+        only when up-front validation rejects the call. Empty ``items`` is
+        valid: empty ``results``, zero counts.
 
         Per-item error modes (inside the response envelope):
         ``self_referential_edge`` (400), ``document_not_found`` (404),
@@ -1079,6 +1089,16 @@ def register_sage_tools(
         On ``dry_run=True`` no edges persist: each ``edge.id`` carries the
         nil-UUID sentinel (or the existing id on a natural-key hit with
         ``created=false``) and the envelope echoes ``dry_run=True``.
+
+        Error modes:
+        Call-level, in the tool's error envelope; the per-item ones are
+        listed above.
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
+        - ``invalid_sha256`` (400): a per-item ``synced_from_content_hash``
+          is not a well-formed hash.
+        - ``legacy_form`` / another malformed ``items`` shape,
+          ``unknown_vault``, or an invalid ``response_mode``.
 
         Args:
             vault_id: Target vault identifier.
@@ -1402,6 +1422,12 @@ def register_sage_tools(
         point-to-point and exempt; the rule applies only to the five
         ``transitive_both`` types.
 
+        Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
+        - ``invalid_document_id`` (400): a document id the call names is not
+          well-formed.
+
         Args:
             vault_id: Target vault identifier.
             start_id: Starting document identifier. Alias: ``document_id``.
@@ -1504,6 +1530,8 @@ def register_sage_tools(
         yet been reconciled.
 
         Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
         - ``invalid_document_id`` (400): the supplied document_id is not a
           well-formed id; rejected at the boundary before any lookup.
         - ``document_not_found`` (404): no document with that id.
@@ -1852,6 +1880,8 @@ def register_sage_tools(
             via ``SAGE_MCP_INLINE_BUDGET_BYTES``.
 
         Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
         - ``misplaced_filters`` (400): a recognized ``filters`` key was
           passed as a top-level argument instead of nested under
           ``filters``. Detail carries ``fields`` (every misplaced key, so
@@ -1998,6 +2028,8 @@ def register_sage_tools(
         document.
 
         Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
         - ``invalid_document_id`` (400): the supplied document_id is not a
           well-formed id; rejected at the boundary before any lookup.
         - ``document_not_found`` (404): no document with that id.
@@ -2095,6 +2127,12 @@ def register_sage_tools(
         position," prefer search semantic or keyword mode — both
         index heading_path text alongside content.
 
+        Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
+        - ``invalid_document_id`` (400): a document id the call names is not
+          well-formed.
+
         Args:
             vault_id: Target vault identifier.
             document_id: The document's unique identifier. Alias: ``doc_id``.
@@ -2146,6 +2184,12 @@ def register_sage_tools(
         from the resulting ``heading_not_found`` error response. The
         Every returned path is an authored heading, so the returned
         paths are exactly those a caller may pass to read_section.
+
+        Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
+        - ``invalid_document_id`` (400): a document id the call names is not
+          well-formed.
 
         Args:
             vault_id: Target vault identifier.
@@ -2353,6 +2397,10 @@ def register_sage_tools(
         to ``vault_config.yaml`` are not picked up until
         ``reload_vault`` is called.
 
+        Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
+
         Args:
             vault_id: Target vault identifier.
         """
@@ -2478,6 +2526,10 @@ def register_sage_tools(
         and keeps surfacing every unconfirmed document, so it can differ
         from ``pending_metadata_count``.
 
+        Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
+
         Args:
             vault_id: Target vault identifier.
         """
@@ -2573,6 +2625,10 @@ def register_sage_tools(
         list groups by source document
         (``staging_review_grouping=by_source_document``) so a reviewer
         can sweep all candidate edges from one document together.
+
+        Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
 
         Args:
             vault_id: Target vault identifier.
@@ -2676,6 +2732,10 @@ def register_sage_tools(
         is the only surface that reaches it. ``pending_metadata_count``
         on ``get_vault_stats`` excludes documents in a terminal
         lifecycle state, so this list can be longer than that count.
+
+        Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
 
         Args:
             vault_id: Target vault identifier.
@@ -2860,6 +2920,12 @@ def register_sage_tools(
           that read just now -- throttling, or a transient backend signal. The
           same call may succeed later.
 
+        Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
+        - ``invalid_document_id`` (400): the supplied document_id is not a
+          well-formed document id.
+
         Args:
             vault_id: Target vault identifier.
             document_id: Document to re-run the pipeline against.
@@ -2947,6 +3013,8 @@ def register_sage_tools(
         Query ``get_vault_config`` for the ``unique_keys`` declarations.
 
         Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
         - ``vault_not_found`` (404): no vault registered with that id.
 
         Args:
@@ -2994,6 +3062,8 @@ def register_sage_tools(
           is populated.
 
         Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
         - ``vault_not_found`` (404): no vault registered with that id.
         - ``chain_nonlinear`` (reported as ``DriftEntry`` rows, not an
           envelope error, per the bucket above, so one forked chain does not
@@ -3068,6 +3138,8 @@ def register_sage_tools(
         store that ``optimize_vault_content_store`` reclaims.
 
         Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
         - ``vault_not_found`` (404): no vault registered with that id.
         - ``vault_source_store_refused`` (502): the store declined the operation
           on its merits -- quota, a permission it withdrew, a reply that could
@@ -3171,6 +3243,10 @@ def register_sage_tools(
         to match.
 
         Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
+        - ``invalid_document_id`` (400): the supplied document_id is not a
+          well-formed document id.
         - ``vault_not_found`` (404): no vault registered with that id.
         - ``restore_target_unresolved`` (404): no document, or more than one,
           claims the delivered bytes; ``detail.candidate_ids`` names them.
@@ -3326,6 +3402,8 @@ def register_sage_tools(
         SSE progress; the MCP contract is report-and-return.)
 
         Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
         - ``vault_not_found`` (404): no vault registered with that id.
         - ``reabstract_already_in_flight`` (409): a reabstract is already
           running on this vault.
@@ -3377,6 +3455,8 @@ def register_sage_tools(
         echoed for audit-log alignment.
 
         Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
         - ``vault_not_found`` (404): no vault registered with that id.
         - ``ValueError``: ``cleanup_older_than_days`` is negative.
 

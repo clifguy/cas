@@ -9,6 +9,7 @@
 from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_graph_ops_service, get_vault_id
+from sage.api.response_docs import boundary_400
 from sage.models.schemas import (
     BulkLinkRequest,
     BulkLinkResponse,
@@ -55,6 +56,10 @@ router = APIRouter(tags=["Graph Operations"])
         "`full`."
     ),
     responses={
+        400: boundary_400(
+            path=("invalid_vault_id",),
+            request=("invalid_document_id", "invalid_edge_id", "invalid_sha256"),
+        ),
         404: {
             "model": ErrorResponse,
             "description": "`vault_not_found`: no vault registered with that id.",
@@ -73,6 +78,7 @@ async def create_edges(
     "/edges/{edge_id}",
     response_model=UnlinkResponse,
     responses={
+        400: boundary_400(path=("invalid_edge_id", "invalid_vault_id")),
         404: {
             "model": ErrorResponse,
             "description": (
@@ -98,12 +104,7 @@ async def unlink(
     "/preconditions/{document_id}",
     response_model=PreconditionResult,
     responses={
-        400: {
-            "model": ErrorResponse,
-            "description": (
-                "`invalid_document_id`: `document_id` is not a well-formed document id."
-            ),
-        },
+        400: boundary_400(path=("invalid_document_id", "invalid_vault_id")),
         404: {
             "model": ErrorResponse,
             "description": ("`document_not_found`: no document with that id; or vault not found."),
@@ -122,10 +123,11 @@ async def check_preconditions(
     "/traverse",
     response_model=TraverseResponse,
     responses={
-        400: {
-            "model": ErrorResponse,
-            "description": "Invalid edge type or direction.",
-        },
+        400: boundary_400(
+            path=("invalid_vault_id",),
+            request=("invalid_document_id",),
+            extra="Invalid edge type or direction.",
+        ),
         404: {
             "model": ErrorResponse,
             "description": "Vault or starting document not found.",
@@ -144,10 +146,9 @@ async def traverse(
     "/chain",
     response_model=ChainResponse,
     responses={
-        400: {
-            "model": ErrorResponse,
-            "description": "Invalid edge type.",
-        },
+        400: boundary_400(
+            path=("invalid_vault_id",), request=("invalid_document_id",), extra="Invalid edge type."
+        ),
         404: {
             "model": ErrorResponse,
             "description": ("`document_not_found`: no document with that id; or vault not found."),

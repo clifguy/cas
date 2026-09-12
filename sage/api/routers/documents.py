@@ -18,6 +18,7 @@ from sage.api.dependencies import (
     get_ingestion_service,
     get_vault_id,
 )
+from sage.api.response_docs import boundary_400
 from sage.models.schemas import (
     DocumentDownloadUrlResponse,
     DocumentIdStr,
@@ -37,6 +38,7 @@ router = APIRouter(tags=["Document Metadata"])
     "/documents/{document_id}/open",
     response_model=OpenDocumentResponse,
     responses={
+        400: boundary_400(path=("invalid_document_id", "invalid_vault_id")),
         404: {
             "model": ErrorResponse,
             "description": "Document, vault, or backing source file not found.",
@@ -64,6 +66,7 @@ async def open_document(
     operation_id="recompute_abstract",
     response_model=ReabstractStartedResponse,
     responses={
+        400: boundary_400(path=("invalid_document_id", "invalid_vault_id")),
         404: {
             "model": ErrorResponse,
             "description": (
@@ -106,6 +109,7 @@ async def recompute_abstract(
     "/documents/{document_id}/download-url",
     response_model=DocumentDownloadUrlResponse,
     responses={
+        400: boundary_400(path=("invalid_document_id", "invalid_vault_id")),
         404: {
             "model": ErrorResponse,
             "description": "Vault or document not found.",
@@ -149,6 +153,7 @@ async def get_document_download_url(
 @router.get(
     "/documents/{document_id}/content",
     responses={
+        400: boundary_400(path=("invalid_document_id", "invalid_vault_id")),
         404: {
             "model": ErrorResponse,
             "description": (
@@ -216,23 +221,21 @@ async def get_document_content(
     "/documents/{document_id}",
     response_model=DocumentWithContent,
     responses={
-        400: {
-            "model": ErrorResponse,
-            "description": (
-                "Both `include_content` and `write_to_path` supplied "
-                "(`content_delivery_conflict`). Also returned with `write_path_invalid` "
-                "when `write_to_path` is not absolute, its parent is missing or not "
-                "writable, or the target cannot be opened for exclusive creation after "
-                "validation. An existing target instead returns `write_path_exists` (409); "
-                "errors after opening are not translated into `write_path_invalid`. "
-                "Also returned with "
-                "`binary_content_refused` when `include_content=true` targets a "
-                "binary-container source (`.docx`, `.pptx`, `.pdf`, `.xlsx`): the read "
-                "path declines to inline raw container bytes and directs the "
-                "caller to `read_projection` for the extracted text "
-                "(CAS-ADR-039)."
-            ),
-        },
+        400: boundary_400(
+            path=("invalid_document_id", "invalid_vault_id"),
+            extra="Both `include_content` and `write_to_path` supplied "
+            "(`content_delivery_conflict`). Also returned with `write_path_invalid` "
+            "when `write_to_path` is not absolute, its parent is missing or not "
+            "writable, or the target cannot be opened for exclusive creation after "
+            "validation. An existing target instead returns `write_path_exists` (409); "
+            "errors after opening are not translated into `write_path_invalid`. "
+            "Also returned with "
+            "`binary_content_refused` when `include_content=true` targets a "
+            "binary-container source (`.docx`, `.pptx`, `.pdf`, `.xlsx`): the read "
+            "path declines to inline raw container bytes and directs the "
+            "caller to `read_projection` for the extracted text "
+            "(CAS-ADR-039).",
+        ),
         404: {
             "model": ErrorResponse,
             "description": (

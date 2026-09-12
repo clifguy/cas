@@ -72,6 +72,8 @@ def register_app_tools(
         the directory or scan subdirectories separately.
 
         Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
         - ``invalid_directory`` (string in response, not a SAGE error):
           ``directory`` does not exist or is not readable.
         - ``caller_filesystem_unavailable`` (501): under the cloud profile the
@@ -250,6 +252,8 @@ def register_app_tools(
         was written to.
 
         Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
         - ``unknown_vault`` (400): ``vault_id`` is not a registered vault
           (call ``list_vaults`` for the set). A batch-boundary check
           raised before any per-file work; per-file failures accumulate in

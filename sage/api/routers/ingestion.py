@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from sage.api.dependencies import get_ingestion_service, get_vault_id, get_vault_services
 from sage.api.errors import SAGEError
+from sage.api.response_docs import boundary_400
 from sage.mcp_init import SAGEServices
 from sage.models.schemas import (
     BatchIngestUploadMetadata,
@@ -46,31 +47,30 @@ router = APIRouter(tags=["Ingestion"])
                 "existing record rather than creating one."
             ),
         },
-        400: {
-            "model": ErrorResponse,
-            "description": (
-                "`adapter_not_found`: no source adapter is registered for "
-                "`source_type`.\n\n"
-                "`vault_source_path_refused`: the vault-source store refused "
-                "the destination it would have retained the source at.\n\n"
-                "`expected_head_version_requires_predecessor`: "
-                "`expected_head_version` was supplied without "
-                "`predecessor_id`. The token is bound to the chain head "
-                "identified by the predecessor (CAS-ADR-038 Primitive C).\n\n"
-                "`invalid_doc_type`: `metadata.doc_type` names a value the "
-                "vault does not declare. Detail carries `doc_type` and "
-                "`valid_types`, the whole vocabulary. Scoped to the "
-                "caller-named value: omitting the field, inheriting a "
-                "predecessor's value, and a filename-inferred value are all "
-                "admitted.\n\n"
-                "`tier3_schema_violation`: `tier3_metadata` is set but the "
-                "resolved doc_type declares no `metadata_schema`, or the "
-                "payload failed validation. Detail carries `doc_type`, "
-                "`path`, `message`, `instance`, and `requirements` -- the "
-                "doc_type's declared and required field names, unique keys "
-                "and permitted source types."
-            ),
-        },
+        400: boundary_400(
+            path=("invalid_vault_id",),
+            request=("invalid_document_id", "invalid_sha256"),
+            extra="`adapter_not_found`: no source adapter is registered for "
+            "`source_type`.\n\n"
+            "`vault_source_path_refused`: the vault-source store refused "
+            "the destination it would have retained the source at.\n\n"
+            "`expected_head_version_requires_predecessor`: "
+            "`expected_head_version` was supplied without "
+            "`predecessor_id`. The token is bound to the chain head "
+            "identified by the predecessor (CAS-ADR-038 Primitive C).\n\n"
+            "`invalid_doc_type`: `metadata.doc_type` names a value the "
+            "vault does not declare. Detail carries `doc_type` and "
+            "`valid_types`, the whole vocabulary. Scoped to the "
+            "caller-named value: omitting the field, inheriting a "
+            "predecessor's value, and a filename-inferred value are all "
+            "admitted.\n\n"
+            "`tier3_schema_violation`: `tier3_metadata` is set but the "
+            "resolved doc_type declares no `metadata_schema`, or the "
+            "payload failed validation. Detail carries `doc_type`, "
+            "`path`, `message`, `instance`, and `requirements` -- the "
+            "doc_type's declared and required field names, unique keys "
+            "and permitted source types.",
+        ),
         404: {
             "model": ErrorResponse,
             "description": (
@@ -192,16 +192,14 @@ async def ingest(
                 "for the batch."
             ),
         },
-        400: {
-            "model": ErrorResponse,
-            "description": (
-                "`empty_file_list`: no files were uploaded.\n\n"
-                "`invalid_batch_metadata`: the `metadata` form field is not "
-                "valid JSON for the BatchIngestUploadMetadata schema, or its "
-                "`files` length does not match the number of uploaded file "
-                "parts."
-            ),
-        },
+        400: boundary_400(
+            path=("invalid_vault_id",),
+            extra="`empty_file_list`: no files were uploaded.\n\n"
+            "`invalid_batch_metadata`: the `metadata` form field is not "
+            "valid JSON for the BatchIngestUploadMetadata schema, or its "
+            "`files` length does not match the number of uploaded file "
+            "parts.",
+        ),
         404: {
             "model": ErrorResponse,
             "description": "`vault_not_found`: no vault registered with that id.",

@@ -85,6 +85,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import re
 import typing
 from collections.abc import Callable
 from types import ModuleType, UnionType
@@ -93,6 +94,7 @@ from typing import Final
 import pytest
 from fastapi.params import Depends as DependsParam
 from pydantic import AfterValidator, BaseModel
+from pydantic_core import PydanticCustomError
 
 from app.backend import models as models_mod
 from app.backend import router as router_mod
@@ -1285,3 +1287,167 @@ def test_module_typeadapter_bindings_unwrap_only_declared_sequences(tmp_path) ->
     assert "NON_SEQ_ADAPTER" not in bindings, (
         f"a non-sequence subscript must not unwrap to its argument; got {sorted(bindings)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Docstring contract: a tool whose parameter carries a family alias declares
+# that alias's 400 in its ``Error modes:`` block
+# ---------------------------------------------------------------------------
+
+
+# A tool's error-mode list is introduced by a line-initial header naming
+# "error modes", optionally qualified -- "Error modes:", "Error modes (raised
+# synchronously ...):", "Batch-level error modes (...):". The qualifier scopes
+# the list rather than renaming it, and wraps across lines, so keying on the
+# bare spelling read three enumerations as absent and reported tools that
+# disclose correctly. The bound on the qualifier keeps a colon far below a
+# prose mention of the phrase from opening a block that was never declared.
+_ERROR_MODES_HEADER_RE = re.compile(r"^[^\n:]*[Ee]rror modes\b[^:]{0,240}?:", re.MULTILINE)
+
+
+def _code_raised_by(alias: type) -> str | None:
+    """The error code ``alias``'s validator raises, read by provoking it.
+
+    Read from the validator rather than derived from the alias's spelling, so
+    an alias renamed without its code, or given a code that does not match its
+    name, is described by what a caller would actually receive. The empty
+    string is the probe because no alias in the family accepts it.
+    """
+    validator = next(
+        (m.func for m in getattr(alias, "__metadata__", ()) if isinstance(m, AfterValidator)),
+        None,
+    )
+    if validator is None:
+        return None
+    try:
+        validator("")
+    except PydanticCustomError as exc:
+        return exc.type
+    except Exception:  # noqa: BLE001 - a validator failing another way names no code
+        return None
+    return None
+
+
+def _error_modes_block(fn: Callable) -> str:
+    """The tool docstring's ``Error modes:`` block, or the empty string.
+
+    Every such list, not the first: a tool that separates its call-level
+    refusals from its per-item ones declares two, and reading one of them
+    reports the other's codes as undisclosed. Each is bounded at the next
+    structural header or the next list, so a code named in ``Args:`` prose, or
+    in the narrative above, does not read as a declared error mode. Which block
+    names the code is the whole point: a caller looking for what a call can
+    return reads these.
+    """
+    doc = inspect.getdoc(fn) or ""
+    blocks: list[str] = []
+    for match in _ERROR_MODES_HEADER_RE.finditer(doc):
+        rest = doc[match.end() :]
+        end = len(rest)
+        for header in ("Args:", "Returns:", "Raises:", "Example:", "Examples:", "Note:"):
+            found = rest.find(f"\n{header}")
+            if found >= 0:
+                end = min(end, found)
+        next_list = _ERROR_MODES_HEADER_RE.search(rest)
+        if next_list is not None:
+            end = min(end, next_list.start())
+        blocks.append(rest[:end])
+    return "\n".join(blocks)
+
+
+def _fastmcp_tool_declared_codes() -> list[tuple[Callable, str]]:
+    """``(tool, code)`` for every boundary code a registered tool can raise.
+
+    Built from the same discovery the parameter-coverage gate runs on, so the
+    two answer for one roster: a parameter this module holds to an alias is a
+    parameter whose refusal the docstring has to disclose.
+    """
+    pairs: set[tuple[str, str]] = set()
+    by_name: dict[str, Callable] = {}
+    for fn, _param, alias in _discover_fastmcp_tool_params():
+        code = _code_raised_by(alias)
+        if code is None:
+            continue
+        by_name[_qualified_callable_name(fn)] = fn
+        pairs.add((_qualified_callable_name(fn), code))
+    rows = [(by_name[name], code) for name, code in pairs]
+    return sorted(rows, key=lambda row: (row[0].__name__, row[1]))
+
+
+_FASTMCP_TOOL_CODES = _fastmcp_tool_declared_codes()
+
+# Anti-vacuity floor for the roster above. 40 pairs today across 33 tools; the
+# floor sits below that so ordinary movement does not trip it while a collapse
+# does -- a roster that returns nothing passes every per-pair case.
+MIN_FASTMCP_TOOL_CODES: int = 30
+
+
+@pytest.mark.parametrize(
+    "tool, code",
+    _FASTMCP_TOOL_CODES,
+    ids=[f"{fn.__name__}-{code}" for fn, code in _FASTMCP_TOOL_CODES],
+)
+def test_fastmcp_tool_docstrings_declare_their_400(tool: Callable, code: str) -> None:
+    """The docstring contract, asserted as a property rather than per tool.
+
+    The steering document states it for the MCP surface and the sibling gate in
+    ``tests/sage/test_openapi_conformance.py`` asserts the same rule for the
+    published operations. Both surfaces refuse the same value with the same
+    code, and a tool docstring is the only contract an agent choosing that tool
+    reads, so a refusal it omits is one the caller learns by provoking it.
+    """
+    block = _error_modes_block(tool)
+    assert f"``{code}``" in block, (
+        f"{_qualified_callable_name(tool)} validates a parameter through the alias that "
+        f"raises {code}, but its Error modes: block does not declare it"
+    )
+
+
+def test_fastmcp_docstring_roster_is_not_vacuous() -> None:
+    """The roster enumerates the tools rather than quietly returning nothing."""
+    assert len(_FASTMCP_TOOL_CODES) >= MIN_FASTMCP_TOOL_CODES, (
+        f"roster collapsed to {len(_FASTMCP_TOOL_CODES)} pairs"
+    )
+    named = {(fn.__name__, code) for fn, code in _FASTMCP_TOOL_CODES}
+    for expected in (
+        ("get_document", "invalid_document_id"),
+        ("get_document", "invalid_vault_id"),
+        ("delete_edge", "invalid_edge_id"),
+    ):
+        assert expected in named, f"roster is missing {expected}"
+
+
+def test_error_modes_block_is_bounded_at_the_next_header() -> None:
+    """A code named outside the block does not satisfy the contract.
+
+    The rival is a containment test over the whole docstring, which a code
+    mentioned in the narrative or in an ``Args:`` description satisfies without
+    the caller-facing list ever naming it.
+    """
+
+    def only_in_args():  # noqa: D401 - fixture, not a documented callable
+        """Narrative.
+
+        Error modes:
+        - ``document_not_found`` (404): no document with that id.
+
+        Args:
+            document_id: refused with ``invalid_document_id`` when malformed.
+        """
+
+    def in_the_block():  # noqa: D401 - fixture, not a documented callable
+        """Narrative.
+
+        Error modes:
+        - ``invalid_document_id`` (400): not a well-formed document id.
+
+        Args:
+            document_id: the document's identifier.
+        """
+
+    def no_block():  # noqa: D401 - fixture, not a documented callable
+        """Narrative naming ``invalid_document_id`` and nothing else."""
+
+    assert "``invalid_document_id``" not in _error_modes_block(only_in_args)
+    assert "``invalid_document_id``" in _error_modes_block(in_the_block)
+    assert _error_modes_block(no_block) == ""

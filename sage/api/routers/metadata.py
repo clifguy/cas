@@ -5,6 +5,7 @@
 from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_metadata_service, get_vault_id
+from sage.api.response_docs import boundary_400
 from sage.models.schemas import (
     BulkMetadataRequest,
     BulkMetadataResponse,
@@ -36,6 +37,9 @@ router = APIRouter(tags=["Document Metadata"])
         "smaller batches default to `full`."
     ),
     responses={
+        400: boundary_400(
+            path=("invalid_vault_id",), request=("invalid_document_date", "invalid_document_id")
+        ),
         404: {
             "model": ErrorResponse,
             "description": "`vault_not_found`: no vault registered with that id.",
