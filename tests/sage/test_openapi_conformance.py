@@ -28,6 +28,8 @@ from pathlib import Path
 
 import pytest
 import yaml
+from fastapi import Depends
+from fastapi.params import Depends as DependsParam
 from fastapi.routing import APIRoute
 from pydantic import AfterValidator, BaseModel
 from pydantic_core import PydanticCustomError
@@ -2217,14 +2219,42 @@ def _provoked_code(validator) -> str | None:
     return None
 
 
+def _validated_annotation(parameter: inspect.Parameter) -> object:
+    """The annotation whose validators actually run for ``parameter``.
+
+    A parameter supplied by ``Depends`` is bound from the dependency's return
+    value, and FastAPI does not validate that against the endpoint's own
+    annotation: a handler declaring ``document_id: DocumentIdStr =
+    Depends(lambda: "not-a-doc-id")`` answers 200. So an alias written there
+    runs nothing, and reading it would enroll a row whose refusal no code
+    performs -- every vault-scoped route carries exactly that shape, and
+    dropping the alias from the dependency would leave all of them enrolled
+    and declared with the gate green. The dependency's own signature is where
+    the validator lives, so that is what is read.
+    """
+    default = parameter.default
+    dependency = default.dependency if isinstance(default, DependsParam) else None
+    if dependency is None:
+        return parameter.annotation
+    try:
+        inner = inspect.signature(dependency, eval_str=True)
+    except TypeError, ValueError, NameError:  # pragma: no cover - resolvable today
+        return parameter.annotation
+    own = [p.annotation for n, p in inner.parameters.items() if n == parameter.name]
+    return own[0] if own else parameter.annotation
+
+
 def _alias_param_rows() -> list[tuple[str, str, str, str]]:
     """``(path, method, parameter, code)`` for every alias-typed parameter.
 
     Built by reflecting the live FastAPI app, so the roster follows the
-    annotations the routes actually carry, wherever the value arrives: a path
-    segment, a query string, or a field of the request model, nested items
-    included. All three run the same validator and raise the same code, and a
-    caller reading the envelope cannot tell which of them refused.
+    annotations that actually run, wherever the value arrives: a path segment,
+    a query string, or a field of the request model, nested items included.
+    All three run the same validator and raise the same code, and a caller
+    reading the envelope cannot tell which of them refused.
+
+    For a parameter supplied by ``Depends`` the annotation that runs is the
+    dependency's own, not the endpoint's -- see ``_validated_annotation``.
     """
     rows: set[tuple[str, str, str, str]] = set()
     for route in create_app().routes:
@@ -2243,7 +2273,7 @@ def _alias_param_rows() -> list[tuple[str, str, str, str]]:
             continue
         methods = {m.lower() for m in route.methods} & _HTTP_METHODS
         for name, parameter in signature.parameters.items():
-            for validator in _alias_validators(parameter.annotation):
+            for validator in _alias_validators(_validated_annotation(parameter)):
                 code = _provoked_code(validator)
                 if code is None:
                     _UNNAMED_VALIDATORS.add(getattr(validator, "__name__", repr(validator)))
@@ -2254,7 +2284,7 @@ def _alias_param_rows() -> list[tuple[str, str, str, str]]:
 
 _ALIAS_PARAM_ROWS = _alias_param_rows()
 
-# Floor for the roster above. 67 rows pair today across 38 operations; the
+# Floor for the roster above. 70 rows pair today across 40 operations; the
 # floor sits below that so ordinary movement does not trip it while a collapse
 # does -- a reflection that returns nothing passes every per-row case
 # vacuously.
@@ -2374,6 +2404,28 @@ def test_alias_param_roster_is_not_vacuous():
         ("/sage_vaults/{vault_id}/stats", "get", "invalid_vault_id"),
     ):
         assert expected in triples, f"roster is missing {expected}"
+
+
+def test_alias_roster_reads_the_dependency_that_validates():
+    """A ``Depends``-supplied parameter is read off the dependency, not the route.
+
+    FastAPI binds such a parameter from the dependency's return value and
+    never validates it against the endpoint's annotation, so an alias written
+    at the route is inert. Every vault-scoped route carries that shape, and a
+    roster reading the route would enroll forty rows whose refusal nothing
+    performs -- dropping the alias from ``get_vault_id`` would leave all of
+    them enrolled, declared, and green.
+    """
+    from sage.api.dependencies import get_vault_id
+
+    def handler(vault_id: DocumentIdStr = Depends(get_vault_id)) -> None: ...
+
+    parameter = inspect.signature(handler).parameters["vault_id"]
+    resolved = _validated_annotation(parameter)
+    codes = {_provoked_code(v) for v in _alias_validators(resolved)}
+    assert codes == {"invalid_vault_id"}, (
+        f"resolved the route's own annotation instead of the dependency's: {codes}"
+    )
 
 
 def test_alias_roster_reaches_a_postponed_annotation_module():

@@ -86,6 +86,7 @@ from __future__ import annotations
 import ast
 import inspect
 import re
+import textwrap
 import typing
 from collections.abc import Callable
 from types import ModuleType, UnionType
@@ -1317,8 +1318,11 @@ def _code_raised_by(alias: type) -> str | None:
         (m.func for m in getattr(alias, "__metadata__", ()) if isinstance(m, AfterValidator)),
         None,
     )
-    if validator is None:
-        return None
+    return None if validator is None else _provoke(validator)
+
+
+def _provoke(validator: Callable) -> str | None:
+    """The code ``validator`` raises against a value no alias accepts."""
     try:
         validator("")
     except PydanticCustomError as exc:
@@ -1355,12 +1359,76 @@ def _error_modes_block(fn: Callable) -> str:
     return "\n".join(blocks)
 
 
+def _models_validated_in(fn: Callable) -> list[type[BaseModel]]:
+    """Every ``BaseModel`` the tool body validates caller input through.
+
+    Pattern 3: a bulk tool takes ``items`` as a list of plain dicts and hands
+    each to a request or item model, so the aliases those entries are refused
+    by are declared on the model's fields and not on any parameter of the
+    tool. Reading only the signature stops at the container and reports the
+    tool as refusing nothing an item can carry -- the same shape that made the
+    HTTP-side walk miss every request body until it read a field's metadata.
+
+    Resolved from the body's own call sites rather than from a table: a class
+    named in a ``model_validate`` call or constructed by name in the tool is
+    one this tool passes caller data into.
+    """
+    try:
+        source = textwrap.dedent(inspect.getsource(fn))
+    except OSError:  # pragma: no cover - every registered tool has source today
+        return []
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        called = node.func
+        if isinstance(called, ast.Attribute) and called.attr == "model_validate":
+            if isinstance(called.value, ast.Name):
+                names.add(called.value.id)
+        elif isinstance(called, ast.Name):
+            names.add(called.id)
+    found: list[type[BaseModel]] = []
+    for name in sorted(names):
+        obj = fn.__globals__.get(name)
+        if isinstance(obj, type) and issubclass(obj, BaseModel):
+            found.append(obj)
+    return found
+
+
+def _codes_reachable_from(model: type[BaseModel], seen: set | None = None) -> set[str]:
+    """Boundary codes the aliases on ``model``'s fields (and nested ones) raise."""
+    seen = set() if seen is None else seen
+    if model in seen:
+        return set()
+    seen.add(model)
+    codes: set[str] = set()
+    for field in model.model_fields.values():
+        for member in (*field.metadata, *typing.get_args(field.annotation), field.annotation):
+            alias_codes = _code_raised_by(member) if hasattr(member, "__metadata__") else None
+            if alias_codes:
+                codes.add(alias_codes)
+            if isinstance(member, AfterValidator):
+                provoked = _provoke(member.func)
+                if provoked:
+                    codes.add(provoked)
+            if isinstance(member, type) and issubclass(member, BaseModel):
+                codes |= _codes_reachable_from(member, seen)
+    return codes
+
+
 def _fastmcp_tool_declared_codes() -> list[tuple[Callable, str]]:
     """``(tool, code)`` for every boundary code a registered tool can raise.
 
-    Built from the same discovery the parameter-coverage gate runs on, so the
-    two answer for one roster: a parameter this module holds to an alias is a
-    parameter whose refusal the docstring has to disclose.
+    Two sources, because a tool refuses caller input at two depths. Its own
+    parameters come from the discovery the parameter-coverage gate runs on, so
+    a parameter this module holds to an alias is a parameter whose refusal the
+    docstring has to disclose. Its bulk payloads come from the models the body
+    validates entries through, which no parameter names.
+
+    The walk reaches what the tool validates in its own body and no further: a
+    refusal raised inside a service the tool calls is outside it, and a tool
+    disclosing one of those declares more than this roster requires rather
+    than less.
     """
     pairs: set[tuple[str, str]] = set()
     by_name: dict[str, Callable] = {}
@@ -1370,13 +1438,17 @@ def _fastmcp_tool_declared_codes() -> list[tuple[Callable, str]]:
             continue
         by_name[_qualified_callable_name(fn)] = fn
         pairs.add((_qualified_callable_name(fn), code))
+    for fn in list(by_name.values()):
+        for model in _models_validated_in(fn):
+            for code in _codes_reachable_from(model):
+                pairs.add((_qualified_callable_name(fn), code))
     rows = [(by_name[name], code) for name, code in pairs]
     return sorted(rows, key=lambda row: (row[0].__name__, row[1]))
 
 
 _FASTMCP_TOOL_CODES = _fastmcp_tool_declared_codes()
 
-# Anti-vacuity floor for the roster above. 40 pairs today across 33 tools; the
+# Anti-vacuity floor for the roster above. 57 pairs today across 33 tools; the
 # floor sits below that so ordinary movement does not trip it while a collapse
 # does -- a roster that returns nothing passes every per-pair case.
 MIN_FASTMCP_TOOL_CODES: int = 30

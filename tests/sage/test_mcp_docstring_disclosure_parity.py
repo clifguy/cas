@@ -544,7 +544,11 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # the contract was stating alone.
     ("sage_core", "traverse"): Pin(4, 1),
     ("sage_core", "update_lifecycles"): Pin(7, 6),
-    ("sage_core", "update_metadata"): Pin(8, 17),
+    # doc_only fell from 17 as the tool's batch-level list gained the per-item
+    # document-id refusal its operation's 400 now declares: a claim the
+    # docstring was making alone has a counterpart. A reconciliation, unlike
+    # the verify_vault_drift entry below.
+    ("sage_core", "update_metadata"): Pin(8, 16),
     ("sage_core", "update_vault_config"): Pin(7, 8),
     ("sage_core", "verify_hashes"): Pin(4, 5),
     # doc_only fell from 7 as the operation's 400 gained the boundary-refusal

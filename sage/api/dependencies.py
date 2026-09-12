@@ -44,9 +44,16 @@ async def get_vault_id(
     """Validate vault_id against loaded vault registry.
 
     The ``VaultIdStr`` alias on the parameter enforces shape via Pydantic at
-    request binding; FastAPI returns 422 on shape violations before this
-    function runs. Registry membership is then checked here and raises
+    request binding, before this function runs; the boundary translates that
+    rejection into the structured ``invalid_vault_id`` (400) envelope rather
+    than a framework-native 422 (CAS-ADR-040), and every vault-scoped
+    operation declares it. Registry membership is then checked here and raises
     ``VaultNotFoundError`` (404) on miss.
+
+    This annotation is the one that runs for every vault-scoped route. A route
+    binds ``vault_id`` from ``Depends(get_vault_id)``, and FastAPI does not
+    validate a dependency's return value against the endpoint's own
+    annotation, so an alias written there is inert.
 
     The bare annotation (no ``Path(...)`` default) is deliberate: FastAPI
     strips the ``AfterValidator`` from an ``Annotated`` type when a

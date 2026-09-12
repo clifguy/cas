@@ -372,6 +372,8 @@ def register_sage_tools(
           well-formed.
         - ``invalid_document_date`` (400): the supplied document_date is not a
           well-formed calendar date (YYYY-MM-DD).
+        - ``invalid_sha256`` (400): a content hash the call supplies is not a
+          well-formed sha256 digest.
         - ``misplaced_metadata`` (400): a recognized ``metadata`` key was
           passed as a top-level argument instead of nested under
           ``metadata``. Detail carries ``fields`` (every misplaced key, so a
@@ -956,6 +958,10 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``invalid_document_id`` (400): a document id a per-item request
+          names is not well-formed.
+        - ``invalid_sha256`` (400): a content hash a per-item request supplies
+          is not a well-formed sha256 digest.
 
         Args:
             vault_id: Target vault identifier.
@@ -1097,6 +1103,10 @@ def register_sage_tools(
           well-formed vault id.
         - ``invalid_sha256`` (400): a per-item ``synced_from_content_hash``
           is not a well-formed hash.
+        - ``invalid_document_id`` (400): a per-item ``source_id``,
+          ``target_id``, or anchor version is not a well-formed document id.
+        - ``invalid_edge_id`` (400): a per-item ``retracted_edge_id`` is not a
+          well-formed edge id.
         - ``legacy_form`` / another malformed ``items`` shape,
           ``unknown_vault``, or an invalid ``response_mode``.
 
@@ -1234,6 +1244,8 @@ def register_sage_tools(
         (a per-item ``tags`` is a bare list or ``tier3_metadata`` a bare
         key/value dict; detail names the ops-object shape),
         ``invalid_vault_id`` (400, malformed ``vault_id``),
+        ``invalid_document_id`` (400, a per-item ``document_id`` is not a
+        well-formed document id),
         ``invalid_document_date`` (400, a per-item ``document_date`` is not a
         YYYY-MM-DD calendar date), ``unknown_vault``, and ``internal_error``
         (a malformed ``items`` shape or invalid ``response_mode``).
