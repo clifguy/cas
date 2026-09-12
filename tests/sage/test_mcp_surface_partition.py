@@ -404,17 +404,17 @@ def test_all_mcp_mounts_are_exact_path_routes(minimal_config):
             f"expected exactly one method-agnostic transport Route at {mount}, "
             f"found {len(transports)}: {[route.name for route in matches]}"
         )
-        for route in matches:
-            if route is transports[0]:
-                break
+        # Position is checked directly rather than by scanning to the
+        # transport and stopping: a loop that breaks on it never examines what
+        # follows, which is the half of the invariant that matters.
+        assert matches[-1] is transports[0], (
+            f"the transport is not last at {mount}, so the route(s) after it can never "
+            f"match: {[route.name for route in matches]}"
+        )
+        for route in matches[:-1]:
             assert "POST" not in (route.methods or set()), (
                 f"route {route.name!r} precedes the transport at {mount} and claims POST, "
                 "which would shadow every JSON-RPC call"
-            )
-        else:
-            assert len(matches) == 1, (
-                f"routes at {mount} sit behind the transport and can never match: "
-                f"{[route.name for route in matches]}"
             )
         mounted = [
             route for route in app.routes if isinstance(route, Mount) and route.path == mount

@@ -168,8 +168,8 @@ async def _initialize_services(app: FastAPI, config: VaultConfig, **overrides) -
 
 
 #: Sent when a standalone GET arrives on a mount. Named rather than inlined so
-#: the access-log filter and the tests can recognize this exact answer without
-#: matching on a status a transport also returns for other reasons.
+#: a test can pin this exact answer: the transport replies 405 to other methods
+#: too, so the status alone does not say which route answered.
 EVENT_STREAM_DECLINED_MESSAGE = (
     "Method Not Allowed: this endpoint serves JSON-RPC over POST and offers no "
     "standalone event stream"
