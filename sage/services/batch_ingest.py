@@ -468,9 +468,7 @@ def _error_entry(
     non-streaming leg serialized whatever the collection held.
     """
     if isinstance(exc, SAGEError):
-        # ``or None`` so an empty detail drops out on serialization rather
-        # than reaching a caller as an empty object.
-        message, code, detail = exc.message, exc.code, exc.detail or None
+        message, code, detail = exc.message, exc.code, exc.detail
     else:
         message, code, detail = str(exc), None, None
     return BatchIngestFileError(

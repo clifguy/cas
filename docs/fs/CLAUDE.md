@@ -45,11 +45,16 @@ down:
   The transports then differ only within what the contract permits, and a
   client generated from either spec parses both.
 
-Two things the rule does not reach, by decision rather than by oversight. The
-MCP error envelope is assembled by hand and omits an empty `detail` on
-falsiness rather than on null. And a response with no published schema at all,
-such as the stack-configuration report, is dumped whole: the rule's authority is
-the schema, and there is none.
+**An empty error `detail` is an absent one.** Its keys vary by error code, so an
+empty object tells a caller nothing the code has not, and the Core API contract
+already says `detail` is omitted when empty. The error normalizes an empty
+`detail` to null where it is raised, so every envelope — MCP, Core API, bulk
+per-item, batch-ingest per-file — omits it under the ordinary null rule rather
+than by a test of its own.
+
+One thing the rule does not reach, by decision rather than by oversight. A
+response with no published schema at all, such as the stack-configuration
+report, is dumped whole: the rule's authority is the schema, and there is none.
 
 Express nullability the OpenAPI 3.1 way — `type: [string, "null"]`, or an
 `anyOf` branch beside a `$ref`. The 3.0 `nullable: true` keyword is not part of

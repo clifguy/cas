@@ -140,7 +140,7 @@ def _error_response(exc: SAGEError | ValueError) -> dict:
     """Format a SAGE error, vault-routing error, or other ValueError for MCP."""
     if isinstance(exc, SAGEError):
         payload: dict = {"error": exc.code, "message": exc.message}
-        if exc.detail:
+        if exc.detail is not None:
             payload["detail"] = exc.detail
     elif isinstance(exc, VaultNotFoundError):
         payload = {"error": "unknown_vault", "message": str(exc)}
@@ -154,7 +154,7 @@ def _error_response(exc: SAGEError | ValueError) -> dict:
         # to the validator's documentation site.
         sage_err = validation_error_envelope(exc)
         payload = {"error": sage_err.code, "message": sage_err.message}
-        if sage_err.detail:
+        if sage_err.detail is not None:
             payload["detail"] = sage_err.detail
     else:
         payload = {"error": "internal_error", "message": str(exc)}

@@ -32,7 +32,10 @@ class SAGEError(Exception):
         self.code = code
         self.message = message
         self.status_code = status_code
-        self.detail = detail
+        # An empty detail is an absent one, as the published envelope states:
+        # its keys vary by code, so an empty dict says nothing the code has not.
+        # Normalized here, once, so every renderer applies the plain null rule.
+        self.detail = detail or None
 
 
 class DocumentNotFoundError(SAGEError):
