@@ -213,6 +213,35 @@ async def test_malformed_document_id_returns_invalid_document_id_400(client):
     assert body["detail"]["document_id"] == "not-a-fn", body
 
 
+async def test_malformed_edge_id_on_staging_confirm_returns_invalid_edge_id_400(client):
+    """The staging-edge routes refuse a malformed edge_id the same way.
+
+    The delete-edge case above covers one router; this covers the other, and
+    the two together are what the published 400 on the staging routes claims.
+    A declaration asserted only against the router's own text would hold even
+    if the route had stopped running the validator.
+    """
+    resp = await client.post("/sage_vaults/test_vault/staging-edges/not-a-uuid/confirm")
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["code"] == "invalid_edge_id", body
+    assert body["detail"]["edge_id"] == "not-a-uuid", body
+
+
+async def test_malformed_document_id_on_projection_returns_invalid_document_id_400(client):
+    """The utilities read routes refuse a malformed document_id the same way.
+
+    The read paths under `/documents/{document_id}/` had no boundary control
+    of their own; the two covered above sit in other routers, and a route that
+    bound its path parameter as a bare string would pass both of them.
+    """
+    resp = await client.get("/sage_vaults/test_vault/documents/not-a-doc-id/projection")
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["code"] == "invalid_document_id", body
+    assert body["detail"]["document_id"] == "not-a-doc-id", body
+
+
 async def test_malformed_document_date_returns_invalid_document_date_400(client):
     """A malformed document_date in the metadata-patch body returns the
     structured invalid_document_date (400)."""

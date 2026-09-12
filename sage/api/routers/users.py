@@ -3,6 +3,7 @@
 from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_user_service, get_vault_id
+from sage.api.response_docs import boundary_400
 from sage.models.schemas import ErrorResponse, RegisterUserRequest, User, VaultIdStr
 from sage.services.user_service import UserService
 
@@ -14,10 +15,9 @@ router = APIRouter(tags=["Access Control"])
     response_model=User,
     status_code=201,
     responses={
-        400: {
-            "model": ErrorResponse,
-            "description": "Invalid user type or missing required field.",
-        },
+        400: boundary_400(
+            path=("invalid_vault_id",), extra="Invalid user type or missing required field."
+        ),
         404: {
             "model": ErrorResponse,
             "description": "Vault not found.",

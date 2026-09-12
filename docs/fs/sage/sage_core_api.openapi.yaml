@@ -244,11 +244,16 @@ paths:
         "400":
           description: >-
             Invalid parameters (unknown mode, scope, or filter field), or
-            `mode_parameter_mismatch` when a parameter is set that the chosen
-            mode or the chosen target forbids. Its detail carries `mode`,
-            `target`, `forbidden_param`, and the allowed set for whichever
-            axis the constraint is on -- `allowed_modes` or `allowed_targets`,
-            never both.
+            `mode_parameter_mismatch` when a parameter is set that the
+            chosen mode or the chosen target forbids. Its detail carries
+            `mode`, `target`, `forbidden_param`, and the allowed set for
+            whichever axis the constraint is on -- `allowed_modes` or
+            `allowed_targets`, never both.
+
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: a document id in the request is not
+            well-formed.
           content:
             application/json:
               schema:
@@ -386,6 +391,19 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BulkLifecycleResponse"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: a document id in the request is not
+            well-formed.
+
+            `invalid_sha256`: a content hash in the request is not a
+            well-formed sha256 digest.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: "`vault_not_found`: no vault registered with that id."
           content:
@@ -469,6 +487,19 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BulkMetadataResponse"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: a document id in the request is not
+            well-formed.
+
+            `invalid_document_date`: a document date in the request is not
+            a well-formed calendar date (`YYYY-MM-DD`).
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: "`vault_not_found`: no vault registered with that id."
           content:
@@ -621,19 +652,16 @@ paths:
                 $ref: "#/components/schemas/IngestResponse"
         "400":
           description: >-
-            `adapter_not_found`: no source adapter is registered
-            for `source_type`.
-
+            `adapter_not_found`: no source adapter is registered for
+            `source_type`.
 
             `vault_source_path_refused`: the vault-source store refused
             the destination it would have retained the source at.
 
-
             `expected_head_version_requires_predecessor`:
-            `expected_head_version` was supplied without
-            `predecessor_id`. The token is bound to the chain head
-            identified by the predecessor (CAS-ADR-038 Primitive C).
-
+            `expected_head_version` was supplied without `predecessor_id`.
+            The token is bound to the chain head identified by the
+            predecessor (CAS-ADR-038 Primitive C).
 
             `invalid_doc_type`: `metadata.doc_type` names a value the
             vault does not declare. Detail carries `doc_type` and
@@ -642,13 +670,20 @@ paths:
             predecessor's value, and a filename-inferred value are all
             admitted.
 
-
             `tier3_schema_violation`: `tier3_metadata` is set but the
             resolved doc_type declares no `metadata_schema`, or the
-            payload failed validation. Detail carries `doc_type`,
-            `path`, `message`, `instance`, and `requirements` -- the
-            doc_type's declared and required field names, unique keys
-            and permitted source types.
+            payload failed validation. Detail carries `doc_type`, `path`,
+            `message`, `instance`, and `requirements` -- the doc_type's
+            declared and required field names, unique keys and permitted
+            source types.
+
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: a document id in the request is not
+            well-formed.
+
+            `invalid_sha256`: a content hash in the request is not a
+            well-formed sha256 digest.
           content:
             application/json:
               schema:
@@ -858,10 +893,12 @@ paths:
           description: >-
             `empty_file_list`: no files were uploaded.
 
+            `invalid_batch_metadata`: the `metadata` form field is not
+            valid JSON for the BatchIngestUploadMetadata schema, or its
+            `files` length does not match the number of uploaded file
+            parts.
 
-            `invalid_batch_metadata`: the `metadata` form field is not valid
-            JSON for the BatchIngestUploadMetadata schema, or its `files`
-            length does not match the number of uploaded file parts.
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
           content:
             application/json:
               schema:
@@ -954,17 +991,22 @@ paths:
         "400":
           description: >-
             Both `include_content` and `write_to_path` supplied
-            (`content_delivery_conflict`). Also returned with `write_path_invalid`
-            when `write_to_path` is not absolute, its parent is missing or not
-            writable, or the target cannot be opened for exclusive creation after
-            validation. An existing target instead returns `write_path_exists` (409);
-            errors after opening are not translated into `write_path_invalid`.
-            Also returned with
-            `binary_content_refused` when `include_content=true` targets a
-            binary-container source (`.docx`, `.pptx`, `.pdf`, `.xlsx`): the read
-            path declines to inline raw container bytes and directs the
-            caller to `read_projection` for the extracted text
-            (CAS-ADR-039).
+            (`content_delivery_conflict`). Also returned with
+            `write_path_invalid` when `write_to_path` is not absolute, its
+            parent is missing or not writable, or the target cannot be
+            opened for exclusive creation after validation. An existing
+            target instead returns `write_path_exists` (409); errors after
+            opening are not translated into `write_path_invalid`. Also
+            returned with `binary_content_refused` when
+            `include_content=true` targets a binary-container source
+            (`.docx`, `.pptx`, `.pdf`, `.xlsx`): the read path declines to
+            inline raw container bytes and directs the caller to
+            `read_projection` for the extracted text (CAS-ADR-039).
+
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: `document_id` is not a well-formed
+            document id.
           content:
             application/json:
               schema:
@@ -1079,6 +1121,22 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/BulkLinkResponse"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: a document id in the request is not
+            well-formed.
+
+            `invalid_edge_id`: an edge id in the request is not
+            well-formed.
+
+            `invalid_sha256`: a content hash in the request is not a
+            well-formed sha256 digest.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: "`vault_not_found`: no vault registered with that id."
           content:
@@ -1138,7 +1196,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/TraverseResponse"
         "400":
-          description: Invalid edge type or direction.
+          description: >-
+            Invalid edge type or direction.
+
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: a document id in the request is not
+            well-formed.
           content:
             application/json:
               schema:
@@ -1211,7 +1275,13 @@ paths:
               schema:
                 $ref: "#/components/schemas/ChainResponse"
         "400":
-          description: Invalid edge type.
+          description: >-
+            Invalid edge type.
+
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: a document id in the request is not
+            well-formed.
           content:
             application/json:
               schema:
@@ -1273,6 +1343,8 @@ paths:
                 $ref: "#/components/schemas/PreconditionResult"
         "400":
           description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
             `invalid_document_id`: `document_id` is not a well-formed
             document id.
           content:
@@ -1326,7 +1398,10 @@ paths:
               schema:
                 $ref: "#/components/schemas/User"
         "400":
-          description: Invalid user type or missing required field.
+          description: >-
+            Invalid user type or missing required field.
+
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
           content:
             application/json:
               schema:
@@ -1373,7 +1448,16 @@ paths:
               schema:
                 $ref: "#/components/schemas/EditorList"
         "400":
-          description: One or more user IDs are not registered in this vault.
+          description: >-
+            One or more user IDs are not registered in this vault.
+
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: `document_id` is not a well-formed
+            document id.
+
+            `invalid_user_id`: a user id in the request is not
+            well-formed.
           content:
             application/json:
               schema:
@@ -1406,6 +1490,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/EditorList"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: `document_id` is not a well-formed
+            document id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
             `document_not_found`: no document with that id; or vault
@@ -1456,6 +1550,11 @@ paths:
           description: >-
             `path_traversal_denied`: `output_path` resolves outside the
             vault's `storage_root`.
+
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: `document_id` is not a well-formed
+            document id.
           content:
             application/json:
               schema:
@@ -1509,12 +1608,13 @@ paths:
                 $ref: "#/components/schemas/EvalRetrievalResult"
         "400":
           description: >-
-            `assertions_file_invalid`: the referenced YAML is malformed
-            or has the wrong structure.
-
+            `assertions_file_invalid`: the referenced YAML is malformed or
+            has the wrong structure.
 
             `assertions_not_configured`: the vault config has no
             `retrieval_health.assertions_file` entry.
+
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
           content:
             application/json:
               schema:
@@ -1556,6 +1656,13 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RefreshViewsResponse"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Vault not found.
           content:
@@ -1677,6 +1784,14 @@ paths:
                 type: object
                 additionalProperties: true
 
+        "400":
+          description: >-
+            `invalid_vault_id`: a vault id in the request is not
+            well-formed.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /sage_vaults/{vault_id}/stats:
     get:
       operationId: get_vault_stats
@@ -1724,6 +1839,13 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/VaultStatsResponse"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Vault not found.
           content:
@@ -1788,6 +1910,13 @@ paths:
                   Vault configuration object. Structure defined by
                   docs/fs/sage/vault_config.schema.json.
                 additionalProperties: true
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Vault not found.
           content:
@@ -1846,8 +1975,10 @@ paths:
         "400":
           description: >-
             `vault_config_validation_error`: the merged config failed
-            schema validation, an unknown section name was passed, or
-            the request attempts to change `vault.id`.
+            schema validation, an unknown section name was passed, or the
+            request attempts to change `vault.id`.
+
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
           content:
             application/json:
               schema:
@@ -1921,6 +2052,16 @@ paths:
                 additionalProperties:
                   $ref: "#/components/schemas/HashCheckMatch"
                 description: Map of SHA-256 hash to existence record.
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_sha256`: a content hash in the request is not a
+            well-formed sha256 digest.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Vault not found.
           content:
@@ -1972,6 +2113,13 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/StagingEdge"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Vault not found.
           content:
@@ -2007,6 +2155,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StagingEdgeConfirmResponse"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_edge_id`: `edge_id` is not a well-formed edge id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
             `staging_edge_not_found`: the id is unknown (already
@@ -2050,6 +2207,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/StagingEdgeDismissResponse"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_edge_id`: `edge_id` is not a well-formed edge id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
             `staging_edge_not_found`: the id is unknown (already
@@ -2107,6 +2273,13 @@ paths:
                 type: array
                 items:
                   $ref: "#/components/schemas/PendingMetadataItem"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Vault not found.
           content:
@@ -2158,6 +2331,8 @@ paths:
           description: >-
             `adapter_not_found`: no source adapter is registered for
             `source_type`.
+
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
           content:
             application/json:
               schema:
@@ -2196,6 +2371,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OpenDocumentResponse"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: `document_id` is not a well-formed
+            document id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Document, vault, or backing source file not found.
           content:
@@ -2245,6 +2430,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReabstractStartedResponse"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: `document_id` is not a well-formed
+            document id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
             `document_not_found` / `no_projection` / `vault_not_found`: the
@@ -2285,6 +2480,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DocumentDownloadUrlResponse"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: `document_id` is not a well-formed
+            document id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: Vault or document not found.
           content:
@@ -2354,6 +2559,16 @@ paths:
                   The raw source bytes. The concrete Content-Type is derived
                   from the source filename and may be more specific than
                   octet-stream.
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: `document_id` is not a well-formed
+            document id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
             Vault or document not found. Also returned with
@@ -2405,6 +2620,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReadProjectionResponse"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: `document_id` is not a well-formed
+            document id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
             `document_not_found`: no document with that id.
@@ -2469,6 +2694,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ReadSectionResponse"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: `document_id` is not a well-formed
+            document id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
             `document_not_found`: no document with that id.
@@ -2516,6 +2751,16 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ListHeadingsResponse"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: `document_id` is not a well-formed
+            document id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
             `document_not_found`: no document with that id.
@@ -2590,6 +2835,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/UnlinkResponse"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_edge_id`: `edge_id` is not a well-formed edge id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
             `edge_not_found`: no production edge with that id; or
@@ -2638,6 +2892,13 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/DriftReport"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: "`vault_not_found`: no vault registered with that id."
           content:
@@ -2703,6 +2964,13 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/SourceFileIntegrityReport"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: "`vault_not_found`: no vault registered with that id."
           content:
@@ -2792,9 +3060,14 @@ paths:
           description: >-
             `restore_provenance_mismatch`: the pinned document was not
             ingested from the delivered bytes.
-            `restore_source_not_absolute`: the source path is not absolute.
-            `vault_source_path_refused`: the document's source_path cannot be
-            written at the path it names.
+            `restore_source_not_absolute`: the source path is not
+            absolute. `vault_source_path_refused`: the document's
+            source_path cannot be written at the path it names.
+
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: a document id in the request is not
+            well-formed.
           content:
             application/json:
               schema:
@@ -2894,6 +3167,13 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/MigrationReport"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: "`vault_not_found`: no vault registered with that id."
           content:
@@ -2996,6 +3276,13 @@ paths:
                   ReabstractSummaryEvent. See
                   components.schemas.ReabstractProgressEvent and
                   components.schemas.ReabstractSummaryEvent.
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: "`vault_not_found`: no vault registered with that id."
           content:
@@ -3059,6 +3346,13 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/OptimizeContentStoreReport"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: "`vault_not_found`: no vault registered with that id."
           content:

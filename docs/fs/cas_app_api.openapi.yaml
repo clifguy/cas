@@ -138,6 +138,9 @@ paths:
           description: >-
             `invalid_directory`: `directory` does not exist or is not
             readable.
+
+            `invalid_vault_id`: a vault id in the request is not
+            well-formed.
           content:
             application/json:
               schema:
@@ -227,8 +230,14 @@ paths:
                   components.schemas.SummaryEvent.
         "400":
           description: >-
-            `empty_file_list`: `files` was empty. Choose at least one
-            file or skip the call.
+            `empty_file_list`: `files` was empty. Choose at least one file
+            or skip the call.
+
+            `invalid_vault_id`: a vault id in the request is not
+            well-formed.
+
+            `invalid_document_date`: a document date in the request is not
+            a well-formed calendar date (`YYYY-MM-DD`).
           content:
             application/json:
               schema:
