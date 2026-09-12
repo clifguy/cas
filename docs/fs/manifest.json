@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Version tracking and schema inventory for the CAS Formal Substrate (CAS-ADR-008). The manifest records which schemas are present in each version, their status, and their role within the substrate.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-09-11",
+  "manifest_date": "2026-09-12",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.53",
+      "version": "0.54",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -91,7 +91,7 @@
       "path": "cas_app_api.openapi.yaml",
       "title": "CAS Application API",
       "status": "draft",
-      "version": "0.12",
+      "version": "0.13",
       "role": "OpenAPI 3.1.0 specification for the CAS Application backend HTTP surface (mounted at the /app prefix). Defines directory scan and batch-ingest endpoints used by the CAS Application UI. Architecturally distinct from the SAGE Core API; the two specs are validated together by tests/sage/test_openapi_conformance.py and must respect URL-prefix boundaries (sage_core_api owns /sage_vaults/*, cas_app_api owns /app/*).",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.97",
+  "substrate_version": "1.98",
   "revision_history": [
+    {
+      "version": "1.98",
+      "date": "2026-09-12",
+      "summary": "Bump the minor version to v2.3 (sage_core_api.openapi.yaml 0.53 -> 0.54; cas_app_api.openapi.yaml 0.12 -> 0.13). The minor version had not moved since v2.2.0, 99 commits back, across keyword search rescoped from the passage to the document, a broad reduction in caller friction (a unified dry run for the ingest tools, error codes declared and typed across both specs, document relocation between vaults, tripwire parameters marked in the published schema, oversize responses excerpted or degraded rather than spilled), PostgreSQL 17 as the serving baseline, and regional recovery drills. The release also carries the retirement of the legacy SAGE Admin surface -- the /mcp_admin mount, the admin_* tool aliases, and the /sage_vaults/{vault_id}/admin/* routes, with no redirects -- numbered as a minor by the precedent v2.1.0 set when it retired the embedded storage backend. The version is VCS-derived and single-sourced: sage/build_info.py resolves RELEASE_VERSION from `git describe --long --tags --match v*` and exposes API_VERSION as its MAJOR.MINOR contract segment. Only the two committed specs carry a hand-edited literal, so the bump is the annotated tag v2.3.0 anchored on main plus info.version \"2.2\" -> \"2.3\" in both specs, tag first: a spec-edit branch authored before the tag exists reads API_VERSION 2.2 against specs declaring 2.3 and cannot go green. The gate of record is tests/sage/test_openapi_conformance.py::test_openapi_info_version_matches_api_version, the three-way check across the live /openapi.json and both committed specs, verified by mutation in each arm: the edited specs with no tag redden it naming API_VERSION 2.2, each spec reverted alone with the tag present reddens it naming that spec, and the live document reports 2.3 with the constants. No schema, route, argument, or model shape changes, and no allowlist entries in any conformance or coverage gate."
+    },
     {
       "version": "1.97",
       "date": "2026-09-12",
