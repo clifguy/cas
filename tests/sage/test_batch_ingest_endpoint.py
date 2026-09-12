@@ -41,6 +41,7 @@ from sage.models.enums import SourceType
 from sage.services import batch_ingest_stream
 from sage.services.batch_ingest import BatchIngestService, FileDescriptor
 from sage.services.batch_ingest_stream import UploadedFile, stream_uploaded_batch_ingest
+from tests.sage._dry_run_helpers import assert_state_unchanged, state_snapshot
 
 
 class _StubOidc:
@@ -721,7 +722,9 @@ async def test_b13_stage_writes_same_named_parts_to_distinct_paths(monkeypatch):
     seen: list[tuple[str, bytes, str | None]] = []
     roots: set[str] = set()
 
-    async def fake_stream(descriptors, vault_services, infer_edges=True, needs_review=True):
+    async def fake_stream(
+        descriptors, vault_services, infer_edges=True, needs_review=True, dry_run=False
+    ):
         for fd in descriptors:
             staged = Path(fd.file_path)
             seen.append((staged.name, staged.read_bytes(), fd.declared_source))
@@ -759,7 +762,9 @@ async def test_b14_degenerate_upload_names_stage_under_a_synthetic_basename(monk
     """
     seen: list[tuple[str, bytes, str | None]] = []
 
-    async def fake_stream(descriptors, vault_services, infer_edges=True, needs_review=True):
+    async def fake_stream(
+        descriptors, vault_services, infer_edges=True, needs_review=True, dry_run=False
+    ):
         for fd in descriptors:
             staged = Path(fd.file_path)
             seen.append((staged.name, staged.read_bytes(), fd.declared_source))
@@ -1005,3 +1010,232 @@ async def test_b15_pipeline_failure_ends_the_committed_stream(batch_app, monkeyp
 
     assert len(roots) == 1, roots
     assert not next(iter(roots)).exists(), "staging survived the failed run"
+
+
+# ---------------------------------------------------------------------------
+# B17-B20 -- dry run on the hosted upload path
+# ---------------------------------------------------------------------------
+
+
+def _tree(root: Path) -> dict[str, tuple[int, int]]:
+    """Every file under ``root``, keyed by path, valued by (size, mtime_ns).
+
+    Deliberately not the graph-state fingerprint's job: retention writes a
+    file and no row, so a snapshot of documents and edges would report a
+    clean dry run over a vault whose import area had just been written to.
+    """
+    return {
+        str(p.relative_to(root)): (p.stat().st_size, p.stat().st_mtime_ns)
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    }
+
+
+def _summary_of(resp: httpx.Response) -> dict:
+    """The trailing summary event of an SSE batch-ingest response."""
+    return next(e for e in _parse_sse_events(resp.text) if e["event_type"] == "summary")
+
+
+async def test_b17_dry_run_previews_every_upload_and_persists_nothing(batch_app):
+    """A mixed batch under a dry run: one novel file, one carrying bytes the
+    vault already holds, and one naming a doc_type the vault has never
+    declared. Previews and errors together account for the batch, in batch
+    order, and nothing is written.
+
+    The refusal arm is an undeclared doc_type rather than a missing source:
+    on an upload path the bytes are always present by construction, so the
+    co-located test's source_file_not_found arm is unreachable here. The
+    vocabulary gate reads only caller metadata and the vault config, which
+    is why it still refuses above the preview branch.
+
+    Anti-coincidental-pass: a route that read the flag off the envelope and
+    dropped it, or a generator that took it and did not forward it, reports
+    ``dry_run: false`` with no previews; an implementation whose preview
+    branch sat below source retention leaves the graph fingerprint clean and
+    the vault-tree listing changed, which is why both are asserted.
+    ``infer_edges`` is set true against an assertion that no edge was
+    created, so a dry run that ran the edge-planning phase anyway is
+    excluded rather than merely unrequested. Not excluded here: an
+    implementation that emits ``previews`` on every run, dry or not. That
+    rival satisfies every assertion below, and is excluded by the real run
+    in the paired test, which asserts the key is absent. Neither test
+    discriminates it alone.
+    """
+    app, vault_id, config = batch_app
+    services: SAGEServices = app.state.vault_registry[vault_id]
+    storage_root = Path(config.vault.storage_root)
+
+    held_bytes = b"# Held\n\nAlready in the vault.\n"
+    async with _client(app) as client:
+        seed = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[_md_part("held.md", held_bytes)],
+            data={"metadata": json.dumps({"files": [{"source_type": "markdown"}]})},
+        )
+    assert seed.status_code == 200, seed.text
+    assert _summary_of(seed)["documents_created"]["new"] == 1, seed.text
+
+    before = await state_snapshot(services.graph_store, services.content_store)
+    tree_before = _tree(storage_root)
+
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[
+                _md_part("novel.md", b"# Novel\n\nNot yet held.\n"),
+                _md_part("held_again.md", held_bytes),
+                _md_part("undeclared.md", b"# Undeclared\n\nbody\n"),
+            ],
+            data={
+                "metadata": json.dumps(
+                    {
+                        "dry_run": True,
+                        "infer_edges": True,
+                        "files": [
+                            {"source_type": "markdown"},
+                            {"source_type": "markdown"},
+                            {
+                                "source_type": "markdown",
+                                "parsed_metadata": {"doc_type": "no_such_type"},
+                            },
+                        ],
+                    }
+                )
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    summary = _summary_of(resp)
+
+    assert summary["dry_run"] is True
+    assert summary["documents_created"] == {"new": 0, "new_version": 0}
+    assert summary["edges_created"] == {}
+
+    previews = summary["previews"]
+    assert len(previews) == 2, previews
+    novel_preview, held_preview = previews
+    assert novel_preview["would_create"] is True
+    assert held_preview["would_create"] is False
+    assert held_preview["duplicate_of"] is not None
+
+    assert summary["error_count"] == 1
+    (error,) = summary["errors"]
+    assert error["code"] == "invalid_doc_type", error
+    assert error["source_path"] == "undeclared.md", error
+
+    after = await state_snapshot(services.graph_store, services.content_store)
+    assert_state_unchanged(before, after)
+    assert _tree(storage_root) == tree_before, (
+        "A dry run retained an uploaded source into the vault tree. "
+        "Retention is the first irreversible act of an ingest; a preview "
+        "must branch above it, and the graph fingerprint cannot see it."
+    )
+
+
+async def test_b18_real_run_reports_no_previews_and_persists(batch_app):
+    """The same upload without the flag persists and carries no previews.
+
+    The negative control for the dry-run cases: without it, a route that had
+    stopped persisting for some unrelated reason would satisfy every
+    "nothing was written" assertion they make.
+
+    Anti-coincidental-pass: this is also the only case that excludes an
+    implementation emitting ``previews`` unconditionally. A dry run
+    asserting the key is present cannot tell that rival from the correct
+    code, so the absence assertion here is load-bearing for the pair rather
+    than a restatement of the dry-run case.
+    """
+    app, vault_id, config = batch_app
+    services: SAGEServices = app.state.vault_registry[vault_id]
+    storage_root = Path(config.vault.storage_root)
+
+    before = await state_snapshot(services.graph_store, services.content_store)
+    tree_before = _tree(storage_root)
+
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[_md_part("real.md", b"# Real\n\nA run that persists.\n")],
+            data={
+                "metadata": json.dumps(
+                    {"infer_edges": True, "files": [{"source_type": "markdown"}]}
+                )
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    summary = _summary_of(resp)
+
+    assert summary["dry_run"] is False
+    assert "previews" not in summary, summary
+    assert summary["documents_created"]["new"] == 1
+    assert summary["error_count"] == 0, summary["errors"]
+
+    after = await state_snapshot(services.graph_store, services.content_store)
+    assert set(after.documents) - set(before.documents), "a real run wrote no document row"
+    assert _tree(storage_root) != tree_before, "a real run retained no source"
+
+
+async def test_b19_dry_run_carries_an_empty_previews_list_when_every_upload_refuses(
+    batch_app,
+):
+    """A dry run whose only file is refused still carries ``previews``, empty.
+
+    The field is keyed on the flag rather than on the list, so an all-refused
+    dry run stays distinguishable on the wire from a real run, which omits
+    the key entirely.
+
+    Anti-coincidental-pass: keying the field on list emptiness instead drops
+    it from this response and reds the assertion below. The rival this does
+    not exclude is an implementation that emits the key unconditionally,
+    which is what the real-run case is for; the two together pin the keying,
+    and neither does on its own.
+    """
+    app, vault_id, _config = batch_app
+
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[_md_part("refused.md", b"# Refused\n\nbody\n")],
+            data={
+                "metadata": json.dumps(
+                    {
+                        "dry_run": True,
+                        "files": [
+                            {
+                                "source_type": "markdown",
+                                "parsed_metadata": {"doc_type": "no_such_type"},
+                            }
+                        ],
+                    }
+                )
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    summary = _summary_of(resp)
+    assert summary["dry_run"] is True
+    assert summary["previews"] == []
+    assert summary["error_count"] == 1
+    assert summary["errors"][0]["code"] == "invalid_doc_type"
+
+
+async def test_b20_dry_run_still_refuses_an_unknown_vault_before_the_stream(batch_app):
+    """A dry run does not move the boundary at which a caller learns the
+    vault does not exist: the 404 still resolves synchronously, as JSON,
+    with no SSE events emitted."""
+    app, _vault_id, _config = batch_app
+
+    async with _client(app) as client:
+        resp = await client.post(
+            "/sage_vaults/no_such_vault/documents:batch",
+            files=[_md_part("a.md", b"# A\n")],
+            data={
+                "metadata": json.dumps({"dry_run": True, "files": [{"source_type": "markdown"}]})
+            },
+        )
+
+    assert resp.status_code == 404, resp.text
+    assert "application/json" in resp.headers.get("content-type", "")
+    assert resp.json()["code"] == "vault_not_found"
+    assert "data: " not in resp.text

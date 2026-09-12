@@ -184,7 +184,12 @@ async def ingest(
                 "SSE stream: one ``progress`` event per per-file state "
                 "transition (started + completed/failed), then one final "
                 "``summary`` event carrying the batch ingest counts. See "
-                "sage.models.schemas.ProgressEvent and SummaryEvent."
+                "sage.models.schemas.ProgressEvent and SummaryEvent. Under "
+                "``dry_run`` the summary echoes the flag and carries one "
+                "``IngestPreview`` in ``previews`` per file that would have "
+                "been ingested; a file that would have been refused appears "
+                "in ``errors`` instead, so the two lists together account "
+                "for the batch."
             ),
         },
         400: {
@@ -211,8 +216,8 @@ async def batch_ingest_documents(
     metadata: str = Form(
         description=(
             "JSON-encoded BatchIngestUploadMetadata: per-file source_type and "
-            "optional parsed_metadata, plus the batch infer_edges and "
-            "needs_review flags."
+            "optional parsed_metadata, plus the batch infer_edges, "
+            "needs_review and dry_run flags."
         ),
     ),
     vault_id: VaultIdStr = Depends(get_vault_id),
@@ -235,6 +240,13 @@ async def batch_ingest_documents(
     the client receives an ``application/json`` error envelope rather than a
     started 200 stream. Staged files are removed in a ``finally`` once the
     stream is exhausted.
+
+    A dry run changes none of that: the envelope is validated and the vault
+    resolved on the same terms, the bytes are staged and evaluated, and the
+    staging directory is removed at the same point. What it changes is that
+    nothing is persisted -- the summary carries previews and refusals in
+    place of counts, and the uploaded content is gone when the stream ends,
+    so a caller that then wants the batch ingested uploads it again.
     """
     try:
         envelope = BatchIngestUploadMetadata.model_validate_json(metadata)
@@ -270,6 +282,7 @@ async def batch_ingest_documents(
             services,
             infer_edges=envelope.infer_edges,
             needs_review=envelope.needs_review,
+            dry_run=envelope.dry_run,
         ),
         media_type="text/event-stream",
     )
