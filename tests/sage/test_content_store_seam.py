@@ -26,6 +26,7 @@ from tests.helpers.seam_signatures import (
     assert_signature_conforms,
     parametrized_values,
     port_surface,
+    public_members,
 )
 
 _BINDINGS = [PostgresContentStore, StubContentStore]
@@ -47,15 +48,6 @@ BINDING_ONLY_METHODS: dict[type, frozenset[str]] = {
 # it, and a pin whose drift is later fixed fails CS5, so the set can only
 # shrink.
 KNOWN_SIGNATURE_DIVERGENCES: frozenset[tuple[type, str]] = frozenset()
-
-
-def _public_methods(cls: type) -> set[str]:
-    """Public methods defined directly on ``cls`` (not inherited)."""
-    return {
-        name
-        for name, val in vars(cls).items()
-        if not name.startswith("_") and inspect.isfunction(val)
-    }
 
 
 # --------------------------------------------------------------------------- #
@@ -108,7 +100,7 @@ def test_cs4_binding_surface_matches_port(binding):
     longer defines fails too, so the allowance can only shrink. And every
     abstract port method must be defined directly on the binding.
     """
-    surface = _public_methods(binding)
+    surface = public_members(binding)
     extras = surface - port_surface(ContentStore)
     assert extras == BINDING_ONLY_METHODS[binding], (
         f"{binding.__name__}: public methods outside the port {sorted(extras)} "

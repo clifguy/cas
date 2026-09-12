@@ -32,6 +32,7 @@ from tests.helpers.seam_signatures import (
     assert_signature_conforms,
     parametrized_values,
     port_surface,
+    public_members,
 )
 
 # Public methods on the concrete store that are intentionally NOT part of the
@@ -52,15 +53,6 @@ STUB_ONLY_METHODS: frozenset[str] = frozenset()
 # it, and a pin whose drift is later fixed fails T5, so the set can only
 # shrink.
 KNOWN_SIGNATURE_DIVERGENCES: frozenset[tuple[type, str]] = frozenset()
-
-
-def _concrete_public_methods() -> set[str]:
-    """Public methods defined directly on PostgresGraphStore (not inherited)."""
-    return {
-        name
-        for name, val in vars(PostgresGraphStore).items()
-        if not name.startswith("_") and inspect.isfunction(val)
-    }
 
 
 # --------------------------------------------------------------------------- #
@@ -115,7 +107,7 @@ def test_abc_surface_matches_consumed_concrete_surface():
     and with an empty divergence set it also proves the concrete store exposes
     nothing backend-specific.
     """
-    concrete_public = _concrete_public_methods()
+    concrete_public = public_members(PostgresGraphStore)
     abc_methods = set(GraphStore.__abstractmethods__)
     surface = port_surface(GraphStore)
 
@@ -135,11 +127,7 @@ def test_stub_surface_matches_port():
     could come to call, and the durable store would not answer -- passes T3 and
     every signature check, which read only port methods.
     """
-    stub_public = {
-        name
-        for name, val in vars(StubGraphStore).items()
-        if not name.startswith("_") and inspect.isfunction(val)
-    }
+    stub_public = public_members(StubGraphStore)
     surface = port_surface(GraphStore)
     assert set(GraphStore.__abstractmethods__) <= stub_public
     assert stub_public - surface == STUB_ONLY_METHODS

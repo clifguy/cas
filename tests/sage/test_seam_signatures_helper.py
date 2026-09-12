@@ -15,6 +15,7 @@ port carries resolved types, and the one binding written with quoted
 annotations is what makes annotation evaluation load-bearing.
 """
 
+import functools
 import inspect
 from abc import ABC, abstractmethod
 
@@ -25,6 +26,7 @@ from tests.helpers.seam_signatures import (
     assert_signature_conforms,
     parametrized_values,
     port_surface,
+    public_members,
 )
 
 
@@ -112,6 +114,80 @@ class _HiddenDriftBinding(_HiddenPort):
         return None
 
 
+def _forwarder(port_fn, body):
+    """A ``functools.wraps`` delegate, shaped like a generated forwarding binding."""
+    delegate = functools.wraps(port_fn)(body)
+    delegate.__isabstractmethod__ = False
+    return delegate
+
+
+class _Forwarding(_Port):
+    op = _forwarder(_Port.op, lambda self, *args, **kwargs: {})
+
+
+class _NarrowForwarding(_Port):
+    op = _forwarder(_Port.op, lambda self, key: {})
+
+
+class _DescriptorPort(ABC):
+    @abstractmethod
+    def op(self) -> None: ...
+
+    @classmethod
+    def build(cls, key: str) -> str:
+        return key
+
+    @staticmethod
+    def version() -> int:
+        return 1
+
+    @property
+    def name(self) -> str:
+        return ""
+
+
+class _DescriptorConforming(_DescriptorPort):
+    def op(self) -> None:
+        return None
+
+    @classmethod
+    def build(cls, key: str) -> str:
+        return key
+
+    @staticmethod
+    def version() -> int:
+        return 2
+
+    @property
+    def name(self) -> str:
+        return "conforming"
+
+
+class _DescriptorDrift(_DescriptorPort):
+    def op(self) -> None:
+        return None
+
+    @classmethod
+    def build(cls, key: int) -> str:  # type: ignore[override]
+        return str(key)
+
+    @staticmethod
+    def version(major: int) -> int:  # type: ignore[override]
+        return major
+
+    @property
+    def name(self) -> int:  # type: ignore[override]
+        return 0
+
+
+class _DescriptorKindMismatch(_DescriptorPort):
+    def op(self) -> None:
+        return None
+
+    def build(self, key: str) -> str:  # type: ignore[override]
+        return key
+
+
 class _Stringized(_Port):
     def op(self, key: "str", *, rule: "frozenset[str]") -> "dict[str, str]":
         return {}
@@ -141,9 +217,7 @@ def test_h2_h4_each_drift_shape_fails_naming_binding_and_method(binding):
     """
     with pytest.raises(AssertionError) as excinfo:
         assert_signature_conforms(_Port, binding, "op")
-    message = str(excinfo.value)
-    assert binding.__name__ in message
-    assert "op" in message
+    assert f"{binding.__name__}.op" in str(excinfo.value)
 
 
 # --------------------------------------------------------------------------- #
@@ -219,6 +293,20 @@ def test_h8_stale_pin_fails():
         )
 
 
+def test_h8b_stale_pin_on_an_inherited_method_fails():
+    """H8b: a pin on a method the binding inherits unchanged fails as stale.
+
+    An inherited method is the port's own function and cannot diverge from it.
+    Trap: an identity check that returned before consulting the pin set would
+    let such a pin sit in the set forever.
+    """
+    assert _Conforming.probe is _Port.probe  # precondition: inherited
+    with pytest.raises(AssertionError, match="stale"):
+        assert_signature_conforms(
+            _Port, _Conforming, "probe", divergences=frozenset({(_Conforming, "probe")})
+        )
+
+
 def test_h9_narrowed_return_exempts_the_return_annotation_only():
     """H9: a sanctioned return narrowing exempts the return annotation and
     nothing else.
@@ -281,6 +369,68 @@ def test_h13_names_a_module_imports_only_for_type_checkers_are_supplied_explicit
             )
     finally:
         globals().update(real_globals)
+
+
+# --------------------------------------------------------------------------- #
+# Forwarding delegates (H14)
+# --------------------------------------------------------------------------- #
+
+
+def test_h14_forwarder_to_the_port_is_declared_and_its_own_shape_checked():
+    """H14: a ``functools.wraps`` delegate of the port's own method conforms only
+    when declared a forwarder, and only while it genuinely forwards.
+
+    ``inspect.signature`` follows ``__wrapped__`` by default, so comparing such
+    a delegate reads the port's signature on both sides -- the self-comparison
+    the identity rule exists to prevent, arriving through a second door.
+
+    Trap, per arm: an undeclared forwarder would pass by self-comparison; a
+    declared "forwarder" that narrows its own parameters would pass on the
+    followed signature while rejecting calls the port admits; and a forwarder
+    pin on a binding that implements the method outright would never expire.
+    """
+    assert inspect.unwrap(_Forwarding.op) is _Port.op  # precondition: it forwards
+    with pytest.raises(AssertionError, match="_Forwarding.op: .*forwarder"):
+        assert_signature_conforms(_Port, _Forwarding, "op")
+
+    assert_signature_conforms(_Port, _Forwarding, "op", forwarders=frozenset({(_Forwarding, "op")}))
+
+    with pytest.raises(AssertionError, match="_NarrowForwarding.op"):
+        assert_signature_conforms(
+            _Port, _NarrowForwarding, "op", forwarders=frozenset({(_NarrowForwarding, "op")})
+        )
+
+    with pytest.raises(AssertionError, match="stale"):
+        assert_signature_conforms(
+            _Port, _Conforming, "op", forwarders=frozenset({(_Conforming, "op")})
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Descriptor members (H15)
+# --------------------------------------------------------------------------- #
+
+
+def test_h15_classmethod_staticmethod_and_property_members_are_port_surface():
+    """H15: a port member defined as a classmethod, staticmethod, or property is
+    port surface, is compared through its underlying function, and must keep its
+    kind on the binding.
+
+    Trap: a surface read filtered on plain functions sees none of these, so a
+    drifting override is never compared and the binding-side surface bounds
+    cannot see the member either.
+    """
+    members = {"op", "build", "version", "name"}
+    assert port_surface(_DescriptorPort) == frozenset(members)
+    assert public_members(_DescriptorConforming) == frozenset(members)
+
+    for member in sorted(members):
+        assert_signature_conforms(_DescriptorPort, _DescriptorConforming, member)
+    for member in ("build", "version", "name"):
+        with pytest.raises(AssertionError, match=f"_DescriptorDrift.{member}"):
+            assert_signature_conforms(_DescriptorPort, _DescriptorDrift, member)
+    with pytest.raises(AssertionError, match="_DescriptorKindMismatch.build: .*kind"):
+        assert_signature_conforms(_DescriptorPort, _DescriptorKindMismatch, "build")
 
 
 # --------------------------------------------------------------------------- #

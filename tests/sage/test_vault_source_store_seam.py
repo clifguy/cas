@@ -16,6 +16,7 @@ structural mirror of tests/sage/test_graph_store_seam.py.
 from __future__ import annotations
 
 import copy
+import functools
 import inspect
 import logging
 from pathlib import Path
@@ -23,7 +24,10 @@ from pathlib import Path
 import pytest
 
 from sage.config import StackDocumentStoreConfig
-from sage.services.vault_source_errors import _TranslatingVaultSourceStore
+from sage.services.vault_source_errors import (
+    SOURCE_BYTE_METHOD_NAMES,
+    _TranslatingVaultSourceStore,
+)
 from sage.vault_source_binding import (
     DocumentStoreVaultSourceStore,
     FilesystemVaultSourceStore,
@@ -35,6 +39,7 @@ from tests.helpers.seam_signatures import (
     assert_signature_conforms,
     parametrized_values,
     port_surface,
+    public_members,
 )
 
 # Methods whose concrete return type legitimately narrows the port's, sanctioned
@@ -59,15 +64,6 @@ _BINDINGS = [
     DocumentStoreVaultSourceStore,
     _TranslatingVaultSourceStore,
 ]
-
-
-def _public_methods(cls: type) -> set[str]:
-    """Public methods defined directly on ``cls`` (not inherited)."""
-    return {
-        name
-        for name, val in vars(cls).items()
-        if not name.startswith("_") and inspect.isfunction(val)
-    }
 
 
 # --------------------------------------------------------------------------- #
@@ -122,7 +118,7 @@ _OPTIONAL_CAPABILITIES: dict[type, tuple[type, ...]] = {
 # or overrides it (present) -- so the binding's surface is bounded above by the
 # full sanctioned set, not required to equal it. Derived, so a new concrete port
 # method joins automatically.
-_CONCRETE_PORT_METHODS = _public_methods(VaultSourceStore) - set(
+_CONCRETE_PORT_METHODS = public_members(VaultSourceStore) - set(
     VaultSourceStore.__abstractmethods__
 )
 
@@ -139,13 +135,22 @@ def test_vss_t4_binding_surface_matches_port(binding):
     abstract method unimplemented."""
     allowed = set(VaultSourceStore.__abstractmethods__) | _CONCRETE_PORT_METHODS
     for proto in _OPTIONAL_CAPABILITIES.get(binding, ()):
-        allowed |= _public_methods(proto)
-    surface = _public_methods(binding)
+        allowed |= public_members(proto)
+    surface = public_members(binding)
     # Drift guard: every public method the binding exposes is sanctioned.
     assert surface <= allowed, f"unsanctioned public methods: {sorted(surface - allowed)}"
     # Completeness: every abstract port method is implemented directly on the binding.
     assert set(VaultSourceStore.__abstractmethods__) <= surface
 
+
+# The translating wrapper's source-byte half is generated: each delegate is a
+# ``functools.wraps`` forwarder of the port's own method, taking ``*args,
+# **kwargs`` and passing them to the wrapped binding. Its signature therefore
+# reads as the port's, and comparing it would compare the port to itself, so
+# these pairs are declared forwarders instead. Derived from the set the wrapper
+# installs, so a source-byte method added to the port is declared here without
+# an edit.
+_FORWARDED = frozenset((_TranslatingVaultSourceStore, name) for name in SOURCE_BYTE_METHOD_NAMES)
 
 # (binding, method) pairs whose signature is known to differ from the port's
 # beyond the sanctioned return narrowing above. Deliberately empty; a pin whose
@@ -164,13 +169,16 @@ def test_vss_t5_binding_signature_matches_port(binding, method_name):
     ``config_locator``) is checked at parameter level only. Concrete port
     methods are included, so a binding's override of a lifecycle default such
     as ``close`` is compared; a binding that inherits the default conforms by
-    identity rather than by comparing the port's function to itself."""
+    identity rather than by comparing the port's function to itself, and the
+    translating wrapper's generated source-byte delegates are checked as
+    declared forwarders for the same reason."""
     assert_signature_conforms(
         VaultSourceStore,
         binding,
         method_name,
         return_narrowed=_RETURN_NARROWED,
         divergences=KNOWN_SIGNATURE_DIVERGENCES,
+        forwarders=_FORWARDED,
     )
 
 
@@ -186,6 +194,36 @@ def test_vss_t5b_signature_gate_covers_every_port_method_on_every_binding():
     assert parametrized_values(test_vss_t5_binding_signature_matches_port, "method_name") == sorted(
         port_surface(VaultSourceStore)
     )
+
+
+def test_vss_t5c_binding_signature_mutation_turns_the_gate_red(monkeypatch):
+    """T5c: a deliberate drift on a real binding fails the gate it runs through.
+
+    Two arms, one per door into a self-comparison. A concrete port method a
+    binding overrides -- where the widened parametrization is live -- given a
+    required keyword-only parameter. And a translating delegate replaced by a
+    forwarder of the port's own method that narrows what it accepts, which the
+    followed signature would report as conforming.
+    """
+
+    def drifted_close(self, *, drift_probe: int) -> None:
+        return None
+
+    monkeypatch.setattr(DocumentStoreVaultSourceStore, "close", drifted_close)
+    with pytest.raises(AssertionError, match="DocumentStoreVaultSourceStore.close"):
+        test_vss_t5_binding_signature_matches_port(DocumentStoreVaultSourceStore, "close")
+
+    forwarded = sorted(SOURCE_BYTE_METHOD_NAMES)[0]
+    port_method = getattr(VaultSourceStore, forwarded)
+
+    @functools.wraps(port_method)
+    def narrowed(self, vault_id):
+        return None
+
+    narrowed.__isabstractmethod__ = False
+    monkeypatch.setattr(_TranslatingVaultSourceStore, forwarded, narrowed)
+    with pytest.raises(AssertionError, match=f"_TranslatingVaultSourceStore.{forwarded}"):
+        test_vss_t5_binding_signature_matches_port(_TranslatingVaultSourceStore, forwarded)
 
 
 # --------------------------------------------------------------------------- #
