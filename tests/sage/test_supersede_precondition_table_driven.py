@@ -769,7 +769,12 @@ async def test_default_scaffold_still_rejects_an_unconfigured_action_from_comple
     err = exc_info.value
     assert err.detail["current_state"] == "completed"
     assert err.detail["attempted_action"] == "complete"
-    assert sorted(err.detail["valid_actions"]) == ["archive", "reactivate", "supersede"], (
+    assert sorted(err.detail["valid_actions"]) == [
+        "archive",
+        "reactivate",
+        "relocate",
+        "supersede",
+    ], (
         "the payload must name every action the table holds for `completed`; a "
         "blanket non-active guard would refuse without being able to render these"
     )

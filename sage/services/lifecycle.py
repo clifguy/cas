@@ -17,6 +17,7 @@ from sage.api.errors import (
     MissingFieldError,
     SAGEError,
     SupersedeTargetNotActiveError,
+    UnexpectedFieldError,
 )
 from sage.config import TransitionTable, VaultConfig, build_transition_table
 from sage.models.enums import (
@@ -113,6 +114,25 @@ class LifecycleService:
 
             to_state, creates_edge = result
 
+            # Checked before any write, so a relocate that cannot record
+            # where the document went leaves the document exactly as it
+            # was. The state and the pointer travel together or not at
+            # all: a document resting in the relocated state with nothing
+            # naming its destination is the one shape the state exists to
+            # rule out (CAS-ADR-050).
+            if request.action == "relocate" and request.relocated_to is None:
+                raise MissingFieldError("relocated_to", "relocate requires relocated_to")
+
+            # The converse, and checked here for the same reason: a
+            # qualifier supplied with an action that does not take it is a
+            # caller who believes the call does something it does not.
+            # Accepting it silently would return a success that confirms
+            # the belief. Both are refused before any write.
+            if request.action != "supersede" and request.successor_id is not None:
+                raise UnexpectedFieldError("successor_id", request.action, "supersede")
+            if request.action != "relocate" and request.relocated_to is not None:
+                raise UnexpectedFieldError("relocated_to", request.action, "relocate")
+
             created_edge: Edge | None = None
 
             # Supersede-specific validation (BH-016, BH-017) and atomic commit.
@@ -160,7 +180,9 @@ class LifecycleService:
             else:
                 # Non-supersede actions: single-row update is naturally atomic.
                 now = datetime.now(timezone.utc)
-                updates = {"lifecycle_status": to_state, "updated_at": now.isoformat()}
+                updates: dict = {"lifecycle_status": to_state, "updated_at": now.isoformat()}
+                if request.action == "relocate":
+                    updates["relocated_to"] = request.relocated_to
                 if request.dry_run:
                     updated_doc = doc.model_copy(update={**updates, "updated_at": now})
                 else:
@@ -203,6 +225,20 @@ class LifecycleService:
                         after=to_state,
                     )
                 ]
+                if request.action == "relocate":
+                    changes.append(
+                        FieldChange(
+                            path="relocated_to",
+                            before=(
+                                doc.relocated_to.model_dump(mode="json")
+                                if doc.relocated_to
+                                else None
+                            ),
+                            after=request.relocated_to.model_dump(mode="json")
+                            if request.relocated_to
+                            else None,
+                        )
+                    )
 
             return SetLifecycleResponse(
                 document=updated_doc,
@@ -297,6 +333,7 @@ class LifecycleService:
             single = SetLifecycleRequest(
                 action=item.action,
                 successor_id=item.successor_id,
+                relocated_to=item.relocated_to,
                 # Propagate envelope dry_run to each per-item
                 # call. Per-item override is not supported.
                 dry_run=request.dry_run,

@@ -54,6 +54,7 @@ from sage.models.schemas import (
     Edge,
     EdgeHit,
     FacetHit,
+    RelocationPointer,
     RetrievalFilters,
     UpdateMetadataRequest,
 )
@@ -115,6 +116,8 @@ def _make_doc(
     semantic_abstract: str | None = None,
     tier3_metadata: dict | None = None,
     version_label: str | None = None,
+    relocated_from: RelocationPointer | None = None,
+    relocated_to: RelocationPointer | None = None,
 ) -> Document:
     now = datetime.now(timezone.utc)
     return Document(
@@ -140,6 +143,8 @@ def _make_doc(
         semantic_abstract=semantic_abstract,
         tier3_metadata=tier3_metadata,
         version_label=version_label,
+        relocated_from=relocated_from,
+        relocated_to=relocated_to,
     )
 
 
@@ -5436,6 +5441,22 @@ def _doc_with_every_summary_field() -> Document:
         semantic_abstract="an abstract for testing",
         tier3_metadata={"ticket_id": "T-0096", "ticket_priority": "medium"},
         version_label="v1.2",
+        # Distinct in every member, so a projection that served one column
+        # for both, or transposed them, fails rather than matching.
+        relocated_from=RelocationPointer(
+            vault_id="origin_vault",
+            document_id=_id("doc_before_move"),
+            server_address="https://origin.example",
+            source_content_hash=_sha("before_move"),
+            relocated_at=datetime(2026, 5, 18, 9, 0, tzinfo=timezone.utc),
+        ),
+        relocated_to=RelocationPointer(
+            vault_id="destination_vault",
+            document_id=_id("doc_after_move"),
+            server_address="https://destination.example",
+            source_content_hash=_sha("after_move"),
+            relocated_at=datetime(2026, 5, 19, 9, 0, tzinfo=timezone.utc),
+        ),
     )
 
 

@@ -95,6 +95,8 @@ const mockDoc: Document = {
   pipeline_status: 'indexed',
   pipeline_error: null,
   tier3_metadata: null,
+  relocated_from: null,
+  relocated_to: null,
 };
 
 const emptyTraverse: TraverseResponse = { start_id: 'doc-42', nodes: [] };

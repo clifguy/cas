@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Version tracking and schema inventory for the CAS Formal Substrate (CAS-ADR-008). The manifest records which schemas are present in each version, their status, and their role within the substrate.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-09-11",
+  "manifest_date": "2026-09-12",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -45,7 +45,7 @@
       "path": "sage/lifecycle.schema.json",
       "title": "SAGE Lifecycle State Machine",
       "status": "draft",
-      "version": "0.3",
+      "version": "0.4",
       "role": "Defines lifecycle states and valid transitions. Base set is always present; domains extend it.",
       "instantiation_checklist_items": [
         3
@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.46",
+      "version": "0.47",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.90",
+  "substrate_version": "1.91",
   "revision_history": [
+    {
+      "version": "1.91",
+      "date": "2026-09-12",
+      "summary": "A document may now relocate between vaults, and the substrate says what that means on both halves (sage_core_api.openapi.yaml 0.46 -> 0.47, sage/lifecycle.schema.json 0.3 -> 0.4). CAS-ADR-050 settles relocation as a composed act rather than an operation: an ordinary ingest into the destination, then a lifecycle transition moving the origin's chain head to a terminal relocated state, with a symmetric pair of inert metadata pointers linking the two. The new RelocationPointer component carries the counterpart's vault id, its document id, a server address, the source content hash, and the time of the move; Document gains relocated_from and relocated_to as nullable engine-level fields rather than per-vault tier-3 metadata, because relocation's characteristic destination is a vault created moments earlier and a pointer each vault had to declare would be unrecordable in exactly that case. Only the content hash confirms; the vault id and address are hints a reasoning caller weighs, which is what lets the shape work without the global document coordinate the substrate does not have. IngestRequest takes relocated_from on the destination write, which happens first so an interrupted move leaves its evidence on the document a reader is most likely to hold; SetLifecycleRequest and BulkLifecycleItem take relocated_to, refusing with missing_relocated_to before any write, so a document can never rest in the relocated state without naming where it went. DocumentSummary carries both so a catalog pass reports a relocated chain root without a follow-up read. The base lifecycle vocabulary gains the state and the relocate action rather than leaving each vault to opt in, which would have made relocation absent wherever it is most needed and left the state's semantics a per-vault convention; every vault configuration declares them, and the engine constrains this one state by name where every other state's meaning is the vault's -- it must be terminal, and no transition may leave it, because reactivating it would restore a second live head for the document the move resolved. Nothing follows a pointer: no traversal, retrieval, dependency, or reconciliation path reads either field, so a depends_on edge whose target has relocated stays unsatisfied inside the origin rather than resolving across the boundary, and the round-trip test asserts that positively against two vaults on separate schemas so a later cross-vault resolution cannot land unnoticed. Neither pointer propagates through supersession, since each records a fact about the version it sits on and a later version was not itself relocated; that assertion is the one most at risk of passing vacuously, so its test asserts the predecessor's value positively in the same body and the propagation path was mutated to confirm it reds. Deliberately not built, per the ADR: no detector for an interrupted relocation, no repair for dependencies stranded in the origin, and no cross-vault traversal. Folded in alongside: successor_id's description has claimed since it was written that the field is forbidden for all other actions while the service only ignored it, so the two neighbouring qualifiers would otherwise have had to describe themselves differently; both are now refused by the action that does not take them, through a new UnexpectedFieldError mirroring MissingFieldError and yielding unexpected_successor_id and unexpected_relocated_to. A qualifier supplied with the wrong action is a caller who believes something about the call that is not true, and accepting it silently returns a success that confirms the belief. No allowlist gains an entry, and the docstring-disclosure pins are unmoved because every rule is stated on the tool and the operation in matching words."
+    },
     {
       "version": "1.90",
       "date": "2026-09-11",

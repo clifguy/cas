@@ -175,6 +175,7 @@ def _build_vault_config_dict(brain_dir, sources_dir, vault_id: str) -> dict:
                 {"value": "active", "label": "Active"},
                 {"value": "completed", "label": "Completed"},
                 {"value": "archived", "label": "Archived", "is_terminal": True},
+                {"value": "relocated", "label": "Relocated", "is_terminal": True},
             ],
             "transitions": [
                 {"from_state": "(new)", "action": "ingest", "to_state": "active"},
@@ -188,6 +189,7 @@ def _build_vault_config_dict(brain_dir, sources_dir, vault_id: str) -> dict:
                 {"from_state": "active", "action": "archive", "to_state": "archived"},
                 {"from_state": "completed", "action": "archive", "to_state": "archived"},
                 {"from_state": "archived", "action": "reactivate", "to_state": "active"},
+                {"from_state": "active", "action": "relocate", "to_state": "relocated"},
             ],
         },
         "metadata_extraction": {},

@@ -295,6 +295,84 @@ class FieldChange(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class RelocationPointer(BaseModel):
+    """Where a document's counterpart lives after a relocation between vaults.
+
+    Recorded on both sides of a move: the destination's chain root carries
+    a pointer at the origin, and the origin's retired head carries one at
+    the destination. Nothing in the engine follows either. No traversal,
+    retrieval, dependency, or reconciliation path consults a pointer, so
+    the consumer is a reasoning caller that can weigh a hint, retry, and
+    ask -- which is what lets the shape do without a global document
+    coordinate, since the substrate has none to offer (CAS-ADR-050).
+
+    That fixes what each member is worth. `vault_id` and `server_address`
+    narrow a search without settling it: a vault identifier is unique
+    within an installation rather than across installations, and an
+    address is a deployment fact. `source_content_hash` is the member that
+    confirms, because both vaults retain the same source at the same
+    digest, so a caller arriving from either direction can check that it
+    landed where the pointer meant.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    vault_id: VaultIdStr = Field(
+        description=(
+            "The counterpart vault's identifier. Unique within an "
+            "installation rather than across installations, so it narrows "
+            "a search rather than settling one."
+        ),
+    )
+    document_id: DocumentIdStr = Field(
+        description=(
+            "The counterpart document's identifier, minted by and local to the counterpart vault."
+        ),
+    )
+    server_address: str | None = Field(
+        default=None,
+        description=(
+            "Where the counterpart vault answered at the time of the "
+            "relocation. A deployment fact rather than an identity: one "
+            "vault is reachable at different addresses under different "
+            "profiles, and a workstation's loopback address is common to "
+            "every workstation. Null when the caller composed both halves "
+            "against a single deployment and has no distinguishing "
+            "address to record."
+        ),
+    )
+    source_content_hash: Sha256Str = Field(
+        description=(
+            "The SHA-256 of the source bytes both vaults retain. The one "
+            "member that confirms rather than hints: a caller arriving "
+            "from either direction matches it to know it reached the "
+            "document the pointer meant."
+        ),
+    )
+    relocated_at: datetime = Field(
+        description=(
+            "When the relocation was performed, as recorded by the caller "
+            "that composed it. The two sides are written by separate "
+            "calls, so their timestamps are close rather than identical."
+        ),
+    )
+
+    @classmethod
+    def from_stored(cls, raw: object) -> "RelocationPointer | None":
+        """Build a pointer from a stored JSON object, or None for an absent one.
+
+        A storage layer hands back whatever its driver deserialized the
+        column to: a mapping for a populated pointer, None for a column
+        that was never written. Every read path goes through here rather
+        than trusting the mapping, so a pointer written by an older
+        release is validated on the way out and a malformed one surfaces
+        at the read that found it.
+        """
+        if raw is None:
+            return None
+        return cls.model_validate(raw)
+
+
 class Document(BaseModel):
     id: DocumentIdStr = Field(
         description="Immutable, assigned at creation (short hash + hint from title)."
@@ -440,6 +518,27 @@ class Document(BaseModel):
             "False marks the document as pending in the metadata-review queue."
         ),
     )
+    relocated_from: RelocationPointer | None = Field(
+        default=None,
+        description=(
+            "Where this document was before it relocated into this vault, "
+            "set on the chain root the relocation created and null on every "
+            "document that was ingested here in the ordinary way. A "
+            "supersession does not carry it forward: it records a fact about "
+            "the version it sits on, and a later version was not itself "
+            "relocated."
+        ),
+    )
+    relocated_to: RelocationPointer | None = Field(
+        default=None,
+        description=(
+            "Where this document went when it relocated out of this vault, "
+            "set on the chain head the relocation retired and null "
+            "otherwise. Written by the same call that moves the head to the "
+            "relocated lifecycle state, so the state and the pointer cannot "
+            "disagree."
+        ),
+    )
 
 
 class DocumentSummary(BaseModel):
@@ -516,6 +615,24 @@ class DocumentSummary(BaseModel):
             "without follow-up get_document round-trips."
         ),
     )
+    relocated_from: RelocationPointer | None = Field(
+        default=None,
+        description=(
+            "Where the document was before it relocated into this vault; "
+            "null on every document ingested here in the ordinary way. "
+            "Surfaced on the projection so a caller recovering provenance "
+            "can spot a relocated chain root from a catalog pass, without a "
+            "follow-up get_document round-trip."
+        ),
+    )
+    relocated_to: RelocationPointer | None = Field(
+        default=None,
+        description=(
+            "Where the document went when it relocated out of this vault; "
+            "null otherwise. Surfaced alongside relocated_from so one pass "
+            "reports both directions."
+        ),
+    )
 
     @classmethod
     def from_document(cls, doc: "Document") -> "DocumentSummary":
@@ -552,6 +669,8 @@ class DocumentSummary(BaseModel):
             source_modified_at=doc.source_modified_at,
             semantic_abstract=doc.semantic_abstract,
             tier3_metadata=doc.tier3_metadata,
+            relocated_from=doc.relocated_from,
+            relocated_to=doc.relocated_to,
         )
 
     @classmethod
@@ -608,6 +727,8 @@ class DocumentSummary(BaseModel):
             ),
             semantic_abstract=row.get("d_semantic_abstract"),
             tier3_metadata=row.get("d_tier3_metadata"),
+            relocated_from=RelocationPointer.from_stored(row.get("d_relocated_from")),
+            relocated_to=RelocationPointer.from_stored(row.get("d_relocated_to")),
         )
 
 
@@ -943,6 +1064,16 @@ class IngestRequest(BaseModel):
             "`Tier3Patch` ops-object with `set`/`unset` semantics."
         ),
     )
+    relocated_from: RelocationPointer | None = Field(
+        default=None,
+        description=(
+            "Where this document was before it relocated into this vault. "
+            "Supplied on the destination half of a relocation, which is "
+            "written first so an interrupted move leaves its evidence on "
+            "the document a reader is most likely to hold. Persisted "
+            "verbatim and never followed. Omit it for an ordinary ingest."
+        ),
+    )
     document_id: DocumentIdStr | None = Field(
         default=None,
         description=(
@@ -1209,11 +1340,12 @@ class SetLifecycleRequest(BaseModel):
         default=None,
         description=(
             "Document ID of the replacement version. Required when "
-            '`action="supersede"`; forbidden for all other actions. '
-            "SAGE creates a `supersedes` edge from the new version to "
-            "this document atomically with the lifecycle transition. "
-            "The successor document must already exist and be active; "
-            "this operation does not create it."
+            '`action="supersede"`; forbidden for all other actions, which '
+            "refuse with 400 `unexpected_successor_id`. SAGE creates a "
+            "`supersedes` edge from the new version to this document "
+            "atomically with the lifecycle transition. The successor "
+            "document must already exist and be active; this operation "
+            "does not create it."
         ),
     )
     dry_run: bool = Field(
@@ -1231,6 +1363,18 @@ class SetLifecycleRequest(BaseModel):
             "(not duplicated in `changes`). The per-document lock is "
             "still acquired so the preview is consistent with "
             "concurrent mutations."
+        ),
+    )
+    relocated_to: RelocationPointer | None = Field(
+        default=None,
+        description=(
+            "Where the document is going. Required when "
+            '`action="relocate"`, which refuses with 400 '
+            "`missing_relocated_to` without it; forbidden for all other "
+            "actions, which refuse with 400 `unexpected_relocated_to`. "
+            "SAGE writes it onto the document in the same statement that "
+            "moves the lifecycle state, so a relocated document always "
+            "names where it went."
         ),
     )
 
@@ -1319,8 +1463,21 @@ class BulkLifecycleItem(BaseModel):
         default=None,
         description=(
             "Document id of the replacement version. Required when "
-            '`action="supersede"`; forbidden for all other actions. Same '
-            "shape and semantics as `SetLifecycleRequest.successor_id`."
+            '`action="supersede"`; forbidden for all other actions, which '
+            "refuse with 400 `unexpected_successor_id`. Same shape and "
+            "semantics as `SetLifecycleRequest.successor_id`."
+        ),
+    )
+    relocated_to: RelocationPointer | None = Field(
+        default=None,
+        description=(
+            "Where the document is going. Required when "
+            '`action="relocate"`, which refuses with 400 '
+            "`missing_relocated_to` without it; forbidden for all other "
+            "actions, which refuse with 400 `unexpected_relocated_to`. "
+            "SAGE writes it onto the document in the same statement that "
+            "moves the lifecycle state, so a relocated document always "
+            "names where it went."
         ),
     )
 

@@ -28,8 +28,16 @@ export function BulkLifecycleDialog({ vaultId, selectedIds, onResolved, onClose 
     getVaultConfig(vaultId)
       .then((cfg: VaultConfig) => {
         if (cancelled) return;
+        // `supersede` and `relocate` are both excluded because each needs
+        // a second argument this dialog has no way to collect -- a
+        // successor id, and a relocation pointer at another vault. Offering
+        // either here would present an action that always fails.
         const distinct = Array.from(
-          new Set(cfg.lifecycle.transitions.map((t) => t.action).filter((a) => a !== 'supersede')),
+          new Set(
+            cfg.lifecycle.transitions
+              .map((t) => t.action)
+              .filter((a) => a !== 'supersede' && a !== 'relocate'),
+          ),
         );
         setActions(distinct);
       })

@@ -224,6 +224,22 @@ def test_pg_row_to_document_populates_every_field():
         "pipeline_error": "err",
         "tier3_metadata": {"ticket_id": "T-1"},
         "metadata_confirmed": True,
+        # Distinct in every member, so a read path that served one column
+        # for both, or transposed them, fails the assertions below.
+        "relocated_from": {
+            "vault_id": "origin_vault",
+            "document_id": "00000002_doc_before",
+            "server_address": "https://origin.example",
+            "source_content_hash": "sha256:" + "ef" * 32,
+            "relocated_at": datetime(2026, 5, 18, 9, 0, tzinfo=timezone.utc).isoformat(),
+        },
+        "relocated_to": {
+            "vault_id": "destination_vault",
+            "document_id": "00000003_doc_after",
+            "server_address": "https://destination.example",
+            "source_content_hash": "sha256:" + "12" * 32,
+            "relocated_at": datetime(2026, 5, 19, 9, 0, tzinfo=timezone.utc).isoformat(),
+        },
     }
     doc = PostgresGraphStore._row_to_document(row)
     assert doc.tags == ["a", "b"]
@@ -237,6 +253,19 @@ def test_pg_row_to_document_populates_every_field():
     assert doc.source_content_hash != doc.stored_content_hash, (
         "the two hashes are distinct columns; the fixture must not let one stand in for the other"
     )
+    # Member-by-member rather than object equality: equality would pass a
+    # read path that parsed one column twice, since both objects would then
+    # be equal to each other but not to what went in.
+    assert doc.relocated_from.vault_id == "origin_vault"
+    assert doc.relocated_from.document_id == "00000002_doc_before"
+    assert doc.relocated_from.server_address == "https://origin.example"
+    assert doc.relocated_from.source_content_hash == "sha256:" + "ef" * 32
+    assert doc.relocated_from.relocated_at == datetime(2026, 5, 18, 9, 0, tzinfo=timezone.utc)
+    assert doc.relocated_to.vault_id == "destination_vault"
+    assert doc.relocated_to.document_id == "00000003_doc_after"
+    assert doc.relocated_to.server_address == "https://destination.example"
+    assert doc.relocated_to.source_content_hash == "sha256:" + "12" * 32
+    assert doc.relocated_to.relocated_at == datetime(2026, 5, 19, 9, 0, tzinfo=timezone.utc)
 
 
 def test_pg_row_to_document_tolerates_a_row_without_the_stored_hash_column():

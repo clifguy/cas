@@ -358,6 +358,7 @@ def _vault_config_dict(
                 {"value": "active", "label": "Active"},
                 {"value": "completed", "label": "Completed"},
                 {"value": "archived", "label": "Archived", "is_terminal": True},
+                {"value": "relocated", "label": "Relocated", "is_terminal": True},
             ],
             "transitions": [
                 {"from_state": "(new)", "action": "ingest", "to_state": "active"},
@@ -371,6 +372,7 @@ def _vault_config_dict(
                 {"from_state": "active", "action": "archive", "to_state": "archived"},
                 {"from_state": "completed", "action": "archive", "to_state": "archived"},
                 {"from_state": "archived", "action": "reactivate", "to_state": "active"},
+                {"from_state": "active", "action": "relocate", "to_state": "relocated"},
             ],
         },
         "metadata_extraction": {},
@@ -2013,9 +2015,17 @@ def test_supersession_retired_states_are_not_preferred(tmp_path):
     supersession-retirement are orthogonal — a vault may declare a
     reactivation out of the state a supersession lands in — and with the
     flag set, that rival produces this same set and survives.
+
+    `relocated` surviving is correct and not an oversight: the question
+    the set answers is whether a newer version retired the document, and
+    a relocated one was retired by a move instead. It is also the case
+    that separates this derivation from one reading `is_terminal`, which
+    would exclude it.
     """
     base = VaultConfig.model_validate(_vault_config_dict(tmp_path))
-    assert base.lifecycle.supersession_surviving_states() == frozenset({"active", "completed"})
+    assert base.lifecycle.supersession_surviving_states() == frozenset(
+        {"active", "completed", "relocated"}
+    )
 
     variant = _draft_landing_config_dict(tmp_path)
     variant["lifecycle"]["states"].append(
@@ -2031,7 +2041,7 @@ def test_supersession_retired_states_are_not_preferred(tmp_path):
     )
     extended = VaultConfig.model_validate(variant)
     surviving = extended.lifecycle.supersession_surviving_states()
-    assert surviving == frozenset({"active", "completed", "draft"})
+    assert surviving == frozenset({"active", "completed", "draft", "relocated"})
     assert "archived" not in surviving
     assert "superseded_draft" not in surviving
 

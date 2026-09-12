@@ -245,6 +245,30 @@ class MissingFieldError(SAGEError):
         )
 
 
+class UnexpectedFieldError(SAGEError):
+    """400: request field supplied alongside an action that does not take it.
+
+    The mirror of :class:`MissingFieldError`, and the reason both exist:
+    a field that qualifies one action qualifies no other, so supplying it
+    elsewhere is a caller who believes something about the call that is
+    not true. Ignoring it silently lets that belief stand -- the caller
+    sees a success and reads it as confirmation -- which is worse than a
+    refusal naming the action the field belongs to.
+    """
+
+    def __init__(self, field: str, attempted_action: str, required_action: str) -> None:
+        super().__init__(
+            f"unexpected_{field}",
+            f"{field} is accepted only with action '{required_action}', not '{attempted_action}'",
+            400,
+            {
+                "field": field,
+                "attempted_action": attempted_action,
+                "required_action": required_action,
+            },
+        )
+
+
 class InvalidDocTypeError(SAGEError):
     """400: doc_type not in vault's document_types config."""
 

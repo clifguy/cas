@@ -469,7 +469,16 @@ async def test_terminal_exclusion_is_a_no_op_when_no_state_is_terminal(
     separates negation from complement is the undeclared-state case
     below, which is where the two actually part.
     """
-    for state in minimal_vault_config_dict["lifecycle"]["states"]:
+    # `relocated` is dropped rather than un-flagged: the engine refuses a
+    # configuration that clears its terminal flag, so a vault with no
+    # terminal state at all is only expressible outside the base floor.
+    # Dropping it costs this test nothing -- it is the empty terminal set
+    # the test is about, not which states produce it.
+    lifecycle = minimal_vault_config_dict["lifecycle"]
+    lifecycle["base_states_required"] = False
+    lifecycle["states"] = [s for s in lifecycle["states"] if s["value"] != "relocated"]
+    lifecycle["transitions"] = [t for t in lifecycle["transitions"] if t["action"] != "relocate"]
+    for state in lifecycle["states"]:
         state.pop("is_terminal", None)
     config = VaultConfig.model_validate(minimal_vault_config_dict)
     assert config.lifecycle.terminal_states() == frozenset()

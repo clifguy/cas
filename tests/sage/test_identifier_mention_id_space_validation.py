@@ -825,6 +825,7 @@ def test_ts3_constructing_a_canonical_config_logs_no_id_space_warning(caplog) ->
                         {"value": "active", "label": "Active"},
                         {"value": "completed", "label": "Completed"},
                         {"value": "archived", "label": "Archived", "is_terminal": True},
+                        {"value": "relocated", "label": "Relocated", "is_terminal": True},
                     ],
                     "transitions": [
                         {"from_state": "(new)", "action": "ingest", "to_state": "active"},
@@ -837,6 +838,7 @@ def test_ts3_constructing_a_canonical_config_logs_no_id_space_warning(caplog) ->
                         {"from_state": "active", "action": "complete", "to_state": "completed"},
                         {"from_state": "active", "action": "archive", "to_state": "archived"},
                         {"from_state": "archived", "action": "reactivate", "to_state": "active"},
+                        {"from_state": "active", "action": "relocate", "to_state": "relocated"},
                     ],
                 },
                 "metadata_extraction": {},

@@ -120,7 +120,9 @@ CREATE TABLE IF NOT EXISTS documents (
     pipeline_error text,
     tier3_metadata jsonb,
     metadata_confirmed boolean NOT NULL DEFAULT false,
-    is_chain_head boolean NOT NULL DEFAULT true
+    is_chain_head boolean NOT NULL DEFAULT true,
+    relocated_from jsonb,
+    relocated_to jsonb
 );
 """
 
@@ -348,6 +350,14 @@ ADDITIVE_COLUMNS: tuple[str, ...] = (
     # column with no default is catalog-only, so this is safe to run on every
     # vault open even on a table of tens of thousands of passages.
     "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS indexed_structure text;",
+    # The two halves of a cross-vault relocation pointer (CAS-ADR-050). Both
+    # nullable with no default, because null is what "this document has not
+    # relocated in that direction" means, and that is every document in a vault
+    # where no relocation has happened. Stored as jsonb rather than as flat
+    # columns per member so the pointer is present or absent as a unit: a
+    # half-written pointer names a document nobody can check.
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS relocated_from jsonb;",
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS relocated_to jsonb;",
 )
 
 

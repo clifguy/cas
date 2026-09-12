@@ -534,8 +534,14 @@ def test_non_active_landing_state_that_permits_supersede_is_not_advised(
     with caplog.at_level(logging.WARNING, logger="sage.config"):
         config = VaultConfig.model_validate(mutated)
 
+    # `relocated` survives too, and correctly: the set answers "was this
+    # document retired by a newer version", and a relocated one was not.
+    # What retired it is the move, which no supersession landed. A
+    # re-ingest that picks it as predecessor on that basis is then refused
+    # by the transition table, which permits no supersede out of the
+    # state -- a refusal rather than a silent wrong pick.
     assert config.lifecycle.supersession_surviving_states() == frozenset(
-        {"active", "completed", "review"}
+        {"active", "completed", "review", "relocated"}
     )
     assert _landing_advisories(caplog.records) == []
 
@@ -557,7 +563,7 @@ def test_terminal_states_derives_from_is_terminal(minimal_vault_config_dict):
     `archived` after its flag is cleared, and fails.
     """
     base = VaultConfig.model_validate(_lifecycle_variant(minimal_vault_config_dict))
-    assert base.lifecycle.terminal_states() == frozenset({"archived"})
+    assert base.lifecycle.terminal_states() == frozenset({"archived", "relocated"})
 
     added = _lifecycle_variant(minimal_vault_config_dict)
     added["lifecycle"]["states"].append({"value": "filed", "label": "Filed", "is_terminal": True})
@@ -565,11 +571,16 @@ def test_terminal_states_derives_from_is_terminal(minimal_vault_config_dict):
         {"from_state": "active", "action": "file", "to_state": "filed"}
     )
     config = VaultConfig.model_validate(added)
-    assert config.lifecycle.terminal_states() == frozenset({"archived", "filed"})
+    assert config.lifecycle.terminal_states() == frozenset({"archived", "filed", "relocated"})
 
     removed = _lifecycle_variant(minimal_vault_config_dict)
     for state in removed["lifecycle"]["states"]:
         if state["value"] == "archived":
             state["is_terminal"] = False
     config = VaultConfig.model_validate(removed)
-    assert config.lifecycle.terminal_states() == frozenset()
+    # `relocated` stays, because the engine refuses a configuration that
+    # clears its flag -- so this arm now reads as "the state whose flag
+    # the vault may clear leaves the set, the one it may not remains". A
+    # hardcoded-base-union implementation still fails here, returning
+    # `archived` alongside it, which is what the arm is for.
+    assert config.lifecycle.terminal_states() == frozenset({"relocated"})

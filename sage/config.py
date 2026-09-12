@@ -583,10 +583,21 @@ class LifecycleTransition(BaseModel):
 #: declaring `satisfies_dependency: true` on the state.
 DEFAULT_DEPENDENCY_SATISFYING_STATES = frozenset({"active", "completed"})
 
+#: The terminal state a document's chain head rests in once its live
+#: version has moved to another vault (CAS-ADR-050). Named here because
+#: the lifecycle validator constrains it by name: unlike every other
+#: state a vault declares, this one's meaning is the engine's, so a
+#: configuration may not give it a way out. Reactivating it would restore
+#: a live head alongside the one the relocation created, which is the
+#: condition the relocation resolved.
+RELOCATED_STATE = "relocated"
+
 #: The base lifecycle vocabulary a `base_states_required` configuration
 #: must keep declared (see `LifecycleConfig`).
-BASE_LIFECYCLE_STATES = frozenset({"active", "completed", "archived"})
-BASE_LIFECYCLE_ACTIONS = frozenset({"ingest", "supersede", "complete", "archive", "reactivate"})
+BASE_LIFECYCLE_STATES = frozenset({"active", "completed", "archived", RELOCATED_STATE})
+BASE_LIFECYCLE_ACTIONS = frozenset(
+    {"ingest", "supersede", "complete", "archive", "reactivate", "relocate"}
+)
 
 #: The `(new)` pseudo-state: sanctioned as the source of the ingestion
 #: transition and nowhere else. It is not a state a document occupies, so
@@ -622,7 +633,8 @@ class LifecycleState(BaseModel):
             "Semantics of this state. For base states: active (in the "
             "system), completed (work done, no replacement), archived "
             "(long-term storage; includes documents superseded by newer "
-            "versions)."
+            "versions), relocated (the document's live version moved to "
+            "another vault; terminal, and no transition may leave it)."
         ),
     )
     is_terminal: bool = Field(
@@ -631,7 +643,8 @@ class LifecycleState(BaseModel):
             "Whether this state represents an end state from which no "
             "further transitions are expected under normal operation. "
             "Archived is terminal by default but reactivation is permitted "
-            "as an exceptional case."
+            "as an exceptional case. Relocated must declare it true, and "
+            "unlike archived it permits no way out at all."
         ),
     )
     satisfies_dependency: bool | None = Field(
@@ -663,14 +676,14 @@ class LifecycleConfig(BaseModel):
         default=True,
         description=(
             "When true (the default), the configuration must declare the "
-            "base states (active, completed, archived) and use each base "
-            "action (ingest, supersede, complete, archive, reactivate) in "
-            "at least one transition; a configuration missing any of them "
-            "fails validation. An existing on-disk configuration loads with "
-            "a warning instead, so the vault stays reachable for repair. "
-            "Domain-specific states and transitions extend this base. Set "
-            "false only for a configuration that replaces the base "
-            "lifecycle entirely."
+            "base states (active, completed, archived, relocated) and use "
+            "each base action (ingest, supersede, complete, archive, "
+            "reactivate, relocate) in at least one transition; a "
+            "configuration missing any of them fails validation. An "
+            "existing on-disk configuration loads with a warning instead, "
+            "so the vault stays reachable for repair. Domain-specific "
+            "states and transitions extend this base. Set false only for a "
+            "configuration that replaces the base lifecycle entirely."
         ),
     )
 
@@ -753,7 +766,12 @@ class LifecycleConfig(BaseModel):
         must name a declared state, with `(new)` sanctioned as a source
         and never as a target: a transition into an undeclared state
         strands the document there, absent from the state list and from
-        the dependency-satisfying set, with no valid action out. And no
+        the dependency-satisfying set, with no valid action out. Also
+        unconditionally, `relocated` is constrained by name where every
+        other state's meaning is the vault's: it must be terminal and no
+        transition may leave it, because a document reaches it when its
+        live version moved to another vault, and a way out would restore
+        a second live head for the same document. And no
         lifecycle may resolve to an empty dependency-satisfying set,
         which would fail every `depends_on` precondition permanently with
         nothing naming the configuration as the cause. When
@@ -827,6 +845,26 @@ class LifecycleConfig(BaseModel):
                 problems.append(
                     f"the transition '{where}' lands in '{row.to_state}', "
                     "which is not a declared lifecycle state"
+                )
+        relocated_exits = sorted(
+            f"{t.from_state} -> {t.action} -> {t.to_state}"
+            for t in self.transitions
+            if t.from_state == RELOCATED_STATE
+        )
+        if relocated_exits:
+            problems.append(
+                f"no transition may leave '{RELOCATED_STATE}'; found: "
+                f"{', '.join(relocated_exits)}. A document reaches that state "
+                "when its live version moved to another vault, and a way out "
+                "would restore a second live head for the same document"
+            )
+        for state in self.states:
+            if state.value == RELOCATED_STATE and not state.is_terminal:
+                problems.append(
+                    f"the state '{RELOCATED_STATE}' must declare is_terminal: "
+                    "true; no transition may leave it, so a document that "
+                    "reaches it would otherwise sit on an operator worklist "
+                    "with nothing anyone can do about it"
                 )
         stray_ingest = sorted(
             t.from_state
