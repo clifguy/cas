@@ -851,7 +851,8 @@ class IngestionService:
         payload and a real run may still raise
         ``Tier3SchemaViolationError``; and a source resident in the
         store with no prior document record has no digest to inherit,
-        so its hash and duplicate verdict come back null. Every
+        so its hash and duplicate verdict come back null and a force
+        pin on it goes unchecked. Every
         validator that runs does so in real-run order and raises the
         real-run error: ``AdapterNotFoundError``,
         ``ExpectedHeadVersionRequiresPredecessorError``,

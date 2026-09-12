@@ -362,8 +362,12 @@ def register_sage_tools(
         collide before the real call arrives;
         ``force_reingest_path_mismatch``, which turns on the colliding
         record's own source path; and ``stale_chain_head`` on an
-        ``expected_head_version`` that no longer matches. A clean
-        preview is not a promise that the real run commits.
+        ``expected_head_version`` that no longer matches. A
+        ``force_reingest_pin_mismatch`` is checked only where the preview
+        holds the content hash; it goes unchecked for a source resident in
+        the store with no prior document record, which has no hash to judge
+        the pin against. A clean preview is not a promise that the real run
+        commits.
 
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
