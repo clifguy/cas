@@ -520,7 +520,11 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     ("sage_core", "create_vault"): Pin(4, 17),
     ("sage_core", "delete_edge"): Pin(6, 3),
     ("sage_core", "get_document"): Pin(10, 2),
-    ("sage_core", "get_filename_metadata"): Pin(7, 4),
+    # spec_only fell from 7 as the docstring gained the boundary-refusal
+    # bullet its operation already declares: one contract claim now has a
+    # counterpart it did not have. Real coverage on this one claim, not a
+    # reconciliation of the pair.
+    ("sage_core", "get_filename_metadata"): Pin(6, 4),
     ("sage_core", "get_vault_config"): Pin(6, 3),
     ("sage_core", "get_vault_stats"): Pin(6, 1),
     ("sage_core", "ingest_document"): Pin(13, 14),
@@ -535,12 +539,26 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     ("sage_core", "recompute_views"): Pin(4, 10),
     ("sage_core", "restore_vault_source_file"): Pin(0, 10),
     ("sage_core", "search"): Pin(3, 9),
-    ("sage_core", "traverse"): Pin(5, 1),
+    # spec_only fell from 5 for the same reason as get_filename_metadata:
+    # the docstring now declares the boundary refusals, covering one claim
+    # the contract was stating alone.
+    ("sage_core", "traverse"): Pin(4, 1),
     ("sage_core", "update_lifecycles"): Pin(7, 6),
-    ("sage_core", "update_metadata"): Pin(8, 17),
+    # doc_only fell from 17 as the tool's batch-level list gained the per-item
+    # document-id refusal its operation's 400 now declares: a claim the
+    # docstring was making alone has a counterpart. A reconciliation, unlike
+    # the verify_vault_drift entry below.
+    ("sage_core", "update_metadata"): Pin(8, 16),
     ("sage_core", "update_vault_config"): Pin(7, 8),
     ("sage_core", "verify_hashes"): Pin(4, 5),
-    ("sage_core", "verify_vault_drift"): Pin(5, 7),
+    # doc_only fell from 7 as the operation's 400 gained the boundary-refusal
+    # sentence every vault-scoped operation now declares. The claim that came
+    # covered is "data_quality is a flag, not a drift signal", and the sentence
+    # supplies only its "not": coverage is a bag of words over the whole
+    # surface, so an unrelated paragraph can carry a claim over the floor. The
+    # pin moves because the measurement did, which is the rule this list runs
+    # on; the pair is no better reconciled than it was.
+    ("sage_core", "verify_vault_drift"): Pin(5, 6),
     ("sage_core", "verify_vault_source_files"): Pin(3, 7),
     ("cas_app", "bulk_ingest_document"): Pin(9, 37),
     ("cas_app", "list_directory"): Pin(6, 9),

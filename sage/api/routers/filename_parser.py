@@ -11,6 +11,7 @@ metadata.
 from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_ingestion_service, get_vault_id
+from sage.api.response_docs import boundary_400
 from sage.models.schemas import (
     ErrorResponse,
     ParseFilenameRequest,
@@ -26,12 +27,10 @@ router = APIRouter(tags=["Utilities"])
     "/parse-filename",
     response_model=ParseFilenameResponse,
     responses={
-        400: {
-            "model": ErrorResponse,
-            "description": (
-                "`adapter_not_found`: no source adapter is registered for `source_type`."
-            ),
-        },
+        400: boundary_400(
+            path=("invalid_vault_id",),
+            extra="`adapter_not_found`: no source adapter is registered for `source_type`.",
+        ),
         404: {
             "model": ErrorResponse,
             "description": "Vault not found.",

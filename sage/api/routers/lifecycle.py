@@ -5,6 +5,7 @@
 from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_lifecycle_service, get_vault_id
+from sage.api.response_docs import boundary_400
 from sage.models.schemas import (
     BulkLifecycleRequest,
     BulkLifecycleResponse,
@@ -36,6 +37,9 @@ router = APIRouter(tags=["Document Lifecycle"])
         "smaller batches default to `full`."
     ),
     responses={
+        400: boundary_400(
+            path=("invalid_vault_id",), request=("invalid_document_id", "invalid_sha256")
+        ),
         404: {
             "model": ErrorResponse,
             "description": "`vault_not_found`: no vault registered with that id.",

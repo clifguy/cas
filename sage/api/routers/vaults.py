@@ -16,6 +16,7 @@ from sage.api.dependencies import (
     get_vault_id,
     get_vault_registry_service,
 )
+from sage.api.response_docs import boundary_400
 from sage.models.schemas import (
     CreateVaultRequest,
     ErrorResponse,
@@ -47,6 +48,9 @@ async def list_vaults(
     "/sage_vaults/default-config",
     operation_id="get_default_vault_config",
     summary="Return the default configuration a new vault would be created with.",
+    responses={
+        400: boundary_400(request=("invalid_vault_id",)),
+    },
 )
 async def get_default_vault_config(
     vault_id: VaultIdStr,
@@ -67,6 +71,7 @@ async def get_default_vault_config(
     "/sage_vaults/{vault_id}/stats",
     response_model=VaultStatsResponse,
     responses={
+        400: boundary_400(path=("invalid_vault_id",)),
         404: {
             "model": ErrorResponse,
             "description": "Vault not found.",
@@ -85,6 +90,7 @@ async def vault_stats(
     "/sage_vaults/{vault_id}/hash-check",
     response_model=dict[str, HashCheckMatch],
     responses={
+        400: boundary_400(path=("invalid_vault_id",), request=("invalid_sha256",)),
         404: {
             "model": ErrorResponse,
             "description": "Vault not found.",
@@ -103,6 +109,7 @@ async def hash_check(
 @router.get(
     "/sage_vaults/{vault_id}/config",
     responses={
+        400: boundary_400(path=("invalid_vault_id",)),
         404: {
             "model": ErrorResponse,
             "description": "Vault not found.",
@@ -121,14 +128,12 @@ async def get_vault_config(
     "/sage_vaults/{vault_id}/config",
     response_model=UpdateVaultConfigResponse,
     responses={
-        400: {
-            "model": ErrorResponse,
-            "description": (
-                "`vault_config_validation_error`: the merged config failed "
-                "schema validation, an unknown section name was passed, or "
-                "the request attempts to change `vault.id`."
-            ),
-        },
+        400: boundary_400(
+            path=("invalid_vault_id",),
+            extra="`vault_config_validation_error`: the merged config failed "
+            "schema validation, an unknown section name was passed, or "
+            "the request attempts to change `vault.id`.",
+        ),
         404: {
             "model": ErrorResponse,
             "description": "Vault not found.",

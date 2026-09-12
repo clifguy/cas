@@ -72,6 +72,8 @@ def register_app_tools(
         the directory or scan subdirectories separately.
 
         Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
         - ``invalid_directory`` (string in response, not a SAGE error):
           ``directory`` does not exist or is not readable.
         - ``caller_filesystem_unavailable`` (501): under the cloud profile the
@@ -250,11 +252,18 @@ def register_app_tools(
         was written to.
 
         Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
         - ``unknown_vault`` (400): ``vault_id`` is not a registered vault
           (call ``list_vaults`` for the set). A batch-boundary check
           raised before any per-file work; per-file failures accumulate in
           ``summary.errors[]`` instead.
         - ``empty_file_list`` (string in response): ``files`` was empty.
+        - ``invalid_document_date`` (per-file, in ``summary.errors[]``, not a
+          call-level envelope): an entry's parsed ``date`` is not a well-formed
+          calendar date. The ingest of that one file fails and the call still
+          returns its summary, so a caller checking only the envelope sees a
+          success.
         - ``ambiguous_ingest_source`` / ``missing_ingest_source`` (400): a
           file entry set both ``file_path`` and ``transfer_token``, or
           neither; each entry needs exactly one.

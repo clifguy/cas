@@ -20,16 +20,23 @@ These tests catch drift in either direction:
 Run via: pytest tests/sage/test_openapi_conformance.py
 """
 
+import inspect
 import json
 import re
+import typing
 from pathlib import Path
 
 import pytest
 import yaml
+from fastapi import Depends
+from fastapi.params import Depends as DependsParam
 from fastapi.routing import APIRoute
+from pydantic import AfterValidator, BaseModel
+from pydantic_core import PydanticCustomError
 
 from sage import build_info
 from sage.app import create_app
+from sage.models.schemas import DocumentIdStr
 from tests.helpers.adapter_claims import ENABLEMENT_CLAIM_MARKERS
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -2140,3 +2147,384 @@ def test_precondition_operation_names_document_id_throughout(sage_core_spec):
         "retired property still declared on PreconditionResult"
     )
     assert "document_id" in result_schema["required"], result_schema["required"]
+
+
+# ---------------------------------------------------------------------------
+# Test 2d: an operation whose path parameter carries a typed alias declares
+# that alias's 400
+# ---------------------------------------------------------------------------
+
+
+_PATH_PARAM_RE = re.compile(r"\{([^{}:]+)")
+
+# Validators found on a parameter that refused to name a code. Populated
+# by the discovery pass and asserted empty, so an alias whose validator accepts
+# the probe value cannot drop out of the roster unnoticed.
+_UNNAMED_VALIDATORS: set[str] = set()
+
+
+def _alias_validators(annotation: object, _seen: set | None = None) -> list:
+    """Every ``AfterValidator`` function reachable from ``annotation``.
+
+    Walks the annotation tree rather than reading the parameter's name: a
+    parameter named ``document_id`` whose annotation is a bare ``str`` runs no
+    validator and can raise nothing, and a roster keyed on names would enroll
+    it all the same.
+
+    Descends into request models, reading each field's ``metadata`` as well as
+    its annotation. Pydantic lifts an ``Annotated`` field's validators onto the
+    ``FieldInfo`` and leaves ``annotation`` the bare ``str``, so a walk that
+    reads annotations alone finds no alias on any model field and reports every
+    request body as carrying none -- silently, the roster simply being shorter.
+    ``test_alias_roster_reads_a_field_level_alias`` is the control for it.
+    """
+    seen: set = set() if _seen is None else _seen
+    found: list = []
+    stack: list = [annotation]
+    while stack:
+        node = stack.pop()
+        metadata = getattr(node, "__metadata__", None)
+        if metadata:
+            found.extend(m.func for m in metadata if isinstance(m, AfterValidator))
+            stack.append(typing.get_args(node)[0])
+            continue
+        if isinstance(node, type) and issubclass(node, BaseModel):
+            if node in seen:
+                continue
+            seen.add(node)
+            for field in node.model_fields.values():
+                found.extend(m.func for m in field.metadata if isinstance(m, AfterValidator))
+                found.extend(_alias_validators(field.annotation, seen))
+            continue
+        stack.extend(typing.get_args(node))
+    return found
+
+
+def _provoked_code(validator) -> str | None:
+    """The error code ``validator`` raises, read by provoking it.
+
+    Every typed-alias validator raises a ``PydanticCustomError`` whose type is
+    the code the boundary translator envelopes, so the code is read from the
+    validator rather than derived from the alias's spelling. The empty string
+    is the probe because no alias in the family accepts it; a future one that
+    does lands in ``_UNNAMED_VALIDATORS`` rather than silently emptying
+    its row from the roster.
+    """
+    try:
+        validator("")
+    except PydanticCustomError as exc:
+        return exc.type
+    except Exception:  # noqa: BLE001 - a validator that fails another way names no code
+        return None
+    return None
+
+
+def _validated_annotation(parameter: inspect.Parameter) -> object:
+    """The annotation whose validators actually run for ``parameter``.
+
+    A parameter supplied by ``Depends`` is bound from the dependency's return
+    value, and FastAPI does not validate that against the endpoint's own
+    annotation: a handler declaring ``document_id: DocumentIdStr =
+    Depends(lambda: "not-a-doc-id")`` answers 200. So an alias written there
+    runs nothing, and reading it would enroll a row whose refusal no code
+    performs -- every vault-scoped route carries exactly that shape, and
+    dropping the alias from the dependency would leave all of them enrolled
+    and declared with the gate green. The dependency's own signature is where
+    the validator lives, so that is what is read.
+    """
+    default = parameter.default
+    dependency = default.dependency if isinstance(default, DependsParam) else None
+    if dependency is None:
+        return parameter.annotation
+    try:
+        inner = inspect.signature(dependency, eval_str=True)
+    except TypeError, ValueError, NameError:  # pragma: no cover - resolvable today
+        return parameter.annotation
+    own = [p.annotation for n, p in inner.parameters.items() if n == parameter.name]
+    return own[0] if own else parameter.annotation
+
+
+def _alias_param_rows(app: object | None = None) -> list[tuple[str, str, str, str]]:
+    """``(path, method, parameter, code)`` for every alias-typed parameter.
+
+    Built by reflecting the live FastAPI app, so the roster follows the
+    annotations that actually run, wherever the value arrives: a path segment,
+    a query string, or a field of the request model, nested items included.
+    All three run the same validator and raise the same code, and a caller
+    reading the envelope cannot tell which of them refused.
+
+    For a parameter supplied by ``Depends`` the annotation that runs is the
+    dependency's own, not the endpoint's -- see ``_validated_annotation``.
+
+    ``app`` defaults to the live application and is taken as an argument so a
+    control can drive this same loop over a route it constructs. Asserting the
+    resolution on the helper alone leaves one rival standing: a helper that is
+    correct and not called from here.
+    """
+    rows: set[tuple[str, str, str, str]] = set()
+    for route in (app if app is not None else create_app()).routes:
+        if not isinstance(route, APIRoute) or route.path in _INFRA_PATHS:
+            continue
+        template = _normalize_path(route.path)
+        try:
+            # eval_str resolves postponed annotations. Without it a router
+            # module carrying ``from __future__ import annotations`` hands
+            # back each annotation as a string, every alias walk over it
+            # finds nothing, and that module's operations leave the roster
+            # silently -- which is how the CAS Application's two operations
+            # sat outside this gate while it reported clean.
+            signature = inspect.signature(route.endpoint, eval_str=True)
+        except TypeError, ValueError, NameError:  # pragma: no cover - no such endpoint today
+            continue
+        methods = {m.lower() for m in route.methods} & _HTTP_METHODS
+        for name, parameter in signature.parameters.items():
+            for validator in _alias_validators(_validated_annotation(parameter)):
+                code = _provoked_code(validator)
+                if code is None:
+                    _UNNAMED_VALIDATORS.add(getattr(validator, "__name__", repr(validator)))
+                    continue
+                rows.update((template, method, name, code) for method in methods)
+    return sorted(rows)
+
+
+_ALIAS_PARAM_ROWS = _alias_param_rows()
+
+# Floor for the roster above. 70 rows pair today across 40 operations; the
+# floor sits below that so ordinary movement does not trip it while a collapse
+# does -- a reflection that returns nothing passes every per-row case
+# vacuously.
+MIN_ALIAS_PARAM_ROWS: int = 55
+
+
+def _spec_owning(path: str, sage_core: dict | None, cas_app: dict | None) -> dict | None:
+    """The committed spec that declares ``path``.
+
+    The two specs split the surface by URL prefix, so a row checked against the
+    wrong one finds no operation at all and reports every code as undeclared.
+    """
+    return cas_app if path.startswith("/app/") else sage_core
+
+
+def _undeclared_alias_codes(
+    spec: dict | None,
+    rows: list[tuple[str, str, str, str]],
+) -> list[tuple[str, str, str]]:
+    """Rows whose operation does not name the code in its 400 description.
+
+    The code is sought in ``responses["400"].description`` specifically rather
+    than anywhere in the operation: a code named in the 404 prose, or in the
+    operation's own narrative, discloses a different branch than the one a
+    caller would key on.
+    """
+    undeclared: list[tuple[str, str, str]] = []
+    for path, method, _parameter, code in rows:
+        operation = (((spec or {}).get("paths") or {}).get(path) or {}).get(method) or {}
+        response = (operation.get("responses") or {}).get("400") or {}
+        if f"`{code}`" not in (response.get("description") or ""):
+            undeclared.append((path, method, code))
+    return undeclared
+
+
+@pytest.mark.parametrize(
+    "row",
+    _ALIAS_PARAM_ROWS,
+    ids=[f"{m.upper()} {p} -> {c}" for (p, m, _n, c) in _ALIAS_PARAM_ROWS],
+)
+def test_alias_typed_params_declare_their_400(
+    row: tuple[str, str, str, str],
+    sage_core_spec: dict | None,
+    cas_app_spec: dict | None,
+):
+    """Every parameter carrying a typed alias has its 400 published.
+
+    The route runs the alias's validator at request binding, whether the value
+    arrives in the path, the query string or the request body, so the refusal
+    is a branch the operation has always had. A client generated from the
+    specification gets that branch only if the specification declares it, and
+    the specification is served unauthenticated, so it is all an outside
+    developer has.
+
+    Asserts the property rather than the instances: the roster is reflected
+    from the live routes, so a route added with an alias-typed parameter and no
+    declaration fails here without an edit to this file. That is the
+    difference from the per-operation pins elsewhere in this module, and the
+    reason 14 of 15 operations could sit undeclared while every one of those
+    pins stayed green.
+    """
+    assert sage_core_spec is not None, f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
+    assert cas_app_spec is not None, f"CAS Application API spec missing at {CAS_APP_SPEC_PATH}"
+    undeclared = _undeclared_alias_codes(_spec_owning(row[0], sage_core_spec, cas_app_spec), [row])
+    assert not undeclared, (
+        f"{row[1].upper()} {row[0]}: parameter {row[2]!r} runs the validator that "
+        f"raises {row[3]}, but the operation's 400 does not name it"
+    )
+
+
+def test_forward_declared_alias_operations_declare_their_400(sage_core_spec: dict | None):
+    """The same property on the operations no route implements yet.
+
+    Codes are derived from the path template's parameter names here, mapped
+    through the correspondence the live rows establish, because a forward
+    declaration has no annotation to reflect. The weaker derivation is confined
+    to these entries: everywhere else the code is read from the validator.
+    """
+    assert sage_core_spec is not None, f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
+    code_by_parameter = {name: code for (_p, _m, name, code) in _ALIAS_PARAM_ROWS}
+    assert code_by_parameter, "no live rows to learn the parameter-to-code correspondence from"
+
+    rows = [
+        (path, method, name, code_by_parameter[name])
+        for (path, method) in sorted(SPEC_FORWARD_DECLARATIONS)
+        for name in _PATH_PARAM_RE.findall(path)
+        if name in code_by_parameter
+    ]
+    assert rows, "forward declarations carry no parameter the live roster names"
+
+    undeclared = _undeclared_alias_codes(sage_core_spec, rows)
+    assert not undeclared, (
+        f"forward-declared operations not declaring their boundary 400: {undeclared}"
+    )
+
+
+def test_alias_param_roster_is_not_vacuous():
+    """The roster enumerates the routes rather than quietly returning nothing.
+
+    Every per-row case passes when the reflection yields no rows, so the gate
+    above is only as strong as this floor. The named representatives cover a
+    partial collapse -- one alias family dropping out leaves the count high
+    enough to clear a floor alone.
+    """
+    assert not _UNNAMED_VALIDATORS, (
+        f"parameter validators naming no code: {sorted(_UNNAMED_VALIDATORS)}. "
+        "The probe value is accepted by one of them, so its rows are missing from the roster."
+    )
+    assert len(_ALIAS_PARAM_ROWS) >= MIN_ALIAS_PARAM_ROWS, (
+        f"roster collapsed to {len(_ALIAS_PARAM_ROWS)} rows"
+    )
+
+    triples = {(path, method, code) for (path, method, _n, code) in _ALIAS_PARAM_ROWS}
+    for expected in (
+        ("/sage_vaults/{vault_id}/documents/{document_id}", "get", "invalid_document_id"),
+        ("/sage_vaults/{vault_id}/edges/{edge_id}", "delete", "invalid_edge_id"),
+        ("/sage_vaults/{vault_id}/stats", "get", "invalid_vault_id"),
+    ):
+        assert expected in triples, f"roster is missing {expected}"
+
+
+def test_alias_roster_reads_the_dependency_that_validates():
+    """A ``Depends``-supplied parameter is read off the dependency, not the route.
+
+    FastAPI binds such a parameter from the dependency's return value and
+    never validates it against the endpoint's annotation, so an alias written
+    at the route is inert. Every vault-scoped route carries that shape, and a
+    roster reading the route would enroll forty rows whose refusal nothing
+    performs -- dropping the alias from ``get_vault_id`` would leave all of
+    them enrolled, declared, and green.
+
+    Driven through ``_alias_param_rows`` over a route built for the purpose,
+    rather than through the resolution helper: on the live app both readings
+    yield the same rows, because every route happens to annotate the same
+    alias the dependency does, so a helper tested alone leaves standing the
+    rival where it is correct and the roster never calls it. The probe route
+    annotates the *wrong* alias deliberately, which is what separates them.
+    """
+    from fastapi import FastAPI
+
+    from sage.api.dependencies import get_vault_id
+
+    probe = FastAPI()
+
+    @probe.get("/probe/{vault_id}")
+    async def handler(vault_id: DocumentIdStr = Depends(get_vault_id)) -> None: ...
+
+    rows = _alias_param_rows(probe)
+    codes = {code for _path, _method, _name, code in rows}
+    assert codes == {"invalid_vault_id"}, (
+        f"the roster read the route's own annotation instead of the dependency's: {codes}"
+    )
+
+
+def test_alias_roster_reaches_a_postponed_annotation_module():
+    """A router using postponed annotations contributes rows like any other.
+
+    ``app/backend/router.py`` carries ``from __future__ import annotations``,
+    so its parameter annotations arrive as strings unless they are resolved.
+    An unresolved walk finds no alias there and that module's operations leave
+    the roster -- no row fails, nothing is reported, and the gate reads clean
+    over a surface it never examined. Named rather than left to the floor,
+    which a two-row shortfall clears comfortably.
+    """
+    covered = {(path, method) for path, method, _name, _code in _ALIAS_PARAM_ROWS}
+    assert ("/app/scan", "post") in covered, sorted(p for p, _m in covered if p.startswith("/app"))
+    assert ("/app/ingest", "post") in covered
+
+
+def test_alias_400_detector_has_teeth():
+    """The detector reports each way a declaration can be absent or misplaced.
+
+    Four mutants, each a rival the gate would pass over if it asked a weaker
+    question: whether a 400 exists at all (14 operations already declared one
+    for an unrelated code), or whether the code appears anywhere in the
+    operation (a 404 description mentioning it is a different branch).
+    """
+    rows = [("/p", "get", "document_id", "invalid_document_id")]
+
+    absent = {"paths": {"/p": {"get": {"responses": {"404": {"description": "gone"}}}}}}
+    unrelated = {
+        "paths": {"/p": {"get": {"responses": {"400": {"description": "`bad_shape`: nope."}}}}}
+    }
+    misplaced = {
+        "paths": {
+            "/p": {
+                "get": {
+                    "responses": {
+                        "400": {"description": "`bad_shape`: nope."},
+                        "404": {"description": "`invalid_document_id`: wrong branch."},
+                    }
+                }
+            }
+        }
+    }
+    declared = {
+        "paths": {
+            "/p": {"get": {"responses": {"400": {"description": "`invalid_document_id`: yes."}}}}
+        }
+    }
+
+    assert _undeclared_alias_codes(absent, rows) == [("/p", "get", "invalid_document_id")]
+    assert _undeclared_alias_codes(unrelated, rows) == [("/p", "get", "invalid_document_id")]
+    assert _undeclared_alias_codes(misplaced, rows) == [("/p", "get", "invalid_document_id")]
+    assert _undeclared_alias_codes(declared, rows) == []
+
+
+def test_alias_roster_reads_a_field_level_alias():
+    """An alias declared on a model field is found, not just one on a parameter.
+
+    Pydantic moves an ``Annotated`` field's validators onto the ``FieldInfo``
+    and leaves ``annotation`` the bare ``str``. A walk over annotations alone
+    therefore reports a request body as carrying no alias, and the roster gets
+    shorter rather than wrong -- which no per-row case can report, because the
+    rows are simply absent. Asserted against a live request model, so it holds
+    against whatever pydantic does with the metadata rather than against a
+    model built to match this walk.
+    """
+    from sage.models.schemas import BulkMetadataRequest
+
+    field = BulkMetadataRequest.model_fields["items"]
+    assert _alias_validators(field.annotation), "no alias found under the items field"
+
+    codes = {_provoked_code(v) for v in _alias_validators(BulkMetadataRequest)}
+    assert "invalid_document_id" in codes, codes
+    assert "invalid_document_date" in codes, codes
+
+
+def test_alias_roster_reads_the_annotation_not_the_parameter_name():
+    """A shape-named parameter with no validator contributes no row.
+
+    The rival this excludes is a roster keyed on names, which would enroll a
+    route whose alias had been dropped and then find its declaration present --
+    reporting coverage of a validator that no longer runs.
+    """
+    assert _alias_validators(str) == []
+    assert _alias_validators(DocumentIdStr) != []
+    assert _provoked_code(_alias_validators(DocumentIdStr)[0]) == "invalid_document_id"

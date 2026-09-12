@@ -5,6 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path
 
 from sage.api.dependencies import get_utilities_service, get_vault_id
+from sage.api.response_docs import boundary_400
 from sage.models.schemas import (
     DocumentIdStr,
     ErrorResponse,
@@ -30,13 +31,11 @@ _DocumentIdPath = Annotated[DocumentIdStr, Path(description="Document identifier
     "/documents/{document_id}/export",
     response_model=ExportProjectionResponse,
     responses={
-        400: {
-            "model": ErrorResponse,
-            "description": (
-                "`path_traversal_denied`: `output_path` resolves outside the "
-                "vault's `storage_root`."
-            ),
-        },
+        400: boundary_400(
+            path=("invalid_document_id", "invalid_vault_id"),
+            extra="`path_traversal_denied`: `output_path` resolves outside the "
+            "vault's `storage_root`.",
+        ),
         404: {
             "model": ErrorResponse,
             "description": (
@@ -61,6 +60,7 @@ async def export_projection(
     "/documents/{document_id}/projection",
     response_model=ReadProjectionResponse,
     responses={
+        400: boundary_400(path=("invalid_document_id", "invalid_vault_id")),
         404: {
             "model": ErrorResponse,
             "description": (
@@ -86,6 +86,7 @@ async def read_projection(
     "/documents/{document_id}/section/{heading_path:path}",
     response_model=ReadSectionResponse,
     responses={
+        400: boundary_400(path=("invalid_document_id", "invalid_vault_id")),
         404: {
             "model": ErrorResponse,
             "description": (
@@ -112,6 +113,7 @@ async def read_section(
     "/documents/{document_id}/headings",
     response_model=ListHeadingsResponse,
     responses={
+        400: boundary_400(path=("invalid_document_id", "invalid_vault_id")),
         404: {
             "model": ErrorResponse,
             "description": (
@@ -136,15 +138,13 @@ async def list_headings(
     "/eval-retrieval",
     response_model=EvalRetrievalResult,
     responses={
-        400: {
-            "model": ErrorResponse,
-            "description": (
-                "`assertions_file_invalid`: the referenced YAML is malformed "
-                "or has the wrong structure.\n\n"
-                "`assertions_not_configured`: the vault config has no "
-                "`retrieval_health.assertions_file` entry."
-            ),
-        },
+        400: boundary_400(
+            path=("invalid_vault_id",),
+            extra="`assertions_file_invalid`: the referenced YAML is malformed "
+            "or has the wrong structure.\n\n"
+            "`assertions_not_configured`: the vault config has no "
+            "`retrieval_health.assertions_file` entry.",
+        ),
         404: {
             "model": ErrorResponse,
             "description": (
@@ -166,6 +166,7 @@ async def eval_retrieval(
     "/refresh-views",
     response_model=RefreshViewsResponse,
     responses={
+        400: boundary_400(path=("invalid_vault_id",)),
         404: {
             "model": ErrorResponse,
             "description": "Vault not found.",

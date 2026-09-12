@@ -85,6 +85,8 @@ from __future__ import annotations
 
 import ast
 import inspect
+import re
+import textwrap
 import typing
 from collections.abc import Callable
 from types import ModuleType, UnionType
@@ -93,6 +95,7 @@ from typing import Final
 import pytest
 from fastapi.params import Depends as DependsParam
 from pydantic import AfterValidator, BaseModel
+from pydantic_core import PydanticCustomError
 
 from app.backend import models as models_mod
 from app.backend import router as router_mod
@@ -1285,3 +1288,254 @@ def test_module_typeadapter_bindings_unwrap_only_declared_sequences(tmp_path) ->
     assert "NON_SEQ_ADAPTER" not in bindings, (
         f"a non-sequence subscript must not unwrap to its argument; got {sorted(bindings)}"
     )
+
+
+# ---------------------------------------------------------------------------
+# Docstring contract: a tool whose parameter carries a family alias declares
+# that alias's 400 in its ``Error modes:`` block
+# ---------------------------------------------------------------------------
+
+
+# A tool's error-mode list is introduced by a line-initial header naming
+# "error modes", optionally qualified -- "Error modes:", "Error modes (raised
+# synchronously ...):", "Batch-level error modes (...):". The qualifier scopes
+# the list rather than renaming it, and wraps across lines, so keying on the
+# bare spelling read three enumerations as absent and reported tools that
+# disclose correctly. The bound on the qualifier keeps a colon far below a
+# prose mention of the phrase from opening a block that was never declared.
+_ERROR_MODES_HEADER_RE = re.compile(r"^[^\n:]*[Ee]rror modes\b[^:]{0,240}?:", re.MULTILINE)
+
+
+def _code_raised_by(alias: type) -> str | None:
+    """The error code ``alias``'s validator raises, read by provoking it.
+
+    Read from the validator rather than derived from the alias's spelling, so
+    an alias renamed without its code, or given a code that does not match its
+    name, is described by what a caller would actually receive. The empty
+    string is the probe because no alias in the family accepts it.
+    """
+    validator = next(
+        (m.func for m in getattr(alias, "__metadata__", ()) if isinstance(m, AfterValidator)),
+        None,
+    )
+    return None if validator is None else _provoke(validator)
+
+
+def _provoke(validator: Callable) -> str | None:
+    """The code ``validator`` raises against a value no alias accepts."""
+    try:
+        validator("")
+    except PydanticCustomError as exc:
+        return exc.type
+    except Exception:  # noqa: BLE001 - a validator failing another way names no code
+        return None
+    return None
+
+
+def _error_modes_block(fn: Callable) -> str:
+    """The tool docstring's ``Error modes:`` block, or the empty string.
+
+    Every such list, not the first: a tool that separates its call-level
+    refusals from its per-item ones declares two, and reading one of them
+    reports the other's codes as undisclosed. Each is bounded at the next
+    structural header or the next list, so a code named in ``Args:`` prose, or
+    in the narrative above, does not read as a declared error mode. Which block
+    names the code is the whole point: a caller looking for what a call can
+    return reads these.
+    """
+    doc = inspect.getdoc(fn) or ""
+    blocks: list[str] = []
+    for match in _ERROR_MODES_HEADER_RE.finditer(doc):
+        rest = doc[match.end() :]
+        end = len(rest)
+        for header in ("Args:", "Returns:", "Raises:", "Example:", "Examples:", "Note:"):
+            found = rest.find(f"\n{header}")
+            if found >= 0:
+                end = min(end, found)
+        next_list = _ERROR_MODES_HEADER_RE.search(rest)
+        if next_list is not None:
+            end = min(end, next_list.start())
+        blocks.append(rest[:end])
+    return "\n".join(blocks)
+
+
+def _models_validated_in(fn: Callable) -> list[type[BaseModel]]:
+    """Every ``BaseModel`` the tool body validates caller input through.
+
+    Pattern 3: a bulk tool takes ``items`` as a list of plain dicts and hands
+    each to a request or item model, so the aliases those entries are refused
+    by are declared on the model's fields and not on any parameter of the
+    tool. Reading only the signature stops at the container and reports the
+    tool as refusing nothing an item can carry -- the same shape that made the
+    HTTP-side walk miss every request body until it read a field's metadata.
+
+    Resolved from the body's own call sites rather than from a table: a class
+    named in a ``model_validate`` call or constructed by name in the tool is
+    one this tool passes caller data into.
+    """
+    try:
+        source = textwrap.dedent(inspect.getsource(fn))
+    except OSError:  # pragma: no cover - every registered tool has source today
+        return []
+    names: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        called = node.func
+        if isinstance(called, ast.Attribute) and called.attr == "model_validate":
+            if isinstance(called.value, ast.Name):
+                names.add(called.value.id)
+        elif isinstance(called, ast.Name):
+            names.add(called.id)
+    found: list[type[BaseModel]] = []
+    for name in sorted(names):
+        obj = fn.__globals__.get(name)
+        if isinstance(obj, type) and issubclass(obj, BaseModel):
+            found.append(obj)
+    return found
+
+
+def _codes_reachable_from(model: type[BaseModel], seen: set | None = None) -> set[str]:
+    """Boundary codes the aliases on ``model``'s fields (and nested ones) raise."""
+    seen = set() if seen is None else seen
+    if model in seen:
+        return set()
+    seen.add(model)
+    codes: set[str] = set()
+    for field in model.model_fields.values():
+        for member in (*field.metadata, *typing.get_args(field.annotation), field.annotation):
+            alias_codes = _code_raised_by(member) if hasattr(member, "__metadata__") else None
+            if alias_codes:
+                codes.add(alias_codes)
+            if isinstance(member, AfterValidator):
+                provoked = _provoke(member.func)
+                if provoked:
+                    codes.add(provoked)
+            if isinstance(member, type) and issubclass(member, BaseModel):
+                codes |= _codes_reachable_from(member, seen)
+    return codes
+
+
+def _fastmcp_tool_declared_codes() -> list[tuple[Callable, str]]:
+    """``(tool, code)`` for every boundary code a registered tool can raise.
+
+    Two sources, because a tool refuses caller input at two depths. Its own
+    parameters come from the discovery the parameter-coverage gate runs on, so
+    a parameter this module holds to an alias is a parameter whose refusal the
+    docstring has to disclose. Its bulk payloads come from the models the body
+    validates entries through, which no parameter names.
+
+    The walk reaches what the tool validates in its own body and no further: a
+    refusal raised inside a service the tool calls is outside it, and a tool
+    disclosing one of those declares more than this roster requires rather
+    than less.
+    """
+    pairs: set[tuple[str, str]] = set()
+    by_name: dict[str, Callable] = {}
+    for fn, _param, alias in _discover_fastmcp_tool_params():
+        code = _code_raised_by(alias)
+        if code is None:
+            continue
+        by_name[_qualified_callable_name(fn)] = fn
+        pairs.add((_qualified_callable_name(fn), code))
+    # Every registered tool, not only those already carrying a top-level alias:
+    # a tool whose only refusals come from a model it validates has no such
+    # parameter, so gating the body walk on the first source would skip exactly
+    # the tools the walk exists for.
+    for fn in _registered_fastmcp_tools():
+        codes = {
+            code for model in _models_validated_in(fn) for code in _codes_reachable_from(model)
+        }
+        if not codes:
+            continue
+        by_name.setdefault(_qualified_callable_name(fn), fn)
+        pairs.update((_qualified_callable_name(fn), code) for code in codes)
+    rows = [(by_name[name], code) for name, code in pairs]
+    return sorted(rows, key=lambda row: (row[0].__name__, row[1]))
+
+
+_FASTMCP_TOOL_CODES = _fastmcp_tool_declared_codes()
+
+# Anti-vacuity floor for the roster above. 57 pairs today across 33 tools, of
+# which 49 come from tool parameters and 8 from the models a tool body
+# validates. The floor sits above the parameter-only count so a collapse of
+# *either* source trips it: at 30 the body walk could return nothing -- the
+# silent shape its own docstring warns about -- and the roster would still
+# clear the floor while every per-pair case simply stopped being generated.
+MIN_FASTMCP_TOOL_CODES: int = 52
+
+
+@pytest.mark.parametrize(
+    "tool, code",
+    _FASTMCP_TOOL_CODES,
+    ids=[f"{fn.__name__}-{code}" for fn, code in _FASTMCP_TOOL_CODES],
+)
+def test_fastmcp_tool_docstrings_declare_their_400(tool: Callable, code: str) -> None:
+    """The docstring contract, asserted as a property rather than per tool.
+
+    The steering document states it for the MCP surface and the sibling gate in
+    ``tests/sage/test_openapi_conformance.py`` asserts the same rule for the
+    published operations. Both surfaces refuse the same value with the same
+    code, and a tool docstring is the only contract an agent choosing that tool
+    reads, so a refusal it omits is one the caller learns by provoking it.
+    """
+    block = _error_modes_block(tool)
+    assert f"``{code}``" in block, (
+        f"{_qualified_callable_name(tool)} validates a parameter through the alias that "
+        f"raises {code}, but its Error modes: block does not declare it"
+    )
+
+
+def test_fastmcp_docstring_roster_is_not_vacuous() -> None:
+    """The roster enumerates the tools rather than quietly returning nothing."""
+    assert len(_FASTMCP_TOOL_CODES) >= MIN_FASTMCP_TOOL_CODES, (
+        f"roster collapsed to {len(_FASTMCP_TOOL_CODES)} pairs"
+    )
+    named = {(fn.__name__, code) for fn, code in _FASTMCP_TOOL_CODES}
+    for expected in (
+        ("get_document", "invalid_document_id"),
+        ("get_document", "invalid_vault_id"),
+        ("delete_edge", "invalid_edge_id"),
+        # Body-derived, and reachable no other way: create_edges takes no
+        # top-level edge id, so this pair exists only if the walk entered
+        # BulkLinkItem. Without it every representative is a parameter pair
+        # and a body walk returning nothing is unobservable here.
+        ("create_edges", "invalid_edge_id"),
+    ):
+        assert expected in named, f"roster is missing {expected}"
+
+
+def test_error_modes_block_is_bounded_at_the_next_header() -> None:
+    """A code named outside the block does not satisfy the contract.
+
+    The rival is a containment test over the whole docstring, which a code
+    mentioned in the narrative or in an ``Args:`` description satisfies without
+    the caller-facing list ever naming it.
+    """
+
+    def only_in_args():  # noqa: D401 - fixture, not a documented callable
+        """Narrative.
+
+        Error modes:
+        - ``document_not_found`` (404): no document with that id.
+
+        Args:
+            document_id: refused with ``invalid_document_id`` when malformed.
+        """
+
+    def in_the_block():  # noqa: D401 - fixture, not a documented callable
+        """Narrative.
+
+        Error modes:
+        - ``invalid_document_id`` (400): not a well-formed document id.
+
+        Args:
+            document_id: the document's identifier.
+        """
+
+    def no_block():  # noqa: D401 - fixture, not a documented callable
+        """Narrative naming ``invalid_document_id`` and nothing else."""
+
+    assert "``invalid_document_id``" not in _error_modes_block(only_in_args)
+    assert "``invalid_document_id``" in _error_modes_block(in_the_block)
+    assert _error_modes_block(no_block) == ""
