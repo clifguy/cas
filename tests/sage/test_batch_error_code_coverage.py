@@ -35,9 +35,11 @@ whose code is a constructor argument it cannot resolve to a literal.
 
 Limits of the derivation: a code counts as declared wherever an error
 response's description names it, so a passing mention inside another code's
-paragraph declares it too; and an exclusion is held only to the batch not
+paragraph declares it too; an exclusion is held only to the batch not
 passing its fields -- that the code cannot arise without them is read from the
-service, not checked here.
+service, not checked here; and the scan follows the request within the batch
+module, so a helper elsewhere that sets a field on the instance it is handed
+is not seen.
 """
 
 from __future__ import annotations
@@ -427,6 +429,50 @@ def test_excluded_codes_stay_unreachable():
     assert None not in passed, "a ** expansion hides which fields the request carries"
     assert "source" in passed, f"read the wrong construction: {sorted(passed)}"
 
+    # The request model is not frozen, so the constructor's keywords are not
+    # the whole of what it carries: a field set afterwards, a copy with an
+    # update, or a second route to an instance would each carry fields this
+    # scan never reads.
+    bound = {
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign) and node.value is calls[0]
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    assert bound, "the construction is not bound to a name the scan can follow"
+    rebuilt = sorted(
+        f"line {node.lineno}"
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and (
+            (node.func.value.id == "IngestRequest" and node.func.attr.startswith("model_"))
+            or (node.func.value.id in bound and node.func.attr == "model_copy")
+        )
+    )
+    assert not rebuilt, f"the request is rebuilt outside its constructor at {rebuilt}"
+    mutated = sorted(
+        f"line {node.lineno}"
+        for node in ast.walk(tree)
+        if (
+            isinstance(node, ast.Attribute)
+            and isinstance(node.ctx, ast.Store)
+            and isinstance(node.value, ast.Name)
+            and node.value.id in bound
+        )
+        or (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "setattr"
+            and node.args
+            and isinstance(node.args[0], ast.Name)
+            and node.args[0].id in bound
+        )
+    )
+    assert not mutated, f"a field is set on the request after construction at {mutated}"
+
     known = set(IngestRequest.model_fields)
     for code, fields in UNREACHABLE_PER_FILE.items():
         assert set(fields) <= known, (
@@ -438,6 +484,54 @@ def test_excluded_codes_stay_unreachable():
     assert not reachable, (
         f"the batch now passes {sorted(passed)}, which makes {reachable} reachable per file"
     )
+
+
+def test_translation_is_confined_to_request_construction():
+    """A validation failure is translated only where the request is built.
+
+    The per-file loop catches every exception the ingest raises, and a
+    translation applied there would rebuild an internal model's validation
+    failure as a caller-facing refusal. Held structurally: the one call to the
+    translator sits in an ``except ValidationError`` handler whose ``try``
+    body is the request's construction.
+    """
+    tree = ast.parse(_BATCH_MODULE.read_text(encoding="utf-8"))
+    translations = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "translate_validation_error"
+    ]
+    assert len(translations) == 1, f"expected one translation, found {len(translations)}"
+    (translation,) = translations
+
+    enclosing = [
+        (node, handler)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Try)
+        for handler in node.handlers
+        if any(inner is translation for inner in ast.walk(handler))
+    ]
+    assert enclosing, "the translation is not inside an exception handler"
+    try_node, handler = enclosing[-1]
+    assert isinstance(handler.type, ast.Name) and handler.type.id == "ValidationError", (
+        "the translation's handler does not catch ValidationError alone"
+    )
+    guarded = [
+        node
+        for statement in try_node.body
+        for node in ast.walk(statement)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id in {"IngestRequest", "_error_entry"}
+    ]
+    assert [node.func.id for node in guarded] == ["IngestRequest"], (
+        f"the guarded block holds {[node.func.id for node in guarded]}, not the construction alone"
+    )
+    assert not any(
+        isinstance(node, ast.Await) for statement in try_node.body for node in ast.walk(statement)
+    ), "the guarded block reaches the ingest itself"
 
 
 def test_exclusion_tables_are_not_stale(core, catalog):

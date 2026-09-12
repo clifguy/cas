@@ -318,18 +318,31 @@ class BatchIngestService:
 
             try:
                 metadata_dict = _metadata_dict_from_parsed(fd.parsed_metadata)
-                request = IngestRequest(
-                    source=fd.file_path,
-                    source_type=SourceType(fd.source_type),
-                    metadata=metadata_dict,
-                    # CAS-ADR-021: SAGE's default is to commit caller-
-                    # supplied metadata as authoritative. The CAS bulk-
-                    # ingest workflow surfaces inferred values for human
-                    # confirmation, so it opts the document into the
-                    # metadata-review queue (needs_review defaults True).
-                    needs_review=needs_review,
-                    dry_run=dry_run,
-                )
+                source_type = SourceType(fd.source_type)
+                try:
+                    request = IngestRequest(
+                        source=fd.file_path,
+                        source_type=source_type,
+                        metadata=metadata_dict,
+                        # CAS-ADR-021: SAGE's default is to commit caller-
+                        # supplied metadata as authoritative. The CAS bulk-
+                        # ingest workflow surfaces inferred values for human
+                        # confirmation, so it opts the document into the
+                        # metadata-review queue (needs_review defaults True).
+                        needs_review=needs_review,
+                        dry_run=dry_run,
+                    )
+                except ValidationError as exc:
+                    # The single-document surface validates this request at
+                    # its boundary and returns the typed refusal; here the
+                    # request is built inside the loop, so the same
+                    # translation is applied where it is built. Without it the
+                    # entry carries no code and a message rendering the whole
+                    # request, staged location included.
+                    translated = translate_validation_error(exc)
+                    if translated is None:
+                        raise
+                    raise translated from exc
                 ingest_result = await vault_services.ingestion_service.ingest(
                     request,
                     # The staged path is where the bytes are; the caller's
@@ -469,16 +482,7 @@ def _error_entry(
     caller of the pipeline carries the same validated contract: the streaming
     leg validated its entries when it built the summary event, while the
     non-streaming leg serialized whatever the collection held.
-
-    A request that fails its own validation -- a parsed date that is not a
-    calendar date -- is reported under the code the single-document ingest
-    returns for the same value, by the translation that surface applies at
-    its boundary. The batch builds the request inside its per-file loop, so
-    that boundary never sees it, and without the translation the entry would
-    carry no code and a message naming the staged location.
     """
-    if isinstance(exc, ValidationError):
-        exc = translate_validation_error(exc) or exc
     if isinstance(exc, SAGEError):
         # ``or None`` so an empty detail drops out on serialization rather
         # than reaching a caller as an empty object.
