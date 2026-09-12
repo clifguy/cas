@@ -1295,3 +1295,64 @@ async def test_b23_dry_run_does_not_build_an_edge_plan(batch_app, monkeypatch):
     assert summary["dry_run"] is True
     assert summary["edges_created"] == {}
     assert summary["edges_dropped"] == 0
+
+
+# ---------------------------------------------------------------------------
+# B24 -- a malformed per-file date is reported with its typed code
+# ---------------------------------------------------------------------------
+
+
+async def test_b24_malformed_per_file_date_reports_its_typed_code(batch_app):
+    """A file whose parsed date is not a calendar date fails alone, and its
+    entry carries ``invalid_document_date`` with the offending value -- the
+    code the batch contract lists for that failure -- rather than a bare
+    message with no code to branch on.
+
+    The second file carries a valid date and must ingest: it is the control
+    that the refusal is the one file's date and not a batch-wide rejection.
+    """
+    app, vault_id, _config = batch_app
+
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[
+                _md_part("impossible.md", b"# Impossible\n\nbody\n"),
+                _md_part("dated.md", b"# Dated\n\nbody\n"),
+            ],
+            data={
+                "metadata": json.dumps(
+                    {
+                        "infer_edges": False,
+                        "files": [
+                            {
+                                "source_type": "markdown",
+                                "parsed_metadata": {"title": "Impossible", "date": "2026-02-30"},
+                            },
+                            {
+                                "source_type": "markdown",
+                                "parsed_metadata": {"title": "Dated", "date": "2026-02-28"},
+                            },
+                        ],
+                    }
+                )
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    summary = _summary_of(resp)
+
+    assert summary["documents_created"]["new"] == 1, summary
+    assert summary["error_count"] == 1, summary
+    (error,) = summary["errors"]
+    assert error["file_index"] == 0, error
+    assert error["code"] == "invalid_document_date", error
+    assert error["detail"]["document_date"] == "2026-02-30", error
+    # The typed error's own message, not the raw validation text, which
+    # renders the whole request with the staged location in it.
+    assert error["message"].startswith("document_date '2026-02-30'"), error
+
+    # The progress event reports the same message as the entry.
+    (failed,) = [e for e in _parse_sse_events(resp.text) if e.get("status") == "failed"]
+    assert failed["file_index"] == 0, failed
+    assert failed["error"] == error["message"], failed

@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.51",
+      "version": "0.52",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -91,7 +91,7 @@
       "path": "cas_app_api.openapi.yaml",
       "title": "CAS Application API",
       "status": "draft",
-      "version": "0.11",
+      "version": "0.12",
       "role": "OpenAPI 3.1.0 specification for the CAS Application backend HTTP surface (mounted at the /app prefix). Defines directory scan and batch-ingest endpoints used by the CAS Application UI. Architecturally distinct from the SAGE Core API; the two specs are validated together by tests/sage/test_openapi_conformance.py and must respect URL-prefix boundaries (sage_core_api owns /sage_vaults/*, cas_app_api owns /app/*).",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.95",
+  "substrate_version": "1.96",
   "revision_history": [
+    {
+      "version": "1.96",
+      "date": "2026-09-12",
+      "summary": "Enumerate the per-file error-code vocabulary a batch ingest reports, and declare the three codes the single-document ingest returned without declaring (sage_core_api.openapi.yaml 0.51 -> 0.52; cas_app_api.openapi.yaml 0.11 -> 0.12). BatchIngestFileError.code, in both specs, now lists the codes an entry can carry in place of three examples: adapter_not_found, duplicate_content, invalid_doc_type, invalid_document_date, reserved_transition, source_file_not_found, tier3_schema_violation, tier3_unique_constraint_violation, vault_source_path_refused, vault_source_store_refused and vault_source_store_unavailable -- the single-document codes that depend on none of a predecessor, a force re-ingest, a chain-head token or a relocation pointer, which a batch's per-file request never carries. The ingest operation gains `invalid_document_date` on its 400 (a malformed metadata date, already refused there at request binding), `document_not_found` on its 404 (predecessor_id naming no document) and `tier3_unique_constraint_violation` on its 409, with detail doc_type, field, colliding_value and existing_document_id; the service raised all three. The batch operations' statuses are unchanged: a per-file failure is reported inside the success summary and never becomes a status. Code (not in this spec): a per-file request that fails its own validation is now reported under the typed code the single-document surface returns for it, through the same validation-error translation, where it previously carried no code and a message naming the staged path, and the per-file failed progress event reports the entry's message rather than the raw exception text. The MCP bulk_ingest_document docstring's per-file list, which named three codes a batch cannot reach and omitted five it can, now names the same vocabulary; the MCP ingest_document docstring gains the predecessor document_not_found. Tests: a gate deriving the vocabulary from the ingest operation's declared codes less those keyed to request fields a batch never passes, asserted as exact sets against each spec and the MCP docstring; an AST walk from IngestionService.ingest through its own methods and module functions requiring every constructed error's code to be declared on the operation, with positive and sibling-method negative controls; a check that the batch's single request construction passes none of the excluded codes' fields; a staleness check on the exclusion tables; the batch operations' status sets pinned; and an end-to-end upload batch in which a file with an impossible date fails alone with invalid_document_date and its value in detail."
+    },
     {
       "version": "1.95",
       "date": "2026-09-12",
