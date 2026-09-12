@@ -546,6 +546,91 @@ def test_non_active_landing_state_that_permits_supersede_is_not_advised(
     assert _landing_advisories(caplog.records) == []
 
 
+def test_only_the_relocate_action_may_land_a_document_in_relocated(minimal_vault_config_dict):
+    """A second way into `relocated` is refused, in both directions.
+
+    The pointer is required on the transition that lands a document in
+    this state, so an action reaching it by another name would land one
+    there carrying nothing -- a document in a terminal state naming
+    nowhere, with no way out. The reservation runs the other way too: the
+    action landing elsewhere would stamp a relocation pointer onto a
+    document that has not relocated and can still be reactivated.
+
+    Both arms were reachable configurations before this refusal existed,
+    and both were confirmed by probe rather than inferred. The unmodified
+    table validating is what keeps this from passing on a validator that
+    refuses everything.
+    """
+    assert VaultConfig.model_validate(minimal_vault_config_dict) is not None
+    lifecycle = minimal_vault_config_dict["lifecycle"]
+
+    aliased_entry = {
+        **minimal_vault_config_dict,
+        "lifecycle": {
+            **lifecycle,
+            "transitions": [
+                *lifecycle["transitions"],
+                {"from_state": "active", "action": "exile", "to_state": "relocated"},
+            ],
+        },
+    }
+    with pytest.raises(ValidationError, match="may land a document in 'relocated'"):
+        VaultConfig.model_validate(aliased_entry)
+
+    stray_landing = {
+        **minimal_vault_config_dict,
+        "lifecycle": {
+            **lifecycle,
+            "transitions": [
+                *lifecycle["transitions"],
+                {"from_state": "completed", "action": "relocate", "to_state": "archived"},
+            ],
+        },
+    }
+    with pytest.raises(ValidationError, match="may land only in 'relocated'"):
+        VaultConfig.model_validate(stray_landing)
+
+
+def test_relocated_may_not_be_declared_dependency_satisfying(minimal_vault_config_dict):
+    """A vault may not opt `relocated` into satisfying a dependency.
+
+    Every other state's dependency semantics are the vault's to declare,
+    and this one is not: the document's live version is in another vault
+    and nothing here resolves across that boundary, so a dependency on it
+    can never actually be met. Without the refusal the flag is accepted
+    and honoured, and a relocated target reports satisfied -- the opposite
+    of what the decision, the specification and the tool docstring say.
+    """
+    lifecycle = minimal_vault_config_dict["lifecycle"]
+    opted_in = {
+        **minimal_vault_config_dict,
+        "lifecycle": {
+            **lifecycle,
+            "states": [
+                {**s, "satisfies_dependency": True} if s["value"] == "relocated" else s
+                for s in lifecycle["states"]
+            ],
+        },
+    }
+    with pytest.raises(ValidationError, match="may not declare"):
+        VaultConfig.model_validate(opted_in)
+
+    # The same flag on a state the vault does own is still accepted, so
+    # the refusal is about this state rather than about the field.
+    other_state = {
+        **minimal_vault_config_dict,
+        "lifecycle": {
+            **lifecycle,
+            "states": [
+                {**s, "satisfies_dependency": True} if s["value"] == "archived" else s
+                for s in lifecycle["states"]
+            ],
+        },
+    }
+    config = VaultConfig.model_validate(other_state)
+    assert "archived" in config.lifecycle.dependency_satisfying_states()
+
+
 def test_terminal_states_derives_from_is_terminal(minimal_vault_config_dict):
     """The terminal set is the declared states carrying `is_terminal`.
 

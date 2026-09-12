@@ -19,7 +19,13 @@ from sage.api.errors import (
     SupersedeTargetNotActiveError,
     UnexpectedFieldError,
 )
-from sage.config import TransitionTable, VaultConfig, build_transition_table
+from sage.config import (
+    RELOCATED_STATE,
+    RELOCATION_ACTION,
+    TransitionTable,
+    VaultConfig,
+    build_transition_table,
+)
 from sage.models.enums import (
     LIGHT_DEFAULT_THRESHOLD,
     TERMINAL_PIPELINE_STATUSES,
@@ -114,24 +120,34 @@ class LifecycleService:
 
             to_state, creates_edge = result
 
-            # Checked before any write, so a relocate that cannot record
+            # Keyed on the state the transition lands in, not on the
+            # action's name. The invariant is a property of the state --
+            # a document resting in it names where it went -- so an
+            # action-keyed guard holds only for as long as one action can
+            # reach the state, which is a vault's configuration to decide
+            # rather than this code's. The configuration validator
+            # reserves the action and the state to each other, and this
+            # reads the state so the two cannot drift apart.
+            lands_in_relocated = to_state == RELOCATED_STATE
+
+            # Checked before any write, so a relocation that cannot record
             # where the document went leaves the document exactly as it
             # was. The state and the pointer travel together or not at
             # all: a document resting in the relocated state with nothing
             # naming its destination is the one shape the state exists to
             # rule out (CAS-ADR-050).
-            if request.action == "relocate" and request.relocated_to is None:
+            if lands_in_relocated and request.relocated_to is None:
                 raise MissingFieldError("relocated_to", "relocate requires relocated_to")
 
             # The converse, and checked here for the same reason: a
-            # qualifier supplied with an action that does not take it is a
-            # caller who believes the call does something it does not.
-            # Accepting it silently would return a success that confirms
-            # the belief. Both are refused before any write.
+            # qualifier supplied with a transition that does not take it
+            # is a caller who believes the call does something it does
+            # not. Accepting it silently would return a success that
+            # confirms the belief. Both are refused before any write.
             if request.action != "supersede" and request.successor_id is not None:
                 raise UnexpectedFieldError("successor_id", request.action, "supersede")
-            if request.action != "relocate" and request.relocated_to is not None:
-                raise UnexpectedFieldError("relocated_to", request.action, "relocate")
+            if not lands_in_relocated and request.relocated_to is not None:
+                raise UnexpectedFieldError("relocated_to", request.action, RELOCATION_ACTION)
 
             created_edge: Edge | None = None
 
@@ -181,7 +197,7 @@ class LifecycleService:
                 # Non-supersede actions: single-row update is naturally atomic.
                 now = datetime.now(timezone.utc)
                 updates: dict = {"lifecycle_status": to_state, "updated_at": now.isoformat()}
-                if request.action == "relocate":
+                if lands_in_relocated:
                     updates["relocated_to"] = request.relocated_to
                 if request.dry_run:
                     updated_doc = doc.model_copy(update={**updates, "updated_at": now})
@@ -225,7 +241,7 @@ class LifecycleService:
                         after=to_state,
                     )
                 ]
-                if request.action == "relocate":
+                if lands_in_relocated:
                     changes.append(
                         FieldChange(
                             path="relocated_to",

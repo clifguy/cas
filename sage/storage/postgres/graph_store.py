@@ -82,6 +82,10 @@ _STAGING_EDGES_UNIQ_INDEX = "idx_staging_edges_uniq_natural_key"
 # an expression-index DDL. The service layer validates the same keys against the
 # doc_type's metadata_schema; this is the last-line guarantee no caller string
 # can break out of the path.
+_TIER3_KEY_FORMAT = re.compile(r"^[A-Za-z0-9_]+$")
+_DOC_TYPE_FORMAT = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
 def _pointer_to_jsonb(pointer: RelocationPointer | None) -> Jsonb | None:
     """Adapt a relocation pointer to its column form, or NULL.
 
@@ -95,9 +99,6 @@ def _pointer_to_jsonb(pointer: RelocationPointer | None) -> Jsonb | None:
         return None
     return Jsonb(pointer.model_dump(mode="json"))
 
-
-_TIER3_KEY_FORMAT = re.compile(r"^[A-Za-z0-9_]+$")
-_DOC_TYPE_FORMAT = re.compile(r"^[a-z][a-z0-9_]*$")
 
 # Columns safe to use in ORDER BY (prevent SQL injection). Mirrors the embedded
 # store's allowlist.

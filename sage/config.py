@@ -592,11 +592,19 @@ DEFAULT_DEPENDENCY_SATISFYING_STATES = frozenset({"active", "completed"})
 #: condition the relocation resolved.
 RELOCATED_STATE = "relocated"
 
+#: The one action permitted to land a document in `RELOCATED_STATE`, and
+#: permitted to land it nowhere else. Named alongside the state because
+#: the two are reserved to each other: the relocation pointer is required
+#: on this action and refused on every other, so a second way into the
+#: state, or this action landing anywhere else, would separate the state
+#: from the pointer that gives it meaning.
+RELOCATION_ACTION = "relocate"
+
 #: The base lifecycle vocabulary a `base_states_required` configuration
 #: must keep declared (see `LifecycleConfig`).
 BASE_LIFECYCLE_STATES = frozenset({"active", "completed", "archived", RELOCATED_STATE})
 BASE_LIFECYCLE_ACTIONS = frozenset(
-    {"ingest", "supersede", "complete", "archive", "reactivate", "relocate"}
+    {"ingest", "supersede", "complete", "archive", "reactivate", RELOCATION_ACTION}
 )
 
 #: The `(new)` pseudo-state: sanctioned as the source of the ingestion
@@ -858,13 +866,54 @@ class LifecycleConfig(BaseModel):
                 "when its live version moved to another vault, and a way out "
                 "would restore a second live head for the same document"
             )
+        # The entry side, and the reason it is checked at all: the engine
+        # requires a relocation pointer on the transition that lands a
+        # document in this state, so a second action reaching the same
+        # state by another name would land one there carrying nothing --
+        # the exact shape the state exists to rule out, and one with no
+        # way out. The reservation runs both ways, as it does for
+        # `ingest` and the ingestion pseudo-state: the action reaches
+        # only this state, and this state is reached only by it.
+        misnamed_entries = sorted(
+            f"{t.from_state} -> {t.action} -> {t.to_state}"
+            for t in self.transitions
+            if t.to_state == RELOCATED_STATE and t.action != RELOCATION_ACTION
+        )
+        if misnamed_entries:
+            problems.append(
+                f"only the action '{RELOCATION_ACTION}' may land a document in "
+                f"'{RELOCATED_STATE}'; found: {', '.join(misnamed_entries)}. The "
+                "relocation pointer is required on that action alone, so another "
+                "way in would leave a document in the state naming nowhere"
+            )
+        stray_relocate = sorted(
+            f"{t.from_state} -> {t.action} -> {t.to_state}"
+            for t in self.transitions
+            if t.action == RELOCATION_ACTION and t.to_state != RELOCATED_STATE
+        )
+        if stray_relocate:
+            problems.append(
+                f"the action '{RELOCATION_ACTION}' may land only in "
+                f"'{RELOCATED_STATE}'; found: {', '.join(stray_relocate)}. "
+                "Landing it elsewhere would stamp a relocation pointer onto a "
+                "document that has not relocated, and may still be reactivated"
+            )
         for state in self.states:
-            if state.value == RELOCATED_STATE and not state.is_terminal:
+            if state.value != RELOCATED_STATE:
+                continue
+            if not state.is_terminal:
                 problems.append(
                     f"the state '{RELOCATED_STATE}' must declare is_terminal: "
                     "true; no transition may leave it, so a document that "
                     "reaches it would otherwise sit on an operator worklist "
                     "with nothing anyone can do about it"
+                )
+            if state.satisfies_dependency:
+                problems.append(
+                    f"the state '{RELOCATED_STATE}' may not declare "
+                    "satisfies_dependency: true; its document's live version is "
+                    "in another vault, and nothing in this one resolves across "
+                    "that boundary, so a dependency on it can never be met here"
                 )
         stray_ingest = sorted(
             t.from_state

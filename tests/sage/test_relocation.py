@@ -36,6 +36,7 @@ from sage.adapters.stubs import (
 from sage.api.errors import (
     InvalidLifecycleTransitionError,
     MissingFieldError,
+    SupersedeTargetNotActiveError,
     UnexpectedFieldError,
 )
 from sage.config import VaultConfig
@@ -647,6 +648,17 @@ async def test_force_reingest_refreshes_the_inbound_pointer(
         (await graph_store.get_document(result.document.id)).relocated_from, second
     )
 
+    # The omit arm, and the one that makes the guard load-bearing: an
+    # implementation writing the request's value unconditionally clears the
+    # pointer on every ordinary force-reingest -- an undo of the move that
+    # no caller asked for -- and passes every assertion above it.
+    await ingestion_service.ingest(
+        IngestRequest(source="refreshed.md", source_type=SourceType.MARKDOWN, force=True)
+    )
+    _assert_pointer_equals(
+        (await graph_store.get_document(result.document.id)).relocated_from, second
+    )
+
 
 # ---------------------------------------------------------------------------
 # Non-propagation through supersession
@@ -658,9 +670,9 @@ async def test_supersession_does_not_carry_the_inbound_pointer_forward(
 ):
     """A successor of a relocated-into document carries no pointer of its own.
 
-    The ticket names this as the assertion most at risk of passing
-    vacuously: the successor's field is null both when propagation is
-    correctly suppressed and when nothing ever populated the predecessor.
+    This is the assertion most at risk of passing vacuously: the
+    successor's field is null both when propagation is correctly
+    suppressed and when nothing ever populated the predecessor.
     The predecessor is therefore asserted *positively*, member by member,
     after the supersession, in the same test. The mutation that proves the
     pair load-bearing is adding ``relocated_from`` to the field tuple in
@@ -689,14 +701,22 @@ async def test_supersession_does_not_carry_the_inbound_pointer_forward(
     _assert_pointer_equals(predecessor.relocated_from, origin)
 
 
-async def test_supersession_does_not_carry_the_outbound_pointer_forward(
+async def test_a_relocated_head_cannot_be_superseded(
     tmp_vault_dir, ingestion_service, graph_store, lifecycle_service
 ):
-    """The same rule in the other direction, for a document that relocated out.
+    """A relocated head refuses a successor, so the outbound pointer never travels.
 
-    Reached by a different route than its sibling: this pointer is written
-    by the lifecycle action rather than supplied at ingest, so an
-    implementation could suppress one and propagate the other.
+    Named for what it holds rather than for its sibling's property. The
+    outbound pointer cannot propagate through a supersession because no
+    supersession is possible once the head has relocated -- the transition
+    table permits no `supersede` out of the state. That refusal is the
+    stronger guarantee, and it is what this test asserts; the question of
+    suppressing a propagating write never arises on this side.
+
+    The refusal is pinned to its exact code. A bare `Exception` matched on
+    the substring "supersede" would pass against any failure in the ingest
+    path whose message happened to mention it, including one unrelated to
+    the state under test.
     """
     _write_md(tmp_vault_dir, "out-v1.md", "# Out V1\n\nOriginal.\n")
     _write_md(tmp_vault_dir, "out-v2.md", "# Out V2\n\nRevised.\n")
@@ -717,7 +737,7 @@ async def test_supersession_does_not_carry_the_outbound_pointer_forward(
     )
 
     _write_md(tmp_vault_dir, "out-v3.md", "# Out V3\n\nLater.\n")
-    with pytest.raises(Exception) as excinfo:
+    with pytest.raises(SupersedeTargetNotActiveError) as excinfo:
         await ingestion_service.ingest(
             IngestRequest(
                 source="out-v3.md",
@@ -725,10 +745,10 @@ async def test_supersession_does_not_carry_the_outbound_pointer_forward(
                 predecessor_id=v2.document.id,
             )
         )
-    # A relocated head cannot be superseded at all -- there is no supersede
-    # transition out of the state -- so the non-propagation question never
-    # arises on this side, and the refusal is the stronger guarantee.
-    assert "supersede" in str(excinfo.value).lower()
+    assert excinfo.value.code == "supersede_target_not_active"
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail["current_state"] == "relocated"
+    assert excinfo.value.detail["predecessor_id"] == v2.document.id
 
     head = await graph_store.get_document(v2.document.id)
     _assert_pointer_equals(head.relocated_to, destination)
