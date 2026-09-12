@@ -1438,20 +1438,31 @@ def _fastmcp_tool_declared_codes() -> list[tuple[Callable, str]]:
             continue
         by_name[_qualified_callable_name(fn)] = fn
         pairs.add((_qualified_callable_name(fn), code))
-    for fn in list(by_name.values()):
-        for model in _models_validated_in(fn):
-            for code in _codes_reachable_from(model):
-                pairs.add((_qualified_callable_name(fn), code))
+    # Every registered tool, not only those already carrying a top-level alias:
+    # a tool whose only refusals come from a model it validates has no such
+    # parameter, so gating the body walk on the first source would skip exactly
+    # the tools the walk exists for.
+    for fn in _registered_fastmcp_tools():
+        codes = {
+            code for model in _models_validated_in(fn) for code in _codes_reachable_from(model)
+        }
+        if not codes:
+            continue
+        by_name.setdefault(_qualified_callable_name(fn), fn)
+        pairs.update((_qualified_callable_name(fn), code) for code in codes)
     rows = [(by_name[name], code) for name, code in pairs]
     return sorted(rows, key=lambda row: (row[0].__name__, row[1]))
 
 
 _FASTMCP_TOOL_CODES = _fastmcp_tool_declared_codes()
 
-# Anti-vacuity floor for the roster above. 57 pairs today across 33 tools; the
-# floor sits below that so ordinary movement does not trip it while a collapse
-# does -- a roster that returns nothing passes every per-pair case.
-MIN_FASTMCP_TOOL_CODES: int = 30
+# Anti-vacuity floor for the roster above. 57 pairs today across 33 tools, of
+# which 49 come from tool parameters and 8 from the models a tool body
+# validates. The floor sits above the parameter-only count so a collapse of
+# *either* source trips it: at 30 the body walk could return nothing -- the
+# silent shape its own docstring warns about -- and the roster would still
+# clear the floor while every per-pair case simply stopped being generated.
+MIN_FASTMCP_TOOL_CODES: int = 52
 
 
 @pytest.mark.parametrize(
@@ -1485,6 +1496,11 @@ def test_fastmcp_docstring_roster_is_not_vacuous() -> None:
         ("get_document", "invalid_document_id"),
         ("get_document", "invalid_vault_id"),
         ("delete_edge", "invalid_edge_id"),
+        # Body-derived, and reachable no other way: create_edges takes no
+        # top-level edge id, so this pair exists only if the walk entered
+        # BulkLinkItem. Without it every representative is a parameter pair
+        # and a body walk returning nothing is unobservable here.
+        ("create_edges", "invalid_edge_id"),
     ):
         assert expected in named, f"roster is missing {expected}"
 

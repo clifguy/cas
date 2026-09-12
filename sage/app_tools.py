@@ -259,6 +259,11 @@ def register_app_tools(
           raised before any per-file work; per-file failures accumulate in
           ``summary.errors[]`` instead.
         - ``empty_file_list`` (string in response): ``files`` was empty.
+        - ``invalid_document_date`` (per-file, in ``summary.errors[]``, not a
+          call-level envelope): an entry's parsed ``date`` is not a well-formed
+          calendar date. The ingest of that one file fails and the call still
+          returns its summary, so a caller checking only the envelope sees a
+          success.
         - ``ambiguous_ingest_source`` / ``missing_ingest_source`` (400): a
           file entry set both ``file_path`` and ``transfer_token``, or
           neither; each entry needs exactly one.

@@ -2244,7 +2244,7 @@ def _validated_annotation(parameter: inspect.Parameter) -> object:
     return own[0] if own else parameter.annotation
 
 
-def _alias_param_rows() -> list[tuple[str, str, str, str]]:
+def _alias_param_rows(app: object | None = None) -> list[tuple[str, str, str, str]]:
     """``(path, method, parameter, code)`` for every alias-typed parameter.
 
     Built by reflecting the live FastAPI app, so the roster follows the
@@ -2255,9 +2255,14 @@ def _alias_param_rows() -> list[tuple[str, str, str, str]]:
 
     For a parameter supplied by ``Depends`` the annotation that runs is the
     dependency's own, not the endpoint's -- see ``_validated_annotation``.
+
+    ``app`` defaults to the live application and is taken as an argument so a
+    control can drive this same loop over a route it constructs. Asserting the
+    resolution on the helper alone leaves one rival standing: a helper that is
+    correct and not called from here.
     """
     rows: set[tuple[str, str, str, str]] = set()
-    for route in create_app().routes:
+    for route in (app if app is not None else create_app()).routes:
         if not isinstance(route, APIRoute) or route.path in _INFRA_PATHS:
             continue
         template = _normalize_path(route.path)
@@ -2415,16 +2420,27 @@ def test_alias_roster_reads_the_dependency_that_validates():
     roster reading the route would enroll forty rows whose refusal nothing
     performs -- dropping the alias from ``get_vault_id`` would leave all of
     them enrolled, declared, and green.
+
+    Driven through ``_alias_param_rows`` over a route built for the purpose,
+    rather than through the resolution helper: on the live app both readings
+    yield the same rows, because every route happens to annotate the same
+    alias the dependency does, so a helper tested alone leaves standing the
+    rival where it is correct and the roster never calls it. The probe route
+    annotates the *wrong* alias deliberately, which is what separates them.
     """
+    from fastapi import FastAPI
+
     from sage.api.dependencies import get_vault_id
 
-    def handler(vault_id: DocumentIdStr = Depends(get_vault_id)) -> None: ...
+    probe = FastAPI()
 
-    parameter = inspect.signature(handler).parameters["vault_id"]
-    resolved = _validated_annotation(parameter)
-    codes = {_provoked_code(v) for v in _alias_validators(resolved)}
+    @probe.get("/probe/{vault_id}")
+    async def handler(vault_id: DocumentIdStr = Depends(get_vault_id)) -> None: ...
+
+    rows = _alias_param_rows(probe)
+    codes = {code for _path, _method, _name, code in rows}
     assert codes == {"invalid_vault_id"}, (
-        f"resolved the route's own annotation instead of the dependency's: {codes}"
+        f"the roster read the route's own annotation instead of the dependency's: {codes}"
     )
 
 
