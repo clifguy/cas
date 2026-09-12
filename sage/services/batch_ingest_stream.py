@@ -238,6 +238,7 @@ async def stream_uploaded_batch_ingest(
     vault_services: object,
     infer_edges: bool = True,
     needs_review: bool = True,
+    dry_run: bool = False,
 ) -> AsyncGenerator[str, None]:
     """Stage uploaded file content and stream a batch ingest as SSE.
 
@@ -258,6 +259,15 @@ async def stream_uploaded_batch_ingest(
     itself and failing mid-stream. A per-file failure names the file by the
     upload's own filename, not by the staging path it was written to. The
     staging directory is removed once the stream is exhausted.
+
+    Under ``dry_run`` the bytes are staged and evaluated exactly as they
+    otherwise would be, and then discarded with the staging directory when
+    the stream ends: content arrives by upload rather than by path here, so
+    the preview cannot spare the transfer, only the persistence. Retaining
+    the staged copy for a later real call would mean holding a caller's
+    bytes past the request that delivered them, which needs a handle to
+    redeem them by and a lifetime to bound them with; a caller that wants
+    the batch ingested uploads it again.
     """
     staging_dir = Path(tempfile.mkdtemp(prefix="sage-batch-ingest-"))
     try:
@@ -284,6 +294,7 @@ async def stream_uploaded_batch_ingest(
             vault_services,
             infer_edges=infer_edges,
             needs_review=needs_review,
+            dry_run=dry_run,
         ):
             yield chunk
     finally:

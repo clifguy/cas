@@ -750,6 +750,17 @@ paths:
         lands in the metadata-review queue.
 
 
+        `dry_run` asks what the batch would do and persists nothing: the
+        summary echoes the flag and carries one IngestPreview in `previews`
+        per file that would have been ingested, while a file that would have
+        been refused appears in `errors` instead, so the two lists together
+        account for the batch. Content arrives here by upload rather than by
+        path, so a preview spares the persistence and not the transfer: the
+        staged bytes are discarded with the staging directory when the stream
+        ends, and a caller that then wants the batch ingested uploads it
+        again.
+
+
         Response is `text/event-stream`: per-file state transitions surface as
         `progress` events (status = started / completed / failed); a final
         `summary` event carries the batch counts. A per-file failure does not
@@ -801,7 +812,7 @@ paths:
                   description: >-
                     JSON-encoded BatchIngestUploadMetadata: per-file
                     source_type and optional parsed_metadata, plus the batch
-                    infer_edges and needs_review flags. See
+                    infer_edges, needs_review and dry_run flags. See
                     components.schemas.BatchIngestUploadMetadata.
       responses:
         "200":
@@ -816,7 +827,12 @@ paths:
                   SSE stream. Each event is a `data:` line with a JSON payload
                   conforming to ProgressEvent or SummaryEvent. See
                   components.schemas.ProgressEvent and
-                  components.schemas.SummaryEvent.
+                  components.schemas.SummaryEvent. Under `dry_run` the summary
+                  event carries `previews` alongside the flag echo, and every
+                  creation and edge count it reports is zero by construction.
+                  `error_count` is not among them: a file the batch would have
+                  refused is counted there on a dry run exactly as on a real
+                  one.
         "400":
           description: >-
             `empty_file_list`: no files were uploaded.
@@ -7866,6 +7882,19 @@ components:
             metadata_confirmed=false in the metadata-review queue
             (CAS-ADR-021). When false, caller-supplied metadata is committed
             as authoritative.
+        dry_run:
+          type: boolean
+          description: >-
+            When true, evaluate every uploaded file and report one preview or
+            one refusal per entry without persisting anything. No source is
+            retained, no projection, indexing or abstraction runs, no record
+            is written, and edge inference does not run whatever `infer_edges`
+            says. The uploaded bytes are staged only for the evaluation and
+            are discarded with the rest of the staging directory when the
+            stream ends, so a real run afterwards uploads them again. Files
+            are evaluated against committed state as it stood at batch start,
+            so a sequential dependency within one batch is not reflected: two
+            entries carrying identical bytes each report no duplicate.
         files:
           type: array
           items:

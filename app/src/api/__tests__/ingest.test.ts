@@ -77,6 +77,30 @@ describe('uploadBatchIngest', () => {
     expect(metadata.files.map(f => f.source_type)).toEqual(['markdown', 'pdf']);
   });
 
+  it('B1b: threads dryRun into the envelope, and defaults it off', async () => {
+    // The option exists so a caller can ask what the batch would do without
+    // persisting it. A type that declares the field while the only builder
+    // cannot set it would describe nothing reachable, so both arms are pinned
+    // here: an explicit true must survive into the envelope, and the default
+    // must be a real run rather than an absent key the server has to guess at.
+    apiUploadStreamMock.mockResolvedValue({} as ReadableStream<Uint8Array>);
+    readSSEStreamMock.mockResolvedValue();
+
+    const items = [{ file: new File(['a'], 'a.md'), source_type: 'markdown' }];
+
+    await uploadBatchIngest('v1', items, vi.fn(), undefined, { dryRun: true });
+    const [, dryForm] = apiUploadStreamMock.mock.calls[0] as [string, FormData];
+    const dryMetadata = JSON.parse(dryForm.get('metadata') as string) as BatchIngestUploadMetadata;
+    expect(dryMetadata.dry_run).toBe(true);
+
+    await uploadBatchIngest('v1', items, vi.fn());
+    const [, realForm] = apiUploadStreamMock.mock.calls[1] as [string, FormData];
+    const realMetadata = JSON.parse(
+      realForm.get('metadata') as string,
+    ) as BatchIngestUploadMetadata;
+    expect(realMetadata.dry_run).toBe(false);
+  });
+
   it('B2: metadata.files order matches the appended file parts order (alignment guard)', async () => {
     apiUploadStreamMock.mockResolvedValue({} as ReadableStream<Uint8Array>);
     readSSEStreamMock.mockResolvedValue();

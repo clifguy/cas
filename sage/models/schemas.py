@@ -4798,6 +4798,22 @@ class BatchIngestUploadMetadata(BaseModel):
             "as authoritative."
         ),
     )
+    dry_run: bool = Field(
+        default=False,
+        description=(
+            "When true, evaluate every uploaded file and report one preview "
+            "or one refusal per entry without persisting anything. No source "
+            "is retained, no projection, indexing or abstraction runs, no "
+            "record is written, and edge inference does not run whatever "
+            "`infer_edges` says. The uploaded bytes are staged only for the "
+            "evaluation and are discarded with the rest of the staging "
+            "directory when the stream ends, so a real run afterwards "
+            "uploads them again. Files are evaluated against committed state "
+            "as it stood at batch start, so a sequential dependency within "
+            "one batch is not reflected: two entries carrying identical "
+            "bytes each report no duplicate."
+        ),
+    )
     files: list[BatchIngestFileMetadata] = Field(
         description=(
             "Per-file descriptors aligned by position with the uploaded file "

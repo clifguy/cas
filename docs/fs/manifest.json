@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.46",
+      "version": "0.47",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.90",
+  "substrate_version": "1.91",
   "revision_history": [
+    {
+      "version": "1.91",
+      "date": "2026-09-11",
+      "summary": "The hosted-profile batch ingest gains the dry run the co-located one already offers (sage_core_api.openapi.yaml 0.46 -> 0.47). bulk_ingest_document and the CAS Application's in-process bulk path took a dry_run and returned one IngestPreview per file; the Core REST batch upload route, which is where the hosted profile sends a caller the in-process path refuses, took no such flag. The same client asking the same question about the same batch got a preview on one profile and could not ask on the other -- and the hosted profile is where a preview is worth most, because the caller has already uploaded the bytes and has no way to walk a bad batch back. The gap was three links wide and no wider: SummaryEvent already declared dry_run and previews, the summary builder already mapped both, and the shared SSE generator already took the flag. What was missing was the field on BatchIngestUploadMetadata, the parameter on the upload generator, and the one argument at the route that joins them. All three are now present and the published envelope declares the flag. The decision the route's own shape forces is recorded on the surface that has to answer for it: content arrives here by upload rather than by path, so a preview spares the persistence and not the transfer, and the staged bytes are discarded with the staging directory when the stream ends. Retaining them for a later real call would mean holding a caller's bytes past the request that delivered them, which needs a handle to redeem them by and a lifetime to bound them with -- three new contract surfaces to spare one upload. A caller that wants the batch ingested uploads it again, and the field's own description says so rather than leaving it to be discovered. Tests: the route is driven over HTTP rather than the generator called directly, because the flag crosses two hops and a unit test on the generator would cover only the second -- the declared-but-unread shape is exactly what the first hop going missing produces. A mixed batch pins that previews and errors together account for the batch; a real run alongside it pins that the same route still persists and still omits previews, so the no-state-was-written assertions discriminate rather than being satisfied by a route that had stopped working. The vault-tree listing is asserted beside the graph fingerprint, since retention writes a file and no row. No allowlist gains an entry."
+    },
     {
       "version": "1.90",
       "date": "2026-09-11",
