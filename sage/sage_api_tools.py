@@ -393,11 +393,12 @@ def register_sage_tools(
           ``document_content_hash``. Refused before the source is retained, so
           no copy is left behind.
         - ``relocation_source_undelivered`` (400): ``relocated_from`` was
-          supplied for a source already resident in this vault's store, which
-          is re-projected rather than delivered. Nothing is hashed on that
-          path and no prior record's provenance can be inherited, so the claim
-          cannot be checked against anything; deliver the document's source
-          bytes instead.
+          supplied for a source already resident in this vault's store that
+          belongs to no document here, so nothing was hashed on this call and
+          no prior record's provenance can be inherited. There is no recorded
+          digest to check the pointer against; deliver the document's source
+          bytes instead. A resident source that *does* carry a record is
+          checked against that record's digest rather than refused.
         - ``ambiguous_ingest_source`` (400): both ``source`` and
           ``transfer_token`` were supplied; they are mutually exclusive.
         - ``missing_ingest_source`` (400): neither ``source`` nor

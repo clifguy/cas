@@ -81,11 +81,13 @@ router = APIRouter(tags=["Ingestion"])
                 "before the source is retained, so a refused relocation "
                 "leaves no copy behind.\n\n"
                 "`relocation_source_undelivered`: `relocated_from` was "
-                "supplied for a source already resident in the vault's store, "
-                "which is re-projected rather than delivered. Nothing is "
-                "hashed on that path and no prior record's provenance can be "
-                "inherited, so the claim cannot be checked against anything; "
-                "deliver the document's source bytes instead."
+                "supplied for a source already resident in the vault's store "
+                "that belongs to no document here, so nothing was hashed on "
+                "this call and no prior record's provenance can be inherited. "
+                "There is no recorded digest to check the pointer against; "
+                "deliver the document's source bytes instead. A resident "
+                "source that does carry a record is checked against that "
+                "record's digest rather than refused."
             ),
         },
         404: {

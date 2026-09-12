@@ -366,22 +366,28 @@ class RelocationProvenanceMismatchError(SAGEError):
 
 
 class RelocationSourceUndeliveredError(SAGEError):
-    """400: a relocation was asked for without delivering the source bytes.
+    """400: a relocation named a source this vault records no digest for.
 
-    The destination half of a relocation proves the source it claims by
-    hashing the bytes it was handed. A source already resident in the
-    vault's store is re-projected rather than re-delivered, so on that
-    path nothing is hashed this call and the only digest available
-    describes the retained copy -- which a binding that rewrites at rest
-    is permitted to make different from what produced it (CAS-ADR-043).
-    Comparing the pointer against that digest would refuse or admit a
-    relocation on evidence about the wrong bytes.
+    The destination half checks the pointer against the digest this vault
+    will record for the source (CAS-ADR-050). Ordinarily that digest comes
+    from hashing the bytes the call delivered. A source already resident
+    in the store is re-projected rather than re-delivered, and there the
+    digest is inherited from the document that established the path --
+    which is still a digest this vault recorded for those exact bytes, so
+    such a call is checked rather than refused.
 
-    Refused rather than admitted, because a relocation is composed by a
-    client that holds the source and delivers it to each side; a
-    destination write that delivers nothing is a different operation
-    wearing a relocation's pointer. Deliver the document's source bytes,
-    or ingest without the pointer and record the relocation separately.
+    This error is the remaining case: a resident source with no such
+    document, so there is nothing to inherit. What is left is the retained
+    copy's own digest, which a binding that rewrites at rest is permitted
+    to make different from what produced it (CAS-ADR-043), so comparing
+    the pointer against it would decide the relocation on evidence about
+    the wrong bytes. Refused rather than guessed at.
+
+    Note what the ground is, because a broader one would prove too much.
+    It is not that nothing was delivered -- the inherited-record branch
+    delivers nothing either and is admitted. It is that nothing here
+    accounts for the bytes. Deliver the document's source, or ingest
+    without the pointer and record the relocation separately.
 
     The refused source is named by the caller's own spelling. Every other
     spelling this error could reach for is one the service resolved and
@@ -393,9 +399,9 @@ class RelocationSourceUndeliveredError(SAGEError):
             "relocation_source_undelivered",
             (
                 f"relocated_from was supplied for '{source}', whose bytes are already "
-                f"resident in this vault and are re-projected rather than delivered. A "
-                f"relocation proves its source by the bytes it is handed, so deliver the "
-                f"document's source, or ingest without relocated_from."
+                f"resident in this vault and belong to no document here, so there is no "
+                f"recorded digest to check the pointer against. Deliver the document's "
+                f"source, or ingest without relocated_from."
             ),
             400,
             {"source": source},
