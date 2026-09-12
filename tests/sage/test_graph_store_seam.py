@@ -3,8 +3,10 @@
 Proves the graph store has a real swappable seam: a ``GraphStore`` ABC port, a
 concrete ``PostgresGraphStore`` implementing it, a hermetic ``StubGraphStore``,
 and ``initialize_services`` injection mirroring the content-store seam. The
-structural tests (T1-T5) guard the port surface; the substitutability tests
-(T6-T7) prove a stub can stand in for the concrete store end to end.
+structural tests (T1-T5) guard the port surface -- T5 compares every port
+method's signature against both bindings, so neither can drift alone; the
+substitutability tests (T6-T7) prove a stub can stand in for the concrete store
+end to end.
 """
 
 from __future__ import annotations
@@ -26,6 +28,11 @@ from sage.config import VaultConfig
 from sage.mcp_init import initialize_services
 from sage.models.schemas import Document, PipelineStatus, SourceType
 from sage.storage.postgres.graph_store import PostgresGraphStore
+from tests.helpers.seam_signatures import (
+    assert_signature_conforms,
+    parametrized_values,
+    port_surface,
+)
 
 # Public methods on the concrete store that are intentionally NOT part of the
 # port. Deliberately empty: the Postgres store's public surface is exactly the
@@ -34,27 +41,24 @@ from sage.storage.postgres.graph_store import PostgresGraphStore
 # underscore or, if consumers need it, on the port itself.
 POSTGRES_ONLY_METHODS: frozenset[str] = frozenset()
 
+# Public methods on the stub that are intentionally NOT part of the port.
+# Deliberately empty, like POSTGRES_ONLY_METHODS: a test-inspection helper
+# belongs under a leading underscore or in the test that needs it (see T4b).
+STUB_ONLY_METHODS: frozenset[str] = frozenset()
+
+# (binding, method) pairs whose signature is known to differ from the port's.
+# Deliberately empty: both bindings carry the port's signatures exactly. A
+# drift belongs fixed in the binding; pinning one here needs a reason beside
+# it, and a pin whose drift is later fixed fails T5, so the set can only
+# shrink.
+KNOWN_SIGNATURE_DIVERGENCES: frozenset[tuple[type, str]] = frozenset()
+
 
 def _concrete_public_methods() -> set[str]:
     """Public methods defined directly on PostgresGraphStore (not inherited)."""
     return {
         name
         for name, val in vars(PostgresGraphStore).items()
-        if not name.startswith("_") and inspect.isfunction(val)
-    }
-
-
-def _port_default_methods() -> set[str]:
-    """Public concrete (defaulted) methods defined directly on the GraphStore ABC.
-
-    A defaulted port method is port surface even though it is not abstract:
-    implementations may override it for backend-specific failure containment,
-    and T4/T5 must treat such an override as port-conformant rather than as
-    seam drift.
-    """
-    return {
-        name
-        for name, val in vars(GraphStore).items()
         if not name.startswith("_") and inspect.isfunction(val)
     }
 
@@ -113,33 +117,103 @@ def test_abc_surface_matches_consumed_concrete_surface():
     """
     concrete_public = _concrete_public_methods()
     abc_methods = set(GraphStore.__abstractmethods__)
-    port_surface = abc_methods | _port_default_methods()
+    surface = port_surface(GraphStore)
 
     # Every abstract method is implemented as a public concrete method.
     assert abc_methods <= concrete_public
     # No public concrete method exists outside the port.
-    assert concrete_public - port_surface == POSTGRES_ONLY_METHODS
+    assert concrete_public - surface == POSTGRES_ONLY_METHODS
     # And nothing in the divergence list leaked into the port.
-    assert port_surface.isdisjoint(POSTGRES_ONLY_METHODS)
+    assert surface.isdisjoint(POSTGRES_ONLY_METHODS)
 
 
-@pytest.mark.parametrize(
-    "method_name", sorted(set(GraphStore.__abstractmethods__) | _port_default_methods())
-)
+def test_stub_surface_matches_port():
+    """T4b: the stub exposes exactly the port, plus STUB_ONLY_METHODS.
+
+    Trap: T4 bounds the concrete store's public surface and nothing bounds the
+    stub's, so a convenience method added to the stub alone -- one a service
+    could come to call, and the durable store would not answer -- passes T3 and
+    every signature check, which read only port methods.
+    """
+    stub_public = {
+        name
+        for name, val in vars(StubGraphStore).items()
+        if not name.startswith("_") and inspect.isfunction(val)
+    }
+    surface = port_surface(GraphStore)
+    assert set(GraphStore.__abstractmethods__) <= stub_public
+    assert stub_public - surface == STUB_ONLY_METHODS
+    assert surface.isdisjoint(STUB_ONLY_METHODS)
+
+
+@pytest.mark.parametrize("method_name", sorted(port_surface(GraphStore)))
 def test_concrete_signature_matches_port(method_name):
     """T5: each concrete method's signature matches the port's exactly.
 
     Trap: a parameter rename, default change, or return-type drift between the
     port and the concrete would break substitutability silently while T2-T4 stay
     green. Strict signature equality surfaces it per method. Defaulted port
-    methods are included so an override cannot drift from the port shape.
+    methods are included so an override cannot drift from the port shape; one
+    the concrete store inherits unchanged conforms by identity rather than by
+    comparing the port's function to itself.
     """
-    # eval_str resolves stringized annotations (the concrete module uses
-    # `from __future__ import annotations`; the port module does not), so the
-    # comparison is between resolved types, not their spellings.
-    abc_sig = inspect.signature(getattr(GraphStore, method_name), eval_str=True)
-    concrete_sig = inspect.signature(getattr(PostgresGraphStore, method_name), eval_str=True)
-    assert concrete_sig == abc_sig, f"{method_name}: concrete {concrete_sig} != port {abc_sig}"
+    assert_signature_conforms(
+        GraphStore, PostgresGraphStore, method_name, divergences=KNOWN_SIGNATURE_DIVERGENCES
+    )
+
+
+@pytest.mark.parametrize("method_name", sorted(port_surface(GraphStore)))
+def test_stub_signature_matches_port(method_name):
+    """T5 (stub): each stub method's signature matches the port's exactly.
+
+    The stub is what the substitutability tests stand a service on, so a stub
+    signature that admits a call the port forbids lets a test exercise a shape
+    the durable store would reject -- a keyword-only preference left positional,
+    or a required parameter given a default, quietly lets a caller omit the
+    rule. T3 is name-based and cannot see either. The stub module does not
+    stringize its annotations where the concrete one does, which is why the
+    comparison resolves them first.
+    """
+    assert_signature_conforms(
+        GraphStore, StubGraphStore, method_name, divergences=KNOWN_SIGNATURE_DIVERGENCES
+    )
+
+
+def test_signature_gate_covers_every_port_method_on_both_bindings():
+    """T5b: both T5 arms are parametrized over the whole port surface.
+
+    Trap: a parametrization narrowed to the abstract set, or a stub arm that
+    lost its cases, keeps T5 green while half the seam goes unchecked. The
+    surface is read back from the collected parametrization, not restated.
+    """
+    surface = sorted(port_surface(GraphStore))
+    assert set(GraphStore.__abstractmethods__) < set(surface)  # defaults included
+    for arm in (test_concrete_signature_matches_port, test_stub_signature_matches_port):
+        assert parametrized_values(arm, "method_name") == surface
+
+
+def test_stub_signature_mutation_turns_the_gate_red(monkeypatch):
+    """T5c: a deliberate drift on the real stub fails the gate it runs through.
+
+    Without this probe a gate that silently compared a method to itself would
+    pass for the wrong reason. Two shapes, on the method whose preference must
+    stay keyword-only and required: made positional, and given a default.
+    """
+
+    async def positional(
+        self, hashes: list[str], prefer_lifecycle_statuses: frozenset[str]
+    ) -> dict[str, str]:
+        return {}
+
+    async def defaulted(
+        self, hashes: list[str], *, prefer_lifecycle_statuses: frozenset[str] = frozenset()
+    ) -> dict[str, str]:
+        return {}
+
+    for mutant in (positional, defaulted):
+        monkeypatch.setattr(StubGraphStore, "find_documents_by_hashes", mutant)
+        with pytest.raises(AssertionError, match="StubGraphStore.find_documents_by_hashes"):
+            test_stub_signature_matches_port("find_documents_by_hashes")
 
 
 # --------------------------------------------------------------------------- #
@@ -384,16 +458,3 @@ async def test_hash_lookup_tie_break_agrees_on_ids_the_two_comparators_order_dif
     assert from_stub == from_concrete
     # "2" (0x32) sorts below "_" (0x5f), so the digit-bearing id is lowest.
     assert from_concrete == {under.source_content_hash: digit.id}
-
-
-def test_stub_hash_lookup_signature_matches_port():
-    """T8b: the stub's hash lookup carries the port's signature exactly.
-
-    T5 compares only the *concrete* binding to the port, and the stub's own
-    structural guards are name-based, so a stub that kept the preference
-    positional, or gave it a default, would satisfy every existing check
-    while quietly letting a caller omit the rule.
-    """
-    port_sig = inspect.signature(GraphStore.find_documents_by_hashes, eval_str=True)
-    stub_sig = inspect.signature(StubGraphStore.find_documents_by_hashes, eval_str=True)
-    assert stub_sig == port_sig, f"stub {stub_sig} != port {port_sig}"

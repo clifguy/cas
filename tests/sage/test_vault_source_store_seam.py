@@ -31,6 +31,11 @@ from sage.vault_source_binding import (
     VaultSourceStore,
 )
 from tests.helpers.fake_graph_client import FakeGraphClient
+from tests.helpers.seam_signatures import (
+    assert_signature_conforms,
+    parametrized_values,
+    port_surface,
+)
 
 # Methods whose concrete return type legitimately narrows the port's, sanctioned
 # by CAS-ADR-043 ("richer-binding capabilities live inside the binding"): the
@@ -142,27 +147,45 @@ def test_vss_t4_binding_surface_matches_port(binding):
     assert set(VaultSourceStore.__abstractmethods__) <= surface
 
 
+# (binding, method) pairs whose signature is known to differ from the port's
+# beyond the sanctioned return narrowing above. Deliberately empty; a pin whose
+# drift is later fixed fails T5, so the set can only shrink.
+KNOWN_SIGNATURE_DIVERGENCES: frozenset[tuple[type, str]] = frozenset()
+
+
 @pytest.mark.parametrize("binding", _BINDINGS)
-@pytest.mark.parametrize("method_name", sorted(VaultSourceStore.__abstractmethods__))
+@pytest.mark.parametrize("method_name", sorted(port_surface(VaultSourceStore)))
 def test_vss_t5_binding_signature_matches_port(binding, method_name):
     """T5: each binding method's signature matches the port's.
 
     Trap: a parameter rename, default change, or annotation drift on the
     source-byte half would break substitutability silently while T2-T4 stay
     green. The one sanctioned divergence (covariant return narrowing on
-    ``config_locator``) is checked at parameter level only."""
-    port_sig = inspect.signature(getattr(VaultSourceStore, method_name))
-    binding_sig = inspect.signature(getattr(binding, method_name))
+    ``config_locator``) is checked at parameter level only. Concrete port
+    methods are included, so a binding's override of a lifecycle default such
+    as ``close`` is compared; a binding that inherits the default conforms by
+    identity rather than by comparing the port's function to itself."""
+    assert_signature_conforms(
+        VaultSourceStore,
+        binding,
+        method_name,
+        return_narrowed=_RETURN_NARROWED,
+        divergences=KNOWN_SIGNATURE_DIVERGENCES,
+    )
 
-    if (binding, method_name) in _RETURN_NARROWED:
-        assert binding_sig.parameters == port_sig.parameters, (
-            f"{binding.__name__}.{method_name}: parameters "
-            f"{binding_sig.parameters} != port {port_sig.parameters}"
-        )
-    else:
-        assert binding_sig == port_sig, (
-            f"{binding.__name__}.{method_name}: {binding_sig} != port {port_sig}"
-        )
+
+def test_vss_t5b_signature_gate_covers_every_port_method_on_every_binding():
+    """T5b: T5 is parametrized over the whole port surface and every binding.
+
+    Trap: a method list narrowed back to the abstract set leaves overrides of
+    concrete port methods unchecked, and a bindings list that lost one leaves
+    that binding free to drift. Both are read back from the collected
+    parametrization, not restated."""
+    assert _CONCRETE_PORT_METHODS  # precondition: the widening is not vacuous
+    assert parametrized_values(test_vss_t5_binding_signature_matches_port, "binding") == _BINDINGS
+    assert parametrized_values(test_vss_t5_binding_signature_matches_port, "method_name") == sorted(
+        port_surface(VaultSourceStore)
+    )
 
 
 # --------------------------------------------------------------------------- #
