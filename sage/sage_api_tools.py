@@ -586,7 +586,10 @@ def register_sage_tools(
                 resolution reached the intended document, since both vaults
                 retain the same source at the same digest. That last part is
                 checked rather than assumed: the hash must match the digest
-                of the bytes this call delivers, or the call refuses with
+                this vault will record for the source, which is the digest
+                of the bytes the call delivers, or of the record they are
+                inherited from where a resident source is re-projected.
+                Otherwise the call refuses with
                 ``relocated_from_provenance_mismatch``. The origin half
                 is ``update_lifecycles`` with ``action="relocate"``. Omit
                 for an ordinary ingest.

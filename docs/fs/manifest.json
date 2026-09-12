@@ -83,7 +83,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.48",
+      "version": "0.49",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -171,8 +171,13 @@
     }
   ],
   "deferred": [],
-  "substrate_version": "1.92",
+  "substrate_version": "1.93",
   "revision_history": [
+    {
+      "version": "1.93",
+      "date": "2026-09-12",
+      "summary": "Both halves of a relocation are now held to the same source digest, and the substrate says which refusal each half raises (sage_core_api.openapi.yaml 0.48 -> 0.49). CAS-ADR-050 Decision 10 promotes byte identity from an assumption the Rationale leaned on to a decision each half enforces locally: a relocation moves a document without modifying it, so both vaults hold the same source at the same digest, and a pointer naming a different one is refused rather than stored. RelocationPointer.source_content_hash is therefore described as checked at write time on both halves rather than merely offered for a caller to match. The destination write refuses with relocated_from_provenance_mismatch and the origin transition with relocated_to_provenance_mismatch -- one code per pointer field, following the missing_relocated_to and unexpected_relocated_to pattern on the same fields, because the two halves are recovered from differently: on the destination the caller has built nothing yet, while on the origin the destination half has already landed and a live document in another vault is waiting on a decision. Neither refusal follows a pointer or reads the counterpart, so Decision 8 is untouched and the check is available whichever deployment each side sits in, and both compare against the source provenance digest rather than the as-stored one, which a rewriting binding is permitted to make different (CAS-ADR-043). The destination check is raised above retention rather than placed beside the two sibling digest refusals: those mean the bytes are already in the vault, so retention reuses the existing copy, while a relocation mismatch is novel bytes and refusing below retention would leave a retained file with no document row. A destination write that delivers no bytes -- a source already resident in the store that this vault never ingested -- refuses with relocation_source_undelivered instead of being compared against the retained copy's digest, which would decide the move on evidence about the wrong bytes. The dry run reaches the same verdict as the run it previews, keyed on the same delivered digest, because a preview projects nothing and a check written against the projected fallback would go quiet on exactly the branch the real run refuses. Folded in alongside: the ingest path now re-checks at runtime that its configured landing state is not the terminal relocated state, the reservation the lifecycle side already held, and refuses with reserved_transition -- a leniently loaded table naming relocated in its (new) row would otherwise insert a document already resting in the state with an inbound pointer, no outbound one, and no action able to repair it."
+    },
     {
       "version": "1.92",
       "date": "2026-09-11",

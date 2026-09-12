@@ -436,11 +436,17 @@ markdown fixture, so an implementation comparing against the as-stored digest
 is invisible everywhere else. The divergence is therefore asserted before it is
 relied on — the store must have stamped the upload and the two recorded digests
 must differ — because without a real rewrite both arms reduce to the same
-comparison. The accept arm excludes an implementation that refuses every
-relocation; the refuse arm carries the stored digest specifically, so an
-implementation reading that digest admits exactly the pointer that must be
-turned away. The filesystem leg runs the accept arm and returns, rather than
-asking a question it cannot distinguish.
+comparison. **The accept arm is the discriminator and excludes both rivals:**
+refuse-every-relocation reds there, and so does the as-stored rival, which
+stamps the upload it just made and so cannot match the delivered digest the
+pointer carries. The refuse arm excludes neither, and an earlier version of
+this entry wrongly credited it with the second: under a store that stamps each
+upload afresh, no refuse arm can be made to admit under that rival, because it
+compares this upload's stamped digest against a different document's and
+refuses with the same code. It is kept for what it does show — that a digest
+taken from the vault's own records is refused rather than waved through. The
+filesystem leg runs the accept arm and returns, rather than asking a question
+it cannot distinguish.
 
 ## MPI-019: a relocation that delivers no bytes is refused
 

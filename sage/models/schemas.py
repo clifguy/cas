@@ -320,12 +320,15 @@ class RelocationPointer(BaseModel):
     pointer whose digest describes neither side is refused. Neither check
     follows the pointer or reaches the counterpart, which is what keeps
     them available across deployments. What each half proves differs, and
-    the difference is worth knowing. The destination compares against
-    bytes it hashed on that call, so it establishes byte identity. The
-    origin compares against its own record, so it establishes record
-    identity -- its retained copy is not re-read, and confirming that a
-    retained copy still hashes to its record is the source-file integrity
-    audit's job rather than this pointer's.
+    the difference is worth knowing. The destination ordinarily compares
+    against bytes it hashed on that call, so it establishes byte identity;
+    on the one branch where a source already resident in the store is
+    re-projected against an existing record, it compares against that
+    record's digest and establishes record identity instead. The origin
+    always compares against its own record -- its retained copy is not
+    re-read, and confirming that a retained copy still hashes to its
+    record is the source-file integrity audit's job rather than this
+    pointer's.
     """
 
     model_config = ConfigDict(extra="forbid")

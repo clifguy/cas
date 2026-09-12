@@ -742,10 +742,22 @@ async def test_mpi_018_relocation_reads_delivered_provenance_not_the_stored_copy
     Anti-coincidental-pass: the divergence is asserted before it is relied on --
     the store must have stamped the upload and the two recorded digests must
     differ -- because without a real rewrite both arms below reduce to the same
-    comparison and the test proves nothing. The accept arm is what rules out an
-    implementation refusing every relocation, and the refuse arm carries the
-    stored digest specifically, so an implementation comparing against it admits
-    exactly the pointer that should be turned away.
+    comparison and the test proves nothing.
+
+    **The accept arm is the discriminator, and it excludes both rivals.** It
+    rules out an implementation that refuses every relocation, and it rules out
+    one comparing against the as-stored digest: that rival computes a stamped
+    digest for the upload it just made, which cannot equal the delivered digest
+    the pointer carries, so it refuses a correct pointer and the arm reds.
+
+    The refuse arm does not carry that job, and saying it did was wrong. Under a
+    store that stamps each upload afresh, no refuse arm *can* be made to admit
+    under the as-stored rival: the arm delivers different bytes, so the rival
+    compares this upload's stamped digest against the previous document's and
+    refuses with the same code the correct implementation raises. What the arm
+    does show is that a pointer carrying a digest from the vault's own records
+    is refused rather than accepted as self-evidently valid -- worth one call,
+    but not a rival exclusion.
     """
     _services, _config, handle = mpi_vault
     src = _write_office_file(tmp_path, "relocating_in.docx", "Alpha")
