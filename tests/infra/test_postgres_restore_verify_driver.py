@@ -51,11 +51,25 @@ def driver() -> ModuleType:
     return module
 
 
-def server(name: str, *, tags: dict[str, str] | None = None) -> dict[str, Any]:
+GEO_LOCATION = "centralus"
+DRILL_GROUP = f"rg-cas-{ENVIRONMENT}-geodrill-{RUN_ID}"
+DRILL_ENVIRONMENT_ID = (
+    f"/subscriptions/s/resourceGroups/{DRILL_GROUP}/providers/Microsoft.App/"
+    f"managedEnvironments/cae-{ENVIRONMENT}-geodrill-{RUN_ID}"
+)
+
+
+def group_of(resource_id: str) -> str:
+    return resource_id.split("/resourceGroups/", 1)[1].split("/", 1)[0]
+
+
+def server(name: str, *, tags: dict[str, str] | None = None, group: str = GROUP) -> dict[str, Any]:
     return {
-        "id": f"/subscriptions/s/resourceGroups/{GROUP}/providers/"
+        "id": f"/subscriptions/s/resourceGroups/{group}/providers/"
         f"Microsoft.DBforPostgreSQL/flexibleServers/{name}",
         "name": name,
+        "type": "Microsoft.DBforPostgreSQL/flexibleServers",
+        "location": "East US 2",
         "fullyQualifiedDomainName": f"{name}.postgres.database.azure.com",
         "tags": tags or {},
         "backup": {
@@ -80,11 +94,97 @@ class Azure:
         self.image = IMAGE
         self.delete_is_a_lie = False
         self.job_delete_is_a_lie = False
+        self.group_delete_is_a_lie = False
+        # How many existence reads a deleted group survives before it is gone: a
+        # delete issued without waiting returns while Azure is still removing it.
+        self.group_polls_before_gone = 0
+        self._pending_group_removal: dict[str, int] = {}
         self.started = 0
+        # Resource groups by name, deployments by (group, name), and resources a
+        # group holds beyond the servers and jobs tracked above.
+        self.groups: dict[str, dict[str, Any]] = {}
+        self.deployments: dict[tuple[str, str], dict[str, Any]] = {}
+        self.resources: list[dict[str, Any]] = []
+
+    @staticmethod
+    def _group(args: tuple[str, ...]) -> str:
+        return args[args.index("--resource-group") + 1] if "--resource-group" in args else GROUP
 
     def __call__(self, *args: str) -> Any:
         self.calls.append(args)
         prefix = args[:3]
+        if args[:2] == ("group", "exists"):
+            name = args[args.index("--name") + 1]
+            if name in self._pending_group_removal:
+                if self._pending_group_removal[name] > 0:
+                    self._pending_group_removal[name] -= 1
+                else:
+                    del self._pending_group_removal[name]
+                    self._remove_group(name)
+            return name in self.groups
+        if args[:2] == ("account", "list-locations"):
+            return [
+                {
+                    "name": "eastus2",
+                    "displayName": "East US 2",
+                    "metadata": {"pairedRegion": [{"name": "centralus"}]},
+                },
+                {
+                    "name": "centralus",
+                    "displayName": "Central US",
+                    "metadata": {"pairedRegion": [{"name": "eastus2"}]},
+                },
+                {
+                    "name": "westus3",
+                    "displayName": "West US 3",
+                    "metadata": {"pairedRegion": [{"name": "eastus"}]},
+                },
+            ]
+        if args[:2] == ("group", "create"):
+            name = args[args.index("--name") + 1]
+            key, _, tag = args[args.index("--tags") + 1].partition("=")
+            self.groups[name] = {
+                "name": name,
+                "location": args[args.index("--location") + 1],
+                "tags": {key: tag},
+            }
+            return self.groups[name]
+        if args[:2] == ("group", "show"):
+            name = args[args.index("--name") + 1]
+            if name not in self.groups:
+                raise RuntimeError(f"ResourceGroupNotFound: {name}")
+            return self.groups[name]
+        if args[:2] == ("group", "delete"):
+            name = args[args.index("--name") + 1]
+            if not self.group_delete_is_a_lie:
+                if self.group_polls_before_gone:
+                    self._pending_group_removal[name] = self.group_polls_before_gone
+                else:
+                    self._remove_group(name)
+            return None
+        if args[:2] == ("resource", "list"):
+            group = self._group(args)
+            held = [s for s in self.servers if group_of(s["id"]) == group]
+            held += [
+                {
+                    "id": f"/subscriptions/s/resourceGroups/{group}/providers/"
+                    f"Microsoft.App/jobs/{j['name']}",
+                    "name": j["name"],
+                    "type": "Microsoft.App/jobs",
+                    "tags": j.get("tags"),
+                }
+                for j in self.jobs
+                if j.get("group", GROUP) == group
+            ]
+            held += [r for r in self.resources if group_of(r["id"]) == group]
+            return [
+                {key: entry.get(key) for key in ("id", "name", "type", "tags")} for entry in held
+            ]
+        if prefix == ("deployment", "group", "show"):
+            key = (self._group(args), args[args.index("--name") + 1])
+            if key not in self.deployments:
+                raise RuntimeError(f"DeploymentNotFound: {key[1]}")
+            return self.deployments[key]
         if prefix == ("deployment", "sub", "show"):
             return {
                 "properties": {
@@ -125,14 +225,15 @@ class Azure:
                 },
             }
         if prefix == ("postgres", "flexible-server", "list"):
-            return list(self.servers)
+            group = self._group(args)
+            return [s for s in self.servers if group_of(s["id"]) == group]
         if prefix == ("postgres", "flexible-server", "restore") or prefix == (
             "postgres",
             "flexible-server",
             "geo-restore",
         ):
             name = args[args.index("--name") + 1]
-            created = server(name)
+            created = server(name, group=self._group(args))
             self.servers.append(created)
             return created
         if prefix == ("postgres", "flexible-server", "delete"):
@@ -148,11 +249,17 @@ class Azure:
                     entry["tags"][key] = tag
             return None
         if prefix == ("containerapp", "job", "list"):
-            return list(self.jobs)
+            group = self._group(args)
+            return [entry for entry in self.jobs if entry.get("group", GROUP) == group]
         if prefix == ("containerapp", "job", "delete"):
             name = args[args.index("--name") + 1]
+            group = self._group(args)
             if not self.job_delete_is_a_lie:
-                self.jobs = [entry for entry in self.jobs if entry["name"] != name]
+                self.jobs = [
+                    entry
+                    for entry in self.jobs
+                    if not (entry["name"] == name and entry.get("group", GROUP) == group)
+                ]
             return None
         if prefix == ("containerapp", "job", "start"):
             self.started += 1
@@ -168,9 +275,53 @@ class Azure:
             # this is the window in which element 0 is the *previous* run.
             return [{"name": "exec-stale", "properties": {"status": "Succeeded"}}]
         if prefix == ("deployment", "group", "create"):
-            self.jobs.append({"name": "job-pg-restore-verify-prod"})
+            group = self._group(args)
+            template = Path(args[args.index("--template-file") + 1]).name
+            if template == "postgres-geo-drill-footprint.bicep":
+                return self._deploy_footprint(group, args)
+            self.jobs.append({"name": "job-pg-restore-verify-prod", "group": group})
             return None
         raise AssertionError(f"unexpected az call: {args}")
+
+    def _remove_group(self, name: str) -> None:
+        self.groups.pop(name, None)
+        self.servers = [s for s in self.servers if group_of(s["id"]) != name]
+        self.jobs = [j for j in self.jobs if j.get("group", GROUP) != name]
+        self.resources = [r for r in self.resources if group_of(r["id"]) != name]
+
+    def _deploy_footprint(self, group: str, args: tuple[str, ...]) -> dict[str, Any]:
+        parameters = dict(value.split("=", 1) for value in args if "=" in value)
+        base = f"/subscriptions/s/resourceGroups/{group}/providers/"
+        tags = {"casRestoreDrill": parameters["runId"]}
+        vnet = f"{base}Microsoft.Network/virtualNetworks/vnet-geodrill"
+        zone = (
+            f"{base}Microsoft.Network/privateDnsZones/geodrill.private.postgres.database.azure.com"
+        )
+        self.resources += [
+            {"id": vnet, "name": "vnet-geodrill", "type": "Microsoft.Network/virtualNetworks"},
+            {"id": zone, "name": "geodrill", "type": "Microsoft.Network/privateDnsZones"},
+            {
+                "id": DRILL_ENVIRONMENT_ID,
+                "name": "cae-geodrill",
+                "type": "Microsoft.App/managedEnvironments",
+            },
+        ]
+        for entry in self.resources[-3:]:
+            entry["tags"] = dict(tags)
+        outputs = {
+            "postgresSubnetId": f"{vnet}/subnets/postgres",
+            "privateDnsZoneId": zone,
+            "environmentId": DRILL_ENVIRONMENT_ID,
+            "location": parameters["location"],
+        }
+        deployment = {
+            "properties": {
+                "provisioningState": "Succeeded",
+                "outputs": {key: {"value": value} for key, value in outputs.items()},
+            }
+        }
+        self.deployments[(group, args[args.index("--name") + 1])] = deployment
+        return deployment
 
     def call(self, *prefix: str) -> tuple[str, ...]:
         matches = [args for args in self.calls if args[: len(prefix)] == prefix]
@@ -239,32 +390,161 @@ def test_the_ownership_mark_is_written_incrementally(module: ModuleType, az: Azu
     assert "--is-incremental" in call
 
 
-GEO_SUBNET = (
-    "/subscriptions/s/resourceGroups/rg-cas-dr/providers/Microsoft.Network/"
-    "virtualNetworks/vnet-dr/subnets/postgres"
-)
-GEO_DNS_ZONE = (
-    "/subscriptions/s/resourceGroups/rg-cas-dr/providers/Microsoft.Network/"
-    "privateDnsZones/dr.private.postgres.database.azure.com"
-)
+def network_in(group: str) -> tuple[str, str]:
+    base = f"/subscriptions/s/resourceGroups/{group}/providers/Microsoft.Network/"
+    return (
+        f"{base}virtualNetworks/vnet-geodrill/subnets/postgres",
+        f"{base}privateDnsZones/geodrill.private.postgres.database.azure.com",
+    )
+
+
+GEO_SUBNET, GEO_DNS_ZONE = network_in(DRILL_GROUP)
 
 
 def test_a_geo_restore_names_its_region_and_its_own_network(module: ModuleType, az: Azure) -> None:
     result = provision(
         module,
         az,
-        geo_location="centralus",
+        geo_location=GEO_LOCATION,
         geo_subnet=GEO_SUBNET,
         geo_dns_zone=GEO_DNS_ZONE,
     )
     call = az.call("postgres", "flexible-server", "geo-restore")
-    assert az.argument(call, "--location") == "centralus"
+    assert az.argument(call, "--location") == GEO_LOCATION
     # The destination region needs its own network. Passing the serving subnet
     # would name a resource in the wrong region entirely.
     assert az.argument(call, "--subnet") == GEO_SUBNET
     assert az.argument(call, "--private-dns-zone") == GEO_DNS_ZONE
     assert az.argument(call, "--subnet") != SUBNET
+    # The restored server belongs to the drill's own group, so teardown is that
+    # group's deletion and the serving group gains nothing.
+    assert az.argument(call, "--resource-group") == DRILL_GROUP
+    # By resource id, not name: a bare name resolves against the *target* group,
+    # where no server of that name exists.
+    serving_id = next(s["id"] for s in az.servers if s["name"] == SERVING_NAME)
+    assert az.argument(call, "--source-server") == serving_id
     assert result["mode"] == "geo-restore"
+    assert result["resource_group"] == DRILL_GROUP
+
+
+@pytest.mark.parametrize(
+    "subnet_group, zone_group",
+    [
+        # The serving network itself.
+        (GROUP, DRILL_GROUP),
+        (DRILL_GROUP, GROUP),
+        # Another workload's network in the destination region.
+        ("rg-other-centralus", DRILL_GROUP),
+        # A group whose name merely begins with the drill group's.
+        (f"{DRILL_GROUP}-other", DRILL_GROUP),
+        (DRILL_GROUP, f"{DRILL_GROUP}-other"),
+        # A different drill run's footprint.
+        (f"rg-cas-{ENVIRONMENT}-geodrill-other", DRILL_GROUP),
+    ],
+)
+def test_a_geo_network_outside_the_drill_group_is_refused(
+    module: ModuleType, az: Azure, subnet_group: str, zone_group: str
+) -> None:
+    subnet = network_in(subnet_group)[0]
+    zone = network_in(zone_group)[1]
+    with pytest.raises(ValueError, match="own resource group"):
+        provision(module, az, geo_location=GEO_LOCATION, geo_subnet=subnet, geo_dns_zone=zone)
+    assert not [
+        args for args in az.calls if args[:3] == ("postgres", "flexible-server", "geo-restore")
+    ]
+
+
+def test_a_geo_target_already_in_the_drill_group_is_refused(module: ModuleType, az: Azure) -> None:
+    az.servers.append(server(TARGET_NAME, group=DRILL_GROUP))
+    with pytest.raises(ValueError, match="existing server"):
+        provision(
+            module, az, geo_location=GEO_LOCATION, geo_subnet=GEO_SUBNET, geo_dns_zone=GEO_DNS_ZONE
+        )
+    assert not [
+        args for args in az.calls if args[:3] == ("postgres", "flexible-server", "geo-restore")
+    ]
+
+
+# --- the destination-region footprint ----------------------------------------
+
+
+def footprint(module: ModuleType, az: Azure, **overrides: Any) -> dict:
+    settings = {
+        "environment": ENVIRONMENT,
+        "group": GROUP,
+        "run_id": RUN_ID,
+        "geo_location": GEO_LOCATION,
+    }
+    settings.update(overrides)
+    return module.footprint(az, **settings)
+
+
+def test_the_footprint_lands_in_its_own_group_in_the_destination_region(
+    module: ModuleType, az: Azure
+) -> None:
+    result = footprint(module, az)
+    created = az.call("group", "create")
+    assert az.argument(created, "--name") == DRILL_GROUP
+    assert az.argument(created, "--location") == GEO_LOCATION
+    assert az.argument(created, "--tags") == f"{module.DRILL_TAG}={RUN_ID}"
+    deployed = az.call("deployment", "group", "create")
+    assert az.argument(deployed, "--resource-group") == DRILL_GROUP
+    assert Path(az.argument(deployed, "--template-file")) == (
+        ROOT / "infra/modules/postgres-geo-drill-footprint.bicep"
+    )
+    parameters = dict(value.split("=", 1) for value in deployed if "=" in value)
+    assert parameters["location"] == GEO_LOCATION
+    assert parameters["runId"] == RUN_ID
+    assert parameters["environmentName"] == ENVIRONMENT
+    assert result["resource_group"] == DRILL_GROUP
+    assert result["postgres_subnet_id"] == GEO_SUBNET
+    assert result["private_dns_zone_id"] == GEO_DNS_ZONE
+    assert result["environment_id"] == DRILL_ENVIRONMENT_ID
+
+
+@pytest.mark.parametrize("region", ["eastus2", "East US 2", "EASTUS2"])
+def test_a_footprint_in_the_serving_region_is_refused(
+    module: ModuleType, az: Azure, region: str
+) -> None:
+    # A "geo" drill inside the serving region demonstrates nothing about losing it.
+    with pytest.raises(ValueError, match="serving region"):
+        footprint(module, az, geo_location=region)
+    assert not [args for args in az.calls if args[:2] == ("group", "create")]
+
+
+def test_a_footprint_for_a_server_without_geo_backup_is_refused(
+    module: ModuleType, az: Azure
+) -> None:
+    serving = next(s for s in az.servers if s["name"] == SERVING_NAME)
+    serving["backup"]["geoRedundantBackup"] = "Disabled"
+    with pytest.raises(ValueError, match="geo-redundant backup"):
+        footprint(module, az)
+    assert not [args for args in az.calls if args[:2] == ("group", "create")]
+
+
+def test_an_existing_drill_group_is_refused(module: ModuleType, az: Azure) -> None:
+    az.groups[DRILL_GROUP] = {"name": DRILL_GROUP, "location": GEO_LOCATION, "tags": {}}
+    with pytest.raises(ValueError, match="already exists"):
+        footprint(module, az)
+    assert not [args for args in az.calls if args[:2] == ("group", "create")]
+    assert not [args for args in az.calls if args[:3] == ("deployment", "group", "create")]
+
+
+def test_footprint_requires_a_geo_location(module: ModuleType, az: Azure, monkeypatch) -> None:
+    monkeypatch.setattr(module, "azure", az)
+    with pytest.raises(ValueError, match="--geo-location"):
+        module.main(
+            [
+                "footprint",
+                "--environment",
+                ENVIRONMENT,
+                "--resource-group",
+                GROUP,
+                "--run-id",
+                RUN_ID,
+            ]
+        )
+    assert az.calls == []
 
 
 @pytest.mark.parametrize(
@@ -337,7 +617,7 @@ def test_a_malformed_run_id_is_refused(module: ModuleType, run_id: str) -> None:
         module.drill_server_name(SERVING_NAME, run_id)
 
 
-@pytest.mark.parametrize("action", ["provision", "verify", "cleanup"])
+@pytest.mark.parametrize("action", ["footprint", "provision", "verify", "cleanup"])
 def test_every_action_validates_the_run_id(
     module: ModuleType, az: Azure, monkeypatch: pytest.MonkeyPatch, action: str
 ) -> None:
@@ -622,6 +902,208 @@ def test_the_loop_waits_between_polls(module: ModuleType, az: Azure) -> None:
     assert waits == [7.5]
 
 
+def geo_drill(module: ModuleType, az: Azure) -> None:
+    """Footprint, restore and verification, in the order an operator runs them."""
+    built = footprint(module, az)
+    provision(
+        module,
+        az,
+        geo_location=GEO_LOCATION,
+        geo_subnet=built["postgres_subnet_id"],
+        geo_dns_zone=built["private_dns_zone_id"],
+    )
+    verify(module, az, geo_location=GEO_LOCATION)
+
+
+def test_geo_verification_runs_the_job_in_the_drill_environment(
+    module: ModuleType, az: Azure
+) -> None:
+    footprint(module, az)
+    verify(module, az, geo_location=GEO_LOCATION)
+    deployments = [args for args in az.calls if args[:3] == ("deployment", "group", "create")]
+    job = next(
+        args
+        for args in deployments
+        if "--template-file" in args
+        and Path(az.argument(args, "--template-file")).name == "postgres-restore-verify-job.bicep"
+    )
+    assert az.argument(job, "--resource-group") == DRILL_GROUP
+    parameters = dict(value.split("=", 1) for value in job if "=" in value)
+    assert parameters["location"] == GEO_LOCATION
+    # The serving environment cannot reach a server in another region's network.
+    assert parameters["acaEnvironmentId"] == DRILL_ENVIRONMENT_ID
+    assert parameters["acaEnvironmentId"] != "/subscriptions/s/managedEnvironments/cae-prod"
+    assert parameters["restoreFqdn"] == TARGET_FQDN
+    assert parameters["servingFqdn"] == SERVING_FQDN
+    assert az.argument(az.call("containerapp", "job", "start"), "--resource-group") == DRILL_GROUP
+    show = az.call("containerapp", "job", "execution", "show")
+    assert az.argument(show, "--resource-group") == DRILL_GROUP
+
+
+def test_geo_verification_without_a_footprint_fails_before_deploying(
+    module: ModuleType, az: Azure
+) -> None:
+    with pytest.raises(RuntimeError, match="DeploymentNotFound"):
+        verify(module, az, geo_location=GEO_LOCATION)
+    assert not [args for args in az.calls if args[:3] == ("deployment", "group", "create")]
+    assert not [args for args in az.calls if args[:3] == ("containerapp", "job", "start")]
+
+
+def test_geo_verification_in_a_region_other_than_the_footprints_is_refused(
+    module: ModuleType, az: Azure
+) -> None:
+    footprint(module, az)
+    with pytest.raises(ValueError, match="footprint"):
+        verify(module, az, geo_location="westus3")
+    assert len([args for args in az.calls if args[:3] == ("deployment", "group", "create")]) == 1
+
+
+def geo_cleanup(module: ModuleType, az: Azure, **overrides: Any) -> dict:
+    settings = {
+        "environment": ENVIRONMENT,
+        "group": GROUP,
+        "run_id": RUN_ID,
+        "geo_location": GEO_LOCATION,
+        "sleep": lambda _seconds: None,
+    }
+    settings.update(overrides)
+    return module.cleanup(az, **settings)
+
+
+def test_geo_cleanup_deletes_without_waiting_and_polls_for_removal(
+    module: ModuleType, az: Azure
+) -> None:
+    # A group delete can outlast the driver's per-command timeout, so it is issued
+    # without waiting and the removal is proven by polling under the drill's own
+    # budget. Two existence reads return true before the group is gone.
+    geo_drill(module, az)
+    az.group_polls_before_gone = 2
+    waits: list[float] = []
+    result = geo_cleanup(module, az, poll_seconds=7.5, sleep=waits.append)
+    assert "--no-wait" in az.call("group", "delete")
+    assert waits == [7.5, 7.5]
+    assert result["removed"] == [DRILL_GROUP]
+    assert DRILL_GROUP not in az.groups
+
+
+def test_geo_cleanup_deletes_the_drill_group_and_proves_it(module: ModuleType, az: Azure) -> None:
+    geo_drill(module, az)
+    result = geo_cleanup(module, az)
+    deleted = az.call("group", "delete")
+    assert az.argument(deleted, "--name") == DRILL_GROUP
+    # The removal proof is a read *after* the delete, not the delete's exit code.
+    index = az.calls.index(deleted)
+    assert any(args[:2] == ("group", "exists") for args in az.calls[index + 1 :])
+    assert result["removed"] == [DRILL_GROUP]
+    assert DRILL_GROUP not in az.groups
+    assert {entry["name"] for entry in az.servers} == {SERVING_NAME, RETAINED_NAME}
+
+
+@pytest.mark.parametrize("tags", [{}, {"casRestoreDrill": "other"}])
+def test_geo_cleanup_refuses_a_group_not_tagged_for_this_run(
+    module: ModuleType, az: Azure, tags: dict[str, str]
+) -> None:
+    az.groups[DRILL_GROUP] = {"name": DRILL_GROUP, "location": GEO_LOCATION, "tags": tags}
+    with pytest.raises(ValueError, match="not tagged"):
+        geo_cleanup(module, az)
+    assert not [args for args in az.calls if args[:2] == ("group", "delete")]
+    assert DRILL_GROUP in az.groups
+
+
+def test_geo_cleanup_refuses_a_group_holding_a_resource_it_does_not_own(
+    module: ModuleType, az: Azure
+) -> None:
+    geo_drill(module, az)
+    az.resources.append(
+        {
+            "id": f"/subscriptions/s/resourceGroups/{DRILL_GROUP}/providers/"
+            "Microsoft.Compute/virtualMachines/vm-someone-else",
+            "name": "vm-someone-else",
+            "type": "Microsoft.Compute/virtualMachines",
+            "tags": {},
+        }
+    )
+    with pytest.raises(ValueError, match="vm-someone-else"):
+        geo_cleanup(module, az)
+    assert not [args for args in az.calls if args[:2] == ("group", "delete")]
+
+
+@pytest.mark.parametrize(
+    "name, refused",
+    [("job-pg-restore-verify-prod", False), ("job-pg-bootstrap-prod", True)],
+)
+def test_geo_cleanup_tolerates_only_the_named_verification_job_untagged(
+    module: ModuleType, az: Azure, name: str, refused: bool
+) -> None:
+    # The verification job module carries no tags, so the one untagged resource a
+    # drill group may legitimately hold is that job, by name. Any other job is not
+    # this drill's.
+    footprint(module, az)
+    az.jobs.append({"name": name, "group": DRILL_GROUP})
+    # The tolerated arm proves nothing unless the untagged job is really among what
+    # cleanup reads, so confirm it through the same listing cleanup uses.
+    listed = az("resource", "list", "--resource-group", DRILL_GROUP)
+    assert [entry["tags"] for entry in listed if entry["name"] == name] == [None]
+    if refused:
+        with pytest.raises(ValueError, match=name):
+            geo_cleanup(module, az)
+        assert not [args for args in az.calls if args[:2] == ("group", "delete")]
+    else:
+        assert geo_cleanup(module, az)["removed"] == [DRILL_GROUP]
+
+
+def test_geo_cleanup_fails_when_the_group_survives_its_delete(
+    module: ModuleType, az: Azure
+) -> None:
+    # An accepted delete is not a removal: a group that never goes away exhausts
+    # the budget and is named, rather than reported removed.
+    geo_drill(module, az)
+    az.group_delete_is_a_lie = True
+    with pytest.raises(TimeoutError, match=DRILL_GROUP):
+        geo_cleanup(module, az, poll_seconds=0.0, budget_seconds=0.0)
+
+
+@pytest.mark.parametrize("region", ["westus3", "West US 3"])
+def test_a_footprint_outside_the_serving_regions_pair_is_refused(
+    module: ModuleType, az: Azure, region: str
+) -> None:
+    # Geo-redundant backup restores only into the paired region. Any other
+    # destination builds a footprint the control plane then refuses to restore into.
+    with pytest.raises(ValueError, match="paired"):
+        footprint(module, az, geo_location=region)
+    assert not [args for args in az.calls if args[:2] == ("group", "create")]
+
+
+def test_the_pair_is_recognised_by_its_display_name(module: ModuleType, az: Azure) -> None:
+    footprint(module, az, geo_location="Central US")
+    assert az.argument(az.call("group", "create"), "--location") == "Central US"
+
+
+@pytest.mark.parametrize(
+    "state, keep_outputs",
+    [("Failed", False), ("Failed", True), ("Running", True), ("Canceled", True)],
+)
+def test_geo_verification_against_an_unfinished_footprint_is_refused(
+    module: ModuleType, az: Azure, state: str, keep_outputs: bool
+) -> None:
+    # The state decides, not the outputs: the cases that keep a full set of outputs
+    # are the ones a check on missing outputs would wave through.
+    footprint(module, az)
+    deployment = az.deployments[(DRILL_GROUP, f"geo-drill-footprint-{RUN_ID}")]
+    outputs = deployment["properties"]["outputs"] if keep_outputs else None
+    deployment["properties"] = {"provisioningState": state, "outputs": outputs}
+    with pytest.raises(ValueError, match="footprint"):
+        verify(module, az, geo_location=GEO_LOCATION)
+    assert len([args for args in az.calls if args[:3] == ("deployment", "group", "create")]) == 1
+    assert not [args for args in az.calls if args[:3] == ("containerapp", "job", "start")]
+
+
+def test_geo_cleanup_of_an_absent_group_removes_nothing(module: ModuleType, az: Azure) -> None:
+    result = geo_cleanup(module, az)
+    assert result["removed"] == []
+    assert not [args for args in az.calls if args[:2] == ("group", "delete")]
+
+
 # --- 19 and 20. cleanup removes only its own, and proves it ------------------
 
 
@@ -733,3 +1215,78 @@ def test_no_call_ever_mutates_a_serving_resource(module: ModuleType, az: Azure) 
         assert "--set-env-vars" not in call
         assert call[:3] != ("containerapp", "job", "update")
         assert call[:2] != ("containerapp", "update")
+
+
+def test_a_geo_drill_never_mutates_a_serving_resource(module: ModuleType, az: Azure) -> None:
+    geo_drill(module, az)
+    geo_cleanup(module, az)
+    # A geo drill's every write belongs to the drill group. The restore verbs are
+    # mutating here even though the point-in-time test's vocabulary omits them:
+    # they are the calls that decide which group gains a server.
+    mutating = {
+        "update",
+        "delete",
+        "restart",
+        "start",
+        "create",
+        "tag",
+        "revision",
+        "restore",
+        "geo-restore",
+    }
+    serving = {SERVING_NAME, RETAINED_NAME, "job-pg-bootstrap-prod", SERVING_FQDN, GROUP}
+    serving_ids = {
+        entry["id"] for entry in az.servers if entry["name"] in {SERVING_NAME, RETAINED_NAME}
+    }
+    writes = [call for call in az.calls if set(call) & mutating]
+    assert serving_ids, "the fixture must carry serving ids for this test to constrain anything"
+    assert writes, "the drill must issue writes for this test to constrain anything"
+    for call in writes:
+        addressed = set()
+        for flag in ("--name", "--ids", "--resource-group"):
+            if flag in call:
+                addressed.add(call[call.index(flag) + 1])
+        assert not addressed & serving, f"a geo drill write addressed serving state: {call}"
+        assert not addressed & serving_ids, f"a geo drill write addressed a serving id: {call}"
+        assert "--set-env-vars" not in call
+
+
+def test_a_geo_network_in_the_drill_group_is_accepted_whatever_its_casing(
+    module: ModuleType, az: Azure
+) -> None:
+    # Azure spells the group segment both ways in ids it returns, and group names
+    # are case-insensitive. Every other fixture here uses one canonical casing, so
+    # only this case separates a case-insensitive match from a literal one.
+    subnet, zone = network_in(DRILL_GROUP.upper())
+    provision(
+        module,
+        az,
+        geo_location=GEO_LOCATION,
+        geo_subnet=subnet.replace("/resourceGroups/", "/resourcegroups/"),
+        geo_dns_zone=zone,
+    )
+    call = az.call("postgres", "flexible-server", "geo-restore")
+    assert az.argument(call, "--subnet").startswith(
+        "/subscriptions/s/resourcegroups/RG-CAS-PROD-GEODRILL-"
+    )
+
+
+def test_geo_cleanup_does_not_admit_another_resource_type_under_the_jobs_name(
+    module: ModuleType, az: Azure
+) -> None:
+    # The exemption is the verification job by name *and* type. A name-only
+    # exemption would delete an untagged resource of any kind that happened to
+    # carry the job's name.
+    footprint(module, az)
+    az.resources.append(
+        {
+            "id": f"/subscriptions/s/resourceGroups/{DRILL_GROUP}/providers/"
+            "Microsoft.Compute/virtualMachines/job-pg-restore-verify-prod",
+            "name": "job-pg-restore-verify-prod",
+            "type": "Microsoft.Compute/virtualMachines",
+            "tags": {},
+        }
+    )
+    with pytest.raises(ValueError, match="job-pg-restore-verify-prod"):
+        geo_cleanup(module, az)
+    assert not [args for args in az.calls if args[:2] == ("group", "delete")]

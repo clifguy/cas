@@ -513,15 +513,10 @@ network. The serving server's own record and every application binding are
 untouched, and the drill server carries no deletion lock precisely so that
 teardown is a single operation.
 
-**A point-in-time restore does not demonstrate regional recovery.** Geo-restore
-was attempted against the live tenant and refused: Azure will not geo-restore a
-private-access server onto a public endpoint, and requires network parameters in
-the destination region. Exercising regional recovery therefore needs a delegated
-subnet and private DNS zone in the paired region, plus compute there able to reach
-them. The driver refuses a geo-restore that lacks those parameters rather than
-issuing a call the control plane rejects. Until that footprint exists, geo-redundancy
-is a configured capability and not a demonstrated one; do not report a successful
-point-in-time drill as regional disaster-recovery evidence.
+**A point-in-time restore does not demonstrate regional recovery.** Do not report
+a successful point-in-time drill as regional disaster-recovery evidence; the
+[regional recovery drill](#regional-recovery-drill) below is the separate exercise
+that does.
 
 ### Teardown
 
@@ -539,3 +534,139 @@ Confirm afterwards that both production servers, their majors, their backup
 configuration and both deletion locks are unchanged, and that the private DNS zone
 is back to its pre-drill record set. Delete the throwaway image tag and the
 sentinel documents once the evidence record is filed.
+
+## Regional recovery drill
+
+A geo-restore answers a different question from a point-in-time restore: whether
+the serving server's backups, copied asynchronously to the paired region, can be
+turned into a working server there. It cannot choose its recovery point. Azure
+restores to the last data that reached the paired region, and documents the
+recovery point objective for geo-restore as under one hour, against under five
+minutes for point-in-time restore. A geo drill therefore measures the recovery
+point rather than asserting one.
+
+### Why the drill needs its own footprint
+
+Azure will not geo-restore a private-access server onto a public endpoint; the
+request must name a delegated subnet and a private DNS zone in the destination
+region. The serving network is in the wrong region, and the destination region's
+other networks belong to other workloads, so the drill builds its own. The
+verification job also has to run there, because the serving Container Apps
+environment cannot reach a server in another region's network.
+
+The footprint is **per drill**, not permanent. `footprint` creates a resource group
+named `rg-cas-<env>-geodrill-<run id>` in the destination region and deploys
+`infra/modules/postgres-geo-drill-footprint.bicep` into it: a virtual network with
+the two delegated subnets, a private DNS zone linked to it, a Log Analytics
+workspace, and an internal Container Apps environment. The restored server and the
+verification job go into the same group, and teardown deletes the group.
+
+The trade-off, stated so it can be revisited:
+
+- **Per drill** costs only while a drill exists, dominated by the restored server
+  for the hour or two the drill runs, and adds a few minutes of setup. The serving
+  template and resource group gain nothing, and there is no standing
+  infrastructure in the destination region to maintain or to mistake for a
+  failover capability.
+- **Permanent** would cost little at idle, but it would enter every tenant deploy's
+  validation and what-if, and it would amount to the network half of a failover
+  region with no applications, secrets vault or API facade behind it. Adopt it only
+  as part of a real regional failover design, where its value is recovery time.
+
+Isolation is by network as well as by resource. Unlike the point-in-time drill, a
+geo drill never places anything in the serving subnet or private DNS zone.
+
+### Bracket and tolerance
+
+The point-in-time bracket asserts an exact boundary; a geo drill states a
+tolerance instead. Write the first sentinel at least one documented recovery point
+objective before the request, then a stream of sentinels at a fixed interval up to
+the request, then one after it. The restored copy must contain the first and not
+the last. Where the stream ends inside the copy bounds the observed recovery point
+between the last stream sentinel present and the first absent.
+
+The report's row count for the sentinel schema's `documents` table locates that
+boundary without changing the verifier: subtract the count before the stream
+began. The inference holds only if nothing else wrote to that schema during the
+window, so record the vault's document list, with creation times, before and
+after, and check it.
+
+### Run a geo drill
+
+```sh
+python3 deploy/postgres-restore-verify.py footprint \
+    --environment prod --resource-group rg-cas-prod \
+    --run-id <id> --geo-location <paired region>
+
+python3 deploy/postgres-restore-verify.py provision \
+    --environment prod --resource-group rg-cas-prod --run-id <id> \
+    --restore-time <request time with offset> --geo-location <paired region> \
+    --geo-subnet <postgres_subnet_id from footprint> \
+    --geo-dns-zone <private_dns_zone_id from footprint>
+
+python3 deploy/postgres-restore-verify.py verify \
+    --environment prod --resource-group rg-cas-prod --run-id <id> \
+    --geo-location <paired region> --target-fqdn <fqdn from provision> \
+    --restore-time <same request time> --sentinel-schema <vault schema> \
+    --sentinel-before <first sentinel id> --sentinel-after <last sentinel id>
+
+python3 deploy/postgres-restore-verify.py cleanup \
+    --environment prod --resource-group rg-cas-prod --run-id <id> \
+    --geo-location <paired region>
+```
+
+`--resource-group` always names the serving group, from which the driver reads its
+coordinates; every write lands in the drill's own group. The driver refuses, before
+creating anything: a destination in the serving region, or in any region other than
+its Azure pair, since geo-redundant backup restores only into the pair; a serving
+server without geo-redundant backup; a drill group that already exists; and a subnet or private
+DNS zone outside the drill's own group, which is how it enforces not borrowing
+another workload's network. The geo-restore names the source server by resource
+id, because the target group holds no server of that name.
+
+Read the report as for the point-in-time drill, with the drill group as the
+resource group of `az containerapp job logs show`.
+
+### Observed behaviour of a geo drill
+
+Measured on the first drill against the serving PostgreSQL 17 server, East US 2 to
+Central US, at roughly 26,000 workload rows. One observation at low write volume,
+so read the recovery point as an instance rather than a bound.
+
+- **The footprint is quick.** The resource group, network, zone, workspace and
+  internal Container Apps environment deployed in about three minutes.
+- **A geo-restore takes about as long as a point-in-time restore.** The restored
+  server reached `Ready` about eight minutes after the request.
+- **The observed recovery point was minutes, not the hour Azure allows.** Every
+  sentinel written up to 2 minutes 21 seconds before the request was present, and
+  the one written 33 seconds after was absent. At a lower write rate or a less
+  convenient moment in the backup copy, expect more; the documented tolerance
+  remains the planning figure.
+- **Whether `--restore-time` is honoured was not distinguished.** The request time
+  was the current time, which is also the last available point, so both readings
+  predict the same copy.
+- **The Entra administrator carries across a geo-restore** as it does across a
+  point-in-time restore; the job authenticated with no manual grant.
+- **Lineage is again invisible on the resource.** `sourceServerResourceId` reads
+  null, and the source's tags are inherited alongside the drill's mark.
+- **The private DNS record is created in the drill's zone automatically**, at an
+  address in the drill subnet; the serving zone's record set is unchanged.
+- **Teardown dominates the drill's wall-clock time.** Deleting the group took about
+  26 minutes, longer than building and verifying combined.
+
+### Teardown of a geo drill
+
+`cleanup --geo-location` deletes the drill group only if the group carries this
+run's ownership tag and every resource inside it does too. The single exception is
+the verification job, recognised by its exact name and type, because its module
+leaves it untagged. Anything else untagged aborts the teardown and is named, rather
+than being deleted with the group. The delete is issued without waiting, because it
+can run longer than a single CLI call is allowed, and removal is proven by polling
+the group's existence under an hour's budget. An overrun is reported as such, not
+as a removal; Azure keeps deleting, and a run whose group is already gone is a
+no-op, so a teardown interrupted part way can simply be rerun.
+
+Deleting the Container Apps environment also removes the managed infrastructure
+group Azure creates for it; confirm that too. The Log Analytics workspace enters
+Azure's soft-deleted state rather than disappearing, which is harmless because its
+name is unique to the run.
