@@ -829,7 +829,10 @@ paths:
                   components.schemas.ProgressEvent and
                   components.schemas.SummaryEvent. Under `dry_run` the summary
                   event carries `previews` alongside the flag echo, and every
-                  count it reports is zero by construction.
+                  creation and edge count it reports is zero by construction.
+                  `error_count` is not among them: a file the batch would have
+                  refused is counted there on a dry run exactly as on a real
+                  one.
         "400":
           description: >-
             `empty_file_list`: no files were uploaded.

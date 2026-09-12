@@ -94,6 +94,7 @@ export interface UploadFileItem {
 export interface UploadBatchOptions {
   inferEdges?: boolean;
   needsReview?: boolean;
+  dryRun?: boolean;
 }
 
 /**
@@ -110,11 +111,12 @@ export async function uploadBatchIngest(
   items: UploadFileItem[],
   onEvent: (event: BatchIngestEvent) => void,
   signal?: AbortSignal,
-  { inferEdges = false, needsReview = true }: UploadBatchOptions = {},
+  { inferEdges = false, needsReview = true, dryRun = false }: UploadBatchOptions = {},
 ): Promise<void> {
   const metadata: BatchIngestUploadMetadata = {
     infer_edges: inferEdges,
     needs_review: needsReview,
+    dry_run: dryRun,
     files: items.map((item) => ({ source_type: item.source_type })),
   };
 

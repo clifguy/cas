@@ -1013,7 +1013,7 @@ async def test_b15_pipeline_failure_ends_the_committed_stream(batch_app, monkeyp
 
 
 # ---------------------------------------------------------------------------
-# B17-B20 -- dry run on the hosted upload path
+# B19-B23 -- dry run on the hosted upload path
 # ---------------------------------------------------------------------------
 
 
@@ -1036,7 +1036,7 @@ def _summary_of(resp: httpx.Response) -> dict:
     return next(e for e in _parse_sse_events(resp.text) if e["event_type"] == "summary")
 
 
-async def test_b17_dry_run_previews_every_upload_and_persists_nothing(batch_app):
+async def test_b19_dry_run_previews_every_upload_and_persists_nothing(batch_app):
     """A mixed batch under a dry run: one novel file, one carrying bytes the
     vault already holds, and one naming a doc_type the vault has never
     declared. Previews and errors together account for the batch, in batch
@@ -1052,14 +1052,15 @@ async def test_b17_dry_run_previews_every_upload_and_persists_nothing(batch_app)
     dropped it, or a generator that took it and did not forward it, reports
     ``dry_run: false`` with no previews; an implementation whose preview
     branch sat below source retention leaves the graph fingerprint clean and
-    the vault-tree listing changed, which is why both are asserted.
-    ``infer_edges`` is set true against an assertion that no edge was
-    created, so a dry run that ran the edge-planning phase anyway is
-    excluded rather than merely unrequested. Not excluded here: an
-    implementation that emits ``previews`` on every run, dry or not. That
-    rival satisfies every assertion below, and is excluded by the real run
-    in the paired test, which asserts the key is absent. Neither test
-    discriminates it alone.
+    the vault-tree listing changed, which is why both are asserted. Two
+    rivals are NOT excluded here, and neither is a gap: an implementation
+    that emits ``previews`` on every run is excluded by the real run below,
+    which asserts the key is absent; and one that plans edges on a dry run
+    is excluded by the plan-builder test at the end of this section. This
+    batch cannot reach the second on its own -- ``edges_created`` is empty
+    under either implementation, because these filenames carry no version
+    token and so plan no ``version_chain`` edge either way. ``infer_edges``
+    is set true for realism, not as a control.
     """
     app, vault_id, config = batch_app
     services: SAGEServices = app.state.vault_registry[vault_id]
@@ -1132,7 +1133,7 @@ async def test_b17_dry_run_previews_every_upload_and_persists_nothing(batch_app)
     )
 
 
-async def test_b18_real_run_reports_no_previews_and_persists(batch_app):
+async def test_b20_real_run_reports_no_previews_and_persists(batch_app):
     """The same upload without the flag persists and carries no previews.
 
     The negative control for the dry-run cases: without it, a route that had
@@ -1143,7 +1144,10 @@ async def test_b18_real_run_reports_no_previews_and_persists(batch_app):
     implementation emitting ``previews`` unconditionally. A dry run
     asserting the key is present cannot tell that rival from the correct
     code, so the absence assertion here is load-bearing for the pair rather
-    than a restatement of the dry-run case.
+    than a restatement of the dry-run case. It is likewise the only case
+    that would red if the route stopped persisting altogether, which is why
+    it asserts a new document row and a grown vault tree rather than
+    reading the summary alone.
     """
     app, vault_id, config = batch_app
     services: SAGEServices = app.state.vault_registry[vault_id]
@@ -1176,7 +1180,7 @@ async def test_b18_real_run_reports_no_previews_and_persists(batch_app):
     assert _tree(storage_root) != tree_before, "a real run retained no source"
 
 
-async def test_b19_dry_run_carries_an_empty_previews_list_when_every_upload_refuses(
+async def test_b21_dry_run_carries_an_empty_previews_list_when_every_upload_refuses(
     batch_app,
 ):
     """A dry run whose only file is refused still carries ``previews``, empty.
@@ -1220,10 +1224,19 @@ async def test_b19_dry_run_carries_an_empty_previews_list_when_every_upload_refu
     assert summary["errors"][0]["code"] == "invalid_doc_type"
 
 
-async def test_b20_dry_run_still_refuses_an_unknown_vault_before_the_stream(batch_app):
+async def test_b22_dry_run_still_refuses_an_unknown_vault_before_the_stream(batch_app):
     """A dry run does not move the boundary at which a caller learns the
     vault does not exist: the 404 still resolves synchronously, as JSON,
-    with no SSE events emitted."""
+    with no SSE events emitted.
+
+    This is a removal guard on the route's vault dependency, not a gate on
+    the dry run, and the distinction is worth stating rather than leaving a
+    reader to infer a coverage claim it does not make. The dependency
+    resolves before the handler body reads the envelope, so no arrangement
+    of the flag can reach the boundary and no rival implementation of the
+    dry run makes this red. What does make it red is the dependency going
+    missing, which the router conformance gate also pins structurally.
+    """
     app, _vault_id, _config = batch_app
 
     async with _client(app) as client:
@@ -1239,3 +1252,46 @@ async def test_b20_dry_run_still_refuses_an_unknown_vault_before_the_stream(batc
     assert "application/json" in resp.headers.get("content-type", "")
     assert resp.json()["code"] == "vault_not_found"
     assert "data: " not in resp.text
+
+
+async def test_b23_dry_run_does_not_build_an_edge_plan(batch_app, monkeypatch):
+    """``infer_edges`` is overridden by ``dry_run`` on the upload path too. An
+    edge plan resolves against document ids a preview never mints, so building
+    one would cost reads to produce a plan that could only be discarded.
+
+    The observable is the plan builder itself, not the edge counts. Those are
+    empty whether or not the planning phase runs -- only the resolution phase
+    writes edges, and it is unreachable without a plan -- so asserting them
+    proves nothing, which is the trap the co-located sibling records having
+    fallen into and this test exists to avoid repeating at the route.
+    """
+    app, vault_id, _config = batch_app
+    calls: list[object] = []
+
+    async def _record(*args, **kwargs):
+        calls.append(args)
+        raise AssertionError("the edge-planning phase must not run on a dry run")
+
+    monkeypatch.setattr(BatchIngestService, "_build_edge_plan", _record)
+
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[_md_part("planless.md", b"# Planless\n\nbody\n")],
+            data={
+                "metadata": json.dumps(
+                    {
+                        "dry_run": True,
+                        "infer_edges": True,
+                        "files": [{"source_type": "markdown"}],
+                    }
+                )
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert calls == []
+    summary = _summary_of(resp)
+    assert summary["dry_run"] is True
+    assert summary["edges_created"] == {}
+    assert summary["edges_dropped"] == 0
