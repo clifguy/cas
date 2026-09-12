@@ -339,10 +339,12 @@ def _error_codes() -> set[str]:
     Four readers, each anchored on a construction the package actually
     uses: the ``super().__init__`` call above; a direct ``SAGEError`` or
     ``PydanticCustomError``; the ``{"error": "<code>"}`` envelope built at
-    a tool boundary without an exception; and the ``missing_{field}``
-    family and its ``unexpected_{field}`` mirror, whose literals appear
-    nowhere because ``MissingFieldError`` and ``UnexpectedFieldError``
-    build the code from an argument. All four run over every package
+    a tool boundary without an exception; and the code families whose
+    literals appear nowhere because the class builds the code from an
+    argument -- ``missing_{field}``, its ``unexpected_{field}`` mirror,
+    and ``{field}_provenance_mismatch``, which
+    ``RelocationProvenanceMismatchError`` assembles for whichever of the
+    two relocation pointers was refused. All four run over every package
     file. Scoping the envelope reader to a single module -- which it was,
     and which cost it both codes ``sage/app_tools.py`` emits -- is the
     failure mode a reader like this arrives carrying.
@@ -390,6 +392,15 @@ def _error_codes() -> set[str]:
                 field = node.args[0] if node.args else None
                 if isinstance(field, ast.Constant) and isinstance(field.value, str):
                     codes.add(f"unexpected_{field.value}")
+            # ``RelocationProvenanceMismatchError("<field>", ...)`` ->
+            # ``{field}_provenance_mismatch``, the same shape: the code
+            # names which of the two relocation pointers was refused, so a
+            # caller branches on the half it got wrong, and it is assembled
+            # at the raise site from a literal every call site supplies.
+            if getattr(node.func, "id", "") == "RelocationProvenanceMismatchError":
+                field = node.args[0] if node.args else None
+                if isinstance(field, ast.Constant) and isinstance(field.value, str):
+                    codes.add(f"{field.value}_provenance_mismatch")
             # ``super().__init__("<code>", ...)`` inside a SAGEError subclass.
             if (
                 isinstance(node.func, ast.Attribute)
@@ -672,15 +683,18 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         # Keys of the untyped error ``detail``, named in the
         # ``Error modes:`` block. See the category note above the table.
         "allowed_states": ERROR_DETAIL_KEY,
+        "attempted_action": ERROR_DETAIL_KEY,
         "colliding_value": ERROR_DETAIL_KEY,
         "current_head_version": ERROR_DETAIL_KEY,
         "current_state": ERROR_DETAIL_KEY,
+        "document_content_hash": ERROR_DETAIL_KEY,
         "example": ERROR_DETAIL_KEY,
         "existing_document_id": ERROR_DETAIL_KEY,
         "existing_source_path": ERROR_DETAIL_KEY,
         "fields": ERROR_DETAIL_KEY,
         "instance": ERROR_DETAIL_KEY,
         "new_source_path": ERROR_DETAIL_KEY,
+        "pointer_content_hash": ERROR_DETAIL_KEY,
         "recognized": ERROR_DETAIL_KEY,
         "required_state": ERROR_DETAIL_KEY,
         "store_status": ERROR_DETAIL_KEY,
@@ -775,6 +789,11 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "CTEs": "prose: SQL common table expressions used by graph traversal",
     },
     ("sage_core", "update_lifecycles"): {
+        # Keys of the untyped ``relocated_to_provenance_mismatch`` detail,
+        # named in the relocate narrative so a refused caller can see both
+        # digests the origin admits.
+        "also_accounted_content_hash": ERROR_DETAIL_KEY,
+        "document_content_hash": ERROR_DETAIL_KEY,
         "cas": "example vault id in a worked example",
         "sage_vaults": (
             "the vault-scoped route prefix, in the endpoint paths this "
@@ -1066,6 +1085,13 @@ def test_error_codes_reaches_every_construction_site() -> None:
     # The ``missing_{field}`` family, whose literal exists nowhere: the
     # code is assembled at the raise site from a call-site argument.
     assert {"missing_query", "missing_document_id", "missing_heading_path"} <= codes
+    # The ``{field}_provenance_mismatch`` pair, assembled the same way and
+    # from the two halves of a relocation rather than from one surface, so
+    # a reader that found only the half it was written against fails here.
+    assert {
+        "relocated_from_provenance_mismatch",
+        "relocated_to_provenance_mismatch",
+    } <= codes
     # An ordinary SAGEError subclass, pinning the original reader.
     assert "vault_not_found" in codes
 

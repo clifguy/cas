@@ -388,6 +388,25 @@ def register_sage_tools(
           a directory sitting there, a path resolving out of the vault's source
           tree, or an ``imports`` entry that is not a directory. The reason
           names the destination by its vault-relative path.
+        - ``reserved_transition`` (409): the vault's lifecycle lands a fresh
+          ingest in the terminal ``relocated`` state, which the engine reserves
+          to the one action carrying a relocation pointer. An ingest carries
+          none, so landing one there would rest a document in the state naming
+          nowhere, and no transition leaves the state to repair it. Possible
+          only on a configuration that loaded leniently; repair the ``(new)``
+          row via ``update_vault_config``.
+        - ``relocated_from_provenance_mismatch`` (400): ``relocated_from``
+          names a source content hash the delivered bytes do not carry. Detail
+          carries ``field``, ``pointer_content_hash`` and
+          ``document_content_hash``. Refused before the source is retained, so
+          no copy is left behind.
+        - ``relocation_source_undelivered`` (400): ``relocated_from`` was
+          supplied for a source already resident in this vault's store that
+          belongs to no document here, so nothing was hashed on this call and
+          no prior record's provenance can be inherited. There is no recorded
+          digest to check the pointer against; deliver the document's source
+          bytes instead. A resident source that *does* carry a record is
+          checked against that record's digest rather than refused.
         - ``ambiguous_ingest_source`` (400): both ``source`` and
           ``transfer_token`` were supplied; they are mutually exclusive.
         - ``missing_ingest_source`` (400): neither ``source`` nor
@@ -573,8 +592,14 @@ def register_sage_tools(
                 performed first. Stored verbatim and never followed: the
                 vault id and address are hints for a caller recovering
                 provenance, and the content hash is what confirms a
-                resolution reached the intended document, since both vaults
-                retain the same source at the same digest. The origin half
+                resolution reached the intended document. The hash names
+                the bytes that travelled between the two vaults, and on
+                this half it is checked rather than assumed: it must match the digest this vault
+                will record for the source, which is the digest of the
+                bytes the call delivers, or of the record they are
+                inherited from where a resident source is re-projected.
+                Otherwise the call refuses with
+                ``relocated_from_provenance_mismatch``. The origin half
                 is ``update_lifecycles`` with ``action="relocate"``. Omit
                 for an ordinary ingest.
             document_id: Pins the force-reingest target. Consulted only when
@@ -904,7 +929,17 @@ def register_sage_tools(
         "server_address", "source_content_hash", "relocated_at"}`` naming
         the counterpart -- in the same statement, so the state and the
         pointer cannot disagree. Without it the item refuses with
-        ``missing_relocated_to`` and nothing is written. The destination
+        ``missing_relocated_to`` and nothing is written. The pointer's
+        ``source_content_hash`` names the bytes that travelled, and this
+        half accounts for either digest it records -- the document's
+        source provenance digest or its as-stored digest, which differ
+        where the vault's store rewrites its copy at rest. A pointer
+        matching neither refuses with
+        ``relocated_to_provenance_mismatch`` before anything is written,
+        its detail naming the document's provenance digest as
+        ``document_content_hash`` and, where the two differ, its as-stored
+        digest as ``also_accounted_content_hash``.
+        Neither side reads the other to check it. The destination
         half is an ordinary ``ingest_document`` carrying
         ``relocated_from``, and it is performed first, so an interrupted
         move leaves its evidence on the document a reader is most likely
@@ -923,7 +958,9 @@ def register_sage_tools(
         the ``valid_actions`` for the state the document is in),
         ``missing_successor_id``, ``missing_relocated_to``,
         ``unexpected_successor_id``, ``unexpected_relocated_to`` (a
-        qualifier supplied with an action that does not take it), and
+        qualifier supplied with an action that does not take it),
+        ``relocated_to_provenance_mismatch`` (the pointer names a source
+        content hash the document does not carry), and
         ``reserved_transition`` (the vault declares a transition into or
         out of ``relocated`` that the engine reserves; possible only on a
         configuration that loaded leniently). Each appears as a per-item

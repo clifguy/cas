@@ -55,6 +55,9 @@ from sage.api.errors import (
     NoProjectionError,
     ReabstractDocumentAlreadyInFlightError,
     RecomputePipelineAlreadyInFlightError,
+    RelocationProvenanceMismatchError,
+    RelocationSourceUndeliveredError,
+    ReservedTransitionError,
     SourceFileNotFoundError,
     StaleChainHeadError,
     SupersedeTargetNotActiveError,
@@ -62,7 +65,13 @@ from sage.api.errors import (
     Tier3UniqueConstraintViolation,
     VaultSourcePathRefusedError,
 )
-from sage.config import VaultConfig, build_transition_table
+from sage.config import (
+    INGESTION_PSEUDO_STATE,
+    RELOCATED_STATE,
+    RELOCATION_ACTION,
+    VaultConfig,
+    build_transition_table,
+)
 from sage.models.enums import (
     SUCCESSFUL_TERMINAL_PIPELINE_STATUSES,
     TERMINAL_PIPELINE_STATUS_VALUES,
@@ -1005,6 +1014,7 @@ class IngestionService:
         # bytes into the import area and then refused, leaving a retained
         # file with no row, which no audit walks.
         self._validate_caller_doc_type(request)
+        self._validate_ingest_landing_state()
 
         # A preview stops here, before the source is read into the vault.
         # Everything above is a validator that reads nothing and writes
@@ -1043,6 +1053,11 @@ class IngestionService:
         # can have changed the retained copy, so only a write licenses refreshing
         # the as-stored digest below.
         retained = False
+        # Whether the bytes were already on the store and are only being
+        # re-projected. The retain phase below has nothing to do on that
+        # branch, and the relocation guard reads it to tell "nothing was
+        # delivered this call" from "something was, and it did not match".
+        resident = False
         # What a refusal names back at the caller. Every path below this point is
         # a location the service resolved or was staged at; this is the one
         # spelling the caller would recognize as its own.
@@ -1053,7 +1068,19 @@ class IngestionService:
         # being typed on another -- including a branch added later, which is the
         # part a shared helper could not have covered. The branches differ in how
         # they reach a retain, not in what a refusal means to the caller.
+
         with _refuse_retention_as(reported_source):
+            # Locate and hash first, retain second, with the relocation
+            # guard between them. Retention is the first irreversible act
+            # of an ingest, so a refusal that depends only on the caller's
+            # request and the digest of its own bytes belongs above it --
+            # left below, a refused relocation would copy a novel file into
+            # the import area and then decline to record it, leaving a
+            # retained file with no row, which no audit walks. The two
+            # sibling digest refusals further down are exempt from that
+            # reasoning rather than an argument against it: both mean the
+            # bytes are already in the vault, so retention reuses the
+            # existing copy and orphans nothing.
             if source_input.is_absolute():
                 # External file import: copy the caller's file into the vault,
                 # retaining it on the active profile's store (BH-053 through
@@ -1062,9 +1089,6 @@ class IngestionService:
                     raise SourceFileNotFoundError(reported_source)
                 source_path = source_input.resolve()
                 delivered_hash = hash_file(source_path)
-                vault_relative, retained = await self._retain_or_reuse(
-                    vault_source_store, storage_root, source_path, delivered_hash
-                )
             else:
                 # Relative source: a vault-relative path into the store. When the
                 # bytes are present on the local tree, retain in place / upload as
@@ -1075,20 +1099,6 @@ class IngestionService:
                 if source_path.exists():
                     source_path = source_path.resolve()
                     delivered_hash = hash_file(source_path)
-                    # Retained without consulting the reuse short-circuit. A
-                    # relative source names a location the caller chose, not
-                    # merely bytes to get in, so reusing some other path holding
-                    # the same content would override that choice -- silently
-                    # refusing the re-home a caller performs by re-ingesting a
-                    # moved file from its new path (BH-067), and hiding the
-                    # different-path collision the force-reingest guard exists to
-                    # raise. The binding is already the cheap answer here: a
-                    # source inside the vault is retained in place, with no copy
-                    # to avoid.
-                    vault_relative = vault_source_store.retain_source(
-                        self._config.vault.id, storage_root, source_path, delivered_hash
-                    )
-                    retained = True
                 elif vault_source_store.source_exists(
                     self._config.vault.id, storage_root, request.source
                 ):
@@ -1104,6 +1114,7 @@ class IngestionService:
                     # caller-facing code.
                     from sage.vault_source_binding import normalize_vault_relative
 
+                    resident = True
                     vault_relative = normalize_vault_relative(request.source)
                     # Nothing was delivered this call -- the bytes were already
                     # on the store and are only being re-projected. The
@@ -1133,6 +1144,32 @@ class IngestionService:
                     delivered_hash = by_path.get(vault_relative) or by_path.get(request.source)
                 else:
                     raise SourceFileNotFoundError(reported_source)
+
+            self._validate_relocation_provenance(request, delivered_hash, reported_source)
+
+            if resident:
+                # Nothing to retain: the bytes are already on the store and
+                # this call only re-projects them.
+                pass
+            elif source_input.is_absolute():
+                vault_relative, retained = await self._retain_or_reuse(
+                    vault_source_store, storage_root, source_path, delivered_hash
+                )
+            else:
+                # Retained without consulting the reuse short-circuit. A
+                # relative source names a location the caller chose, not
+                # merely bytes to get in, so reusing some other path holding
+                # the same content would override that choice -- silently
+                # refusing the re-home a caller performs by re-ingesting a
+                # moved file from its new path (BH-067), and hiding the
+                # different-path collision the force-reingest guard exists to
+                # raise. The binding is already the cheap answer here: a
+                # source inside the vault is retained in place, with no copy
+                # to avoid.
+                vault_relative = vault_source_store.retain_source(
+                    self._config.vault.id, storage_root, source_path, delivered_hash
+                )
+                retained = True
 
         # Stage 1: Projection (synchronous). Merge vault-level adapter config
         # with the per-request config; per-request keys override vault keys
@@ -1604,6 +1641,15 @@ class IngestionService:
                 source_path = storage_root / vault_relative
             else:
                 raise SourceFileNotFoundError(reported_source)
+
+        # Asked here, in the same position relative to the hash that the
+        # real path asks it in, so a preview and the run it previews reach
+        # the same verdict. The guard keys on the delivered digest rather
+        # than on a projected one, which is what makes that possible: a
+        # preview projects nothing, so it has no as-stored digest to fall
+        # back on, and a check written against the fallback would go quiet
+        # on exactly the branch the real path refuses.
+        self._validate_relocation_provenance(request, delivered_hash, reported_source)
 
         parsed = (
             self._parse_source_filename(source_path, request.source_type)
@@ -2512,6 +2558,86 @@ class IngestionService:
         valid = self._config.valid_doc_type_values()
         if caller_doc_type not in valid:
             raise InvalidDocTypeError(caller_doc_type, valid)
+
+    def _validate_ingest_landing_state(self) -> None:
+        """Refuse to land a fresh document in the relocated state.
+
+        The engine reserves the relocated state to the one action that
+        carries a relocation pointer, because a document resting there
+        with nothing naming its destination is the shape the state exists
+        to rule out and no transition leaves the state to repair it
+        (CAS-ADR-050). An ingest carries no such pointer -- the
+        destination half records where the document *came from*, not
+        where it went -- so a configuration landing ingests there would
+        insert exactly that document on every call.
+
+        Checked here rather than trusted to the configuration validator,
+        which refuses such a table on write but loads one leniently: a
+        rejected file would drop its vault from the registry and out of
+        reach of the surfaces that could repair it, so a vault can be
+        serving this table right now. The same reasoning, and the same
+        error, as the reservation the lifecycle service holds on the
+        transition side.
+        """
+        landing = self._transition_table.ingest_landing_state()
+        if landing != RELOCATED_STATE:
+            return
+        raise ReservedTransitionError(
+            INGESTION_PSEUDO_STATE,
+            "ingest",
+            landing,
+            f"only '{RELOCATION_ACTION}' may land a document in "
+            f"'{RELOCATED_STATE}', and an ingest carries no relocation "
+            "pointer, so landing one there would rest it in the state "
+            "naming nowhere",
+        )
+
+    def _validate_relocation_provenance(
+        self,
+        request: IngestRequest,
+        delivered_hash: str | None,
+        reported_source: str,
+    ) -> None:
+        """Hold a destination write to the source its pointer claims.
+
+        A relocation moves a document between vaults without modifying
+        it, so the pointer names the bytes that travelled and each half
+        proves that against digests it already records (CAS-ADR-050).
+        This is the destination half, and it accounts for one value: the
+        digest this vault will record for the source. Nothing is followed
+        and the origin is never read, so the check is available whichever
+        deployment each side sits in.
+
+        Called from both the real path and the preview, which is the
+        point of taking ``delivered_hash`` rather than reading it back
+        off a projection. The preview retains nothing and therefore
+        computes no projection, so an as-stored digest exists on one path
+        and not the other; keying on the delivered digest is what lets
+        the two reach the same verdict instead of the preview quietly
+        admitting a call the run refuses.
+
+        A ``delivered_hash`` of ``None`` is the one branch where nothing
+        was hashed and no prior record's provenance could be inherited --
+        bytes already resident on the store that this vault never
+        ingested. The digest available there describes the retained copy,
+        which a binding that rewrites at rest is permitted to make
+        different from what produced it (CAS-ADR-043), so comparing
+        against it would decide a relocation on evidence about the wrong
+        bytes. Refused rather than guessed at.
+        """
+        if request.relocated_from is None:
+            return
+        if delivered_hash is None:
+            raise RelocationSourceUndeliveredError(reported_source)
+        # Canonicalized because one of the two sources of this value is a
+        # digest read back off a storage row, which never crossed the
+        # typed alias that normalizes spelling. The comparison is an exact
+        # string match, so a bare or upper-case spelling would read as a
+        # mismatch rather than raise.
+        delivered = canonicalize_sha256(delivered_hash)
+        claimed = request.relocated_from.source_content_hash
+        if claimed != delivered:
+            raise RelocationProvenanceMismatchError("relocated_from", claimed, delivered)
 
     def _validate_tier3_payload(
         self,

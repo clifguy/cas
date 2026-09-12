@@ -15,6 +15,7 @@ from sage.api.errors import (
     InvalidActionError,
     InvalidLifecycleTransitionError,
     MissingFieldError,
+    RelocationProvenanceMismatchError,
     ReservedTransitionError,
     SAGEError,
     SupersedeTargetNotActiveError,
@@ -177,6 +178,50 @@ class LifecycleService:
                 raise UnexpectedFieldError("successor_id", request.action, "supersede")
             if not lands_in_relocated and request.relocated_to is not None:
                 raise UnexpectedFieldError("relocated_to", request.action, RELOCATION_ACTION)
+
+            # A relocation moves a document without modifying it, so the
+            # pointer names the bytes that travelled and each side checks
+            # that against what it can account for locally (CAS-ADR-050).
+            #
+            # The origin accounts for either digest it records. It cannot
+            # know which of its two byte-sets the caller took: a caller
+            # still holding the file it originally ingested relocates
+            # that, while a caller that does not fetches what the vault
+            # serves, which is the retained copy. Under a binding that
+            # rewrites its copy at rest (CAS-ADR-043) the second is the
+            # ordinary case -- an Office package carries that store's own
+            # enrichment, so the two digests differ by design and the only
+            # byte channel out serves the stamped copy. Admitting the
+            # provenance digest alone would refuse every relocation out of
+            # such a vault while the integrity audit reported the document
+            # healthy. Two known values is not any value: a digest
+            # matching neither is still refused.
+            #
+            # Nothing is followed and nothing is read from the counterpart:
+            # a caller-supplied value is tested against this record, which
+            # is what keeps the check available across deployments and
+            # leaves the no-engine-follows-a-pointer rule intact.
+            #
+            # Below the qualifier refusals rather than above them, because
+            # a call supplying a field the action does not take has not yet
+            # described a coherent operation, and answering its digest
+            # first would answer a question it did not ask. Still above
+            # every write, on the same reasoning as those refusals.
+            if lands_in_relocated:
+                accounted = {doc.source_content_hash}
+                if doc.stored_content_hash is not None:
+                    accounted.add(doc.stored_content_hash)
+                if request.relocated_to.source_content_hash not in accounted:
+                    raise RelocationProvenanceMismatchError(
+                        "relocated_to",
+                        request.relocated_to.source_content_hash,
+                        doc.source_content_hash,
+                        also_accounted=(
+                            doc.stored_content_hash
+                            if doc.stored_content_hash != doc.source_content_hash
+                            else None
+                        ),
+                    )
 
             created_edge: Edge | None = None
 

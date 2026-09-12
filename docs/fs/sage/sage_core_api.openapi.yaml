@@ -316,7 +316,17 @@ paths:
         server_address, source_content_hash, relocated_at}` naming the
         counterpart -- in the same statement, so the state and the
         pointer cannot disagree. Without it the item refuses with
-        `missing_relocated_to` and nothing is written. The destination
+        `missing_relocated_to` and nothing is written. The pointer's
+        `source_content_hash` names the bytes that travelled, and this
+        half accounts for either digest it records -- the document's
+        source provenance digest or its as-stored digest, which differ
+        where the vault's store rewrites its copy at rest. A pointer
+        matching neither refuses with
+        `relocated_to_provenance_mismatch` before anything is written,
+        its detail naming the document's provenance digest as
+        `document_content_hash` and, where the two differ, its as-stored
+        digest as `also_accounted_content_hash`.
+        Neither side reads the other to check it. The destination
         half is an ordinary ingest carrying `relocated_from`, and it is
         performed first, so an interrupted move leaves its evidence on
         the document a reader is most likely to hold. Nothing in the
@@ -345,7 +355,9 @@ paths:
         `invalid_lifecycle_transition` (carrying the `valid_actions` for
         the state the document is in), `missing_successor_id`, `missing_relocated_to`,
         `unexpected_successor_id`, `unexpected_relocated_to` (a
-        qualifier supplied with an action that does not take it), and
+        qualifier supplied with an action that does not take it),
+        `relocated_to_provenance_mismatch` (the pointer names a source
+        content hash the document does not carry), and
         `reserved_transition` (the vault declares a transition into or
         out of `relocated` that the engine reserves; possible only on a
         configuration that loaded leniently). Each appears as a per-item
@@ -677,6 +689,27 @@ paths:
             declared and required field names, unique keys and permitted
             source types.
 
+            `relocated_from_provenance_mismatch`: `relocated_from` names
+            a source content hash this vault will not record for the
+            source. The pointer names the bytes that travelled between
+            the two vaults, and each half checks it against digests it
+            already records (CAS-ADR-050); this half accounts for the
+            digest of the bytes the call delivered, or of the record
+            they are inherited from where a resident source is
+            re-projected. Detail carries `field`,
+            `pointer_content_hash` and `document_content_hash`. Checked
+            before the source is retained, so a refused relocation
+            leaves no copy behind.
+
+            `relocation_source_undelivered`: `relocated_from` was
+            supplied for a source already resident in the vault's store
+            that belongs to no document here, so nothing was hashed on
+            this call and no prior record's provenance can be inherited.
+            There is no recorded digest to check the pointer against;
+            deliver the document's source bytes instead. A resident
+            source that does carry a record is checked against that
+            record's digest rather than refused.
+
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
 
             `invalid_document_id`: a document id in the request is not
@@ -744,6 +777,17 @@ paths:
             `identical_content_supersede`: the new file's content hash
             matches the predecessor's; supersede chains require
             distinct content per step.
+
+
+            `reserved_transition`: the vault's lifecycle lands a fresh
+            ingest in the terminal `relocated` state, which the engine
+            reserves to the one action carrying a relocation pointer. An
+            ingest carries none, so landing one there would rest a
+            document in the state naming nowhere, and no transition
+            leaves the state to repair it. Detail carries `from_state`,
+            `attempted_action`, `to_state` and `reason`. Possible only
+            on a configuration that loaded leniently; repair the `(new)`
+            row via `PATCH /sage_vaults/{vault_id}/config`.
 
 
             `stale_chain_head`: `expected_head_version` was supplied
@@ -3850,8 +3894,14 @@ components:
         consults it. The vault identifier and server address are
         resolution hints a reasoning caller weighs rather than
         coordinates the engine resolves, and the source content hash is
-        what confirms a resolution landed where it meant to, because
-        both vaults retain the same source at the same digest.
+        what confirms a resolution landed where it meant to. It names
+        the bytes that travelled between the two vaults, and each half
+        checks it against digests it already records, without reaching
+        the counterpart, so a pointer neither side accounts for is
+        refused. The destination accounts for the bytes delivered to it;
+        the origin accounts for either its provenance digest or its
+        as-stored digest, which differ where its store rewrites its copy
+        at rest.
       required:
         - vault_id
         - document_id
@@ -3882,10 +3932,16 @@ components:
         source_content_hash:
           type: string
           description: >-
-            The SHA-256 of the source bytes both vaults retain. The one
-            member that confirms rather than hints: a caller arriving
-            from either direction matches it to know it reached the
-            document the pointer meant.
+            The SHA-256 of the bytes that travelled between the two
+            vaults. The one member that confirms rather than hints: a
+            caller arriving from either direction matches it to know it
+            reached the document the pointer meant. Checked at write
+            time on both halves against digests each already records, so
+            a pointer neither side accounts for is refused rather than
+            stored. The destination accounts for the bytes it was
+            delivered; the origin accounts for either its provenance
+            digest or its as-stored digest, which differ where its store
+            rewrites its copy at rest.
         relocated_at:
           type: string
           format: date-time

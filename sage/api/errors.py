@@ -298,6 +298,116 @@ class ReservedTransitionError(SAGEError):
         )
 
 
+class RelocationProvenanceMismatchError(SAGEError):
+    """400: a relocation pointer names a digest the document does not carry.
+
+    A relocation moves a document between vaults; it does not modify one,
+    so the pointer's ``source_content_hash`` names the bytes that
+    travelled between the two, and a pointer naming a digest neither side
+    can account for is not describing a relocation (CAS-ADR-050). It would
+    be one more asserted coordinate, which is what the decision prefers a
+    checkable digest to.
+
+    Neither half follows its pointer or reaches the other side to raise
+    this. Each compares a caller-supplied value against digests already
+    recorded locally, so the refusal is available under every deployment
+    and to a vault whose store rewrites its copy at rest.
+
+    What each half accounts for differs, which is why the code names the
+    pointer rather than being shared. The **destination** knows exactly
+    what it received, so it admits one value: the digest of the bytes the
+    call delivered. The **origin** admits either digest it records for the
+    document -- its source provenance digest or its as-stored digest --
+    because it cannot know which of its two byte-sets the caller took. A
+    caller still holding the file it originally ingested relocates that; a
+    caller that does not fetches what the vault serves, which is the
+    retained copy. Under a binding that rewrites at rest (CAS-ADR-043)
+    the second is the ordinary case, and admitting only the first would
+    refuse every relocation out of such a vault.
+
+    The two halves are also recovered from differently: on the
+    destination the caller has built nothing yet and can simply retry,
+    while on the origin the destination half has already been written
+    (CAS-ADR-050 writes it first), so a live document in another vault is
+    now waiting on a decision.
+
+    ``also_accounted`` carries the origin's second admissible digest when
+    it has one, so a caller refused here can see both values rather than
+    inferring the other. Absent on the destination half, which has only
+    one.
+    """
+
+    def __init__(
+        self,
+        field: str,
+        pointer_hash: str,
+        document_hash: str,
+        also_accounted: str | None = None,
+    ) -> None:
+        accounted = f"{document_hash} or {also_accounted}" if also_accounted else document_hash
+        detail = {
+            "field": field,
+            "pointer_content_hash": pointer_hash,
+            "document_content_hash": document_hash,
+        }
+        if also_accounted is not None:
+            detail["also_accounted_content_hash"] = also_accounted
+        super().__init__(
+            f"{field}_provenance_mismatch",
+            (
+                f"{field} names source content hash {pointer_hash}, which this document "
+                f"does not account for: its source is {accounted}. A relocation names the "
+                f"bytes that travelled between the two vaults. Correct the pointer, or "
+                f"relocate the document whose source it names."
+            ),
+            400,
+            detail,
+        )
+
+
+class RelocationSourceUndeliveredError(SAGEError):
+    """400: a relocation named a source this vault records no digest for.
+
+    The destination half checks the pointer against the digest this vault
+    will record for the source (CAS-ADR-050). Ordinarily that digest comes
+    from hashing the bytes the call delivered. A source already resident
+    in the store is re-projected rather than re-delivered, and there the
+    digest is inherited from the document that established the path --
+    which is still a digest this vault recorded for those exact bytes, so
+    such a call is checked rather than refused.
+
+    This error is the remaining case: a resident source with no such
+    document, so there is nothing to inherit. What is left is the retained
+    copy's own digest, which a binding that rewrites at rest is permitted
+    to make different from what produced it (CAS-ADR-043), so comparing
+    the pointer against it would decide the relocation on evidence about
+    the wrong bytes. Refused rather than guessed at.
+
+    Note what the ground is, because a broader one would prove too much.
+    It is not that nothing was delivered -- the inherited-record branch
+    delivers nothing either and is admitted. It is that nothing here
+    accounts for the bytes. Deliver the document's source, or ingest
+    without the pointer and record the relocation separately.
+
+    The refused source is named by the caller's own spelling. Every other
+    spelling this error could reach for is one the service resolved and
+    the caller would not recognize.
+    """
+
+    def __init__(self, source: str) -> None:
+        super().__init__(
+            "relocation_source_undelivered",
+            (
+                f"relocated_from was supplied for '{source}', whose bytes are already "
+                f"resident in this vault and belong to no document here, so there is no "
+                f"recorded digest to check the pointer against. Deliver the document's "
+                f"source, or ingest without relocated_from."
+            ),
+            400,
+            {"source": source},
+        )
+
+
 class InvalidDocTypeError(SAGEError):
     """400: doc_type not in vault's document_types config."""
 
