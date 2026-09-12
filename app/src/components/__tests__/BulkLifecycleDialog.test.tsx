@@ -75,6 +75,23 @@ describe('BulkLifecycleDialog', () => {
     expect(optionValues).toEqual(['archive', 'complete']);
   });
 
+  // `relocate` needs a pointer at another vault that this dialog cannot
+  // collect, exactly as `supersede` needs a successor id. Offering it would
+  // present an action that always fails. The surviving actions are asserted
+  // alongside so a filter that dropped everything would not pass.
+  it('excludes relocate from the action dropdown', async () => {
+    vi.mocked(getVaultConfig).mockResolvedValue(
+      makeVaultConfig(['archive', 'relocate', 'complete']),
+    );
+    renderDialog();
+    await waitFor(() => expect(screen.getByRole('combobox', { name: /action/i })).toBeEnabled());
+    const select = screen.getByRole('combobox', { name: /action/i }) as HTMLSelectElement;
+    const optionValues = Array.from(select.options)
+      .map((o) => o.value)
+      .filter((v) => v !== '');
+    expect(optionValues).toEqual(['archive', 'complete']);
+  });
+
   it('disables the apply button until an action is selected', async () => {
     vi.mocked(getVaultConfig).mockResolvedValue(makeVaultConfig(['archive', 'complete']));
     const { user } = renderDialog();

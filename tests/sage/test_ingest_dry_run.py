@@ -136,6 +136,7 @@ def _config_dict(tmp_vault_dir: Path) -> dict:
                 {"value": "active", "label": "Active"},
                 {"value": "completed", "label": "Completed"},
                 {"value": "archived", "label": "Archived", "is_terminal": True},
+                {"value": "relocated", "label": "Relocated", "is_terminal": True},
             ],
             "transitions": [
                 {"from_state": "(new)", "action": "ingest", "to_state": "active"},
@@ -149,6 +150,7 @@ def _config_dict(tmp_vault_dir: Path) -> dict:
                 {"from_state": "active", "action": "archive", "to_state": "archived"},
                 {"from_state": "completed", "action": "archive", "to_state": "archived"},
                 {"from_state": "archived", "action": "reactivate", "to_state": "active"},
+                {"from_state": "active", "action": "relocate", "to_state": "relocated"},
             ],
         },
         # A filename pattern, so a doc_type inferred from the name is
@@ -1047,6 +1049,7 @@ async def test_invalid_action_names_the_whole_known_vocabulary(
         "archive",
         "complete",
         "reactivate",
+        "relocate",
         "supersede",
     ]
 

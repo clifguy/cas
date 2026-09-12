@@ -15,10 +15,18 @@ from sage.api.errors import (
     InvalidActionError,
     InvalidLifecycleTransitionError,
     MissingFieldError,
+    ReservedTransitionError,
     SAGEError,
     SupersedeTargetNotActiveError,
+    UnexpectedFieldError,
 )
-from sage.config import TransitionTable, VaultConfig, build_transition_table
+from sage.config import (
+    RELOCATED_STATE,
+    RELOCATION_ACTION,
+    TransitionTable,
+    VaultConfig,
+    build_transition_table,
+)
 from sage.models.enums import (
     LIGHT_DEFAULT_THRESHOLD,
     TERMINAL_PIPELINE_STATUSES,
@@ -113,6 +121,63 @@ class LifecycleService:
 
             to_state, creates_edge = result
 
+            # Keyed on the state the transition lands in, not on the
+            # action's name. The invariant is a property of the state --
+            # a document resting in it names where it went -- so an
+            # action-keyed guard holds only for as long as one action can
+            # reach the state, which is a vault's configuration to decide
+            # rather than this code's. The configuration validator
+            # reserves the action and the state to each other, and this
+            # reads the state so the two cannot drift apart.
+            lands_in_relocated = to_state == RELOCATED_STATE
+
+            # The reservation itself, enforced before either write branch
+            # rather than only on the one that carries the pointer. The
+            # configuration validator refuses a table that breaks it, but
+            # an already-on-disk table loads leniently, so a vault can be
+            # serving one now -- and a `supersede` row landing in the
+            # state would otherwise pass the pointer check and then take
+            # the supersede branch, which builds its own update and never
+            # writes a pointer, leaving exactly the document the state
+            # exists to rule out and no action able to repair it.
+            if lands_in_relocated and request.action != RELOCATION_ACTION:
+                raise ReservedTransitionError(
+                    doc.lifecycle_status,
+                    request.action,
+                    to_state,
+                    f"only '{RELOCATION_ACTION}' may land a document in "
+                    f"'{RELOCATED_STATE}', because the relocation pointer is "
+                    "required on that action alone",
+                )
+            if request.action == RELOCATION_ACTION and not lands_in_relocated:
+                raise ReservedTransitionError(
+                    doc.lifecycle_status,
+                    request.action,
+                    to_state,
+                    f"'{RELOCATION_ACTION}' may land a document only in "
+                    f"'{RELOCATED_STATE}'; landing it elsewhere would stamp a "
+                    "relocation pointer onto a document that has not relocated",
+                )
+
+            # Checked before any write, so a relocation that cannot record
+            # where the document went leaves the document exactly as it
+            # was. The state and the pointer travel together or not at
+            # all: a document resting in the relocated state with nothing
+            # naming its destination is the one shape the state exists to
+            # rule out (CAS-ADR-050).
+            if lands_in_relocated and request.relocated_to is None:
+                raise MissingFieldError("relocated_to", "relocate requires relocated_to")
+
+            # The converse, and checked here for the same reason: a
+            # qualifier supplied with a transition that does not take it
+            # is a caller who believes the call does something it does
+            # not. Accepting it silently would return a success that
+            # confirms the belief. Both are refused before any write.
+            if request.action != "supersede" and request.successor_id is not None:
+                raise UnexpectedFieldError("successor_id", request.action, "supersede")
+            if not lands_in_relocated and request.relocated_to is not None:
+                raise UnexpectedFieldError("relocated_to", request.action, RELOCATION_ACTION)
+
             created_edge: Edge | None = None
 
             # Supersede-specific validation (BH-016, BH-017) and atomic commit.
@@ -160,7 +225,9 @@ class LifecycleService:
             else:
                 # Non-supersede actions: single-row update is naturally atomic.
                 now = datetime.now(timezone.utc)
-                updates = {"lifecycle_status": to_state, "updated_at": now.isoformat()}
+                updates: dict = {"lifecycle_status": to_state, "updated_at": now.isoformat()}
+                if lands_in_relocated:
+                    updates["relocated_to"] = request.relocated_to
                 if request.dry_run:
                     updated_doc = doc.model_copy(update={**updates, "updated_at": now})
                 else:
@@ -203,6 +270,20 @@ class LifecycleService:
                         after=to_state,
                     )
                 ]
+                if lands_in_relocated:
+                    changes.append(
+                        FieldChange(
+                            path="relocated_to",
+                            before=(
+                                doc.relocated_to.model_dump(mode="json")
+                                if doc.relocated_to
+                                else None
+                            ),
+                            after=request.relocated_to.model_dump(mode="json")
+                            if request.relocated_to
+                            else None,
+                        )
+                    )
 
             return SetLifecycleResponse(
                 document=updated_doc,
@@ -297,6 +378,7 @@ class LifecycleService:
             single = SetLifecycleRequest(
                 action=item.action,
                 successor_id=item.successor_id,
+                relocated_to=item.relocated_to,
                 # Propagate envelope dry_run to each per-item
                 # call. Per-item override is not supported.
                 dry_run=request.dry_run,

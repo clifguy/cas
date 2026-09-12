@@ -245,6 +245,59 @@ class MissingFieldError(SAGEError):
         )
 
 
+class UnexpectedFieldError(SAGEError):
+    """400: request field supplied alongside an action that does not take it.
+
+    The mirror of :class:`MissingFieldError`, and the reason both exist:
+    a field that qualifies one action qualifies no other, so supplying it
+    elsewhere is a caller who believes something about the call that is
+    not true. Ignoring it silently lets that belief stand -- the caller
+    sees a success and reads it as confirmation -- which is worse than a
+    refusal naming the action the field belongs to.
+    """
+
+    def __init__(self, field: str, attempted_action: str, required_action: str) -> None:
+        super().__init__(
+            f"unexpected_{field}",
+            f"{field} is accepted only with action '{required_action}', not '{attempted_action}'",
+            400,
+            {
+                "field": field,
+                "attempted_action": attempted_action,
+                "required_action": required_action,
+            },
+        )
+
+
+class ReservedTransitionError(SAGEError):
+    """409: the vault declares a transition the engine reserves to itself.
+
+    Almost every lifecycle transition means whatever its vault says it
+    means. One does not: the engine requires a relocation pointer on the
+    transition that lands a document in the relocated state, so that
+    action and that state are reserved to each other. The configuration
+    validator refuses a table that breaks the reservation, but an
+    already-on-disk configuration loads leniently -- a rejected file
+    would drop its vault from the registry, unreachable by the surfaces
+    that could repair it -- so a vault can be serving such a table right
+    now. Refusing here is what stops the transition from running against
+    one, and the message names the row to repair rather than the call.
+    """
+
+    def __init__(self, from_state: str, action: str, to_state: str, reason: str) -> None:
+        super().__init__(
+            "reserved_transition",
+            f"the vault's transition '{from_state} -> {action} -> {to_state}' is refused: {reason}",
+            409,
+            {
+                "from_state": from_state,
+                "attempted_action": action,
+                "to_state": to_state,
+                "reason": reason,
+            },
+        )
+
+
 class InvalidDocTypeError(SAGEError):
     """400: doc_type not in vault's document_types config."""
 

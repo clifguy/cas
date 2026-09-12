@@ -264,6 +264,7 @@ def register_sage_tools(
         needs_review: bool = False,
         metadata: dict | None = None,
         tier3_metadata: dict | None = None,
+        relocated_from: dict | None = None,
         document_id: str | None = None,
         transfer_token: str | None = None,
         dry_run: bool = False,
@@ -556,6 +557,18 @@ def register_sage_tools(
                 once validated; queryable via ``search`` filters as
                 ``{"tier3_metadata": {"<field>": <value>}}`` (exact equality;
                 null matches absent-or-null fields).
+            relocated_from: Where the document was before it relocated into
+                this vault, as ``{"vault_id", "document_id",
+                "server_address", "source_content_hash", "relocated_at"}``
+                naming the counterpart; ``server_address`` may be null.
+                Supplied on the destination half of a relocation, which is
+                performed first. Stored verbatim and never followed: the
+                vault id and address are hints for a caller recovering
+                provenance, and the content hash is what confirms a
+                resolution reached the intended document, since both vaults
+                retain the same source at the same digest. The origin half
+                is ``update_lifecycles`` with ``action="relocate"``. Omit
+                for an ordinary ingest.
             document_id: Pins the force-reingest target. Consulted only when
                 ``force=true`` and a content-hash collision exists; ignored
                 otherwise. Names the record to re-ingest into so a
@@ -625,6 +638,7 @@ def register_sage_tools(
                     needs_review=needs_review,
                     metadata=metadata,
                     tier3_metadata=tier3_metadata,
+                    relocated_from=relocated_from,
                     document_id=document_id,
                     dry_run=dry_run,
                 )
@@ -839,8 +853,9 @@ def register_sage_tools(
         MCP entry point for lifecycle transitions.
 
         Each item carries ``document_id``, ``action``, and optional
-        ``successor_id``. Items are processed in order, each holding the
-        per-document lock and a per-item database transaction.
+        ``successor_id`` or ``relocated_to``. Items are processed in
+        order, each holding the per-document lock and a per-item database
+        transaction.
 
         The ``action`` vocabulary is vault-config-defined, not a fixed
         SAGE-wide set. Call with ``dry_run=true`` to learn it without
@@ -853,7 +868,7 @@ def register_sage_tools(
         rather than either answer, read ``lifecycle.transitions`` in the
         vault config via ``get_vault_config``. The ``cas`` vault uses
         ``ingest``, ``supersede``, ``complete``, ``archive``,
-        ``reactivate``.
+        ``reactivate``, ``relocate``.
 
         **``supersede`` is the canonical atomic form for replacing one
         document with another:** it transitions the predecessor AND
@@ -871,15 +886,36 @@ def register_sage_tools(
         (``create_edges`` does NOT auto-transition the predecessor's
         lifecycle).
 
+        **``relocate`` is the origin half of a move to another vault:**
+        it transitions the chain head to a terminal ``relocated`` state
+        and records ``relocated_to`` -- ``{"vault_id", "document_id",
+        "server_address", "source_content_hash", "relocated_at"}`` naming
+        the counterpart -- in the same statement, so the state and the
+        pointer cannot disagree. Without it the item refuses with
+        ``missing_relocated_to`` and nothing is written. The destination
+        half is an ordinary ``ingest_document`` carrying
+        ``relocated_from``, and it is performed first, so an interrupted
+        move leaves its evidence on the document a reader is most likely
+        to hold. Nothing in the engine follows either pointer: a
+        ``depends_on`` edge whose target has relocated stays unsatisfied
+        inside the origin rather than resolving across the boundary, and
+        no action leaves the ``relocated`` state -- reactivating it would
+        restore a second live head for the same document.
+
         Per-item error codes: ``missing_document_identifier`` and
         ``ambiguous_document_identifier`` (neither or both of
         ``document_id`` and ``doc_id`` supplied — resolved per item,
         before any mutation), ``document_not_found`` (the item's own
         document, or a ``supersede`` successor that does not exist),
         ``invalid_action``, ``invalid_lifecycle_transition`` (carrying
-        the ``valid_actions`` for the state the document is in), and
-        ``missing_successor_id``. Each appears as a per-item error
-        envelope rather than as a batch-level 400/409.
+        the ``valid_actions`` for the state the document is in),
+        ``missing_successor_id``, ``missing_relocated_to``,
+        ``unexpected_successor_id``, ``unexpected_relocated_to`` (a
+        qualifier supplied with an action that does not take it), and
+        ``reserved_transition`` (the vault declares a transition into or
+        out of ``relocated`` that the engine reserves; possible only on a
+        configuration that loaded leniently). Each appears as a per-item
+        error envelope rather than as a batch-level 400/409.
 
         Two codes that belong to ingest do not appear here.
         ``supersede_target_not_active`` is the ingest surface's code for

@@ -1337,6 +1337,14 @@ class IngestionService:
             # filename extraction; caller wins per the precedence above.
             if final_tier3 is not None:
                 updates["tier3_metadata"] = final_tier3
+            # Relocation provenance, on the same caller-authority footing as
+            # tier3 above: a force-reingest that names where the document came
+            # from is restating that fact, and leaving the previous value in
+            # place would have the record describe a move it no longer claims.
+            # Absent from the call, the stored pointer stands -- an ordinary
+            # re-ingest of a relocated document is not an undo of the move.
+            if request.relocated_from is not None:
+                updates["relocated_from"] = request.relocated_from
             # Title reaffirmation (force branch): when filename parse
             # contributed, refresh title from the freshly-resolved value
             # in case the filename changed between ingestions.
@@ -1417,6 +1425,7 @@ class IngestionService:
                 source_modified_at=source_modified_at,
                 pipeline_status=PipelineStatus.PROJECTION_COMPLETE,
                 tier3_metadata=final_tier3,
+                relocated_from=request.relocated_from,
             )
             doc = Document(**{**base, **field_updates})
             if predecessor is not None and self._lifecycle_service is not None:

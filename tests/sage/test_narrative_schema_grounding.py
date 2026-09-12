@@ -340,8 +340,9 @@ def _error_codes() -> set[str]:
     uses: the ``super().__init__`` call above; a direct ``SAGEError`` or
     ``PydanticCustomError``; the ``{"error": "<code>"}`` envelope built at
     a tool boundary without an exception; and the ``missing_{field}``
-    family, whose literal appears nowhere because ``MissingFieldError``
-    builds the code from its argument. All four run over every package
+    family and its ``unexpected_{field}`` mirror, whose literals appear
+    nowhere because ``MissingFieldError`` and ``UnexpectedFieldError``
+    build the code from an argument. All four run over every package
     file. Scoping the envelope reader to a single module -- which it was,
     and which cost it both codes ``sage/app_tools.py`` emits -- is the
     failure mode a reader like this arrives carrying.
@@ -383,6 +384,12 @@ def _error_codes() -> set[str]:
                 field = node.args[0] if node.args else None
                 if isinstance(field, ast.Constant) and isinstance(field.value, str):
                     codes.add(f"missing_{field.value}")
+            # ``UnexpectedFieldError("<field>", ...)`` -> ``unexpected_{field}``,
+            # assembled at the raise site exactly as its mirror above is.
+            if getattr(node.func, "id", "") == "UnexpectedFieldError":
+                field = node.args[0] if node.args else None
+                if isinstance(field, ast.Constant) and isinstance(field.value, str):
+                    codes.add(f"unexpected_{field.value}")
             # ``super().__init__("<code>", ...)`` inside a SAGEError subclass.
             if (
                 isinstance(node.func, ast.Attribute)

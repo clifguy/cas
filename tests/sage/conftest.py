@@ -171,6 +171,10 @@ def minimal_vault_config_dict(tmp_vault_dir):
     rows refuses, and widening it here would delete that coverage silently
     rather than failing. Add a row locally in the test that needs one, as
     `_config_allowing_supersede_from` does.
+
+    `relocate` is declared from `active` only, for the same reason: one
+    row satisfies the base-action requirement, and leaving `completed`
+    out keeps this table a negative control on that side too.
     """
     return {
         "vault": {
@@ -193,6 +197,7 @@ def minimal_vault_config_dict(tmp_vault_dir):
                 {"value": "active", "label": "Active"},
                 {"value": "completed", "label": "Completed"},
                 {"value": "archived", "label": "Archived", "is_terminal": True},
+                {"value": "relocated", "label": "Relocated", "is_terminal": True},
             ],
             "transitions": [
                 {"from_state": "(new)", "action": "ingest", "to_state": "active"},
@@ -206,6 +211,7 @@ def minimal_vault_config_dict(tmp_vault_dir):
                 {"from_state": "active", "action": "archive", "to_state": "archived"},
                 {"from_state": "completed", "action": "archive", "to_state": "archived"},
                 {"from_state": "archived", "action": "reactivate", "to_state": "active"},
+                {"from_state": "active", "action": "relocate", "to_state": "relocated"},
             ],
         },
         # Zero the abstraction-queue retry backoff so tests that exercise a

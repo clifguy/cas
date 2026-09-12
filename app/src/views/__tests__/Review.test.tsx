@@ -63,6 +63,8 @@ function makePending(id: string, title: string): PendingMetadata {
       pipeline_status: 'projection_complete',
       pipeline_error: null,
       tier3_metadata: null,
+      relocated_from: null,
+      relocated_to: null,
     },
     extracted_fields: {
       title: { value: title, source: 'filename' },

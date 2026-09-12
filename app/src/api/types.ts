@@ -67,6 +67,20 @@ export interface LastOptimizeSummary {
 
 // --- Document ---
 
+/**
+ * Where a document's counterpart lives after it relocated between vaults.
+ * Recorded on both sides of the move and never followed: the vault id and
+ * server address are hints, and the content hash is what confirms a
+ * resolution reached the intended document.
+ */
+export interface RelocationPointer {
+  vault_id: string;
+  document_id: string;
+  server_address: string | null;
+  source_content_hash: string;
+  relocated_at: string;
+}
+
 export interface Document {
   id: string;
   title: string;
@@ -94,6 +108,8 @@ export interface Document {
   tier3_metadata: Record<string, unknown> | null;
   metadata_confirmed?: boolean;
   projection_text?: string;
+  relocated_from: RelocationPointer | null;
+  relocated_to: RelocationPointer | null;
 }
 
 export interface DocumentSummary {

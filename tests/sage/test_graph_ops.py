@@ -2080,6 +2080,22 @@ def _traversal_row_with_every_document_summary_field() -> dict:
         "d_source_modified_at": datetime(2026, 5, 20, 12, 0, tzinfo=timezone.utc).isoformat(),
         "d_semantic_abstract": "T-0118 sentinel semantic abstract",
         "d_tier3_metadata": {"ticket_id": "T-0118", "ticket_priority": "high"},
+        # Distinct in every member, so a factory serving one column for both,
+        # or transposing them, fails rather than matching.
+        "d_relocated_from": {
+            "vault_id": "origin_vault",
+            "document_id": _id("traversal_sentinel_before_move"),
+            "server_address": "https://origin.example",
+            "source_content_hash": "sha256:" + "ef" * 32,
+            "relocated_at": datetime(2026, 5, 18, 9, 0, tzinfo=timezone.utc).isoformat(),
+        },
+        "d_relocated_to": {
+            "vault_id": "destination_vault",
+            "document_id": _id("traversal_sentinel_after_move"),
+            "server_address": "https://destination.example",
+            "source_content_hash": "sha256:" + "12" * 32,
+            "relocated_at": datetime(2026, 5, 19, 9, 0, tzinfo=timezone.utc).isoformat(),
+        },
     }
 
 

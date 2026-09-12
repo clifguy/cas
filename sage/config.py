@@ -583,10 +583,29 @@ class LifecycleTransition(BaseModel):
 #: declaring `satisfies_dependency: true` on the state.
 DEFAULT_DEPENDENCY_SATISFYING_STATES = frozenset({"active", "completed"})
 
+#: The terminal state a document's chain head rests in once its live
+#: version has moved to another vault (CAS-ADR-050). Named here because
+#: the lifecycle validator constrains it by name: unlike every other
+#: state a vault declares, this one's meaning is the engine's, so a
+#: configuration may not give it a way out. Reactivating it would restore
+#: a live head alongside the one the relocation created, which is the
+#: condition the relocation resolved.
+RELOCATED_STATE = "relocated"
+
+#: The one action permitted to land a document in `RELOCATED_STATE`, and
+#: permitted to land it nowhere else. Named alongside the state because
+#: the two are reserved to each other: the relocation pointer is required
+#: on this action and refused on every other, so a second way into the
+#: state, or this action landing anywhere else, would separate the state
+#: from the pointer that gives it meaning.
+RELOCATION_ACTION = "relocate"
+
 #: The base lifecycle vocabulary a `base_states_required` configuration
 #: must keep declared (see `LifecycleConfig`).
-BASE_LIFECYCLE_STATES = frozenset({"active", "completed", "archived"})
-BASE_LIFECYCLE_ACTIONS = frozenset({"ingest", "supersede", "complete", "archive", "reactivate"})
+BASE_LIFECYCLE_STATES = frozenset({"active", "completed", "archived", RELOCATED_STATE})
+BASE_LIFECYCLE_ACTIONS = frozenset(
+    {"ingest", "supersede", "complete", "archive", "reactivate", RELOCATION_ACTION}
+)
 
 #: The `(new)` pseudo-state: sanctioned as the source of the ingestion
 #: transition and nowhere else. It is not a state a document occupies, so
@@ -622,7 +641,10 @@ class LifecycleState(BaseModel):
             "Semantics of this state. For base states: active (in the "
             "system), completed (work done, no replacement), archived "
             "(long-term storage; includes documents superseded by newer "
-            "versions)."
+            "versions), relocated (the document's live version moved to "
+            "another vault; terminal, and no transition may leave it, only the "
+            "relocate action may land a document there and it may land "
+            "nowhere else, and it may not satisfy a dependency)."
         ),
     )
     is_terminal: bool = Field(
@@ -631,7 +653,11 @@ class LifecycleState(BaseModel):
             "Whether this state represents an end state from which no "
             "further transitions are expected under normal operation. "
             "Archived is terminal by default but reactivation is permitted "
-            "as an exceptional case."
+            "as an exceptional case. Relocated must declare it true, and "
+            "unlike archived it permits no way out at all; it is also the "
+            "one state the engine reserves, so only the relocate action "
+            "may land a document there, that action may land one nowhere "
+            "else, and it may not satisfy a dependency."
         ),
     )
     satisfies_dependency: bool | None = Field(
@@ -663,14 +689,14 @@ class LifecycleConfig(BaseModel):
         default=True,
         description=(
             "When true (the default), the configuration must declare the "
-            "base states (active, completed, archived) and use each base "
-            "action (ingest, supersede, complete, archive, reactivate) in "
-            "at least one transition; a configuration missing any of them "
-            "fails validation. An existing on-disk configuration loads with "
-            "a warning instead, so the vault stays reachable for repair. "
-            "Domain-specific states and transitions extend this base. Set "
-            "false only for a configuration that replaces the base "
-            "lifecycle entirely."
+            "base states (active, completed, archived, relocated) and use "
+            "each base action (ingest, supersede, complete, archive, "
+            "reactivate, relocate) in at least one transition; a "
+            "configuration missing any of them fails validation. An "
+            "existing on-disk configuration loads with a warning instead, "
+            "so the vault stays reachable for repair. Domain-specific "
+            "states and transitions extend this base. Set false only for a "
+            "configuration that replaces the base lifecycle entirely."
         ),
     )
 
@@ -753,7 +779,18 @@ class LifecycleConfig(BaseModel):
         must name a declared state, with `(new)` sanctioned as a source
         and never as a target: a transition into an undeclared state
         strands the document there, absent from the state list and from
-        the dependency-satisfying set, with no valid action out. And no
+        the dependency-satisfying set, with no valid action out. Also
+        unconditionally, `relocated` is constrained by name where every
+        other state's meaning is the vault's. It must be terminal and no
+        transition may leave it, because a document reaches it when its
+        live version moved to another vault and a way out would restore a
+        second live head for the same document; only `relocate` may land
+        a document there and `relocate` may land one nowhere else, since
+        the relocation pointer is required on that action alone and a
+        second way in would leave a document in the state naming nowhere;
+        and it may not be declared dependency-satisfying, because nothing
+        in this vault resolves across the boundary its document crossed.
+        And no
         lifecycle may resolve to an empty dependency-satisfying set,
         which would fail every `depends_on` precondition permanently with
         nothing naming the configuration as the cause. When
@@ -827,6 +864,67 @@ class LifecycleConfig(BaseModel):
                 problems.append(
                     f"the transition '{where}' lands in '{row.to_state}', "
                     "which is not a declared lifecycle state"
+                )
+        relocated_exits = sorted(
+            f"{t.from_state} -> {t.action} -> {t.to_state}"
+            for t in self.transitions
+            if t.from_state == RELOCATED_STATE
+        )
+        if relocated_exits:
+            problems.append(
+                f"no transition may leave '{RELOCATED_STATE}'; found: "
+                f"{', '.join(relocated_exits)}. A document reaches that state "
+                "when its live version moved to another vault, and a way out "
+                "would restore a second live head for the same document"
+            )
+        # The entry side, and the reason it is checked at all: the engine
+        # requires a relocation pointer on the transition that lands a
+        # document in this state, so a second action reaching the same
+        # state by another name would land one there carrying nothing --
+        # the exact shape the state exists to rule out, and one with no
+        # way out. The reservation runs both ways, as it does for
+        # `ingest` and the ingestion pseudo-state: the action reaches
+        # only this state, and this state is reached only by it.
+        misnamed_entries = sorted(
+            f"{t.from_state} -> {t.action} -> {t.to_state}"
+            for t in self.transitions
+            if t.to_state == RELOCATED_STATE and t.action != RELOCATION_ACTION
+        )
+        if misnamed_entries:
+            problems.append(
+                f"only the action '{RELOCATION_ACTION}' may land a document in "
+                f"'{RELOCATED_STATE}'; found: {', '.join(misnamed_entries)}. The "
+                "relocation pointer is required on that action alone, so another "
+                "way in would leave a document in the state naming nowhere"
+            )
+        stray_relocate = sorted(
+            f"{t.from_state} -> {t.action} -> {t.to_state}"
+            for t in self.transitions
+            if t.action == RELOCATION_ACTION and t.to_state != RELOCATED_STATE
+        )
+        if stray_relocate:
+            problems.append(
+                f"the action '{RELOCATION_ACTION}' may land only in "
+                f"'{RELOCATED_STATE}'; found: {', '.join(stray_relocate)}. "
+                "Landing it elsewhere would stamp a relocation pointer onto a "
+                "document that has not relocated, and may still be reactivated"
+            )
+        for state in self.states:
+            if state.value != RELOCATED_STATE:
+                continue
+            if not state.is_terminal:
+                problems.append(
+                    f"the state '{RELOCATED_STATE}' must declare is_terminal: "
+                    "true; no transition may leave it, so a document that "
+                    "reaches it would otherwise sit on an operator worklist "
+                    "with nothing anyone can do about it"
+                )
+            if state.satisfies_dependency:
+                problems.append(
+                    f"the state '{RELOCATED_STATE}' may not declare "
+                    "satisfies_dependency: true; its document's live version is "
+                    "in another vault, and nothing in this one resolves across "
+                    "that boundary, so a dependency on it can never be met here"
                 )
         stray_ingest = sorted(
             t.from_state

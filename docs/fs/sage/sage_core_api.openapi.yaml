@@ -271,9 +271,9 @@ paths:
       description: >-
         Accepts N>=1 per-item transition requests per CAS-ADR-029 v4
         plural-noun convention. Each item carries `document_id`,
-        `action`, and optional `successor_id`. Items are processed in
-        order, each holding the per-document lock and a per-item
-        database transaction. Length-1 is fully supported.
+        `action`, and optional `successor_id` or `relocated_to`. Items
+        are processed in order, each holding the per-document lock and a
+        per-item database transaction. Length-1 is fully supported.
 
 
         **The action vocabulary is vault-config-defined**, not a fixed
@@ -305,6 +305,23 @@ paths:
         supersedes edge is missing.
 
 
+        **The `relocate` action is the origin half of a move to another
+        vault.** It transitions the chain head to a terminal `relocated`
+        state and records `relocated_to` -- `{vault_id, document_id,
+        server_address, source_content_hash, relocated_at}` naming the
+        counterpart -- in the same statement, so the state and the
+        pointer cannot disagree. Without it the item refuses with
+        `missing_relocated_to` and nothing is written. The destination
+        half is an ordinary ingest carrying `relocated_from`, and it is
+        performed first, so an interrupted move leaves its evidence on
+        the document a reader is most likely to hold. Nothing in the
+        engine follows either pointer: a `depends_on` edge whose target
+        has relocated stays unsatisfied inside the origin rather than
+        resolving across the boundary, and no action leaves the
+        `relocated` state -- reactivating it would restore a second live
+        head for the same document.
+
+
         **The batch is NOT atomic.** A per-item error surfaces in
         the response's per-item error envelope but does not roll back
         earlier-or-later successful items. The endpoint returns HTTP
@@ -321,9 +338,13 @@ paths:
         any mutation), `document_not_found` (the item's own document, or
         a `supersede` successor that does not exist), `invalid_action`,
         `invalid_lifecycle_transition` (carrying the `valid_actions` for
-        the state the document is in), and `missing_successor_id`. Each
-        appears as a per-item error envelope rather than as a
-        batch-level 400/409.
+        the state the document is in), `missing_successor_id`, `missing_relocated_to`,
+        `unexpected_successor_id`, `unexpected_relocated_to` (a
+        qualifier supplied with an action that does not take it), and
+        `reserved_transition` (the vault declares a transition into or
+        out of `relocated` that the engine reserves; possible only on a
+        configuration that loaded leniently). Each appears as a per-item
+        error envelope rather than as a batch-level 400/409.
 
 
         Two codes that belong to ingest do not appear here.
@@ -3361,16 +3382,27 @@ components:
 
     LifecycleStatus:
       type: string
-      enum: [active, completed, archived]
+      enum: [active, completed, archived, relocated]
       description: >-
         Base lifecycle states. Vaults may define additional domain-specific
         states (e.g., "filed" in Example Portfolio). The base set is
         declared by every vault whose lifecycle keeps
-        `base_states_required` true (the default).
+        `base_states_required` true (the default). `relocated` is the one
+        base state the engine reserves rather than leaving to each vault:
+        no transition may leave it, because a document reaches it when its
+        live version moved to another vault and reactivating it would
+        restore a second live head; only the `relocate` action may land a
+        document there and that action may land one nowhere else, since
+        the relocation pointer is required on it alone; and it may not be
+        declared dependency-satisfying, because nothing in this vault
+        resolves across the boundary its document crossed. A vault
+        breaking any of those is refused, and an already-on-disk one that
+        loads leniently is refused at the transition instead, with
+        `reserved_transition`.
 
     LifecycleAction:
       type: string
-      enum: [supersede, complete, archive, reactivate]
+      enum: [supersede, complete, archive, reactivate, relocate]
       description: >-
         Base lifecycle transition actions. Vaults may define additional
         domain-specific actions (e.g., "file" in Example Portfolio).
@@ -3513,6 +3545,60 @@ components:
     # -------------------------------------------------------------------------
     # Core Entities
     # -------------------------------------------------------------------------
+
+    RelocationPointer:
+      type: object
+      additionalProperties: false
+      description: >-
+        Where a document's counterpart lives after it relocated between
+        vaults. Recorded on both sides of the move and never followed:
+        no traversal, retrieval, dependency, or reconciliation path
+        consults it. The vault identifier and server address are
+        resolution hints a reasoning caller weighs rather than
+        coordinates the engine resolves, and the source content hash is
+        what confirms a resolution landed where it meant to, because
+        both vaults retain the same source at the same digest.
+      required:
+        - vault_id
+        - document_id
+        - source_content_hash
+        - relocated_at
+      properties:
+        vault_id:
+          type: string
+          description: >-
+            The counterpart vault's identifier. Unique within an
+            installation rather than across installations, so it narrows
+            a search rather than settling one.
+        document_id:
+          type: string
+          description: >-
+            The counterpart document's identifier, minted by and local
+            to the counterpart vault.
+        server_address:
+          type: [string, "null"]
+          description: >-
+            Where the counterpart vault answered at the time of the
+            relocation. A deployment fact rather than an identity: one
+            vault is reachable at different addresses under different
+            profiles, and a workstation's loopback address is common to
+            every workstation. Null when the caller composed both halves
+            against a single deployment and has no distinguishing
+            address to record.
+        source_content_hash:
+          type: string
+          description: >-
+            The SHA-256 of the source bytes both vaults retain. The one
+            member that confirms rather than hints: a caller arriving
+            from either direction matches it to know it reached the
+            document the pointer meant.
+        relocated_at:
+          type: string
+          format: date-time
+          description: >-
+            When the relocation was performed, as recorded by the caller
+            that composed it. The two sides are written by separate
+            calls, so their timestamps are close rather than identical.
 
     Document:
       type: object
@@ -3664,6 +3750,27 @@ components:
             filename inference needed or inferred values have been
             reviewed). False marks the document as pending in the
             metadata-review queue.
+        relocated_from:
+          anyOf:
+            - $ref: "#/components/schemas/RelocationPointer"
+            - type: "null"
+          description: >-
+            Where this document was before it relocated into this vault,
+            set on the chain root the relocation created and null on
+            every document that was ingested here in the ordinary way. A
+            supersession does not carry it forward: it records a fact
+            about the version it sits on, and a later version was not
+            itself relocated.
+        relocated_to:
+          anyOf:
+            - $ref: "#/components/schemas/RelocationPointer"
+            - type: "null"
+          description: >-
+            Where this document went when it relocated out of this vault,
+            set on the chain head the relocation retired and null
+            otherwise. Written by the same call that moves the head to
+            the relocated lifecycle state, so the state and the pointer
+            cannot disagree.
 
     DocumentSummary:
       type: object
@@ -3737,6 +3844,24 @@ components:
             string through unchanged so the wire serialization stays a
             bare calendar date. Consumers that need a datetime (e.g.,
             recency scoring) parse it at the use site.
+        relocated_from:
+          anyOf:
+            - $ref: "#/components/schemas/RelocationPointer"
+            - type: "null"
+          description: >-
+            Where the document was before it relocated into this vault;
+            null on every document ingested here in the ordinary way.
+            Surfaced on the projection so a caller recovering provenance
+            can spot a relocated chain root from a catalog pass, without
+            a follow-up get_document round-trip.
+        relocated_to:
+          anyOf:
+            - $ref: "#/components/schemas/RelocationPointer"
+            - type: "null"
+          description: >-
+            Where the document went when it relocated out of this vault;
+            null otherwise. Surfaced alongside relocated_from so one pass
+            reports both directions.
 
     DocumentSummaryLight:
       type: object
@@ -4206,11 +4331,24 @@ components:
           type: string
           description: >-
             Document ID of the replacement version. Required when
-            `action="supersede"`; forbidden for all other actions. SAGE
-            creates a `supersedes` edge from the new version to this
-            document atomically with the lifecycle transition. The
-            successor document must already exist and be active; this
-            operation does not create it.
+            `action="supersede"`; forbidden for all other actions, which
+            refuse with 400 `unexpected_successor_id`. SAGE creates a
+            `supersedes` edge from the new version to this document
+            atomically with the lifecycle transition. The successor
+            document must already exist and be active; this operation
+            does not create it.
+        relocated_to:
+          anyOf:
+            - $ref: "#/components/schemas/RelocationPointer"
+            - type: "null"
+          description: >-
+            Where the document is going. Required when
+            `action="relocate"`, which refuses with 400
+            `missing_relocated_to` without it; forbidden for all other
+            actions, which refuse with 400 `unexpected_relocated_to`.
+            SAGE writes it onto the document in the same statement that
+            moves the lifecycle state, so a relocated document always
+            names where it went.
         dry_run:
           type: boolean
           default: false
@@ -4482,6 +4620,16 @@ components:
             CAS-ADR-028: ingest takes the literal dict, whereas
             `UpdateMetadataRequest.tier3_metadata` takes a
             `Tier3Patch` ops-object with `set`/`unset` semantics.
+        relocated_from:
+          anyOf:
+            - $ref: "#/components/schemas/RelocationPointer"
+            - type: "null"
+          description: >-
+            Where this document was before it relocated into this vault.
+            Supplied on the destination half of a relocation, which is
+            written first so an interrupted move leaves its evidence on
+            the document a reader is most likely to hold. Persisted
+            verbatim and never followed. Omit it for an ordinary ingest.
         document_id:
           type: [string, "null"]
           description: >-
@@ -5139,8 +5287,21 @@ components:
           type: string
           description: >-
             Document id of the replacement version. Required when
-            `action="supersede"`; forbidden for all other actions. Same
-            shape and semantics as `SetLifecycleRequest.successor_id`.
+            `action="supersede"`; forbidden for all other actions, which
+            refuse with 400 `unexpected_successor_id`. Same shape and
+            semantics as `SetLifecycleRequest.successor_id`.
+        relocated_to:
+          anyOf:
+            - $ref: "#/components/schemas/RelocationPointer"
+            - type: "null"
+          description: >-
+            Where the document is going. Required when
+            `action="relocate"`, which refuses with 400
+            `missing_relocated_to` without it; forbidden for all other
+            actions, which refuse with 400 `unexpected_relocated_to`.
+            SAGE writes it onto the document in the same statement that
+            moves the lifecycle state, so a relocated document always
+            names where it went.
 
     BulkLifecycleRequest:
       type: object

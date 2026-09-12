@@ -54,7 +54,14 @@ from sage.models.enums import (
     UserType,
 )
 from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
-from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge, User
+from sage.models.schemas import (
+    Document,
+    Edge,
+    LinkRequest,
+    RelocationPointer,
+    StagingEdge,
+    User,
+)
 from sage.storage.tier3_uniqueness import (
     TIER3_UNIQUE_INDEX_PREFIX,
     Tier3UniqueIndexBlockedError,
@@ -70,12 +77,28 @@ from sage.utils.sql_patterns import escape_like
 _EDGES_UNIQ_INDEX = "idx_edges_uniq_natural_key"
 _STAGING_EDGES_UNIQ_INDEX = "idx_staging_edges_uniq_natural_key"
 
+
 # Defense-in-depth fence for tier3 keys interpolated into a ``->>`` accessor or
 # an expression-index DDL. The service layer validates the same keys against the
 # doc_type's metadata_schema; this is the last-line guarantee no caller string
 # can break out of the path.
 _TIER3_KEY_FORMAT = re.compile(r"^[A-Za-z0-9_]+$")
 _DOC_TYPE_FORMAT = re.compile(r"^[a-z][a-z0-9_]*$")
+
+
+def _pointer_to_jsonb(pointer: RelocationPointer | None) -> Jsonb | None:
+    """Adapt a relocation pointer to its column form, or NULL.
+
+    Serialized in JSON mode so the timestamp lands as an ISO-8601 string
+    rather than a datetime the JSON encoder would refuse. A null pointer
+    stores as SQL NULL rather than as a jsonb ``null``: unlike
+    ``tier3_metadata`` there is no empty-but-present form to preserve,
+    since a pointer is either whole or absent.
+    """
+    if pointer is None:
+        return None
+    return Jsonb(pointer.model_dump(mode="json"))
+
 
 # Columns safe to use in ORDER BY (prevent SQL injection). Mirrors the embedded
 # store's allowlist.
@@ -338,9 +361,9 @@ class PostgresGraphStore(GraphStore):
                 last_modified_by, updated_at, projected_at, indexed_at,
                 source_modified_at, document_date,
                 semantic_abstract, pipeline_status, pipeline_error, tier3_metadata,
-                metadata_confirmed
+                metadata_confirmed, relocated_from, relocated_to
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (
                 doc.id,
                 doc.title,
@@ -368,6 +391,8 @@ class PostgresGraphStore(GraphStore):
                 doc.pipeline_error,
                 Jsonb(doc.tier3_metadata) if doc.tier3_metadata else None,
                 bool(doc.metadata_confirmed),
+                _pointer_to_jsonb(doc.relocated_from),
+                _pointer_to_jsonb(doc.relocated_to),
             ),
         )
         await self._sync_document_tags(conn, doc.id, doc.tags)
@@ -465,6 +490,9 @@ class PostgresGraphStore(GraphStore):
             # and ``{}`` are stored as jsonb ``null`` / ``{}`` and read back as
             # Python None / {} respectively, matching SQLite exactly.
             updates["tier3_metadata"] = Jsonb(updates["tier3_metadata"])
+        for pointer_field in ("relocated_from", "relocated_to"):
+            if pointer_field in updates:
+                updates[pointer_field] = _pointer_to_jsonb(updates[pointer_field])
         if "metadata_confirmed" in updates:
             updates["metadata_confirmed"] = bool(updates["metadata_confirmed"])
         if "is_chain_head" in updates:
@@ -1712,7 +1740,9 @@ class PostgresGraphStore(GraphStore):
                 f"d.source_path, d.version_label, d.project, d.doc_type, "
                 f"d.tags::text AS tags, "
                 f"d.document_date AS d_document_date, "
-                f"d.source_modified_at AS d_source_modified_at "
+                f"d.source_modified_at AS d_source_modified_at, "
+                f"d.relocated_from AS d_relocated_from, "
+                f"d.relocated_to AS d_relocated_to "
                 f"FROM traversal t "
                 f"INNER JOIN documents d ON t.doc_id = d.id"
             )
@@ -1746,6 +1776,8 @@ class PostgresGraphStore(GraphStore):
                     "d_tags": row["tags"],
                     "d_document_date": row["d_document_date"],
                     "d_source_modified_at": row["d_source_modified_at"],
+                    "d_relocated_from": row["d_relocated_from"],
+                    "d_relocated_to": row["d_relocated_to"],
                 }
                 for row in rows
             ]
@@ -1946,6 +1978,9 @@ class PostgresGraphStore(GraphStore):
             pipeline_error=row["pipeline_error"],
             tier3_metadata=row["tier3_metadata"],
             metadata_confirmed=bool(row["metadata_confirmed"]),
+            # ``.get`` for the same reason as ``stored_content_hash`` above.
+            relocated_from=RelocationPointer.from_stored(row.get("relocated_from")),
+            relocated_to=RelocationPointer.from_stored(row.get("relocated_to")),
         )
 
     @staticmethod
