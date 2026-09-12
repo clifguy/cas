@@ -910,10 +910,12 @@ def register_sage_tools(
         ``invalid_action``, ``invalid_lifecycle_transition`` (carrying
         the ``valid_actions`` for the state the document is in),
         ``missing_successor_id``, ``missing_relocated_to``,
-        ``unexpected_successor_id``, and ``unexpected_relocated_to`` (a
-        qualifier supplied with an action that does not take it). Each
-        appears as a per-item error envelope rather than as a batch-level
-        400/409.
+        ``unexpected_successor_id``, ``unexpected_relocated_to`` (a
+        qualifier supplied with an action that does not take it), and
+        ``reserved_transition`` (the vault declares a transition into or
+        out of ``relocated`` that the engine reserves; possible only on a
+        configuration that loaded leniently). Each appears as a per-item
+        error envelope rather than as a batch-level 400/409.
 
         Two codes that belong to ingest do not appear here.
         ``supersede_target_not_active`` is the ingest surface's code for

@@ -28,12 +28,12 @@
           },
           "description": {
             "type": "string",
-            "description": "Semantics of this state. For base states: active (in the system), completed (work done, no replacement), archived (long-term storage; includes documents superseded by newer versions), relocated (the document's live version moved to another vault; terminal, and no transition may leave it)."
+            "description": "Semantics of this state. For base states: active (in the system), completed (work done, no replacement), archived (long-term storage; includes documents superseded by newer versions), relocated (the document's live version moved to another vault; terminal, and no transition may leave it, only the relocate action may land a document there and it may land nowhere else, and it may not satisfy a dependency)."
           },
           "is_terminal": {
             "type": "boolean",
             "default": false,
-            "description": "Whether this state represents an end state from which no further transitions are expected under normal operation. Archived is terminal by default but reactivation is permitted as an exceptional case. Relocated must declare it true, and unlike archived it permits no way out at all."
+            "description": "Whether this state represents an end state from which no further transitions are expected under normal operation. Archived is terminal by default but reactivation is permitted as an exceptional case. Relocated must declare it true, and unlike archived it permits no way out at all; it is also the one state the engine reserves, so only the relocate action may land a document there, that action may land one nowhere else, and it may not satisfy a dependency."
           },
           "satisfies_dependency": {
             "type": ["boolean", "null"],

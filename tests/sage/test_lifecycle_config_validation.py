@@ -630,6 +630,23 @@ def test_relocated_may_not_be_declared_dependency_satisfying(minimal_vault_confi
     config = VaultConfig.model_validate(other_state)
     assert "archived" in config.lifecycle.dependency_satisfying_states()
 
+    # An explicit `false` on `relocated` is still accepted. Without this
+    # arm a guard written `if state.satisfies_dependency is not None`
+    # passes both arms above while refusing a vault that merely states
+    # the engine default out loud.
+    explicit_false = {
+        **minimal_vault_config_dict,
+        "lifecycle": {
+            **lifecycle,
+            "states": [
+                {**s, "satisfies_dependency": False} if s["value"] == "relocated" else s
+                for s in lifecycle["states"]
+            ],
+        },
+    }
+    permitted = VaultConfig.model_validate(explicit_false)
+    assert "relocated" not in permitted.lifecycle.dependency_satisfying_states()
+
 
 def test_terminal_states_derives_from_is_terminal(minimal_vault_config_dict):
     """The terminal set is the declared states carrying `is_terminal`.

@@ -269,6 +269,35 @@ class UnexpectedFieldError(SAGEError):
         )
 
 
+class ReservedTransitionError(SAGEError):
+    """409: the vault declares a transition the engine reserves to itself.
+
+    Almost every lifecycle transition means whatever its vault says it
+    means. One does not: the engine requires a relocation pointer on the
+    transition that lands a document in the relocated state, so that
+    action and that state are reserved to each other. The configuration
+    validator refuses a table that breaks the reservation, but an
+    already-on-disk configuration loads leniently -- a rejected file
+    would drop its vault from the registry, unreachable by the surfaces
+    that could repair it -- so a vault can be serving such a table right
+    now. Refusing here is what stops the transition from running against
+    one, and the message names the row to repair rather than the call.
+    """
+
+    def __init__(self, from_state: str, action: str, to_state: str, reason: str) -> None:
+        super().__init__(
+            "reserved_transition",
+            f"the vault's transition '{from_state} -> {action} -> {to_state}' is refused: {reason}",
+            409,
+            {
+                "from_state": from_state,
+                "attempted_action": action,
+                "to_state": to_state,
+                "reason": reason,
+            },
+        )
+
+
 class InvalidDocTypeError(SAGEError):
     """400: doc_type not in vault's document_types config."""
 

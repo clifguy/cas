@@ -36,6 +36,7 @@ from sage.adapters.stubs import (
 from sage.api.errors import (
     InvalidLifecycleTransitionError,
     MissingFieldError,
+    ReservedTransitionError,
     SupersedeTargetNotActiveError,
     UnexpectedFieldError,
 )
@@ -479,6 +480,102 @@ async def test_no_transition_leaves_the_relocated_state(graph_store, lifecycle_s
         archived.id, SetLifecycleRequest(action="reactivate")
     )
     assert reactivated.document.lifecycle_status == "active"
+
+
+async def test_the_service_holds_the_reservation_a_lenient_config_broke(
+    graph_store, lock_manager, minimal_vault_config_dict
+):
+    """A vault already serving a reserved-breaking table is refused at the service.
+
+    The configuration validator refuses these tables, but that is not the
+    whole barrier and it was wrong to treat it as one: ``load_vault_config``
+    validates every on-disk configuration leniently, because rejecting a
+    file would drop its vault from the registry and put it out of reach of
+    the surfaces that could repair it. So a vault can be serving one of
+    these tables right now, and the service is the only thing standing
+    between it and a broken document. The lenient context below is exactly
+    the one that path uses.
+
+    Three shapes, and the third is why this test exists. A and B are the
+    two the earlier review probed, and they distinguish a guard keyed on
+    the landing state from one keyed on the action's name. C reaches the
+    supersede branch, which builds its own update and never writes a
+    pointer: before the reservation was enforced ahead of the branch
+    split, C was *accepted* and left a document resting in the terminal
+    state naming nowhere, with no transition able to repair it.
+    """
+    import copy
+
+    from sage.services.lifecycle import LifecycleService
+
+    def _leniently(extra_row: dict) -> VaultConfig:
+        raw = copy.deepcopy(minimal_vault_config_dict)
+        raw["lifecycle"]["transitions"].append(extra_row)
+        # Strict validation refuses it -- asserted, so this fixture cannot
+        # quietly become a table the validator would have allowed anyway.
+        with pytest.raises(ValidationError):
+            VaultConfig.model_validate(raw)
+        return VaultConfig.model_validate(raw, context={"lifecycle_validation": "warn"})
+
+    async def _service(extra_row: dict) -> LifecycleService:
+        return LifecycleService(
+            graph_store, lock_manager, _leniently(extra_row), StubContentStore()
+        )
+
+    # A — another action reaching the state. Refused by the reservation.
+    doc_a = _make_doc("00000030_aliased_entry")
+    await graph_store.insert_document(doc_a)
+    service_a = await _service({"from_state": "active", "action": "exile", "to_state": "relocated"})
+    with pytest.raises(ReservedTransitionError) as exile_exc:
+        await service_a._set_lifecycle(doc_a.id, SetLifecycleRequest(action="exile"))
+    assert exile_exc.value.code == "reserved_transition"
+    assert exile_exc.value.detail["to_state"] == "relocated"
+    assert (await graph_store.get_document(doc_a.id)).lifecycle_status == "active"
+
+    # B — the relocate action landing somewhere else. Refused likewise, so
+    # no pointer is stamped onto a document that can still be reactivated.
+    doc_b = _make_doc("00000031_stray_landing", lifecycle_status="completed")
+    await graph_store.insert_document(doc_b)
+    service_b = await _service(
+        {"from_state": "completed", "action": "relocate", "to_state": "archived"}
+    )
+    with pytest.raises(ReservedTransitionError):
+        await service_b._set_lifecycle(
+            doc_b.id,
+            SetLifecycleRequest(action="relocate", relocated_to=_destination_pointer()),
+        )
+    stored_b = await graph_store.get_document(doc_b.id)
+    assert stored_b.lifecycle_status == "completed"
+    assert stored_b.relocated_to is None
+
+    # C — a supersede row landing in the state. The pointer check alone
+    # passes this (it lands in `relocated` and a pointer was supplied) and
+    # the supersede branch then writes neither, so only a reservation
+    # checked ahead of the branch split refuses it.
+    doc_c = _make_doc("00000032_supersede_entry", lifecycle_status="completed")
+    successor = _make_doc("00000033_successor")
+    await graph_store.insert_document(doc_c)
+    await graph_store.insert_document(successor)
+    service_c = await _service(
+        {
+            "from_state": "completed",
+            "action": "supersede",
+            "to_state": "relocated",
+            "creates_edge": "supersedes",
+        }
+    )
+    with pytest.raises(ReservedTransitionError):
+        await service_c._set_lifecycle(
+            doc_c.id,
+            SetLifecycleRequest(
+                action="supersede",
+                successor_id=successor.id,
+                relocated_to=_destination_pointer(),
+            ),
+        )
+    stored_c = await graph_store.get_document(doc_c.id)
+    assert stored_c.lifecycle_status == "completed"
+    assert stored_c.relocated_to is None
 
 
 def test_a_configuration_may_not_give_the_relocated_state_a_way_out(minimal_vault_config_dict):

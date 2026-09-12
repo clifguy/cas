@@ -15,6 +15,7 @@ from sage.api.errors import (
     InvalidActionError,
     InvalidLifecycleTransitionError,
     MissingFieldError,
+    ReservedTransitionError,
     SAGEError,
     SupersedeTargetNotActiveError,
     UnexpectedFieldError,
@@ -129,6 +130,34 @@ class LifecycleService:
             # reserves the action and the state to each other, and this
             # reads the state so the two cannot drift apart.
             lands_in_relocated = to_state == RELOCATED_STATE
+
+            # The reservation itself, enforced before either write branch
+            # rather than only on the one that carries the pointer. The
+            # configuration validator refuses a table that breaks it, but
+            # an already-on-disk table loads leniently, so a vault can be
+            # serving one now -- and a `supersede` row landing in the
+            # state would otherwise pass the pointer check and then take
+            # the supersede branch, which builds its own update and never
+            # writes a pointer, leaving exactly the document the state
+            # exists to rule out and no action able to repair it.
+            if lands_in_relocated and request.action != RELOCATION_ACTION:
+                raise ReservedTransitionError(
+                    doc.lifecycle_status,
+                    request.action,
+                    to_state,
+                    f"only '{RELOCATION_ACTION}' may land a document in "
+                    f"'{RELOCATED_STATE}', because the relocation pointer is "
+                    "required on that action alone",
+                )
+            if request.action == RELOCATION_ACTION and not lands_in_relocated:
+                raise ReservedTransitionError(
+                    doc.lifecycle_status,
+                    request.action,
+                    to_state,
+                    f"'{RELOCATION_ACTION}' may land a document only in "
+                    f"'{RELOCATED_STATE}'; landing it elsewhere would stamp a "
+                    "relocation pointer onto a document that has not relocated",
+                )
 
             # Checked before any write, so a relocation that cannot record
             # where the document went leaves the document exactly as it

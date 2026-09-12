@@ -642,7 +642,9 @@ class LifecycleState(BaseModel):
             "system), completed (work done, no replacement), archived "
             "(long-term storage; includes documents superseded by newer "
             "versions), relocated (the document's live version moved to "
-            "another vault; terminal, and no transition may leave it)."
+            "another vault; terminal, and no transition may leave it, only the "
+            "relocate action may land a document there and it may land "
+            "nowhere else, and it may not satisfy a dependency)."
         ),
     )
     is_terminal: bool = Field(
@@ -652,7 +654,10 @@ class LifecycleState(BaseModel):
             "further transitions are expected under normal operation. "
             "Archived is terminal by default but reactivation is permitted "
             "as an exceptional case. Relocated must declare it true, and "
-            "unlike archived it permits no way out at all."
+            "unlike archived it permits no way out at all; it is also the "
+            "one state the engine reserves, so only the relocate action "
+            "may land a document there, that action may land one nowhere "
+            "else, and it may not satisfy a dependency."
         ),
     )
     satisfies_dependency: bool | None = Field(
@@ -776,10 +781,16 @@ class LifecycleConfig(BaseModel):
         strands the document there, absent from the state list and from
         the dependency-satisfying set, with no valid action out. Also
         unconditionally, `relocated` is constrained by name where every
-        other state's meaning is the vault's: it must be terminal and no
+        other state's meaning is the vault's. It must be terminal and no
         transition may leave it, because a document reaches it when its
-        live version moved to another vault, and a way out would restore
-        a second live head for the same document. And no
+        live version moved to another vault and a way out would restore a
+        second live head for the same document; only `relocate` may land
+        a document there and `relocate` may land one nowhere else, since
+        the relocation pointer is required on that action alone and a
+        second way in would leave a document in the state naming nowhere;
+        and it may not be declared dependency-satisfying, because nothing
+        in this vault resolves across the boundary its document crossed.
+        And no
         lifecycle may resolve to an empty dependency-satisfying set,
         which would fail every `depends_on` precondition permanently with
         nothing naming the configuration as the cause. When

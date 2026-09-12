@@ -339,10 +339,12 @@ paths:
         a `supersede` successor that does not exist), `invalid_action`,
         `invalid_lifecycle_transition` (carrying the `valid_actions` for
         the state the document is in), `missing_successor_id`, `missing_relocated_to`,
-        `unexpected_successor_id`, and `unexpected_relocated_to` (a
-        qualifier supplied with an action that does not take it). Each
-        appears as a per-item error envelope rather than as a
-        batch-level 400/409.
+        `unexpected_successor_id`, `unexpected_relocated_to` (a
+        qualifier supplied with an action that does not take it), and
+        `reserved_transition` (the vault declares a transition into or
+        out of `relocated` that the engine reserves; possible only on a
+        configuration that loaded leniently). Each appears as a per-item
+        error envelope rather than as a batch-level 400/409.
 
 
         Two codes that belong to ingest do not appear here.
@@ -3370,9 +3372,17 @@ components:
         states (e.g., "filed" in Example Portfolio). The base set is
         declared by every vault whose lifecycle keeps
         `base_states_required` true (the default). `relocated` is the one
-        base state no transition may leave: a document reaches it when its
-        live version moved to another vault, and reactivating it would
-        restore a second live head for the same document.
+        base state the engine reserves rather than leaving to each vault:
+        no transition may leave it, because a document reaches it when its
+        live version moved to another vault and reactivating it would
+        restore a second live head; only the `relocate` action may land a
+        document there and that action may land one nowhere else, since
+        the relocation pointer is required on it alone; and it may not be
+        declared dependency-satisfying, because nothing in this vault
+        resolves across the boundary its document crossed. A vault
+        breaking any of those is refused, and an already-on-disk one that
+        loads leniently is refused at the transition instead, with
+        `reserved_transition`.
 
     LifecycleAction:
       type: string
