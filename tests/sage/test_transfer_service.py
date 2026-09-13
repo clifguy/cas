@@ -23,6 +23,8 @@ import pytest
 import sage.mcp_init as _mcp_init
 import sage.services.transfer as _transfer
 from sage.api.errors import (
+    AmbiguousIngestSourceError,
+    MissingIngestSourceError,
     TransferAlreadyStagedError,
     TransferNotStagedError,
     TransferTokenInvalidError,
@@ -594,6 +596,52 @@ class TestMultiLegRecipeWindow:
 
         (item,) = recipe.uploads
         assert recipe.expires_at == store._entries[item.transfer_id].expires_at
+
+
+class TestGateRefusalsNameTheCallersSpelling:
+    """The gate's delivery-shape refusals name the spelling it was handed.
+
+    Several tools reach the gate and spell the path parameter differently, and
+    the gate raises before it has resolved anything that could tell them
+    apart. The caller supplies its own spelling; each refusal must carry it,
+    under an unchanged code and status. Both refusals are driven, because
+    forwarding the spelling to only one leaves the other still naming a
+    parameter the caller never had.
+
+    No profile is pinned and no store is reset: the refusal precedes both the
+    reachability decision and any redemption, so neither is in its causal path.
+    """
+
+    @pytest.mark.parametrize(
+        ("declaration", "error", "code", "message"),
+        [
+            (
+                DeliveryDeclaration(source="/tmp/a.md", transfer_token="whatever"),
+                AmbiguousIngestSourceError,
+                "ambiguous_ingest_source",
+                "Supply exactly one of `file_path` (a source file path) or "
+                "`transfer_token` (redeeming an already-delivered upload); "
+                "both were provided.",
+            ),
+            (
+                DeliveryDeclaration(),
+                MissingIngestSourceError,
+                "missing_ingest_source",
+                "Supply exactly one of `file_path` (a source file path) or "
+                "`transfer_token` (redeeming an already-delivered upload); "
+                "neither was provided.",
+            ),
+        ],
+        ids=["ambiguous", "missing"],
+    )
+    def test_refusals_name_the_supplied_spelling(self, declaration, error, code, message):
+        with pytest.raises(error) as raised:
+            with caller_local_delivery(_VAULT, [declaration], source_parameter="file_path"):
+                pytest.fail("the gate must refuse before yielding a plan")
+
+        assert raised.value.code == code
+        assert raised.value.status_code == 400
+        assert raised.value.message == message
 
 
 class TestPreviewDoesNotSpendTheToken:

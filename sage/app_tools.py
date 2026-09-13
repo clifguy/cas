@@ -376,6 +376,9 @@ def register_app_tools(
                 # A preview reads the staged bytes without spending the
                 # tokens, so the real batch it previews still has them.
                 consume=not dry_run,
+                # The entries spell the path ``file_path``, so a malformed
+                # entry's refusal names that rather than ``source``.
+                source_parameter="file_path",
             ) as plan:
                 if plan.recipe is not None:
                     return serialize(plan.recipe)
