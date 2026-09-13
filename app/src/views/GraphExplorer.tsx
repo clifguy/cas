@@ -103,6 +103,10 @@ export default function GraphExplorer() {
           tags: doc.tags,
           document_date: doc.document_date,
           source_modified_at: doc.source_modified_at,
+          semantic_abstract: doc.semantic_abstract,
+          tier3_metadata: doc.tier3_metadata,
+          relocated_from: doc.relocated_from,
+          relocated_to: doc.relocated_to,
         });
         setLoading(false);
       } catch (err) {

@@ -50,6 +50,7 @@ function makePending(id: string, title: string): PendingMetadata {
       authority_scope: null,
       doc_type: null,
       source_content_hash: 'sha',
+      stored_content_hash: null,
       adapter_version: '0',
       created_by: 'system',
       created_at: '2026-05-21',
