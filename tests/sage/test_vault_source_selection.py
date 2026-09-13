@@ -37,6 +37,11 @@ def test_vss_001_document_store_leg_routes_dispatch_through_fake(monkeypatch, tm
     can send dispatch to the document store; and the lazily-built client comes
     from the patched factory, so only the fake can answer ``discover`` with the
     seeded vault. A store that never touched the fake cannot produce it.
+
+    A second selection must hand out a fresh fake and move the factory to it.
+    A selector returning one process-global fake would pass the first half and
+    leak state -- seeded configs, installed refusals -- from test to test; the
+    second call's identity check and its empty discovery exclude that rival.
     """
     fake = select_vault_source_binding(monkeypatch, "document_store")
     assert fake is not None
@@ -48,6 +53,11 @@ def test_vss_001_document_store_leg_routes_dispatch_through_fake(monkeypatch, tm
     assert isinstance(store, DocumentStoreVaultSourceStore)
     assert [d.vault_id for d in discovered] == ["probe_vault"]
     assert all(d.config_path is None for d in discovered)
+
+    second = select_vault_source_binding(monkeypatch, "document_store")
+    assert second is not fake
+    rebuilt = build_stack_vault_source_store(SageCoreConfig(), vault_root=tmp_path)
+    assert rebuilt.discover() == []
 
 
 def test_vss_002_filesystem_leg_overrides_config_and_wires_nothing(monkeypatch, tmp_path):

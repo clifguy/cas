@@ -17,7 +17,7 @@ installed can import it unconditionally.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Literal, overload
 
 if TYPE_CHECKING:
     import pytest
@@ -29,6 +29,24 @@ if TYPE_CHECKING:
 # there fails until this selector is revisited. That check forces the revisit; it
 # does not prove the new backend is wired correctly.
 WIRED_BACKENDS: Final[tuple[str, ...]] = ("filesystem", "document_store")
+
+
+@overload
+def select_vault_source_binding(
+    monkeypatch: pytest.MonkeyPatch, backend: Literal["filesystem"]
+) -> None: ...
+
+
+@overload
+def select_vault_source_binding(
+    monkeypatch: pytest.MonkeyPatch, backend: Literal["document_store"]
+) -> FakeGraphClient: ...
+
+
+@overload
+def select_vault_source_binding(
+    monkeypatch: pytest.MonkeyPatch, backend: str
+) -> FakeGraphClient | None: ...
 
 
 def select_vault_source_binding(
