@@ -126,11 +126,11 @@ _METADATA_COLUMNS: tuple[str, ...] = ("doc_type", "lifecycle_status", "project")
 
 _INSERT_COLUMNS = (
     "document_id, heading_path, indexed_structure, content, chunk_index, "
-    "embedding, doc_type, lifecycle_status, project"
+    "embedding, doc_type, lifecycle_status, project, section_index"
 )
 _INSERT_SQL = (
     f"INSERT INTO chunks ({_INSERT_COLUMNS}) "  # noqa: S608 -- fixed column constant
-    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
 )
 
 # ``indexed_structure`` is read back as well as written, because a passage read
@@ -142,8 +142,12 @@ _INSERT_SQL = (
 # the pre-decision behaviour rather than an error.
 _SELECT_CHUNK_COLUMNS = (
     "document_id, heading_path, indexed_structure, content, chunk_index, "
-    "doc_type, lifecycle_status, project"
+    "doc_type, lifecycle_status, project, section_index"
 )
+
+# A passage's section, for a read that groups or counts by it. A passage written
+# before sections were numbered is a section of its own.
+_SECTION_KEY = "coalesce(section_index, chunk_index)"
 
 
 def _passage_rows_only(alias: str = "") -> str:
@@ -449,6 +453,7 @@ class PostgresContentStore(ContentStore):
             chunk.doc_type,
             chunk.lifecycle_status,
             chunk.project,
+            chunk.section_index,
         )
 
     async def index_chunks(self, document_id: str, chunks: list[Chunk]) -> None:
@@ -552,6 +557,18 @@ class PostgresContentStore(ContentStore):
                 return cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
 
     # -- migration to the relative indexed structure (CAS-ADR-049 Decision 3) --
+
+    async def documents_with_passages_longer_than(self, byte_bound: int) -> list[str]:
+        """Return the ids of documents holding a passage over ``byte_bound`` bytes."""
+        with self._query_timer.measure("documents_with_passages_longer_than"):
+            rows = await self._fetchall(
+                "SELECT DISTINCT document_id FROM chunks "  # noqa: S608 -- fixed predicate constant
+                f"WHERE {_passage_rows_only()} "
+                "AND octet_length(heading_path) + octet_length(content) > %s "
+                "ORDER BY document_id",
+                (byte_bound,),
+            )
+            return [r[0] for r in rows]
 
     async def passages_awaiting_indexed_structure(self) -> list[tuple[str, str]]:
         """Return the distinct ``(document_id, heading_path)`` still underived."""
@@ -731,10 +748,11 @@ class PostgresContentStore(ContentStore):
             predicate = f" WHERE {where}" if where else ""
             sql = (
                 "SELECT document_id, heading_path, content, score,"  # noqa: S608
-                " is_document_surface FROM ("
+                " is_document_surface, section_key FROM ("
                 " (SELECT document_id, heading_path, content,"
                 " 1 - (embedding <=> %s::vector) AS score,"
-                " false AS is_document_surface, chunk_index FROM chunks"
+                f" false AS is_document_surface, chunk_index, {_SECTION_KEY} AS section_key"
+                " FROM chunks"
                 f" WHERE {_passage_rows_only()}{' AND ' + where if where else ''}"
                 " ORDER BY embedding <=> %s::vector LIMIT %s)"
                 " UNION ALL"
@@ -748,7 +766,8 @@ class PostgresContentStore(ContentStore):
                 " '' AS content,"
                 " 1 - (embedding <=> %s::vector) AS score,"
                 " true AS is_document_surface,"
-                f" {LEGACY_DOCUMENT_HEADER_CHUNK_INDEX} AS chunk_index FROM document_surface"
+                f" {LEGACY_DOCUMENT_HEADER_CHUNK_INDEX} AS chunk_index,"
+                " NULL::integer AS section_key FROM document_surface"
                 f"{predicate}"
                 " ORDER BY embedding <=> %s::vector LIMIT %s)"
                 # Two rows can share a score, and a clause stopping there hands
@@ -1050,7 +1069,12 @@ class PostgresContentStore(ContentStore):
             " ), ranked AS ("
             " SELECT c.document_id, c.heading_path, c.content,"
             " max(ts_rank(c.tsv, %s::tsquery)) OVER (PARTITION BY c.document_id) AS chunk_score,"
-            " count(*) OVER (PARTITION BY c.document_id) AS matched_chunks,"
+            # A section divided to fit the embedder is several passages of one
+            # section, and the count is of sections: the densest rank over the
+            # section key is how many distinct sections carry a match.
+            " dense_rank() OVER (PARTITION BY c.document_id"
+            " ORDER BY coalesce(c.section_index, c.chunk_index)) AS section_rank,"
+            " coalesce(c.section_index, c.chunk_index) AS section_key,"
             " row_number() OVER (PARTITION BY c.document_id ORDER BY"
             " ts_rank(c.tsv, %s::tsquery) DESC, c.chunk_index) AS rn"
             " FROM chunks c JOIN matched USING (document_id)"
@@ -1058,12 +1082,14 @@ class PostgresContentStore(ContentStore):
             " ) SELECT m.document_id,"
             " COALESCE(r.heading_path, ''), COALESCE(r.content, ''),"
             " GREATEST(COALESCE(r.chunk_score, 0), COALESCE(s.surf_score, 0)) AS doc_score,"
-            " COALESCE(r.matched_chunks, 0) AS matched_chunks,"
+            " COALESCE(n.matched_chunks, 0) AS matched_chunks,"
             # No surviving passage row means nothing but the document surface
             # answered, which is what makes the row a document-level one.
-            " (r.document_id IS NULL) AS is_document_surface"
+            " (r.document_id IS NULL) AS is_document_surface, r.section_key"
             " FROM matched m"
             " LEFT JOIN (SELECT * FROM ranked WHERE rn = 1) r USING (document_id)"
+            " LEFT JOIN (SELECT document_id, max(section_rank) AS matched_chunks"
+            " FROM ranked GROUP BY document_id) n USING (document_id)"
             " LEFT JOIN surf s USING (document_id)"
             " ORDER BY doc_score DESC, m.document_id LIMIT %s"
         )
@@ -1117,7 +1143,12 @@ class PostgresContentStore(ContentStore):
         ranked = (
             "SELECT c.document_id, c.heading_path, c.content,"  # noqa: S608
             " max(ts_rank(c.tsv, q)) OVER (PARTITION BY c.document_id) AS chunk_score,"
-            " count(*) OVER (PARTITION BY c.document_id) AS matched_chunks,"
+            # A section divided to fit the embedder is several passages of one
+            # section, and the count is of sections: the densest rank over the
+            # section key is how many distinct sections carry a match.
+            " dense_rank() OVER (PARTITION BY c.document_id"
+            " ORDER BY coalesce(c.section_index, c.chunk_index)) AS section_rank,"
+            " coalesce(c.section_index, c.chunk_index) AS section_key,"
             " row_number() OVER (PARTITION BY c.document_id ORDER BY"
             " ts_rank(c.tsv, q) DESC, c.chunk_index) AS rn"
             f" FROM chunks c, websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s) AS q"
@@ -1135,15 +1166,17 @@ class PostgresContentStore(ContentStore):
             " ) SELECT m.document_id,"
             " COALESCE(r.heading_path, ''), COALESCE(r.content, ''),"
             " GREATEST(COALESCE(r.chunk_score, 0), COALESCE(s.surf_score, 0)) AS doc_score,"
-            " COALESCE(r.matched_chunks, 0) AS matched_chunks,"
+            " COALESCE(n.matched_chunks, 0) AS matched_chunks,"
             # No surviving passage row means nothing but the document surface
             # answered, which is what makes the row a document-level one. The
             # surface is a second unit of text rather than a second scope, so
             # it can win the document and cannot win the excerpt: a document
             # whose passages matched is represented by its best one.
-            " (r.document_id IS NULL) AS is_document_surface"
+            " (r.document_id IS NULL) AS is_document_surface, r.section_key"
             " FROM matched m"
             " LEFT JOIN (SELECT * FROM ranked WHERE rn = 1) r USING (document_id)"
+            " LEFT JOIN (SELECT document_id, max(section_rank) AS matched_chunks"
+            " FROM ranked GROUP BY document_id) n USING (document_id)"
             " LEFT JOIN surf s USING (document_id)"
             # Total, for the reason the semantic verb's own sort gives. For
             # much of what reaches this path the id is not breaking a tie
@@ -1412,7 +1445,7 @@ class PostgresContentStore(ContentStore):
 
         The passage count is selected alongside the discriminant rather than
         following from it: the row stands for a whole document, so how many of
-        its passages matched is not recoverable from the row itself.
+        its sections matched is not recoverable from the row itself.
         """
         return SearchResult(
             document_id=row[0],
@@ -1421,6 +1454,7 @@ class PostgresContentStore(ContentStore):
             score=float(row[3]),
             matched_chunk_count=int(row[4]),
             is_document_surface=bool(row[5]),
+            section_index=row[6],
         )
 
     @staticmethod
@@ -1440,6 +1474,7 @@ class PostgresContentStore(ContentStore):
             score=float(row[3]),
             matched_chunk_count=0 if is_document_surface else 1,
             is_document_surface=is_document_surface,
+            section_index=row[5],
         )
 
     @staticmethod
@@ -1453,6 +1488,7 @@ class PostgresContentStore(ContentStore):
             doc_type=row[5],
             lifecycle_status=row[6],
             project=row[7],
+            section_index=row[8],
         )
 
     _escape_like = staticmethod(escape_like)

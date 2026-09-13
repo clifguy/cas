@@ -62,6 +62,7 @@ from sage.services.identifier_mention_inference import (  # noqa: E402
     plan_identifier_mention_edges,
     plan_reference_reconcile,
 )
+from sage.services.passage_split import join_passages  # noqa: E402
 from sage.vault_management import config_path_for_vault  # noqa: E402
 
 
@@ -132,7 +133,7 @@ async def _process_document(
     reconcile: bool = False,
 ) -> DocReport:
     chunks = await services.content_store.get_all_chunks(doc.id)
-    body_text = "\n".join(c.content for c in chunks)
+    body_text = join_passages(chunks, separator="\n")
     planned = await plan_identifier_mention_edges(
         source_doc_id=doc.id,
         body_text=body_text,

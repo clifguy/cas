@@ -63,6 +63,7 @@ from sage.services.caller_paths import (
     validate_caller_write_path_shape,
     validate_write_to_path,
 )
+from sage.services.passage_split import group_sections, join_passages
 from sage.services.read_diagnostics import build_not_found_detail
 
 logger = logging.getLogger(__name__)
@@ -174,8 +175,9 @@ class UtilitiesService:
 
         # No exclusion is needed: the passage surface holds authored
         # passages only, so reconstructed projection text is exactly the body
-        # content the source adapter produced (CAS-ADR-049).
-        projection_text = "\n\n".join(chunk.content for chunk in chunks)
+        # content the source adapter produced (CAS-ADR-049). A section divided
+        # to fit the embedder rejoins as the one section it was.
+        projection_text = join_passages(chunks)
         return doc, projection_text
 
     # ------------------------------------------------------------------
@@ -398,12 +400,14 @@ class UtilitiesService:
                 candidate_matches=candidates if candidates else None,
             )
 
-        section_text = "\n\n".join(chunk.content for chunk in chunks)
+        # Counted in sections, so the answer does not depend on how the index
+        # divided a long one.
+        section_text = join_passages(chunks)
 
         return ReadSectionResponse.from_document(
             doc,
             heading_path=heading_path,
-            chunk_count=len(chunks),
+            chunk_count=len(group_sections(chunks)),
             section_text=section_text,
         )
 

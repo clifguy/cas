@@ -119,6 +119,17 @@ class StubContentStore(ContentStore):
 
     # -- migration to the relative indexed structure (CAS-ADR-049 Decision 3) --
 
+    async def documents_with_passages_longer_than(self, byte_bound: int) -> list[str]:
+        return sorted(
+            document_id
+            for document_id, chunks in self._store.items()
+            if any(
+                len(c.heading_path.encode("utf-8")) + len(c.content.encode("utf-8")) > byte_bound
+                for c in chunks
+                if c.heading_path != LEGACY_DOCUMENT_HEADER_HEADING_PATH
+            )
+        )
+
     async def passages_awaiting_indexed_structure(self) -> list[tuple[str, str]]:
         seen: dict[tuple[str, str], None] = {}
         for document_id, chunks in self._store.items():
@@ -180,6 +191,7 @@ class StubContentStore(ContentStore):
                                 heading_path=chunk.heading_path,
                                 content=chunk.content,
                                 score=sim,
+                                section_index=chunk.section_key,
                             ),
                         )
                     )
@@ -355,7 +367,8 @@ class StubContentStore(ContentStore):
                     heading_path=excerpt.heading_path,
                     content=excerpt.content,
                     score=max(score for score, _ in pool),
-                    matched_chunk_count=sum(1 for _, hits in authored if hits),
+                    matched_chunk_count=len({c.section_key for c, hits in authored if hits}),
+                    section_index=excerpt.section_key,
                 )
             )
 
@@ -529,7 +542,26 @@ def _cosine_similarity(a: list[float], b: list[float]) -> float:
     return dot / (norm_a * norm_b)
 
 
-class StubEmbeddingProvider(EmbeddingProvider):
+class _ByteCountedBound:
+    """A declared input bound over a byte count, for the test providers.
+
+    A byte is the coarsest count the port admits -- no binding counts more
+    tokens than bytes plus two -- so a double bounding by bytes divides text at
+    least as finely as a real tokenizer would.
+    """
+
+    def __init__(self, max_input_tokens: int = 2048) -> None:
+        self._max_input_tokens = max_input_tokens
+
+    @property
+    def max_input_tokens(self) -> int:
+        return self._max_input_tokens
+
+    def count_tokens(self, text: str) -> int:
+        return len(text.encode("utf-8"))
+
+
+class StubEmbeddingProvider(_ByteCountedBound, EmbeddingProvider):
     """Returns deterministic zero vectors for testing."""
 
     DIMENSIONS = 768
@@ -538,7 +570,7 @@ class StubEmbeddingProvider(EmbeddingProvider):
         return [[0.0] * self.DIMENSIONS for _ in texts]
 
 
-class SeededEmbeddingProvider(EmbeddingProvider):
+class SeededEmbeddingProvider(_ByteCountedBound, EmbeddingProvider):
     """Returns deterministic embeddings seeded from text content.
 
     Produces distinct non-zero vectors so that cosine similarity tests

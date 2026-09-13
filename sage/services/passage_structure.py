@@ -39,9 +39,9 @@ def indexed_structure(heading_path: str, document_title: str | None) -> str:
 
     An empty result is a legitimate value, not an absence. It is what the
     top-level heading's own passage carries, and the title still reaches that
-    passage's index through its content, where the chunker prepends the heading
-    line -- the decision demotes the title from the top weight rather than
-    removing it.
+    section's index through the content of its first passage, where the chunker
+    prepends the heading line -- the decision demotes the title from the top
+    weight rather than removing it.
 
     Args:
         heading_path: The passage's address, as the source adapter produced it.

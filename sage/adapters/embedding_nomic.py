@@ -14,6 +14,10 @@ logger = logging.getLogger(__name__)
 
 NOMIC_MODEL_NAME = "nomic-ai/nomic-embed-text-v1.5"
 EXPECTED_DIMENSIONS = 768
+# The sequence length inference is capped at, and so the bound past which input
+# is truncated. nomic's primary training context; the model's default of 8192
+# produces attention matrices 16x larger.
+MAX_INPUT_TOKENS = 2048
 
 # PyTorch's ``_IncompatibleKeys`` success repr, emitted as a cosmetic WARNING
 # by nomic's remote modeling code on a clean state-dict load.
@@ -87,11 +91,9 @@ class NomicEmbeddingProvider(EmbeddingProvider):
             # unified memory. MPS attention tensors scale quadratically
             # with sequence length and can exhaust the shared memory pool.
             self._model = SentenceTransformer(model_name, trust_remote_code=True, device="cpu")
-            # Cap sequence length to 2048 (nomic's primary training context).
-            # The default 8192 produces attention matrices 16x larger.
-            # Texts beyond 2048 tokens are truncated; the leading content
-            # (title, headings, opening paragraphs) is preserved.
-            self._model.max_seq_length = 2048
+            # Texts beyond the cap are truncated. Chunking keeps each passage
+            # within it, so truncation reaches only text not built by chunking.
+            self._model.max_seq_length = MAX_INPUT_TOKENS
         except Exception as exc:
             raise RuntimeError(f"Failed to load embedding model '{model_name}': {exc}") from exc
 
@@ -117,6 +119,18 @@ class NomicEmbeddingProvider(EmbeddingProvider):
     @property
     def dimensions(self) -> int:
         return self._dimensions
+
+    @property
+    def max_input_tokens(self) -> int:
+        return MAX_INPUT_TOKENS
+
+    def count_tokens(self, text: str) -> int:
+        """Count as ``encode`` does: WordPiece tokens plus the two special tokens.
+
+        A WordPiece token never spans less than one character, so the count
+        never exceeds the UTF-8 byte length plus two.
+        """
+        return len(self._model.tokenizer(text)["input_ids"])
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts. Returns L2-normalized vectors.
