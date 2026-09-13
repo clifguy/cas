@@ -249,6 +249,92 @@ async def test_bootstrap_schema_refuses_the_public_schema():
         await pgschema.bootstrap_schema(object(), schema="public")
 
 
+@pytest.mark.parametrize(
+    ("version", "meets"),
+    [
+        ("0.8.0", True),
+        ("0.8.2", True),
+        ("0.10.0", True),
+        ("1.0.0", True),
+        ("0.7.9", False),
+        ("0.7.4", False),
+    ],
+)
+def test_vector_floor_compares_versions_numerically(version, meets):
+    """The floor is compared component by component as numbers.
+
+    ``0.10.0`` sorts below ``0.8.0`` as a string, so a lexical comparison
+    refuses a newer library; ``0.7.9`` carries a later component above the
+    floor's, so a comparison letting a later component outweigh an earlier one
+    admits an older library.
+    """
+    assert pgschema.vector_extension_meets_floor(version) is meets
+
+
+class _VersionReportingConnection:
+    """A connection whose only answer is the vector library's installed version.
+
+    Records every statement, so a test can tell a bootstrap that asked for the
+    version from one that never did.
+    """
+
+    def __init__(self, version: str | None) -> None:
+        self.version = version
+        self.statements: list[str] = []
+
+    def transaction(self):
+        connection = self
+
+        class _Transaction:
+            async def __aenter__(self):
+                return connection
+
+            async def __aexit__(self, *exc):
+                return False
+
+        return _Transaction()
+
+    async def execute(self, statement, params=None):
+        self.statements.append(statement)
+        version = self.version
+
+        class _Cursor:
+            async def fetchone(self):
+                if "pg_available_extensions" not in statement:
+                    return None
+                return None if version is None else (version,)
+
+        return _Cursor()
+
+
+async def test_bootstrap_refuses_a_vector_library_below_the_scan_floor():
+    """A library older than the floor stops the vault from opening, and says why.
+
+    Semantic search depends on the index's iterative scan, which an older
+    library does not provide; without this refusal such a server serves reads
+    silently capped at the index's candidate list. The control shows the same
+    bootstrap asks the same question and proceeds when the answer clears.
+    """
+    old = _VersionReportingConnection("0.7.4")
+    with pytest.raises(RuntimeError, match=r"0\.7\.4.*0\.8\.0"):
+        await pgschema.bootstrap_schema(old, schema="sage_test_x", extensions=["vector"])
+
+    current = _VersionReportingConnection("0.8.2")
+    await pgschema.bootstrap_schema(current, schema="sage_test_x", extensions=["vector"])
+    assert any("pg_available_extensions" in s for s in current.statements), (
+        "control: the bootstrap that proceeded must have asked for the version"
+    )
+
+
+async def test_bootstrap_refuses_when_the_vector_library_is_not_installed():
+    """No installed library is below every floor, not a pass by default."""
+    missing = _VersionReportingConnection(None)
+    with pytest.raises(RuntimeError, match="not installed"):
+        await pgschema.bootstrap_schema(
+            missing, schema="sage_test_x", extensions=["vector"], create_extensions=False
+        )
+
+
 def test_disposable_target_guard():
     """The disposable-target guard accepts sage_test_* schemas and refuses
     'public' and any non-prefixed name -- the 'never the dev DB' rule."""

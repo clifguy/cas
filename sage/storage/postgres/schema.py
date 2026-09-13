@@ -37,6 +37,12 @@ TEXT_SEARCH_CONFIG = "english"
 # local runbook but is not in every target's managed allowlist.
 DEFAULT_EXTENSIONS: tuple[str, ...] = ("vector", "pgstattuple")
 
+# The oldest pgvector library the content store runs on. Semantic search turns on
+# the HNSW index's iterative scan, which arrived in 0.8.0; an older library would
+# not refuse the setting but drop it, serving every read capped at the index's
+# candidate list with no error to say so.
+VECTOR_LIBRARY_FLOOR: tuple[int, ...] = (0, 8, 0)
+
 # Disposable test schemas carry this prefix; the harness guard refuses to
 # provision or drop anything that does not.
 DISPOSABLE_SCHEMA_PREFIX = "sage_test_"
@@ -511,11 +517,56 @@ async def bootstrap_schema(
     ``create_extensions`` is threaded to :func:`schema_statements`: pass False
     when the extensions are an out-of-band precondition the connecting role may
     not create itself (see :func:`schema_statements`).
+
+    When ``vector`` is among the extensions, the installed library is checked
+    against :data:`VECTOR_LIBRARY_FLOOR` before anything is created, whichever
+    way ``create_extensions`` is set: the check guards what the server can load,
+    not what this role may create.
     """
+    extensions = list(extensions)
     statements = schema_statements(schema, extensions, create_extensions=create_extensions)
+    if "vector" in extensions:
+        await _assert_vector_library_floor(conn)
     async with conn.transaction():
         for stmt in statements:
             await conn.execute(stmt)
+
+
+def vector_extension_meets_floor(version: str) -> bool:
+    """Whether a pgvector version string is at or above the library floor.
+
+    Compared component by component as integers: as strings ``0.10.0`` sorts
+    below ``0.8.0``.
+    """
+    components = tuple(int(re.match(r"\d*", part).group() or 0) for part in version.split("."))
+    return components >= VECTOR_LIBRARY_FLOOR
+
+
+async def _assert_vector_library_floor(conn) -> None:
+    """Refuse a server whose pgvector library predates the floor.
+
+    Reads the version the server can load (``pg_available_extensions``) rather
+    than the version recorded against the database (``pg_extension``): the
+    setting semantic search depends on is registered by the loaded library, and a
+    database whose extension objects were never updated after a library upgrade
+    still has it.
+    """
+    cursor = await conn.execute(
+        "SELECT default_version FROM pg_available_extensions WHERE name = 'vector'"
+    )
+    row = await cursor.fetchone()
+    floor = ".".join(str(part) for part in VECTOR_LIBRARY_FLOOR)
+    if row is None or row[0] is None:
+        raise RuntimeError(
+            f"the pgvector library is not installed on this server; the content "
+            f"store needs pgvector {floor} or later"
+        )
+    if not vector_extension_meets_floor(row[0]):
+        raise RuntimeError(
+            f"the server's pgvector library is {row[0]}, below the {floor} the "
+            f"content store needs for iterative index scans; upgrade pgvector on "
+            f"the server and reopen the vault"
+        )
 
 
 def drop_schema_statement(schema: str) -> str:

@@ -791,8 +791,13 @@ class PostgresContentStore(ContentStore):
         limit; a filter is applied to those candidates after the scan, so a
         filtered arm can come back with fewer still, or with none. Each read
         therefore turns on the index's iterative scan for its own transaction,
-        so an arm keeps scanning until it holds its limit or the index is
-        exhausted. Strict ordering is the mode chosen because everything above
+        so an arm keeps scanning until it holds its limit, the index is
+        exhausted, or the scan reaches pgvector's own bounds on how far it will
+        go (``hnsw.max_scan_tuples`` and ``hnsw.scan_mem_multiplier``). The last
+        is a real residue: a filter admitting only rows sparse among the nearest
+        tuples can still leave an arm short of its limit on a large table. The
+        library floor the schema bootstrap enforces is what makes the setting
+        exist at all. Strict ordering is the mode chosen because everything above
         rests on each arm's rows arriving in distance order; the relaxed mode
         would let an arm's cutoff fall on rows it had not ranked.
 

@@ -148,14 +148,20 @@ class _RecordingBootstrapConn:
     """Records the statements bootstrap_schema executes; no live Postgres.
 
     Doubles as the connect() result context manager and the transaction()
-    context manager, the two `async with` blocks bootstrap_schema opens.
+    context manager, the two `async with` blocks bootstrap_schema opens. It
+    answers the one query bootstrap_schema reads a result from, the vector
+    library's installed version, with a version at the floor.
     """
 
     def __init__(self) -> None:
         self.statements: list[str] = []
 
-    async def execute(self, statement: str) -> None:
+    async def execute(self, statement: str) -> "_RecordingBootstrapConn":
         self.statements.append(statement)
+        return self
+
+    async def fetchone(self) -> tuple[str]:
+        return ("0.8.0",)
 
     def transaction(self) -> "_RecordingBootstrapConn":
         return self

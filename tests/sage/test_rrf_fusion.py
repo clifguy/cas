@@ -55,12 +55,13 @@ def test_rrf_fuse_hand_computed_scores() -> None:
 def test_rrf_fuse_keys_on_the_document_not_the_chunk() -> None:
     """The two arms must fuse on the entity they both rank: the document.
 
-    The arms rank different things. The semantic arm returns one row per chunk,
-    while the keyword arm's match unit is the document and it returns one row
-    per document. Keyed on ``(document_id, heading_path)`` the two would almost
-    never collide, so a document both arms agree on would receive one
-    contribution instead of two and fusion would degenerate into an interleave
-    of two independent rankings.
+    Both production arms return one row per document, but each represents it
+    by its own best passage, and the two need not pick the same one. Keyed on
+    ``(document_id, heading_path)`` the arms would collide only when they did,
+    so a document both arms agree on would receive one contribution instead of
+    two and fusion would degenerate into an interleave of two independent
+    rankings. The fusion also reads a list carrying several rows for one
+    document by that document's best row, which is what this fixture exercises.
 
     Here ``d1`` holds the vector arm's ranks 0 and 1 and the keyword arm's rank
     0. It must appear once, scored from its *best* rank in each arm, so it

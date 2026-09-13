@@ -654,6 +654,8 @@ async def test_search_semantic_fills_its_limit_past_the_index_candidate_list(ind
     first two documents and two passages of the third. The sections each
     document reports are what show how far the arm reached. A scan that stops
     at its candidate list answers with one document and two of its sections.
+    Which iterative mode the arm uses is not pinned here: at this size strict
+    and relaxed ordering return the same rows in the same order.
     """
     store, pool = index_bound_store
     for d in range(4):
@@ -680,7 +682,7 @@ async def test_search_semantic_fills_its_limit_past_the_index_candidate_list(ind
         ("d0", 3),
         ("d1", 3),
         ("d2", 2),
-    ], "the arm stopped at the index's candidate list or lost the distance order"
+    ], "the arm stopped at the index's candidate list"
 
 
 async def test_search_semantic_filter_does_not_starve_the_passage_arm(index_bound_store):
@@ -817,6 +819,7 @@ async def test_search_semantic_represents_a_document_by_its_best_passage(store):
         "the excerpt is the nearest passage, not the surface outranking it"
     )
     assert hit.matched_chunk_count == 2, "two sections matched; a divided one counts once"
+    assert hit.section_index == 0, "the row carries its excerpt's section"
 
 
 async def test_search_bm25_finds_content_term(store):

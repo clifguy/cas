@@ -860,3 +860,4 @@ async def test_stub_search_semantic_represents_a_document_by_its_best_passage(st
     assert not hit.is_document_surface, "a document whose passages matched is a passage hit"
     assert (hit.content, hit.heading_path) == ("nearest half", "Long")
     assert hit.matched_chunk_count == 2, "two sections matched; a divided one counts once"
+    assert hit.section_index == 0, "the row carries its excerpt's section"
