@@ -70,6 +70,7 @@ def _chunk(
     doc_type: str | None = None,
     lifecycle_status: str | None = None,
     project: str | None = None,
+    section_index: int | None = None,
 ) -> Chunk:
     return Chunk(
         document_id=document_id,
@@ -80,6 +81,7 @@ def _chunk(
         doc_type=doc_type,
         lifecycle_status=lifecycle_status,
         project=project,
+        section_index=section_index,
     )
 
 
@@ -575,6 +577,246 @@ async def test_search_semantic_ranks_nearest_and_scores_similarity(store):
     for r in res:
         if r.document_id != "d0":
             assert r.score == pytest.approx(0.0, abs=1e-6)  # orthogonal -> distance 1
+
+
+# The candidate list an HNSW scan keeps: a scan that is not iterative returns at
+# most this many rows whatever the statement's LIMIT, and a filter is applied to
+# those rows after the scan. Two makes the ceiling reachable with a corpus a
+# test can reason about row by row.
+_CANDIDATE_LIST = 2
+
+
+@pytest.fixture
+async def index_bound_store(pg_pool, pg_dsn, pg_schema):
+    """A store whose connections must answer a distance order from the index.
+
+    At a test's corpus size the planner sorts the table rather than scanning the
+    index, and a sort has no candidate list to run out of -- so on the ordinary
+    fixture the ceiling these tests guard cannot occur, and they would pass
+    against the defect. Refusing the sequential scan and shrinking the candidate
+    list is what makes it reachable. ``pg_pool`` is taken for its per-test
+    truncation.
+    """
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+    from psycopg_pool import AsyncConnectionPool
+
+    from sage.storage.postgres.pool import configure_connection
+
+    parsed = conninfo_to_dict(pg_dsn)
+    parsed["options"] = (
+        f"-c search_path={pg_schema},public -c enable_seqscan=off"
+        f" -c hnsw.ef_search={_CANDIDATE_LIST}"
+    )
+    pool = AsyncConnectionPool(
+        make_conninfo(**parsed),
+        min_size=1,
+        max_size=2,
+        configure=configure_connection,
+        open=False,
+    )
+    await pool.open()
+    try:
+        yield PostgresContentStore(pool), pool
+    finally:
+        await pool.close()
+
+
+async def _index_bound_passage_rows(
+    pool, query: list[float], limit: int, project: str | None = None
+) -> list[str]:
+    """The passage arm's ordering asked of the index with no iterative scan.
+
+    The control both tests stand on: it shows the connection really is bounded
+    by the candidate list, so a store read returning more rows than this did so
+    by scanning past the list rather than by the planner avoiding the index. A
+    filtered read is the one the planner most readily answers with a sort
+    instead, so a test that filters carries its filter into the control.
+    """
+    predicate = "chunk_index >= 0" + ("" if project is None else " AND project = %s")
+    params = ([] if project is None else [project]) + [query, limit]
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute("SELECT current_setting('hnsw.ef_search')")
+        (setting,) = await cur.fetchone()
+        assert setting == str(_CANDIDATE_LIST), "the candidate-list setting never took effect"
+        await cur.execute(
+            f"SELECT document_id FROM chunks WHERE {predicate}"  # noqa: S608
+            " ORDER BY embedding <=> %s::vector LIMIT %s",
+            params,
+        )
+        return [row[0] for row in await cur.fetchall()]
+
+
+async def test_search_semantic_fills_its_limit_past_the_index_candidate_list(index_bound_store):
+    """The passage arm reaches its ``limit``, not the scan's first few rows.
+
+    Twelve passages sit at twelve distinct similarities to the query, three to a
+    document, so the nearest eight are fixed by the fixture alone: all of the
+    first two documents and two passages of the third. The sections each
+    document reports are what show how far the arm reached. A scan that stops
+    at its candidate list answers with one document and two of its sections.
+    """
+    store, pool = index_bound_store
+    for d in range(4):
+        doc_id = f"d{d}"
+        chunks = [
+            _chunk(
+                doc_id,
+                content=f"passage {d}.{p}",
+                heading_path=f"Section {p}",
+                chunk_index=p,
+                embedding=_graded_emb(0.95 - 0.07 * (d * 3 + p), 1 + d * 3 + p),
+            )
+            for p in range(3)
+        ]
+        await store.index_chunks(doc_id, chunks)
+
+    assert len(await _index_bound_passage_rows(pool, _emb(0), 8)) <= _CANDIDATE_LIST, (
+        "precondition: the index must bound the ordering, or this test cannot see the ceiling"
+    )
+
+    res = await store.search_semantic(_emb(0), limit=8)
+
+    assert [(r.document_id, r.matched_chunk_count) for r in res] == [
+        ("d0", 3),
+        ("d1", 3),
+        ("d2", 2),
+    ], "the arm stopped at the index's candidate list or lost the distance order"
+
+
+async def test_search_semantic_filter_does_not_starve_the_passage_arm(index_bound_store):
+    """A filter applied after the scan must not leave the arm with nothing.
+
+    The six passages nearest the query belong to a project the filter excludes,
+    so every candidate a bounded scan keeps is filtered away; the four the filter
+    admits lie beyond the list and are reached only by scanning on.
+    """
+    store, pool = index_bound_store
+    rank = 0
+    corpus = (("o0", "other"), ("o1", "other"), ("o2", "other"), ("p0", "p"), ("p1", "p"))
+    for doc_id, project in corpus:
+        chunks = []
+        for p in range(2):
+            chunks.append(
+                _chunk(
+                    doc_id,
+                    content=f"passage {doc_id}.{p}",
+                    heading_path=f"Section {p}",
+                    chunk_index=p,
+                    embedding=_graded_emb(0.95 - 0.08 * rank, 1 + rank),
+                    project=project,
+                )
+            )
+            rank += 1
+        await store.index_chunks(doc_id, chunks)
+
+    assert await _index_bound_passage_rows(pool, _emb(0), 4, project="p") == [], (
+        "precondition: a filtered read bounded by the index must come back empty,"
+        " or this test cannot see the starvation"
+    )
+    unfiltered = await store.search_semantic(_emb(0), limit=2)
+    assert {r.document_id for r in unfiltered} == {"o0"}, (
+        "positive control: the nearest rows must be ones the filter excludes"
+    )
+
+    res = await store.search_semantic(_emb(0), limit=4, filters={"project": "p"})
+
+    assert [(r.document_id, r.matched_chunk_count) for r in res] == [("p0", 2), ("p1", 2)], (
+        "the filter emptied the bounded candidate list instead of the arm scanning on"
+    )
+
+
+async def test_search_semantic_limit_is_a_document_budget(store):
+    """``limit`` bounds documents, not rows.
+
+    One document's four passages are nearer the query than anything else, so a
+    budget counted in rows spends ``limit=3`` inside that document and answers
+    with one id. Two other documents follow by their surfaces, so a budget
+    counted in documents names them next: the assertion is on the ordered ids.
+    """
+    await store.index_chunks(
+        "crowd",
+        [
+            _chunk(
+                "crowd",
+                content=f"passage {rank}",
+                heading_path=f"Section {rank}",
+                chunk_index=rank,
+                embedding=_graded_emb(cos, 1 + rank),
+            )
+            for rank, cos in enumerate((0.95, 0.90, 0.85, 0.80))
+        ],
+    )
+    for offset, (doc_id, cos) in enumerate((("a", 0.5), ("b", 0.4), ("crowd", 0.3))):
+        await store.upsert_document_surface(
+            DocumentSurface(
+                document_id=doc_id,
+                matchable=doc_id,
+                orienting="",
+                embedding=_graded_emb(cos, 100 + offset),
+            )
+        )
+
+    res = await store.search_semantic(_emb(0), limit=3)
+
+    assert [r.document_id for r in res] == ["crowd", "a", "b"], (
+        "three documents in score order, not three passages of one"
+    )
+
+
+async def test_search_semantic_represents_a_document_by_its_best_passage(store):
+    """One row per document, carrying its best passage and its section count.
+
+    Collapsing a document's rows must not discard what they said: the excerpt
+    is the nearest passage's, the score is the document's best across both
+    surfaces, and the count is of sections -- two passages of one divided
+    section count once, which a tally of rows would count twice, and two
+    sections sharing a heading count twice, which a tally of headings would
+    count once.
+    """
+    await store.index_chunks(
+        "doc",
+        [
+            _chunk(
+                "doc",
+                content="nearest half",
+                heading_path="Long",
+                chunk_index=0,
+                section_index=0,
+                embedding=_graded_emb(0.9, 1),
+            ),
+            _chunk(
+                "doc",
+                content="second half",
+                heading_path="Long",
+                chunk_index=1,
+                section_index=0,
+                embedding=_graded_emb(0.8, 2),
+            ),
+            _chunk(
+                "doc",
+                content="other section",
+                heading_path="Long",
+                chunk_index=2,
+                section_index=1,
+                embedding=_graded_emb(0.7, 3),
+            ),
+        ],
+    )
+    await store.upsert_document_surface(
+        DocumentSurface(
+            document_id="doc", matchable="doc", orienting="", embedding=_graded_emb(0.95, 4)
+        )
+    )
+
+    [hit] = await store.search_semantic(_emb(0), limit=10)
+
+    assert hit.document_id == "doc"
+    assert hit.score == pytest.approx(0.95, abs=1e-6), "the score is the document's best"
+    assert not hit.is_document_surface, "a document whose passages matched is a passage hit"
+    assert (hit.content, hit.heading_path) == ("nearest half", "Long"), (
+        "the excerpt is the nearest passage, not the surface outranking it"
+    )
+    assert hit.matched_chunk_count == 2, "two sections matched; a divided one counts once"
 
 
 async def test_search_bm25_finds_content_term(store):
@@ -1255,13 +1497,11 @@ async def test_document_surface_leg_returns_no_excerpt_on_the_semantic_arm(store
     place of anything the document says. A document-level row is not a passage
     and has no excerpt to give, on either arm (CAS-ADR-049 Decision 5).
     """
-    # Orthogonal one-hot vectors, so the query reaches the document-level row
-    # rather than the passage. A zero vector has no defined cosine and the arm
-    # drops such a row, which would empty the result and prove nothing.
-    await store.index_chunks(
-        "surfaced",
-        [_chunk("surfaced", content="unrelated body prose", embedding=_emb(1))],
-    )
+    # A document answers once, and one whose passages reached the arm is
+    # represented by a passage, so the document-level row is observable only on
+    # a document no passage answers for. The surface is written alone for that
+    # reason; a zero vector has no defined cosine and the arm drops such a row,
+    # which would empty the result and prove nothing.
     await store.upsert_document_surface(
         DocumentSurface(
             document_id="surfaced",
@@ -1862,7 +2102,7 @@ async def test_semantic_arm_applies_the_updated_filter_to_both_surfaces(store):
                 "d1",
                 content="body",
                 lifecycle_status="active",
-                embedding=[1.0] + [0.0] * (EMBEDDING_DIM - 1),
+                embedding=_graded_emb(0.6, 1),
             )
         ],
     )
@@ -1884,11 +2124,13 @@ async def test_semantic_arm_applies_the_updated_filter_to_both_surfaces(store):
 
     # The control: an implementation that simply stopped returning surface rows
     # under any filter would satisfy the assertion above. This separates
-    # "filtered correctly" from "filtered out entirely".
+    # "filtered correctly" from "filtered out entirely". The document answers
+    # once, so the surface shows in its score: only the surface is at 1.
     archived = await store.search_semantic(
         query, limit=10, filters={"lifecycle_status": "archived"}
     )
-    assert any(h.heading_path == "" for h in archived), (
+    assert [h.document_id for h in archived] == ["d1"]
+    assert archived[0].score == pytest.approx(1.0, abs=1e-6), (
         "the surface row is filtered out under every predicate, not re-stamped"
     )
 
@@ -2987,7 +3229,10 @@ async def test_a_tied_semantic_result_orders_on_the_document_id(store):
     Queried on ``tie_bravo``'s own vector, so it scores 1 against the pair's 0
     and must lead. As on the sibling above, the leading claim is what keeps the
     id a tiebreak rather than the sort, and the excerpts are compared so the
-    order within a document is asserted along with the order between them.
+    order within a document is asserted along with the order between them. A
+    document answers once, so as on the keyword sibling that order shows as
+    which passage represents it: the tied passages and the tied surface row all
+    score level, and the passage index picks the first passage.
     """
     await _tied_documents(store)
 
@@ -2998,15 +3243,11 @@ async def test_a_tied_semantic_result_orders_on_the_document_id(store):
     assert first == second, "two identical calls disagreed after a no-op rewrite"
     assert first == [
         ("tie_bravo", _TIED_BRAVO_CONTENT),
-        ("tie_alfa", ""),
         ("tie_alfa", f"{_TIED_CONTENT} 0"),
-        ("tie_alfa", f"{_TIED_CONTENT} 1"),
-        ("tie_zulu", ""),
         ("tie_zulu", f"{_TIED_CONTENT} 0"),
-        ("tie_zulu", f"{_TIED_CONTENT} 1"),
     ], (
-        "the nearer document must lead and the tied set must then order on the id "
-        "and the passage index, not on the order the arms produced it"
+        "the nearer document must lead, the tied set must then order on the id, and "
+        "each be represented by its first passage, not by the order the arms produced"
     )
 
 

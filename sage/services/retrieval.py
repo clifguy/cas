@@ -604,16 +604,18 @@ class RetrievalService:
     def _fetch_limit(request: DiscoverRequest) -> int:
         """Compute content store fetch limit.
 
-        Over-fetch headroom compensates for post-search culls:
-        document-level dedup (one hit per doc), the inner RRF re-rank
-        fetch multiplier, and the optional ``min_relevance`` threshold.
-        The size of the headroom depends on what kind of filtering the
-        candidate set has already been through:
+        Over-fetch headroom compensates for post-search culls: the
+        failed-pipeline and scope exclusions applied to each hit, the inner
+        RRF re-rank fetch multiplier, and the optional ``min_relevance``
+        threshold. Document-level dedup no longer draws on it: both scored
+        arms count their ``limit`` in documents, so a fetch of N rows is
+        already N distinct documents. The size of the headroom depends on
+        what kind of filtering the candidate set has already been through:
 
-        * No filters → 5x. Dedup-only headroom.
+        * No filters → 5x.
         * All pushdownable (``doc_type``, ``lifecycle_status``,
           ``project``) → 3x. The content store has already filtered at the
-          column level, so the only remaining cull is dedup.
+          column level, so less remains to cull.
         * Mixed (any of ``tags``, ``pipeline_status``, ``document_ids``,
           ``tier3_metadata``) → 10x. Graph-resolved ``document_id`` IN
           clause may
@@ -1679,17 +1681,16 @@ class RetrievalService:
         out another: this runs over the rows the search already chose, and a
         budget spent per row inside one document leaves every other document
         unfetched, where no dedup here can reach them. Whether the budget can
-        be spent that way is the arm's own property, and the keyword arm
-        settles it at ``search_bm25``.
+        be spent that way is the arm's own property, and each scored arm
+        settles it at its own verb, ``search_bm25`` and ``search_semantic``.
 
         ``matched_chunk_count`` (a useful reranking signal) is the larger of
         the rows tallied here and the count the row itself carries. An arm that
-        ranks chunk by chunk reports one row per chunk and leaves the carried
-        count at 1, so the tally is the answer -- the semantic arm, now the
-        only one that reports this way. An arm whose match unit is the document
-        reports one row per document and cannot be tallied, so it counts its
-        own chunks and the carried value is the answer. Taking the larger reads
-        both without asking which is which.
+        reports one row per chunk leaves the carried count at 1, so the tally
+        is the answer. An arm that reports one row per document -- both scored
+        arms, whose ``limit`` counts documents -- cannot be tallied, so it
+        counts its own sections and the carried value is the answer. Taking
+        the larger reads both without asking which is which.
 
         Only passages are tallied. A document-level row is not a passage
         (CAS-ADR-049 Decision 5), so it contributes nothing to the tally and a

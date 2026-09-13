@@ -457,6 +457,13 @@ class ContentStore(ABC):
     ) -> list[SearchResult]:
         """Vector similarity search.
 
+        ``limit`` counts documents, not rows: a document answers once, however
+        many of its passages are near the query, so one document's passages
+        cannot be the whole answer. An approximate index is a binding's own
+        means of ranking, not a narrower budget: a binding whose index scan
+        stops short of its limit, or whose filter empties that scan, must scan
+        on rather than answer with what the index kept.
+
         filters: optional pre-filter predicates (e.g. {"doc_type": "design_spec"}).
         Values may be a single string (equality) or a list of strings
         (IN clause). When provided, only chunks matching all predicates
