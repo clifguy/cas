@@ -1929,13 +1929,16 @@ class AmbiguousIngestSourceError(SAGEError):
     delivered to the upload endpoint. Supplying both is refused so the caller
     learns which to drop, mirroring the exactly-one-of contract of
     :class:`AmbiguousDocumentIdentifierError`.
+
+    ``source_parameter`` is the name the calling tool gives the path, so the
+    message names the parameter that caller can actually correct.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, source_parameter: str) -> None:
         super().__init__(
             "ambiguous_ingest_source",
             (
-                "Supply exactly one of `source` (a source file path) or "
+                f"Supply exactly one of `{source_parameter}` (a source file path) or "
                 "`transfer_token` (redeeming an already-delivered upload); "
                 "both were provided."
             ),
@@ -1948,13 +1951,14 @@ class MissingIngestSourceError(SAGEError):
 
     Companion to :class:`AmbiguousIngestSourceError`: a document to ingest must
     arrive by exactly one of the two delivery shapes, and neither was provided.
+    ``source_parameter`` names the path as its sibling's does.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, source_parameter: str) -> None:
         super().__init__(
             "missing_ingest_source",
             (
-                "Supply exactly one of `source` (a source file path) or "
+                f"Supply exactly one of `{source_parameter}` (a source file path) or "
                 "`transfer_token` (redeeming an already-delivered upload); "
                 "neither was provided."
             ),
