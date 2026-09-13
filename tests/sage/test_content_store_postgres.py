@@ -586,6 +586,29 @@ async def test_search_semantic_ranks_nearest_and_scores_similarity(store):
 _CANDIDATE_LIST = 2
 
 
+def _planner_bound_pool(pg_dsn: str, pg_schema: str, settings: str):
+    """An unopened pool on the test schema whose connections carry ``settings``.
+
+    The ordinary fixture leaves the plan to the planner, which at a test's
+    corpus size may answer a distance order either way; a test whose defect
+    lives in one plan fixes that plan here.
+    """
+    from psycopg.conninfo import conninfo_to_dict, make_conninfo
+    from psycopg_pool import AsyncConnectionPool
+
+    from sage.storage.postgres.pool import configure_connection
+
+    parsed = conninfo_to_dict(pg_dsn)
+    parsed["options"] = f"-c search_path={pg_schema},public {settings}"
+    return AsyncConnectionPool(
+        make_conninfo(**parsed),
+        min_size=1,
+        max_size=2,
+        configure=configure_connection,
+        open=False,
+    )
+
+
 @pytest.fixture
 async def index_bound_store(pg_pool, pg_dsn, pg_schema):
     """A store whose connections must answer a distance order from the index.
@@ -597,23 +620,25 @@ async def index_bound_store(pg_pool, pg_dsn, pg_schema):
     list is what makes it reachable. ``pg_pool`` is taken for its per-test
     truncation.
     """
-    from psycopg.conninfo import conninfo_to_dict, make_conninfo
-    from psycopg_pool import AsyncConnectionPool
-
-    from sage.storage.postgres.pool import configure_connection
-
-    parsed = conninfo_to_dict(pg_dsn)
-    parsed["options"] = (
-        f"-c search_path={pg_schema},public -c enable_seqscan=off"
-        f" -c hnsw.ef_search={_CANDIDATE_LIST}"
+    pool = _planner_bound_pool(
+        pg_dsn, pg_schema, f"-c enable_seqscan=off -c hnsw.ef_search={_CANDIDATE_LIST}"
     )
-    pool = AsyncConnectionPool(
-        make_conninfo(**parsed),
-        min_size=1,
-        max_size=2,
-        configure=configure_connection,
-        open=False,
-    )
+    await pool.open()
+    try:
+        yield PostgresContentStore(pool), pool
+    finally:
+        await pool.close()
+
+
+@pytest.fixture
+async def table_scan_store(pg_pool, pg_dsn, pg_schema):
+    """A store whose connections must answer a distance order from the table.
+
+    An HNSW index over cosine distance stores no zero vector, so an index scan
+    never returns such a row and a defect in how one is scored is invisible
+    through it. Refusing index scans is what lets a test reach the row.
+    """
+    pool = _planner_bound_pool(pg_dsn, pg_schema, "-c enable_indexscan=off")
     await pool.open()
     try:
         yield PostgresContentStore(pool), pool
@@ -763,6 +788,42 @@ async def test_search_semantic_limit_is_a_document_budget(store):
     assert [r.document_id for r in res] == ["crowd", "a", "b"], (
         "three documents in score order, not three passages of one"
     )
+
+
+async def test_search_semantic_an_unscorable_passage_does_not_represent_its_document(
+    table_scan_store,
+):
+    """A passage with no defined similarity neither wins the excerpt nor the score.
+
+    A zero vector has no cosine, so its score is NaN, and NaN sorts above every
+    number: kept in the collapse, it becomes the document's best score and its
+    representative passage, displacing the document surface that genuinely
+    matched. The control shows the table scan does return the row, so the
+    assertion is not passing because the plan never saw it.
+    """
+    store, pool = table_scan_store
+    await store.index_chunks(
+        "doc",
+        [_chunk("doc", content="unembedded", heading_path="Body", embedding=[0.0] * EMBEDDING_DIM)],
+    )
+    await store.upsert_document_surface(
+        DocumentSurface(document_id="doc", matchable="doc", orienting="", embedding=_emb(0))
+    )
+    async with pool.connection() as conn, conn.cursor() as cur:
+        await cur.execute(
+            "SELECT document_id FROM chunks WHERE chunk_index >= 0"
+            " ORDER BY embedding <=> %s::vector LIMIT 10",
+            (_emb(0),),
+        )
+        assert [r[0] for r in await cur.fetchall()] == ["doc"], (
+            "precondition: the table scan must return the unembedded passage"
+        )
+
+    [hit] = await store.search_semantic(_emb(0), limit=10)
+
+    assert hit.is_document_surface, "the unscorable passage took the document"
+    assert hit.score == pytest.approx(1.0, abs=1e-6), "the score is the surface's, not NaN"
+    assert (hit.content, hit.matched_chunk_count) == ("", 0)
 
 
 async def test_search_semantic_represents_a_document_by_its_best_passage(store):
@@ -1616,11 +1677,27 @@ async def test_search_filter_pushdown_excludes_nonmatching(store):
     """Filter predicates exclude rows that match the query but fail the filter."""
     await store.index_chunks(
         "adr1",
-        [_chunk("adr1", content="shared topic", doc_type="adr", lifecycle_status="active")],
+        [
+            _chunk(
+                "adr1",
+                content="shared topic",
+                doc_type="adr",
+                lifecycle_status="active",
+                embedding=_emb(0),
+            )
+        ],
     )
     await store.index_chunks(
         "tic1",
-        [_chunk("tic1", content="shared topic", doc_type="ticket", lifecycle_status="archived")],
+        [
+            _chunk(
+                "tic1",
+                content="shared topic",
+                doc_type="ticket",
+                lifecycle_status="archived",
+                embedding=_emb(0),
+            )
+        ],
     )
     # Scalar equality predicate.
     assert [

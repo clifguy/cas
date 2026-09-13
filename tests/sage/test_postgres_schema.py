@@ -256,8 +256,11 @@ async def test_bootstrap_schema_refuses_the_public_schema():
         ("0.8.2", True),
         ("0.10.0", True),
         ("1.0.0", True),
+        ("0.8", True),
+        ("0.8.1-dev", True),
         ("0.7.9", False),
         ("0.7.4", False),
+        ("0.7", False),
     ],
 )
 def test_vector_floor_compares_versions_numerically(version, meets):
@@ -266,7 +269,8 @@ def test_vector_floor_compares_versions_numerically(version, meets):
     ``0.10.0`` sorts below ``0.8.0`` as a string, so a lexical comparison
     refuses a newer library; ``0.7.9`` carries a later component above the
     floor's, so a comparison letting a later component outweigh an earlier one
-    admits an older library.
+    admits an older library. A missing component reads as zero, so ``0.8``
+    meets a floor of ``0.8.0``; a suffix on a component is ignored.
     """
     assert pgschema.vector_extension_meets_floor(version) is meets
 
@@ -318,12 +322,29 @@ async def test_bootstrap_refuses_a_vector_library_below_the_scan_floor():
     old = _VersionReportingConnection("0.7.4")
     with pytest.raises(RuntimeError, match=r"0\.7\.4.*0\.8\.0"):
         await pgschema.bootstrap_schema(old, schema="sage_test_x", extensions=["vector"])
+    assert not any(s.lstrip().upper().startswith("CREATE") for s in old.statements), (
+        "the refusal must come before anything is created"
+    )
 
     current = _VersionReportingConnection("0.8.2")
     await pgschema.bootstrap_schema(current, schema="sage_test_x", extensions=["vector"])
     assert any("pg_available_extensions" in s for s in current.statements), (
         "control: the bootstrap that proceeded must have asked for the version"
     )
+
+
+async def test_bootstrap_checks_the_library_whatever_extensions_are_listed():
+    """The floor is checked even when ``vector`` is not among the extensions.
+
+    The list names what the bootstrap creates, and on a profile where an
+    administrator creates extensions it may omit ``vector`` entirely; the
+    content store's embedding column needs the library either way.
+    """
+    old = _VersionReportingConnection("0.7.4")
+    with pytest.raises(RuntimeError, match=r"0\.7\.4"):
+        await pgschema.bootstrap_schema(
+            old, schema="sage_test_x", extensions=["pgstattuple"], create_extensions=False
+        )
 
 
 async def test_bootstrap_refuses_when_the_vector_library_is_not_installed():

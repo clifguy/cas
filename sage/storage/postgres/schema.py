@@ -518,15 +518,14 @@ async def bootstrap_schema(
     when the extensions are an out-of-band precondition the connecting role may
     not create itself (see :func:`schema_statements`).
 
-    When ``vector`` is among the extensions, the installed library is checked
-    against :data:`VECTOR_LIBRARY_FLOOR` before anything is created, whichever
-    way ``create_extensions`` is set: the check guards what the server can load,
-    not what this role may create.
+    The installed pgvector library is checked against
+    :data:`VECTOR_LIBRARY_FLOOR` before anything is created, whatever
+    ``extensions`` lists and whichever way ``create_extensions`` is set: the
+    content store's embedding column needs the library regardless, and the check
+    guards what the server can load, not what this role may create.
     """
-    extensions = list(extensions)
     statements = schema_statements(schema, extensions, create_extensions=create_extensions)
-    if "vector" in extensions:
-        await _assert_vector_library_floor(conn)
+    await _assert_vector_library_floor(conn)
     async with conn.transaction():
         for stmt in statements:
             await conn.execute(stmt)
@@ -536,10 +535,12 @@ def vector_extension_meets_floor(version: str) -> bool:
     """Whether a pgvector version string is at or above the library floor.
 
     Compared component by component as integers: as strings ``0.10.0`` sorts
-    below ``0.8.0``.
+    below ``0.8.0``. A missing component reads as zero and a non-numeric suffix
+    on a component is ignored, so ``0.8`` and ``0.8.0-dev`` both meet ``0.8.0``.
     """
-    components = tuple(int(re.match(r"\d*", part).group() or 0) for part in version.split("."))
-    return components >= VECTOR_LIBRARY_FLOOR
+    components = [int(re.match(r"\d*", part).group() or 0) for part in version.split(".")]
+    components += [0] * (len(VECTOR_LIBRARY_FLOOR) - len(components))
+    return tuple(components) >= VECTOR_LIBRARY_FLOOR
 
 
 async def _assert_vector_library_floor(conn) -> None:

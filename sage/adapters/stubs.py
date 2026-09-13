@@ -206,14 +206,15 @@ class StubContentStore(ContentStore):
             for chunk in chunks:
                 if not _chunk_matches_filters(chunk, filters):
                     continue
-                if chunk.embedding is not None:
+                # A zero vector has no similarity; the binding drops such a row.
+                if chunk.embedding is not None and any(chunk.embedding):
                     sim = _cosine_similarity(query_embedding, chunk.embedding)
                     passages.append((sim, chunk.chunk_index, chunk))
         surfaces: list[tuple[float, str]] = []
         for surface in self._surfaces.values():
             if not _chunk_matches_filters(surface, filters):
                 continue
-            if surface.embedding is not None:
+            if surface.embedding is not None and any(surface.embedding):
                 sim = _cosine_similarity(query_embedding, surface.embedding)
                 surfaces.append((sim, surface.document_id))
         passages.sort(key=lambda x: (-x[0], x[2].document_id, x[1]))

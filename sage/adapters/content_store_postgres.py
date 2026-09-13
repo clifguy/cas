@@ -769,14 +769,15 @@ class PostgresContentStore(ContentStore):
         union, and the outer query sorts the survivors. Two properties depend
         on that shape. It is the form pgvector's HNSW index serves -- ordering
         the union by a computed score instead makes the planner scan both
-        tables in full, since neither index can supply that order. And a row
-        with no embedding yields a NaN distance, which sorts above every real
-        number under ``score DESC`` but below every real distance under the
-        ascending order each arm uses, so an unembedded row is the last thing
-        an arm keeps rather than the first. It can still reach the result when
-        an arm returns fewer rows than its limit -- there is then nothing for
-        the ordering to displace it behind -- which is why nothing writes a
-        row without an embedding.
+        tables in full, since neither index can supply that order. A row with a
+        zero vector yields a NaN distance, which sorts below every real distance
+        under the ascending order each arm uses, so an unembedded row is the
+        last thing an arm keeps rather than the first -- and a table scan can
+        still keep it when an arm returns fewer rows than its limit, though an
+        index scan never does, since the index stores no zero vector. Such a row
+        is dropped before the collapse: NaN sorts above every number, so kept
+        there it would become its document's best score and representative
+        passage, displacing a surface that genuinely matched.
 
         The outer sort is total, so the same survivors always come back in the
         same order. The arms' own clauses are not, and deliberately: a tiebreak
@@ -843,7 +844,8 @@ class PostgresContentStore(ContentStore):
                 " ORDER BY embedding <=> %s::vector LIMIT %s)"
             )
             sql = (
-                f"WITH scored AS (SELECT * FROM ({arms}) s WHERE score IS NOT NULL),"  # noqa: S608
+                f"WITH scored AS (SELECT * FROM ({arms}) s"  # noqa: S608
+                " WHERE score IS NOT NULL AND score <> 'NaN'::float8),"
                 # A document is represented by its nearest passage wherever one
                 # reached the arm. Two rows can share a score, and a clause
                 # stopping there hands back whichever the scan reached first, so

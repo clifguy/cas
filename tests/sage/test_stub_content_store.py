@@ -829,6 +829,22 @@ async def test_stub_search_semantic_limit_is_a_document_budget(store):
     )
 
 
+async def test_stub_search_semantic_an_unscorable_passage_does_not_represent_its_document(store):
+    """A zero-vector passage has no similarity, so its document answers by its surface."""
+    await store.index_chunks(
+        "doc",
+        [dataclasses.replace(_chunk("doc", content="unembedded"), embedding=[0.0] * _DIM)],
+    )
+    await store.upsert_document_surface(
+        DocumentSurface(document_id="doc", matchable="doc", orienting="", embedding=_axis())
+    )
+
+    [hit] = await store.search_semantic(_axis(), limit=10)
+
+    assert hit.is_document_surface, "the unscorable passage took the document"
+    assert (hit.content, hit.matched_chunk_count) == ("", 0)
+
+
 async def test_stub_search_semantic_represents_a_document_by_its_best_passage(store):
     """One row per document, carrying its best passage and its section count.
 
