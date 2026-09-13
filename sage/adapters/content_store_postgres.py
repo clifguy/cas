@@ -38,7 +38,6 @@ from sage.adapters.interfaces import (
     ContentStoreOptimizeSnapshot,
     DocumentSurface,
     KeywordQueryParse,
-    PassageState,
     SearchResult,
 )
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
@@ -141,16 +140,6 @@ _INSERT_SQL = (
 # structure on the way through that round-trip, and the generated column's
 # coalesce would then quietly index the address again -- a silent reversion to
 # the pre-decision behaviour rather than an error.
-# Serializes the writers of one document's passages -- those replacing,
-# removing, or updating a single document's rows. Transaction-scoped, so it
-# releases at commit or rollback, and taken by statement rather than by row lock:
-# a writer that deletes a document's rows cannot lock rows another writer has
-# yet to insert, and an UPDATE blocked on deleted rows re-evaluates to none of
-# the rows that replaced them. The vault-wide indexed-structure backfill updates
-# many documents at once and does not take it. The first key namespaces these
-# locks.
-DOCUMENT_PASSAGE_WRITE_LOCK_SQL = "SELECT pg_advisory_xact_lock(7, hashtext(%s))"
-
 _SELECT_CHUNK_COLUMNS = (
     "document_id, heading_path, indexed_structure, content, chunk_index, "
     "doc_type, lifecycle_status, project, section_index"
@@ -471,40 +460,10 @@ class PostgresContentStore(ContentStore):
         """Replace all chunks for a document (delete-then-insert, atomic)."""
         with self._query_timer.measure("index_chunks", params={"chunks": len(chunks)}):
             async with self._pool.connection() as conn, conn.transaction():
-                await conn.execute(DOCUMENT_PASSAGE_WRITE_LOCK_SQL, (document_id,))
-                await self._replace_chunks(conn, document_id, chunks)
-
-    async def replace_chunks_if_unchanged(
-        self,
-        document_id: str,
-        expected: Sequence[PassageState],
-        chunks: list[Chunk],
-    ) -> bool:
-        """Replace a document's passages only if they still read as ``expected``."""
-        with self._query_timer.measure(
-            "replace_chunks_if_unchanged", params={"chunks": len(chunks)}
-        ):
-            async with self._pool.connection() as conn, conn.transaction():
-                await conn.execute(DOCUMENT_PASSAGE_WRITE_LOCK_SQL, (document_id,))
-                cur = await conn.execute(
-                    f"SELECT {_SELECT_CHUNK_COLUMNS} FROM chunks "  # noqa: S608 -- fixed constants
-                    f"WHERE document_id = %s AND {_passage_rows_only()} ORDER BY chunk_index",
-                    (document_id,),
-                )
-                current = [self._row_to_chunk(r).stored_state for r in await cur.fetchall()]
-                if current != list(expected):
-                    return False
-                await self._replace_chunks(conn, document_id, chunks)
-                return True
-
-    async def _replace_chunks(
-        self, conn: AsyncConnection, document_id: str, chunks: list[Chunk]
-    ) -> None:
-        """Delete then insert a document's chunks on an open transaction."""
-        await conn.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
-        if chunks:
-            async with conn.cursor() as cur:
-                await cur.executemany(_INSERT_SQL, [self._chunk_row(c) for c in chunks])
+                await conn.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
+                if chunks:
+                    async with conn.cursor() as cur:
+                        await cur.executemany(_INSERT_SQL, [self._chunk_row(c) for c in chunks])
 
     async def upsert_document_surface(self, surface: DocumentSurface) -> None:
         """Write a document's document-level row; its passages are untouched."""
@@ -559,7 +518,6 @@ class PostgresContentStore(ContentStore):
             return 0
         with self._query_timer.measure("update_indexed_structure", params={"paths": len(derived)}):
             async with self._pool.connection() as conn, conn.transaction():
-                await conn.execute(DOCUMENT_PASSAGE_WRITE_LOCK_SQL, (document_id,))
                 async with conn.cursor() as cur:
                     await cur.executemany(
                         "UPDATE chunks SET indexed_structure = %s"
@@ -572,7 +530,6 @@ class PostgresContentStore(ContentStore):
         """Remove a document's passages and document surface (idempotent)."""
         with self._query_timer.measure("remove_document"):
             async with self._pool.connection() as conn, conn.transaction():
-                await conn.execute(DOCUMENT_PASSAGE_WRITE_LOCK_SQL, (document_id,))
                 await conn.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
                 await conn.execute(
                     "DELETE FROM document_surface WHERE document_id = %s", (document_id,)
@@ -738,7 +695,6 @@ class PostgresContentStore(ContentStore):
             params: list[object] = [metadata[c] for c in cols]
             params.append(document_id)
             async with self._pool.connection() as conn, conn.transaction():
-                await conn.execute(DOCUMENT_PASSAGE_WRITE_LOCK_SQL, (document_id,))
                 await conn.execute(
                     f"UPDATE chunks SET {set_clause} WHERE document_id = %s",  # noqa: S608
                     params,

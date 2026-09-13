@@ -171,7 +171,10 @@ router = APIRouter(tags=["Ingestion"])
                 "vault already holds this document's value for it. Checked in "
                 "the same transaction as the insert, so the existing document "
                 "is never disturbed. Detail carries `doc_type`, `field`, "
-                "`colliding_value` and `existing_document_id`."
+                "`colliding_value` and `existing_document_id`.\n\n"
+                "`vault_migration_in_flight`: `migrate_vault` is running on this "
+                "vault. Detail carries `vault_id` and the migration's ISO 8601 "
+                "`start_time`; retry once it has returned."
             ),
         },
         422: {

@@ -825,6 +825,11 @@ paths:
             the same transaction as the insert, so the existing document
             is never disturbed. Detail carries `doc_type`, `field`,
             `colliding_value` and `existing_document_id`.
+
+
+            `vault_migration_in_flight`: `migrate_vault` is running on this
+            vault. Detail carries `vault_id` and the migration's ISO 8601
+            `start_time`; retry once it has returned.
           content:
             application/json:
               schema:
@@ -2527,6 +2532,11 @@ paths:
           description: >-
             `reabstract_document_already_in_flight`: a re-abstraction is
             already running for this document.
+
+
+            `vault_migration_in_flight`: `migrate_vault` is running on this
+            vault. Detail carries `vault_id` and the migration's ISO 8601
+            `start_time`; retry once it has returned.
           content:
             application/json:
               schema:
@@ -3208,8 +3218,9 @@ paths:
         the registry so subsequent operations observe the new schema.
 
 
-        Six data backfills run, each naming itself in backfills_applied
-        only when it changed rows. Documents already at a successful
+        Six data backfills run, and backfills_applied names each one only
+        when it changed rows, so a vault with nothing to repair reports an
+        empty list. Documents already at a successful
         terminal pipeline_status that still carry the pipeline_error of a
         failure they have since recovered from get that field cleared.
         Documents holding a stored source_path in a spelling ingest no
@@ -3226,18 +3237,15 @@ paths:
         each fit. The division works from the stored passages -- no source
         is read and nothing is re-abstracted -- and re-embeds only the
         documents it rewrites; section reads, heading enumeration and
-        projection text read exactly as before. A document with pipeline work
-        in flight, or re-indexed or stamped while it is divided, is left for a
-        later call, and the server log names each one. A document indexed
-        before the text above its first heading had a passage of its own
-        gains that passage, addressed by the empty heading path. This is the
-        one backfill that reads sources: it re-projects each candidate
-        through the vault's source binding and adds the text ahead of the
-        passages already stored, which read exactly as before, so every
-        heading path still resolves. Nothing is re-abstracted, and only the
-        documents it rewrites are re-embedded. A document whose source
-        changed since it was indexed or cannot be read, or with pipeline
-        work in flight, is left for a later call, and the server log names
+        projection text read exactly as before. A document indexed before
+        the text above its first heading had a passage of its own gains that
+        passage, addressed by the empty heading path. This is the one
+        backfill that reads sources: it re-projects each candidate through
+        the vault's source binding and adds the text ahead of the passages
+        already stored, which read exactly as before, so every heading path
+        still resolves. Nothing is re-abstracted, and only the documents it
+        rewrites are re-embedded. A document whose source changed since it
+        was indexed or cannot be read is skipped, and the server log names
         each one. And every passage
         gains its structure relative to its document -- its heading path
         with a root element equal to the document title removed -- so a
@@ -3255,9 +3263,17 @@ paths:
         tens of thousands of passages. That backfill re-embeds nothing.
 
 
+        Run it on a vault with no pipeline work in flight. The backfills
+        rewrite stored passages, so the migration and pipeline work exclude
+        each other: the call is refused while any ingest, reabstract or
+        recompute is queued or running on the vault, and while it runs
+        those calls are refused in turn. The exclusion covers this server
+        process only: a reabstract sweep run as its own job is not seen, so
+        do not run one during a migration.
+
+
         Idempotent: a re-call against an already-migrated vault with
-        nothing left to repair, including no document an earlier call left
-        for later, returns a MigrationReport with empty
+        nothing left to repair returns a MigrationReport with empty
         columns_added and backfills_applied lists and no error; the
         registry reload is skipped on the no-op path to avoid pointless
         thrash.
@@ -3286,6 +3302,19 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: "`vault_not_found`: no vault registered with that id."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            `pipeline_work_in_flight`: an ingest, reabstract or recompute is
+            queued or running on the vault. Detail carries `vault_id`; retry
+            once it has drained.
+
+
+            `vault_migration_in_flight`: another `migrate_vault` is running
+            on this vault. Detail carries `vault_id` and the time it started.
           content:
             application/json:
               schema:
@@ -3400,7 +3429,14 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
-          description: "`reabstract_already_in_flight`: a reabstract is already running on this vault."
+          description: >-
+            `reabstract_already_in_flight`: a reabstract is already running on
+            this vault.
+
+
+            `vault_migration_in_flight`: `migrate_vault` is running on this
+            vault. Detail carries `vault_id` and the migration's ISO 8601
+            `start_time`; retry once it has returned.
           content:
             application/json:
               schema:
@@ -8670,10 +8706,11 @@ components:
             `duplicate_content`, `invalid_doc_type`, `invalid_document_date`,
             `reserved_transition`, `source_file_not_found`,
             `tier3_schema_violation`, `tier3_unique_constraint_violation`,
-            `vault_source_path_refused`, `vault_source_store_refused` and
-            `vault_source_store_unavailable`. Of these,
-            `vault_source_store_unavailable` is the one a later attempt at the
-            same file may succeed past.
+            `vault_migration_in_flight`, `vault_source_path_refused`,
+            `vault_source_store_refused` and `vault_source_store_unavailable`.
+            Of these, `vault_migration_in_flight` and
+            `vault_source_store_unavailable` are the ones a later attempt at
+            the same file may succeed past.
         detail:
           type: [object, "null"]
           additionalProperties: true

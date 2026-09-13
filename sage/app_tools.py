@@ -248,8 +248,9 @@ def register_app_tools(
         ``duplicate_content``, ``invalid_doc_type``,
         ``invalid_document_date``, ``reserved_transition``,
         ``source_file_not_found``, ``tier3_schema_violation``,
-        ``tier3_unique_constraint_violation``, ``vault_source_path_refused``,
-        ``vault_source_store_refused`` and ``vault_source_store_unavailable``.
+        ``tier3_unique_constraint_violation``, ``vault_migration_in_flight``,
+        ``vault_source_path_refused``, ``vault_source_store_refused`` and
+        ``vault_source_store_unavailable``.
         Each such entry carries that error's ``code`` and ``detail``; a
         ``vault_source_path_refused`` entry's ``detail.source_path`` names
         the caller's own file, never the staging location a redeemed upload

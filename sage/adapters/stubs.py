@@ -21,7 +21,6 @@ from sage.adapters.interfaces import (
     FacetFieldCounts,
     GraphStore,
     KeywordQueryParse,
-    PassageState,
     SearchResult,
 )
 from sage.models.enums import ResolutionPolicy
@@ -57,23 +56,6 @@ class StubContentStore(ContentStore):
 
     async def index_chunks(self, document_id: str, chunks: list[Chunk]) -> None:
         self._store[document_id] = chunks
-
-    async def replace_chunks_if_unchanged(
-        self,
-        document_id: str,
-        expected: Sequence[PassageState],
-        chunks: list[Chunk],
-    ) -> bool:
-        # No await separates the comparison from the write, so no other
-        # coroutine can write between them.
-        current = [
-            c.stored_state
-            for c in sorted(self._store.get(document_id, []), key=lambda c: c.chunk_index)
-        ]
-        if current != list(expected):
-            return False
-        self._store[document_id] = chunks
-        return True
 
     async def upsert_document_surface(self, surface: DocumentSurface) -> None:
         """Write a document's document-level row; its passages are untouched.

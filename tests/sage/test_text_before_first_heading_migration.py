@@ -14,6 +14,7 @@ migration then runs with the adapter as shipped.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -21,9 +22,10 @@ import pytest
 from sage.adapters.content_store_postgres import PostgresContentStore
 from sage.adapters.interfaces import Chunk
 from sage.adapters.stubs import StubAbstractionProvider, StubEmbeddingProvider
-from sage.models.enums import PipelineStatus, RetrievalMode, SourceType
-from sage.models.schemas import DiscoverRequest, IngestRequest
+from sage.models.enums import RetrievalMode, SourceType
+from sage.models.schemas import DiscoverRequest, IngestRequest, SetLifecycleRequest
 from sage.services.ingestion import IngestionService
+from sage.services.lifecycle import LifecycleService
 from sage.services.maintenance import BACKFILL_TEXT_BEFORE_FIRST_HEADING, MaintenanceService
 from sage.services.retrieval import RetrievalService
 from sage.services.utilities import UtilitiesService
@@ -57,13 +59,15 @@ class _RecordingEmbedder(StubEmbeddingProvider):
 
 
 class _CountingStore(PostgresContentStore):
+    """Counts every write of a document's passages."""
+
     def __init__(self, pool) -> None:
         super().__init__(pool)
-        self.replacements = 0
+        self.writes = 0
 
-    async def replace_chunks_if_unchanged(self, document_id, expected, chunks) -> bool:
-        self.replacements += 1
-        return await super().replace_chunks_if_unchanged(document_id, expected, chunks)
+    async def index_chunks(self, document_id, chunks) -> None:
+        self.writes += 1
+        await super().index_chunks(document_id, chunks)
 
 
 class _CountingAbstraction(StubAbstractionProvider):
@@ -117,7 +121,7 @@ class Vault:
         }
         self.ingestion._adapters = adapters
         self.embedder.embedded.clear()
-        self.store.replacements = 0
+        self.store.writes = 0
         self.abstraction.calls = 0
         return adapters
 
@@ -205,15 +209,15 @@ async def test_a_second_run_rewrites_nothing(vault):
     await _led(vault)
     vault.ship_adapters()
     await vault.migrate()
-    assert vault.store.replacements == 1, "control: the first run must have rewritten"
+    assert vault.store.writes == 1, "control: the first run must have rewritten"
     vault.embedder.embedded.clear()
-    vault.store.replacements = 0
+    vault.store.writes = 0
 
     report = await vault.migrate()
 
     assert BACKFILL_TEXT_BEFORE_FIRST_HEADING not in report.backfills_applied
     assert vault.embedder.embedded == []
-    assert vault.store.replacements == 0
+    assert vault.store.writes == 0
 
 
 async def test_a_document_opening_at_a_heading_is_read_and_left_alone(vault):
@@ -281,7 +285,7 @@ async def test_a_pdf_without_an_outline_is_not_projected(vault, tmp_path):
     assert _shape(await vault.store.get_all_chunks(flat)) == before
 
 
-async def test_a_source_changed_since_it_was_indexed_is_left_for_a_later_run(vault, caplog):
+async def test_a_source_changed_since_it_was_indexed_is_skipped_and_logged(vault, caplog):
     led = await _led(vault)
     doc = await vault.graph_store.get_document(led)
     (vault.root / "sources" / doc.source_path).write_text(f"Edited lead.\n\n{BODY}")
@@ -294,68 +298,10 @@ async def test_a_source_changed_since_it_was_indexed_is_left_for_a_later_run(vau
     assert BACKFILL_TEXT_BEFORE_FIRST_HEADING not in report.backfills_applied
     assert _shape(await vault.store.get_all_chunks(led)) == before
     assert vault.embedder.embedded == []
-    left = [r.getMessage() for r in caplog.records if "left for a later" in r.getMessage()]
-    assert any(led in message for message in left), left
-
-
-@pytest.mark.parametrize("hold", ["indexing_in_progress", "claimed"])
-async def test_a_document_with_pipeline_work_is_left_for_a_later_run(vault, hold):
-    led = await _led(vault)
-    if hold == "claimed":
-        assert vault.ingestion._try_claim(led, "recompute") is None
-    else:
-        await vault.graph_store.update_document(
-            led, {"pipeline_status": PipelineStatus.INDEXING_IN_PROGRESS.value}
-        )
-    before = _shape(await vault.store.get_all_chunks(led))
-    vault.ship_adapters()
-
-    report = await vault.migrate()
-
-    assert BACKFILL_TEXT_BEFORE_FIRST_HEADING not in report.backfills_applied
-    assert _shape(await vault.store.get_all_chunks(led)) == before
-    assert vault.embedder.embedded == []
-
-    if hold == "claimed":
-        vault.ingestion._release_claim(led)
-    else:
-        await vault.graph_store.update_document(
-            led, {"pipeline_status": PipelineStatus.ABSTRACTION_COMPLETE.value}
-        )
-    report = await vault.migrate()
-
-    assert BACKFILL_TEXT_BEFORE_FIRST_HEADING in report.backfills_applied, (
-        "control: the same document is recovered once nothing holds it"
-    )
-
-
-async def test_passages_rewritten_while_the_recovery_embeds_are_not_overwritten(vault):
-    led = await _led(vault)
-    stored = await vault.store.get_all_chunks(led)
-    concurrent = [
-        Chunk(
-            document_id=led,
-            heading_path=c.heading_path,
-            content=f"re-indexed meanwhile {c.chunk_index}",
-            embedding=[0.5] * EMBEDDING_DIM,
-            chunk_index=c.chunk_index,
-            section_index=c.chunk_index,
-        )
-        for c in stored
+    skipped = [
+        r.getMessage() for r in caplog.records if "not stored by migrate_vault" in r.getMessage()
     ]
-
-    async def reindex_meanwhile():
-        vault.embedder.during_embed = None
-        await vault.store.index_chunks(led, concurrent)
-
-    vault.ship_adapters()
-    vault.embedder.during_embed = reindex_meanwhile
-
-    report = await vault.migrate()
-
-    assert vault.embedder.embedded, "control: the recovery reached its embed call"
-    assert _shape(await vault.store.get_all_chunks(led)) == _shape(concurrent)
-    assert BACKFILL_TEXT_BEFORE_FIRST_HEADING not in report.backfills_applied
+    assert any(led in message and "source differs" in message for message in skipped), skipped
 
 
 class _InMemorySourceStore(FilesystemVaultSourceStore):
@@ -429,13 +375,13 @@ async def test_the_recovered_passage_carries_the_document_scalars(vault):
     assert [h.document.id for h in response.results] == [led]
 
 
-async def test_a_document_reindexed_with_its_preamble_before_the_read_gets_no_second(vault):
-    """A candidate is chosen from its heading paths before its source is projected.
+async def test_passages_already_holding_the_text_when_read_get_no_second(vault):
+    """Candidacy is read from heading enumeration before the source is projected.
 
-    A re-index landing in between -- a same-bytes forced re-ingest, say -- writes the
-    empty-path passage itself, so by the time the passages are read there is nothing
-    to add. The stale candidacy read is reproduced by answering heading enumeration
-    with the paths the document held before that re-index.
+    The rewrite reads the passages again under the document's lock and does not
+    trust that earlier read: passages already holding the empty path are left
+    alone. A stale candidacy read is reproduced by answering heading enumeration
+    with the paths the document held before its passages gained the text.
     """
     led = await _led(vault)
     stale_paths = await vault.store.get_heading_paths(led)
@@ -461,4 +407,34 @@ async def test_a_document_reindexed_with_its_preamble_before_the_read_gets_no_se
 
     assert BACKFILL_TEXT_BEFORE_FIRST_HEADING not in report.backfills_applied
     assert _shape(await vault.store.get_all_chunks(led)) == before
-    assert vault.store.replacements == 0
+    assert vault.store.writes == 0
+
+
+async def test_a_lifecycle_stamp_while_the_text_is_added_is_not_reverted(vault):
+    """Archiving writes the new status onto the passage rows, which the rewrite
+    carries forward from the rows it read. The archive waits for the rewrite."""
+    led = await _led(vault)
+    lifecycle = LifecycleService(
+        vault.graph_store, vault.ingestion._locks, vault.config, vault.store
+    )
+    archiving = []
+
+    async def archive_meanwhile():
+        vault.embedder.during_embed = None
+        archive = asyncio.create_task(
+            lifecycle._set_lifecycle(led, SetLifecycleRequest(action="archive"))
+        )
+        archiving.append(archive)
+        await asyncio.wait({archive}, timeout=0.5)
+        assert not archive.done(), "control: the archive must wait on the rewrite"
+
+    vault.ship_adapters()
+    vault.embedder.during_embed = archive_meanwhile
+
+    report = await vault.migrate()
+    await archiving[0]
+
+    assert BACKFILL_TEXT_BEFORE_FIRST_HEADING in report.backfills_applied
+    chunks = await vault.store.get_all_chunks(led)
+    assert chunks[0].heading_path == ""
+    assert {c.lifecycle_status for c in chunks} == {"archived"}

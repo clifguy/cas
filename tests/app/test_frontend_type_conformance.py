@@ -1,10 +1,11 @@
-"""The frontend document interfaces declare the published component schemas.
+"""The frontend API interfaces declare the published component schemas.
 
-``app/src/api/types.ts`` hand-maintains TypeScript mirrors of the response
-shapes the SAGE Core API publishes. The spec-versus-code gates elsewhere in this
-suite hold the Pydantic models to ``sage_core_api.openapi.yaml`` and stop at the
-Python boundary; nothing else reads the TypeScript file, so a property added to
-a schema reaches the frontend only if whoever added it remembered to.
+``app/src/api/types.ts`` hand-maintains TypeScript mirrors of the shapes the
+SAGE Core API publishes: the document responses the frontend reads and the
+request bodies it sends. The spec-versus-code gates elsewhere in this suite hold
+the Pydantic models to ``sage_core_api.openapi.yaml`` and stop at the Python
+boundary; nothing else reads the TypeScript file, so a property added to a
+schema reaches the frontend only if whoever added it remembered to.
 
 This module reads the component schemas, not the Pydantic models, so it sits on
 the same authority those gates do and needs no opinion about which Python class
@@ -13,11 +14,38 @@ backs which interface.
 Authority
 ---------
 
-The formal substrate is authoritative (CAS-ADR-008). A property the schema
-declares and the interface omits is drift, and the fix is to declare it. A
-property the interface declares and the schema omits is a frontend-only field:
-nothing on the wire supplies it, so it needs an allowlist entry naming why it
-exists, or it should not exist.
+The formal substrate is authoritative (CAS-ADR-008), in the same direction for
+responses and requests.
+
+A property the schema declares and the interface omits is drift, and the fix is
+to declare it. On a response it is a field the wire supplies that the frontend
+cannot see. On a request it is a field the server accepts that the frontend
+cannot send without first widening its own type; declaring an optional member
+obliges no caller to send it, so omission is never the way to say "not sent".
+The settled omission is a property the frontend must not send, such as a
+back-compatible alias a request component accepts in place of another property:
+declaring both would type-permit a body the server refuses. Such a property needs
+an allowlist entry naming why it is withheld.
+
+A property the interface declares and the schema omits is a frontend-only field:
+nothing on the wire supplies it, or the server refuses it, so it needs an
+allowlist entry naming why it exists, or it should not exist.
+
+Optionality
+-----------
+
+A request component's ``required`` list is part of the contract the frontend
+sends against, so for request interfaces one direction is compared: a property
+the component requires is non-optional on the interface. The other direction is
+permitted, since an interface requiring what the schema leaves optional only
+means the frontend always sends it. F6 has no allowlist. A required property the
+interface marks optional type-permits a body the server refuses, which is never a
+settled divergence.
+
+Response interfaces are compared by name only: the REST document routes emit
+every key, so a response schema's ``required`` list carries nothing the frontend
+relies on. Whether a property is nullable or correctly typed on the TypeScript
+side is not asserted for either kind.
 
 Invariants
 ----------
@@ -26,17 +54,14 @@ F1  Every property of an enrolled component schema is declared on its interface.
 F2  An enrolled interface declares no property its component schema omits.
 F3  Every allowlist entry names an enrolled interface and a property that still
     diverges on the side the entry names.
-F4  Every enrolled interface and component resolves, and enough properties are
-    compared to mean something (vacuity floor).
-F5  The comparison fires on a removed declaration, and the staleness check
-    fires on a stale entry.
-
-Only property names are compared. Whether a property is optional, nullable, or
-correctly typed on the TypeScript side is not asserted here.
-
-F3 is inert by construction while the allowlist is empty: its loop runs zero
-times and passes against any implementation. The staleness function it calls is
-exercised with a non-empty allowlist by F5, which is where its teeth are.
+F4  Every enrolled interface and component resolves, the response and request
+    enrollments are disjoint, each per-interface gate iterates the whole of its
+    enrollment, and enough properties are compared in each to mean something
+    (vacuity floors).
+F5  The comparison fires on a removed declaration, including one inherited
+    through a heritage clause; the optionality check fires on a relaxed required
+    member; and the staleness check fires on a stale entry.
+F6  Every property a request component requires is non-optional on its interface.
 
 The reader
 ----------
@@ -44,11 +69,14 @@ The reader
 The interfaces are read by a token-level declaration reader, not by matching
 lines: comments, string literals and nested type literals are lexed as what they
 are, so reformatting a declaration or annotating a member does not change what
-is collected. The reader models plain property members only and **fails closed**
-on anything else it meets inside an enrolled interface -- a heritage clause, an
-index signature, a method signature, a member it cannot delimit -- because
-collecting a subset of such a declaration would let F1 pass over members it never
-saw. The P tests pin its behaviour on synthetic sources.
+is collected. The reader models plain property members, and heritage clauses
+whose bases are bare names of interfaces declared in the same source; inherited
+members are collected with the interface's own. It **fails closed** on anything
+else it meets in an enrolled interface -- an index signature, a method signature,
+a member it cannot delimit, a generic or qualified base, a base it cannot find as
+an interface, a cyclic clause, a member declared twice along the heritage chain
+-- because collecting a subset of such a declaration would let F1 pass over
+members it never saw. The P tests pin its behaviour on synthetic sources.
 """
 
 from __future__ import annotations
@@ -64,27 +92,58 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 TYPES_TS_PATH = _REPO_ROOT / "app" / "src" / "api" / "types.ts"
 SAGE_CORE_SPEC_PATH = _REPO_ROOT / "docs" / "fs" / "sage" / "sage_core_api.openapi.yaml"
 
-# TypeScript interface name -> SAGE Core component schema name.
+# Response interfaces: TypeScript interface name -> SAGE Core component schema name.
 ENROLLED: Final[dict[str, str]] = {
     "Document": "Document",
     "DocumentSummary": "DocumentSummary",
 }
 
+# Request interfaces, which F6 additionally holds to their components' required lists.
+ENROLLED_REQUESTS: Final[dict[str, str]] = {
+    "BulkLifecycleItem": "BulkLifecycleItem",
+    "BulkLifecycleRequest": "BulkLifecycleRequest",
+    "BulkLinkItem": "BulkLinkItem",
+    "BulkLinkRequest": "BulkLinkRequest",
+    "BulkMetadataItem": "BulkMetadataItem",
+    "BulkMetadataRequest": "BulkMetadataRequest",
+    "DiscoverRequest": "DiscoverRequest",
+    "LinkRequest": "LinkRequest",
+    "ListFieldPatch": "ListFieldPatch",
+    "ReabstractRequest": "ReabstractRequest",
+    "RelocationPointer": "RelocationPointer",
+    "Tier3Patch": "Tier3Patch",
+    "TraverseRequest": "TraverseRequest",
+    "UpdateMetadataRequest": "UpdateMetadataRequest",
+}
+
+ALL_ENROLLED: Final[dict[str, str]] = {**ENROLLED, **ENROLLED_REQUESTS}
+
 # Which side of a divergence carries the property: published by the schema only, or
 # declared by the interface only.
 Side = Literal["schema_only", "interface_only"]
 
+_DOC_ID_ALIAS_REASON: Final[str] = (
+    "back-compatible alias for document_id; the component accepts exactly one of the "
+    "two per item, so declaring both would type-permit a body the server refuses"
+)
+
 # (interface, property, side) -> the reason the divergence is kept rather than closed.
 # The side is part of the key so an entry justifying one direction cannot silence
 # the other: a frontend-only field that later becomes schema-only is drift again.
-# Empty by intent: an entry is an admission that the frontend and the published
-# contract disagree about a document's shape, and should be justified in review.
-KNOWN_FRONTEND_TYPE_DIVERGENCE: Final[dict[tuple[str, str, Side], str]] = {}
+# An entry is an admission that the frontend and the published contract disagree
+# about a shape, and should be justified in review.
+KNOWN_FRONTEND_TYPE_DIVERGENCE: Final[dict[tuple[str, str, Side], str]] = {
+    ("BulkLifecycleItem", "doc_id", "schema_only"): _DOC_ID_ALIAS_REASON,
+    ("BulkMetadataItem", "doc_id", "schema_only"): _DOC_ID_ALIAS_REASON,
+}
 
-# Vacuity floor for F4. The enrolled pairs compare forty-three schema properties
-# today; the floor sits below that so ordinary movement does not trip it, while a
-# lookup returning nothing does.
+# Vacuity floors for F4, each set below today's count so ordinary movement does not
+# trip it while a lookup returning nothing does. The response pairs compare
+# forty-three schema properties, the request pairs ninety-one, and the request
+# components require thirteen.
 MIN_PROPERTIES_COMPARED: Final[int] = 35
+MIN_REQUEST_PROPERTIES_COMPARED: Final[int] = 70
+MIN_REQUIRED_PROPERTIES_COMPARED: Final[int] = 7
 
 
 # ---------------------------------------------------------------------------
@@ -138,12 +197,20 @@ def _is_punct(token: tuple[str, str], text: str) -> bool:
 def read_interface(source: str, name: str) -> dict[str, bool]:
     """Return the property members of interface ``name`` as ``{property: optional}``.
 
-    The gate compares property names only; the optional flag is reported, not
-    compared. Raises ``KeyError`` when no such interface is declared, and
-    ``UnsupportedDeclarationError`` when it is declared more than once or uses
-    syntax the reader does not model.
+    Members inherited through a heritage clause are included. Raises ``KeyError``
+    when no such interface is declared, and ``UnsupportedDeclarationError`` when it
+    is declared more than once or uses syntax the reader does not model.
     """
-    tokens = _lex(source)
+    return _read_interface(_lex(source), name, ())
+
+
+def _read_interface(
+    tokens: list[tuple[str, str]], name: str, seen: tuple[str, ...]
+) -> dict[str, bool]:
+    """Read interface ``name`` from ``tokens``; ``seen`` is the heritage chain that reached it."""
+    if name in seen:
+        chain = " -> ".join((*seen, name))
+        raise UnsupportedDeclarationError(f"interface {seen[0]!r}: cyclic heritage {chain}")
     starts = [
         i
         for i in range(len(tokens) - 1)
@@ -168,10 +235,66 @@ def read_interface(source: str, name: str) -> dict[str, bool]:
                     j += 1
                     break
             j += 1
+    bases: list[str] = []
+    if j < len(tokens) and tokens[j] == ("ident", "extends"):
+        j, bases = _read_heritage(tokens, j + 1, name)
     if j >= len(tokens) or not _is_punct(tokens[j], "{"):
         found = tokens[j][1] if j < len(tokens) else "end of source"
         raise UnsupportedDeclarationError(f"interface {name!r}: expected '{{', found {found!r}")
-    return _read_members(tokens, j + 1, name)
+    own = _read_members(tokens, j + 1, name)
+
+    members: dict[str, bool] = {}
+    for base in bases:
+        try:
+            inherited = _read_interface(tokens, base, (*seen, name))
+        except KeyError:
+            raise UnsupportedDeclarationError(
+                f"interface {name!r}: base {base!r} is not an interface declared in this source"
+            ) from None
+        _merge_members(members, inherited, name, base)
+    _merge_members(members, own, name, name)
+    return members
+
+
+def _read_heritage(tokens: list[tuple[str, str]], j: int, name: str) -> tuple[int, list[str]]:
+    """Read the base names of a heritage clause starting at ``j``.
+
+    Returns the index of the body's ``{`` with the bases in declaration order.
+    Only bare identifiers are modelled: a type argument or a qualified name would
+    make the base something other than the interface its identifier names.
+    """
+    bases: list[str] = []
+    while True:
+        if j >= len(tokens) or tokens[j][0] != "ident":
+            found = tokens[j][1] if j < len(tokens) else "end of source"
+            raise UnsupportedDeclarationError(
+                f"interface {name!r}: heritage clause names {found!r}, not a bare interface name"
+            )
+        base = tokens[j][1]
+        j += 1
+        if j < len(tokens) and _is_punct(tokens[j], ","):
+            bases.append(base)
+            j += 1
+            continue
+        if j < len(tokens) and _is_punct(tokens[j], "{"):
+            bases.append(base)
+            return j, bases
+        found = tokens[j][1] if j < len(tokens) else "end of source"
+        raise UnsupportedDeclarationError(
+            f"interface {name!r}: base {base!r} is followed by {found!r}, not a bare interface name"
+        )
+
+
+def _merge_members(
+    members: dict[str, bool], incoming: dict[str, bool], name: str, origin: str
+) -> None:
+    """Add ``incoming`` to ``members``, refusing a member already collected along the chain."""
+    for member, optional in incoming.items():
+        if member in members:
+            raise UnsupportedDeclarationError(
+                f"interface {name!r}: {origin!r} redeclares member {member!r}"
+            )
+        members[member] = optional
 
 
 def _read_members(tokens: list[tuple[str, str]], j: int, name: str) -> dict[str, bool]:
@@ -277,9 +400,27 @@ def component_properties(spec: dict, component: str) -> set[str]:
     return set(properties)
 
 
+def component_required(spec: dict, component: str) -> set[str]:
+    """The property names a component schema lists as required.
+
+    Refuses an absent or composed component on the same terms as
+    ``component_properties``.
+    """
+    component_properties(spec, component)
+    return set(spec["components"]["schemas"][component].get("required") or [])
+
+
 def divergence(interface_props: set[str], schema_props: set[str]) -> tuple[set[str], set[str]]:
     """Return ``(schema_only, interface_only)`` property names."""
     return schema_props - interface_props, interface_props - schema_props
+
+
+def relaxed_required(members: dict[str, bool], required: set[str]) -> set[str]:
+    """Required property names the interface declares optional.
+
+    A required property the interface does not declare at all is F1's to report.
+    """
+    return {prop for prop in required if members.get(prop, False)}
 
 
 def stale_entries(
@@ -326,15 +467,20 @@ def core_spec() -> dict:
 
 
 @pytest.fixture(scope="module")
-def interface_props(types_source: str) -> dict[str, set[str]]:
-    return {interface: set(read_interface(types_source, interface)) for interface in ENROLLED}
+def interface_members(types_source: str) -> dict[str, dict[str, bool]]:
+    return {interface: read_interface(types_source, interface) for interface in ALL_ENROLLED}
+
+
+@pytest.fixture(scope="module")
+def interface_props(interface_members: dict[str, dict[str, bool]]) -> dict[str, set[str]]:
+    return {interface: set(members) for interface, members in interface_members.items()}
 
 
 @pytest.fixture(scope="module")
 def schema_props(core_spec: dict) -> dict[str, set[str]]:
     return {
         interface: component_properties(core_spec, component)
-        for interface, component in ENROLLED.items()
+        for interface, component in ALL_ENROLLED.items()
     }
 
 
@@ -347,12 +493,61 @@ def allowlisted(
     }
 
 
+def unexempted_schema_only(source: str, spec: dict) -> dict[str, set[str]]:
+    """F1's findings over ``source``: each enrolled interface with a non-exempt omission."""
+    findings: dict[str, set[str]] = {}
+    for interface, component in ALL_ENROLLED.items():
+        schema_only, _ = divergence(
+            set(read_interface(source, interface)), component_properties(spec, component)
+        )
+        missing = schema_only - allowlisted(
+            interface, "schema_only", KNOWN_FRONTEND_TYPE_DIVERGENCE
+        )
+        if missing:
+            findings[interface] = missing
+    return findings
+
+
+def relaxed_request_members(source: str, spec: dict) -> dict[str, set[str]]:
+    """F6's findings over ``source``: each enrolled request with a relaxed required member."""
+    findings: dict[str, set[str]] = {}
+    for interface, component in ENROLLED_REQUESTS.items():
+        relaxed = relaxed_required(
+            read_interface(source, interface), component_required(spec, component)
+        )
+        if relaxed:
+            findings[interface] = relaxed
+    return findings
+
+
+def rewrite_member(source: str, interface: str, member: str, replacement: str) -> str:
+    """Rewrite the one declaration head of ``member`` in the body of exported ``interface``.
+
+    The head is the member's name, optional marker and colon; ``replacement`` is
+    substituted for it. An empty ``replacement`` removes a declaration that ends on its
+    own line, and refuses a member whose type continues onto further lines.
+    """
+    body = re.search(
+        rf"^export interface {re.escape(interface)}\b[^\n]*\{{\n(?P<body>.*?)^\}}",
+        source,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert body is not None, f"interface {interface!r} body not found"
+    if replacement:
+        pattern, repl = rf"^([ \t]*){re.escape(member)}\??[ \t]*:", rf"\g<1>{replacement}"
+    else:
+        pattern, repl = rf"^[ \t]*{re.escape(member)}\??[ \t]*:[^\n]*;[ \t]*\n", ""
+    mutated, count = re.subn(pattern, repl, body.group("body"), flags=re.MULTILINE)
+    assert count == 1, f"{interface}.{member} is not declared exactly once in its body"
+    return source[: body.start("body")] + mutated + source[body.end("body") :]
+
+
 # ---------------------------------------------------------------------------
 # Gate
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("interface", sorted(ENROLLED))
+@pytest.mark.parametrize("interface", sorted(ALL_ENROLLED))
 def test_schema_properties_are_declared_on_the_interface(
     interface: str,
     interface_props: dict[str, set[str]],
@@ -364,13 +559,13 @@ def test_schema_properties_are_declared_on_the_interface(
         schema_only - allowlisted(interface, "schema_only", KNOWN_FRONTEND_TYPE_DIVERGENCE)
     )
     assert not missing, (
-        f"{ENROLLED[interface]} publishes properties the TypeScript {interface} interface does not "
-        f"declare: {missing}. The published schema is authoritative; "
+        f"{ALL_ENROLLED[interface]} publishes properties the TypeScript {interface} interface "
+        f"does not declare: {missing}. The published schema is authoritative; "
         f"declare them in {TYPES_TS_PATH.name}."
     )
 
 
-@pytest.mark.parametrize("interface", sorted(ENROLLED))
+@pytest.mark.parametrize("interface", sorted(ALL_ENROLLED))
 def test_interface_declares_no_property_absent_from_the_schema(
     interface: str,
     interface_props: dict[str, set[str]],
@@ -382,9 +577,9 @@ def test_interface_declares_no_property_absent_from_the_schema(
         interface_only - allowlisted(interface, "interface_only", KNOWN_FRONTEND_TYPE_DIVERGENCE)
     )
     assert not extra, (
-        f"The TypeScript {interface} interface declares properties {ENROLLED[interface]} does not "
-        f"publish: {extra}. Remove them, or add a KNOWN_FRONTEND_TYPE_DIVERGENCE entry naming why "
-        "a frontend-only field exists."
+        f"The TypeScript {interface} interface declares properties {ALL_ENROLLED[interface]} "
+        f"does not publish: {extra}. Remove them, or add a KNOWN_FRONTEND_TYPE_DIVERGENCE entry "
+        "naming why a frontend-only field exists."
     )
 
 
@@ -397,16 +592,74 @@ def test_divergence_allowlist_has_no_stale_entries(
     assert not stale, "stale KNOWN_FRONTEND_TYPE_DIVERGENCE entries:\n" + "\n".join(stale)
 
 
-def test_enrollment_resolves_and_is_not_vacuous(types_source: str, core_spec: dict) -> None:
-    """F4: every enrolled pair resolves, and the comparison covers enough properties."""
-    compared = 0
-    for interface, component in ENROLLED.items():
-        assert read_interface(types_source, interface), (
-            f"interface {interface!r} declares no properties"
+@pytest.mark.parametrize("interface", sorted(ENROLLED_REQUESTS))
+def test_required_request_properties_are_not_optional_on_the_interface(
+    interface: str,
+    interface_members: dict[str, dict[str, bool]],
+    core_spec: dict,
+) -> None:
+    """F6: a property the request component requires is non-optional on the interface."""
+    relaxed = sorted(
+        relaxed_required(
+            interface_members[interface],
+            component_required(core_spec, ENROLLED_REQUESTS[interface]),
         )
-        compared += len(component_properties(core_spec, component))
-    assert compared >= MIN_PROPERTIES_COMPARED, (
-        f"only {compared} schema properties compared; floor is {MIN_PROPERTIES_COMPARED}"
+    )
+    assert not relaxed, (
+        f"{ENROLLED_REQUESTS[interface]} requires properties the TypeScript {interface} interface "
+        f"marks optional: {relaxed}. The server refuses a body without them; "
+        f"remove the '?' in {TYPES_TS_PATH.name}."
+    )
+
+
+@pytest.mark.parametrize(
+    ("gate", "enrollment"),
+    [
+        (test_schema_properties_are_declared_on_the_interface, ALL_ENROLLED),
+        (test_interface_declares_no_property_absent_from_the_schema, ALL_ENROLLED),
+        (test_required_request_properties_are_not_optional_on_the_interface, ENROLLED_REQUESTS),
+    ],
+    ids=["F1", "F2", "F6"],
+)
+def test_gates_are_parametrized_over_their_enrollment(
+    gate: object, enrollment: dict[str, str]
+) -> None:
+    """F4: each per-interface gate iterates the whole of the enrollment it enforces.
+
+    The F5 probes exercise the comparison helpers, not the parametrized gates, so a
+    gate narrowed back to a subset of its enrollment would leave them green.
+    """
+    marks = [mark for mark in getattr(gate, "pytestmark", []) if mark.name == "parametrize"]
+    assert len(marks) == 1, (
+        f"{getattr(gate, '__name__', gate)} carries {len(marks)} parametrizations"
+    )
+    assert marks[0].args == ("interface", sorted(enrollment))
+
+
+def test_enrollment_resolves_and_is_not_vacuous(types_source: str, core_spec: dict) -> None:
+    """F4: every enrolled pair resolves, and each kind compares enough properties."""
+    overlap = sorted(set(ENROLLED) & set(ENROLLED_REQUESTS))
+    assert not overlap, f"interfaces enrolled as both response and request: {overlap}"
+    floors = (
+        ("response", ENROLLED, MIN_PROPERTIES_COMPARED),
+        ("request", ENROLLED_REQUESTS, MIN_REQUEST_PROPERTIES_COMPARED),
+    )
+    for kind, enrolled, floor in floors:
+        compared = 0
+        for interface, component in enrolled.items():
+            assert read_interface(types_source, interface), (
+                f"interface {interface!r} declares no properties"
+            )
+            compared += len(component_properties(core_spec, component))
+        assert compared >= floor, (
+            f"only {compared} {kind} schema properties compared; floor is {floor}"
+        )
+    required = sum(
+        len(component_required(core_spec, component)) for component in ENROLLED_REQUESTS.values()
+    )
+    assert required >= MIN_REQUIRED_PROPERTIES_COMPARED, (
+        f"only {required} required request properties compared; "
+        f"floor is {MIN_REQUIRED_PROPERTIES_COMPARED}"
     )
 
 
@@ -426,6 +679,55 @@ def test_gate_fires_when_a_declared_property_is_removed(types_source: str, core_
     )
     assert document_only == {"stored_content_hash"}
     assert summary_only == set()
+
+
+def test_gate_fires_when_a_request_declaration_is_removed(
+    types_source: str, core_spec: dict
+) -> None:
+    """F5: removing one request member surfaces exactly that member, on that interface only."""
+    assert unexempted_schema_only(types_source, core_spec) == {}
+    mutated = rewrite_member(types_source, "DiscoverRequest", "facet_value_limit", "")
+    assert unexempted_schema_only(mutated, core_spec) == {"DiscoverRequest": {"facet_value_limit"}}
+
+
+def test_gate_sees_a_base_member_removed_through_heritage(
+    types_source: str, core_spec: dict
+) -> None:
+    """F5: a member removed from a base is missing from the interface that inherits it."""
+    assert unexempted_schema_only(types_source, core_spec) == {}
+    mutated = rewrite_member(types_source, "BulkLinkItem", "rationale_kind", "")
+    assert unexempted_schema_only(mutated, core_spec) == {
+        "BulkLinkItem": {"rationale_kind"},
+        "LinkRequest": {"rationale_kind"},
+    }
+
+
+def test_optionality_check_fires_when_a_required_member_is_relaxed(
+    types_source: str, core_spec: dict
+) -> None:
+    """F5: marking an inherited required member optional is reported wherever it is inherited."""
+    assert relaxed_request_members(types_source, core_spec) == {}
+    mutated = rewrite_member(types_source, "BulkLinkItem", "edge_type", "edge_type?:")
+    assert relaxed_request_members(mutated, core_spec) == {
+        "BulkLinkItem": {"edge_type"},
+        "LinkRequest": {"edge_type"},
+    }
+
+
+def test_component_required_reads_the_required_list() -> None:
+    """F6: the required list is read as declared, and its absence means nothing is required."""
+    spec = {
+        "components": {
+            "schemas": {
+                "X": {"properties": {"a": {}, "b": {}}, "required": ["a"]},
+                "Y": {"properties": {"a": {}}},
+            }
+        }
+    }
+    assert component_required(spec, "X") == {"a"}
+    assert component_required(spec, "Y") == set()
+    assert relaxed_required({"a": True, "b": True}, {"a"}) == {"a"}
+    assert relaxed_required({"b": False}, {"a"}) == set()
 
 
 def test_stale_check_flags_an_entry_that_no_longer_diverges() -> None:
@@ -521,10 +823,53 @@ def test_reader_collects_quoted_and_readonly_members() -> None:
     assert set(read_interface(source, "X")) == {"weird-key", "z", "readonly"}
 
 
-def test_reader_refuses_a_heritage_clause() -> None:
-    """P6."""
-    with pytest.raises(UnsupportedDeclarationError, match="expected"):
-        read_interface("interface X extends Y { a: string }", "X")
+def test_reader_resolves_a_heritage_clause() -> None:
+    """P6: inherited members are collected with the interface's own, optional flags intact."""
+    source = """
+    interface B { b?: string }
+    interface C { c: boolean }
+    interface A extends B { a: number }
+    export interface Multi extends B, C { m: string }
+    interface Generic<T> extends C { g: T }
+    """
+    assert read_interface(source, "A") == {"b": True, "a": False}
+    assert read_interface(source, "Multi") == {"b": True, "c": False, "m": False}
+    assert read_interface(source, "Generic") == {"c": False, "g": False}
+
+
+@pytest.mark.parametrize(
+    ("source", "diagnostic"),
+    [
+        ("interface B<T> { b: T }\ninterface X extends B<string> { a: string }", "not a bare"),
+        ("interface X extends ns.B { a: string }", "not a bare"),
+        ("interface X extends { a: string }", "not a bare"),
+        ("interface X extends Absent { a: string }", "not an interface declared"),
+        (
+            "type B = { b: string }\ninterface X extends B { a: string }",
+            "not an interface declared",
+        ),
+        ("interface X extends B { a: string }\ninterface B extends X { b: string }", "cyclic"),
+        ("interface B { a: string }\ninterface X extends B { a: string }", "redeclares"),
+        (
+            "interface B { a: string }\ninterface C { a: string }\ninterface X extends B, C {}",
+            "redeclares",
+        ),
+    ],
+    ids=[
+        "generic-base",
+        "qualified-base",
+        "empty-clause",
+        "absent-base",
+        "type-alias-base",
+        "cycle",
+        "redeclared-in-derived",
+        "redeclared-across-bases",
+    ],
+)
+def test_reader_refuses_heritage_it_does_not_model(source: str, diagnostic: str) -> None:
+    """P10: each refusal names its own cause."""
+    with pytest.raises(UnsupportedDeclarationError, match=diagnostic):
+        read_interface(source, "X")
 
 
 @pytest.mark.parametrize(

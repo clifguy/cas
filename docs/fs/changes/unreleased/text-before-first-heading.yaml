@@ -16,10 +16,11 @@ summary: >-
   reads sources: it re-projects each markdown, docx and outlined-PDF document whose
   stored passages include headings but none under the empty path, and adds the text
   ahead of the stored passages, which it leaves as they read. It does not re-abstract,
-  re-embeds only the documents it rewrites, and leaves for a later call a document
-  whose source changed since it was indexed or cannot be read, or that has pipeline
-  work in flight. Descriptions change in sage_core_api.openapi.yaml and the MCP tool
-  catalog: migrate_vault names the backfill, list_headings says the empty path may be
+  re-embeds only the documents it rewrites, and skips, logging the reason, a document
+  whose source changed since it was indexed or cannot be read. It runs inside the
+  migration's vault-level exclusion of pipeline work and rewrites each document under
+  the per-document lock metadata stamps take. Descriptions change in
+  sage_core_api.openapi.yaml and the MCP tool catalog: migrate_vault names the backfill, list_headings says the empty path may be
   listed and what it addresses, and DiscoverHit.chunk_content and search say a hit with
   a null heading_path may be the text before a first heading, read whole by read_section
   with an empty heading_path. No operation, tool, parameter or response field is added

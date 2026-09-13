@@ -673,6 +673,8 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         # Key of the untyped ``invalid_doc_type`` detail, named in the
         # doc_type-vocabulary error mode.
         "valid_types": ERROR_DETAIL_KEY,
+        # Key of the ``vault_migration_in_flight`` detail.
+        "start_time": ERROR_DETAIL_KEY,
         "sage_vaults": (
             "the vault-scoped route prefix, in the endpoint paths this "
             "narrative names; a URL segment, not a contract node"

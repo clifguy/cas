@@ -54,6 +54,7 @@ from sage.api.errors import (
     InvalidDocTypeError,
     InvalidLifecycleTransitionError,
     NoProjectionError,
+    PipelineWorkInFlightError,
     ReabstractDocumentAlreadyInFlightError,
     RecomputePipelineAlreadyInFlightError,
     RelocationProvenanceMismatchError,
@@ -64,6 +65,7 @@ from sage.api.errors import (
     SupersedeTargetNotActiveError,
     Tier3SchemaViolationError,
     Tier3UniqueConstraintViolation,
+    VaultMigrationInFlightError,
     VaultSourcePathRefusedError,
 )
 from sage.config import (
@@ -117,9 +119,6 @@ _PREAMBLE_SOURCE_TYPES = frozenset({SourceType.MARKDOWN, SourceType.DOCX, Source
 # Tag the PDF adapter records on a document projected from an outline, the only
 # structure through which a PDF places text before a heading.
 _PDF_OUTLINE_TAG = "pdf:has_outline"
-
-# How a repair that adds the text before the first heading is named in the log.
-_PREAMBLE_OPERATION = "adding the text before the first heading"
 
 # Provider-neutral abstraction latency records. Shares the logger name with
 # the local provider's implementation-specific breakdown so one pipeline
@@ -328,6 +327,11 @@ class IngestionService:
         # terminates.
         self._inflight: dict[str, _InflightClaim] = {}
 
+        # See ``exclude_pipeline_work``. An ingest counts from entry: it writes
+        # before it claims, and the inline path never claims at all.
+        self._migration_started_at: datetime | None = None
+        self._ingests_running = 0
+
         # In-memory abstraction work queue drained by a single per-vault worker.
         # The queue is created lazily on first enqueue (so it binds to the
         # running loop) and is NOT itself durable: durability comes from the
@@ -390,6 +394,29 @@ class IngestionService:
             kind=kind, start_time=datetime.now(timezone.utc)
         )
         return None
+
+    def refuse_during_migration(self) -> None:
+        """Raise ``VaultMigrationInFlightError`` while ``migrate_vault`` runs; never awaits."""
+        if self._migration_started_at is not None:
+            raise VaultMigrationInFlightError(self._config.vault.id, self._migration_started_at)
+
+    @contextlib.contextmanager
+    def exclude_pipeline_work(self) -> Iterator[None]:
+        """Hold the vault free of pipeline work for a migration, however the block ends.
+
+        Check and hold happen with no await between them. The state is this
+        process's, which suffices only while the deployment pins one replica and
+        no separate job (a scheduled reabstract sweep) runs pipeline work beside
+        it; otherwise the exclusion would have to move to the store.
+        """
+        self.refuse_during_migration()
+        if self._inflight or self._ingests_running:
+            raise PipelineWorkInFlightError(self._config.vault.id)
+        self._migration_started_at = datetime.now(timezone.utc)
+        try:
+            yield
+        finally:
+            self._migration_started_at = None
 
     def _release_claim(self, document_id: str) -> None:
         """Decrement a document's in-flight claim, dropping it when the last
@@ -989,7 +1016,23 @@ class IngestionService:
                 ``metadata_schema``, or the doc_type has no
                 ``metadata_schema`` declared and a non-empty payload was
                 supplied.
+            VaultMigrationInFlightError: ``migrate_vault`` is running on the
+                vault. Raised before anything else, dry runs included.
         """
+        self.refuse_during_migration()
+        self._ingests_running += 1
+        try:
+            return await self._ingest(request, wait_for_pipeline, caller_source)
+        finally:
+            self._ingests_running -= 1
+
+    async def _ingest(
+        self,
+        request: IngestRequest,
+        wait_for_pipeline: bool,
+        caller_source: str | None,
+    ) -> IngestResult | IngestPreview:
+        """The body of ``ingest``, run once the call is admitted."""
         adapter = self._adapters.get(request.source_type)
         if adapter is None:
             raise AdapterNotFoundError(request.source_type)
@@ -2183,6 +2226,7 @@ class IngestionService:
         if not await self._content_store.has_chunks(document_id):
             raise NoProjectionError(document_id)
 
+        self.refuse_during_migration()
         existing = self._try_claim(document_id, "reabstract")
         if existing is not None:
             raise ReabstractDocumentAlreadyInFlightError(document_id, existing.start_time)
@@ -2310,6 +2354,7 @@ class IngestionService:
 
         vault_source_store = resolve_stack_vault_source_store(get_stack_config())
 
+        self.refuse_during_migration()
         existing = self._try_claim(document_id, "recompute")
         if existing is not None:
             raise RecomputePipelineAlreadyInFlightError(document_id, existing.start_time)
@@ -3093,38 +3138,26 @@ class IngestionService:
         scalars stamped on it -- are carried from its section, and the document's
         passages are re-embedded together, since they are replaced together.
 
-        The migration runs in the server that serves ingest, so a document can
-        be re-indexed while it is divided. A document whose division would change
-        nothing is left alone; one with pipeline work in flight, or not yet at a
-        terminal status, is left for a later run; otherwise the division holds
-        the document's pipeline claim while it embeds, so no reabstract or
-        recompute starts meanwhile, and writes through the store's
-        compare-and-replace, which is refused if the passages were rewritten or
-        stamped after they were read. A document left for later is logged with its reason.
+        The migration excludes pipeline work, so only a metadata stamp can reach
+        a document mid-division; holding the lock stamps take, from read to
+        write, makes a stamp land after the rewrite instead of beneath it.
 
         Returns:
-            Whether the passages were rewritten. A document whose division is
-            unchanged, or that is left for a later run, is not.
+            Whether the passages were rewritten.
         """
-        doc = await self._store.get_document(document_id)
-        if doc is None:
-            return False
-        stored = await self._content_store.get_all_chunks(document_id)
-        sections = group_sections(stored)
-        divided = self._passages_for_sections(
-            document_id,
-            [(section[0].heading_path, section_text(section)) for section in sections],
-        )
-        if [(c.heading_path, c.content) for c in divided] == [
-            (c.heading_path, c.content) for c in stored
-        ]:
-            return False
-        as_read = [c.stored_state for c in stored]
-        if doc.pipeline_status not in TERMINAL_PIPELINE_STATUS_VALUES:
-            return self._left_for_later(document_id, f"pipeline_status {doc.pipeline_status}")
-        if self._try_claim(document_id, "divide") is not None:
-            return self._left_for_later(document_id, "pipeline work in flight")
-        try:
+        async with self._locks.lock(document_id):
+            if await self._store.get_document(document_id) is None:
+                return False
+            stored = await self._content_store.get_all_chunks(document_id)
+            sections = group_sections(stored)
+            divided = self._passages_for_sections(
+                document_id,
+                [(section[0].heading_path, section_text(section)) for section in sections],
+            )
+            if [(c.heading_path, c.content) for c in divided] == [
+                (c.heading_path, c.content) for c in stored
+            ]:
+                return False
             for chunk in divided:
                 origin = sections[chunk.section_key][0]
                 chunk.indexed_structure = origin.indexed_structure
@@ -3136,14 +3169,8 @@ class IngestionService:
             )
             for chunk, embedding in zip(divided, embeddings):
                 chunk.embedding = embedding
-
-            if await self._content_store.replace_chunks_if_unchanged(document_id, as_read, divided):
-                return True
-            return self._left_for_later(
-                document_id, "passages rewritten or stamped during the division"
-            )
-        finally:
-            self._release_claim(document_id)
+            await self._content_store.index_chunks(document_id, divided)
+            return True
 
     async def store_text_before_first_heading(self) -> int:
         """Store the text each document carries before its first heading, vault-wide.
@@ -3185,21 +3212,19 @@ class IngestionService:
         replaced together.
 
         The source must still be the one the passages were projected from: a
-        source whose bytes changed since is left for a later run, since adding
-        new text above old passages would store a document that never existed.
-        So is a source that cannot be projected, a document with pipeline work
-        in flight or not at a terminal status, and one whose passages were
-        rewritten or stamped while it embeds -- the same claim and
-        compare-and-replace the division above uses.
+        source whose bytes changed since is skipped, since adding new text above
+        old passages would store a document that never existed, and so is a
+        source that cannot be projected. Each skip is logged with its reason.
+
+        The migration excludes pipeline work, so only a metadata stamp can reach
+        the document meanwhile; the passages are read and rewritten under the
+        lock stamps take, as the division above does. The source is projected
+        before that lock is taken, since projection can be slow.
 
         Returns:
             Whether the passages were rewritten.
         """
         document_id = doc.id
-        if doc.pipeline_status not in TERMINAL_PIPELINE_STATUS_VALUES:
-            return self._left_for_later(
-                document_id, f"pipeline_status {doc.pipeline_status}", _PREAMBLE_OPERATION
-            )
         adapter = self._adapters.get(doc.source_type)
         if adapter is None or doc.source_path is None:
             return False
@@ -3214,37 +3239,33 @@ class IngestionService:
             ) as project_path:
                 projection = await adapter.project(project_path, merged_config)
         except Exception as exc:
-            return self._left_for_later(
-                document_id, f"source not projected: {type(exc).__name__}", _PREAMBLE_OPERATION
+            return self._preamble_skipped(
+                document_id, f"source not projected: {type(exc).__name__}"
             )
         expected_hash = doc.stored_content_hash or doc.source_content_hash
         if canonicalize_sha256(projection.content_hash) != expected_hash:
-            return self._left_for_later(
-                document_id, "source differs from the one its passages hold", _PREAMBLE_OPERATION
+            return self._preamble_skipped(
+                document_id, "source differs from the one its passages hold"
             )
         if not projection.headings or not projection.preamble.strip():
             return False
 
-        stored = await self._content_store.get_all_chunks(document_id)
-        # Candidacy was read before the projection; a re-index landing since then
-        # has already stored the text, and adding it again would store it twice.
-        if not stored or any(chunk.heading_path == "" for chunk in stored):
-            return False
-        sections = group_sections(stored)
-        rebuilt = self._passages_for_sections(
-            document_id,
-            [("", projection.preamble)]
-            + [(section[0].heading_path, section_text(section)) for section in sections],
-        )
-        as_read = [c.stored_state for c in stored]
-        if self._try_claim(document_id, "store_preamble") is not None:
-            return self._left_for_later(document_id, "pipeline work in flight", _PREAMBLE_OPERATION)
-        try:
-            first = stored[0]
+        async with self._locks.lock(document_id):
+            stored = await self._content_store.get_all_chunks(document_id)
+            # Candidacy was read before the projection; passages that hold the
+            # text by now must not be given it twice.
+            if not stored or any(chunk.heading_path == "" for chunk in stored):
+                return False
+            sections = group_sections(stored)
+            rebuilt = self._passages_for_sections(
+                document_id,
+                [("", projection.preamble)]
+                + [(section[0].heading_path, section_text(section)) for section in sections],
+            )
             for chunk in rebuilt:
                 if chunk.section_key == 0:
+                    origin = stored[0]
                     chunk.indexed_structure = indexed_structure("", doc.title)
-                    origin = first
                 else:
                     origin = sections[chunk.section_key - 1][0]
                     chunk.indexed_structure = origin.indexed_structure
@@ -3256,21 +3277,15 @@ class IngestionService:
             )
             for chunk, embedding in zip(rebuilt, embeddings):
                 chunk.embedding = embedding
-
-            if await self._content_store.replace_chunks_if_unchanged(document_id, as_read, rebuilt):
-                return True
-            return self._left_for_later(
-                document_id,
-                "passages rewritten or stamped while the text was added",
-                _PREAMBLE_OPERATION,
-            )
-        finally:
-            self._release_claim(document_id)
+            await self._content_store.index_chunks(document_id, rebuilt)
+            return True
 
     @staticmethod
-    def _left_for_later(document_id: str, reason: str, operation: str = "passage division") -> bool:
-        """Record that a document's repair was left for a later migration run."""
+    def _preamble_skipped(document_id: str, reason: str) -> bool:
+        """Record why a document's text before its first heading was not stored."""
         logger.info(
-            "%s of %s left for a later migrate_vault run: %s", operation, document_id, reason
+            "text before the first heading of %s not stored by migrate_vault: %s",
+            document_id,
+            reason,
         )
         return False
