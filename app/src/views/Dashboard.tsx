@@ -118,7 +118,6 @@ export default function Dashboard() {
             <tr>
               <th style={thStyle}>Adapter</th>
               <th style={thStyle}>Extensions</th>
-              <th style={thStyle}>Enabled</th>
             </tr>
           </thead>
           <tbody>
@@ -126,7 +125,6 @@ export default function Dashboard() {
               <tr key={a.source_type}>
                 <td style={tdStyle}>{a.source_type}</td>
                 <td style={tdStyle}>{a.extensions.join(', ')}</td>
-                <td style={tdStyle}>{a.enabled ? 'Yes' : 'No'}</td>
               </tr>
             ))}
           </tbody>
