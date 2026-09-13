@@ -3207,7 +3207,9 @@ paths:
         each fit. The division works from the stored passages -- no source
         is read and nothing is re-abstracted -- and re-embeds only the
         documents it rewrites; section reads, heading enumeration and
-        projection text read exactly as before. And every passage
+        projection text read exactly as before. A document with pipeline work
+        in flight, or re-indexed while it is divided, is left for a later
+        call, and the server log names each one. And every passage
         gains its structure relative to its document -- its heading path
         with a root element equal to the document title removed -- so a
         title that a source format made the document's top-level heading
@@ -3225,7 +3227,8 @@ paths:
 
 
         Idempotent: a re-call against an already-migrated vault with
-        nothing left to repair returns a MigrationReport with empty
+        nothing left to repair, including no document an earlier call left
+        for later, returns a MigrationReport with empty
         columns_added and backfills_applied lists and no error; the
         registry reload is skipped on the no-op path to avoid pointless
         thrash.

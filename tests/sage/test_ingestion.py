@@ -857,20 +857,11 @@ def test_chunk_projection_leaves_sections_under_the_bound_unsplit(ingestion_serv
     assert chunks[2].content == "## Tail\n\nShort closing."
 
 
-def test_chunk_projection_keeps_a_section_whole_when_its_heading_path_fills_the_bound(
-    ingestion_service,
-):
-    """No division can fit when the heading path alone overflows the bound.
-
-    Dividing anyway emits one passage per code point, each embedded as the same
-    truncated heading path; one passage is the least-bad outcome.
-    """
+def _long_heading_section(ingestion_service, bound: int, path: str):
     from sage.source_adapters.base import HeadingNode, ProjectionResult
 
-    service = _bounded(ingestion_service, bound=40)
-    path = "Doc > " + "An extremely long heading promoted from a styled paragraph"
-    body = "First paragraph of the section.\n\nSecond paragraph of the section."
-
+    service = _bounded(ingestion_service, bound=bound)
+    body = "\n\n".join(f"Paragraph {i} of the section." for i in range(6))
     chunks = service._chunk_projection(
         "doc_long_heading",
         ProjectionResult(
@@ -881,9 +872,38 @@ def test_chunk_projection_keeps_a_section_whole_when_its_heading_path_fills_the_
             title="Doc",
         ),
     )
+    return chunks, f"## {path[6:]}\n\n{body}"
 
-    assert len(path.encode()) > 40
-    assert [(c.heading_path, c.content) for c in chunks] == [(path, f"## {path[6:]}\n\n{body}")]
+
+def test_chunk_projection_keeps_a_section_whole_when_its_heading_path_crowds_the_bound(
+    ingestion_service,
+):
+    """Under a quarter of the bound left for content, a section stays whole.
+
+    Dividing there emits passages of a few characters each, every one embedded
+    as the same heading path; one passage is the least-bad outcome.
+    """
+    bound = 200
+    path = "Doc > " + "h" * 145  # leaves under a quarter of the bound once separated
+    assert bound - len(f"{path}\n\n".encode()) < bound // 4
+
+    chunks, section = _long_heading_section(ingestion_service, bound, path)
+
+    assert [(c.heading_path, c.content) for c in chunks] == [(path, section)]
+
+
+def test_chunk_projection_still_divides_when_the_heading_path_leaves_a_quarter(
+    ingestion_service,
+):
+    """Control for the floor: with a quarter of the bound left, the section divides."""
+    bound = 200
+    path = "Doc > " + "h" * 100
+    assert bound - len(f"{path}\n\n".encode()) >= bound // 4
+
+    chunks, section = _long_heading_section(ingestion_service, bound, path)
+
+    assert len(chunks) > 1
+    assert "".join(c.content for c in chunks) == section
 
 
 def _document_for_surface(

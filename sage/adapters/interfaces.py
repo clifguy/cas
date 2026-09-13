@@ -278,6 +278,25 @@ class ContentStore(ABC):
         """Store embedded chunks for a document."""
 
     @abstractmethod
+    async def replace_chunks_if_unchanged(
+        self,
+        document_id: str,
+        expected: Sequence[tuple[str, str]],
+        chunks: list[Chunk],
+    ) -> bool:
+        """Replace a document's passages only if they still read as ``expected``.
+
+        ``expected`` is the document's passages as ``(heading_path, content)``
+        pairs in document order, as the caller read them. The comparison and the
+        replacement are one step, excluding every other writer of the document's
+        passages for its duration, so a write landing after the caller's read is
+        never overwritten: the replacement is refused instead.
+
+        Returns:
+            Whether the passages were replaced.
+        """
+
+    @abstractmethod
     async def upsert_document_surface(self, surface: DocumentSurface) -> None:
         """Write a document's document-level text, replacing any prior row.
 

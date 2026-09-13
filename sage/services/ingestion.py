@@ -3004,10 +3004,15 @@ class IngestionService:
         chunks: list[Chunk] = []
         for section_index, (heading_path, content) in enumerate(sections):
             fits = self._fits_embedding_input(heading_path)
-            # Where the heading path leaves no room for any content, no division
-            # fits, and dividing anyway yields a passage per code point, each
-            # embedded as the same truncated path. The section stays whole.
-            pieces = split_passage(content, fits) if fits(content[:1]) else [content]
+            # A heading path that leaves under a quarter of the bound for content
+            # divides a section into slivers, each embedded as mostly the same
+            # path, and past the bound into a passage per code point. The
+            # section stays whole instead.
+            room = self._embedding.max_input_tokens - self._embedding.count_tokens(
+                embedding_input(heading_path, "")
+            )
+            crowded = room < self._embedding.max_input_tokens // 4
+            pieces = [content] if crowded else split_passage(content, fits)
             for piece in pieces:
                 chunks.append(
                     Chunk(
@@ -3071,34 +3076,36 @@ class IngestionService:
         scalars stamped on it -- are carried from its section, and the document's
         passages are re-embedded together, since they are replaced together.
 
-        The migration runs in the server that serves ingest, and pipeline work
-        replaces a document's passages without the document lock, so the lock
-        would not exclude it. A document with pipeline work in flight or not yet
-        at a terminal status is left for a later run instead; the division holds
+        The migration runs in the server that serves ingest, so a document can
+        be re-indexed while it is divided. A document whose division would change
+        nothing is left alone; one with pipeline work in flight, or not yet at a
+        terminal status, is left for a later run; otherwise the division holds
         the document's pipeline claim while it embeds, so no reabstract or
-        recompute starts meanwhile; and the passages are read again before the
-        write, which is abandoned if they changed in the interval.
+        recompute starts meanwhile, and writes through the store's
+        compare-and-replace, which is refused if the passages changed after they
+        were read. A document left for later is logged with its reason.
 
         Returns:
             Whether the passages were rewritten. A document whose division is
-            unchanged, or that is skipped or changed under the division, is not.
+            unchanged, or that is left for a later run, is not.
         """
         doc = await self._store.get_document(document_id)
-        if doc is None or doc.pipeline_status not in TERMINAL_PIPELINE_STATUS_VALUES:
+        if doc is None:
             return False
+        stored = await self._content_store.get_all_chunks(document_id)
+        sections = group_sections(stored)
+        divided = self._passages_for_sections(
+            document_id,
+            [(section[0].heading_path, section_text(section)) for section in sections],
+        )
+        as_read = [(c.heading_path, c.content) for c in stored]
+        if [(c.heading_path, c.content) for c in divided] == as_read:
+            return False
+        if doc.pipeline_status not in TERMINAL_PIPELINE_STATUS_VALUES:
+            return self._left_for_later(document_id, f"pipeline_status {doc.pipeline_status}")
         if self._try_claim(document_id, "divide") is not None:
-            return False
+            return self._left_for_later(document_id, "pipeline work in flight")
         try:
-            stored = await self._content_store.get_all_chunks(document_id)
-            sections = group_sections(stored)
-            divided = self._passages_for_sections(
-                document_id,
-                [(section[0].heading_path, section_text(section)) for section in sections],
-            )
-            as_read = [(c.heading_path, c.content) for c in stored]
-            if [(c.heading_path, c.content) for c in divided] == as_read:
-                return False
-
             for chunk in divided:
                 origin = sections[chunk.section_key][0]
                 chunk.indexed_structure = origin.indexed_structure
@@ -3111,10 +3118,16 @@ class IngestionService:
             for chunk, embedding in zip(divided, embeddings):
                 chunk.embedding = embedding
 
-            current = await self._content_store.get_all_chunks(document_id)
-            if [(c.heading_path, c.content) for c in current] != as_read:
-                return False
-            await self._content_store.index_chunks(document_id, divided)
-            return True
+            if await self._content_store.replace_chunks_if_unchanged(document_id, as_read, divided):
+                return True
+            return self._left_for_later(document_id, "passages rewritten during the division")
         finally:
             self._release_claim(document_id)
+
+    @staticmethod
+    def _left_for_later(document_id: str, reason: str) -> bool:
+        """Record that a document's division was left for a later migration run."""
+        logger.info(
+            "passage division of %s left for a later migrate_vault run: %s", document_id, reason
+        )
+        return False

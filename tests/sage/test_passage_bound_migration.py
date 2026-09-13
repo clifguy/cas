@@ -318,15 +318,18 @@ async def test_a_document_mid_pipeline_is_left_for_a_later_run(
 async def test_passages_rewritten_while_the_division_embeds_are_not_overwritten(
     graph_store, store, ingestion, embedder, minimal_config, tmp_vault_dir, legacy_vault
 ):
+    """The concurrent write keeps the stored shape -- same rows, same heading
+    paths -- and changes only content, as re-ingesting an edited source does."""
     concurrent = [
         Chunk(
             document_id=OVERSIZE,
-            heading_path="Doc",
-            content="# Doc\n\nre-indexed meanwhile",
+            heading_path=c.heading_path,
+            content=f"re-indexed meanwhile {c.chunk_index}",
             embedding=[0.5] * EMBEDDING_DIM,
-            chunk_index=0,
-            section_index=0,
+            chunk_index=c.chunk_index,
+            section_index=c.chunk_index,
         )
+        for c in legacy_vault
     ]
 
     async def reindex_meanwhile():
@@ -358,3 +361,44 @@ async def test_the_division_holds_the_document_while_it_embeds(
 
     assert observed and observed[0] is not None, "a recompute could start mid-division"
     assert OVERSIZE not in ingestion._inflight, "the division's claim outlived it"
+
+
+@pytest.mark.parametrize(
+    "status",
+    [
+        PipelineStatus.ABSTRACTION_SKIPPED,
+        PipelineStatus.ABSTRACTION_INTERRUPTED,
+        PipelineStatus.FAILED,
+    ],
+)
+async def test_every_terminal_status_is_divided(
+    graph_store, store, ingestion, minimal_config, tmp_vault_dir, legacy_vault, status
+):
+    await graph_store.update_document(OVERSIZE, {"pipeline_status": status.value})
+
+    report = await _maintenance(
+        graph_store, store, ingestion, minimal_config, tmp_vault_dir
+    ).migrate_vault()
+
+    assert BACKFILL_PASSAGE_INPUT_BOUND in report.backfills_applied
+    assert len(await store.get_all_chunks(OVERSIZE)) > len(legacy_vault)
+
+
+async def test_a_document_left_for_a_later_run_is_logged_with_its_reason(
+    graph_store, store, ingestion, minimal_config, tmp_vault_dir, legacy_vault, caplog
+):
+    await graph_store.update_document(
+        OVERSIZE, {"pipeline_status": PipelineStatus.INDEXING_IN_PROGRESS.value}
+    )
+    assert ingestion._try_claim(FITTING, "recompute") is None
+
+    with caplog.at_level("INFO", logger="sage.services.ingestion"):
+        await _maintenance(
+            graph_store, store, ingestion, minimal_config, tmp_vault_dir
+        ).migrate_vault()
+
+    left = [r.getMessage() for r in caplog.records if "left for a later" in r.getMessage()]
+    assert any(OVERSIZE in m and "indexing_in_progress" in m for m in left), left
+    assert not any(FITTING in m for m in left), (
+        "a document the division would not have rewritten is not reported as left"
+    )
