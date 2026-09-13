@@ -145,6 +145,11 @@ KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
         "renamed test_no_fixture_hands_off_an_unsettled_document when the unwaited-fixture "
         "arm began anchoring on return and completion as well as yield"
     ),
+    "tests/app/test_frontend_type_conformance.py::test_reader_refuses_a_heritage_clause": (
+        "replaced by test_reader_resolves_a_heritage_clause when the reader began resolving "
+        "bare-name heritage; the forms it still refuses are pinned by "
+        "test_reader_refuses_heritage_it_does_not_model"
+    ),
 }
 
 

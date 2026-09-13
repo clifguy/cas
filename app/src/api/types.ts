@@ -216,7 +216,15 @@ export interface DiscoverHit {
 export interface DiscoverRequest {
   mode: 'semantic' | 'keyword' | 'deterministic' | 'catalog';
   query?: string;
+  // Deterministic mode addresses one section of one document.
+  document_id?: string;
+  heading_path?: string;
   scope?: string;
+  target?: 'documents' | 'edges' | 'facets';
+  facet_fields?:
+    | ('doc_type' | 'lifecycle_status' | 'source_type' | 'pipeline_status' | 'tags')[]
+    | null;
+  facet_value_limit?: number | null;
   filters?: {
     doc_type?: string;
     lifecycle_status?: string;
@@ -231,6 +239,9 @@ export interface DiscoverRequest {
   limit?: number;
   offset?: number;
   use_hybrid?: boolean;
+  use_abstract_prefilter?: boolean;
+  include_abstracts?: boolean;
+  min_relevance?: number | null;
   sort_by?: 'title' | 'doc_type' | 'document_date' | 'lifecycle_status';
   sort_order?: 'asc' | 'desc';
   // Payload depth. Left unset, a catalog page large enough to overrun the
@@ -300,19 +311,10 @@ export interface ResolutionPathEntry {
   tombstone_version?: string | null;
 }
 
-export interface LinkRequest {
-  source_id: string;
-  // Required for every edge type except `retracts`.
-  target_id?: string | null;
-  edge_type: EdgeType | string;
-  // Required for transitive_source, transitive_both, and `retracts`.
-  source_valid_from_version?: string | null;
-  // Required for transitive_both only.
-  target_valid_from_version?: string | null;
-  // Required for `retracts` only; must identify an existing edge.
-  retracted_edge_id?: string | null;
-  notes?: string;
-  rationale?: string;
+// A single edge assertion is a bulk item plus `dry_run`, which a bulk batch
+// carries once on its envelope and refuses per item (CAS-ADR-029).
+export interface LinkRequest extends BulkLinkItem {
+  dry_run?: boolean;
 }
 
 // --- Review ---
@@ -608,6 +610,9 @@ export interface UpdateMetadataRequest {
   authority_scope?: string;
   document_date?: string;
   tier3_metadata?: Tier3Patch;
+  // Optimistic-concurrency token (CAS-ADR-038).
+  expected_version?: string | null;
+  dry_run?: boolean;
 }
 
 // --- Bulk operations (CAS-ADR-028 ops-object shape) ---
@@ -622,6 +627,8 @@ export interface BulkLifecycleItem {
   document_id: string;
   action: string;
   successor_id?: string | null;
+  // Required by `relocate`, refused by every other action.
+  relocated_to?: RelocationPointer | null;
 }
 
 export interface BulkLifecycleItemResult {
@@ -634,6 +641,8 @@ export interface BulkLifecycleItemResult {
 
 export interface BulkLifecycleRequest {
   items: BulkLifecycleItem[];
+  response_mode?: 'light' | 'full' | null;
+  dry_run?: boolean;
 }
 
 export interface BulkLifecycleResponse {
@@ -653,6 +662,7 @@ export interface BulkMetadataItem {
   authority_scope?: string;
   document_date?: string;
   tier3_metadata?: Tier3Patch;
+  expected_version?: string | null;
 }
 
 export interface BulkMetadataItemResult {
@@ -665,6 +675,8 @@ export interface BulkMetadataItemResult {
 
 export interface BulkMetadataRequest {
   items: BulkMetadataItem[];
+  response_mode?: 'light' | 'full' | null;
+  dry_run?: boolean;
 }
 
 export interface BulkMetadataResponse {
@@ -674,7 +686,19 @@ export interface BulkMetadataResponse {
   total: number;
 }
 
-export interface BulkLinkItem extends LinkRequest {
+export interface BulkLinkItem {
+  source_id: string;
+  // Required for every edge type except `retracts`.
+  target_id?: string | null;
+  edge_type: EdgeType | string;
+  // Required for transitive_source, transitive_both, and `retracts`.
+  source_valid_from_version?: string | null;
+  // Required for transitive_both only.
+  target_valid_from_version?: string | null;
+  // Required for `retracts` only; must identify an existing edge.
+  retracted_edge_id?: string | null;
+  notes?: string;
+  rationale?: string;
   rationale_kind?: string | null;
   synced_from_version?: string | null;
   synced_from_content_hash?: string | null;
