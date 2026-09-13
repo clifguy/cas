@@ -3098,9 +3098,11 @@ class IngestionService:
             document_id,
             [(section[0].heading_path, section_text(section)) for section in sections],
         )
-        as_read = [(c.heading_path, c.content) for c in stored]
-        if [(c.heading_path, c.content) for c in divided] == as_read:
+        if [(c.heading_path, c.content) for c in divided] == [
+            (c.heading_path, c.content) for c in stored
+        ]:
             return False
+        as_read = [c.stored_state for c in stored]
         if doc.pipeline_status not in TERMINAL_PIPELINE_STATUS_VALUES:
             return self._left_for_later(document_id, f"pipeline_status {doc.pipeline_status}")
         if self._try_claim(document_id, "divide") is not None:

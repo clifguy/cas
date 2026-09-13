@@ -16,8 +16,8 @@ summary: >-
   chunk_count in the specification and the response models. A document with
   pipeline work in flight is left for a later migrate_vault call, and the division
   writes through a new content-store compare-and-replace under a per-document
-  write lock that every writer replacing or removing a document's passages now
-  takes. No operation, tool, parameter or
+  write lock that every per-document passage writer -- replacing, removing or
+  updating a document's rows -- now takes. No operation, tool, parameter or
   response field is added or removed.
 for_callers: >-
   matched_chunk_count and read_section's chunk_count now count sections rather than

@@ -6,8 +6,9 @@ is overwritten. The store performs both under the document's write lock, which
 every passage writer takes, so a concurrent writer either lands before the
 comparison -- and the replacement is refused -- or waits until it commits.
 
-The fixtures change content while keeping the row count and heading paths, so a
-comparison of either alone passes nothing here.
+Each refusal fixture changes exactly one axis the replacement would overwrite --
+content, heading path, or a column a metadata writer stamps -- and keeps the row
+count, so a comparison omitting that axis passes its test and fails no other.
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ DOC_ID = "0000cafe_replace_if_unchanged"
 PATHS = ("Doc", "Doc > Long", "Doc > Long")
 
 
-def _rows(label: str) -> list[Chunk]:
+def _rows(label: str, paths=PATHS, lifecycle_status: str = "active") -> list[Chunk]:
     return [
         Chunk(
             document_id=DOC_ID,
@@ -39,9 +40,17 @@ def _rows(label: str) -> list[Chunk]:
             embedding=[0.1] * EMBEDDING_DIM,
             chunk_index=index,
             section_index=min(index, 1),
+            doc_type="misc",
+            lifecycle_status=lifecycle_status,
+            project="CAS",
+            indexed_structure=path.removeprefix("Doc > ").removeprefix("Doc"),
         )
-        for index, path in enumerate(PATHS)
+        for index, path in enumerate(paths)
     ]
+
+
+def _state(chunks: list[Chunk]) -> list:
+    return [c.stored_state for c in chunks]
 
 
 def _read(chunks: list[Chunk]) -> list[tuple[str, str]]:
@@ -59,7 +68,7 @@ async def test_replaces_passages_that_are_unchanged(store) -> None:
     await store.index_chunks(DOC_ID, _rows("original"))
 
     replaced = await store.replace_chunks_if_unchanged(
-        DOC_ID, _read(_rows("original")), _rows("divided")
+        DOC_ID, _state(_rows("original")), _rows("divided")
     )
 
     assert replaced is True
@@ -70,11 +79,39 @@ async def test_refuses_when_content_changed_under_the_same_shape(store) -> None:
     await store.index_chunks(DOC_ID, _rows("re-indexed"))
 
     replaced = await store.replace_chunks_if_unchanged(
-        DOC_ID, _read(_rows("original")), _rows("divided")
+        DOC_ID, _state(_rows("original")), _rows("divided")
     )
 
     assert replaced is False
     assert _read(await store.get_all_chunks(DOC_ID)) == _read(_rows("re-indexed"))
+
+
+async def test_refuses_when_heading_paths_changed_under_the_same_content(store) -> None:
+    """A parent heading renamed on re-ingest moves every descendant's path while
+    leaving each passage's content -- which carries only its own heading line --
+    byte-identical."""
+    renamed = ("Renamed", "Renamed > Long", "Renamed > Long")
+    await store.index_chunks(DOC_ID, _rows("original", paths=renamed))
+
+    replaced = await store.replace_chunks_if_unchanged(
+        DOC_ID, _state(_rows("original")), _rows("divided")
+    )
+
+    assert replaced is False
+    assert [c.heading_path for c in await store.get_all_chunks(DOC_ID)] == list(renamed)
+
+
+async def test_refuses_when_a_metadata_writer_stamped_the_passages(store) -> None:
+    """The replacement carries the stamped columns from the rows it read, so a
+    stamp landing after the read would otherwise be written back."""
+    await store.index_chunks(DOC_ID, _rows("original"))
+    expected = _state(_rows("original"))
+    await store.update_chunk_metadata(DOC_ID, {"lifecycle_status": "archived"})
+
+    replaced = await store.replace_chunks_if_unchanged(DOC_ID, expected, _rows("divided"))
+
+    assert replaced is False
+    assert {c.lifecycle_status for c in await store.get_all_chunks(DOC_ID)} == {"archived"}
 
 
 async def test_a_replacement_waits_for_a_writer_holding_the_document(pg_pool) -> None:
@@ -84,7 +121,7 @@ async def test_a_replacement_waits_for_a_writer_holding_the_document(pg_pool) ->
     async with pg_pool.connection() as conn, conn.transaction():
         await conn.execute(DOCUMENT_PASSAGE_WRITE_LOCK_SQL, (DOC_ID,))
         task = asyncio.create_task(
-            store.replace_chunks_if_unchanged(DOC_ID, _read(_rows("original")), _rows("divided"))
+            store.replace_chunks_if_unchanged(DOC_ID, _state(_rows("original")), _rows("divided"))
         )
         await asyncio.sleep(0.3)
         assert not task.done(), "the replacement did not wait for the document's writer"
@@ -103,15 +140,23 @@ async def test_a_replacement_waits_for_a_writer_holding_the_document(pg_pool) ->
     assert _read(await store.get_all_chunks(DOC_ID)) == _read(_rows("re-indexed"))
 
 
-@pytest.mark.parametrize("writer", ["index_chunks", "remove_document"])
+@pytest.mark.parametrize(
+    "writer",
+    ["index_chunks", "remove_document", "update_chunk_metadata", "update_indexed_structure"],
+)
 async def test_every_passage_writer_takes_the_document_write_lock(pg_pool, writer) -> None:
     store = PostgresContentStore(pg_pool)
     await store.index_chunks(DOC_ID, _rows("original"))
-    call = (
-        store.index_chunks(DOC_ID, _rows("re-indexed"))
-        if writer == "index_chunks"
-        else store.remove_document(DOC_ID)
-    )
+    call = {
+        "index_chunks": lambda: store.index_chunks(DOC_ID, _rows("re-indexed")),
+        "remove_document": lambda: store.remove_document(DOC_ID),
+        "update_chunk_metadata": lambda: store.update_chunk_metadata(
+            DOC_ID, {"lifecycle_status": "archived"}
+        ),
+        "update_indexed_structure": lambda: store.update_indexed_structure(
+            DOC_ID, [("Doc > Long", "Renamed")]
+        ),
+    }[writer]()
 
     async with pg_pool.connection() as conn, conn.transaction():
         await conn.execute(DOCUMENT_PASSAGE_WRITE_LOCK_SQL, (DOC_ID,))

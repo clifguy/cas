@@ -21,6 +21,7 @@ from sage.adapters.interfaces import (
     FacetFieldCounts,
     GraphStore,
     KeywordQueryParse,
+    PassageState,
     SearchResult,
 )
 from sage.models.enums import ResolutionPolicy
@@ -60,13 +61,13 @@ class StubContentStore(ContentStore):
     async def replace_chunks_if_unchanged(
         self,
         document_id: str,
-        expected: Sequence[tuple[str, str]],
+        expected: Sequence[PassageState],
         chunks: list[Chunk],
     ) -> bool:
         # No await separates the comparison from the write, so no other
         # coroutine can write between them.
         current = [
-            (c.heading_path, c.content)
+            c.stored_state
             for c in sorted(self._store.get(document_id, []), key=lambda c: c.chunk_index)
         ]
         if current != list(expected):

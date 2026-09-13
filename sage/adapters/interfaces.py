@@ -109,6 +109,11 @@ NON_CANONICAL_SOURCE_PATH_PATTERN = r"(^|/)[.](/|$)|//|/$"
 HEADING_PATH_SEPARATOR = " > "
 
 
+# A passage's stored state as a replacement overwrites it: heading path,
+# content, indexed structure, and the document scalars stamped on the row.
+PassageState = tuple[str, str, str | None, str | None, str | None, str | None]
+
+
 @dataclass
 class Chunk:
     """A chunk of document content for indexing.
@@ -164,6 +169,22 @@ class Chunk:
         own, so its position in the document identifies it.
         """
         return self.section_index if self.section_index is not None else self.chunk_index
+
+    @property
+    def stored_state(self) -> PassageState:
+        """Every column a passage replacement overwrites, embedding aside.
+
+        A snapshot: a tuple taken at read time does not change when a writer
+        later updates the row, which is what lets a caller compare against it.
+        """
+        return (
+            self.heading_path,
+            self.content,
+            self.indexed_structure,
+            self.doc_type,
+            self.lifecycle_status,
+            self.project,
+        )
 
 
 @dataclass
@@ -281,16 +302,18 @@ class ContentStore(ABC):
     async def replace_chunks_if_unchanged(
         self,
         document_id: str,
-        expected: Sequence[tuple[str, str]],
+        expected: Sequence[PassageState],
         chunks: list[Chunk],
     ) -> bool:
         """Replace a document's passages only if they still read as ``expected``.
 
-        ``expected`` is the document's passages as ``(heading_path, content)``
-        pairs in document order, as the caller read them. The comparison and the
-        replacement are one step, excluding every other writer of the document's
-        passages for its duration, so a write landing after the caller's read is
-        never overwritten: the replacement is refused instead.
+        ``expected`` is the document's passages as ``Chunk.stored_state``
+        snapshots in document order, as the caller read them -- every column the
+        replacement overwrites, so a stamp as well as a re-index is detected.
+        The comparison and the replacement are one step, excluding every other
+        per-document writer of the document's passages for its duration, so a
+        write landing after the caller's read is never overwritten: the
+        replacement is refused instead.
 
         Returns:
             Whether the passages were replaced.

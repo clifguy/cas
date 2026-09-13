@@ -299,12 +299,13 @@ async def test_a_document_with_pipeline_work_in_flight_is_left_for_a_later_run(
     )
 
 
+@pytest.mark.parametrize(
+    "status", [PipelineStatus.INDEXING_IN_PROGRESS, PipelineStatus.ABSTRACTION_IN_PROGRESS]
+)
 async def test_a_document_mid_pipeline_is_left_for_a_later_run(
-    graph_store, store, ingestion, embedder, minimal_config, tmp_vault_dir, legacy_vault
+    graph_store, store, ingestion, embedder, minimal_config, tmp_vault_dir, legacy_vault, status
 ):
-    await graph_store.update_document(
-        OVERSIZE, {"pipeline_status": PipelineStatus.INDEXING_IN_PROGRESS.value}
-    )
+    await graph_store.update_document(OVERSIZE, {"pipeline_status": status.value})
 
     report = await _maintenance(
         graph_store, store, ingestion, minimal_config, tmp_vault_dir
@@ -402,3 +403,21 @@ async def test_a_document_left_for_a_later_run_is_logged_with_its_reason(
     assert not any(FITTING in m for m in left), (
         "a document the division would not have rewritten is not reported as left"
     )
+
+
+async def test_a_lifecycle_stamp_during_the_division_is_not_reverted(
+    graph_store, store, ingestion, embedder, minimal_config, tmp_vault_dir, legacy_vault
+):
+    """Archiving writes the new status onto the passage rows, which the division
+    carries forward from the rows it read before embedding."""
+
+    async def archive_meanwhile():
+        embedder.during_embed = None
+        await store.update_chunk_metadata(OVERSIZE, {"lifecycle_status": "archived"})
+
+    embedder.during_embed = archive_meanwhile
+
+    await _maintenance(graph_store, store, ingestion, minimal_config, tmp_vault_dir).migrate_vault()
+
+    assert embedder.embedded, "control: the division reached its embed call"
+    assert {c.lifecycle_status for c in await store.get_all_chunks(OVERSIZE)} == {"archived"}
