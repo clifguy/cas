@@ -56,6 +56,7 @@ from typing import Any, Final
 import pytest
 
 from tests.deploy._stub_server import serve_threaded, serve_uvicorn
+from tests.helpers.vault_source_selection import select_vault_source_binding
 
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 _DRIVER: Final[Path] = _REPO_ROOT / "deploy" / "sharepoint_validate.py"
@@ -168,15 +169,7 @@ def _serve_real(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, backend: str) -
     raw["vault"]["brain_root"] = str(brain)
     config = VaultConfig.model_validate(raw)
 
-    monkeypatch.setenv("SAGE_TEST_VAULT_SOURCE_BACKEND", backend)
-    if backend == "document_store":
-        from tests.helpers.fake_graph_client import FakeGraphClient
-
-        fake = FakeGraphClient()
-        monkeypatch.setattr(
-            "sage.vault_source_document_store.build_sharepoint_graph_client",
-            lambda *args, **kwargs: fake,
-        )
+    select_vault_source_binding(monkeypatch, backend)
 
     monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
     app = create_app(config=config, content_store_factory=lambda _root: StubContentStore())

@@ -342,18 +342,12 @@ async def test_lifespan_discovers_document_store_vault_without_local_tree(
     ``load_config`` that demanded a filesystem locator would fail on the
     pathless ``DiscoveredVault`` (``config_path=None``).
     """
-    from tests.helpers.fake_graph_client import FakeGraphClient
+    from tests.helpers.vault_source_selection import select_vault_source_binding
 
-    fake = FakeGraphClient()
+    fake = select_vault_source_binding(monkeypatch, "document_store")
     cfg = copy.deepcopy(minimal_vault_config_dict)
     cfg["vault"]["id"] = "store_vault"
     fake.store["store_vault"] = yaml.safe_dump(cfg).encode()
-
-    monkeypatch.setenv("SAGE_TEST_VAULT_SOURCE_BACKEND", "document_store")
-    monkeypatch.setattr(
-        "sage.vault_source_document_store.build_sharepoint_graph_client",
-        lambda *args, **kwargs: fake,
-    )
 
     captured: dict[str, dict] = {}
 
