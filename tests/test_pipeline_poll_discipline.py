@@ -76,14 +76,20 @@ states why the bound sits where it does.
 
 All four arms so far need a sleep to anchor on, and so all four are blind to
 the wait that was never written. A fifth closes that where it does the most
-damage: a *fixture* that ingests a document and yields without waiting hands
-one still in flight to every test that requests it, and none of those tests
-can repair it -- by the time any of them runs, it has been racing since before
-its first line. Two fixtures stood in exactly that shape while carrying an
-allowlist entry for their teardown drain, so the fourth arm reported them and
-the report said nothing about the gap that mattered; they were found by
-somebody reading the code. The exemption is the others' again, widened to the
-module's own wait adapter as well as the shared helper's entry points.
+damage: a *fixture* that ingests a document and hands off without waiting --
+by ``yield``, by ``return``, or by completing -- gives one still in flight to
+every test that requests it, and none of those tests can repair it: by the
+time any of them runs, it has been racing since before its first line. Two
+fixtures stood in exactly that shape while carrying an allowlist entry for
+their teardown drain, so the fourth arm reported them and the report said
+nothing about the gap that mattered; they were found by somebody reading the
+code. The exemption is the others' again, widened to the module's own wait
+adapter as well as the shared helper's entry points.
+
+Every arm scans the same modules: the tracked test modules pytest collects,
+and the ``conftest.py`` files it imports beside them, which is where a fixture
+shared across a directory lives. ``_is_scanned_module`` states why the second
+kind is in and why other helper modules are not.
 
 Allowlist convention follows ``ORPHANED_TEST_ALLOWLIST`` in
 ``tests/test_collection_integrity.py`` and the allowlists in
@@ -99,7 +105,8 @@ whatever the live tree happens to contain.
 import ast
 import subprocess
 import textwrap
-from pathlib import Path
+from collections.abc import Iterable, Iterator
+from pathlib import Path, PurePosixPath
 from typing import Final
 
 import pytest
@@ -234,7 +241,7 @@ BARE_SLEEP_WAIT_ALLOWLIST: Final[dict[str, list[str]]] = {
 # Unwaited-fixture allowlist
 #
 # path (relative to repo root) -> names of the fixtures that ingest a document
-# and then yield without waiting for it, where handing a moving document to
+# and then hand off without waiting for it, where handing a moving document to
 # every test using the fixture is nonetheless correct. Empty by default, and
 # the bar for an entry is high: a fixture's tests cannot each decide to wait,
 # because the fixture is where the document was put in flight.
@@ -244,7 +251,7 @@ BARE_SLEEP_WAIT_ALLOWLIST: Final[dict[str, list[str]]] = {
 # document that has not settled.
 # ---------------------------------------------------------------------------
 
-UNWAITED_FIXTURE_YIELD_ALLOWLIST: Final[dict[str, list[str]]] = {}
+UNWAITED_FIXTURE_HANDOFF_ALLOWLIST: Final[dict[str, list[str]]] = {}
 
 
 # The ingestion entry points. A function that calls one of these has put a
@@ -293,27 +300,64 @@ def _tracked_files() -> list[Path]:
     return [REPO_ROOT / line for line in result.stdout.splitlines() if line]
 
 
-def _tracked_test_modules() -> list[Path]:
-    """Tracked ``.py`` files that pytest would collect as test modules.
+def _is_scanned_module(rel: PurePosixPath) -> bool:
+    """Whether a repo-relative path is a module the arms scan.
 
-    Matches ``testpaths = ["tests"]`` and ``python_files = "test_*.py"`` from
-    pyproject.toml: files under ``tests/`` whose basename starts with
-    ``test_``.
+    Two kinds of file under ``tests/``. The first is what pytest collects as
+    a test module, matching ``testpaths = ["tests"]`` and
+    ``python_files = "test_*.py"`` from pyproject.toml.
+
+    The second is ``conftest.py``, which pytest does not collect but does
+    import for every module beneath it. That asymmetry is the reason it is
+    scanned: a fixture defined there reaches every test in its directory tree
+    without any of them importing it, so it reaches further than a fixture in
+    any single test module -- and an unsettled document handed off there is
+    handed to all of those tests at once.
+
+    Other helper modules under ``tests/`` stay out. A fixture or ingest helper
+    defined in one reaches a test only through an import the test module
+    writes, which the arms do not follow; that is a bound, measured empty on
+    the tree, and not a claim that such a module could not carry the defect.
+    """
+    return (
+        len(rel.parts) > 1
+        and rel.parts[0] == "tests"
+        and rel.suffix == ".py"
+        and (rel.name.startswith("test_") or rel.name == "conftest.py")
+    )
+
+
+def _tracked_test_modules(
+    files: Iterable[Path] | None = None, root: Path = REPO_ROOT
+) -> list[Path]:
+    """Tracked ``.py`` files the arms scan, as ``_is_scanned_module`` defines them.
+
+    ``files`` and ``root`` default to the repository's tracked files; they are
+    parameters so a synthetic tree can be run through the same enumeration.
     """
     modules: list[Path] = []
-    for path in _tracked_files():
+    for path in _tracked_files() if files is None else files:
         try:
-            rel = path.relative_to(REPO_ROOT)
+            rel = path.relative_to(root)
         except ValueError:
             continue
-        if (
-            rel.parts
-            and rel.parts[0] == "tests"
-            and path.suffix == ".py"
-            and path.name.startswith("test_")
-        ):
+        if _is_scanned_module(PurePosixPath(rel.as_posix())):
             modules.append(path)
     return modules
+
+
+def _parsed_modules(paths: Iterable[Path], root: Path = REPO_ROOT) -> Iterator[tuple[str, ast.AST]]:
+    """Yield ``(repo-relative path, parsed tree)`` for each module the gates scan.
+
+    A syntactically broken module is skipped: it fails its own collection or
+    import loudly, and is not this gate's concern.
+    """
+    for path in paths:
+        try:
+            tree = ast.parse(path.read_bytes(), filename=str(path))
+        except SyntaxError:
+            continue
+        yield str(path.relative_to(root)), tree
 
 
 # ---------------------------------------------------------------------------
@@ -890,14 +934,69 @@ def _is_fixture(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     )
 
 
-def _unwaited_fixture_yields(tree: ast.AST) -> list[tuple[int, str]]:
-    """Return ``(yield lineno, fixture name)`` for every fixture that ingests a
-    document and then yields without waiting for it.
+def _own_scope_nodes(func: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[ast.AST]:
+    """Every node in the function's own scope, stopping at nested scopes.
+
+    A nested ``def``, ``lambda`` or ``class`` body is not entered, so a
+    ``return`` or ``yield`` found here belongs to ``func`` itself.
+    """
+    pending: list[ast.AST] = list(func.body)
+    while pending:
+        node = pending.pop()
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        pending.extend(ast.iter_child_nodes(node))
+
+
+def _fixture_handoff(
+    func: ast.FunctionDef | ast.AsyncFunctionDef, first_ingest: int
+) -> tuple[int, int] | None:
+    """Where a fixture hands control to its tests after its first ingestion.
+
+    Returns ``(ordering line, reported line)``, or None when nothing follows
+    the ingestion. The two lines differ only for completion, below.
+
+    A generator fixture hands off at its first ``yield`` after the ingest. A
+    plain fixture hands off at its first ``return`` after the ingest, and if
+    it has none, at completion: pytest runs its tests once the fixture body
+    finishes, whether or not it returned a value, so an autouse fixture that
+    seeds and falls off the end still puts every test in front of a document
+    in flight. Completion is ordered one past the last line, so a wait
+    written on that line precedes it, and is reported at the last line,
+    which is where the missing wait belongs.
+
+    Only the fixture's own scope is read, by ``_own_scope_nodes``. A nested
+    helper's ``return`` hands a value to the helper's caller, and a nested
+    generator's ``yield`` suspends that generator; counting either would put
+    a handoff wherever a module's ``_parse`` happens to be defined.
+
+    Handoffs above the first ingestion are dropped, as they always were for
+    ``yield``: an early ``return`` for a fixture that declines to seed hands
+    off nothing in flight.
+    """
+    own = list(_own_scope_nodes(func))
+    yields = [node.lineno for node in own if isinstance(node, (ast.Yield, ast.YieldFrom))]
+    if yields:
+        after = [line for line in yields if line > first_ingest]
+        return (min(after), min(after)) if after else None
+    returns = [
+        node.lineno for node in own if isinstance(node, ast.Return) and node.lineno > first_ingest
+    ]
+    if returns:
+        return min(returns), min(returns)
+    end = func.end_lineno if func.end_lineno is not None else first_ingest
+    return end + 1, end
+
+
+def _unwaited_fixture_handoffs(tree: ast.AST) -> list[tuple[int, str]]:
+    """Return ``(handoff lineno, fixture name)`` for every fixture that ingests a
+    document and then hands control to its tests without waiting for it.
 
     The four arms above all need a *sleep* to anchor on: each asks what a wait
     reads, and the last asks whether a wait that reads nothing is standing in
     for one. None of them asks whether a wait was written at all, so a fixture
-    that ingests and yields straight through passes every one untouched -- and
+    that ingests and hands off straight through passes every one untouched -- and
     that is the worst form of the race rather than the mildest. A fixture is
     setup for every test that requests it, so an unsettled document is handed
     to all of them at once, and none of those tests can fix it: by the time
@@ -914,12 +1013,14 @@ def _unwaited_fixture_yields(tree: ast.AST) -> list[tuple[int, str]]:
     * **A fixture**, by its decorator. A plain helper that ingests and returns
       is out of scope: its caller is a single function, which is where the
       wait can be written and where the arms above already look.
-    * **Yielding after an ingestion** -- reached directly, through the
+    * **Handing off after an ingestion** -- reached directly, through the
       enclosing chain, or through one module-local helper, exactly as
-      ``_first_ingest_line`` resolves it for the arm above. A fixture whose
-      only ingest follows its ``yield`` is doing teardown work, and has no
-      document in flight at the moment it hands control on.
-    * **Not waiting between the last such ingestion and that yield**, by
+      ``_first_ingest_line`` resolves it for the arm above. The handoff is the
+      fixture's own ``yield``, its own ``return``, or its completion, as
+      ``_fixture_handoff`` locates it. A fixture whose only ingest follows its
+      ``yield`` is doing teardown work, and has no document in flight at the
+      moment it hands control on.
+    * **Not waiting between the last such ingestion and that handoff**, by
       ``_pipeline_wait_lines``. Delegation is the sanctioned form and is
       invisible here by construction, whether the fixture calls the shared
       helper or the module's own adapter for it -- but only a wait standing
@@ -932,7 +1033,7 @@ def _unwaited_fixture_yields(tree: ast.AST) -> list[tuple[int, str]]:
       -- retire the drain's allowlist entry by making it a real wait --
       writes exactly that fixture, and a walk reading the body as an
       unordered set would go quiet on it while still printing "wait before
-      the yield".
+      the handoff".
 
       Against the last ingestion rather than the first, because a fixture may
       seed more than once. Waiting for the opening document and then seeding
@@ -947,14 +1048,17 @@ def _unwaited_fixture_yields(tree: ast.AST) -> list[tuple[int, str]]:
     document whether or not this walk can prove one of them reads a field the
     pipeline writes.
 
-    Two bounds worth stating, both measured empty on the tree today. The walk
-    sees only the modules ``_tracked_test_modules`` enumerates, whose basename
-    must begin with ``test_`` -- so a fixture defined in a ``conftest.py`` is
-    invisible to it, and that is where a widely shared fixture would most
-    naturally live. And it anchors on a ``yield``, so a fixture that ingests
-    and *returns* hands its tests an unsettled document just the same while
-    going unreported. Neither is closed here; both are named so a later
-    reader does not mistake an unexercised limit for coverage.
+    Reach, and where it stops. The walk sees ``conftest.py`` as well as the
+    test modules, because that is where a widely shared fixture most
+    naturally lives; ``_is_scanned_module`` carries the argument. It anchors
+    on the handoff rather than on ``yield`` alone, because a fixture that
+    seeds and returns, or seeds and completes, hands its tests an unsettled
+    document just the same. What it does not see, measured empty on the tree
+    today, is a fixture defined in any other helper module, or an ingestion
+    reached through a helper another module defines: both resolve only
+    through an import, and the walk reads one module at a time. They are
+    named so a later reader does not mistake an unexercised limit for
+    coverage.
     """
     ingest_helpers = _module_ingest_helpers(tree)
     wait_helpers = _module_wait_helpers(tree)
@@ -966,14 +1070,10 @@ def _unwaited_fixture_yields(tree: ast.AST) -> list[tuple[int, str]]:
         ingest_lines = _ingest_lines(node, ingest_helpers)
         if not ingest_lines:
             continue
-        yields = [
-            inner.lineno
-            for inner in ast.walk(node)
-            if isinstance(inner, (ast.Yield, ast.YieldFrom)) and inner.lineno > ingest_lines[0]
-        ]
-        if not yields:
+        located = _fixture_handoff(node, ingest_lines[0])
+        if located is None:
             continue
-        handoff = min(yields)
+        handoff, reported_line = located
         # The document at risk is the *last* one put in flight before the
         # handoff, so that is what the wait has to follow. Taking the first
         # instead exempts a fixture that waits for its opening document and
@@ -982,7 +1082,7 @@ def _unwaited_fixture_yields(tree: ast.AST) -> list[tuple[int, str]]:
         last_ingest = max(line for line in ingest_lines if line < handoff)
         if any(last_ingest < wait < handoff for wait in _pipeline_wait_lines(node, wait_helpers)):
             continue
-        findings.append((handoff, node.name))
+        findings.append((reported_line, node.name))
     return sorted(findings)
 
 
@@ -993,14 +1093,14 @@ def _format_unwaited_fixture_violations(violations: list[tuple[str, int, str]]) 
     overflow = len(violations) - len(head)
     tail = f"\n  ... and {overflow} more" if overflow > 0 else ""
     return (
-        f"Fixtures that ingest a document and yield without waiting for it "
+        f"Fixtures that ingest a document and hand off without waiting for it "
         f"({len(violations)} found):\n{body}{tail}\n"
         "Ingestion dispatches the pipeline in the background, so a fixture "
-        "that yields straight from the ingest hands a document still in "
-        "flight to every test that requests it -- and no test can repair "
-        "that, because it was already racing before its first line ran. Wait "
-        "before the yield, via await_pipeline_idle / await_tool_idle in "
-        "tests/helpers/pipeline_wait.py."
+        "that yields, returns or completes straight from the ingest hands a "
+        "document still in flight to every test that requests it -- and no "
+        "test can repair that, because it was already racing before its first "
+        "line ran. Wait before the handoff, via await_pipeline_idle / "
+        "await_tool_idle in tests/helpers/pipeline_wait.py."
     )
 
 
@@ -1014,14 +1114,7 @@ def test_no_nonterminal_pipeline_status_accept_sets() -> None:
     accept-set that admits a non-terminal state.
     """
     violations: list[tuple[str, int, str]] = []
-    for path in _tracked_test_modules():
-        rel = str(path.relative_to(REPO_ROOT))
-        try:
-            tree = ast.parse(path.read_bytes(), filename=str(path))
-        except SyntaxError:
-            # A syntactically broken test module is a different failure mode
-            # (it fails its own collection loudly); not this gate's concern.
-            continue
+    for rel, tree in _parsed_modules(_tracked_test_modules()):
         allowed = set(NONTERMINAL_POLL_ALLOWLIST.get(rel, []))
         for lineno, states in _nonterminal_accept_sets(tree):
             if lineno in allowed:
@@ -1037,14 +1130,7 @@ def test_no_poll_then_contend_without_claim_arm() -> None:
     ``pipeline_status`` poll.
     """
     violations: list[tuple[str, int, str, int]] = []
-    for path in _tracked_test_modules():
-        rel = str(path.relative_to(REPO_ROOT))
-        try:
-            tree = ast.parse(path.read_bytes(), filename=str(path))
-        except SyntaxError:
-            # A syntactically broken test module fails its own collection
-            # loudly; not this gate's concern.
-            continue
+    for rel, tree in _parsed_modules(_tracked_test_modules()):
         allowed = set(CLAIM_ARM_POLL_ALLOWLIST.get(rel, []))
         for poll_line, call, call_line in _poll_then_contend(tree):
             if poll_line in allowed:
@@ -1060,14 +1146,7 @@ def test_no_status_only_pipeline_poll_helpers() -> None:
     not also wait for the in-flight claim to clear.
     """
     violations: list[tuple[str, int, str]] = []
-    for path in _tracked_test_modules():
-        rel = str(path.relative_to(REPO_ROOT))
-        try:
-            tree = ast.parse(path.read_bytes(), filename=str(path))
-        except SyntaxError:
-            # A syntactically broken test module fails its own collection
-            # loudly; not this gate's concern.
-            continue
+    for rel, tree in _parsed_modules(_tracked_test_modules()):
         allowed = set(STATUS_ONLY_POLL_ALLOWLIST.get(rel, []))
         for lineno, name in _status_only_poll_helpers(tree):
             if name in allowed:
@@ -1081,14 +1160,7 @@ def test_no_status_only_pipeline_poll_helpers() -> None:
 def test_no_bare_sleep_waits_on_ingested_documents() -> None:
     """No tracked test module may wait on an ingested document with a fixed sleep."""
     violations: list[tuple[str, int, str]] = []
-    for path in _tracked_test_modules():
-        rel = str(path.relative_to(REPO_ROOT))
-        try:
-            tree = ast.parse(path.read_bytes(), filename=str(path))
-        except SyntaxError:
-            # A syntactically broken test module fails its own collection
-            # loudly; not this gate's concern.
-            continue
+    for rel, tree in _parsed_modules(_tracked_test_modules()):
         allowed = set(BARE_SLEEP_WAIT_ALLOWLIST.get(rel, []))
         for lineno, name in _bare_sleep_waits(tree):
             if name in allowed:
@@ -1099,19 +1171,12 @@ def test_no_bare_sleep_waits_on_ingested_documents() -> None:
         pytest.fail(_format_bare_sleep_violations(violations))
 
 
-def test_no_fixture_yields_an_unsettled_document() -> None:
-    """No tracked test module may seed a document in a fixture and yield unwaited."""
+def test_no_fixture_hands_off_an_unsettled_document() -> None:
+    """No tracked test module may seed a document in a fixture and hand it off unwaited."""
     violations: list[tuple[str, int, str]] = []
-    for path in _tracked_test_modules():
-        rel = str(path.relative_to(REPO_ROOT))
-        try:
-            tree = ast.parse(path.read_bytes(), filename=str(path))
-        except SyntaxError:
-            # A syntactically broken test module fails its own collection
-            # loudly; not this gate's concern.
-            continue
-        allowed = set(UNWAITED_FIXTURE_YIELD_ALLOWLIST.get(rel, []))
-        for lineno, name in _unwaited_fixture_yields(tree):
+    for rel, tree in _parsed_modules(_tracked_test_modules()):
+        allowed = set(UNWAITED_FIXTURE_HANDOFF_ALLOWLIST.get(rel, []))
+        for lineno, name in _unwaited_fixture_handoffs(tree):
             if name in allowed:
                 continue
             violations.append((rel, lineno, name))
@@ -2057,7 +2122,7 @@ def test_unwaited_fixture_detector_flags_an_ingest_then_yield() -> None:
     The finding is anchored at the ``yield`` rather than at the ingest, which
     is the line a reader has to edit -- the wait goes immediately above it.
     """
-    assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_UNWAITED_FIXTURE_SOURCE)) == [
+    assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_UNWAITED_FIXTURE_SOURCE)) == [
         (9, "vault_services")
     ]
 
@@ -2090,7 +2155,7 @@ _SYNTHETIC_WAITED_FIXTURE_SOURCE: Final[str] = textwrap.dedent(
 
 def test_unwaited_fixture_detector_ignores_a_delegated_wait() -> None:
     """The sanctioned form is invisible because the wait is there to find."""
-    assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_WAITED_FIXTURE_SOURCE)) == []
+    assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_WAITED_FIXTURE_SOURCE)) == []
 
 
 # The same real wait, moved to the teardown side. Every identifier the walk
@@ -2132,7 +2197,7 @@ def test_unwaited_fixture_detector_flags_a_wait_that_runs_only_in_teardown() -> 
     silently disarms the arm for that fixture while the message still says to
     wait before the yield.
     """
-    assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_TEARDOWN_WAIT_FIXTURE_SOURCE)) == [
+    assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_TEARDOWN_WAIT_FIXTURE_SOURCE)) == [
         (8, "vault_services")
     ]
 
@@ -2162,7 +2227,7 @@ def test_unwaited_fixture_detector_flags_a_wait_below_a_bare_yield() -> None:
     is the wrong rule, and this source is where it fails: the wait is in no
     block at all, and is still a wait the fixture's tests never received.
     """
-    assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_BARE_POST_YIELD_WAIT_SOURCE)) == [
+    assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_BARE_POST_YIELD_WAIT_SOURCE)) == [
         (5, "vault_services")
     ]
 
@@ -2197,7 +2262,7 @@ def test_unwaited_fixture_detector_flags_a_second_seed_below_the_wait() -> None:
     documents and waits for both in a loop, and appending a third below that
     loop is the ordinary way it would grow.
     """
-    assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_WAIT_THEN_SEED_AGAIN_SOURCE)) == [
+    assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_WAIT_THEN_SEED_AGAIN_SOURCE)) == [
         (9, "vault_services")
     ]
 
@@ -2237,7 +2302,7 @@ def test_unwaited_fixture_detector_ignores_a_nested_seed_that_waits() -> None:
     as well would waive the same finding twice. This arm attributes nothing to
     a nested definition, since a nested ``def`` is not a fixture.
     """
-    assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_NESTED_SEED_AND_WAIT_SOURCE)) == []
+    assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_NESTED_SEED_AND_WAIT_SOURCE)) == []
 
 
 # The same wait written through the module's own adapter, which is how a module
@@ -2302,7 +2367,7 @@ def test_unwaited_fixture_detector_resolves_a_wait_through_a_module_adapter() ->
     the adapter consulting the claim and to nothing else about the shape of
     the call.
     """
-    assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_ADAPTED_FIXTURE_SOURCE)) == [
+    assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_ADAPTED_FIXTURE_SOURCE)) == [
         (27, "unsettled_vault")
     ]
 
@@ -2328,7 +2393,7 @@ def test_unwaited_fixture_detector_ignores_an_ingest_after_the_yield() -> None:
     its tests nothing at all. The remedy it would print -- wait before the
     yield -- would name a document that does not yet exist.
     """
-    assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_TEARDOWN_INGEST_FIXTURE_SOURCE)) == []
+    assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_TEARDOWN_INGEST_FIXTURE_SOURCE)) == []
 
 
 # An ingesting context manager: it ingests and yields, exactly as the fixture
@@ -2352,13 +2417,198 @@ def test_unwaited_fixture_detector_ignores_a_plain_ingesting_helper() -> None:
     document to every test that requests it, none of which can. That
     asymmetry is the whole reason this arm keys on the decorator.
 
-    The control ingests *and* yields, so its absence from the report is
-    attributable to the missing fixture decorator and to nothing else. A
-    version that merely returned would be excluded by the yield condition
-    instead, leaving a walk that ignores the decorator entirely green here --
-    which is to say, leaving the condition this test is named for unpinned.
+    The control ingests *and* hands off unwaited, so its absence from the
+    report is attributable to the missing fixture decorator and to nothing
+    else. A version that ingested after its handoff, or waited before it,
+    would be excluded by those conditions instead, leaving a walk that ignores
+    the decorator entirely green here -- which is to say, leaving the
+    condition this test is named for unpinned.
     """
-    assert _unwaited_fixture_yields(ast.parse(_SYNTHETIC_INGESTING_NON_FIXTURE_SOURCE)) == []
+    assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_INGESTING_NON_FIXTURE_SOURCE)) == []
+
+
+# A fixture that seeds and returns rather than yielding. Its tests receive the
+# document exactly as they would from a yield, and just as unsettled.
+_SYNTHETIC_RETURNING_FIXTURE_SOURCE: Final[str] = textwrap.dedent(
+    """
+    @pytest.fixture
+    async def seeded_document(services, tmp_path):
+        doc = _parse(await ingest_document("v", str(tmp_path / "s.md"), "markdown"))
+        return doc
+    """
+)
+
+
+def test_unwaited_fixture_detector_flags_an_ingest_then_return() -> None:
+    """A ``return`` is a handoff as much as a ``yield`` is.
+
+    pytest hands a plain fixture's return value to its tests the moment the
+    fixture completes, so a fixture that seeds and returns puts a document in
+    flight in front of every requester. The finding is anchored at the
+    ``return``, where the wait has to be written.
+    """
+    assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_RETURNING_FIXTURE_SOURCE)) == [
+        (5, "seeded_document")
+    ]
+
+
+# The same fixture waiting before it returns: one line apart from the returning
+# synthetic above, so the pair discriminates on the wait and on nothing else.
+_SYNTHETIC_WAITED_RETURNING_FIXTURE_SOURCE: Final[str] = textwrap.dedent(
+    """
+    @pytest.fixture
+    async def seeded_document(services, tmp_path):
+        doc = _parse(await ingest_document("v", str(tmp_path / "s.md"), "markdown"))
+        await await_tool_idle(fetch, doc["id"], service=services.ingestion_service)
+        return doc
+    """
+)
+
+
+def test_unwaited_fixture_detector_ignores_a_return_after_a_wait() -> None:
+    """A returning fixture that waits before its ``return`` is not reported.
+
+    Paired with the returning synthetic above rather than standing alone: by
+    itself this is green under a walk that never looks at a ``return`` at all.
+    The pair rejects the rival that reports every returning fixture that
+    ingests, which is the false-positive form of anchoring on the handoff.
+    """
+    assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_WAITED_RETURNING_FIXTURE_SOURCE)) == []
+
+
+# A fixture that seeds and returns nothing -- the shape of an autouse seeding
+# fixture. No test receives a value from it, and every test still runs against
+# a vault holding a document in flight.
+_SYNTHETIC_FALL_THROUGH_FIXTURE_SOURCE: Final[str] = textwrap.dedent(
+    """
+    @pytest.fixture(autouse=True)
+    async def seeded_vault(services, tmp_path):
+        await ingest_document("v", str(tmp_path / "s.md"), "markdown")
+        services.seeded = True
+    """
+)
+
+
+def test_unwaited_fixture_detector_flags_an_ingest_then_fall_through() -> None:
+    """Completion is a handoff too, for a fixture with no ``return`` after its ingest.
+
+    The finding is anchored at the fixture's last line, which is where the
+    missing wait belongs -- not at the ingest, which a rival anchoring on
+    the last ingestion would name instead, and which the second statement in
+    the synthetic keeps distinct from the last line.
+    """
+    assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_FALL_THROUGH_FIXTURE_SOURCE)) == [
+        (5, "seeded_vault")
+    ]
+
+
+# The same autouse fixture with its wait written as the last statement, which is
+# where the flagged synthetic above says the wait belongs.
+_SYNTHETIC_WAITED_FALL_THROUGH_FIXTURE_SOURCE: Final[str] = textwrap.dedent(
+    """
+    @pytest.fixture(autouse=True)
+    async def seeded_vault(services, tmp_path):
+        doc = _parse(await ingest_document("v", str(tmp_path / "s.md"), "markdown"))
+        await await_tool_idle(fetch, doc["id"], service=services.ingestion_service)
+    """
+)
+
+
+def test_unwaited_fixture_detector_ignores_a_wait_on_the_last_line() -> None:
+    """A wait written as a fixture's final statement precedes its completion.
+
+    Completion is ordered one past the last line for exactly this fixture. A
+    walk that ordered it *at* the last line would find no wait strictly before
+    it and report the fixture for following the remedy its own message gives.
+    """
+    assert (
+        _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_WAITED_FALL_THROUGH_FIXTURE_SOURCE)) == []
+    )
+
+
+# A returning fixture with a nested helper that returns. The nested ``return``
+# sits between the ingest and the wait, so a handoff walk that descends into
+# nested definitions takes it for the fixture's own and reports the fixture.
+_SYNTHETIC_NESTED_RETURN_FIXTURE_SOURCE: Final[str] = textwrap.dedent(
+    """
+    @pytest.fixture
+    async def seeded_id(services, tmp_path):
+        doc = _parse(await ingest_document("v", str(tmp_path / "s.md"), "markdown"))
+
+        def _pick(result):
+            return result["id"]
+
+        await await_tool_idle(fetch, _pick(doc), service=services.ingestion_service)
+        return _pick(doc)
+    """
+)
+
+
+def test_unwaited_fixture_detector_ignores_a_nested_return_as_the_handoff() -> None:
+    """Only the fixture's own ``return`` hands anything to its tests.
+
+    A nested definition's ``return`` hands a value back to whoever calls the
+    helper. Nearly every module that ingests carries a nested or module-level
+    ``_parse`` that returns, so a walk counting those would place a handoff
+    on every one of them and report fixtures that waited correctly.
+    """
+    assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_NESTED_RETURN_FIXTURE_SOURCE)) == []
+
+
+# The generator form of the same trap: a nested generator's ``yield`` between
+# the ingest and the wait, with the fixture's own yield below the wait.
+_SYNTHETIC_NESTED_YIELD_FIXTURE_SOURCE: Final[str] = textwrap.dedent(
+    """
+    @pytest.fixture
+    async def seeded_vault(services, tmp_path):
+        doc = _parse(await ingest_document("v", str(tmp_path / "s.md"), "markdown"))
+
+        async def _rows():
+            yield doc
+
+        await await_tool_idle(fetch, doc["id"], service=services.ingestion_service)
+        yield services
+    """
+)
+
+
+def test_unwaited_fixture_detector_ignores_a_nested_yield_as_the_handoff() -> None:
+    """Only the fixture's own ``yield`` hands anything to its tests.
+
+    The generator counterpart of the nested-return test, pinned separately
+    because a walk can scope one kind of handoff correctly and not the
+    other: a nested generator's ``yield`` suspends that generator, not the
+    fixture. The nested generator here is ``async`` where the nested helper
+    above is not, so a walk that stops at one kind of nested definition and
+    enters the other is reported by one of the two.
+    """
+    assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_NESTED_YIELD_FIXTURE_SOURCE)) == []
+
+
+# A fixture that may decline to seed: an early ``return`` above the ingest, then
+# a wait and a ``return`` below it. The early return hands off no document.
+_SYNTHETIC_EARLY_RETURN_FIXTURE_SOURCE: Final[str] = textwrap.dedent(
+    """
+    @pytest.fixture
+    async def seeded_document(services, tmp_path, request):
+        if request.config.getoption("--no-seed"):
+            return None
+        doc = _parse(await ingest_document("v", str(tmp_path / "s.md"), "markdown"))
+        await await_tool_idle(fetch, doc["id"], service=services.ingestion_service)
+        return doc
+    """
+)
+
+
+def test_unwaited_fixture_detector_ignores_an_early_return_before_the_ingest() -> None:
+    """A ``return`` above every ingestion hands off nothing in flight.
+
+    The same ordering condition the ``yield`` carries. A walk that took the
+    earliest ``return`` as the handoff would find no ingestion before it and
+    fail outright rather than report, so this pins the condition and the
+    absence of a crash together.
+    """
+    assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_EARLY_RETURN_FIXTURE_SOURCE)) == []
 
 
 def test_unwaited_fixture_allowlist_has_no_stale_entries() -> None:
@@ -2369,17 +2619,131 @@ def test_unwaited_fixture_allowlist_has_no_stale_entries() -> None:
     the next reader inherits a waiver for something already fixed.
     """
     stale: list[str] = []
-    for rel, names in UNWAITED_FIXTURE_YIELD_ALLOWLIST.items():
+    for rel, names in UNWAITED_FIXTURE_HANDOFF_ALLOWLIST.items():
         path = REPO_ROOT / rel
         reported = (
-            {name for _, name in _unwaited_fixture_yields(ast.parse(path.read_bytes()))}
+            {name for _, name in _unwaited_fixture_handoffs(ast.parse(path.read_bytes()))}
             if path.exists()
             else set()
         )
         stale.extend(f"{rel}: {name}" for name in names if name not in reported)
 
     assert not stale, (
-        "UNWAITED_FIXTURE_YIELD_ALLOWLIST entries that the walk no longer "
+        "UNWAITED_FIXTURE_HANDOFF_ALLOWLIST entries that the walk no longer "
         f"reports ({len(stale)}): {', '.join(stale)}. Drop each one — the "
         "fixture it exempted now waits, so the entry waives nothing."
     )
+
+
+# ---------------------------------------------------------------------------
+# Module enumeration self-tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("rel", "scanned"),
+    [
+        ("tests/test_x.py", True),
+        ("tests/sage/test_y.py", True),
+        ("tests/conftest.py", True),
+        ("tests/sage/maintenance/conftest.py", True),
+        ("tests/helpers/pipeline_wait.py", False),
+        ("tests/sage/_dry_run_helpers.py", False),
+        ("tests/conftest_helpers.py", False),
+        ("tests/my_conftest.py", False),
+        ("sage/conftest.py", False),
+        ("scripts/test_x.py", False),
+        ("tests/test_data.json", False),
+    ],
+)
+def test_scanned_module_predicate_admits_conftest_beside_test_modules(
+    rel: str, scanned: bool
+) -> None:
+    """The enumeration admits ``conftest.py`` and ``test_*.py`` under ``tests/``, and nothing else.
+
+    The rejected cases each exclude a rival: every ``.py`` under ``tests/``
+    (the helper modules), a substring match on ``conftest`` (the two names
+    that merely contain it), a basename rule that ignores where the file sits
+    (the two outside ``tests/``), and a prefix rule that ignores the suffix
+    (the tracked data file named like a test module).
+    """
+    assert _is_scanned_module(PurePosixPath(rel)) is scanned
+
+
+def test_tracked_enumeration_reaches_every_tracked_conftest() -> None:
+    """Every tracked ``conftest.py`` under ``tests/`` is among the modules the arms scan.
+
+    The predicate test above says what the rule is; this says the arms'
+    enumeration applies it to the real tree. The root conftest is asserted
+    present first, so an empty set cannot pass the subset check vacuously.
+    """
+    conftests = {
+        path
+        for path in _tracked_files()
+        if path.name == "conftest.py" and path.relative_to(REPO_ROOT).parts[0] == "tests"
+    }
+    assert REPO_ROOT / "tests" / "conftest.py" in conftests
+    assert conftests <= set(_tracked_test_modules())
+
+
+def test_every_gate_scans_the_shared_enumeration() -> None:
+    """Each of the five gate tests iterates ``_parsed_modules(_tracked_test_modules())``.
+
+    The two tests above prove the shared enumeration reaches ``conftest.py``;
+    neither proves a gate uses it. A gate rewritten to loop over some other
+    list would keep both green while scanning less than they describe. The
+    count is asserted first, so a renamed or deleted gate cannot let this pass
+    by finding nothing to check.
+    """
+    tree = ast.parse(Path(__file__).read_bytes())
+    gates = [
+        node
+        for node in ast.iter_child_nodes(tree)
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("test_no_")
+    ]
+    assert len(gates) == 5, [gate.name for gate in gates]
+
+    def scans_shared_enumeration(gate: ast.FunctionDef) -> bool:
+        return any(
+            isinstance(loop, ast.For)
+            and isinstance(loop.iter, ast.Call)
+            and _called_name(loop.iter.func) == "_parsed_modules"
+            and len(loop.iter.args) == 1
+            and isinstance(loop.iter.args[0], ast.Call)
+            and _called_name(loop.iter.args[0].func) == "_tracked_test_modules"
+            and not loop.iter.args[0].args
+            for loop in ast.walk(gate)
+        )
+
+    assert [gate.name for gate in gates if not scans_shared_enumeration(gate)] == []
+
+
+def test_unwaited_fixture_arm_reaches_a_fixture_outside_a_test_module(tmp_path: Path) -> None:
+    """A fixture defined in a ``conftest.py`` is reported, through the gates' own path.
+
+    The same unwaited fixture is written into four files, and the enumeration
+    and parse loop the gate tests use decide which of them the arm sees. The
+    ``test_*.py`` module shows the harness reports at all, so a missing
+    conftest reads as a reach defect rather than a broken harness; the helper
+    module, identical in content, rejects an enumeration that admits
+    everything; and the nested conftest rejects one that admits only the root.
+    """
+    rels = [
+        "tests/conftest.py",
+        "tests/sage/conftest.py",
+        "tests/test_mod.py",
+        "tests/helpers/seeding.py",
+    ]
+    files: list[Path] = []
+    for rel in rels:
+        path = tmp_path / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(_SYNTHETIC_UNWAITED_FIXTURE_SOURCE)
+        files.append(path)
+
+    reported = {
+        rel
+        for rel, tree in _parsed_modules(_tracked_test_modules(files, root=tmp_path), root=tmp_path)
+        if _unwaited_fixture_handoffs(tree)
+    }
+    assert reported == {"tests/conftest.py", "tests/sage/conftest.py", "tests/test_mod.py"}
