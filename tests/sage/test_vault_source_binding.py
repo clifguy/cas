@@ -16,6 +16,7 @@ Test IDs follow VSB-NNN (Vault-Source Binding).
 import copy
 import errno
 import shutil
+import typing
 
 import pytest
 import yaml
@@ -23,6 +24,7 @@ import yaml
 from sage.config import SageCoreConfig, StackDocumentStoreConfig, VaultConfig
 from sage.vault_source_binding import (
     _RMTREE_MAX_ATTEMPTS,
+    _VALID_BACKENDS,
     VAULT_SOURCE_BACKEND_ENV_VAR,
     DiscoveredVault,
     DocumentStoreVaultSourceStore,
@@ -94,6 +96,18 @@ def test_vsb_002_env_override_wins_over_config(monkeypatch):
     monkeypatch.setenv(VAULT_SOURCE_BACKEND_ENV_VAR, "sharepoint")
     with pytest.raises(ValueError, match="sharepoint"):
         build_stack_vault_source_store(SageCoreConfig())
+
+
+def test_vsb_072_valid_backends_match_config_selector():
+    """The dispatch accepts exactly the backends the stack config admits.
+
+    Compared against the config field's live ``Literal`` arguments. A backend
+    added to the config selector alone would validate and then be refused at
+    dispatch; one added to the dispatch alone would be reachable only through
+    the environment override.
+    """
+    annotation = SageCoreConfig.model_fields["vault_source_backend"].annotation
+    assert set(_VALID_BACKENDS) == set(typing.get_args(annotation))
 
 
 def test_vsb_070_download_url_capability_is_binding_scoped(tmp_path):

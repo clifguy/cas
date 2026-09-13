@@ -609,25 +609,15 @@ class VaultSourceBackendHandle:
 def vault_source_backend(request, monkeypatch):
     """Pin the stack's vault-source binding for the test, one leg per backend.
 
-    Both legs exercise the real dispatch in ``build_stack_vault_source_store``
-    via the env override. The document-store leg fakes only the Graph
-    transport: one shared ``FakeGraphClient`` is returned by the (call-time
-    resolved) client factory, so state persists across the fresh store
-    constructions the stack resolver performs per service call while every
-    line of ``DocumentStoreVaultSourceStore`` still runs.
+    The selection and the fake Graph transport are wired by
+    ``select_vault_source_binding`` (``tests/helpers/vault_source_selection.py``);
+    this fixture adds the parametrization and the handle a test inspects the
+    active leg through.
     """
+    from tests.helpers.vault_source_selection import select_vault_source_binding
+
     backend = request.param
-    monkeypatch.setenv("SAGE_TEST_VAULT_SOURCE_BACKEND", backend)
-    if backend == "filesystem":
-        return VaultSourceBackendHandle(backend=backend, fake_client=None)
-
-    from tests.helpers.fake_graph_client import FakeGraphClient
-
-    fake = FakeGraphClient()
-    monkeypatch.setattr(
-        "sage.vault_source_document_store.build_sharepoint_graph_client",
-        lambda *args, **kwargs: fake,
-    )
+    fake = select_vault_source_binding(monkeypatch, backend)
     return VaultSourceBackendHandle(backend=backend, fake_client=fake)
 
 
@@ -675,18 +665,11 @@ def stub_stream_generate(*segments: str, **stats):
 def refusing_source_store(monkeypatch):
     """A document-store vault-source binding whose Graph client can be told to refuse.
 
-    Pins the stack's binding through the same env override the shared
-    ``vault_source_backend`` fixture uses, so the real
-    ``DocumentStoreVaultSourceStore`` and the real dispatch both run and only
-    the Graph transport is faked. Returned so a test can install a refusal on
-    the operation it is about.
+    Pinned by the same selector the shared ``vault_source_backend`` fixture uses,
+    so the real ``DocumentStoreVaultSourceStore`` and the real dispatch both run
+    and only the Graph transport is faked. Returned so a test can install a
+    refusal on the operation it is about.
     """
-    from tests.helpers.fake_graph_client import FakeGraphClient
+    from tests.helpers.vault_source_selection import select_vault_source_binding
 
-    monkeypatch.setenv("SAGE_TEST_VAULT_SOURCE_BACKEND", "document_store")
-    fake = FakeGraphClient()
-    monkeypatch.setattr(
-        "sage.vault_source_document_store.build_sharepoint_graph_client",
-        lambda *args, **kwargs: fake,
-    )
-    return fake
+    return select_vault_source_binding(monkeypatch, "document_store")
