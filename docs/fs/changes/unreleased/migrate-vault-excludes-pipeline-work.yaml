@@ -1,0 +1,29 @@
+classification: minor
+category:
+  - capability
+  - caller-adaptation
+  - operator-adaptation
+summary: >-
+  migrate_vault and pipeline work exclude each other on a vault. migrate_vault is
+  refused with pipeline_work_in_flight (409) while an ingest, reabstract, recompute or
+  deferred reabstract pass is queued or running, and with vault_migration_in_flight
+  (409) while another migration runs; while it runs, ingest_document,
+  bulk_ingest_document's per-file ingests, recompute_abstract, recompute_pipeline and
+  recompute_deferred_vault_abstracts are refused with vault_migration_in_flight. The
+  passage-division backfill no longer defers a document with pipeline work in flight:
+  it writes through plain index_chunks under the per-document lock metadata writers
+  already take, and the content-store compare-and-replace
+  (replace_chunks_if_unchanged), the passage snapshot it compared, and the per-document
+  passage write lock are removed from the content-store port and its bindings. The
+  descriptions in sage_core_api.openapi.yaml, cas_app_api.openapi.yaml, the router
+  response declarations, the BatchIngestFileError code vocabulary and the MCP tool
+  catalog name the new refusals, and migrate_vault's no longer describes documents
+  left for a later call. migrate_vault gains a 409 response.
+for_callers: >-
+  Run migrate_vault once a vault's pipeline work has drained; a call made while an
+  ingest, reabstract or recompute is queued or running returns pipeline_work_in_flight
+  (409) and changes nothing. While a migration runs, ingest_document (dry runs
+  included), recompute_abstract, recompute_pipeline and
+  recompute_deferred_vault_abstracts return vault_migration_in_flight (409), and a batch
+  ingest records it per file; retry once the migration has returned. A migration no
+  longer leaves documents for a later call.

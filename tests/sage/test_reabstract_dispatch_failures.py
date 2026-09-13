@@ -51,7 +51,10 @@ async def test_dispatch_failure_classification_and_continuation(
     graph = SimpleNamespace(
         get_document=AsyncMock(return_value=settled),
     )
-    ingestion = SimpleNamespace(reabstract=AsyncMock(side_effect=[dispatch_error, {}]))
+    ingestion = SimpleNamespace(
+        reabstract=AsyncMock(side_effect=[dispatch_error, {}]),
+        refuse_during_migration=lambda: None,
+    )
     if surface != "bulk":
         graph.list_all_documents = AsyncMock(return_value=[rejected, accepted])
     if surface == "script":

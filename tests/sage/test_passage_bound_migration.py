@@ -13,6 +13,7 @@ alone would rewrite it.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -22,8 +23,9 @@ from sage.adapters.content_store_postgres import PostgresContentStore
 from sage.adapters.interfaces import Chunk
 from sage.adapters.stubs import StubAbstractionProvider, StubEmbeddingProvider
 from sage.models.enums import PipelineStatus, SourceType
-from sage.models.schemas import Document
+from sage.models.schemas import Document, SetLifecycleRequest
 from sage.services.ingestion import IngestionService
+from sage.services.lifecycle import LifecycleService
 from sage.services.maintenance import BACKFILL_PASSAGE_INPUT_BOUND, MaintenanceService
 from sage.services.utilities import UtilitiesService
 from sage.source_adapters.base import HeadingNode, ProjectionResult
@@ -270,40 +272,17 @@ async def test_migrated_passages_match_what_ingest_now_writes(
 
 
 # ---------------------------------------------------------------------------
-# The migration shares the server with ingest, and must not overwrite a
-# document that is being re-indexed while it works.
+# Pipeline work is excluded from the vault while the migration runs, so the
+# division needs no gate of its own on it. What still reaches a document is a
+# metadata stamp, which the per-document lock serializes against the division.
 # ---------------------------------------------------------------------------
-
-
-def _shape(chunks):
-    return [(c.heading_path, c.content, c.section_index) for c in chunks]
-
-
-async def test_a_document_with_pipeline_work_in_flight_is_left_for_a_later_run(
-    graph_store, store, ingestion, embedder, minimal_config, tmp_vault_dir, legacy_vault
-):
-    maintenance = _maintenance(graph_store, store, ingestion, minimal_config, tmp_vault_dir)
-    assert ingestion._try_claim(OVERSIZE, "recompute") is None
-
-    report = await maintenance.migrate_vault()
-
-    assert BACKFILL_PASSAGE_INPUT_BOUND not in report.backfills_applied
-    assert embedder.embedded == []
-    assert _shape(await store.get_all_chunks(OVERSIZE)) == _shape(legacy_vault)
-
-    ingestion._release_claim(OVERSIZE)
-    report = await maintenance.migrate_vault()
-
-    assert BACKFILL_PASSAGE_INPUT_BOUND in report.backfills_applied, (
-        "control: the same document is divided once nothing holds it"
-    )
 
 
 @pytest.mark.parametrize(
     "status", [PipelineStatus.INDEXING_IN_PROGRESS, PipelineStatus.ABSTRACTION_IN_PROGRESS]
 )
-async def test_a_document_mid_pipeline_is_left_for_a_later_run(
-    graph_store, store, ingestion, embedder, minimal_config, tmp_vault_dir, legacy_vault, status
+async def test_a_document_at_a_non_terminal_status_is_divided(
+    graph_store, store, ingestion, minimal_config, tmp_vault_dir, legacy_vault, status
 ):
     await graph_store.update_document(OVERSIZE, {"pipeline_status": status.value})
 
@@ -311,57 +290,40 @@ async def test_a_document_mid_pipeline_is_left_for_a_later_run(
         graph_store, store, ingestion, minimal_config, tmp_vault_dir
     ).migrate_vault()
 
-    assert BACKFILL_PASSAGE_INPUT_BOUND not in report.backfills_applied
-    assert embedder.embedded == []
-    assert _shape(await store.get_all_chunks(OVERSIZE)) == _shape(legacy_vault)
+    assert BACKFILL_PASSAGE_INPUT_BOUND in report.backfills_applied
+    assert len(await store.get_all_chunks(OVERSIZE)) > len(legacy_vault)
 
 
-async def test_passages_rewritten_while_the_division_embeds_are_not_overwritten(
-    graph_store, store, ingestion, embedder, minimal_config, tmp_vault_dir, legacy_vault
+async def test_the_division_holds_the_document_from_its_read_to_its_write(
+    graph_store,
+    store,
+    ingestion,
+    embedder,
+    minimal_config,
+    tmp_vault_dir,
+    legacy_vault,
+    monkeypatch,
 ):
-    """The concurrent write keeps the stored shape -- same rows, same heading
-    paths -- and changes only content, as re-ingesting an edited source does."""
-    concurrent = [
-        Chunk(
-            document_id=OVERSIZE,
-            heading_path=c.heading_path,
-            content=f"re-indexed meanwhile {c.chunk_index}",
-            embedding=[0.5] * EMBEDDING_DIM,
-            chunk_index=c.chunk_index,
-            section_index=c.chunk_index,
-        )
-        for c in legacy_vault
-    ]
+    """Observed at the read as well as at the embed: a lock taken after the read
+    still holds during the embed, and lets a stamp in between the two."""
+    held = {}
+    get_all_chunks = store.get_all_chunks
 
-    async def reindex_meanwhile():
-        embedder.during_embed = None
-        await store.index_chunks(OVERSIZE, concurrent)
+    async def observed_read(document_id):
+        if document_id == OVERSIZE:
+            held.setdefault("read", ingestion._locks.lock(OVERSIZE).locked())
+        return await get_all_chunks(document_id)
 
-    embedder.during_embed = reindex_meanwhile
+    async def observe_embed():
+        held["embed"] = ingestion._locks.lock(OVERSIZE).locked()
 
-    report = await _maintenance(
-        graph_store, store, ingestion, minimal_config, tmp_vault_dir
-    ).migrate_vault()
-
-    assert embedder.embedded, "control: the division reached its embed call"
-    assert _shape(await store.get_all_chunks(OVERSIZE)) == _shape(concurrent)
-    assert BACKFILL_PASSAGE_INPUT_BOUND not in report.backfills_applied
-
-
-async def test_the_division_holds_the_document_while_it_embeds(
-    graph_store, store, ingestion, embedder, minimal_config, tmp_vault_dir, legacy_vault
-):
-    observed = []
-
-    async def try_to_claim():
-        observed.append(ingestion._try_claim(OVERSIZE, "recompute"))
-
-    embedder.during_embed = try_to_claim
+    monkeypatch.setattr(store, "get_all_chunks", observed_read)
+    embedder.during_embed = observe_embed
 
     await _maintenance(graph_store, store, ingestion, minimal_config, tmp_vault_dir).migrate_vault()
 
-    assert observed and observed[0] is not None, "a recompute could start mid-division"
-    assert OVERSIZE not in ingestion._inflight, "the division's claim outlived it"
+    assert held == {"read": True, "embed": True}, "a stamp could land before the division's write"
+    assert not ingestion._locks.lock(OVERSIZE).locked(), "the division's lock outlived it"
 
 
 @pytest.mark.parametrize(
@@ -385,39 +347,36 @@ async def test_every_terminal_status_is_divided(
     assert len(await store.get_all_chunks(OVERSIZE)) > len(legacy_vault)
 
 
-async def test_a_document_left_for_a_later_run_is_logged_with_its_reason(
-    graph_store, store, ingestion, minimal_config, tmp_vault_dir, legacy_vault, caplog
-):
-    await graph_store.update_document(
-        OVERSIZE, {"pipeline_status": PipelineStatus.INDEXING_IN_PROGRESS.value}
-    )
-    assert ingestion._try_claim(FITTING, "recompute") is None
-
-    with caplog.at_level("INFO", logger="sage.services.ingestion"):
-        await _maintenance(
-            graph_store, store, ingestion, minimal_config, tmp_vault_dir
-        ).migrate_vault()
-
-    left = [r.getMessage() for r in caplog.records if "left for a later" in r.getMessage()]
-    assert any(OVERSIZE in m and "indexing_in_progress" in m for m in left), left
-    assert not any(FITTING in m for m in left), (
-        "a document the division would not have rewritten is not reported as left"
-    )
-
-
 async def test_a_lifecycle_stamp_during_the_division_is_not_reverted(
-    graph_store, store, ingestion, embedder, minimal_config, tmp_vault_dir, legacy_vault
+    graph_store,
+    store,
+    ingestion,
+    embedder,
+    lock_manager,
+    minimal_config,
+    tmp_vault_dir,
+    legacy_vault,
 ):
     """Archiving writes the new status onto the passage rows, which the division
-    carries forward from the rows it read before embedding."""
+    carries forward from the rows it read. The archive waits for the division."""
+    lifecycle = LifecycleService(graph_store, lock_manager, minimal_config, store)
+    archiving = []
 
     async def archive_meanwhile():
         embedder.during_embed = None
-        await store.update_chunk_metadata(OVERSIZE, {"lifecycle_status": "archived"})
+        archive = asyncio.create_task(
+            lifecycle._set_lifecycle(OVERSIZE, SetLifecycleRequest(action="archive"))
+        )
+        archiving.append(archive)
+        await asyncio.wait({archive}, timeout=0.5)
+        assert not archive.done(), "control: the archive must wait on the division"
 
     embedder.during_embed = archive_meanwhile
 
-    await _maintenance(graph_store, store, ingestion, minimal_config, tmp_vault_dir).migrate_vault()
+    report = await _maintenance(
+        graph_store, store, ingestion, minimal_config, tmp_vault_dir
+    ).migrate_vault()
+    await archiving[0]
 
-    assert embedder.embedded, "control: the division reached its embed call"
+    assert BACKFILL_PASSAGE_INPUT_BOUND in report.backfills_applied
     assert {c.lifecycle_status for c in await store.get_all_chunks(OVERSIZE)} == {"archived"}

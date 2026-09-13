@@ -1527,6 +1527,23 @@ class RecomputePipelineAlreadyInFlightError(SAGEError):
         )
 
 
+class PipelineWorkInFlightError(SAGEError):
+    """409: migrate_vault refused because pipeline work is in flight on the vault."""
+
+    def __init__(self, vault_id: str) -> None:
+        message = f"Pipeline work is queued or running on vault {vault_id!r}."
+        super().__init__("pipeline_work_in_flight", message, 409, {"vault_id": vault_id})
+
+
+class VaultMigrationInFlightError(SAGEError):
+    """409: refused because migrate_vault is running on the vault."""
+
+    def __init__(self, vault_id: str, start_time: datetime) -> None:
+        detail = {"vault_id": vault_id, "start_time": start_time.isoformat()}
+        message = f"migrate_vault is running on vault {vault_id!r}, since {detail['start_time']}."
+        super().__init__("vault_migration_in_flight", message, 409, detail)
+
+
 class DestructiveConfigChangeError(SAGEError):
     """409: vault config update would orphan existing documents.
 
