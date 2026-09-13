@@ -3226,7 +3226,9 @@ class IngestionService:
             return False
 
         stored = await self._content_store.get_all_chunks(document_id)
-        if not stored:
+        # Candidacy was read before the projection; a re-index landing since then
+        # has already stored the text, and adding it again would store it twice.
+        if not stored or any(chunk.heading_path == "" for chunk in stored):
             return False
         sections = group_sections(stored)
         rebuilt = self._passages_for_sections(

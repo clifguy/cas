@@ -7539,7 +7539,9 @@ components:
       description: >-
         Response body for the list-headings endpoint; returns the distinct
         heading paths of a document in document order. Body content is not
-        included; every path is an authored heading.
+        included. Every path is one `read_section` accepts: an authored
+        heading's path, or the empty path, listed first where present, which
+        addresses the text under no heading.
       properties:
         document_id:
           type: string

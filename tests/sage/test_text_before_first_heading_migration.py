@@ -427,3 +427,38 @@ async def test_the_recovered_passage_carries_the_document_scalars(vault):
         )
     )
     assert [h.document.id for h in response.results] == [led]
+
+
+async def test_a_document_reindexed_with_its_preamble_before_the_read_gets_no_second(vault):
+    """A candidate is chosen from its heading paths before its source is projected.
+
+    A re-index landing in between -- a same-bytes forced re-ingest, say -- writes the
+    empty-path passage itself, so by the time the passages are read there is nothing
+    to add. The stale candidacy read is reproduced by answering heading enumeration
+    with the paths the document held before that re-index.
+    """
+    led = await _led(vault)
+    stale_paths = await vault.store.get_heading_paths(led)
+    assert "" not in stale_paths, "control: the seeded document must lack the passage"
+    doc = await vault.graph_store.get_document(led)
+    projection = await MarkdownAdapter().project(vault.root / "sources" / doc.source_path)
+    reindexed = vault.ingestion._chunk_projection(led, projection)
+    for chunk in reindexed:
+        chunk.embedding = [0.25] * EMBEDDING_DIM
+    await vault.store.index_chunks(led, reindexed)
+    before = _shape(await vault.store.get_all_chunks(led))
+    assert [path for path, _, _ in before].count("") == 1, "control: the re-index wrote it"
+
+    real_paths = vault.store.get_heading_paths
+
+    async def paths_as_first_read(document_id):
+        return stale_paths if document_id == led else await real_paths(document_id)
+
+    vault.store.get_heading_paths = paths_as_first_read
+    vault.ship_adapters()
+
+    report = await vault.migrate()
+
+    assert BACKFILL_TEXT_BEFORE_FIRST_HEADING not in report.backfills_applied
+    assert _shape(await vault.store.get_all_chunks(led)) == before
+    assert vault.store.replacements == 0
