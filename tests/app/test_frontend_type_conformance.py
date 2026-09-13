@@ -55,8 +55,9 @@ F2  An enrolled interface declares no property its component schema omits.
 F3  Every allowlist entry names an enrolled interface and a property that still
     diverges on the side the entry names.
 F4  Every enrolled interface and component resolves, the response and request
-    enrollments are disjoint, and enough properties are compared in each to mean
-    something (vacuity floors).
+    enrollments are disjoint, each per-interface gate iterates the whole of its
+    enrollment, and enough properties are compared in each to mean something
+    (vacuity floors).
 F5  The comparison fires on a removed declaration, including one inherited
     through a heritage clause; the optionality check fires on a relaxed required
     member; and the staleness check fires on a stale entry.
@@ -109,6 +110,7 @@ ENROLLED_REQUESTS: Final[dict[str, str]] = {
     "LinkRequest": "LinkRequest",
     "ListFieldPatch": "ListFieldPatch",
     "ReabstractRequest": "ReabstractRequest",
+    "RelocationPointer": "RelocationPointer",
     "Tier3Patch": "Tier3Patch",
     "TraverseRequest": "TraverseRequest",
     "UpdateMetadataRequest": "UpdateMetadataRequest",
@@ -137,8 +139,8 @@ KNOWN_FRONTEND_TYPE_DIVERGENCE: Final[dict[tuple[str, str, Side], str]] = {
 
 # Vacuity floors for F4, each set below today's count so ordinary movement does not
 # trip it while a lookup returning nothing does. The response pairs compare
-# forty-three schema properties, the request pairs eighty-six, and the request
-# components require nine.
+# forty-three schema properties, the request pairs ninety-one, and the request
+# components require thirteen.
 MIN_PROPERTIES_COMPARED: Final[int] = 35
 MIN_REQUEST_PROPERTIES_COMPARED: Final[int] = 70
 MIN_REQUIRED_PROPERTIES_COMPARED: Final[int] = 7
@@ -522,7 +524,8 @@ def rewrite_member(source: str, interface: str, member: str, replacement: str) -
     """Rewrite the one declaration head of ``member`` in the body of exported ``interface``.
 
     The head is the member's name, optional marker and colon; ``replacement`` is
-    substituted for it, and an empty ``replacement`` removes the whole declaration.
+    substituted for it. An empty ``replacement`` removes a declaration that ends on its
+    own line, and refuses a member whose type continues onto further lines.
     """
     body = re.search(
         rf"^export interface {re.escape(interface)}\b[^\n]*\{{\n(?P<body>.*?)^\}}",
@@ -533,7 +536,7 @@ def rewrite_member(source: str, interface: str, member: str, replacement: str) -
     if replacement:
         pattern, repl = rf"^([ \t]*){re.escape(member)}\??[ \t]*:", rf"\g<1>{replacement}"
     else:
-        pattern, repl = rf"^[ \t]*{re.escape(member)}\??[ \t]*:[^\n]*\n", ""
+        pattern, repl = rf"^[ \t]*{re.escape(member)}\??[ \t]*:[^\n]*;[ \t]*\n", ""
     mutated, count = re.subn(pattern, repl, body.group("body"), flags=re.MULTILINE)
     assert count == 1, f"{interface}.{member} is not declared exactly once in its body"
     return source[: body.start("body")] + mutated + source[body.end("body") :]
@@ -607,6 +610,30 @@ def test_required_request_properties_are_not_optional_on_the_interface(
         f"marks optional: {relaxed}. The server refuses a body without them; "
         f"remove the '?' in {TYPES_TS_PATH.name}."
     )
+
+
+@pytest.mark.parametrize(
+    ("gate", "enrollment"),
+    [
+        (test_schema_properties_are_declared_on_the_interface, ALL_ENROLLED),
+        (test_interface_declares_no_property_absent_from_the_schema, ALL_ENROLLED),
+        (test_required_request_properties_are_not_optional_on_the_interface, ENROLLED_REQUESTS),
+    ],
+    ids=["F1", "F2", "F6"],
+)
+def test_gates_are_parametrized_over_their_enrollment(
+    gate: object, enrollment: dict[str, str]
+) -> None:
+    """F4: each per-interface gate iterates the whole of the enrollment it enforces.
+
+    The F5 probes exercise the comparison helpers, not the parametrized gates, so a
+    gate narrowed back to a subset of its enrollment would leave them green.
+    """
+    marks = [mark for mark in getattr(gate, "pytestmark", []) if mark.name == "parametrize"]
+    assert len(marks) == 1, (
+        f"{getattr(gate, '__name__', gate)} carries {len(marks)} parametrizations"
+    )
+    assert marks[0].args == ("interface", sorted(enrollment))
 
 
 def test_enrollment_resolves_and_is_not_vacuous(types_source: str, core_spec: dict) -> None:
