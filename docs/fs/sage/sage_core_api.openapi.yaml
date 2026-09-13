@@ -3208,8 +3208,8 @@ paths:
         is read and nothing is re-abstracted -- and re-embeds only the
         documents it rewrites; section reads, heading enumeration and
         projection text read exactly as before. A document with pipeline work
-        in flight, or re-indexed while it is divided, is left for a later
-        call, and the server log names each one. And every passage
+        in flight, or re-indexed or stamped while it is divided, is left for a
+        later call, and the server log names each one. And every passage
         gains its structure relative to its document -- its heading path
         with a root element equal to the document title removed -- so a
         title that a source format made the document's top-level heading

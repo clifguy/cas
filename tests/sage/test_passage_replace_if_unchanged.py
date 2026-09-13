@@ -101,17 +101,23 @@ async def test_refuses_when_heading_paths_changed_under_the_same_content(store) 
     assert [c.heading_path for c in await store.get_all_chunks(DOC_ID)] == list(renamed)
 
 
-async def test_refuses_when_a_metadata_writer_stamped_the_passages(store) -> None:
+@pytest.mark.parametrize("column", ["lifecycle_status", "doc_type", "project", "indexed_structure"])
+async def test_refuses_when_a_metadata_writer_stamped_the_passages(store, column) -> None:
     """The replacement carries the stamped columns from the rows it read, so a
-    stamp landing after the read would otherwise be written back."""
+    stamp landing after the read would otherwise be written back. One case per
+    column, so a comparison omitting any one of them reddens exactly that case."""
     await store.index_chunks(DOC_ID, _rows("original"))
     expected = _state(_rows("original"))
-    await store.update_chunk_metadata(DOC_ID, {"lifecycle_status": "archived"})
+    if column == "indexed_structure":
+        await store.update_indexed_structure(DOC_ID, [("Doc > Long", "Retitled")])
+    else:
+        await store.update_chunk_metadata(DOC_ID, {column: "stamped"})
 
     replaced = await store.replace_chunks_if_unchanged(DOC_ID, expected, _rows("divided"))
 
     assert replaced is False
-    assert {c.lifecycle_status for c in await store.get_all_chunks(DOC_ID)} == {"archived"}
+    stamped = {getattr(c, column) for c in await store.get_all_chunks(DOC_ID)}
+    assert ("Retitled" if column == "indexed_structure" else "stamped") in stamped
 
 
 async def test_a_replacement_waits_for_a_writer_holding_the_document(pg_pool) -> None:

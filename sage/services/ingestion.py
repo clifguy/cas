@@ -3082,8 +3082,8 @@ class IngestionService:
         terminal status, is left for a later run; otherwise the division holds
         the document's pipeline claim while it embeds, so no reabstract or
         recompute starts meanwhile, and writes through the store's
-        compare-and-replace, which is refused if the passages changed after they
-        were read. A document left for later is logged with its reason.
+        compare-and-replace, which is refused if the passages were rewritten or
+        stamped after they were read. A document left for later is logged with its reason.
 
         Returns:
             Whether the passages were rewritten. A document whose division is
@@ -3122,7 +3122,9 @@ class IngestionService:
 
             if await self._content_store.replace_chunks_if_unchanged(document_id, as_read, divided):
                 return True
-            return self._left_for_later(document_id, "passages rewritten during the division")
+            return self._left_for_later(
+                document_id, "passages rewritten or stamped during the division"
+            )
         finally:
             self._release_claim(document_id)
 
