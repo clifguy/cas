@@ -893,7 +893,8 @@ def _pipeline_wait_lines(
     so letting its wait also exempt the enclosing body would waive a finding
     twice over. The arm below attributes nothing to a nested definition -- a
     nested ``def`` is not a fixture -- so the same stop would simply lose the
-    wait, while ``_ingest_lines`` descends and keeps the ingest beside it. A
+    wait, while the fixture's ingest walk descends into the helpers it calls
+    and keeps the ingest beside it. A
     fixture that seeds and waits inside one nested helper would then be
     reported for a document it demonstrably waited for.
 
@@ -949,6 +950,40 @@ def _own_scope_nodes(func: ast.FunctionDef | ast.AsyncFunctionDef) -> Iterator[a
         pending.extend(ast.iter_child_nodes(node))
 
 
+def _fixture_ingest_lines(
+    func: ast.FunctionDef | ast.AsyncFunctionDef, helpers: frozenset[str]
+) -> list[int]:
+    """Every line at which a fixture puts a document in flight before its tests run.
+
+    ``_ingest_lines`` reads nested definitions too, on the ground that a
+    document a nested helper puts in flight is in flight just the same. That
+    holds for a helper the fixture *calls*. It does not hold for one the
+    fixture only defines and hands on -- a factory fixture -- whose ingestion
+    runs in whichever test calls it, one function that can wait where it
+    calls. So an ingestion inside a nested definition of the fixture's own
+    scope counts only when the fixture calls that definition by name there.
+
+    Lines stay where ``_ingest_lines`` puts them, inside the helper's body, so
+    a called helper that seeds and waits keeps its wait beside its ingest.
+    """
+    own = list(_own_scope_nodes(func))
+    called = {
+        node.func.id
+        for node in own
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    uncalled_spans = [
+        (node.lineno, node.end_lineno or node.lineno)
+        for node in own
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name not in called
+    ]
+    return [
+        line
+        for line in _ingest_lines(func, helpers)
+        if not any(start <= line <= end for start, end in uncalled_spans)
+    ]
+
+
 def _fixture_handoff(
     func: ast.FunctionDef | ast.AsyncFunctionDef, first_ingest: int
 ) -> tuple[int, int] | None:
@@ -974,6 +1009,14 @@ def _fixture_handoff(
     Handoffs above the first ingestion are dropped, as they always were for
     ``yield``: an early ``return`` for a fixture that declines to seed hands
     off nothing in flight.
+
+    One bound, left as a bound. A ``return`` inside a ``try`` whose
+    ``finally`` waits hands its tests a settled document, because the
+    ``finally`` runs before the fixture exits; the ordering here reads the
+    wait as falling after the handoff and reports it. For a ``yield`` the same
+    reading is right, since that ``finally`` runs at teardown. No fixture is
+    naturally written that way, so the asymmetry is named rather than
+    modelled.
     """
     own = list(_own_scope_nodes(func))
     yields = [node.lineno for node in own if isinstance(node, (ast.Yield, ast.YieldFrom))]
@@ -1013,9 +1056,10 @@ def _unwaited_fixture_handoffs(tree: ast.AST) -> list[tuple[int, str]]:
     * **A fixture**, by its decorator. A plain helper that ingests and returns
       is out of scope: its caller is a single function, which is where the
       wait can be written and where the arms above already look.
-    * **Handing off after an ingestion** -- reached directly, through the
-      enclosing chain, or through one module-local helper, exactly as
-      ``_first_ingest_line`` resolves it for the arm above. The handoff is the
+    * **Handing off after an ingestion** -- reached directly, through a
+      nested helper the fixture calls, or through one module-local helper, as
+      ``_fixture_ingest_lines`` resolves it. A nested helper the fixture only
+      defines and hands on puts nothing in flight: its caller does. The handoff is the
       fixture's own ``yield``, its own ``return``, or its completion, as
       ``_fixture_handoff`` locates it. A fixture whose only ingest follows its
       ``yield`` is doing teardown work, and has no document in flight at the
@@ -1067,7 +1111,7 @@ def _unwaited_fixture_handoffs(tree: ast.AST) -> list[tuple[int, str]]:
     for node in ast.walk(tree):
         if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) or not _is_fixture(node):
             continue
-        ingest_lines = _ingest_lines(node, ingest_helpers)
+        ingest_lines = _fixture_ingest_lines(node, ingest_helpers)
         if not ingest_lines:
             continue
         located = _fixture_handoff(node, ingest_lines[0])
@@ -2195,7 +2239,7 @@ def test_unwaited_fixture_detector_flags_a_wait_that_runs_only_in_teardown() -> 
     allowlisted teardown drain, and the obvious way to retire those entries is
     to make the drain a real wait. Under the position-blind reading that edit
     silently disarms the arm for that fixture while the message still says to
-    wait before the yield.
+    wait before the handoff.
     """
     assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_TEARDOWN_WAIT_FIXTURE_SOURCE)) == [
         (8, "vault_services")
@@ -2391,7 +2435,7 @@ def test_unwaited_fixture_detector_ignores_an_ingest_after_the_yield() -> None:
     The ordering condition, and the same one the arm above carries: without
     it the walk keys on mere co-occurrence and reports a fixture that hands
     its tests nothing at all. The remedy it would print -- wait before the
-    yield -- would name a document that does not yet exist.
+    handoff -- would name a document that does not yet exist.
     """
     assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_TEARDOWN_INGEST_FIXTURE_SOURCE)) == []
 
@@ -2611,6 +2655,61 @@ def test_unwaited_fixture_detector_ignores_an_early_return_before_the_ingest() -
     assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_EARLY_RETURN_FIXTURE_SOURCE)) == []
 
 
+# A factory fixture: it defines an ingesting helper and hands the helper on
+# without calling it. Nothing is in flight when it returns; each requesting test
+# puts its own document in flight by calling the helper, and waits there.
+_SYNTHETIC_UNCALLED_FACTORY_FIXTURE_SOURCE: Final[str] = textwrap.dedent(
+    """
+    @pytest.fixture
+    def seed(services, tmp_path):
+        async def _seed(name):
+            return _parse(await ingest_document("v", str(tmp_path / name), "markdown"))
+
+        return _seed
+    """
+)
+
+
+def test_unwaited_fixture_detector_ignores_a_factory_returning_an_uncalled_helper() -> None:
+    """A nested helper the fixture only defines puts nothing in flight.
+
+    The ingestion is written inside the fixture but runs in whichever test
+    calls the helper, which is one function and can wait where it calls --
+    the same reason a plain ingesting helper is out of scope. Reporting the
+    factory would ask every factory fixture for an allowlist entry it does not
+    need.
+    """
+    assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_UNCALLED_FACTORY_FIXTURE_SOURCE)) == []
+
+
+# The same factory, calling its helper once before handing it on and waiting for
+# nothing. The call is what puts a document in flight inside the fixture.
+_SYNTHETIC_CALLED_FACTORY_FIXTURE_SOURCE: Final[str] = textwrap.dedent(
+    """
+    @pytest.fixture
+    async def seed(services, tmp_path):
+        async def _seed(name):
+            return _parse(await ingest_document("v", str(tmp_path / name), "markdown"))
+
+        await _seed("s.md")
+        return _seed
+    """
+)
+
+
+def test_unwaited_fixture_detector_flags_a_factory_that_calls_its_ingesting_helper() -> None:
+    """A nested helper the fixture calls has ingested, and the handoff that follows is reported.
+
+    Paired with the uncalled factory above, and the pair is what excludes the
+    rival that makes the uncalled case pass by discarding every ingestion
+    written inside a nested definition. That rival is green above and silent
+    here, which is the nested-seed shape this arm exists to report.
+    """
+    assert _unwaited_fixture_handoffs(ast.parse(_SYNTHETIC_CALLED_FACTORY_FIXTURE_SOURCE)) == [
+        (8, "seed")
+    ]
+
+
 def test_unwaited_fixture_allowlist_has_no_stale_entries() -> None:
     """Every unwaited-fixture allowlist entry names a fixture the walk still reports.
 
@@ -2691,7 +2790,10 @@ def test_every_gate_scans_the_shared_enumeration() -> None:
 
     The two tests above prove the shared enumeration reaches ``conftest.py``;
     neither proves a gate uses it. A gate rewritten to loop over some other
-    list would keep both green while scanning less than they describe. The
+    list would keep both green while scanning less than they describe, and so
+    would one that keeps both calls but passes either an argument --
+    ``_tracked_test_modules(files=[])`` scans nothing -- which is why keyword
+    arguments are refused as well as positional ones. The
     count is asserted first, so a renamed or deleted gate cannot let this pass
     by finding nothing to check.
     """
@@ -2711,7 +2813,9 @@ def test_every_gate_scans_the_shared_enumeration() -> None:
             and len(loop.iter.args) == 1
             and isinstance(loop.iter.args[0], ast.Call)
             and _called_name(loop.iter.args[0].func) == "_tracked_test_modules"
+            and not loop.iter.keywords
             and not loop.iter.args[0].args
+            and not loop.iter.args[0].keywords
             for loop in ast.walk(gate)
         )
 
