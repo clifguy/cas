@@ -220,12 +220,13 @@ class DocumentSurface:
 class SearchResult:
     """A result from content store search.
 
-    One row per chunk on the semantic arm. On the keyword arm the match unit
-    is the document, so a row stands for a whole document: ``heading_path``
-    and ``content`` carry its best-ranking chunk, and ``matched_chunk_count``
-    reports how many of its chunks carry a query term. A binding that ranks
-    chunk-by-chunk leaves the count at its default of 1, and the caller
-    tallies duplicate ``document_id`` rows itself.
+    One row per document on both scored arms, since each counts its ``limit``
+    in documents: ``heading_path`` and ``content`` carry the document's
+    best-ranking passage, and ``matched_chunk_count`` reports how many of its
+    sections matched -- on the keyword arm, those carrying a query term; on the
+    semantic arm, those its passages reached. A row that leaves the count at
+    its default of 1 stands for a single passage, and a caller handed several
+    for one document tallies them itself.
 
     ``is_document_surface`` names which of the two surfaces the row came from
     (CAS-ADR-049 Decision 2). A document-level row is not a passage: it carries
@@ -456,6 +457,14 @@ class ContentStore(ABC):
         filters: dict[str, str | list[str]] | None = None,
     ) -> list[SearchResult]:
         """Vector similarity search.
+
+        ``limit`` counts documents, not rows: a document answers once, however
+        many of its passages are near the query, so one document's passages
+        cannot be the whole answer. An approximate index is a binding's own
+        means of ranking, not a narrower budget: a binding whose index scan
+        stops short of its limit, or whose filter empties that scan, must scan
+        on rather than answer with what the index kept. How far it scans on may
+        itself be bounded by the index, and a binding states that bound.
 
         filters: optional pre-filter predicates (e.g. {"doc_type": "design_spec"}).
         Values may be a single string (equality) or a list of strings

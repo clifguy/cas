@@ -769,14 +769,15 @@ class PostgresContentStore(ContentStore):
         union, and the outer query sorts the survivors. Two properties depend
         on that shape. It is the form pgvector's HNSW index serves -- ordering
         the union by a computed score instead makes the planner scan both
-        tables in full, since neither index can supply that order. And a row
-        with no embedding yields a NaN distance, which sorts above every real
-        number under ``score DESC`` but below every real distance under the
-        ascending order each arm uses, so an unembedded row is the last thing
-        an arm keeps rather than the first. It can still reach the result when
-        an arm returns fewer rows than its limit -- there is then nothing for
-        the ordering to displace it behind -- which is why nothing writes a
-        row without an embedding.
+        tables in full, since neither index can supply that order. A row with a
+        zero vector yields a NaN distance, which sorts below every real distance
+        under the ascending order each arm uses, so an unembedded row is the
+        last thing an arm keeps rather than the first -- and a table scan can
+        still keep it when an arm returns fewer rows than its limit, though an
+        index scan never does, since the index stores no zero vector. Such a row
+        is dropped before the collapse: NaN sorts above every number, so kept
+        there it would become its document's best score and representative
+        passage, displacing a surface that genuinely matched.
 
         The outer sort is total, so the same survivors always come back in the
         same order. The arms' own clauses are not, and deliberately: a tiebreak
@@ -784,16 +785,43 @@ class PostgresContentStore(ContentStore):
         one would cost the full scan of both tables the shape above exists to
         avoid. Two rows tied at an arm's cutoff can therefore still vary which
         one that arm keeps. What is fixed here is the half that costs nothing.
+
+        An index-served arm does not reach its ``limit`` on its own. The HNSW
+        scan keeps a bounded candidate list (``hnsw.ef_search``) and, left to
+        itself, returns no more rows than that list holds however high the
+        limit; a filter is applied to those candidates after the scan, so a
+        filtered arm can come back with fewer still, or with none. Each read
+        therefore turns on the index's iterative scan for its own transaction,
+        so an arm keeps scanning until it holds its limit, the index is
+        exhausted, or the scan reaches pgvector's own bounds on how far it will
+        go (``hnsw.max_scan_tuples`` and ``hnsw.scan_mem_multiplier``). The last
+        is a real residue: a filter admitting only rows sparse among the nearest
+        tuples can still leave an arm short of its limit on a large table. The
+        library floor the schema bootstrap enforces is what makes the setting
+        exist at all. Strict ordering is the mode chosen because everything above
+        rests on each arm's rows arriving in distance order; the relaxed mode
+        would let an arm's cutoff fall on rows it had not ranked.
+
+        ``limit`` counts documents. The surviving rows are collapsed to one per
+        document before the outer limit applies: the document's best score
+        across both surfaces, its nearest passage as the excerpt wherever a
+        passage reached an arm, and the number of sections those passages
+        belong to, so a section divided into several passages counts once. A
+        budget counted in rows let one document's passages be the whole
+        answer. The collapse sits outside the arms because a per-document
+        clause inside one is a clause the index cannot serve. What that leaves
+        is bounded and stated: an arm's own limit still counts rows, so a
+        document with more near passages than the limit keeps other documents
+        out of the passage arm. They still reach the answer through the
+        document surface, which holds one row per document.
         """
         with self._query_timer.measure(
             "search_semantic", params={"limit": limit, "filtered": bool(filters)}
         ):
             where, where_params = self._build_where(filters)
             predicate = f" WHERE {where}" if where else ""
-            sql = (
-                "SELECT document_id, heading_path, content, score,"  # noqa: S608
-                " is_document_surface, section_key FROM ("
-                " (SELECT document_id, heading_path, content,"
+            arms = (
+                " (SELECT document_id, heading_path, content,"  # noqa: S608
                 " 1 - (embedding <=> %s::vector) AS score,"
                 f" false AS is_document_surface, chunk_index, {_SECTION_KEY} AS section_key"
                 " FROM chunks"
@@ -814,16 +842,34 @@ class PostgresContentStore(ContentStore):
                 " NULL::integer AS section_key FROM document_surface"
                 f"{predicate}"
                 " ORDER BY embedding <=> %s::vector LIMIT %s)"
-                # Two rows can share a score, and a clause stopping there hands
-                # back whichever the scan reached first, so the same call can
-                # answer differently twice. The id makes the order total across
-                # documents; within one, the passage index separates the
-                # passages from each other and from the document-level row,
-                # which sorts at the index the port reserves for it. The
-                # heading will not serve: two passages can share one, and a
-                # passage carrying none ties with its own surface row.
-                " ) s WHERE score IS NOT NULL"
-                " ORDER BY score DESC, document_id, chunk_index LIMIT %s"
+            )
+            sql = (
+                f"WITH scored AS (SELECT * FROM ({arms}) s"  # noqa: S608
+                " WHERE score IS NOT NULL AND score <> 'NaN'::float8),"
+                # A document is represented by its nearest passage wherever one
+                # reached the arm. Two rows can share a score, and a clause
+                # stopping there hands back whichever the scan reached first, so
+                # the passage index settles it. The heading will not serve: two
+                # passages can share one.
+                " best AS (SELECT DISTINCT ON (document_id) document_id,"
+                " heading_path, content, section_key FROM scored"
+                " WHERE NOT is_document_surface"
+                " ORDER BY document_id, score DESC, chunk_index),"
+                # The score is the document's best across both surfaces, and the
+                # count is of the sections its passages belong to, so a section
+                # divided into several passages counts once.
+                " docs AS (SELECT document_id, max(score) AS score,"
+                " count(DISTINCT section_key) AS matched_sections"
+                " FROM scored GROUP BY document_id)"
+                " SELECT d.document_id, COALESCE(b.heading_path, ''),"
+                " COALESCE(b.content, ''), d.score,"
+                # No passage row means only the document surface answered.
+                " (b.document_id IS NULL) AS is_document_surface,"
+                " b.section_key, d.matched_sections"
+                " FROM docs d LEFT JOIN best b USING (document_id)"
+                # Total, so the same survivors always come back in the same
+                # order: the id separates documents sharing a score.
+                " ORDER BY d.score DESC, d.document_id LIMIT %s"
             )
             params: list[object] = [
                 query_embedding,
@@ -836,7 +882,10 @@ class PostgresContentStore(ContentStore):
                 limit,
                 limit,
             ]
-            rows = await self._fetchall(sql, params)
+            async with self._pool.connection() as conn, conn.transaction():
+                await conn.execute("SET LOCAL hnsw.iterative_scan = strict_order")
+                cur = await conn.execute(sql, params)
+                rows = await cur.fetchall()
             return [self._row_to_semantic_result(r) for r in rows]
 
     async def search_bm25(
@@ -1503,21 +1552,21 @@ class PostgresContentStore(ContentStore):
 
     @staticmethod
     def _row_to_semantic_result(row: tuple) -> SearchResult:
-        """A row from the semantic union, which spans both surfaces.
+        """A row from the semantic search, which answers per document.
 
-        The passage count follows from the discriminant rather than being
-        selected alongside it: the arm ranks row by row, so a passage row
-        stands for one passage and a document-level row for none
-        (CAS-ADR-049 Decision 5).
+        The section count is selected alongside the discriminant rather than
+        following from it: the row stands for a whole document, so how many of
+        its sections the arms reached is not recoverable from the row itself. A
+        document only its surface answered counts none, since a document-level
+        row is not a passage (CAS-ADR-049 Decision 5).
         """
-        is_document_surface = bool(row[4])
         return SearchResult(
             document_id=row[0],
             heading_path=row[1],
             content=row[2],
             score=float(row[3]),
-            matched_chunk_count=0 if is_document_surface else 1,
-            is_document_surface=is_document_surface,
+            matched_chunk_count=int(row[6]),
+            is_document_surface=bool(row[4]),
             section_index=row[5],
         )
 

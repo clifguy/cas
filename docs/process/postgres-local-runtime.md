@@ -23,6 +23,13 @@ brew install pg_repack       # optional: online bloat reclamation (used later)
 `pgvector` and `pg_repack` must be built for the **same** Postgres major version
 as the running server. If you upgrade the server major version, reinstall both.
 
+`pgvector` must also be **0.8.0 or later**: semantic search uses the HNSW index's
+iterative scan, which earlier releases lack. Opening a vault refuses a server whose
+installed library is older, naming the version it found. The check runs per vault,
+so on an older library the server still starts but skips **every** vault: the
+roster comes back empty, and each vault's skip reason in the startup log names the
+pgvector version and the floor.
+
 ## 2. Run it under launchd
 
 ```sh

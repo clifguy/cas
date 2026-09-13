@@ -9,13 +9,13 @@ scoring algorithms -- for instance LanceDB BM25 and Postgres ``ts_rank`` --
 fuse on equal footing. Keeping the fusion in one place lets both callers share
 an identical implementation rather than a hand-copied formula.
 
-The document is the key because it is the entity both arms rank. The semantic
-arm returns one row per chunk; the keyword arm's match unit is the document
-(CAS-ADR-048) and it returns one row per document. Keying on the chunk instead
-would leave the arms colliding only when they happened to pick the same
-passage, so a document both arms agree on would take one contribution rather
-than two, and the fusion would degenerate into an interleave of two
-independent rankings.
+The document is the key because it is the entity both arms rank: each returns
+one row per document, represented by its best passage (the keyword arm's match
+unit is the document, CAS-ADR-048). Keying on the chunk instead would leave the
+arms colliding only when they happened to pick the same passage, so a document
+both arms agree on would take one contribution rather than two, and the fusion
+would degenerate into an interleave of two independent rankings. A list with
+several rows for one document is still read correctly, by its best one.
 """
 
 from sage.adapters.interfaces import SearchResult

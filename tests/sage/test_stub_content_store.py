@@ -21,7 +21,9 @@ Both the mirror and the inventory are bounded to the keyword contract: the
 ``search_bm25`` and ``parse_keyword_query`` rules CAS-ADR-048 and CAS-ADR-049
 settle. The Postgres module also covers indexing, statistics, bloat and fusion,
 some of which reach ``search_bm25`` incidentally; those are outside what this
-module claims to mirror and are not enumerated below.
+module claims to mirror and are not enumerated below. The one addition is the
+semantic arm's document budget, pinned in the final section under its Postgres
+twins' names, because the double stands in for that verb's budget too.
 
 **Postgres rules with no counterpart here.** Quoted-phrase adjacency and the
 within-chunk fallback path, because the double parses no operators, so neither
@@ -61,11 +63,15 @@ here exercise it, under names that do not match the Postgres ones.
 
 from __future__ import annotations
 
+import dataclasses
+import math
+
 import pytest
 
 from sage.adapters.interfaces import (
     LEGACY_DOCUMENT_HEADER_HEADING_PATH,
     Chunk,
+    DocumentSurface,
     KeywordQueryParse,
 )
 from sage.adapters.stubs import StubContentStore
@@ -767,3 +773,120 @@ async def test_stub_search_bm25_header_still_ranks_a_matched_document(store):
     assert res[0].heading_path != LEGACY_DOCUMENT_HEADER_HEADING_PATH, (
         "the header set the score without becoming the excerpt"
     )
+
+
+# ---------------------------------------------------------------------------
+# Semantic budget
+# ---------------------------------------------------------------------------
+
+_DIM = 768
+
+
+def _graded(cos: float, off: int) -> list[float]:
+    """A unit vector at cosine ``cos`` to the first axis, off along ``off``."""
+    vec = [0.0] * _DIM
+    vec[0] = cos
+    vec[off] = math.sqrt(max(0.0, 1.0 - cos * cos))
+    return vec
+
+
+def _axis() -> list[float]:
+    return _graded(1.0, 1)
+
+
+async def test_stub_search_semantic_limit_is_a_document_budget(store):
+    """``limit`` bounds documents, not rows.
+
+    One document's four passages are nearer the query than anything else, so a
+    budget counted in rows spends ``limit=3`` inside that document and answers
+    with one id. Two other documents follow by their surfaces, so a budget
+    counted in documents names them next.
+    """
+    await store.index_chunks(
+        "crowd",
+        [
+            dataclasses.replace(
+                _chunk("crowd", content=f"passage {rank}", chunk_index=rank),
+                embedding=_graded(cos, 2 + rank),
+            )
+            for rank, cos in enumerate((0.95, 0.90, 0.85, 0.80))
+        ],
+    )
+    for offset, (doc_id, cos) in enumerate((("a", 0.5), ("b", 0.4), ("crowd", 0.3))):
+        await store.upsert_document_surface(
+            DocumentSurface(
+                document_id=doc_id,
+                matchable=doc_id,
+                orienting="",
+                embedding=_graded(cos, 100 + offset),
+            )
+        )
+
+    res = await store.search_semantic(_axis(), limit=3)
+
+    assert [r.document_id for r in res] == ["crowd", "a", "b"], (
+        "three documents in score order, not three passages of one"
+    )
+
+
+async def test_stub_search_semantic_a_query_with_no_norm_finds_nothing(store):
+    """A zero query vector has no similarity to any row, so nothing is returned."""
+    await store.index_chunks(
+        "doc",
+        [dataclasses.replace(_chunk("doc", content="embedded"), embedding=_axis())],
+    )
+    assert [r.document_id for r in await store.search_semantic(_axis(), limit=10)] == ["doc"], (
+        "positive control: the same row is found by a query with a norm"
+    )
+
+    assert await store.search_semantic([0.0] * _DIM, limit=10) == []
+
+
+async def test_stub_search_semantic_an_unscorable_passage_does_not_represent_its_document(store):
+    """A zero-vector passage has no similarity, so its document answers by its surface."""
+    await store.index_chunks(
+        "doc",
+        [dataclasses.replace(_chunk("doc", content="unembedded"), embedding=[0.0] * _DIM)],
+    )
+    await store.upsert_document_surface(
+        DocumentSurface(document_id="doc", matchable="doc", orienting="", embedding=_axis())
+    )
+
+    [hit] = await store.search_semantic(_axis(), limit=10)
+
+    assert hit.is_document_surface, "the unscorable passage took the document"
+    assert (hit.content, hit.matched_chunk_count) == ("", 0)
+
+
+async def test_stub_search_semantic_represents_a_document_by_its_best_passage(store):
+    """One row per document, carrying its best passage and its section count.
+
+    Two passages of one section count once and two sections sharing a heading
+    count twice, so neither a tally of rows nor a tally of headings passes.
+    """
+    rows = [("nearest half", "Long", 0, 0, 0.9), ("second half", "Long", 1, 0, 0.8)]
+    rows += [("other section", "Long", 2, 1, 0.7)]
+    await store.index_chunks(
+        "doc",
+        [
+            dataclasses.replace(
+                _chunk("doc", content=content, heading_path=heading, chunk_index=index),
+                section_index=section,
+                embedding=_graded(cos, 2 + index),
+            )
+            for content, heading, index, section, cos in rows
+        ],
+    )
+    await store.upsert_document_surface(
+        DocumentSurface(
+            document_id="doc", matchable="doc", orienting="", embedding=_graded(0.95, 9)
+        )
+    )
+
+    [hit] = await store.search_semantic(_axis(), limit=10)
+
+    assert hit.score == pytest.approx(0.95, abs=1e-6), "the score is the document's best"
+    assert not hit.is_document_surface, "a document whose passages matched is a passage hit"
+    assert (hit.content, hit.heading_path) == ("nearest half", "Long")
+    assert hit.matched_chunk_count == 2, "two sections matched; a divided one counts once"
+    assert hit.section_index == 0, "the row carries its excerpt's section"

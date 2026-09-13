@@ -193,52 +193,77 @@ class StubContentStore(ContentStore):
         (CAS-ADR-049). Similarity is not matching, so the provenance bar does
         not apply here and this double can model the union faithfully -- unlike
         ``search_bm25``, where it deliberately does not.
+
+        The budget is modelled as the binding spends it: each surface
+        contributes its ``limit`` nearest rows, and those rows are collapsed to
+        one per document before ``limit`` counts documents. A document is
+        represented by its nearest passage wherever one was kept, scores its
+        best across both surfaces, and counts the sections its kept passages
+        belong to. A query with no norm has no similarity to anything and finds
+        nothing, as on the binding.
         """
-        scored: list[tuple[float, SearchResult]] = []
+        if not any(query_embedding):
+            return []
+        passages: list[tuple[float, int, Chunk]] = []
         for chunks in self._store.values():
             for chunk in chunks:
                 if not _chunk_matches_filters(chunk, filters):
                     continue
-                if chunk.embedding is not None:
+                # A zero vector has no similarity; the binding drops such a row.
+                if chunk.embedding is not None and any(chunk.embedding):
                     sim = _cosine_similarity(query_embedding, chunk.embedding)
-                    scored.append(
-                        (
-                            sim,
-                            SearchResult(
-                                document_id=chunk.document_id,
-                                heading_path=chunk.heading_path,
-                                content=chunk.content,
-                                score=sim,
-                                section_index=chunk.section_key,
-                            ),
-                        )
-                    )
-
+                    passages.append((sim, chunk.chunk_index, chunk))
+        surfaces: list[tuple[float, str]] = []
         for surface in self._surfaces.values():
             if not _chunk_matches_filters(surface, filters):
                 continue
-            if surface.embedding is not None:
+            if surface.embedding is not None and any(surface.embedding):
                 sim = _cosine_similarity(query_embedding, surface.embedding)
-                scored.append(
-                    (
-                        sim,
-                        # No excerpt and no passage count, as the real binding
-                        # returns: a document-level row is not a passage, and
-                        # its stored halves carry the index-side expansion
-                        # rather than the document's own text (CAS-ADR-049).
-                        SearchResult(
-                            document_id=surface.document_id,
-                            heading_path="",
-                            content="",
-                            score=sim,
-                            matched_chunk_count=0,
-                            is_document_surface=True,
-                        ),
+                surfaces.append((sim, surface.document_id))
+        passages.sort(key=lambda x: (-x[0], x[2].document_id, x[1]))
+        surfaces.sort(key=lambda x: (-x[0], x[1]))
+
+        best: dict[str, float] = {}
+        representative: dict[str, Chunk] = {}
+        sections: dict[str, set[int]] = {}
+        for sim, _, chunk in passages[:limit]:
+            doc_id = chunk.document_id
+            best[doc_id] = max(best.get(doc_id, sim), sim)
+            representative.setdefault(doc_id, chunk)
+            sections.setdefault(doc_id, set()).add(chunk.section_key)
+        for sim, doc_id in surfaces[:limit]:
+            best[doc_id] = max(best.get(doc_id, sim), sim)
+
+        results: list[SearchResult] = []
+        for doc_id in sorted(best, key=lambda d: (-best[d], d))[:limit]:
+            chunk = representative.get(doc_id)
+            if chunk is None:
+                # No excerpt and no passage count, as the real binding returns:
+                # a document-level row is not a passage, and its stored halves
+                # carry the index-side expansion rather than the document's own
+                # text (CAS-ADR-049).
+                results.append(
+                    SearchResult(
+                        document_id=doc_id,
+                        heading_path="",
+                        content="",
+                        score=best[doc_id],
+                        matched_chunk_count=0,
+                        is_document_surface=True,
                     )
                 )
-
-        scored.sort(key=lambda x: x[0], reverse=True)
-        return [result for _, result in scored[:limit]]
+                continue
+            results.append(
+                SearchResult(
+                    document_id=doc_id,
+                    heading_path=chunk.heading_path,
+                    content=chunk.content,
+                    score=best[doc_id],
+                    matched_chunk_count=len(sections[doc_id]),
+                    section_index=chunk.section_key,
+                )
+            )
+        return results
 
     async def search_bm25(
         self,
@@ -580,7 +605,13 @@ class _ByteCountedBound:
 
 
 class StubEmbeddingProvider(_ByteCountedBound, EmbeddingProvider):
-    """Returns deterministic zero vectors for testing."""
+    """Returns deterministic zero vectors for testing.
+
+    A zero vector has no cosine similarity, so both content-store bindings drop
+    rows embedded by this provider from the semantic arm, and a query it embeds
+    finds nothing there. A test that needs a semantic hit uses
+    ``SeededEmbeddingProvider``.
+    """
 
     DIMENSIONS = 768
 
