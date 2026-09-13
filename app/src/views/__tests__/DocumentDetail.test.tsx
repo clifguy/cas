@@ -82,6 +82,7 @@ const mockDoc: Document = {
   authority_scope: null,
   doc_type: 'design_spec',
   source_content_hash: 'abc',
+  stored_content_hash: null,
   adapter_version: '1.0',
   created_by: 'test',
   created_at: '2026-03-15T00:00:00Z',

@@ -354,23 +354,6 @@ export default function DocumentDetail() {
         )}
       </Section>
 
-      {doc.projection_text && (
-        <Section title="Projection Preview">
-          <div style={{
-            background: '#f9f9f9',
-            border: '1px solid #eee',
-            borderRadius: 4,
-            padding: 16,
-            fontSize: 13,
-            lineHeight: 1.6,
-            fontFamily: 'system-ui',
-            whiteSpace: 'pre-wrap',
-          }}>
-            {doc.projection_text}
-          </div>
-        </Section>
-      )}
-
       <Section title="Edges">
         {Object.keys(edgeGroups).length === 0 ? (
           <div style={{ color: '#666' }}>No edges for this document.</div>

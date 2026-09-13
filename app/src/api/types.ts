@@ -93,6 +93,7 @@ export interface Document {
   authority_scope: string | null;
   doc_type: string | null;
   source_content_hash: string;
+  stored_content_hash: string | null;
   adapter_version: string;
   created_by: string;
   created_at: string;
@@ -107,7 +108,6 @@ export interface Document {
   pipeline_error: string | null;
   tier3_metadata: Record<string, unknown> | null;
   metadata_confirmed?: boolean;
-  projection_text?: string;
   relocated_from: RelocationPointer | null;
   relocated_to: RelocationPointer | null;
 }
@@ -124,6 +124,10 @@ export interface DocumentSummary {
   tags: string[];
   document_date: string | null;
   source_modified_at: string | null;
+  semantic_abstract: string | null;
+  tier3_metadata: Record<string, unknown> | null;
+  relocated_from: RelocationPointer | null;
+  relocated_to: RelocationPointer | null;
 }
 
 // --- Edge ---

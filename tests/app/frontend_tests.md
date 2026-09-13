@@ -828,25 +828,17 @@ configured), Tier 3 (source-type-specific), plus a separate provenance section.
 **Rationale:** Tiered organization reflects the metadata model's structure and
 helps users distinguish system-generated from domain-specific fields.
 
-### TEST-APP-UI-038: Projection preview renders heading hierarchy
+### TEST-APP-UI-038: RETIRED (was: Projection preview renders heading hierarchy)
 
-**Artifact:** App Spec v0.4, Section 10.2 (Projection Preview)
-**Category:** document_detail
-
-**Decision:** The stored projection_text is rendered with heading hierarchy
-intact. This is the adapter's structured text output, not the original source.
-
-**Precondition:** Document with projection_text containing multiple heading levels.
-
-**Input:** Navigate to Document Detail.
-
-**Expected:**
-- Projection text rendered as structured content
-- Heading hierarchy preserved (h1, h2, etc.)
-- Content is readable and maintains logical structure
-
-**Rationale:** The projection is what SAGE indexed. Showing it confirms
-what the retrieval system "sees" for this document.
+Specified a Document Detail section rendering a `projection_text` field on the
+document record. No such field was ever published: the `Document` component
+schema in `docs/fs/sage/sage_core_api.openapi.yaml` does not declare it, no
+REST route returns it, and the section it guarded therefore never rendered.
+The field and the section were removed rather than kept as a frontend-only
+declaration. The frontend document interfaces are now held to their published
+component schemas by `tests/app/test_frontend_type_conformance.py`. A
+projection read in Document Detail would be new work against a route that
+supplies the text, not a revival of this test.
 
 ### TEST-APP-UI-039: "Open Source File" button present
 
