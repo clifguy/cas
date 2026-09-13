@@ -1868,7 +1868,7 @@ def register_sage_tools(
             heading_path: Heading path prefix (required for deterministic mode).
             limit: Maximum results (0-100). Default: 10. 0 is catalog-only and
                 returns total_available with no results, for documents and for
-                edges alike; other modes refuse it.
+                edges alike; other modes and the facets target refuse it.
             offset: Skip this many results before returning (catalog mode pagination). Default: 0.
             use_hybrid: Use hybrid RRF fusion of vector + BM25 in semantic mode. Default: true.
             use_abstract_prefilter: Boost documents whose semantic abstract matches the

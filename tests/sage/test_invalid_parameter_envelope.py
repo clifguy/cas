@@ -105,7 +105,8 @@ def test_limit_below_zero_yields_invalid_parameter_envelope():
     """``limit`` accepts zero, the count-only request, and nothing below it.
 
     The constraint must name 0 as the floor: a floor left at 1 would still
-    refuse -1, so the refusal alone cannot tell the two bounds apart.
+    refuse -1, so the refusal alone cannot tell the two bounds apart. The
+    offset remedy answers the cap, not the floor, so it is absent here.
     """
     err = validation_error_envelope(_discover_error(limit=-1))
 
@@ -115,6 +116,8 @@ def test_limit_below_zero_yields_invalid_parameter_envelope():
     assert err.detail["value"] == -1
     assert "0" in err.detail["constraint"]
     assert "1" not in err.detail["constraint"]
+    assert "hint" not in err.detail
+    assert "offset" not in err.message
 
 
 # ---------------------------------------------------------------------------

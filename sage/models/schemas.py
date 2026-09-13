@@ -3320,7 +3320,7 @@ class DiscoverRequest(BaseModel):
         description=(
             "Maximum number of results to return. In catalog mode, 0 asks "
             "for the count alone: the response carries total_available and "
-            "no results. Other modes refuse 0."
+            "no results. Other modes, and the facets target, refuse 0."
         ),
     )
     offset: int = Field(

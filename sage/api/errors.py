@@ -2200,13 +2200,15 @@ _FILTER_FIELD_TYPE_NAMES: dict[str, str] = {
 }
 
 # Remedies attached to ``invalid_parameter`` envelopes, keyed by the final
-# segment of the failing location. Deliberately sparse: a hint earns its
-# place by naming a way forward the constraint alone does not imply, and an
-# absent entry yields an envelope with no ``hint`` key rather than filler.
+# segment of the failing location and the Pydantic error type. Deliberately
+# sparse: a hint earns its place by naming a way forward the constraint alone
+# does not imply, and an absent entry yields an envelope with no ``hint`` key
+# rather than filler. Keying on the error type keeps a remedy to the violation
+# it answers -- paging past a cap says nothing to a value below the floor.
 # The bound itself is never restated here -- it comes from the validator's
 # own message, so a changed cap cannot leave a stale number behind.
-_PARAMETER_HINTS: dict[str, str] = {
-    "limit": "Page through larger result sets with `offset`.",
+_PARAMETER_HINTS: dict[tuple[str, str], str] = {
+    ("limit", "less_than_equal"): "Page through larger result sets with `offset`.",
 }
 
 # Request components FastAPI prepends to a validation error's location to
@@ -2410,7 +2412,7 @@ def _generic_parameter_error(
         parameter=parameter,
         value=value,
         constraint=str(err.get("msg", "Invalid value")),
-        hint=_PARAMETER_HINTS.get(str(loc[-1]) if loc else ""),
+        hint=_PARAMETER_HINTS.get((str(loc[-1]) if loc else "", str(err.get("type", "")))),
     )
 
 

@@ -5345,6 +5345,7 @@ async def test_min_relevance_filters_low_scoring_results(
     baseline = DiscoverRequest(query="glucose monitoring")
     baseline_response = await retrieval_service.discover(baseline)
     assert len(baseline_response.results) > 0
+    assert baseline_response.total_available >= 1
     actual_score = baseline_response.results[0].relevance_score
     assert actual_score is not None
 
@@ -5355,6 +5356,9 @@ async def test_min_relevance_filters_low_scoring_results(
     )
     response = await retrieval_service.discover(request)
     assert len(response.results) == 0
+    # A scored total reports what survived the threshold, so dropping every
+    # hit drops it to zero -- unlike catalog, whose total is a filtered count.
+    assert response.total_available == 0
 
 
 async def test_min_relevance_keeps_high_scoring_results(

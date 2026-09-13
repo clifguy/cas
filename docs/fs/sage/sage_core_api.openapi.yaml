@@ -207,9 +207,10 @@ paths:
           search, no chunk content. A query is refused rather than ignored,
           since nothing would consume it. Supports pagination via limit +
           offset. Pass `limit=0` to receive `total_available` alone, with no
-          results, as an existence or count check. It is also the only mode the `edges` and `facets` targets
-          accept, so a request naming one of those and no mode resolves to
-          catalog; naming another mode explicitly is still refused.
+          results, as an existence or count check. It is also the only mode
+          the `edges` and `facets` targets accept, so a request naming one of
+          those and no mode resolves to catalog; naming another mode
+          explicitly is still refused.
 
         - **deterministic**: Exact content extraction by document ID and heading
           path. Bypasses vector search entirely. Used for governed content
@@ -4491,7 +4492,7 @@ components:
           description: >-
             Maximum number of results to return. In catalog mode, 0 asks for
             the count alone: the response carries total_available and no
-            results. Other modes refuse 0.
+            results. Other modes, and the facets target, refuse 0.
         offset:
           type: integer
           minimum: 0
