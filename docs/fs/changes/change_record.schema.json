@@ -37,7 +37,7 @@
       "type": "object",
       "required": ["reason"],
       "additionalProperties": false,
-      "description": "The project owner's explicit downgrade of a contract-comparison finding, recorded in the change for review. Present only when the comparison finds a minor-level change that the owner has judged a patch, such as declaring behaviour the server already had.",
+      "description": "The project owner's explicit downgrade of the contract comparison's findings for this change, recorded in the change for review. It covers the change's findings as a whole. Present only when the comparison finds a minor-level change that the owner has judged a patch, such as declaring behaviour the server already had; the gate warns when no finding remains to override.",
       "properties": {
         "reason": {
           "type": "string",

@@ -248,6 +248,11 @@ def _land_release(repo: SubstrateRepo) -> str:
     release_prepare(repo.root, today=TODAY)
     repo.commit("prepare release")
     release_commit = repo.squash_merge("release", "Release 1.1")
+    # A later change that edits the manifest without releasing anything, so the
+    # newest manifest-touching commit is not the release commit.
+    repo.edit_json(MANIFEST, lambda m: m.__setitem__("description", "Reworded manifest."))
+    repo.add_record("reword-manifest", classification="patch", summary="Reword the manifest.")
+    repo.commit("a manifest edit lands after the release")
     repo.write_text("sage/app.py", "VALUE = 9\n")
     repo.commit("an unrelated change lands after the release")
     return release_commit

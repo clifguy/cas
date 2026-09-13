@@ -28,6 +28,21 @@ CI_WORKFLOW: Final[Path] = REPO_ROOT / ".github" / "workflows" / "ci.yml"
 TEST_JOB: Final[str] = "test"
 BASE_STEP_ID: Final[str] = "substrate-base"
 CHECK_COMMAND: Final[str] = "scripts.substrate_changes check"
+FIRST_PARENT: Final[str] = "sha=\"$(git rev-parse 'HEAD^1')\""
+
+
+def case_arm_body(script: str, label: str) -> str:
+    """The body of the ``case`` arm labelled exactly ``label``, up to its ``;;``."""
+    lines = script.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() == f"{label})":
+            body: list[str] = []
+            for arm_line in lines[index + 1 :]:
+                if arm_line.strip() == ";;":
+                    break
+                body.append(arm_line)
+            return "\n".join(body)
+    return ""
 
 
 def _test_job() -> dict[str, Any]:
@@ -69,7 +84,29 @@ def test_the_base_resolution_covers_every_trigger() -> None:
 
     assert script, f"no step with id {BASE_STEP_ID!r} in {TEST_JOB}"
     assert workflow_triggers(workflow) <= case_arms(script)
-    assert "HEAD^1" in script, "merged-tree events must compare against the merge's first parent"
+    assert FIRST_PARENT in case_arm_body(script, "pull_request|merge_group"), (
+        "merged-tree events must compare against the merge's first parent"
+    )
+
+
+def test_arm_body_extraction_reads_the_arm_not_the_script() -> None:
+    """Control: a first-parent mention outside the arm does not satisfy the check."""
+    script = (
+        "# the base is HEAD^1 on merged trees: sha=\"$(git rev-parse 'HEAD^1')\"\n"
+        'case "$EVENT_NAME" in\n'
+        "  pull_request|merge_group)\n"
+        "    sha=\"$(git rev-parse 'HEAD^2')\"\n"
+        "    ;;\n"
+        "  push)\n"
+        '    sha="$PUSH_BEFORE_SHA"\n'
+        "    ;;\n"
+        "esac\n"
+    )
+
+    assert FIRST_PARENT in script
+    assert FIRST_PARENT not in case_arm_body(script, "pull_request|merge_group")
+    assert "HEAD^2" in case_arm_body(script, "pull_request|merge_group")
+    assert case_arm_body(script, "schedule") == ""
 
 
 def test_the_checkout_carries_history() -> None:

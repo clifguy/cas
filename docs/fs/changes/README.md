@@ -16,6 +16,8 @@ A change needs a record when it touches any of:
 - a file listed in `../manifest.json`;
 - either OpenAPI specification (`../sage/sage_core_api.openapi.yaml`,
   `../cas_app_api.openapi.yaml`);
+- `../manifest.json` itself, outside a release (an artifact delisted, an entry
+  reworded);
 - the MCP tool catalog, `../sage/sage_mcp_tools.catalog.json`. The catalog is
   generated from the servers, and a test gate fails when it is stale, so a change
   to an MCP tool's signature or docstring reaches this rule through the catalog:
@@ -27,8 +29,10 @@ hatch.
 ## Format
 
 The file name is a short kebab-case slug describing the change, ending in
-`.yaml` (`scored-response-excerpts.yaml`). It is not read, but two concurrent
-changes choosing the same name would conflict, so make it specific.
+`.yaml` (`scored-response-excerpts.yaml`). It is not parsed, but it orders the
+release: records fold into the release entry, and their caller notes into the
+tag message, in file-name order. Two concurrent changes choosing the same name
+would conflict, so make it specific.
 
 The fields are defined by `change_record.schema.json`:
 
@@ -67,7 +71,10 @@ detector_override:
   reason: The server already returned these codes; the contract now lists them.
 ```
 
-The override is for the owner to write, not the author. The comparison sees
+The override covers the change's findings as a whole, not one finding, so its
+reason should account for all of them; the gate warns when a record carries an
+override the comparison finds nothing for. The override is for the owner to
+write, not the author. The comparison sees
 shape, not meaning: a changed default behind an unchanged schema, and every
 operator-facing change, still depend on the author's classification.
 

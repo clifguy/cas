@@ -51,6 +51,13 @@ SPEC: dict[str, Any] = {
                 "responses": {
                     "200": {
                         "description": "OK.",
+                        "headers": {
+                            "X-Page": {
+                                "description": "Page number.",
+                                "required": False,
+                                "schema": {"type": "integer"},
+                            }
+                        },
                         "content": {
                             "application/json": {"schema": {"$ref": "#/components/schemas/Thing"}}
                         },
@@ -376,6 +383,38 @@ OPENAPI_POSITIVE: list[tuple[str, Callable[[dict[str, Any]], None], str, str, st
         "responses/404",
     ),
     (
+        "response-header-added",
+        lambda s: _get(s)["responses"]["200"]["headers"].__setitem__(
+            "X-Total", {"required": False, "schema": {"type": "integer"}}
+        ),
+        CAPABILITY,
+        "header-added",
+        "responses/200/headers/x-total",
+    ),
+    (
+        "response-header-removed",
+        lambda s: _get(s)["responses"]["200"].pop("headers"),
+        CALLER_ADAPTATION,
+        "header-removed",
+        "responses/200/headers/x-page",
+    ),
+    (
+        "response-header-made-required",
+        lambda s: _get(s)["responses"]["200"]["headers"]["X-Page"].__setitem__("required", True),
+        CALLER_ADAPTATION,
+        "header-made-required",
+        "responses/200/headers/x-page",
+    ),
+    (
+        "response-header-narrowed",
+        lambda s: _get(s)["responses"]["200"]["headers"]["X-Page"]["schema"].__setitem__(
+            "minimum", 1
+        ),
+        CALLER_ADAPTATION,
+        "constraint-tightened",
+        "responses/200/headers/x-page/schema/minimum",
+    ),
+    (
         "component-removed",
         lambda s: s["components"]["schemas"].pop("Other"),
         CALLER_ADAPTATION,
@@ -509,6 +548,30 @@ OPENAPI_NEGATIVE: list[tuple[str, Callable[[dict[str, Any]], None]]] = [
             _thing(s)["properties"]["id"].__setitem__("example", "abc"),
             _thing(s)["properties"]["id"].__setitem__("examples", ["abc"]),
             _get(s)["responses"]["404"].__setitem__("description", "Nothing there."),
+            _get(s)["responses"]["200"]["headers"]["X-Page"].__setitem__("description", "Page."),
+        ),
+    ),
+    (
+        "header-name-case",
+        lambda s: _get(s)["responses"]["200"].__setitem__(
+            "headers", {"x-page": _get(s)["responses"]["200"]["headers"]["X-Page"]}
+        ),
+    ),
+    (
+        "header-moved-to-a-component",
+        lambda s: (
+            s["components"].__setitem__(
+                "headers", {"Page": _get(s)["responses"]["200"]["headers"]["X-Page"]}
+            ),
+            _get(s)["responses"]["200"]["headers"].__setitem__(
+                "X-Page", {"$ref": "#/components/headers/Page"}
+            ),
+        ),
+    ),
+    (
+        "ref-inlined-with-identical-shape",
+        lambda s: _get(s)["responses"]["200"]["content"]["application/json"].__setitem__(
+            "schema", copy.deepcopy(_thing(s))
         ),
     ),
     (
@@ -569,6 +632,51 @@ def test_mcp_ignores_description_title_and_annotation_text() -> None:
     assert changed != CATALOG
 
     assert diff_mcp_catalog(CATALOG, changed) == []
+
+
+def test_a_response_header_made_optional_is_an_adaptation() -> None:
+    """A caller that relied on a guaranteed header can no longer."""
+    required = _mutated(
+        SPEC,
+        lambda s: _get(s)["responses"]["200"]["headers"]["X-Page"].__setitem__("required", True),
+    )
+
+    findings = diff_openapi(required, SPEC, surface="core")
+
+    assert [(f.kind, f.category) for f in findings] == [("header-made-optional", CALLER_ADAPTATION)]
+
+
+def test_a_header_reference_resolves_on_either_side() -> None:
+    """Moving a header into a component, or back out of one, changes nothing."""
+
+    def to_component(spec: dict[str, Any]) -> None:
+        headers = _get(spec)["responses"]["200"]["headers"]
+        spec["components"]["headers"] = {"Page": headers["X-Page"]}
+        headers["X-Page"] = {"$ref": "#/components/headers/Page"}
+
+    referenced = _mutated(SPEC, to_component)
+
+    assert diff_openapi(SPEC, referenced, surface="core") == []
+    assert diff_openapi(referenced, SPEC, surface="core") == []
+
+
+def test_a_component_renamed_with_its_shape_intact_reports_the_rename_only() -> None:
+    """Each side's reference resolves against its own document.
+
+    The old reference names a component the new document no longer has, so a
+    comparison resolving both sides against the new document would report the
+    unchanged shape as retargeted as well."""
+
+    def rename(spec: dict[str, Any]) -> None:
+        schemas = spec["components"]["schemas"]
+        schemas["Item"] = schemas.pop("Thing")
+        _get(spec)["responses"]["200"]["content"]["application/json"]["schema"] = {
+            "$ref": "#/components/schemas/Item"
+        }
+
+    kinds = sorted(f.kind for f in diff_openapi(SPEC, _mutated(SPEC, rename), surface="core"))
+
+    assert kinds == ["component-removed"]
 
 
 def test_identical_contracts_have_no_findings() -> None:

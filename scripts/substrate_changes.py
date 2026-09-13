@@ -416,7 +416,7 @@ def run_check(
     triggers = sorted(
         path
         for path in changed
-        if path in _listed(base_manifest) | _listed(head_manifest) | set(SPEC_PATHS)
+        if path in _listed(base_manifest) | _listed(head_manifest) | {MANIFEST, *SPEC_PATHS}
     )
     if triggers and not added:
         result.errors.append(
@@ -431,6 +431,11 @@ def run_check(
     result.classification = "minor" if minor else "patch"
     result.categories = _categories(valid)
 
+    if not result.findings and any(r.get("detector_override") for r in valid):
+        result.warnings.append(
+            "an added record carries detector_override, but the contract comparison finds "
+            "nothing to override; remove the stale override"
+        )
     if result.findings and valid:
         if not minor:
             if any(r.get("detector_override") for r in valid):
@@ -862,6 +867,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     root: Path = args.repo_root
 
+    try:
+        return _run_command(args, root)
+    except GitError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
+
+
+def _run_command(args: argparse.Namespace, root: Path) -> int:
     if args.command == "check":
         result = run_check(root, base=args.base, head=args.head)
         if args.format == "json":

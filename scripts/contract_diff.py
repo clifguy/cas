@@ -196,8 +196,15 @@ def _type_set(schema: dict[str, Any]) -> frozenset[str] | None:
 
 
 class _Collector:
-    def __init__(self, surface: str) -> None:
+    def __init__(
+        self,
+        surface: str,
+        old_document: dict[str, Any] | None = None,
+        new_document: dict[str, Any] | None = None,
+    ) -> None:
         self.surface = surface
+        self.old_document = old_document
+        self.new_document = new_document
         self.findings: list[Finding] = []
 
     def add(self, pointer: str, kind: str, category: str) -> None:
@@ -211,7 +218,12 @@ def _diff_schema(old: Any, new: Any, pointer: str, out: _Collector) -> None:
         out.add(pointer, "schema-changed", CALLER_ADAPTATION)
         return
     if old.get("$ref") != new.get("$ref"):
-        out.add(pointer, "ref-retargeted", CALLER_ADAPTATION)
+        # A reference and the shape it names are the same contract: resolve each
+        # side once, against its own document, and report only a change of shape.
+        old_shape = _resolve_schema(out.old_document, old)
+        new_shape = _resolve_schema(out.new_document, new)
+        if _canon(old_shape) != _canon(new_shape):
+            out.add(pointer, "ref-retargeted", CALLER_ADAPTATION)
         return
 
     _diff_type(old, new, pointer, out)
@@ -424,6 +436,14 @@ def _resolve(spec: dict[str, Any], node: Any, section: str) -> Any:
     return ((spec.get("components") or {}).get(section) or {}).get(ref[len(prefix) :], node)
 
 
+def _resolve_schema(document: dict[str, Any] | None, schema: dict[str, Any]) -> dict[str, Any]:
+    """A bare local component-schema reference replaced by the schema it names."""
+    if document is None or set(schema) != {"$ref"}:
+        return schema
+    resolved = _resolve(document, schema, "schemas")
+    return resolved if isinstance(resolved, dict) else schema
+
+
 def _parameters(
     spec: dict[str, Any], path_item: dict[str, Any], operation: dict[str, Any]
 ) -> dict[str, dict[str, Any]]:
@@ -526,6 +546,28 @@ def _diff_responses(
         old_response = _resolve(old_spec, old_raw, "responses") or {}
         new_response = _resolve(new_spec, new_raw, "responses") or {}
         _diff_content(old_response.get("content"), new_response.get("content"), at, out)
+        _diff_headers(old_response.get("headers"), new_response.get("headers"), at, out)
+
+
+def _diff_headers(old: Any, new: Any, pointer: str, out: _Collector) -> None:
+    """Response headers, compared by case-insensitive name as parameters are."""
+    old_headers = {str(k).lower(): v for k, v in (old or {}).items()}
+    new_headers = {str(k).lower(): v for k, v in (new or {}).items()}
+    for name in sorted(set(new_headers) - set(old_headers)):
+        out.add(f"{pointer}/headers/{name}", "header-added", CAPABILITY)
+    for name in sorted(set(old_headers) - set(new_headers)):
+        out.add(f"{pointer}/headers/{name}", "header-removed", CALLER_ADAPTATION)
+    for name in sorted(set(old_headers) & set(new_headers)):
+        at = f"{pointer}/headers/{name}"
+        old_header = _resolve(out.old_document or {}, old_headers[name], "headers") or {}
+        new_header = _resolve(out.new_document or {}, new_headers[name], "headers") or {}
+        if new_header.get("required") and not old_header.get("required"):
+            out.add(at, "header-made-required", CALLER_ADAPTATION)
+        elif old_header.get("required") and not new_header.get("required"):
+            out.add(at, "header-made-optional", CALLER_ADAPTATION)
+        _diff_schema(
+            old_header.get("schema") or {}, new_header.get("schema") or {}, f"{at}/schema", out
+        )
 
 
 def _operations(spec: dict[str, Any]) -> dict[tuple[str, str], tuple[dict, dict]]:
@@ -541,7 +583,7 @@ def _operations(spec: dict[str, Any]) -> dict[tuple[str, str], tuple[dict, dict]
 
 def diff_openapi(old: dict[str, Any], new: dict[str, Any], *, surface: str) -> list[Finding]:
     """Every contract-visible difference between two OpenAPI documents."""
-    out = _Collector(surface)
+    out = _Collector(surface, old, new)
     old_ops, new_ops = _operations(old), _operations(new)
 
     for path, method in sorted(set(new_ops) - set(old_ops)):

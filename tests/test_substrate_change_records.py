@@ -187,6 +187,27 @@ def test_delisting_and_deleting_an_artifact_needs_a_record(repo: SubstrateRepo) 
     assert recorded.errors == []
 
 
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda m: m["schemas"].pop(3),
+        lambda m: m["schemas"][3].__setitem__("role", "Reworded role."),
+    ],
+    ids=["delist-without-deleting", "reword-an-entry"],
+)
+def test_a_manifest_only_edit_needs_a_record(repo: SubstrateRepo, mutate: Any) -> None:
+    """The manifest is published inventory; editing it is a substrate change."""
+    repo.edit_json(MANIFEST, mutate)
+    assert repo.path(OTHER_SCHEMA).exists(), "control: the artifact file itself is untouched"
+
+    unrecorded = _check(repo)
+    repo.add_record("manifest-inventory-edit", **PATCH)
+    recorded = _check(repo)
+
+    assert any(MANIFEST in error for error in unrecorded.errors), unrecorded.errors
+    assert recorded.errors == []
+
+
 def test_the_comparison_uses_the_merge_base_when_the_base_branch_moves_on(
     repo: SubstrateRepo,
 ) -> None:
@@ -236,6 +257,25 @@ def test_owner_override_with_a_reason_admits_the_patch_claim(repo: SubstrateRepo
     assert result.errors == []
     assert result.classification == "patch"
     assert [f.kind for f in result.findings] == ["property-added"]
+    assert not [w for w in result.warnings if "detector_override" in w], (
+        "an override with a finding to cover was reported stale"
+    )
+
+
+def test_an_override_with_nothing_to_override_warns(repo: SubstrateRepo) -> None:
+    """An override that outlived the finding it justified is flagged, not failed."""
+    repo.edit_yaml(CORE_SPEC, _reword)
+    repo.add_record(
+        "clarify-list",
+        **PATCH,
+        detector_override={"reason": "Written for a finding since removed."},
+    )
+
+    result = _check(repo)
+
+    assert result.errors == []
+    assert result.findings == []
+    assert [w for w in result.warnings if "detector_override" in w], result.warnings
 
 
 def test_override_without_a_reason_is_refused(repo: SubstrateRepo) -> None:
@@ -475,6 +515,17 @@ def test_json_report_aggregates_the_added_records(
     assert report["categories"] == ["capability", "caller-adaptation"]
     assert len(report["records"]) == 3
     assert report["errors"] == []
+
+
+def test_cli_reports_an_unresolvable_base_without_a_traceback(
+    repo: SubstrateRepo, capsys: pytest.CaptureFixture[str]
+) -> None:
+    code = main(["check", "--repo-root", str(repo.root), "--base", "no-such-revision"])
+    captured = capsys.readouterr()
+
+    assert code == 1
+    assert captured.err.startswith("error: ")
+    assert "no-such-revision" in captured.err
 
 
 def test_cli_exit_status_follows_the_verdict(
