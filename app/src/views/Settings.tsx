@@ -8,6 +8,7 @@ import type {
   LifecycleStateConfig,
   LifecycleTransitionConfig,
   VaultAbstractionConfig,
+  UpdateVaultConfigRequest,
 } from '../api/types';
 import { getVaultConfig, updateVaultConfig } from '../api/vaults';
 
@@ -64,7 +65,7 @@ export default function Settings() {
     setWarnings([]);
     setSuccessMsg('');
     try {
-      const resp = await updateVaultConfig(vaultId, { [sectionKey]: sectionData } as Partial<VaultConfig>);
+      const resp = await updateVaultConfig(vaultId, { [sectionKey]: sectionData } as UpdateVaultConfigRequest);
       if (resp.warnings.length > 0) {
         setWarnings(resp.warnings);
       }

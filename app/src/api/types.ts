@@ -26,7 +26,6 @@ export interface LifecycleState {
 
 export interface AdapterInfo {
   source_type: string;
-  enabled: boolean;
   extensions: string[];
 }
 
@@ -154,6 +153,13 @@ export type ResolutionPolicy =
   | 'transitive_both'
   | 'TBD';
 
+// Provenance source of an edge's rationale text.
+export type RationaleKind =
+  | 'version_chain'
+  | 'references_mention'
+  | 'filename_code_match'
+  | 'manual';
+
 // Frontend mirror of sage/models/edge_registry.py _DEFAULT_POLICIES.
 // Used to drive conditional edge-creation form fields and tombstoning UX.
 // Must be kept in sync with the SAGE registry; a registry mismatch
@@ -192,6 +198,11 @@ export interface Edge {
   created_at: string;
   notes: string | null;
   rationale: string | null;
+  rationale_kind?: RationaleKind;
+  // The source-chain version and content hash this edge's content was
+  // copied or derived from when it was asserted.
+  synced_from_version?: string | null;
+  synced_from_content_hash?: string | null;
 }
 
 export interface StagingEdge {
@@ -211,6 +222,36 @@ export interface DiscoverHit {
   chunk_content: string | null;
   heading_path: string | null;
   relevance_score: number | null;
+  // Sections of the document that matched, in the scored modes.
+  matched_chunk_count?: number | null;
+}
+
+// Filters narrowing a discover request.
+export interface RetrievalFilters {
+  doc_type?: string;
+  lifecycle_status?: string;
+  // Narrows to the population the doc-scoped health indicators count:
+  // the server resolves which states are terminal from the vault's own
+  // lifecycle config, so nothing here enumerates them.
+  exclude_terminal_lifecycle?: boolean;
+  pipeline_status?: string;
+  tags?: string[];
+  project?: string;
+  document_ids?: string[];
+  source_type?: string;
+  tier3_metadata?: Record<string, unknown>;
+  source_id?: string;
+  target_id?: string;
+  edge_type?: EdgeType | string;
+}
+
+// Self-describing markers on a read response (CAS-ADR-039).
+export interface ReadMeta {
+  success: boolean;
+  body_present: boolean;
+  body_length?: number | null;
+  projection_status?: 'current' | 'stale' | null;
+  projection_recovery?: string | null;
 }
 
 export interface DiscoverRequest {
@@ -225,17 +266,7 @@ export interface DiscoverRequest {
     | ('doc_type' | 'lifecycle_status' | 'source_type' | 'pipeline_status' | 'tags')[]
     | null;
   facet_value_limit?: number | null;
-  filters?: {
-    doc_type?: string;
-    lifecycle_status?: string;
-    // Narrows to the population the doc-scoped health indicators count:
-    // the server resolves which states are terminal from the vault's own
-    // lifecycle config, so nothing here enumerates them.
-    exclude_terminal_lifecycle?: boolean;
-    pipeline_status?: string;
-    tags?: string[];
-    project?: string;
-  };
+  filters?: RetrievalFilters;
   limit?: number;
   offset?: number;
   use_hybrid?: boolean;
@@ -253,9 +284,11 @@ export interface DiscoverRequest {
 
 export interface DiscoverResponse {
   mode: string;
+  target?: 'documents' | 'edges' | 'facets';
   results: DiscoverHit[];
   total_available: number;
-  cursor: string | null;
+  hints?: Record<string, unknown> | null;
+  read_meta?: ReadMeta;
 }
 
 // --- Graph ---
@@ -282,7 +315,11 @@ export interface ChainResponse {
   tail_id: string;
   query_position: number;
   length: number;
+  total_length: number;
   is_linear: boolean;
+  // Other edge types on the queried document, when the requested one
+  // produced no chain.
+  available_edge_types?: string[] | null;
 }
 
 export interface TraverseRequest {
@@ -319,14 +356,17 @@ export interface LinkRequest extends BulkLinkItem {
 
 // --- Review ---
 
+// One field's extracted value and where it came from.
+export interface ExtractedField {
+  value: string | null;
+  source: string;
+  alt_value?: string | null;
+  alt_source?: string | null;
+}
+
 export interface PendingMetadata {
   document: Document;
-  extracted_fields: Record<string, {
-    value: string | null;
-    source: string;
-    alt_value?: string;
-    alt_source?: string;
-  }>;
+  extracted_fields: Record<string, ExtractedField>;
 }
 
 // --- Ingest (app backend) ---
@@ -459,7 +499,7 @@ export interface DocTypeRequirements {
   declared_tier3_fields: string[];
   required_tier3_fields: string[];
   unique_tier3_fields: string[];
-  permitted_source_types?: string[] | null;
+  permitted_source_types: string[] | null;
 }
 
 // What one file would have done, returned in place of a document under a dry
@@ -469,9 +509,9 @@ export interface IngestPreview {
   would_create: boolean;
   resolved_doc_type: string;
   resolved_source_type: string;
-  source_content_hash?: string | null;
-  duplicate_of?: string | null;
-  predecessor_id?: string | null;
+  source_content_hash: string | null;
+  duplicate_of: string | null;
+  predecessor_id: string | null;
   would_supersede: boolean;
   tier3_validated: boolean;
   requirements: DocTypeRequirements;
@@ -547,7 +587,7 @@ export interface LifecycleConfig {
 
 // Per CAS-ADR-030: vault-scope abstraction config carries enabled +
 // token-budget tuning. The provider and model identifier live in the
-// stack-wide sage/config.yaml; see StackAbstractionConfig.
+// stack-wide sage/config.yaml.
 export interface VaultAbstractionConfig {
   enabled: boolean;
   max_abstract_tokens?: number;
@@ -555,12 +595,6 @@ export interface VaultAbstractionConfig {
   tokens_per_word?: number;
 }
 
-// Stack-wide abstraction config (CAS-ADR-030). Returned by the
-// sage_get_stack_config MCP tool.
-export interface StackAbstractionConfig {
-  provider: "qwen3-mlx" | "stub";
-  model: string | null;
-}
 
 export interface VaultConfig {
   vault: VaultIdentityConfig;
@@ -583,10 +617,32 @@ export type DefaultVaultConfig = {
   [key: string]: unknown;
 };
 
+// Body of a vault config update: any subset of sections, each replacing the
+// persisted section whole. `dry_run` evaluates the update and persists nothing.
+export interface UpdateVaultConfigRequest {
+  vault?: VaultIdentityConfig;
+  document_types?: { doc_types: DocTypeConfig[] };
+  lifecycle?: LifecycleConfig;
+  adapter_defaults?: Record<string, unknown>;
+  metadata_extraction?: Record<string, unknown>;
+  edge_inference?: Record<string, unknown>;
+  abstraction?: VaultAbstractionConfig;
+  access_control_defaults?: Record<string, unknown> | null;
+  retrieval_health?: Record<string, unknown> | null;
+  dry_run?: boolean;
+}
+
+// The top-level config sections a dry-run update would change.
+export interface VaultConfigPreview {
+  changed_sections: string[];
+}
+
 export interface UpdateConfigResponse {
   status: string;
   vault_id: string;
   warnings: string[];
+  dry_run?: boolean;
+  preview?: VaultConfigPreview | null;
 }
 
 // --- Metadata update (CAS-ADR-028 ops-object shape) ---
@@ -617,10 +673,45 @@ export interface UpdateMetadataRequest {
 
 // --- Bulk operations (CAS-ADR-028 ops-object shape) ---
 
+// --- Document actions and staging-edge review ---
+
+export interface OpenDocumentResponse {
+  opened: boolean;
+  path: string;
+}
+
+export interface DocumentDownloadUrlResponse {
+  download_url: string;
+}
+
+export interface StagingEdgeConfirmResponse {
+  confirmed: boolean;
+  staging_edge_id: string;
+  production_edge_id: string;
+}
+
+export interface StagingEdgeDismissResponse {
+  dismissed: boolean;
+  staging_edge_id: string;
+}
+
+// Body of a vault creation request; `config` is a whole vault configuration.
+export interface CreateVaultRequest {
+  config: Record<string, unknown>;
+}
+
 export interface BulkItemErrorEnvelope {
   error: string;
   message: string;
   detail?: unknown;
+}
+
+// One field-level delta a dry run reports it would persist; `path` is dotted
+// for nested keys.
+export interface FieldChange {
+  path: string;
+  before?: unknown;
+  after?: unknown;
 }
 
 export interface BulkLifecycleItem {
@@ -637,6 +728,10 @@ export interface BulkLifecycleItemResult {
   document?: Document | null;
   warnings?: string[] | null;
   error?: BulkItemErrorEnvelope | null;
+  // Populated under dry_run only.
+  changes?: FieldChange[] | null;
+  // The supersedes edge a `supersede` item produces.
+  created_edge?: Edge | null;
 }
 
 export interface BulkLifecycleRequest {
@@ -650,6 +745,7 @@ export interface BulkLifecycleResponse {
   success_count: number;
   error_count: number;
   total: number;
+  dry_run?: boolean;
 }
 
 export interface BulkMetadataItem {
@@ -671,6 +767,8 @@ export interface BulkMetadataItemResult {
   document?: Document | null;
   warnings?: string[] | null;
   error?: BulkItemErrorEnvelope | null;
+  // Populated under dry_run only.
+  changes?: FieldChange[] | null;
 }
 
 export interface BulkMetadataRequest {
@@ -684,6 +782,7 @@ export interface BulkMetadataResponse {
   success_count: number;
   error_count: number;
   total: number;
+  dry_run?: boolean;
 }
 
 export interface BulkLinkItem {
@@ -726,6 +825,7 @@ export interface BulkLinkResponse {
   success_count: number;
   error_count: number;
   total: number;
+  dry_run?: boolean;
 }
 
 // --- Maintenance / Reabstract (T-0117 / T-0134) ---
@@ -765,11 +865,11 @@ export interface ReabstractReportEntry {
   document_id: string;
   outcome: ReabstractOutcome;
   // Failure description when outcome is one of REABSTRACT_FAILURE_OUTCOMES;
-  // null otherwise.
-  error_message: string | null;
+  // absent or null otherwise (the summary event omits null keys).
+  error_message?: string | null;
   // Seconds from the dispatch attempt until rejection or the end of the wait;
-  // null for skipped_pdf.
-  elapsed_seconds: number | null;
+  // absent or null for skipped_pdf.
+  elapsed_seconds?: number | null;
 }
 
 // Aggregate report returned at the end of a reabstract run (also the

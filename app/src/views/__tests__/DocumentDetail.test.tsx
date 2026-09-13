@@ -106,7 +106,6 @@ const emptyDiscover: DiscoverResponse = {
   mode: 'semantic',
   results: [],
   total_available: 0,
-  cursor: null,
 };
 
 // Location spy

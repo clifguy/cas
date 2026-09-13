@@ -3,6 +3,8 @@ import type {
   BulkMetadataItemResult,
   BulkMetadataResponse,
   Document,
+  DocumentDownloadUrlResponse,
+  OpenDocumentResponse,
   ReabstractStartedResponse,
   UpdateMetadataRequest,
 } from './types';
@@ -35,8 +37,8 @@ export async function updateMetadata(
 export async function openDocument(
   vaultId: string,
   documentId: string,
-): Promise<{ opened: boolean; path: string }> {
-  return apiPost(`/sage_vaults/${vaultId}/documents/${documentId}/open`, {});
+): Promise<OpenDocumentResponse> {
+  return apiPost<OpenDocumentResponse>(`/sage_vaults/${vaultId}/documents/${documentId}/open`, {});
 }
 
 // Cloud-profile browser delivery: SAGE mints a short-lived, pre-authenticated
@@ -45,8 +47,8 @@ export async function openDocument(
 export async function getDocumentDownloadUrl(
   vaultId: string,
   documentId: string,
-): Promise<{ download_url: string }> {
-  return apiGet(`/sage_vaults/${vaultId}/documents/${documentId}/download-url`);
+): Promise<DocumentDownloadUrlResponse> {
+  return apiGet<DocumentDownloadUrlResponse>(`/sage_vaults/${vaultId}/documents/${documentId}/download-url`);
 }
 
 // Binding-agnostic browser delivery (CAS-ADR-043): the same-origin BFF streams

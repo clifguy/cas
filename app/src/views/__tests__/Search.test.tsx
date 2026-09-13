@@ -78,7 +78,7 @@ function makeCatalogResponse(count: number, total: number, offset = 0): Discover
     const idx = offset + i + 1;
     results.push(makeHit(`doc-${idx}`, `Document ${idx}`));
   }
-  return { mode: 'catalog', results, total_available: total, cursor: null };
+  return { mode: 'catalog', results, total_available: total };
 }
 
 // --- Test wrapper ---
@@ -339,7 +339,6 @@ describe('Search view: existing search modes preserved', () => {
       mode: 'semantic',
       results: [makeHit('doc-1', 'Test Doc', { relevance_score: 0.92, chunk_content: 'Some content' })],
       total_available: 1,
-      cursor: null,
     });
     const user = userEvent.setup();
 
@@ -494,7 +493,6 @@ describe('Search view: URL-driven state persistence', () => {
       mode: 'semantic',
       results: [makeHit('doc-1', 'Restored')],
       total_available: 1,
-      cursor: null,
     });
 
     render(
@@ -528,7 +526,6 @@ describe('Search view: URL-driven state persistence', () => {
       mode: 'semantic',
       results: [makeHit('doc-1', 'HybridHit')],
       total_available: 1,
-      cursor: null,
     });
 
     render(
@@ -551,7 +548,6 @@ describe('Search view: URL-driven state persistence', () => {
       mode: 'semantic',
       results: [makeHit('doc-1', 'Hit')],
       total_available: 1,
-      cursor: null,
     });
     const user = userEvent.setup();
     const locationRef = { current: '' };
@@ -579,7 +575,6 @@ describe('Search view: URL-driven state persistence', () => {
       mode: 'semantic',
       results: [makeHit('doc-1', 'Filtered')],
       total_available: 1,
-      cursor: null,
     });
     const user = userEvent.setup();
     const locationRef = { current: '' };
@@ -619,7 +614,6 @@ describe('Search view: URL-driven state persistence', () => {
       mode: 'semantic',
       results: [makeHit('doc-1', 'FilteredRestore')],
       total_available: 1,
-      cursor: null,
     });
 
     render(
@@ -812,7 +806,6 @@ describe('Search view: bulk selection model (T-0116)', () => {
       mode: 'semantic',
       results: [makeHit('hit-x', 'X')],
       total_available: 1,
-      cursor: null,
     });
     const modeSelect = screen.getByRole('combobox') as HTMLSelectElement;
     await user.selectOptions(modeSelect, 'hybrid');
@@ -851,7 +844,6 @@ describe('Search view: bulk selection model (T-0116)', () => {
       mode: 'hybrid',
       results: [makeHit('h-1', 'A'), makeHit('h-2', 'B'), makeHit('h-3', 'C')],
       total_available: 3,
-      cursor: null,
     });
     render(
       <TestWrapper
