@@ -189,6 +189,10 @@ BACKFILL_DOCUMENT_SURFACE = "relocate_document_level_text_to_document_surface"
 # vector still built from the passage's address.
 BACKFILL_PASSAGE_INDEXED_STRUCTURE = "derive_passage_structure_relative_to_document"
 
+# Name reported in MigrationReport.backfills_applied when the migration divided a
+# stored section longer than the embedding provider's input bound.
+BACKFILL_PASSAGE_INPUT_BOUND = "split_passages_over_embedding_input_bound"
+
 
 def _canonical_or_none(content_hash: str | None) -> str | None:
     """Canonicalize a content hash, preserving null.
@@ -372,6 +376,9 @@ class MaintenanceService:
         if await self._migrate_to_document_surface():
             backfills_applied.append(BACKFILL_DOCUMENT_SURFACE)
 
+        if await self._divide_passages_over_input_bound():
+            backfills_applied.append(BACKFILL_PASSAGE_INPUT_BOUND)
+
         if await self._migrate_to_relative_indexed_structure():
             backfills_applied.append(BACKFILL_PASSAGE_INDEXED_STRUCTURE)
 
@@ -438,6 +445,24 @@ class MaintenanceService:
 
         await self._content_store.delete_legacy_document_header_rows()
         return relocated
+
+    async def _divide_passages_over_input_bound(self) -> int:
+        """Divide each stored section longer than the embedder's input bound.
+
+        A vault indexed before sections were bounded can hold a passage the
+        embedder truncates, so its vector represents only the passage's head.
+        The division is the one ingest applies, performed from the stored
+        passages; the source is not read and nothing is re-abstracted. Only a
+        document it rewrites is re-embedded.
+
+        Returns:
+            The number of documents rewritten -- zero on a vault with nothing to
+            divide, or where no ingestion service is wired to embed with, so the
+            backfill does not name itself in the report.
+        """
+        if self._ingestion is None:
+            return 0
+        return await self._ingestion.divide_passages_over_input_bound()
 
     async def _migrate_to_relative_indexed_structure(self) -> int:
         """Derive each passage's structure relative to its document.

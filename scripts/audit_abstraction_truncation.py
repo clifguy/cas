@@ -65,6 +65,7 @@ from sage.adapters.abstraction_utils import compute_max_tokens
 from sage.adapters.stubs import StubAbstractionProvider
 from sage.config import VaultAbstractionConfig, load_vault_config
 from sage.mcp_init import initialize_services, load_stack_config_or_default
+from sage.services.passage_split import join_passages
 from sage.vault_management import config_path_for_vault
 
 
@@ -249,7 +250,7 @@ async def _body_text(services, doc_id: str) -> str:
     document content and is not part of what the provider is handed.
     """
     chunks = await services.content_store.get_all_chunks(doc_id)
-    return "\n\n".join(chunk.content for chunk in chunks)
+    return join_passages(chunks)
 
 
 def _render_report(records: list[TruncationRecord], *, effective_window: int) -> list[str]:

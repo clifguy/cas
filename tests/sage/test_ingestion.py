@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from sage.adapters.interfaces import Chunk, DocumentSurface
+from sage.adapters.stubs import StubEmbeddingProvider
 from sage.api.errors import (
     DuplicateContentError,
     ForceReingestPathMismatchError,
@@ -756,6 +757,153 @@ def test_chunk_projection_multiple_headings_have_no_preamble(ingestion_service):
     assert chunks[0].content == "# Part A\n\nContent for part A."
     assert chunks[1].content == "# Part B\n\nContent for part B."
     assert all(not c.content.startswith("Title:") for c in chunks)
+
+
+# ---------------------------------------------------------------------------
+# A section longer than the embedder's input bound becomes several passages.
+# ---------------------------------------------------------------------------
+
+_SPLIT_BOUND = 200
+
+
+def _bounded(ingestion_service, bound: int = _SPLIT_BOUND):
+    ingestion_service._embedding = StubEmbeddingProvider(max_input_tokens=bound)
+    return ingestion_service
+
+
+def _long_body(paragraphs: int = 12) -> str:
+    return "\n\n".join(f"Paragraph {i} " + "word " * 12 for i in range(paragraphs))
+
+
+def _three_section_projection():
+    from sage.source_adapters.base import HeadingNode, ProjectionResult
+
+    return ProjectionResult(
+        text="unused",
+        headings=[
+            HeadingNode(level=1, text="Doc", path="Doc", content="Short opening."),
+            HeadingNode(level=2, text="Long", path="Doc > Long", content=_long_body()),
+            HeadingNode(level=2, text="Tail", path="Doc > Tail", content="Short closing."),
+        ],
+        content_hash="sha256:split",
+        adapter_version="0.1.0",
+        title="Doc",
+    )
+
+
+def test_chunk_projection_splits_an_oversize_section_into_numbered_passages(ingestion_service):
+    service = _bounded(ingestion_service)
+
+    chunks = service._chunk_projection("doc_split", _three_section_projection())
+
+    long_chunks = [c for c in chunks if c.heading_path == "Doc > Long"]
+    assert len(long_chunks) > 1
+    assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
+    assert {c.section_index for c in long_chunks} == {1}
+    assert chunks[0].section_index == 0
+    assert chunks[-1].section_index == 2
+    assert long_chunks[0].content.startswith("## Long\n\n")
+    assert not any(c.content.startswith("## Long") for c in long_chunks[1:])
+    assert "".join(c.content for c in long_chunks) == f"## Long\n\n{_long_body()}"
+
+
+def test_chunk_projection_keeps_every_passage_within_the_input_bound(ingestion_service):
+    service = _bounded(ingestion_service)
+
+    chunks = service._chunk_projection("doc_split", _three_section_projection())
+
+    embedding = service._embedding
+    assert len(chunks) > 3
+    for chunk in chunks:
+        measured = embedding.count_tokens(f"{chunk.heading_path}\n\n{chunk.content}")
+        assert measured <= embedding.max_input_tokens
+
+
+def test_chunk_projection_splits_a_headingless_document(ingestion_service):
+    from sage.source_adapters.base import ProjectionResult
+
+    service = _bounded(ingestion_service)
+    text = _long_body()
+
+    chunks = service._chunk_projection(
+        "doc_flat",
+        ProjectionResult(
+            text=text,
+            headings=[],
+            content_hash="sha256:flat",
+            adapter_version="0.1.0",
+            title="Flat",
+        ),
+    )
+
+    assert len(chunks) > 1
+    assert {c.heading_path for c in chunks} == {""}
+    assert {c.section_index for c in chunks} == {0}
+    assert "".join(c.content for c in chunks) == text
+
+
+def test_chunk_projection_leaves_sections_under_the_bound_unsplit(ingestion_service):
+    service = _bounded(ingestion_service, bound=10_000)
+
+    chunks = service._chunk_projection("doc_whole", _three_section_projection())
+
+    assert [(c.heading_path, c.chunk_index, c.section_index) for c in chunks] == [
+        ("Doc", 0, 0),
+        ("Doc > Long", 1, 1),
+        ("Doc > Tail", 2, 2),
+    ]
+    assert chunks[0].content == "# Doc\n\nShort opening."
+    assert chunks[1].content == f"## Long\n\n{_long_body()}"
+    assert chunks[2].content == "## Tail\n\nShort closing."
+
+
+def _long_heading_section(ingestion_service, bound: int, path: str):
+    from sage.source_adapters.base import HeadingNode, ProjectionResult
+
+    service = _bounded(ingestion_service, bound=bound)
+    body = "\n\n".join(f"Paragraph {i} of the section." for i in range(6))
+    chunks = service._chunk_projection(
+        "doc_long_heading",
+        ProjectionResult(
+            text="unused",
+            headings=[HeadingNode(level=2, text=path[6:], path=path, content=body)],
+            content_hash="sha256:longheading",
+            adapter_version="0.1.0",
+            title="Doc",
+        ),
+    )
+    return chunks, f"## {path[6:]}\n\n{body}"
+
+
+def test_chunk_projection_keeps_a_section_whole_when_its_heading_path_crowds_the_bound(
+    ingestion_service,
+):
+    """Under a quarter of the bound left for content, a section stays whole.
+
+    Dividing there emits passages of a few characters each, every one embedded
+    as the same heading path; one passage is the least-bad outcome.
+    """
+    bound = 200
+    path = "Doc > " + "h" * 145  # leaves under a quarter of the bound once separated
+    assert bound - len(f"{path}\n\n".encode()) < bound // 4
+
+    chunks, section = _long_heading_section(ingestion_service, bound, path)
+
+    assert [(c.heading_path, c.content) for c in chunks] == [(path, section)]
+
+
+def test_chunk_projection_still_divides_when_the_heading_path_leaves_a_quarter(
+    ingestion_service,
+):
+    """Control for the floor: with a quarter of the bound left, the section divides."""
+    bound = 200
+    path = "Doc > " + "h" * 100
+    assert bound - len(f"{path}\n\n".encode()) >= bound // 4
+
+    chunks, section = _long_heading_section(ingestion_service, bound, path)
+
+    assert len(chunks) > 1
+    assert "".join(c.content for c in chunks) == section
 
 
 def _document_for_surface(
@@ -3036,7 +3184,7 @@ async def test_no_request_config_and_no_vault_adapter_config_uses_defaults(
 # ---------------------------------------------------------------------------
 
 
-class _RecordingEmbeddingProvider:
+class _RecordingEmbeddingProvider(StubEmbeddingProvider):
     """Captures the texts passed to embed() for assertion.
 
     Accumulates across calls — the production pipeline now embeds chunks
@@ -3045,6 +3193,7 @@ class _RecordingEmbeddingProvider:
     """
 
     def __init__(self) -> None:
+        super().__init__()
         self.last_inputs: list[str] = []
 
     async def embed(self, texts: list[str]) -> list[list[float]]:

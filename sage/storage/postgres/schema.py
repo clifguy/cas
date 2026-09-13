@@ -218,6 +218,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     indexed_structure text,
     content text NOT NULL,
     chunk_index integer NOT NULL,
+    section_index integer,
     embedding vector({EMBEDDING_DIM}),
     doc_type text,
     lifecycle_status text,
@@ -350,6 +351,12 @@ ADDITIVE_COLUMNS: tuple[str, ...] = (
     # column with no default is catalog-only, so this is safe to run on every
     # vault open even on a table of tens of thousands of passages.
     "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS indexed_structure text;",
+    # The section a passage belongs to, where a section too long for the
+    # embedder is stored as several passages. Nullable with no default for the
+    # same reason as above: NULL is what a passage written before sections were
+    # numbered carries, and every read treats such a passage as a section of its
+    # own, so an existing vault keeps its behaviour with no backfill.
+    "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS section_index integer;",
     # The two halves of a cross-vault relocation pointer (CAS-ADR-050). Both
     # nullable with no default, because null is what "this document has not
     # relocated in that direction" means, and that is every document in a vault

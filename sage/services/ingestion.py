@@ -16,7 +16,7 @@ import logging
 import shutil
 import tempfile
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -93,6 +93,13 @@ from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.services.identifier_mention_inference import infer_identifier_mentions_for_document
 from sage.services.identity import generate_document_id
 from sage.services.metadata import _wire_version
+from sage.services.passage_split import (
+    embedding_input,
+    group_sections,
+    join_passages,
+    section_text,
+    split_passage,
+)
 from sage.services.passage_structure import indexed_structure
 from sage.services.vault_source_errors import report_refusal_as
 from sage.source_adapters.base import ProjectionResult, SourceAdapter
@@ -1788,7 +1795,7 @@ class IngestionService:
             return
         try:
             chunks = await self._content_store.get_all_chunks(document_id)
-            body_text = "\n".join(c.content for c in chunks)
+            body_text = join_passages(chunks, separator="\n")
             if not body_text:
                 return
             await infer_identifier_mentions_for_document(
@@ -1856,9 +1863,7 @@ class IngestionService:
         # relative structure and leaves the vector arm alone, so no corpus needs
         # re-embedding to take that change.
         if chunks:
-            texts = [
-                f"{c.heading_path}\n\n{c.content}" if c.heading_path else c.content for c in chunks
-            ]
+            texts = [embedding_input(c.heading_path, c.content) for c in chunks]
             embeddings = await self._embedding.embed(texts)
             for chunk, embedding in zip(chunks, embeddings):
                 chunk.embedding = embedding
@@ -2238,7 +2243,7 @@ class IngestionService:
         exclusion this method has to remember (CAS-ADR-049).
         """
         chunks = await self._content_store.get_all_chunks(document_id)
-        projection_text = "\n\n".join(chunk.content for chunk in chunks)
+        projection_text = join_passages(chunks)
         abstract = await self._generate_abstract_text(
             projection_text, doc_type, document_id=document_id
         )
@@ -2952,47 +2957,181 @@ class IngestionService:
         document_id: str,
         projection: ProjectionResult,
     ) -> list[Chunk]:
-        """Split projection into body chunks by heading.
+        """Split projection into passages by heading, bounded by the embedder.
 
-        Emits one chunk per heading regardless of whether the heading has
-        immediate body content. A heading whose next paragraph is another
-        heading at the same or higher level (e.g. a USPTO Section like
-        "DETAILED DESCRIPTION" immediately followed by another section
-        marker) ends up with empty body content — but its heading_path
-        must still enter the FTS index so that searches for the heading
-        text find the document, matching the behavior of Word's Find on
-        a heading paragraph.
+        Each heading is a section, and a section is one passage unless it is
+        longer than the embedding provider's input bound, in which case it is
+        divided into consecutive passages that each fit (``split_passage``).
+        Every passage carries its section's heading path and section index;
+        ``chunk_index`` numbers passages across the document.
+
+        A section is emitted whether or not the heading has immediate body
+        content. A heading whose next paragraph is another heading at the same
+        or higher level (e.g. a USPTO Section like "DETAILED DESCRIPTION"
+        immediately followed by another section marker) ends up with empty body
+        content -- but its heading_path must still enter the FTS index so that
+        searches for the heading text find the document, matching the behavior
+        of Word's Find on a heading paragraph.
 
         Passages carry projected content only. Document-identity signals
         (title, source filename, tags, semantic abstract, and their
         expansions) live on the document surface (CAS-ADR-049).
         """
-        chunks: list[Chunk] = []
-        for i, heading in enumerate(projection.headings):
-            # Prepend the ATX heading line to chunk content so the heading
-            # mark survives into the reconstructed projection text.
+        sections: list[tuple[str, str]] = []
+        for heading in projection.headings:
+            # Prepend the ATX heading line to the section's content so the
+            # heading mark survives into the reconstructed projection text.
             # Without this, _get_projection_text emits prose-only text and
             # round-trip through re-ingestion loses the heading hierarchy.
             atx_line = ("#" * heading.level) + " " + heading.text
-            chunk_content = f"{atx_line}\n\n{heading.content}" if heading.content else atx_line
-            chunks.append(
-                Chunk(
-                    document_id=document_id,
-                    heading_path=heading.path,
-                    content=chunk_content,
-                    chunk_index=i,
-                )
-            )
+            content = f"{atx_line}\n\n{heading.content}" if heading.content else atx_line
+            sections.append((heading.path, content))
 
-        # If no headings, create a single chunk from the full text
-        if not chunks and projection.text.strip():
-            chunks.append(
-                Chunk(
-                    document_id=document_id,
-                    heading_path="",
-                    content=projection.text,
-                    chunk_index=0,
-                )
-            )
+        # If no headings, the full text is a single section
+        if not sections and projection.text.strip():
+            sections.append(("", projection.text))
 
+        return self._passages_for_sections(document_id, sections)
+
+    def _passages_for_sections(
+        self, document_id: str, sections: Sequence[tuple[str, str]]
+    ) -> list[Chunk]:
+        """Divide ``(heading_path, content)`` sections into bounded passages.
+
+        The one division both ingest and the stored-passage migration apply, so
+        a migrated document and a freshly ingested one hold identical passages.
+        """
+        chunks: list[Chunk] = []
+        for section_index, (heading_path, content) in enumerate(sections):
+            fits = self._fits_embedding_input(heading_path)
+            # A heading path that leaves under a quarter of the bound for content
+            # divides a section into slivers, each embedded as mostly the same
+            # path, and past the bound into a passage per code point. The
+            # section stays whole instead.
+            room = self._embedding.max_input_tokens - self._embedding.count_tokens(
+                embedding_input(heading_path, "")
+            )
+            crowded = room < self._embedding.max_input_tokens // 4
+            pieces = [content] if crowded else split_passage(content, fits)
+            for piece in pieces:
+                chunks.append(
+                    Chunk(
+                        document_id=document_id,
+                        heading_path=heading_path,
+                        content=piece,
+                        chunk_index=len(chunks),
+                        section_index=section_index,
+                    )
+                )
         return chunks
+
+    def _fits_embedding_input(self, heading_path: str) -> Callable[[str], bool]:
+        """Whether a passage under ``heading_path`` is embedded whole.
+
+        Tests the text Stage 2 embeds (``embedding_input``). No binding counts
+        more tokens than UTF-8 bytes plus two, so text that plainly fits by
+        bytes is admitted without being counted; only a candidate for division
+        is tokenized.
+        """
+        bound = self._embedding.max_input_tokens
+
+        def fits(piece: str) -> bool:
+            text = embedding_input(heading_path, piece)
+            if len(text.encode("utf-8")) + 2 <= bound:
+                return True
+            return self._embedding.count_tokens(text) <= bound
+
+        return fits
+
+    async def divide_passages_over_input_bound(self) -> int:
+        """Divide every stored section too long for the embedder, vault-wide.
+
+        Stored passages are the durable form of a projection, so a section is
+        re-divided from them: the source is not read and nothing is
+        re-abstracted. The candidates are found by length, which bounds the
+        tokens a passage can occupy, and each is then measured exactly, so a
+        document whose passages all fit is left untouched however long they are.
+
+        Returns:
+            The number of documents whose passages were rewritten.
+        """
+        # A passage whose embedding input plainly fits by bytes needs no count
+        # (see ``_fits_embedding_input``). That input is the heading path, a
+        # two-byte separator and the content, and the byte test allows two more.
+        byte_bound = self._embedding.max_input_tokens - 4
+        rewritten = 0
+        for document_id in await self._content_store.documents_with_passages_longer_than(
+            byte_bound
+        ):
+            if await self._divide_stored_passages(document_id):
+                rewritten += 1
+        return rewritten
+
+    async def _divide_stored_passages(self, document_id: str) -> bool:
+        """Re-divide one document's stored sections under the embedder's bound.
+
+        The division is ``_passages_for_sections``, the one ingest applies, so
+        the rewritten passages are exactly those a fresh ingest would write. A
+        passage's derived fields -- its indexed structure and the document
+        scalars stamped on it -- are carried from its section, and the document's
+        passages are re-embedded together, since they are replaced together.
+
+        The migration runs in the server that serves ingest, so a document can
+        be re-indexed while it is divided. A document whose division would change
+        nothing is left alone; one with pipeline work in flight, or not yet at a
+        terminal status, is left for a later run; otherwise the division holds
+        the document's pipeline claim while it embeds, so no reabstract or
+        recompute starts meanwhile, and writes through the store's
+        compare-and-replace, which is refused if the passages were rewritten or
+        stamped after they were read. A document left for later is logged with its reason.
+
+        Returns:
+            Whether the passages were rewritten. A document whose division is
+            unchanged, or that is left for a later run, is not.
+        """
+        doc = await self._store.get_document(document_id)
+        if doc is None:
+            return False
+        stored = await self._content_store.get_all_chunks(document_id)
+        sections = group_sections(stored)
+        divided = self._passages_for_sections(
+            document_id,
+            [(section[0].heading_path, section_text(section)) for section in sections],
+        )
+        if [(c.heading_path, c.content) for c in divided] == [
+            (c.heading_path, c.content) for c in stored
+        ]:
+            return False
+        as_read = [c.stored_state for c in stored]
+        if doc.pipeline_status not in TERMINAL_PIPELINE_STATUS_VALUES:
+            return self._left_for_later(document_id, f"pipeline_status {doc.pipeline_status}")
+        if self._try_claim(document_id, "divide") is not None:
+            return self._left_for_later(document_id, "pipeline work in flight")
+        try:
+            for chunk in divided:
+                origin = sections[chunk.section_key][0]
+                chunk.indexed_structure = origin.indexed_structure
+                chunk.doc_type = origin.doc_type
+                chunk.lifecycle_status = origin.lifecycle_status
+                chunk.project = origin.project
+            embeddings = await self._embedding.embed(
+                [embedding_input(c.heading_path, c.content) for c in divided]
+            )
+            for chunk, embedding in zip(divided, embeddings):
+                chunk.embedding = embedding
+
+            if await self._content_store.replace_chunks_if_unchanged(document_id, as_read, divided):
+                return True
+            return self._left_for_later(
+                document_id, "passages rewritten or stamped during the division"
+            )
+        finally:
+            self._release_claim(document_id)
+
+    @staticmethod
+    def _left_for_later(document_id: str, reason: str) -> bool:
+        """Record that a document's division was left for a later migration run."""
+        logger.info(
+            "passage division of %s left for a later migrate_vault run: %s", document_id, reason
+        )
+        return False

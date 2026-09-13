@@ -32,6 +32,7 @@ from sage.adapters.abstraction_utils import AcronymGloss, find_unattested_acrony
 from sage.adapters.stubs import StubAbstractionProvider
 from sage.config import load_vault_config
 from sage.mcp_init import initialize_services
+from sage.services.passage_split import join_passages
 from sage.vault_management import config_path_for_vault
 
 
@@ -95,7 +96,7 @@ async def build_entries(services) -> list[AuditEntry]:
             continue
         chunks = await services.content_store.get_all_chunks(doc.id)
         body_chunks = list(chunks)
-        source_text = "\n\n".join(chunk.content for chunk in body_chunks)
+        source_text = join_passages(body_chunks)
         if not source_text.strip():
             continue
         status = getattr(doc, "lifecycle_status", None)

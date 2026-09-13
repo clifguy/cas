@@ -162,6 +162,36 @@ class TestNomicEmbeddingProvider:
         norm = math.sqrt(sum(x * x for x in result[0]))
         assert abs(norm - 1.0) < 1e-4
 
+    def test_declared_input_bound_is_the_bound_the_model_applies(self, embedding_provider):
+        """The bound chunking reads is the one inference truncates at.
+
+        Two literals that happened to agree would pass a test comparing the
+        declared bound with 2048; comparing it with the model's own setting is
+        what makes a change to either one visible.
+        """
+        assert embedding_provider.max_input_tokens == embedding_provider._model.max_seq_length
+
+    def test_token_count_is_the_tokenizer_count(self, embedding_provider):
+        """Special tokens are counted, because they occupy the same window."""
+        tokenizer = embedding_provider._model.tokenizer
+        for text in ["", "alpha", "PostgreSQL 17 migration > Original: cutover.log", "漢字 🙂"]:
+            expected = len(tokenizer(text)["input_ids"])
+            assert embedding_provider.count_tokens(text) == expected
+        assert embedding_provider.count_tokens("") > 0
+
+    def test_token_count_never_exceeds_bytes_plus_special_tokens(self, embedding_provider):
+        """The byte pre-check that skips counting rests on this bound."""
+        samples = [
+            "plain ascii prose with punctuation, numbers 12345 and symbols #!@",
+            "漢字かなカナ混じり文と絵文字🙂🙃🚀",
+            "def f(x):\n    return {k: v for k, v in x.items()}\n",
+            "\n\n\n   \t  \n",
+            "a" * 3000,
+            "é" * 500 + "ß" * 500,
+        ]
+        for text in samples:
+            assert embedding_provider.count_tokens(text) <= len(text.encode("utf-8")) + 2
+
     def test_ad_008_init_fails_on_bad_model(self):
         """AD-008: Provider init fails fast if model unavailable."""
         with pytest.raises(RuntimeError, match="nonexistent-model-xyz"):

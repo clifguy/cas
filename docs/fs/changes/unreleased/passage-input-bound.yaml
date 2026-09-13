@@ -1,0 +1,29 @@
+classification: minor
+category:
+  - caller-adaptation
+  - operator-adaptation
+summary: >-
+  Passages are bounded by the embedding provider's input bound. A section longer
+  than the bound is stored as consecutive passages sharing its heading path, so
+  every passage is embedded whole rather than truncated at the embedder's window.
+  Section reads, deterministic search, heading enumeration and projection text read
+  a divided section as the one section it is, and matched_chunk_count counts
+  sections, so neither depends on how a section was divided. migrate_vault gains a
+  fifth backfill, split_passages_over_embedding_input_bound, which divides stored
+  over-bound sections from the stored passages and re-embeds only the documents it
+  rewrites; its descriptions in sage_core_api.openapi.yaml and the MCP tool catalog
+  now say so, as do the descriptions of matched_chunk_count and of read_section's
+  chunk_count in the specification and the response models. A document with
+  pipeline work in flight is left for a later migrate_vault call, and the division
+  writes through a new content-store compare-and-replace under a per-document
+  write lock that every per-document passage writer -- replacing, removing or
+  updating a document's rows -- now takes. No operation, tool, parameter or
+  response field is added or removed.
+for_callers: >-
+  matched_chunk_count and read_section's chunk_count now count sections rather than
+  stored passages, so a caller thresholding either sees smaller values for a document
+  whose long sections were divided. Documents indexed before this release keep any
+  over-long passage until an operator runs migrate_vault on each vault; that run
+  re-embeds the affected documents and reports
+  split_passages_over_embedding_input_bound in backfills_applied, and a document with
+  pipeline work in flight is left for a later call.

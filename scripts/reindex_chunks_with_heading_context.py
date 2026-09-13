@@ -46,6 +46,7 @@ from datetime import datetime, timedelta, timezone
 from sage.config import load_vault_config
 from sage.mcp_init import initialize_services
 from sage.models.enums import SourceType
+from sage.services.passage_split import embedding_input
 from sage.source_adapters.docx_adapter import DocxAdapter
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.source_adapters.pdf_adapter import PdfAdapter
@@ -147,9 +148,7 @@ async def reindex_with_services(
 
         for start in range(0, len(chunks), batch_size):
             batch = chunks[start : start + batch_size]
-            texts = [
-                f"{c.heading_path}\n\n{c.content}" if c.heading_path else c.content for c in batch
-            ]
+            texts = [embedding_input(c.heading_path, c.content) for c in batch]
             new_embeddings = await embedder.embed(texts)
             for c, emb in zip(batch, new_embeddings):
                 c.embedding = emb
