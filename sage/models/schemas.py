@@ -3793,8 +3793,10 @@ class DiscoverHit(BaseModel):
             "the chunk's first `hints.excerpt_chars` characters. A "
             "deterministic request for the hit's document and "
             "`heading_path` returns it whole; where the hit's "
-            "`heading_path` is null, the passage is the document's whole "
-            "body, which `read_projection` returns."
+            "`heading_path` is null, the passage is text under no heading -- "
+            "the whole body of a document with no headings, or the text "
+            "before a document's first heading -- which `read_section` "
+            "returns whole for an empty `heading_path`."
         ),
     )
     heading_path: str | None = Field(

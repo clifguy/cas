@@ -140,6 +140,27 @@ def _flatten_outline(
     return entries
 
 
+def _outline_preamble(
+    entries: list[tuple[int, str, int]],
+    page_texts: list[str],
+    pages_extracted: int,
+) -> str:
+    """The text of the pages before any outline entry begins.
+
+    No entry's page range reaches a page before the earliest start page, so
+    these pages belong to no heading. Empty when an entry starts on the first
+    page, or when no entry starts within the extracted pages.
+    """
+    starts = [sp for (_lvl, _text, sp) in entries if sp < pages_extracted]
+    if not starts:
+        return ""
+    return "\n\n".join(
+        page_texts[p].strip()
+        for p in range(0, min(starts))
+        if p < len(page_texts) and page_texts[p].strip()
+    )
+
+
 def _build_outline_headings(
     entries: list[tuple[int, str, int]],
     page_texts: list[str],
@@ -429,7 +450,9 @@ class PdfAdapter(SourceAdapter):
     # changes (pdf:scanned removed; pdf:ocr_applied / pdf:ocr_no_text added).
     # 0.5.0: post-extraction CID safe-decode for printable-ASCII glyphs
     # (mitigates a pdfminer.six side-effect after the ocrmypdf import).
-    VERSION = "0.5.0"
+    # 0.6.0: pages before the first outline entry are reported as the
+    # projection's preamble rather than dropped.
+    VERSION = "0.6.0"
     EXTENSIONS = [".pdf"]
 
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
@@ -455,6 +478,7 @@ class PdfAdapter(SourceAdapter):
         adapter_tags: list[str] = []
         full_text: str
         headings: list[HeadingNode]
+        preamble = ""
 
         if is_scanned:
             # OCR is blocking; dispatch it (and the post-OCR re-extraction) to
@@ -477,6 +501,7 @@ class PdfAdapter(SourceAdapter):
                 full_text = "\n\n".join(p.strip() for p in page_texts if p.strip())
                 if outline_entries:
                     headings = _build_outline_headings(outline_entries, page_texts, pages_extracted)
+                    preamble = _outline_preamble(outline_entries, page_texts, pages_extracted)
                     adapter_tags.append("pdf:has_outline")
                 else:
                     title_for_heading = _resolve_title(
@@ -501,6 +526,7 @@ class PdfAdapter(SourceAdapter):
             full_text = "\n\n".join(p.strip() for p in page_texts if p.strip())
             if outline_entries:
                 headings = _build_outline_headings(outline_entries, page_texts, pages_extracted)
+                preamble = _outline_preamble(outline_entries, page_texts, pages_extracted)
                 adapter_tags.append("pdf:has_outline")
             else:
                 title_for_heading = _resolve_title(
@@ -537,4 +563,5 @@ class PdfAdapter(SourceAdapter):
             adapter_version=self.VERSION,
             title=title,
             metadata=metadata,
+            preamble=preamble,
         )

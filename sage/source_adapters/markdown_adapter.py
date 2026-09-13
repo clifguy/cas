@@ -31,7 +31,9 @@ class MarkdownAdapter(SourceAdapter):
     # frontmatter is recognized as a block-level construct rather than
     # binding its closing `---` to the preceding YAML body as a setext
     # H2 underline.
-    VERSION = "0.5.0"
+    # 0.6.0: reports the text before the first heading as the projection's
+    # preamble, so it reaches a passage; front matter is excluded.
+    VERSION = "0.6.0"
     EXTENSIONS = [".md", ".markdown"]
 
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
@@ -39,7 +41,7 @@ class MarkdownAdapter(SourceAdapter):
         content_hash = hashlib.sha256(raw_bytes).hexdigest()
         text = raw_bytes.decode("utf-8")
 
-        headings = self._parse_headings(text)
+        headings, preamble = self._parse_headings(text)
         title = self._extract_title(headings, source_path)
 
         source_mtime = datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone.utc)
@@ -56,13 +58,18 @@ class MarkdownAdapter(SourceAdapter):
             adapter_version=self.VERSION,
             title=title,
             metadata=metadata,
+            preamble=preamble,
         )
 
-    def _parse_headings(self, text: str) -> list[HeadingNode]:
-        """Extract headings via CommonMark token stream.
+    def _parse_headings(self, text: str) -> tuple[list[HeadingNode], str]:
+        """Extract headings, and the text before the first, via CommonMark token stream.
 
         Code-block tokens (`fence`, `code_block`) never produce `heading_open`,
         so any `#`-shaped lines inside them are suppressed by construction.
+
+        The text before the first heading starts below any front matter, which
+        describes the document rather than belonging to its body. A document
+        without headings has none: its whole text is already its one passage.
         """
         md = MarkdownIt("commonmark")
         md.use(front_matter_plugin)
@@ -72,7 +79,10 @@ class MarkdownAdapter(SourceAdapter):
         # First pass: collect (level, text, start_line, end_line) for each
         # heading_open token. The next inline token carries the heading text.
         raw: list[tuple[int, str, int, int]] = []
+        body_start = 0
         for i, tok in enumerate(tokens):
+            if tok.type == "front_matter" and tok.map is not None:
+                body_start = tok.map[1]
             if tok.type != "heading_open":
                 continue
             level = int(tok.tag[1:])
@@ -101,7 +111,8 @@ class MarkdownAdapter(SourceAdapter):
                 )
             )
 
-        return headings
+        preamble = "\n".join(lines[body_start : raw[0][2]]).strip() if raw else ""
+        return headings, preamble
 
     def _extract_title(self, headings: list[HeadingNode], source_path: Path) -> str:
         """Extract title from first H1, falling back to filename."""

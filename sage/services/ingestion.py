@@ -111,6 +111,16 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Formats whose adapters can report text before a document's first heading.
+_PREAMBLE_SOURCE_TYPES = frozenset({SourceType.MARKDOWN, SourceType.DOCX, SourceType.PDF})
+
+# Tag the PDF adapter records on a document projected from an outline, the only
+# structure through which a PDF places text before a heading.
+_PDF_OUTLINE_TAG = "pdf:has_outline"
+
+# How a repair that adds the text before the first heading is named in the log.
+_PREAMBLE_OPERATION = "adding the text before the first heading"
+
 # Provider-neutral abstraction latency records. Shares the logger name with
 # the local provider's implementation-specific breakdown so one pipeline
 # reads both; the two are joined on the input size they both carry.
@@ -2973,11 +2983,18 @@ class IngestionService:
         searches for the heading text find the document, matching the behavior
         of Word's Find on a heading paragraph.
 
+        Text before the first heading belongs to no heading, and is the first
+        section, addressed by the empty heading path -- the address text under
+        no heading has in a document without headings, where the whole text is
+        that one section. Every heading keeps the address it has without it.
+
         Passages carry projected content only. Document-identity signals
         (title, source filename, tags, semantic abstract, and their
         expansions) live on the document surface (CAS-ADR-049).
         """
         sections: list[tuple[str, str]] = []
+        if projection.headings and projection.preamble.strip():
+            sections.append(("", projection.preamble))
         for heading in projection.headings:
             # Prepend the ATX heading line to the section's content so the
             # heading mark survives into the reconstructed projection text.
@@ -3128,10 +3145,130 @@ class IngestionService:
         finally:
             self._release_claim(document_id)
 
+    async def store_text_before_first_heading(self) -> int:
+        """Store the text each document carries before its first heading, vault-wide.
+
+        A document indexed before that text had a passage holds none of it, and
+        its stored passages cannot supply it, so the source is re-projected. The
+        candidates are the documents whose format can place text before a heading
+        and whose stored passages include headings but no passage under none: a
+        document without headings already stores its whole text under the empty
+        heading path, as does one this pass has repaired. A PDF can place text
+        before a heading only through its outline, so a PDF without one is not
+        read. Only a candidate whose projection carries such text is rewritten.
+
+        Returns:
+            The number of documents whose passages were rewritten.
+        """
+        rewritten = 0
+        for doc in await self._store.list_all_documents():
+            if doc.source_type not in _PREAMBLE_SOURCE_TYPES:
+                continue
+            if doc.source_type == SourceType.PDF and _PDF_OUTLINE_TAG not in (doc.tags or []):
+                continue
+            paths = await self._content_store.get_heading_paths(doc.id)
+            if not paths or "" in paths:
+                continue
+            if await self._store_stored_preamble(doc):
+                rewritten += 1
+        return rewritten
+
+    async def _store_stored_preamble(self, doc: Document) -> bool:
+        """Add a document's text before its first heading to its stored passages.
+
+        The passages already stored are kept exactly as they read -- heading
+        paths, content and derived fields -- and the text is added ahead of them
+        as the section a fresh ingest writes first, so every section read and
+        heading enumeration answers as before apart from the new empty path. The
+        abstract was generated from the projection's whole text and is left as it
+        is; the document's passages are re-embedded together, since they are
+        replaced together.
+
+        The source must still be the one the passages were projected from: a
+        source whose bytes changed since is left for a later run, since adding
+        new text above old passages would store a document that never existed.
+        So is a source that cannot be projected, a document with pipeline work
+        in flight or not at a terminal status, and one whose passages were
+        rewritten or stamped while it embeds -- the same claim and
+        compare-and-replace the division above uses.
+
+        Returns:
+            Whether the passages were rewritten.
+        """
+        document_id = doc.id
+        if doc.pipeline_status not in TERMINAL_PIPELINE_STATUS_VALUES:
+            return self._left_for_later(
+                document_id, f"pipeline_status {doc.pipeline_status}", _PREAMBLE_OPERATION
+            )
+        adapter = self._adapters.get(doc.source_type)
+        if adapter is None or doc.source_path is None:
+            return False
+        storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
+        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+
+        vault_source_store = resolve_stack_vault_source_store(get_stack_config())
+        try:
+            merged_config = self._merge_adapter_config(doc.source_type, None)
+            with self._project_source(
+                vault_source_store, storage_root, doc.source_path
+            ) as project_path:
+                projection = await adapter.project(project_path, merged_config)
+        except Exception as exc:
+            return self._left_for_later(
+                document_id, f"source not projected: {type(exc).__name__}", _PREAMBLE_OPERATION
+            )
+        expected_hash = doc.stored_content_hash or doc.source_content_hash
+        if canonicalize_sha256(projection.content_hash) != expected_hash:
+            return self._left_for_later(
+                document_id, "source differs from the one its passages hold", _PREAMBLE_OPERATION
+            )
+        if not projection.headings or not projection.preamble.strip():
+            return False
+
+        stored = await self._content_store.get_all_chunks(document_id)
+        if not stored:
+            return False
+        sections = group_sections(stored)
+        rebuilt = self._passages_for_sections(
+            document_id,
+            [("", projection.preamble)]
+            + [(section[0].heading_path, section_text(section)) for section in sections],
+        )
+        as_read = [c.stored_state for c in stored]
+        if self._try_claim(document_id, "store_preamble") is not None:
+            return self._left_for_later(document_id, "pipeline work in flight", _PREAMBLE_OPERATION)
+        try:
+            first = stored[0]
+            for chunk in rebuilt:
+                if chunk.section_key == 0:
+                    chunk.indexed_structure = indexed_structure("", doc.title)
+                    origin = first
+                else:
+                    origin = sections[chunk.section_key - 1][0]
+                    chunk.indexed_structure = origin.indexed_structure
+                chunk.doc_type = origin.doc_type
+                chunk.lifecycle_status = origin.lifecycle_status
+                chunk.project = origin.project
+            embeddings = await self._embedding.embed(
+                [embedding_input(c.heading_path, c.content) for c in rebuilt]
+            )
+            for chunk, embedding in zip(rebuilt, embeddings):
+                chunk.embedding = embedding
+
+            if await self._content_store.replace_chunks_if_unchanged(document_id, as_read, rebuilt):
+                return True
+            return self._left_for_later(
+                document_id,
+                "passages rewritten or stamped while the text was added",
+                _PREAMBLE_OPERATION,
+            )
+        finally:
+            self._release_claim(document_id)
+
     @staticmethod
-    def _left_for_later(document_id: str, reason: str) -> bool:
-        """Record that a document's division was left for a later migration run."""
+    def _left_for_later(document_id: str, reason: str, operation: str = "passage division") -> bool:
+        """Record that a document's repair was left for a later migration run."""
         logger.info(
-            "passage division of %s left for a later migrate_vault run: %s", document_id, reason
+            "%s of %s left for a later migrate_vault run: %s", operation, document_id, reason
         )
         return False

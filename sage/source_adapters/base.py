@@ -134,6 +134,11 @@ class ProjectionResult:
       ``tier3_metadata`` (caller wins) per CAS-ADR-021. Validated
       against the resolved doc_type's ``metadata_schema`` before the
       document is persisted.
+
+    ``preamble`` is the authored text that precedes the first heading and so
+    belongs to no ``HeadingNode``. It is empty when the document opens at a
+    heading, and when the document has no headings at all, since ``text`` is
+    then the document's one passage.
     """
 
     text: str  # Full structured text
@@ -142,6 +147,7 @@ class ProjectionResult:
     adapter_version: str  # Adapter version string
     title: str  # Extracted document title
     metadata: dict = field(default_factory=dict)  # Extracted metadata
+    preamble: str = ""  # Text before the first heading
 
 
 class SourceAdapter(ABC):

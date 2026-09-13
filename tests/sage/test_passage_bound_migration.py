@@ -398,7 +398,11 @@ async def test_a_document_left_for_a_later_run_is_logged_with_its_reason(
             graph_store, store, ingestion, minimal_config, tmp_vault_dir
         ).migrate_vault()
 
-    left = [r.getMessage() for r in caplog.records if "left for a later" in r.getMessage()]
+    left = [
+        r.getMessage()
+        for r in caplog.records
+        if r.getMessage().startswith("passage division of") and "left for a later" in r.getMessage()
+    ]
     assert any(OVERSIZE in m and "indexing_in_progress" in m for m in left), left
     assert not any(FITTING in m for m in left), (
         "a document the division would not have rewritten is not reported as left"

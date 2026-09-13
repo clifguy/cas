@@ -193,6 +193,10 @@ BACKFILL_PASSAGE_INDEXED_STRUCTURE = "derive_passage_structure_relative_to_docum
 # stored section longer than the embedding provider's input bound.
 BACKFILL_PASSAGE_INPUT_BOUND = "split_passages_over_embedding_input_bound"
 
+# Name reported in MigrationReport.backfills_applied when the migration stored the
+# text a document carries before its first heading, re-projected from its source.
+BACKFILL_TEXT_BEFORE_FIRST_HEADING = "store_text_before_first_heading"
+
 
 def _canonical_or_none(content_hash: str | None) -> str | None:
     """Canonicalize a content hash, preserving null.
@@ -353,6 +357,12 @@ class MaintenanceService:
         left exactly as recorded; ``verify_vault_source_files`` is where that
         condition is reported.
 
+        A later backfill stores the text a document carries before its first
+        heading, which a vault indexed before that text had a passage lacks. It
+        re-projects the candidates' sources and adds the text ahead of the stored
+        passages, leaving those as they read (see
+        ``_store_text_before_first_heading``).
+
         Scan every ``unique_keys`` declaration in vault config. For each
         declared (doc_type, field), build the chain-head-grouped value map and
         report any collisions; for each clean declaration, ensure the
@@ -378,6 +388,9 @@ class MaintenanceService:
 
         if await self._divide_passages_over_input_bound():
             backfills_applied.append(BACKFILL_PASSAGE_INPUT_BOUND)
+
+        if await self._store_text_before_first_heading():
+            backfills_applied.append(BACKFILL_TEXT_BEFORE_FIRST_HEADING)
 
         if await self._migrate_to_relative_indexed_structure():
             backfills_applied.append(BACKFILL_PASSAGE_INDEXED_STRUCTURE)
@@ -463,6 +476,25 @@ class MaintenanceService:
         if self._ingestion is None:
             return 0
         return await self._ingestion.divide_passages_over_input_bound()
+
+    async def _store_text_before_first_heading(self) -> int:
+        """Store the text each document carries before its first heading.
+
+        A vault indexed before that text had a passage holds none of it, and the
+        stored passages cannot supply it, so this backfill -- unlike the others --
+        reads sources, re-projecting each candidate through the vault-source
+        binding. The text is added ahead of the passages already stored, which
+        are kept as they read; nothing is re-abstracted, and only a document it
+        rewrites is re-embedded.
+
+        Returns:
+            The number of documents rewritten -- zero on a vault with nothing to
+            recover, or where no ingestion service is wired to project with, so
+            the backfill does not name itself in the report.
+        """
+        if self._ingestion is None:
+            return 0
+        return await self._ingestion.store_text_before_first_heading()
 
     async def _migrate_to_relative_indexed_structure(self) -> int:
         """Derive each passage's structure relative to its document.

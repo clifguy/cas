@@ -1952,8 +1952,10 @@ def register_sage_tools(
             passage whole, call ``search`` with ``mode="deterministic"``,
             ``document_id`` set to the hit's document id, and the hit's
             ``heading_path``. A hit whose ``heading_path`` is null comes
-            from a document with no headings, whose one passage is its
-            whole body; read that with ``read_projection``. An
+            from text under no heading -- the whole body of a document
+            with no headings, or the text before a document's first
+            heading; ``read_section`` with an empty ``heading_path``
+            returns it whole. An
             explicit ``response_mode`` suppresses the excerpt, as it
             suppresses the catalog degrade.
 
@@ -2270,9 +2272,12 @@ def register_sage_tools(
 
         Replaces the antipattern of calling read_section with a
         deliberately wrong heading path to harvest ``available_headings``
-        from the resulting ``heading_not_found`` error response. The
-        Every returned path is an authored heading, so the returned
-        paths are exactly those a caller may pass to read_section.
+        from the resulting ``heading_not_found`` error response.
+        Every returned path is one a caller may pass to read_section.
+        An authored heading is listed by its path. The empty path, first
+        where present, addresses the text under no heading: the text
+        before the document's first heading, or the whole of a document
+        that has none.
 
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
@@ -3062,7 +3067,7 @@ def register_sage_tools(
         pending schema work for this tool to apply and ``columns_added`` is
         always empty.
 
-        Five data backfills run. Documents already at a successful terminal
+        Six data backfills run. Documents already at a successful terminal
         ``pipeline_status`` that still carry the ``pipeline_error`` of a
         failure they have since recovered from get that field cleared.
         Documents whose stored ``source_path`` holds a spelling ingest no
@@ -3081,7 +3086,16 @@ def register_sage_tools(
         rewrites; section reads, heading enumeration and projection text read
         exactly as before. A document with pipeline work in flight, or re-indexed
         or stamped while it is divided, is left for a later call, and the server
-        log names each one. And every passage gains its
+        log names each one. A document indexed before the text above its first
+        heading had a passage of its own gains that passage, addressed by the
+        empty heading path. This is the one backfill that reads sources: it
+        re-projects each candidate through the vault's source binding and adds
+        the text ahead of the passages already stored, which read exactly as
+        before, so every heading path still resolves. Nothing is re-abstracted,
+        and only the documents it rewrites are re-embedded. A document whose
+        source changed since it was indexed or cannot be read, or with pipeline
+        work in flight, is left for a later call, and the server log names each
+        one. And every passage gains its
         structure relative to its document -- its heading path with a root
         element equal to the document title removed -- so a title that a source
         format made the document's top-level heading stops being indexed into

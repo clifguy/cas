@@ -3667,3 +3667,24 @@ async def test_projection_parent_removed_during_read_returns_typed_envelope(
     assert result["detail"]["write_to_path"] == str(target)
     assert "No such file or directory" in result["detail"]["reason"]
     assert not parent.exists()
+
+
+async def test_read_section_reads_text_before_the_first_heading_by_the_empty_path(
+    vault_services, tmp_vault_dir
+):
+    """The empty heading path addresses the text a document carries before its
+    first heading, the address a search hit with a null heading_path names."""
+    (tmp_vault_dir / "sources" / "test" / "led.md").write_text(
+        "Opening sentinel larkspur.\n\n# Heading\n\nHeading body.\n"
+    )
+    doc = _parse(await ingest_document("test_vault", "test/led.md", "markdown"))
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
+
+    headings = _parse(await list_headings(vault_id="test_vault", document_id=doc["id"]))
+    result = _parse(
+        await read_section(vault_id="test_vault", document_id=doc["id"], heading_path="")
+    )
+
+    assert headings["headings"] == ["", "Heading"]
+    assert "error" not in result, result
+    assert result["section_text"].strip() == "Opening sentinel larkspur."

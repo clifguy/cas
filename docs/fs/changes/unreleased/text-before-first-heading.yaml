@@ -1,0 +1,33 @@
+classification: minor
+category:
+  - caller-adaptation
+  - operator-adaptation
+summary: >-
+  Text a document carries before its first heading is stored as a passage. Passages
+  were built from a projection's headings alone, so that text reached no passage and
+  was absent from read_projection, read_section and both retrieval arms while the
+  stored source still held it. The markdown (0.6.0), docx (0.5.0) and PDF (0.6.0)
+  adapters now report it apart from their headings -- markdown excluding front
+  matter, PDF as the pages before its first outline entry -- and ingest stores it
+  first, under the empty heading path that text under no heading already has in a
+  document without headings. Every heading keeps its path and content. The pptx and
+  xlsx adapters make every slide and sheet a heading, so nothing precedes the first.
+  migrate_vault gains a sixth backfill, store_text_before_first_heading, the one that
+  reads sources: it re-projects each markdown, docx and outlined-PDF document whose
+  stored passages include headings but none under the empty path, and adds the text
+  ahead of the stored passages, which it leaves as they read. It does not re-abstract,
+  re-embeds only the documents it rewrites, and leaves for a later call a document
+  whose source changed since it was indexed or cannot be read, or that has pipeline
+  work in flight. Descriptions change in sage_core_api.openapi.yaml and the MCP tool
+  catalog: migrate_vault names the backfill, list_headings says the empty path may be
+  listed and what it addresses, and DiscoverHit.chunk_content and search say a hit with
+  a null heading_path may be the text before a first heading, read whole by read_section
+  with an empty heading_path. No operation, tool, parameter or response field is added
+  or removed.
+for_callers: >-
+  list_headings can now list an empty path first, and a search hit with a null
+  heading_path can come from a document that has headings: both address the text before
+  the document's first heading, which read_section returns for an empty heading_path.
+  Documents indexed before this release lack that text until an operator runs
+  migrate_vault on each vault, which reports store_text_before_first_heading in
+  backfills_applied and reads each candidate document's source.

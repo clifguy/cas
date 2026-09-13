@@ -2812,8 +2812,11 @@ paths:
         `heading_not_found` error response.
 
 
-        Every returned path is an authored heading, so heading paths in
-        this response are exactly those a caller may pass to `read_section`.
+        Every returned path is one a caller may pass to `read_section`.
+        An authored heading is listed by its path. The empty path, first
+        where present, addresses the text under no heading: the text
+        before the document's first heading, or the whole of a document
+        that has none.
       tags: [Utilities]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -3205,7 +3208,7 @@ paths:
         the registry so subsequent operations observe the new schema.
 
 
-        Five data backfills run, each naming itself in backfills_applied
+        Six data backfills run, each naming itself in backfills_applied
         only when it changed rows. Documents already at a successful
         terminal pipeline_status that still carry the pipeline_error of a
         failure they have since recovered from get that field cleared.
@@ -3225,7 +3228,17 @@ paths:
         documents it rewrites; section reads, heading enumeration and
         projection text read exactly as before. A document with pipeline work
         in flight, or re-indexed or stamped while it is divided, is left for a
-        later call, and the server log names each one. And every passage
+        later call, and the server log names each one. A document indexed
+        before the text above its first heading had a passage of its own
+        gains that passage, addressed by the empty heading path. This is the
+        one backfill that reads sources: it re-projects each candidate
+        through the vault's source binding and adds the text ahead of the
+        passages already stored, which read exactly as before, so every
+        heading path still resolves. Nothing is re-abstracted, and only the
+        documents it rewrites are re-embedded. A document whose source
+        changed since it was indexed or cannot be read, or with pipeline
+        work in flight, is left for a later call, and the server log names
+        each one. And every passage
         gains its structure relative to its document -- its heading path
         with a root element equal to the document title removed -- so a
         title that a source format made the document's top-level heading
@@ -5464,8 +5477,10 @@ components:
             `scored_response_excerpted`: the chunk's first
             `hints.excerpt_chars` characters. A deterministic request
             for the hit's document and `heading_path` returns it whole;
-            where the hit's `heading_path` is null, the passage is the
-            document's whole body, which `read_projection` returns.
+            where the hit's `heading_path` is null, the passage is text
+            under no heading -- the whole body of a document with no
+            headings, or the text before a document's first heading --
+            which `read_section` returns whole for an empty `heading_path`.
         heading_path:
           type: [string, "null"]
           description: >-
