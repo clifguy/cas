@@ -25,7 +25,7 @@ Invariants
 F1  Every property of an enrolled component schema is declared on its interface.
 F2  An enrolled interface declares no property its component schema omits.
 F3  Every allowlist entry names an enrolled interface and a property that still
-    diverges.
+    diverges on the side the entry names.
 F4  Every enrolled interface and component resolves, and enough properties are
     compared to mean something (vacuity floor).
 F5  The comparison fires on a removed declaration, and the staleness check
@@ -55,7 +55,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Final
+from typing import Final, Literal
 
 import pytest
 import yaml
@@ -70,10 +70,16 @@ ENROLLED: Final[dict[str, str]] = {
     "DocumentSummary": "DocumentSummary",
 }
 
-# (interface, property) -> the reason the divergence is kept rather than closed.
+# Which side of a divergence carries the property: published by the schema only, or
+# declared by the interface only.
+Side = Literal["schema_only", "interface_only"]
+
+# (interface, property, side) -> the reason the divergence is kept rather than closed.
+# The side is part of the key so an entry justifying one direction cannot silence
+# the other: a frontend-only field that later becomes schema-only is drift again.
 # Empty by intent: an entry is an admission that the frontend and the published
 # contract disagree about a document's shape, and should be justified in review.
-KNOWN_FRONTEND_TYPE_DIVERGENCE: Final[dict[tuple[str, str], str]] = {}
+KNOWN_FRONTEND_TYPE_DIVERGENCE: Final[dict[tuple[str, str, Side], str]] = {}
 
 # Vacuity floor for F4. The enrolled pairs compare forty-three schema properties
 # today; the floor sits below that so ordinary movement does not trip it, while a
@@ -132,7 +138,8 @@ def _is_punct(token: tuple[str, str], text: str) -> bool:
 def read_interface(source: str, name: str) -> dict[str, bool]:
     """Return the property members of interface ``name`` as ``{property: optional}``.
 
-    Raises ``KeyError`` when no such interface is declared, and
+    The gate compares property names only; the optional flag is reported, not
+    compared. Raises ``KeyError`` when no such interface is declared, and
     ``UnsupportedDeclarationError`` when it is declared more than once or uses
     syntax the reader does not model.
     """
@@ -204,6 +211,10 @@ def _read_members(tokens: list[tuple[str, str]], j: int, name: str) -> dict[str,
             j = colon + 1
             continue
 
+        if depth == 1 and _is_punct(token, "?"):
+            raise UnsupportedDeclarationError(
+                f"interface {name!r}: conditional type or other unmodelled syntax in a member type"
+            )
         if depth == 1:
             member, colon = _member_head(tokens, j)
             if member is not None and colon is not None:
@@ -272,21 +283,29 @@ def divergence(interface_props: set[str], schema_props: set[str]) -> tuple[set[s
 
 
 def stale_entries(
-    allowlist: dict[tuple[str, str], str],
+    allowlist: dict[tuple[str, str, Side], str],
     interface_props: dict[str, set[str]],
     schema_props: dict[str, set[str]],
 ) -> list[str]:
-    """Allowlist entries that name no enrolled interface or no longer diverge."""
+    """Allowlist entries that name no enrolled interface or no longer diverge on their side."""
     stale: list[str] = []
-    for interface, prop in sorted(allowlist):
+    for interface, prop, side in sorted(allowlist):
         if interface not in interface_props or interface not in schema_props:
             stale.append(f"{interface}.{prop}: {interface!r} is not enrolled")
             continue
         schema_only, interface_only = divergence(
             interface_props[interface], schema_props[interface]
         )
-        if prop not in schema_only | interface_only:
-            stale.append(f"{interface}.{prop}: no longer diverges; remove the entry")
+        sides: dict[Side, set[str]] = {"schema_only": schema_only, "interface_only": interface_only}
+        if prop in sides[side]:
+            continue
+        other: Side = "interface_only" if side == "schema_only" else "schema_only"
+        if prop in sides[other]:
+            stale.append(
+                f"{interface}.{prop} ({side}): now diverges as {other}; re-examine the entry"
+            )
+        else:
+            stale.append(f"{interface}.{prop} ({side}): no longer diverges; remove the entry")
     return stale
 
 
@@ -319,9 +338,13 @@ def schema_props(core_spec: dict) -> dict[str, set[str]]:
     }
 
 
-def allowlisted(interface: str, allowlist: dict[tuple[str, str], str]) -> set[str]:
-    """The properties ``allowlist`` exempts on ``interface``, and on no other interface."""
-    return {prop for (name, prop) in allowlist if name == interface}
+def allowlisted(
+    interface: str, side: Side, allowlist: dict[tuple[str, str, Side], str]
+) -> set[str]:
+    """The properties ``allowlist`` exempts on ``interface`` for one side of a divergence."""
+    return {
+        prop for (name, prop, entry_side) in allowlist if name == interface and entry_side == side
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -337,7 +360,9 @@ def test_schema_properties_are_declared_on_the_interface(
 ) -> None:
     """F1: a property the published schema declares is declared on the interface."""
     schema_only, _ = divergence(interface_props[interface], schema_props[interface])
-    missing = sorted(schema_only - allowlisted(interface, KNOWN_FRONTEND_TYPE_DIVERGENCE))
+    missing = sorted(
+        schema_only - allowlisted(interface, "schema_only", KNOWN_FRONTEND_TYPE_DIVERGENCE)
+    )
     assert not missing, (
         f"{ENROLLED[interface]} publishes properties the TypeScript {interface} interface does not "
         f"declare: {missing}. The published schema is authoritative; "
@@ -353,7 +378,9 @@ def test_interface_declares_no_property_absent_from_the_schema(
 ) -> None:
     """F2: a property only the interface declares is not supplied by the wire."""
     _, interface_only = divergence(interface_props[interface], schema_props[interface])
-    extra = sorted(interface_only - allowlisted(interface, KNOWN_FRONTEND_TYPE_DIVERGENCE))
+    extra = sorted(
+        interface_only - allowlisted(interface, "interface_only", KNOWN_FRONTEND_TYPE_DIVERGENCE)
+    )
     assert not extra, (
         f"The TypeScript {interface} interface declares properties {ENROLLED[interface]} does not "
         f"publish: {extra}. Remove them, or add a KNOWN_FRONTEND_TYPE_DIVERGENCE entry naming why "
@@ -385,9 +412,9 @@ def test_enrollment_resolves_and_is_not_vacuous(types_source: str, core_spec: di
 
 def test_gate_fires_when_a_declared_property_is_removed(types_source: str, core_spec: dict) -> None:
     """F5: removing a declaration from the real file surfaces exactly that property."""
-    declaration = "  stored_content_hash: string | null;\n"
-    assert types_source.count(declaration) == 1, "mutation target is not declared exactly once"
-    mutated = types_source.replace(declaration, "")
+    declaration = re.compile(r"^[ \t]*stored_content_hash\??[ \t]*:[^\n]*\n", re.MULTILINE)
+    mutated, removed = declaration.subn("", types_source)
+    assert removed == 1, "mutation target is not declared exactly once"
     assert mutated != types_source
 
     document_only, _ = divergence(
@@ -402,19 +429,21 @@ def test_gate_fires_when_a_declared_property_is_removed(types_source: str, core_
 
 
 def test_stale_check_flags_an_entry_that_no_longer_diverges() -> None:
-    """F5: the staleness check keeps a live entry and flags stale and unenrolled ones."""
+    """F5: the staleness check keeps live entries and flags stale, flipped and unenrolled ones."""
     interface_props = {"Thing": {"shared", "frontend_only"}}
     schema_props = {"Thing": {"shared", "schema_only"}}
-    allowlist = {
-        ("Thing", "frontend_only"): "live",
-        ("Thing", "schema_only"): "live",
-        ("Thing", "shared"): "stale",
-        ("Other", "anything"): "unenrolled",
+    allowlist: dict[tuple[str, str, Side], str] = {
+        ("Thing", "frontend_only", "interface_only"): "live",
+        ("Thing", "schema_only", "schema_only"): "live",
+        ("Thing", "shared", "interface_only"): "stale",
+        ("Thing", "schema_only", "interface_only"): "diverges, but on the other side",
+        ("Other", "anything", "schema_only"): "unenrolled",
     }
     stale = stale_entries(allowlist, interface_props, schema_props)
     assert stale == [
         "Other.anything: 'Other' is not enrolled",
-        "Thing.shared: no longer diverges; remove the entry",
+        "Thing.schema_only (interface_only): now diverges as schema_only; re-examine the entry",
+        "Thing.shared (interface_only): no longer diverges; remove the entry",
     ]
 
 
@@ -430,10 +459,14 @@ def test_component_with_composed_shape_is_refused(keyword: str) -> None:
 
 
 def test_allowlist_exempts_a_property_only_on_the_interface_it_names() -> None:
-    """F1/F2: an entry for one interface does not mask the same property on another."""
-    allowlist = {("Document", "shared"): "reason", ("Document", "only_here"): "reason"}
-    assert allowlisted("Document", allowlist) == {"shared", "only_here"}
-    assert allowlisted("DocumentSummary", allowlist) == set()
+    """F1/F2: an entry exempts its property only on the interface and side it names."""
+    allowlist: dict[tuple[str, str, Side], str] = {
+        ("Document", "frontend_field", "interface_only"): "reason",
+        ("Document", "schema_field", "schema_only"): "reason",
+    }
+    assert allowlisted("Document", "interface_only", allowlist) == {"frontend_field"}
+    assert allowlisted("Document", "schema_only", allowlist) == {"schema_field"}
+    assert allowlisted("DocumentSummary", "interface_only", allowlist) == set()
 
 
 # ---------------------------------------------------------------------------
@@ -495,13 +528,19 @@ def test_reader_refuses_a_heritage_clause() -> None:
 
 
 @pytest.mark.parametrize(
-    "body",
-    ["[k: string]: unknown;", "f(): void;", "g<T>(x: T): T;", "a: string\n  b: number"],
-    ids=["index-signature", "method", "generic-method", "undelimited-member"],
+    ("body", "diagnostic"),
+    [
+        ("[k: string]: unknown;", "index signature"),
+        ("f(): void;", "not a property signature"),
+        ("g<T>(x: T): T;", "not a property signature"),
+        ("a: string\n  b: number", "not delimited"),
+        ("a: T extends U ? A : B;\n  b: string;", "conditional type"),
+    ],
+    ids=["index-signature", "method", "generic-method", "undelimited-member", "conditional-type"],
 )
-def test_reader_refuses_members_it_does_not_model(body: str) -> None:
-    """P7."""
-    with pytest.raises(UnsupportedDeclarationError):
+def test_reader_refuses_members_it_does_not_model(body: str, diagnostic: str) -> None:
+    """P7: each refusal names its own cause."""
+    with pytest.raises(UnsupportedDeclarationError, match=diagnostic):
         read_interface(f"interface X {{\n  {body}\n}}", "X")
 
 
