@@ -74,6 +74,7 @@ from sage.models.schemas import (
     RetrievalFilters,
 )
 from sage.models.wire import to_wire
+from sage.services.passage_split import group_sections, section_text
 from sage.services.read_diagnostics import build_not_found_detail
 from sage.utils.date_parsing import parse_document_date
 from sage.utils.rrf import rrf_fuse
@@ -1698,20 +1699,26 @@ class RetrievalService:
         reported zero correctly.
         """
         seen_docs: dict[str, DiscoverHit] = {}
-        chunk_counts: dict[str, int] = {}
+        # The sections each document's passage rows belong to. A row from a
+        # binding that does not report its section counts as a section of its
+        # own, which is what a tally of rows gave before sections were numbered.
+        sections: dict[str, set[object]] = {}
         carried_counts: dict[str, int] = {}
         surface_sourced: dict[str, bool] = {}
         doc_cache: dict[str, object | None] = {}
         include_content = request.response_mode != ResponseMode.LIGHT
 
-        for result in results:
+        for ordinal, result in enumerate(results):
+            section: object = (
+                result.section_index if result.section_index is not None else ("row", ordinal)
+            )
             # Count additional chunks for already-seen documents. A row can
             # arrive after the one that won the excerpt -- a document's surface
             # ranks above its own passages for a title-shaped query -- so the
             # passage test belongs on both branches, not only the first.
             if result.document_id in seen_docs:
                 if not result.is_document_surface:
-                    chunk_counts[result.document_id] += 1
+                    sections[result.document_id].add(section)
                     # The excerpt belongs to a passage. Where the surface
                     # outranked them the held hit has none, so the document's
                     # best-ranking passage supplies it -- leaving the score
@@ -1762,13 +1769,13 @@ class RetrievalService:
                 relevance_score=result.score,
             )
             seen_docs[result.document_id] = hit
-            chunk_counts[result.document_id] = 0 if result.is_document_surface else 1
+            sections[result.document_id] = set() if result.is_document_surface else {section}
             carried_counts[result.document_id] = result.matched_chunk_count
             surface_sourced[result.document_id] = result.is_document_surface
 
         # Stamp matched_chunk_count on each hit
         for doc_id, hit in seen_docs.items():
-            hit.matched_chunk_count = max(chunk_counts[doc_id], carried_counts[doc_id])
+            hit.matched_chunk_count = max(len(sections[doc_id]), carried_counts[doc_id])
 
         return list(seen_docs.values())
 
@@ -2092,14 +2099,16 @@ class RetrievalService:
 
         summary = DocumentSummary.from_document(doc)
 
+        # One hit per section: a section divided to fit the embedder is
+        # returned as the one section it is, never as its fragments.
         hits = [
             DiscoverHit.from_summary(
                 summary,
-                chunk_content=chunk.content,
-                heading_path=chunk.heading_path,
+                chunk_content=section_text(section),
+                heading_path=section[0].heading_path,
                 relevance_score=None,  # Deterministic mode: no relevance score
             )
-            for chunk in chunks
+            for section in group_sections(chunks)
         ]
 
         return DiscoverResponse(

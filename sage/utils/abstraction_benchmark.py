@@ -49,6 +49,7 @@ from sage.adapters.interfaces import (
     AbstractionProvider,
 )
 from sage.config import VaultAbstractionConfig as AbstractionConfig
+from sage.services.passage_split import join_passages
 from sage.utils.unified_memory import free_unified_memory_bytes, total_unified_memory_bytes
 
 logger = logging.getLogger(__name__)
@@ -686,7 +687,7 @@ async def run_benchmark(
     if warmup_calls > 0 and corpus:
         warmup_chunks = await services.content_store.get_all_chunks(corpus[0].doc_id)
         warmup_body = list(warmup_chunks)
-        warmup_text = "\n\n".join(c.content for c in warmup_body)
+        warmup_text = join_passages(warmup_body)
         warmup_word_count = len(warmup_text.split())
         warmup_max_tokens = compute_max_tokens(warmup_word_count, abstraction_config)
         for _ in range(warmup_calls):
@@ -695,7 +696,7 @@ async def run_benchmark(
     for entry in corpus:
         chunks = await services.content_store.get_all_chunks(entry.doc_id)
         body_chunks = list(chunks)
-        projection_text = "\n\n".join(c.content for c in body_chunks)
+        projection_text = join_passages(body_chunks)
 
         record, verdict, outputs = await measure_with_determinism_check(
             provider=provider,
@@ -807,7 +808,7 @@ async def _assemble_probe_text(services, corpus: list[CatalogEntry], target_char
         entry = corpus[index % len(corpus)]
         chunks = await services.content_store.get_all_chunks(entry.doc_id)
         body = list(chunks)
-        text = "\n\n".join(c.content for c in body)
+        text = join_passages(body)
         index += 1
         if not text:
             # A corpus of entirely empty documents would otherwise spin here.

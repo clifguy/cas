@@ -3062,7 +3062,7 @@ def register_sage_tools(
         pending schema work for this tool to apply and ``columns_added`` is
         always empty.
 
-        Four data backfills run. Documents already at a successful terminal
+        Five data backfills run. Documents already at a successful terminal
         ``pipeline_status`` that still carry the ``pipeline_error`` of a
         failure they have since recovered from get that field cleared.
         Documents whose stored ``source_path`` holds a spelling ingest no
@@ -3073,7 +3073,15 @@ def register_sage_tools(
         source tree has no plain form inside it and is left as recorded;
         ``verify_vault_source_files`` reports those. A vault provisioned before
         document-level text had a retrieval surface of its own has that text
-        moved off its passages onto that surface. And every passage gains its
+        moved off its passages onto that surface. A section longer than the
+        embedding provider's input bound, whose vector therefore represents
+        only its head, is divided into consecutive passages that each fit. The
+        division works from the stored passages -- no source is read and
+        nothing is re-abstracted -- and re-embeds only the documents it
+        rewrites; section reads, heading enumeration and projection text read
+        exactly as before. A document with pipeline work in flight, or re-indexed
+        or stamped while it is divided, is left for a later call, and the server
+        log names each one. And every passage gains its
         structure relative to its document -- its heading path with a root
         element equal to the document title removed -- so a title that a source
         format made the document's top-level heading stops being indexed into
@@ -3083,13 +3091,15 @@ def register_sage_tools(
         before.
         ``backfills_applied`` names each backfill only when it changed rows, so
         a vault with nothing to repair reports an empty list. Idempotent: a
-        re-call after a repair reports nothing further and no error.
+        re-call after a repair reports nothing further and no error, except that
+        a call dividing a document an earlier call left names that backfill
+        again.
 
         **The last backfill is expensive and exclusive, and runs once.** It
         rewrites the passage table and rebuilds every index over it, including
         the vector index over the embeddings, which dominates the cost: expect
         minutes of exclusive access on a vault holding tens of thousands of
-        passages. Nothing is re-embedded.
+        passages. That backfill re-embeds nothing.
 
         tier3 uniqueness activation: every ``unique_keys`` declaration in
         vault config is scanned. Clean declarations get partial UNIQUE

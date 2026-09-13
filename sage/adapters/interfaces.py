@@ -109,6 +109,11 @@ NON_CANONICAL_SOURCE_PATH_PATTERN = r"(^|/)[.](/|$)|//|/$"
 HEADING_PATH_SEPARATOR = " > "
 
 
+# A passage's stored state as a replacement overwrites it: heading path,
+# content, indexed structure, and the document scalars stamped on the row.
+PassageState = tuple[str, str, str | None, str | None, str | None, str | None]
+
+
 @dataclass
 class Chunk:
     """A chunk of document content for indexing.
@@ -135,6 +140,14 @@ class Chunk:
     unique within one, and a passage may carry none). Two passages sharing an
     index re-open a tie the orderings are stated to have closed, and no schema
     constraint catches it.
+
+    ``section_index`` names the section a passage belongs to. A section longer
+    than the embedding provider's input bound is stored as several consecutive
+    passages sharing its heading path and its section index, each a contiguous
+    slice of the section's text; a read that returns text or structure treats
+    them as the one section. ``None`` marks a passage written before sections
+    were numbered, which is a section of its own and is identified by its
+    ``chunk_index``.
     """
 
     document_id: str
@@ -146,6 +159,32 @@ class Chunk:
     lifecycle_status: str | None = None
     project: str | None = None
     indexed_structure: str | None = None
+    section_index: int | None = None
+
+    @property
+    def section_key(self) -> int:
+        """The section this passage belongs to.
+
+        A passage written before sections were numbered is a section of its
+        own, so its position in the document identifies it.
+        """
+        return self.section_index if self.section_index is not None else self.chunk_index
+
+    @property
+    def stored_state(self) -> PassageState:
+        """Every column a passage replacement overwrites, embedding aside.
+
+        A snapshot: a tuple taken at read time does not change when a writer
+        later updates the row, which is what lets a caller compare against it.
+        """
+        return (
+            self.heading_path,
+            self.content,
+            self.indexed_structure,
+            self.doc_type,
+            self.lifecycle_status,
+            self.project,
+        )
 
 
 @dataclass
@@ -196,6 +235,13 @@ class SearchResult:
     ``heading_path`` does not imply it -- a document with no headings has a
     genuine passage whose path is empty -- and a zero ``matched_chunk_count``
     does not survive rank fusion, which reconciles counts across arms.
+
+    ``matched_chunk_count`` counts sections, not stored passages: a section the
+    index divided to fit the embedder counts once however many of its passages
+    matched. ``section_index`` identifies the row's section for a caller
+    tallying rows itself -- the heading path cannot, since two sections can
+    render the same one -- and is ``None`` on a document-level row and wherever
+    a binding does not report it.
     """
 
     document_id: str
@@ -204,6 +250,7 @@ class SearchResult:
     score: float
     matched_chunk_count: int = 1
     is_document_surface: bool = False
+    section_index: int | None = None
 
 
 @dataclass(frozen=True)
@@ -250,6 +297,27 @@ class ContentStore(ABC):
     @abstractmethod
     async def index_chunks(self, document_id: str, chunks: list[Chunk]) -> None:
         """Store embedded chunks for a document."""
+
+    @abstractmethod
+    async def replace_chunks_if_unchanged(
+        self,
+        document_id: str,
+        expected: Sequence[PassageState],
+        chunks: list[Chunk],
+    ) -> bool:
+        """Replace a document's passages only if they still read as ``expected``.
+
+        ``expected`` is the document's passages as ``Chunk.stored_state``
+        snapshots in document order, as the caller read them -- every column the
+        replacement overwrites, so a stamp as well as a re-index is detected.
+        The comparison and the replacement are one step, excluding every other
+        per-document writer of the document's passages for its duration, so a
+        write landing after the caller's read is never overwritten: the
+        replacement is refused instead.
+
+        Returns:
+            Whether the passages were replaced.
+        """
 
     @abstractmethod
     async def upsert_document_surface(self, surface: DocumentSurface) -> None:
@@ -329,6 +397,17 @@ class ContentStore(ABC):
     # address indexes the whole heading path at the top ranking weight, and
     # carries no derived structure at all. These three repair that, and have no
     # caller outside the migration.
+
+    @abstractmethod
+    async def documents_with_passages_longer_than(self, byte_bound: int) -> list[str]:
+        """Return the ids of documents holding a passage over ``byte_bound`` bytes.
+
+        A passage's length is its heading path and its content together, in
+        UTF-8 bytes, which is what bounds the tokens its embedding input can
+        occupy. Only passages are measured; a document-level row is not one.
+        The result is a set of candidates for division, not a verdict: a
+        passage over the byte bound may still fit its embedder's token bound.
+        """
 
     @abstractmethod
     async def passages_awaiting_indexed_structure(self) -> list[tuple[str, str]]:
@@ -589,6 +668,28 @@ class EmbeddingProvider(ABC):
     @abstractmethod
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts. Returns list of embedding vectors."""
+
+    @property
+    @abstractmethod
+    def max_input_tokens(self) -> int:
+        """The longest input, in tokens, whose every token reaches the vector.
+
+        Input past this bound is truncated before inference, so text beyond it
+        is invisible to similarity. Chunking reads the bound from here rather
+        than restating it, so a provider change cannot leave the two
+        disagreeing.
+        """
+
+    @abstractmethod
+    def count_tokens(self, text: str) -> int:
+        """The number of tokens ``text`` occupies in the input window.
+
+        Counted as inference counts it, including any tokens the provider adds
+        around the text, so ``count_tokens(text) <= max_input_tokens`` holds
+        exactly when the whole of ``text`` is embedded. A binding's count never
+        exceeds the text's UTF-8 byte length plus two, which is what lets a
+        caller skip counting text that plainly fits.
+        """
 
 
 class AbstractionProvider(ABC):
