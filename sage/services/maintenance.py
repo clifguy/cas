@@ -502,9 +502,11 @@ class MaintenanceService:
         reads sources, re-projecting each candidate through the vault-source
         binding. A candidate is a document an adapter version older than the first
         to report that text projected, and each one examined is stamped with the
-        examining version, so no source is read twice. The text is added ahead of
-        the passages already stored, which are kept as they read; nothing is
-        re-abstracted, and only a document it rewrites is re-embedded.
+        examining version, so no source is read twice. Stored passages that differ
+        from the ones the examining adapter writes are replaced by them -- ordinarily
+        only by adding the new passage, but also correcting a passage an older
+        adapter shaped differently; nothing is re-abstracted, and only a document it
+        rewrites is re-embedded.
 
         Returns:
             The number of documents rewritten -- zero on a vault with nothing to

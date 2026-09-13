@@ -3191,10 +3191,10 @@ class IngestionService:
         candidates are the documents an adapter version older than the first to
         report that text projected, and whose stored passages include headings but
         no passage under none: a document without headings already stores its
-        whole text under the empty heading path. Only a candidate whose projection
-        carries such text is rewritten, and every candidate whose source is
-        examined is stamped with the adapter version that examined it, so a later
-        run reads no source it has already read.
+        whole text under the empty heading path. A candidate's passages are
+        rebuilt from the fresh projection wherever they differ from it, and every
+        candidate whose source is examined is stamped with the adapter version
+        that examined it, so a later run reads no source it has already read.
 
         Returns:
             The number of documents whose passages were rewritten.
@@ -3215,34 +3215,38 @@ class IngestionService:
         vault_source_store = resolve_stack_vault_source_store(get_stack_config())
         rewritten = 0
         for doc in candidates:
-            if await self._store_stored_preamble(doc, vault_source_store):
+            if await self._bring_passages_current(doc, vault_source_store):
                 rewritten += 1
         return rewritten
 
-    async def _store_stored_preamble(
+    async def _bring_passages_current(
         self, doc: Document, vault_source_store: "VaultSourceStore"
     ) -> bool:
-        """Add a document's text before its first heading to its stored passages.
+        """Make a document's stored passages the ones its adapter now writes.
 
-        The passages already stored are kept exactly as they read -- heading
-        paths, content and derived fields -- and the text is added ahead of them
-        as the section a fresh ingest writes first, so every section read and
-        heading enumeration answers as before apart from the new empty path. The
-        abstract was generated from the projection's whole text and is left as it
-        is; the document's passages are re-embedded together, since they are
-        replaced together.
+        The source is re-projected and chunked exactly as ingest chunks it. Where
+        the stored passages already read as that result, nothing is written.
+        Otherwise the fresh passages replace them: ordinarily the only difference
+        is the text before the first heading, added as the first passage with
+        every other heading path, section and passage unchanged, but passages an
+        older adapter shaped differently -- a heading it mistook, content it
+        rendered otherwise -- are corrected too, which is what makes the version
+        stamp afterwards true of all of them. The abstract was generated from the
+        projection's whole text and is left as it is; the document's passages are
+        re-embedded together, since they are replaced together.
 
         The source must still be the one the passages were projected from: a
-        source whose bytes changed since is skipped, since adding new text above
-        old passages would store a document that never existed, and so is a
-        source that cannot be projected, or that no adapter is registered to
-        project. Each skip is logged with its reason and leaves the document's
-        adapter version as it was, so a later run examines it again.
+        source whose bytes changed since is skipped, since rebuilding from it would
+        store a document that was never indexed, and so is a source that cannot
+        be projected, or that no adapter is registered to project. Each skip is
+        logged with its reason and leaves the document's adapter version as it
+        was, so a later run examines it again.
 
         The migration excludes pipeline work, so only a metadata stamp can reach
         the document meanwhile; the passages are read and rewritten under the
-        lock stamps take, as the division above does. The source is projected
-        before that lock is taken, since projection can be slow.
+        lock stamps take, as the division above does, and the rewrite carries the
+        scalars stamped on the rows it read. The source is projected before that
+        lock is taken, since projection can be slow.
 
         Returns:
             Whether the passages were rewritten.
@@ -3269,47 +3273,33 @@ class IngestionService:
             return self._preamble_skipped(
                 document_id, "source differs from the one its passages hold"
             )
-        if not projection.headings or not projection.preamble.strip():
-            await self._stamp_examined(document_id, adapter.VERSION)
-            return False
+        fresh = self._chunk_projection(document_id, projection)
 
         async with self._locks.lock(document_id):
             stored = await self._content_store.get_all_chunks(document_id)
-            # Candidacy was read before the projection; passages that hold the
-            # text by now must not be given it twice.
-            if not stored or any(chunk.heading_path == "" for chunk in stored):
+            if not stored or [(c.heading_path, c.content) for c in fresh] == [
+                (c.heading_path, c.content) for c in stored
+            ]:
                 await self._stamp_examined(document_id, adapter.VERSION)
                 return False
-            sections = group_sections(stored)
-            rebuilt = self._passages_for_sections(
-                document_id,
-                [("", projection.preamble)]
-                + [(section[0].heading_path, section_text(section)) for section in sections],
-            )
-            for chunk in rebuilt:
-                if chunk.section_key == 0:
-                    origin = stored[0]
-                    chunk.indexed_structure = indexed_structure("", doc.title)
-                else:
-                    origin = sections[chunk.section_key - 1][0]
-                    chunk.indexed_structure = origin.indexed_structure
-                chunk.doc_type = origin.doc_type
-                chunk.lifecycle_status = origin.lifecycle_status
-                chunk.project = origin.project
+            for chunk in fresh:
+                chunk.indexed_structure = indexed_structure(chunk.heading_path, doc.title)
+                chunk.doc_type = stored[0].doc_type
+                chunk.lifecycle_status = stored[0].lifecycle_status
+                chunk.project = stored[0].project
             embeddings = await self._embedding.embed(
-                [embedding_input(c.heading_path, c.content) for c in rebuilt]
+                [embedding_input(c.heading_path, c.content) for c in fresh]
             )
-            for chunk, embedding in zip(rebuilt, embeddings):
+            for chunk, embedding in zip(fresh, embeddings):
                 chunk.embedding = embedding
-            await self._content_store.index_chunks(document_id, rebuilt)
+            await self._content_store.index_chunks(document_id, fresh)
         await self._stamp_examined(document_id, adapter.VERSION)
         return True
 
     async def _stamp_examined(self, document_id: str, adapter_version: str) -> None:
-        """Record that ``adapter_version`` examined the document's source.
+        """Record that the stored passages are what ``adapter_version`` writes.
 
-        Its stored passages now hold whatever text that version reports before
-        the first heading, which is what the candidate filter reads.
+        The candidate filter reads this, so a document it records is not read again.
         """
         await self._store.update_document(document_id, {"adapter_version": adapter_version})
 

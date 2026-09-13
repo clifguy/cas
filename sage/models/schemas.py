@@ -461,7 +461,11 @@ class Document(BaseModel):
         ),
     )
     adapter_version: str = Field(
-        description="Version of the source adapter used at last ingestion."
+        description=(
+            "Version of the source adapter whose output the document's stored passages "
+            "are: the adapter of its last ingestion, or of a later migrate_vault that "
+            "brought the passages current with that adapter."
+        )
     )
     created_by: str = Field(
         description="User ID of the actor (human or agent) that created this document."

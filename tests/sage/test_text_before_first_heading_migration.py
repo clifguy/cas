@@ -30,12 +30,19 @@ from sage.services.maintenance import BACKFILL_TEXT_BEFORE_FIRST_HEADING, Mainte
 from sage.services.retrieval import RetrievalService
 from sage.services.utilities import UtilitiesService
 from sage.source_adapters.base import ProjectionResult
+from sage.source_adapters.docx_adapter import DocxAdapter
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.source_adapters.pdf_adapter import PdfAdapter
 from sage.storage.postgres.schema import EMBEDDING_DIM
 from sage.vault_source_binding import FilesystemVaultSourceStore
 from tests.helpers.pipeline_wait import await_pipeline_idle
-from tests.sage.test_adapters import _make_pdf_with_outline, _make_pdf_with_pages, requires_pdf
+from tests.sage.test_adapters import (
+    _add_table,
+    _make_pdf_with_outline,
+    _make_pdf_with_pages,
+    requires_docx,
+    requires_pdf,
+)
 
 pytestmark = pytest.mark.asyncio
 
@@ -81,7 +88,7 @@ class _CountingAbstraction(StubAbstractionProvider):
 
 # The version each seeding adapter reports: the last before its adapter began
 # reporting text before the first heading, which documents indexed then carry.
-_EARLIER_VERSION = {MarkdownAdapter: "0.5.0", PdfAdapter: "0.5.0"}
+_EARLIER_VERSION = {MarkdownAdapter: "0.5.0", DocxAdapter: "0.4.0", PdfAdapter: "0.5.0"}
 
 
 def _observed(base: type, *, withhold: bool):
@@ -128,6 +135,7 @@ class Vault:
         """Swap in the adapters as shipped, each recording what it projects."""
         adapters = {
             SourceType.MARKDOWN: _observed(MarkdownAdapter, withhold=False),
+            SourceType.DOCX: _observed(DocxAdapter, withhold=False),
             SourceType.PDF: _observed(PdfAdapter, withhold=False),
         }
         self.ingestion._adapters = adapters
@@ -172,6 +180,7 @@ async def vault(
         config=minimal_config,
         source_adapters={
             SourceType.MARKDOWN: _observed(MarkdownAdapter, withhold=True),
+            SourceType.DOCX: _observed(DocxAdapter, withhold=True),
             SourceType.PDF: _observed(PdfAdapter, withhold=True),
         },
         lifecycle_service=lifecycle_service,
@@ -517,3 +526,84 @@ async def test_a_document_with_no_adapter_to_project_it_is_skipped_and_logged(va
         led in message and "not stored by migrate_vault" in message and "adapter" in message
         for message in messages
     ), messages
+
+
+async def test_passages_an_older_adapter_shaped_differently_are_rebuilt(vault):
+    """An older markdown adapter read a front-matter block's closing rule as a
+    setext heading, filing the paragraph after it under that heading. The shipped
+    adapter reports the paragraph as the text before the first heading, so adding
+    it ahead of the stored passages would store it twice. The passages are rebuilt
+    from the fresh projection instead, which is also what makes the version stamp
+    true of them."""
+    source = "---\ntitle: Probe\nstatus: active\n---\n\nIntro sentinel paragraph.\n\n" + BODY
+    led = await vault.ingest("front.md", source.encode(), SourceType.MARKDOWN)
+    stale = [
+        Chunk(
+            document_id=led,
+            heading_path="title: Probe\nstatus: active",
+            content="## title: Probe\nstatus: active\n\nIntro sentinel paragraph.",
+            embedding=[0.25] * EMBEDDING_DIM,
+            chunk_index=0,
+            section_index=0,
+        ),
+        *(
+            Chunk(
+                document_id=led,
+                heading_path=path,
+                content=content,
+                embedding=[0.25] * EMBEDDING_DIM,
+                chunk_index=index,
+                section_index=index,
+            )
+            for index, (path, content) in enumerate(
+                [("Guide", "# Guide\n\nGuide body."), ("Guide > Part", "## Part\n\nPart body.")],
+                start=1,
+            )
+        ),
+    ]
+    await vault.store.index_chunks(led, stale)
+    await vault.graph_store.update_document(led, {"adapter_version": "0.4.0"})
+    doc = await vault.graph_store.get_document(led)
+    expected = vault.ingestion._chunk_projection(
+        led, await MarkdownAdapter().project(vault.root / "sources" / doc.source_path)
+    )
+    vault.ship_adapters()
+
+    report = await vault.migrate()
+
+    assert BACKFILL_TEXT_BEFORE_FIRST_HEADING in report.backfills_applied
+    after = await vault.store.get_all_chunks(led)
+    assert [(c.heading_path, c.content) for c in after] == [
+        (c.heading_path, c.content) for c in expected
+    ]
+    assert sum(c.content.count("Intro sentinel") for c in after) == 1
+    assert await vault.store.get_heading_paths(led) == ["", "Guide", "Guide > Part"]
+    assert (await vault.graph_store.get_document(led)).adapter_version == MarkdownAdapter.VERSION
+
+
+@requires_docx
+async def test_a_docx_document_an_earlier_adapter_projected_is_recovered(vault, tmp_path):
+    import docx
+
+    built = docx.Document()
+    built.add_paragraph("Handbook Title", style="Title")
+    built.add_paragraph("Opening paragraph gamma.")
+    _add_table(built, [["Site", "Room"], ["Larkspur", "12"]])
+    built.add_paragraph("Overview", style="Heading 1")
+    built.add_paragraph("Overview body.")
+    path = tmp_path / "lead.docx"
+    built.save(str(path))
+    led = await vault.ingest("lead.docx", path.read_bytes(), SourceType.DOCX)
+    before = await vault.store.get_all_chunks(led)
+    assert "" not in [c.heading_path for c in before], "control: seeded without the passage"
+    assert (await vault.graph_store.get_document(led)).adapter_version == "0.4.0"
+    adapters = vault.ship_adapters()
+
+    report = await vault.migrate()
+
+    assert adapters[SourceType.DOCX].projected == ["lead.docx"]
+    assert BACKFILL_TEXT_BEFORE_FIRST_HEADING in report.backfills_applied
+    first = (await vault.store.get_all_chunks(led))[0]
+    assert first.heading_path == ""
+    assert "gamma" in first.content and "Larkspur" in first.content
+    assert (await vault.graph_store.get_document(led)).adapter_version == DocxAdapter.VERSION

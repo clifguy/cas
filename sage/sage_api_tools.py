@@ -3097,11 +3097,14 @@ def register_sage_tools(
         empty heading path. This is the one backfill that reads sources: it
         re-projects, through the vault's source binding, each document an
         adapter version older than the first to report that text projected, and
-        adds the text ahead of the passages already stored, which read exactly
-        as before, so every heading path still resolves. Each examined document
-        is stamped with the adapter version that examined it, so a source is
-        read once rather than on every call. Nothing is re-abstracted, and only
-        the documents it rewrites are re-embedded. A document whose source
+        replaces its stored passages with the ones that adapter writes wherever
+        the two differ. Ordinarily the only difference is the new passage, and
+        every other heading path and section reads exactly as before; a passage
+        an older adapter shaped differently, such as a heading it mistook, is
+        corrected. Each examined document is stamped with the adapter version
+        that examined it, so a source is read once rather than on every call.
+        Nothing is re-abstracted, and only the documents it rewrites are
+        re-embedded. A document whose source
         changed since it was indexed or cannot be read is skipped, unstamped,
         and the server log names each one. And every passage gains its
         structure relative to its document -- its heading path with a root

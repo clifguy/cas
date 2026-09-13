@@ -15,17 +15,21 @@ summary: >-
   migrate_vault gains a sixth backfill, store_text_before_first_heading, the one that
   reads sources: it re-projects each markdown, docx and PDF document that an adapter
   version older than the fix projected and whose stored passages include headings but
-  none under the empty path, and adds the text ahead of the stored passages, which it
-  leaves as they read. Each examined document is stamped with the examining adapter
-  version (adapter_version), so a source is read once across calls rather than on
-  every call. It does not re-abstract, re-embeds only the documents it rewrites, and
+  none under the empty path, and replaces its stored passages with the ones the shipped
+  adapter writes wherever they differ. Ordinarily that adds only the new passage;
+  passages an older adapter shaped differently (a heading it mistook, as an early
+  markdown adapter did with a front-matter rule) are corrected, so their heading paths
+  change. Each examined document is stamped with the examining adapter version, and
+  adapter_version's description in sage_core_api.openapi.yaml and the Document model
+  now says what that value means: the adapter whose output the stored passages are.
+  A source is therefore read once across calls rather than on every call. It does not re-abstract, re-embeds only the documents it rewrites, and
   skips, logging the reason and leaving the stamp unchanged, a document whose source
   changed since it was indexed or cannot be read. It runs inside the migration's
   vault-level exclusion of pipeline work and rewrites each document under the
   per-document lock metadata stamps take. Descriptions change in
   sage_core_api.openapi.yaml and the MCP tool catalog: migrate_vault names the
-  backfill, list_headings says the empty path may be listed and what it addresses, and DiscoverHit.chunk_content and search say a hit with
-  a null heading_path may be the text before a first heading, read whole by read_section
+  backfill, list_headings says the empty path may be listed and what it addresses,
+  and DiscoverHit.chunk_content and search say a hit with a null heading_path may be the text before a first heading, read whole by read_section
   with an empty heading_path. No operation, tool, parameter or response field is added
   or removed.
 for_callers: >-
