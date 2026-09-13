@@ -141,6 +141,10 @@ KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
         )
         for mode in ("semantic", "keyword")
     },
+    "tests/test_pipeline_poll_discipline.py::test_no_fixture_yields_an_unsettled_document": (
+        "renamed test_no_fixture_hands_off_an_unsettled_document when the unwaited-fixture "
+        "arm began anchoring on return and completion as well as yield"
+    ),
 }
 
 
