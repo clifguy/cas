@@ -176,3 +176,103 @@ async def test_post_maintenance_optimize_content_store_default_days_is_7(mainten
     entry = json.loads(lines[-1])
     assert entry["operation"] == "optimize_vault_content_store"
     assert entry["cleanup_older_than_days"] == 7
+
+
+# ============================================================================
+# verify_vault_source_files route tests
+# ============================================================================
+
+
+async def _seed_two_documents(maintenance_app) -> tuple[str, str]:
+    """One intact document and one whose retained file is missing, inserted
+    through the vault's own graph store. Returns ``(intact_id, missing_id)``."""
+    from tests.sage.test_maintenance_service import _sha256_of, _src_doc, _write_source
+
+    app, vault_id, _content_store, _vault_dir = maintenance_app
+    maint = app.state.vault_registry[vault_id].maintenance_service
+    config = maint._config
+    for did, present in (("aaaaaaaa_rest", True), ("bbbbbbbb_rest", False)):
+        sp = f"imports/{did}.md"
+        body = f"{did} body".encode()
+        if present:
+            _write_source(config, sp, body)
+        await maint._graph_store.insert_document(_src_doc(did, _sha256_of(body), source_path=sp))
+    return "aaaaaaaa_rest", "bbbbbbbb_rest"
+
+
+async def test_post_verify_source_files_scope_reaches_the_service(maintenance_app):
+    """A ``document_ids`` scope in the request body bounds the report.
+
+    Anti-coincidental-pass: the vault holds a second document whose file is
+    missing, so a route that passed only ``check_hashes`` would audit both and
+    report two documents checked with one missing. The route forwards both body
+    fields, so the report's ``check_hashes`` is asserted too: a route that
+    forwarded the scope and dropped the hash flag would otherwise pass.
+    """
+    from sage.models.schemas import SourceFileIntegrityReport
+
+    app, vault_id, _content_store, _vault_dir = maintenance_app
+    intact_id, _missing_id = await _seed_two_documents(maintenance_app)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/maintenance/verify-source-files",
+            json={"check_hashes": True, "document_ids": [intact_id]},
+        )
+
+    assert resp.status_code == 200, resp.text
+    report = SourceFileIntegrityReport.model_validate(resp.json())
+    assert report.total_documents_checked == 1
+    assert report.check_hashes is True
+    assert report.entries == []
+
+
+async def test_post_verify_source_files_unmatched_scope_returns_404(maintenance_app):
+    """A scope naming an id with no document is refused with the typed 404."""
+    app, vault_id, _content_store, _vault_dir = maintenance_app
+    intact_id, _missing_id = await _seed_two_documents(maintenance_app)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/maintenance/verify-source-files",
+            json={"document_ids": [intact_id, "deadbeef_absent"]},
+        )
+
+    assert resp.status_code == 404, resp.text
+    body = resp.json()
+    assert body["code"] == "document_scope_unmatched"
+    assert body["detail"] == {"unmatched_ids": ["deadbeef_absent"]}
+
+
+@pytest.mark.parametrize(
+    ("document_ids", "status", "code"),
+    [
+        (["not a document id!"], 400, "invalid_document_id"),
+        ([], 422, "invalid_parameter"),
+    ],
+)
+async def test_post_verify_source_files_rejects_malformed_or_empty_scope(
+    maintenance_app, document_ids, status, code
+):
+    """A malformed id or an empty scope is refused at the request boundary.
+
+    Anti-coincidental-pass: a route that accepted the body unvalidated would
+    answer both with a 200 report -- an empty scope as a clean report over no
+    documents, which is the outcome the at-least-one rule exists to prevent.
+    """
+    app, vault_id, _content_store, _vault_dir = maintenance_app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/maintenance/verify-source-files",
+            json={"document_ids": document_ids},
+        )
+
+    assert resp.status_code == status, resp.text
+    body = resp.json()
+    assert body["code"] == code
+    if code == "invalid_parameter":
+        assert body["detail"]["parameter"] == "document_ids"

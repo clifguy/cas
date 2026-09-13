@@ -1154,6 +1154,26 @@ class SourceFileNotFoundError(SAGEError):
         )
 
 
+class DocumentScopeUnmatchedError(SAGEError):
+    """404: a document scope names ids with no document in the vault.
+
+    Refused rather than narrowed: auditing only the ids that matched would
+    return a report the caller reads as covering everything it asked about,
+    and a misspelled id would yield a clean report over nothing. ``detail``
+    carries the unmatched ids, sorted, so the caller can correct exactly those.
+    """
+
+    def __init__(self, unmatched_ids: list[str]) -> None:
+        ordered = sorted(unmatched_ids)
+        super().__init__(
+            "document_scope_unmatched",
+            f"No document in the vault matches {len(ordered)} of the scoped ids: "
+            f"{', '.join(ordered)}",
+            404,
+            {"unmatched_ids": ordered},
+        )
+
+
 class RestoreTargetUnresolvedError(SAGEError):
     """404: no single document claims the delivered bytes as its provenance.
 

@@ -594,11 +594,11 @@ def _check_source_audit(ctx: _Context) -> tuple[str, str]:
     expects.
 
     Scoped to this run's probes, and deliberately so. The audit covers the whole
-    vault, but the vault this driver runs against is a disposable validation
-    corpus that accumulates the residue of every previous run: a whole-vault
-    verdict here would report on documents this validation neither created nor
-    can repair, and one such document would red every subsequent run for good.
-    What the driver ingested is what it can honestly speak for.
+    vault by default, but the vault this driver runs against is a disposable
+    validation corpus that accumulates the residue of every previous run: a
+    whole-vault verdict here would report on documents this validation neither
+    created nor can repair, and one such document would red every subsequent run
+    for good. What the driver ingested is what it can honestly speak for.
 
     The verdict is taken from ``entries`` membership rather than from any
     per-status count. The audit reports a document by naming it, and names it
@@ -606,24 +606,22 @@ def _check_source_audit(ctx: _Context) -> tuple[str, str]:
     the summary instead would hold a copy of that list, and would pass silently
     on any status added after this line was written.
 
-    A cost worth knowing before it surprises someone: the *verdict* is scoped to
-    two documents, but the *work* is not. The audit walks every document in the
-    vault, and with hash checking on, each one costs the store a metadata read
-    plus a full streamed download. Each run adds two documents permanently --
-    there is no delete route on this API -- so the walk grows by two per run and
-    is paid twice, once per phase. Far enough out that is a timeout on a healthy
-    deployment, which will read as a store outage rather than as accumulated
-    residue. The request carries no way to scope the work from the client, so
-    bounding it needs a purge capability the store side does not yet offer.
+    The *work* is scoped the same way. The request names the probes as the
+    audit's ``document_ids``, and the server consults the store for those alone,
+    so with hash checking on each phase costs two metadata reads and two streamed
+    downloads however much residue the vault holds. The verdict is still read from
+    ``entries`` membership rather than trusted to the scope, so a server that
+    ignored it would cost more but could not red this check over another document.
     """
     probe_ids = ctx.probe_ids()
     if len(probe_ids) < len(ctx.probes) or not probe_ids:
         return _FAIL, "no_probe_state"
+    request = {"check_hashes": True, "document_ids": sorted(probe_ids.values())}
     status, raw = _http(
         ctx,
         "POST",
         ctx.vault_url("/maintenance/verify-source-files"),
-        data=json.dumps({"check_hashes": True}).encode("utf-8"),
+        data=json.dumps(request).encode("utf-8"),
         content_type="application/json",
     )
     if status != 200:

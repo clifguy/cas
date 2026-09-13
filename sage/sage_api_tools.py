@@ -52,6 +52,7 @@ from sage.models.schemas import (
     IngestRequest,
     RetrievalFilters,
     Sha256Str,
+    SourceFileIntegrityRequest,
     TraverseRequest,
     UpdateVaultConfigRequest,
     VaultIdStr,
@@ -75,6 +76,7 @@ _DOCUMENT_DATE_ADAPTER: TypeAdapter[str | None] = TypeAdapter(DocumentDateStr)
 # wraps the sequence rather than the alias. Validation is whole-argument: one
 # unusable entry fails the call rather than being dropped from the batch.
 _SHA256_LIST_ADAPTER: TypeAdapter[list[str]] = TypeAdapter(list[Sha256Str])
+_DOCUMENT_ID_LIST_ADAPTER: TypeAdapter[list[str]] = TypeAdapter(list[DocumentIdStr])
 
 
 def _check_legacy_patch_form(field: str, value: object) -> None:
@@ -3172,7 +3174,9 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool(name="verify_vault_source_files", annotations=READ_ONLY)
-    async def verify_vault_source_files(vault_id: str, check_hashes: bool = False) -> dict:
+    async def verify_vault_source_files(
+        vault_id: str, check_hashes: bool = False, document_ids: list[str] | None = None
+    ) -> dict:
         """Audit that every document's backing source file is present.
 
         Walks every document in the vault and checks that its
@@ -3181,6 +3185,13 @@ def register_sage_tools(
         ``entries`` enumerate documents whose source file is missing;
         documents with an intact source file are absent. Read-only —
         mutates nothing.
+
+        ``document_ids`` restricts the audit to the named documents: the
+        store is consulted for those alone, and the report's counts describe
+        that set rather than the vault. Omitted, every document is audited.
+        A scope naming an id with no document is refused with
+        ``document_scope_unmatched`` rather than narrowed, so a misspelled
+        id never yields a clean report over fewer documents than were named.
 
         When ``check_hashes`` is true, each present file's SHA-256 is
         recomputed and compared against the digest recorded for the
@@ -3223,7 +3234,11 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``invalid_document_id`` (400): an entry in ``document_ids`` is not
+          a well-formed document id.
         - ``vault_not_found`` (404): no vault registered with that id.
+        - ``document_scope_unmatched`` (404): ``document_ids`` names an id with
+          no document in the vault; ``detail.unmatched_ids`` lists every such id.
         - ``vault_source_store_refused`` (502): the store declined the operation
           on its merits -- quota, a permission it withdrew, a reply that could
           not be used. Resolve it at the store before retrying;
@@ -3241,9 +3256,17 @@ def register_sage_tools(
             vault_id: Target vault identifier.
             check_hashes: Recompute and compare on-disk hashes when true;
                 existence check only when false (default).
+            document_ids: Audit only these documents, in any lifecycle
+                state. At least one id; omit to audit the whole vault.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            if document_ids is not None:
+                document_ids = _DOCUMENT_ID_LIST_ADAPTER.validate_python(document_ids)
+                # The request model carries the scope's remaining constraint --
+                # at least one id -- so an empty scope is refused here by the
+                # same rule, and naming the same parameter, as on the REST body.
+                SourceFileIntegrityRequest(document_ids=document_ids)
             v = get_vault(vault_id)
             if v.maintenance_service is None:
                 raise RuntimeError(
@@ -3251,7 +3274,7 @@ def register_sage_tools(
                     "registry_service; maintenance_service is unavailable."
                 )
             report = await v.maintenance_service.verify_vault_source_files(
-                check_hashes=check_hashes
+                check_hashes=check_hashes, document_ids=document_ids
             )
             return serialize(report)
         except (SAGEError, ValueError) as e:

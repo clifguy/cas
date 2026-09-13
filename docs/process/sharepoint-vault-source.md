@@ -283,22 +283,20 @@ is a timing artifact and worth a ticket against the ingest-time capture rather
 than an investigation of the store.
 
 `source_audit` runs `verify_vault_source_files` (`POST
-.../maintenance/verify-source-files`, `check_hashes=true`) and confirms **both probes**
+.../maintenance/verify-source-files`, `check_hashes=true`, `document_ids` set to the
+two probe ids) and confirms **both probes**
 are healthy — present, not a link, inside the source tree, and hashing to what the
 record expects. It is scoped to this run's probes: the validation vault
 accumulates the residue of every previous run, and a whole-vault verdict would
 hand the check a permanent red over a document it neither created nor can repair.
 
-**Residue grows, and the audit's cost grows with it.** The verdict is scoped to
-two documents; the work is not. The audit walks every document in the vault, and
-with `check_hashes=true` each one costs a metadata read plus a full streamed
-download from the library. Each run adds two documents permanently — the API has
-no document delete route — so the walk grows by two per run and is paid twice,
-once per phase. Far enough out that becomes a timeout on a perfectly healthy
-tenant, and it will present as a SharePoint outage rather than as accumulated
-residue. If the audit check starts running long, check the vault's document count
-before suspecting the store. Bounding this needs a purge on the maintenance
-surface, which does not exist yet.
+**Residue costs the check nothing.** The scope bounds the work as well as the
+verdict: the audit consults the library for the two named probes alone, so each
+phase costs two metadata reads and two streamed downloads however many documents
+earlier runs left behind. Residue is carried rather than purged — each run still
+adds two documents permanently, since the API has no document delete route — but
+it no longer lengthens this check. An audit that runs long is therefore a fact
+about the store, not about the vault's size.
 
 A `result=fail` here means the bytes never reached the library, came back altered,
 or the two digests are no longer telling the truth about each other — stop and

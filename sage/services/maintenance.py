@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, NamedTuple
 from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.api.errors import (
     DocumentNotFoundError,
+    DocumentScopeUnmatchedError,
     ReabstractAlreadyInFlightError,
     RestoreProvenanceMismatchError,
     RestoreSourceNotAbsoluteError,
@@ -593,11 +594,14 @@ class MaintenanceService:
         )
 
     async def verify_vault_source_files(
-        self, check_hashes: bool = False
+        self,
+        check_hashes: bool = False,
+        document_ids: Sequence[str] | None = None,
     ) -> SourceFileIntegrityReport:
         """Audit that every document's backing source file is present.
 
-        Walks every document in the vault (all lifecycle states) and
+        Walks every document in the vault (all lifecycle states) -- or, when
+        ``document_ids`` is given, only the documents it names -- and
         checks that its ``source_path`` resolves to an existing file
         under the vault storage root. When ``check_hashes`` is true, each
         present file's SHA-256 is recomputed and compared against the
@@ -623,17 +627,36 @@ class MaintenanceService:
         at the far end, so it outranks ``missing``: an absent copy at such
         a path is not repaired by re-delivering the content.
 
+        A scoped audit reads its documents by id rather than listing the vault,
+        so both its graph and its store work are bounded by the scope rather
+        than by the vault. An id in the scope that names no document raises
+        :class:`DocumentScopeUnmatchedError` before any store call: auditing
+        only the ids that matched would hand back a report covering less than
+        the caller asked about, and a misspelled id a clean report over nothing.
+
         Returns a SourceFileIntegrityReport with per-document entries for
         missing, symlinked, out-of-root, or hash-mismatched files and
-        aggregate counts; documents with an intact source file are absent
-        from ``entries``.
+        aggregate counts over the documents inspected; documents with an
+        intact source file are absent from ``entries``.
         """
-        all_docs = await self._graph_store.list_all_documents()
+        if document_ids is None:
+            docs = await self._graph_store.list_all_documents()
+        else:
+            docs = []
+            unmatched: list[str] = []
+            for doc_id in sorted(set(document_ids)):
+                doc = await self._graph_store.get_document(doc_id)
+                if doc is None:
+                    unmatched.append(doc_id)
+                else:
+                    docs.append(doc)
+            if unmatched:
+                raise DocumentScopeUnmatchedError(unmatched)
         storage_root = self._storage_root()
         store = self._vault_source_store()
 
         entries: list[SourceFileIntegrityEntry] = []
-        for doc in all_docs:
+        for doc in docs:
             # A refusal aborts the walk rather than becoming a per-document
             # status: the audit and the repair read the store through one
             # observation helper, and a caller is owed the same answer from it
@@ -645,7 +668,7 @@ class MaintenanceService:
                 entries.append(entry)
 
         summary = {
-            "healthy": len(all_docs) - len(entries),
+            "healthy": len(docs) - len(entries),
             "missing": sum(1 for e in entries if e.integrity_status == "missing"),
             "hash_mismatch": sum(1 for e in entries if e.integrity_status == "hash_mismatch"),
             "symlinked": sum(1 for e in entries if e.integrity_status == "symlinked"),
@@ -654,7 +677,7 @@ class MaintenanceService:
 
         return SourceFileIntegrityReport(
             vault_id=self._vault_id,
-            total_documents_checked=len(all_docs),
+            total_documents_checked=len(docs),
             check_hashes=check_hashes,
             summary=summary,
             entries=entries,

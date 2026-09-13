@@ -73,3 +73,52 @@ async def test_verify_vault_source_files_unknown_vault_returns_error_envelope():
     assert result.get("error") == "unknown_vault", (
         f"expected unknown_vault envelope, got {result!r}"
     )
+
+
+async def test_verify_vault_source_files_malformed_scope_id_returns_invalid_document_id():
+    """A malformed id in ``document_ids`` fails the typed alias at the
+    boundary and surfaces as ``invalid_document_id`` -- not a report, and not
+    the unmatched-scope refusal, which is reserved for well-formed ids that
+    name no document."""
+    result = await mcp_server.verify_vault_source_files(
+        vault_id="ghost", document_ids=["not a document id!"]
+    )
+
+    assert isinstance(result, dict)
+    assert result.get("error") == "invalid_document_id", f"got {result!r}"
+
+
+async def test_verify_vault_source_files_empty_scope_is_refused():
+    """An empty ``document_ids`` is refused rather than audited: it would
+    otherwise return a clean report over no documents at all."""
+    result = await mcp_server.verify_vault_source_files(vault_id="ghost", document_ids=[])
+
+    assert isinstance(result, dict)
+    assert result.get("error") == "invalid_parameter", f"got {result!r}"
+    assert result["detail"]["parameter"] == "document_ids"
+
+
+async def test_verify_vault_source_files_unmatched_scope_returns_typed_refusal(
+    minimal_vault_config_dict,
+):
+    """A well-formed id naming no document reaches the service through the
+    tool and comes back as the typed refusal naming it.
+
+    Anti-coincidental-pass: a tool that dropped ``document_ids`` on the way to
+    the service would audit the (empty) vault and return a report, not this
+    envelope.
+    """
+    config = VaultConfig.model_validate(minimal_vault_config_dict)
+    registry_service = VaultRegistryService(mcp_server._vaults, initialize_services)
+    async with initialize_services_for_test(config, registry_service=registry_service) as services:
+        vault_id = config.vault.id
+        mcp_server._vaults[vault_id] = services
+        try:
+            result = await mcp_server.verify_vault_source_files(
+                vault_id=vault_id, document_ids=["deadbeef_absent"]
+            )
+
+            assert result.get("error") == "document_scope_unmatched", f"got {result!r}"
+            assert result["detail"] == {"unmatched_ids": ["deadbeef_absent"]}
+        finally:
+            mcp_server._vaults.pop(vault_id, None)

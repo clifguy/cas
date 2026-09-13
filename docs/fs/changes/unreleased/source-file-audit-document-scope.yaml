@@ -1,0 +1,18 @@
+classification: minor
+category: [capability]
+summary: >-
+  The source-file integrity audit accepts an optional document scope.
+  sage_core_api.openapi.yaml: SourceFileIntegrityRequest gains document_ids, an
+  array of at least one id; the verify_vault_source_files operation declares
+  invalid_document_id under 400 and document_scope_unmatched under 404, and the
+  SourceFileIntegrityReport descriptions of total_documents_checked and summary
+  describe the documents inspected rather than the vault. The MCP catalog's
+  verify_vault_source_files tool gains the matching document_ids argument. A
+  scoped audit reads the named documents by id rather than listing the vault, so
+  its graph and vault-source store work are bounded by the scope rather than by
+  the vault; an id naming no document is refused with the unmatched ids, before
+  any store call, rather than narrowing the audit. Omitting the scope leaves the audit vault-wide, as before.
+for_callers: >-
+  verify_vault_source_files takes an optional document_ids to audit only the
+  named documents, reading the store for those alone; ids that name no document
+  are refused with document_scope_unmatched (404) listing them.

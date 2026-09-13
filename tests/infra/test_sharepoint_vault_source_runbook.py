@@ -144,6 +144,21 @@ def test_live_validation_section_documented() -> None:
     )
 
 
+def test_runbook_describes_the_audit_as_scoped_in_work_as_well_as_verdict() -> None:
+    """The source-file audit step says the check is scoped to the run's probes,
+    and no longer warns that the audit's cost grows with accumulated residue.
+
+    The driver passes its probe ids as the audit's ``document_ids`` scope, so the
+    walk is bounded by what the run created. A runbook still carrying the old
+    warning would send an operator counting documents to explain a slow check
+    that can no longer be caused that way.
+    """
+    text = _runbook_text()
+    assert "document_ids" in text, "runbook must name the scope the audit is called with"
+    for stale in ("Residue grows", "the audit's cost grows with it"):
+        assert stale not in text, f"runbook still warns that residue grows the audit: {stale!r}"
+
+
 def test_operator_command_blocks_declare_the_rewrite_expectation() -> None:
     """Every runbook invocation of the driver passes ``--expect-rewritten``.
 

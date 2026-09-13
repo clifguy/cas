@@ -840,6 +840,7 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
     },
     ("sage_core", "verify_vault_source_files"): {
         "store_status": ERROR_DETAIL_KEY,
+        "unmatched_ids": ERROR_DETAIL_KEY,
     },
 }
 

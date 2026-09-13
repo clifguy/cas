@@ -373,9 +373,10 @@ _UNDERCOUNTED_AUDIT = "undercounted_audit"
 
 
 @contextmanager
-def rest_stub(mode: str) -> Iterator[str]:
+def rest_stub(mode: str, audit_requests: list[Any] | None = None) -> Iterator[str]:
     """A threaded HTTP stub for the edge calls the driver makes. ``mode`` selects
-    a well-behaved surface or one of the pathologies.
+    a well-behaved surface or one of the pathologies. When ``audit_requests`` is
+    given, the decoded JSON body of every source-audit request is appended to it.
 
     The well-behaved surface is a *rewriting* store: a docx upload is retained
     with a stamp appended, its record carries the delivered digest as provenance
@@ -510,6 +511,8 @@ def rest_stub(mode: str) -> Iterator[str]:
                 self._sse_response(self._ingest_events(filename, delivered))
                 return
             if path.endswith("/maintenance/verify-source-files"):
+                if audit_requests is not None:
+                    audit_requests.append(json.loads(raw or b"null"))
                 self._json(self._audit())
                 return
             self._json({"error": "unexpected"}, status=404)
@@ -684,12 +687,38 @@ def test_trap_unrelated_document_unhealthy_passes_audit(tmp_path: Path) -> None:
     The scoping is deliberate. The vault under validation is disposable and
     accumulates the residue of every previous run; a whole-vault verdict would
     hand this validation a permanent red over a document it neither created nor
-    can repair.
+    can repair. The driver asks the audit to check only its probes, so a server
+    honouring that scope never returns such a document; this guards the verdict
+    against one that does not.
     """
     with rest_stub(_UNRELATED_UNHEALTHY) as base:
         proc = _run_driver(base, "pre-restart", tmp_path / "state.json")
     assert proc.returncode == 0, f"stdout={proc.stdout!r} stderr={proc.stderr!r}"
     assert "check=source_audit status=PASS" in proc.stdout, proc.stdout
+
+
+def test_driver_scopes_source_audit_to_its_probes_in_both_phases(tmp_path: Path) -> None:
+    """Both phases ask the audit for exactly this run's probes, with hashing on.
+
+    The scope is what keeps the audit's work constant as the validation vault
+    accumulates residue, so it is asserted on the request the driver sends
+    rather than inferred from a verdict the stub would return either way.
+
+    Anti-coincidental-pass: the stub ignores the body, so every other test here
+    passes whether or not the scope is sent. The post-restart phase reads its
+    probe ids back from the state file, so a driver that scoped only the first
+    phase, or lost the ids across the restart, sends a different body there.
+    """
+    state = tmp_path / "state.json"
+    bodies: list[Any] = []
+    with rest_stub(_GOOD, audit_requests=bodies) as base:
+        pre = _run_driver(base, "pre-restart", state)
+        assert pre.returncode == 0, f"stdout={pre.stdout!r} stderr={pre.stderr!r}"
+        post = _run_driver(base, "post-restart", state)
+    assert post.returncode == 0, f"stdout={post.stdout!r} stderr={post.stderr!r}"
+
+    expected = {"check_hashes": True, "document_ids": sorted(_PROBE_DOC_IDS.values())}
+    assert bodies == [expected, expected]
 
 
 def test_trap_collapsed_digests_fails_provenance(tmp_path: Path) -> None:
