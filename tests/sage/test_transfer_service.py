@@ -610,38 +610,51 @@ class TestGateRefusalsNameTheCallersSpelling:
 
     No profile is pinned and no store is reset: the refusal precedes both the
     reachability decision and any redemption, so neither is in its causal path.
+
+    Each refusal is driven with the spelling supplied and with it omitted. The
+    single-file callers rely on the default rather than naming their spelling,
+    so the default is a contract of the gate's own, and a gate that ignored the
+    argument in favour of either fixed spelling passes one arm and fails the
+    other.
     """
 
     @pytest.mark.parametrize(
-        ("declaration", "error", "code", "message"),
+        ("spelling", "named"),
+        [("file_path", "file_path"), (None, "source")],
+        ids=["supplied", "default"],
+    )
+    @pytest.mark.parametrize(
+        ("declaration", "error", "code", "outcome"),
         [
             (
                 DeliveryDeclaration(source="/tmp/a.md", transfer_token="whatever"),
                 AmbiguousIngestSourceError,
                 "ambiguous_ingest_source",
-                "Supply exactly one of `file_path` (a source file path) or "
-                "`transfer_token` (redeeming an already-delivered upload); "
                 "both were provided.",
             ),
             (
                 DeliveryDeclaration(),
                 MissingIngestSourceError,
                 "missing_ingest_source",
-                "Supply exactly one of `file_path` (a source file path) or "
-                "`transfer_token` (redeeming an already-delivered upload); "
                 "neither was provided.",
             ),
         ],
         ids=["ambiguous", "missing"],
     )
-    def test_refusals_name_the_supplied_spelling(self, declaration, error, code, message):
+    def test_refusals_name_the_supplied_spelling(
+        self, declaration, error, code, outcome, spelling, named
+    ):
+        kwargs = {} if spelling is None else {"source_parameter": spelling}
         with pytest.raises(error) as raised:
-            with caller_local_delivery(_VAULT, [declaration], source_parameter="file_path"):
+            with caller_local_delivery(_VAULT, [declaration], **kwargs):
                 pytest.fail("the gate must refuse before yielding a plan")
 
         assert raised.value.code == code
         assert raised.value.status_code == 400
-        assert raised.value.message == message
+        assert raised.value.message == (
+            f"Supply exactly one of `{named}` (a source file path) or "
+            "`transfer_token` (redeeming an already-delivered upload); " + outcome
+        )
 
 
 class TestPreviewDoesNotSpendTheToken:
