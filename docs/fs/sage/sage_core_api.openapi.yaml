@@ -2997,6 +2997,14 @@ paths:
         Read-only.
 
 
+        ``document_ids`` restricts the audit to the named documents: the
+        store is consulted for those alone, and the report's counts describe
+        that set rather than the vault. Omitted, every document is audited.
+        A scope naming an id with no document is refused with
+        ``document_scope_unmatched`` rather than narrowed, so a misspelled
+        id never yields a clean report over fewer documents than were named.
+
+
         A ``symlinked`` row is reported in both modes and is never read
         through. The bytes behind a link are not the copy the record
         names, and the store refuses to write at such a path, so a repair
@@ -3039,12 +3047,18 @@ paths:
         "400":
           description: >-
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: a document id in the request is not
+            well-formed.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: "`vault_not_found`: no vault registered with that id."
+          description: >-
+            `vault_not_found`: no vault registered with that id.
+            `document_scope_unmatched`: `document_ids` names an id with no
+            document in the vault; `detail.unmatched_ids` lists every such id.
           content:
             application/json:
               schema:
@@ -7976,6 +7990,18 @@ components:
             against the recorded source_content_hash, surfacing
             `hash_mismatch` rows. Adds a full file read per document;
             default false performs an existence check only.
+        document_ids:
+          type: array
+          minItems: 1
+          items:
+            type: string
+          description: >-
+            Restrict the audit to these documents, in any lifecycle state.
+            Documents outside the set are neither read from the store nor
+            reported. Omitted, the audit covers every document in the vault.
+            A malformed id rejects the request with invalid_document_id (400);
+            a well-formed id naming no document rejects it with
+            document_scope_unmatched (404) rather than narrowing the audit.
 
     SourceFileIntegrityEntry:
       type: object
@@ -8052,8 +8078,9 @@ components:
         total_documents_checked:
           type: integer
           description: >-
-            Total documents inspected across all lifecycle states. Equals
-            the universe; `len(entries)` is the subset with a missing or
+            Total documents inspected across all lifecycle states: every
+            document in the vault, or the scoped set when `document_ids` was
+            supplied. `len(entries)` is the subset with a missing or
             mismatched file.
         check_hashes:
           type: boolean
@@ -8066,8 +8093,8 @@ components:
             type: integer
           description: >-
             Counts keyed by `healthy`, `missing`, `hash_mismatch`,
-            `symlinked`, and `out_of_root`. The five values sum to
-            total_documents_checked.
+            `symlinked`, and `out_of_root`, over the documents inspected. The
+            five values sum to total_documents_checked.
         entries:
           type: array
           items:

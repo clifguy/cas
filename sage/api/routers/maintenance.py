@@ -167,10 +167,14 @@ async def optimize_content_store(
     "/maintenance/verify-source-files",
     response_model=SourceFileIntegrityReport,
     responses={
-        400: boundary_400(path=("invalid_vault_id",)),
+        400: boundary_400(path=("invalid_vault_id",), request=("invalid_document_id",)),
         404: {
             "model": ErrorResponse,
-            "description": "`vault_not_found`: no vault registered with that id.",
+            "description": (
+                "`vault_not_found`: no vault registered with that id. "
+                "`document_scope_unmatched`: `document_ids` names an id with no "
+                "document in the vault; `detail.unmatched_ids` lists every such id."
+            ),
         },
         502: {
             "model": ErrorResponse,
@@ -196,7 +200,9 @@ async def verify_vault_source_files(
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: MaintenanceService = Depends(get_maintenance_service),
 ) -> SourceFileIntegrityReport:
-    return await service.verify_vault_source_files(check_hashes=body.check_hashes)
+    return await service.verify_vault_source_files(
+        check_hashes=body.check_hashes, document_ids=body.document_ids
+    )
 
 
 @router.post(

@@ -4683,6 +4683,18 @@ class SourceFileIntegrityRequest(BaseModel):
             "default false performs an existence check only."
         ),
     )
+    document_ids: list[DocumentIdStr] | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "Restrict the audit to these documents, in any lifecycle state. "
+            "Documents outside the set are neither read from the store nor "
+            "reported. Omitted, the audit covers every document in the vault. "
+            "A malformed id rejects the request with invalid_document_id (400); "
+            "a well-formed id naming no document rejects it with "
+            "document_scope_unmatched (404) rather than narrowing the audit."
+        ),
+    )
 
 
 class SourceFileIntegrityReport(BaseModel):
@@ -4701,8 +4713,9 @@ class SourceFileIntegrityReport(BaseModel):
     )
     total_documents_checked: int = Field(
         description=(
-            "Total documents inspected across all lifecycle states. Equals "
-            "the universe; `len(entries)` is the subset with a missing or "
+            "Total documents inspected across all lifecycle states: every "
+            "document in the vault, or the scoped set when `document_ids` was "
+            "supplied. `len(entries)` is the subset with a missing or "
             "mismatched file."
         )
     )
@@ -4715,8 +4728,8 @@ class SourceFileIntegrityReport(BaseModel):
     summary: dict[str, int] = Field(
         description=(
             "Counts keyed by `healthy`, `missing`, `hash_mismatch`, "
-            "`symlinked`, and `out_of_root`. The five values sum to "
-            "total_documents_checked."
+            "`symlinked`, and `out_of_root`, over the documents inspected. The "
+            "five values sum to total_documents_checked."
         )
     )
     entries: list[SourceFileIntegrityEntry] = Field(

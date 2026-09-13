@@ -1998,6 +1998,226 @@ async def test_verify_source_files_summary_counts_all_five_states(
 
 
 # ---------------------------------------------------------------------------
+# Audit: a document scope bounds the walk, not only the report
+# ---------------------------------------------------------------------------
+
+
+def _install_recording_store(monkeypatch) -> list[tuple[str, str]]:
+    """Patch the service's vault-source store with one that records every
+    store call made against a source path, as ``(method, source_path)``.
+
+    Every public method of the port is recorded rather than only the ones the
+    audit is known to call today, so a scope that leaked a document into any
+    store read -- a size probe, a streamed read -- would show here too.
+    """
+    from sage.vault_source_binding import FilesystemVaultSourceStore
+
+    calls: list[tuple[str, str]] = []
+
+    class _RecordingStore(FilesystemVaultSourceStore):
+        def __getattribute__(self, name):
+            attr = super().__getattribute__(name)
+            if name.startswith("_") or not callable(attr):
+                return attr
+
+            def _recorded(*args, **kwargs):
+                if len(args) >= 3 and isinstance(args[2], str):
+                    calls.append((name, args[2]))
+                return attr(*args, **kwargs)
+
+            return _recorded
+
+    monkeypatch.setattr(
+        MaintenanceService, "_vault_source_store", lambda self: _RecordingStore(Path("/unused"))
+    )
+    return calls
+
+
+async def _seed_scope_vault(gs, config: VaultConfig) -> dict[str, str]:
+    """Two intact documents inside the scope and one outside it whose file is
+    missing, so an audit that walked the outside document would both touch the
+    store for it and report it. Returns ``{document_id: source_path}``."""
+    paths: dict[str, str] = {}
+    for did, present in (("aaaaaaaa_ina", True), ("bbbbbbbb_inb", True), ("cccccccc_outc", False)):
+        sp = f"imports/{did}.md"
+        body = f"{did} body".encode()
+        if present:
+            _write_source(config, sp, body)
+        await gs.insert_document(_src_doc(did, _sha256_of(body), source_path=sp))
+        paths[did] = sp
+    return paths
+
+
+async def test_verify_source_files_scope_reads_only_named_documents(
+    graph_store, minimal_config, stub_content_store, monkeypatch
+):
+    """A scoped audit touches the store for the named documents and nothing
+    else.
+
+    Anti-coincidental-pass: the out-of-scope document's file is missing, so an
+    implementation that walked the whole vault and filtered the *report*
+    afterwards still records a store call for its path and fails here. The
+    in-scope paths must each appear, and be hashed, so a store that was never
+    consulted at all -- a patch that did not take -- cannot pass vacuously.
+    """
+    calls = _install_recording_store(monkeypatch)
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+    paths = await _seed_scope_vault(gs, minimal_config)
+
+    await maint.verify_vault_source_files(
+        check_hashes=True, document_ids=["aaaaaaaa_ina", "bbbbbbbb_inb"]
+    )
+
+    touched = {sp for _, sp in calls}
+    assert touched == {paths["aaaaaaaa_ina"], paths["bbbbbbbb_inb"]}
+    hashed = {sp for method, sp in calls if method == "hash_source"}
+    assert hashed == {paths["aaaaaaaa_ina"], paths["bbbbbbbb_inb"]}
+    assert paths["cccccccc_outc"] not in touched
+
+
+async def test_verify_source_files_scope_report_describes_scoped_set(
+    graph_store, minimal_config, stub_content_store
+):
+    """The report's count and summary describe the scoped set, not the vault.
+
+    Anti-coincidental-pass: the vault holds three documents and one of them is
+    missing, so a count taken over the enumeration (3) or a summary carrying
+    the out-of-scope finding (missing: 1) fails.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+    await _seed_scope_vault(gs, minimal_config)
+
+    report = await maint.verify_vault_source_files(
+        check_hashes=True, document_ids=["aaaaaaaa_ina", "bbbbbbbb_inb"]
+    )
+
+    assert report.total_documents_checked == 2
+    assert report.entries == []
+    assert report.summary == {
+        "healthy": 2,
+        "missing": 0,
+        "hash_mismatch": 0,
+        "symlinked": 0,
+        "out_of_root": 0,
+    }
+
+
+async def test_verify_source_files_scope_still_reports_unhealthy_scoped_doc(
+    graph_store, minimal_config, stub_content_store
+):
+    """A scope narrows the walk; it does not suppress what the walk finds.
+
+    Anti-coincidental-pass: an implementation that treated a scope as "report
+    nothing outside it" by dropping entries would still pass the two tests
+    above; here the scoped document is the unhealthy one and must be named.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+    await _seed_scope_vault(gs, minimal_config)
+
+    report = await maint.verify_vault_source_files(
+        check_hashes=False, document_ids=["cccccccc_outc"]
+    )
+
+    assert report.total_documents_checked == 1
+    assert [(e.document_id, e.integrity_status) for e in report.entries] == [
+        ("cccccccc_outc", "missing")
+    ]
+    assert report.summary["missing"] == 1
+    assert report.summary["healthy"] == 0
+
+
+async def test_verify_source_files_scope_includes_non_active_lifecycles(
+    graph_store, minimal_config, stub_content_store
+):
+    """A scope adds no lifecycle filter: an archived document named in it is
+    audited like any other, as the unscoped walk audits every lifecycle state.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+    sp = "imports/dddddddd_arch.md"
+    body = b"archived body"
+    _write_source(minimal_config, sp, body)
+    await gs.insert_document(
+        _src_doc("dddddddd_arch", _sha256_of(body), source_path=sp, lifecycle_status="archived")
+    )
+
+    report = await maint.verify_vault_source_files(document_ids=["dddddddd_arch"])
+
+    assert report.total_documents_checked == 1
+    assert report.summary["healthy"] == 1
+
+
+async def test_verify_source_files_unmatched_scope_is_refused_naming_ids(
+    graph_store, minimal_config, stub_content_store, monkeypatch
+):
+    """A scope naming ids with no document is refused, naming exactly those
+    ids, before any store call.
+
+    Anti-coincidental-pass: the ids are supplied out of order alongside a real
+    one, and the refusal must name the unmatched ones sorted -- so echoing the
+    input, or naming the whole scope, fails. The store must see no call at all,
+    so walking the matched document first and refusing afterwards fails.
+    """
+    from sage.api.errors import DocumentScopeUnmatchedError
+
+    calls = _install_recording_store(monkeypatch)
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+    await _seed_scope_vault(gs, minimal_config)
+
+    with pytest.raises(DocumentScopeUnmatchedError) as excinfo:
+        await maint.verify_vault_source_files(
+            check_hashes=True,
+            document_ids=["zzzzzzzz_nope2", "aaaaaaaa_ina", "yyyyyyyy_nope1"],
+        )
+
+    err = excinfo.value
+    assert err.code == "document_scope_unmatched"
+    assert err.status_code == 404
+    assert err.detail == {"unmatched_ids": ["yyyyyyyy_nope1", "zzzzzzzz_nope2"]}
+    assert calls == []
+
+
+async def test_verify_source_files_scope_duplicates_collapse(
+    graph_store, minimal_config, stub_content_store
+):
+    """Naming a document twice audits it once."""
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+    await _seed_scope_vault(gs, minimal_config)
+
+    report = await maint.verify_vault_source_files(document_ids=["aaaaaaaa_ina", "aaaaaaaa_ina"])
+
+    assert report.total_documents_checked == 1
+
+
+async def test_verify_source_files_unscoped_walks_whole_vault(
+    graph_store, minimal_config, stub_content_store, monkeypatch
+):
+    """Without a scope the audit is vault-wide, exactly as before.
+
+    Anti-coincidental-pass: an implementation that read an absent scope as an
+    empty one would check nothing and report a clean vault; this one must count
+    all three documents, report the missing one, and touch the store for each.
+    """
+    calls = _install_recording_store(monkeypatch)
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+    paths = await _seed_scope_vault(gs, minimal_config)
+
+    report = await maint.verify_vault_source_files(check_hashes=True)
+
+    assert report.total_documents_checked == 3
+    assert [(e.document_id, e.integrity_status) for e in report.entries] == [
+        ("cccccccc_outc", "missing")
+    ]
+    assert {sp for _, sp in calls} == set(paths.values())
+
+
+# ---------------------------------------------------------------------------
 # MaintenanceService.restore_vault_source_file
 # ---------------------------------------------------------------------------
 
