@@ -587,7 +587,7 @@ export interface LifecycleConfig {
 
 // Per CAS-ADR-030: vault-scope abstraction config carries enabled +
 // token-budget tuning. The provider and model identifier live in the
-// stack-wide sage/config.yaml; see StackAbstractionConfig.
+// stack-wide sage/config.yaml.
 export interface VaultAbstractionConfig {
   enabled: boolean;
   max_abstract_tokens?: number;
@@ -595,12 +595,6 @@ export interface VaultAbstractionConfig {
   tokens_per_word?: number;
 }
 
-// Stack-wide abstraction config (CAS-ADR-030). Returned by the
-// sage_get_stack_config MCP tool.
-export interface StackAbstractionConfig {
-  provider: "qwen3-mlx" | "stub";
-  model: string | null;
-}
 
 export interface VaultConfig {
   vault: VaultIdentityConfig;
@@ -678,6 +672,33 @@ export interface UpdateMetadataRequest {
 }
 
 // --- Bulk operations (CAS-ADR-028 ops-object shape) ---
+
+// --- Document actions and staging-edge review ---
+
+export interface OpenDocumentResponse {
+  opened: boolean;
+  path: string;
+}
+
+export interface DocumentDownloadUrlResponse {
+  download_url: string;
+}
+
+export interface StagingEdgeConfirmResponse {
+  confirmed: boolean;
+  staging_edge_id: string;
+  production_edge_id: string;
+}
+
+export interface StagingEdgeDismissResponse {
+  dismissed: boolean;
+  staging_edge_id: string;
+}
+
+// Body of a vault creation request; `config` is a whole vault configuration.
+export interface CreateVaultRequest {
+  config: Record<string, unknown>;
+}
 
 export interface BulkItemErrorEnvelope {
   error: string;

@@ -89,8 +89,8 @@ The gate reads the exported interfaces of ``types.ts`` and nothing else. Every
 one of them is either enrolled or named in ``UNENROLLED_INTERFACES`` with the
 reason it mirrors no Core component (F10), so an interface left out of the
 enrollment is a recorded decision rather than an omission the file cannot tell
-apart from one. Interfaces declared in other frontend modules are outside the
-scan.
+apart from one. Interfaces declared in other frontend modules, and route bodies
+typed inline rather than through an exported interface, are outside the scan.
 
 Invariants
 ----------
@@ -167,6 +167,7 @@ ENROLLED: Final[dict[str, str]] = {
     "DiscoverResponse": "DiscoverResponse",
     "DocTypeEntry": "VaultDocTypeEntry",
     "Document": "Document",
+    "DocumentDownloadUrlResponse": "DocumentDownloadUrlResponse",
     "DocumentSummary": "DocumentSummary",
     "Edge": "Edge",
     "ExtractedField": "ExtractedField",
@@ -174,6 +175,7 @@ ENROLLED: Final[dict[str, str]] = {
     "HealthIndicators": "HealthIndicators",
     "LastOptimizeSummary": "LastOptimizeSummary",
     "LifecycleState": "VaultLifecycleState",
+    "OpenDocumentResponse": "OpenDocumentResponse",
     "OptimizeContentStoreReport": "OptimizeContentStoreReport",
     "PendingMetadata": "PendingMetadataItem",
     "ReabstractReport": "ReabstractReport",
@@ -181,6 +183,8 @@ ENROLLED: Final[dict[str, str]] = {
     "ReadMeta": "ReadMeta",
     "ResolutionPathEntry": "ResolutionPathEntry",
     "StagingEdge": "StagingEdge",
+    "StagingEdgeConfirmResponse": "StagingEdgeConfirmResponse",
+    "StagingEdgeDismissResponse": "StagingEdgeDismissResponse",
     "TraversalNode": "TraversalNode",
     "TraverseResponse": "TraverseResponse",
     "UpdateConfigResponse": "UpdateVaultConfigResponse",
@@ -199,6 +203,7 @@ ENROLLED_REQUESTS: Final[dict[str, str]] = {
     "BulkLinkRequest": "BulkLinkRequest",
     "BulkMetadataItem": "BulkMetadataItem",
     "BulkMetadataRequest": "BulkMetadataRequest",
+    "CreateVaultRequest": "CreateVaultRequest",
     "DiscoverRequest": "DiscoverRequest",
     "LinkRequest": "LinkRequest",
     "ListFieldPatch": "ListFieldPatch",
@@ -271,9 +276,6 @@ UNENROLLED_INTERFACES: Final[dict[str, str]] = {
     "ParsedMetadataItem": _APP_API_REASON,
     "ScanResponse": _APP_API_REASON,
     "ScanResultItem": _APP_API_REASON,
-    "StackAbstractionConfig": (
-        "a section of the stack configuration report, which publishes no schema"
-    ),
     "VaultAbstractionConfig": _VAULT_CONFIG_FILE_REASON,
     "VaultConfig": _VAULT_CONFIG_FILE_REASON,
     "VaultIdentityConfig": _VAULT_CONFIG_FILE_REASON,
@@ -297,9 +299,9 @@ UNGATED_REFERENCED_COMPONENTS: Final[dict[tuple[str, str, str], str]] = {
 }
 
 # Vacuity floors for F4, each set below today's count so ordinary movement does not
-# trip it while a lookup returning nothing does. The response pairs compare 219
-# schema properties, the request pairs 119, and the stream pairs 71; the request
-# components require 15; F8 checks 46 references to enrolled components; and the
+# trip it while a lookup returning nothing does. The response pairs compare 227
+# schema properties, the request pairs 120, and the stream pairs 71; the request
+# components require 16; F8 checks 46 references to enrolled components; and the
 # event-stream descriptions name 4 event components.
 MIN_PROPERTIES_COMPARED: Final[int] = 170
 MIN_REQUEST_PROPERTIES_COMPARED: Final[int] = 85

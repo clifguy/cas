@@ -6,6 +6,7 @@ import type {
   DefaultVaultConfig,
   UpdateConfigResponse,
   UpdateVaultConfigRequest,
+  CreateVaultRequest,
 } from './types';
 
 export async function listVaults(): Promise<VaultSummary[]> {
@@ -37,5 +38,6 @@ export async function getDefaultVaultConfig(vaultId: string): Promise<DefaultVau
 }
 
 export async function createVault(config: Record<string, unknown>): Promise<VaultSummary> {
-  return apiPost<VaultSummary>('/sage_vaults', { config });
+  const body: CreateVaultRequest = { config };
+  return apiPost<VaultSummary>('/sage_vaults', body);
 }
