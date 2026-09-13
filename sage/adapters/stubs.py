@@ -199,8 +199,11 @@ class StubContentStore(ContentStore):
         one per document before ``limit`` counts documents. A document is
         represented by its nearest passage wherever one was kept, scores its
         best across both surfaces, and counts the sections its kept passages
-        belong to.
+        belong to. A query with no norm has no similarity to anything and finds
+        nothing, as on the binding.
         """
+        if not any(query_embedding):
+            return []
         passages: list[tuple[float, int, Chunk]] = []
         for chunks in self._store.values():
             for chunk in chunks:
@@ -602,7 +605,13 @@ class _ByteCountedBound:
 
 
 class StubEmbeddingProvider(_ByteCountedBound, EmbeddingProvider):
-    """Returns deterministic zero vectors for testing."""
+    """Returns deterministic zero vectors for testing.
+
+    A zero vector has no cosine similarity, so both content-store bindings drop
+    rows embedded by this provider from the semantic arm, and a query it embeds
+    finds nothing there. A test that needs a semantic hit uses
+    ``SeededEmbeddingProvider``.
+    """
 
     DIMENSIONS = 768
 

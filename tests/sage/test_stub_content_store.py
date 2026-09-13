@@ -829,6 +829,19 @@ async def test_stub_search_semantic_limit_is_a_document_budget(store):
     )
 
 
+async def test_stub_search_semantic_a_query_with_no_norm_finds_nothing(store):
+    """A zero query vector has no similarity to any row, so nothing is returned."""
+    await store.index_chunks(
+        "doc",
+        [dataclasses.replace(_chunk("doc", content="embedded"), embedding=_axis())],
+    )
+    assert [r.document_id for r in await store.search_semantic(_axis(), limit=10)] == ["doc"], (
+        "positive control: the same row is found by a query with a norm"
+    )
+
+    assert await store.search_semantic([0.0] * _DIM, limit=10) == []
+
+
 async def test_stub_search_semantic_an_unscorable_passage_does_not_represent_its_document(store):
     """A zero-vector passage has no similarity, so its document answers by its surface."""
     await store.index_chunks(

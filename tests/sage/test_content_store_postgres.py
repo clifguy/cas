@@ -8,6 +8,7 @@ when no server is configured.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import inspect
 import math
 import os
@@ -2243,18 +2244,31 @@ async def test_passage_reads_exclude_a_legacy_document_level_row(store):
     enumeration, reconstructed projection text and the abstraction input is
     the passage surface's own definition.
     """
+    # The legacy row is the nearest thing to the query, so a semantic arm that
+    # read it would take it as the document's representative. Both rows carry a
+    # real vector: a zero vector scores NaN and is dropped whatever the scoping,
+    # which would leave the semantic assertion over an empty result.
     await store.index_chunks(
         "d1",
         [
-            _legacy_header("d1", content="Title: T\nAbstract: a previously generated abstract"),
-            _chunk("d1", content="authored body", heading_path="Body", chunk_index=0),
+            dataclasses.replace(
+                _legacy_header("d1", content="Title: T\nAbstract: a previously generated abstract"),
+                embedding=_emb(0),
+            ),
+            _chunk(
+                "d1",
+                content="authored body",
+                heading_path="Body",
+                chunk_index=0,
+                embedding=_graded_emb(0.5, 1),
+            ),
         ],
     )
 
     assert await store.get_heading_paths("d1") == ["Body"]
     assert [c.content for c in await store.get_all_chunks("d1")] == ["authored body"]
-    hits = await store.search_semantic([0.0] * EMBEDDING_DIM, limit=10)
-    assert all(h.heading_path != LEGACY_DOCUMENT_HEADER_HEADING_PATH for h in hits), (
+    hits = await store.search_semantic(_emb(0), limit=10)
+    assert [(h.document_id, h.heading_path) for h in hits] == [("d1", "Body")], (
         "a legacy row reached a caller through the semantic arm"
     )
 
