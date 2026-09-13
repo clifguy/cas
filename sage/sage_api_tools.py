@@ -1712,7 +1712,9 @@ def register_sage_tools(
                 rather than ignored, since nothing would consume it. Returns
                 document metadata only (no chunks or scores). Supports pagination
                 via limit + offset. Best for deterministic enumeration by tags,
-                doc_type, or other metadata.
+                doc_type, or other metadata. Pass limit=0 to receive
+                total_available alone, with no results, as an existence or
+                count check.
             deterministic: Exact heading path extraction. Requires document_id + heading_path.
 
         Edge enumeration:
@@ -1864,7 +1866,9 @@ def register_sage_tools(
                 "references"}``.
             document_id: Target document (required for deterministic mode).
             heading_path: Heading path prefix (required for deterministic mode).
-            limit: Maximum results (1-100). Default: 10.
+            limit: Maximum results (0-100). Default: 10. 0 is catalog-only and
+                returns total_available with no results, for documents and for
+                edges alike; other modes refuse it.
             offset: Skip this many results before returning (catalog mode pagination). Default: 0.
             use_hybrid: Use hybrid RRF fusion of vector + BM25 in semantic mode. Default: true.
             use_abstract_prefilter: Boost documents whose semantic abstract matches the
@@ -1997,7 +2001,7 @@ def register_sage_tools(
         - ``mode_parameter_mismatch`` (400): a parameter is set that the
           chosen mode or the chosen target forbids (e.g., ``heading_path``
           outside deterministic mode, ``facet_fields`` off the ``facets``
-          target). Detail carries ``mode``, ``target``,
+          target, ``limit=0`` outside catalog mode). Detail carries ``mode``, ``target``,
           ``forbidden_param``, and the allowed set for whichever axis the
           constraint is on -- ``allowed_modes`` or ``allowed_targets``,
           never both.

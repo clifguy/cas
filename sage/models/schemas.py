@@ -3315,9 +3315,13 @@ class DiscoverRequest(BaseModel):
     )
     limit: int = Field(
         default=10,
-        ge=1,
+        ge=0,
         le=100,
-        description="Maximum number of results to return.",
+        description=(
+            "Maximum number of results to return. In catalog mode, 0 asks "
+            "for the count alone: the response carries total_available and "
+            "no results. Other modes refuse 0."
+        ),
     )
     offset: int = Field(
         default=0,
@@ -3744,6 +3748,23 @@ class DiscoverRequest(BaseModel):
                             "allowed_targets": allowed_targets,
                         },
                     )
+
+        # A zero limit is the count-only request, which catalog answers from
+        # a count taken independently of the page. The other modes derive
+        # their results by ranking or extraction, so a zero-row page there
+        # would be an empty answer rather than a count. The facets target
+        # has already refused any limit above.
+        if self.limit == 0 and self.mode != RetrievalMode.CATALOG:
+            raise PydanticCustomError(
+                "mode_parameter_mismatch",
+                ("Parameter 'limit' may be 0 only in catalog mode, not '{mode}'."),
+                {
+                    "mode": self.mode.value,
+                    "target": self.target.value,
+                    "forbidden_param": "limit",
+                    "allowed_modes": [RetrievalMode.CATALOG.value],
+                },
+            )
 
         return self
 

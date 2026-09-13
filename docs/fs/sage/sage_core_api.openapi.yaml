@@ -206,7 +206,8 @@ paths:
         - **catalog**: Filter-only document enumeration via SQL. No vector
           search, no chunk content. A query is refused rather than ignored,
           since nothing would consume it. Supports pagination via limit +
-          offset. It is also the only mode the `edges` and `facets` targets
+          offset. Pass `limit=0` to receive `total_available` alone, with no
+          results, as an existence or count check. It is also the only mode the `edges` and `facets` targets
           accept, so a request naming one of those and no mode resolves to
           catalog; naming another mode explicitly is still refused.
 
@@ -4484,10 +4485,13 @@ components:
             documents as the target that takes one.
         limit:
           type: integer
-          minimum: 1
+          minimum: 0
           maximum: 100
           default: 10
-          description: Maximum number of results to return.
+          description: >-
+            Maximum number of results to return. In catalog mode, 0 asks for
+            the count alone: the response carries total_available and no
+            results. Other modes refuse 0.
         offset:
           type: integer
           minimum: 0

@@ -545,6 +545,40 @@ async def test_discover_semantic_missing_query_422(client):
     assert resp.status_code == 400
 
 
+async def test_discover_catalog_limit_zero_http(client, tmp_vault_dir):
+    """POST /discover with mode=catalog, limit=0 returns the count, no rows.
+
+    The HTTP path re-validates the request body against DiscoverRequest and
+    the response through FastAPI's response_model, so a floor left at 1 on
+    either would refuse or reject this call while the MCP path worked.
+    """
+    (tmp_vault_dir / "sources" / "test" / "second.md").write_text("# Second\n\nMore content.")
+    for source in ("test/sample.md", "test/second.md"):
+        resp = await client.post(
+            "/sage_vaults/test_vault/documents",
+            json={"source": source, "source_type": "markdown"},
+        )
+        assert resp.status_code == 201, resp.text
+
+    rows = await client.post(
+        "/sage_vaults/test_vault/discover",
+        json={"mode": "catalog", "limit": 100},
+    )
+    assert rows.status_code == 200, rows.text
+    expected = rows.json()["total_available"]
+    assert expected == len(rows.json()["results"])
+    assert expected >= 2
+
+    resp = await client.post(
+        "/sage_vaults/test_vault/discover",
+        json={"mode": "catalog", "limit": 0},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["results"] == []
+    assert body["total_available"] == expected
+
+
 async def test_discover_facets_200(client):
     """POST /discover with target=facets returns facet rows over HTTP.
 

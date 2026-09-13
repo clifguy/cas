@@ -1,6 +1,6 @@
 """Retrieval tests: BH-020, BH-021, BH-027, BH-028, BH-029, BH-030,
 BH-058, BH-059, BH-060, BH-061, BH-069, BH-070, BH-072 through BH-088,
-BH-101 through BH-115.
+BH-101 through BH-115, BH-140 through BH-144.
 
 Covers semantic retrieval (pure vector and hybrid RRF), deterministic
 retrieval (heading path prefix match), keyword-only retrieval,
@@ -981,6 +981,54 @@ _MISMATCH_CASES: list[_MismatchCase] = [
         mode=RetrievalMode.CATALOG,
         target=RetrievalTarget.FACETS,
         response_mode=ResponseMode.LIGHT,
+    ),
+    # A count-only limit on facets is refused by that target's own
+    # rejection of any limit, not by the count-only branch below.
+    _case(
+        11,
+        "limit=0 on facets",
+        _TARGET,
+        [_DOCS, _EDGES],
+        "limit",
+        expected_target=_FACETS,
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.FACETS,
+        limit=0,
+    ),
+    # 12. limit=0 is the count-only request, which only catalog answers.
+    _case(
+        12,
+        "limit=0 in semantic",
+        _MODE,
+        [_CATALOG],
+        "limit",
+        expected_mode=RetrievalMode.SEMANTIC.value,
+        mode=RetrievalMode.SEMANTIC,
+        query="q",
+        limit=0,
+    ),
+    _case(
+        12,
+        "limit=0 in keyword",
+        _MODE,
+        [_CATALOG],
+        "limit",
+        expected_mode=RetrievalMode.KEYWORD.value,
+        mode=RetrievalMode.KEYWORD,
+        query="q",
+        limit=0,
+    ),
+    _case(
+        12,
+        "limit=0 in deterministic",
+        _MODE,
+        [_CATALOG],
+        "limit",
+        expected_mode=RetrievalMode.DETERMINISTIC.value,
+        mode=RetrievalMode.DETERMINISTIC,
+        document_id=_id("d1"),
+        heading_path="Section 1",
+        limit=0,
     ),
 ]
 
@@ -2678,6 +2726,110 @@ async def test_bh_078_catalog_total_available_independent_of_page(
 
     assert len(response.results) == 3
     assert response.total_available == 10
+
+
+async def _catalog_page_total(retrieval_service, **kwargs) -> tuple[int, int | None]:
+    """Row count and total of a catalog request at the largest page."""
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.CATALOG, limit=100, **kwargs)
+    )
+    return len(response.results), response.total_available
+
+
+async def test_bh_140_catalog_limit_zero_returns_count_without_rows(
+    graph_store,
+    retrieval_service,
+):
+    """Catalog limit=0 returns total_available and no rows.
+
+    Anti-coincidental: the expected total is read from the same request at
+    limit=100 and must be non-zero, so a total derived from the empty page
+    (len(results) == 0) fails.
+    """
+    await _seed_catalog_docs(graph_store)
+    page_rows, page_total = await _catalog_page_total(retrieval_service)
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.CATALOG, limit=0)
+    )
+
+    assert response.results == []
+    assert page_total == page_rows
+    assert page_total > 0
+    assert response.total_available == page_total
+
+
+async def test_bh_141_catalog_limit_zero_zero_match(graph_store, retrieval_service):
+    """A count-only request matching nothing reports a literal zero total."""
+    await _seed_catalog_docs(graph_store)
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            limit=0,
+            filters=RetrievalFilters(doc_type="no_such_type"),
+        )
+    )
+
+    assert response.results == []
+    assert response.total_available is not None
+    assert response.total_available == 0
+
+
+async def test_bh_142_catalog_limit_zero_count_respects_filters(
+    graph_store,
+    retrieval_service,
+):
+    """Filters constrain a count-only request exactly as they constrain rows.
+
+    Anti-coincidental: two independent filter axes, each strictly below the
+    unfiltered count and each pinned to its own row-returning request, so
+    neither a count that ignores filters nor one hard-coded predicate passes.
+    """
+    await _seed_catalog_docs(graph_store)
+
+    async def count(filters: RetrievalFilters | None) -> int | None:
+        response = await retrieval_service.discover(
+            DiscoverRequest(mode=RetrievalMode.CATALOG, limit=0, filters=filters)
+        )
+        assert response.results == []
+        return response.total_available
+
+    unfiltered = await count(None)
+    for filters, expected in (
+        (RetrievalFilters(doc_type="design_spec"), 3),
+        (RetrievalFilters(tags=["PV08"]), 1),
+    ):
+        page_rows, page_total = await _catalog_page_total(retrieval_service, filters=filters)
+        filtered = await count(filters)
+        assert filtered == expected
+        assert filtered == page_total == page_rows
+        assert filtered < unfiltered
+
+
+@pytest.mark.parametrize("limit", [0, 2])
+async def test_bh_143_catalog_total_survives_min_relevance(
+    graph_store,
+    retrieval_service,
+    limit,
+):
+    """min_relevance leaves the catalog total at the filtered count.
+
+    Catalog results carry no score, so the threshold drops none of them and
+    must not replace the total with the size of the page -- which would be
+    zero at limit=0 and the page size at limit=2.
+    """
+    await _seed_catalog_docs(graph_store)
+    _, full_total = await _catalog_page_total(retrieval_service)
+    assert full_total is not None
+    assert full_total > 2
+
+    response = await retrieval_service.discover(
+        DiscoverRequest(mode=RetrievalMode.CATALOG, limit=limit, min_relevance=0.5)
+    )
+
+    assert len(response.results) == limit
+    assert response.total_available == full_total
 
 
 async def test_bh_079_catalog_combined_filters(
@@ -5894,6 +6046,47 @@ async def test_catalog_edges_total_available_unpaginated(graph_store, retrieval_
     resp = await retrieval_service.discover(req)
     assert len(resp.results) == 5
     assert resp.total_available == 20
+
+
+async def test_bh_144_catalog_edges_limit_zero_returns_count_without_rows(
+    graph_store, retrieval_service
+):
+    """target=edges with limit=0 returns the filtered edge count and no rows.
+
+    Anti-coincidental: one edge from a second source sits outside the filter,
+    so a count that ignored the filter reports 21 rather than 20 -- and the
+    unfiltered call is asserted too, so that edge is read, not decoration.
+    """
+    src, _ = await _seed_edge_fixture(graph_store, total_edges=20)
+    other_src = _id("other_src_doc")
+    other_tgt = _id("other_tgt_doc")
+    await graph_store.insert_document(_make_doc(other_src))
+    await graph_store.insert_document(_make_doc(other_tgt))
+    await graph_store.insert_edge(
+        Edge(
+            id=str(_uuid.uuid4()),
+            source_id=other_src,
+            target_id=other_tgt,
+            edge_type=EdgeType.REFERENCES,
+            rationale="edge outside the source filter",
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+    async def count(filters: RetrievalFilters | None) -> int | None:
+        resp = await retrieval_service.discover(
+            DiscoverRequest(
+                mode=RetrievalMode.CATALOG,
+                target=RetrievalTarget.EDGES,
+                filters=filters,
+                limit=0,
+            )
+        )
+        assert resp.results == []
+        return resp.total_available
+
+    assert await count(RetrievalFilters(source_id=src)) == 20
+    assert await count(None) == 21
 
 
 async def test_catalog_edges_sort_default_is_created_at_desc(graph_store, retrieval_service):

@@ -101,6 +101,22 @@ def test_envelope_omits_model_name_and_docs_url():
     assert "validation error for" not in text
 
 
+def test_limit_below_zero_yields_invalid_parameter_envelope():
+    """``limit`` accepts zero, the count-only request, and nothing below it.
+
+    The constraint must name 0 as the floor: a floor left at 1 would still
+    refuse -1, so the refusal alone cannot tell the two bounds apart.
+    """
+    err = validation_error_envelope(_discover_error(limit=-1))
+
+    assert err.code == "invalid_parameter"
+    assert err.status_code == 422
+    assert err.detail["parameter"] == "limit"
+    assert err.detail["value"] == -1
+    assert "0" in err.detail["constraint"]
+    assert "1" not in err.detail["constraint"]
+
+
 # ---------------------------------------------------------------------------
 # A4-A5 -- other non-filter fields, and the optional hint
 # ---------------------------------------------------------------------------

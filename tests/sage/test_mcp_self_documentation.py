@@ -683,6 +683,29 @@ def test_discover_catalog_mode_named_canonical_document_enumerator():
     )
 
 
+def test_search_docstring_documents_count_only_limit():
+    """search publishes limit=0 as the count-only catalog request.
+
+    Anti-coincidental-pass: both checks read an isolated block. The
+    ``catalog:`` mode block must name the spelling and the field that
+    answers it, and the ``limit`` Args entry must widen its stated range to
+    zero and confine zero to catalog -- ``total_available`` is named
+    elsewhere in the docstring already, so a whole-docstring check would
+    pass without the change.
+    """
+    doc = _docstring(search)
+    catalog = re.search(r"\bcatalog:.*?(?=\n\s*deterministic:)", doc, re.DOTALL)
+    assert catalog is not None
+    assert "limit=0" in catalog.group(0)
+    assert "total_available" in catalog.group(0)
+
+    limit_arg = re.search(r"^\s*limit:(.*?)(?=^\s*\w+:)", doc, re.MULTILINE | re.DOTALL)
+    assert limit_arg is not None, "search docstring must retain a ``limit:`` Args entry."
+    entry = limit_arg.group(1)
+    assert "0-100" in entry
+    assert "catalog" in entry
+
+
 def test_discover_docstring_documents_source_type_vocabulary():
     """The source_type filter must publish its closed vocabulary.
 

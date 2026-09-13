@@ -3406,3 +3406,117 @@ inline, while per-hit metadata alone can exceed the budget at a large limit,
 so an excerpt alone cannot either. The fallback covers the second case. A
 scored re-page is not a prefix of the same rows, since candidate fetch scales
 with the limit, so the fallback's `recommended_limit` is advisory.
+
+
+### TEST-SAGE-BH-140: a catalog request with limit=0 returns the count without rows
+
+**Artifact:** `sage/models/schemas.py` (`DiscoverRequest.limit`), `sage/services/retrieval.py` (`_catalog`)
+**Category:** retrieval, catalog, count
+
+**Decision:** `limit=0` is the count-only spelling of a catalog request. The
+response carries `total_available` and an empty `results`. The count is the one
+the same request reports at any other limit: the filtered `COUNT(*)` is
+independent of the page, so a zero-row page changes nothing about it.
+
+**Precondition:** Vault with the five catalog seed documents.
+
+**Input:** `discover(mode="catalog", limit=0)`
+
+**Expected:**
+- `results == []`
+- `total_available` equals the `total_available` of the same request at
+  `limit=100`, and is greater than zero.
+
+**Rationale:** An existence or count question should not cost a page of rows.
+
+
+### TEST-SAGE-BH-141: a count-only catalog request matching nothing reports zero
+
+**Artifact:** `sage/services/retrieval.py` (`_catalog`)
+**Category:** retrieval, catalog, count
+
+**Decision:** A count-only request whose filters match no document is a
+successful response with `total_available == 0`, not an absent total.
+
+**Precondition:** Vault with the five catalog seed documents.
+
+**Input:** `discover(mode="catalog", limit=0, filters={"doc_type": "<unused type>"})`
+
+**Expected:**
+- `results == []`
+- `total_available == 0`
+
+**Rationale:** The zero is the answer to an existence check; a null total would
+leave the caller unable to tell "none" from "not reported".
+
+
+### TEST-SAGE-BH-142: filters constrain a count-only catalog request
+
+**Artifact:** `sage/services/retrieval.py` (`_catalog`)
+**Category:** retrieval, catalog, count
+
+**Decision:** A count-only request applies every filter the row-returning
+request applies, so its count is the size of the filtered set.
+
+**Precondition:** Vault with the five catalog seed documents, which differ by
+`doc_type` and by tag.
+
+**Input:** `discover(mode="catalog", limit=0)` unfiltered, then filtered by
+`doc_type`, then filtered by `tags`.
+
+**Expected:**
+- Each filtered count is smaller than the unfiltered count.
+- Each count equals the `total_available`, and the row count, of the same
+  filtered request at `limit=100`.
+
+**Rationale:** A count that ignored filters would answer every existence check
+with the vault's size.
+
+
+### TEST-SAGE-BH-143: min_relevance does not rewrite a catalog total
+
+**Artifact:** `sage/services/retrieval.py` (`_dispatch`)
+**Category:** retrieval, catalog, count
+
+**Decision:** The relevance threshold drops scored results below it and, for
+scored modes, reports the surviving count. Catalog results carry no score, so
+the threshold removes none of them, and the catalog total stays the filtered
+`COUNT(*)` rather than being replaced by the size of the page.
+
+**Precondition:** Vault with the five catalog seed documents.
+
+**Input:** `discover(mode="catalog", min_relevance=0.5, limit=L)` for `L` in
+`{0, 2}`.
+
+**Expected:**
+- `len(results) == L`
+- `total_available` equals the total of the same request without
+  `min_relevance`.
+
+**Rationale:** Replacing the total with the page size reports zero for a
+count-only request and breaks pagination for a paged one.
+
+
+### TEST-SAGE-BH-144: an edge enumeration with limit=0 returns the count without rows
+
+**Artifact:** `sage/models/schemas.py` (`DiscoverRequest.limit`), `sage/services/retrieval.py` (`_catalog_edges`)
+**Category:** retrieval, catalog, edges, count
+
+**Decision:** `limit=0` on the edges target is count-only, as on documents, and
+the edge filters constrain the count. `limit=0` in any mode other than catalog
+is refused with `mode_parameter_mismatch` naming catalog as the allowed mode;
+on the facets target it is refused on the target axis, which rejects any limit.
+
+**Precondition:** Twenty edges from one source document and one edge from
+another.
+
+**Input:** `discover(mode="catalog", target="edges", limit=0)` with and without
+`filters={"source_id": <first source>}`.
+
+**Expected:**
+- `results == []` in both.
+- `total_available == 20` filtered and `21` unfiltered.
+
+**Rationale:** Edge enumeration reports its total from the same kind of
+separate count, so the count-only spelling costs nothing to extend to it, and a
+caller counting edges has the same reason to avoid a page of rows.
