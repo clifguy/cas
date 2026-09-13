@@ -11,7 +11,9 @@ summary: >-
   fifth backfill, split_passages_over_embedding_input_bound, which divides stored
   over-bound sections from the stored passages and re-embeds only the documents it
   rewrites; its descriptions in sage_core_api.openapi.yaml and the MCP tool catalog
-  now say so. No operation, tool, parameter or response field is added or removed.
+  now say so, as do the descriptions of matched_chunk_count and of read_section's
+  chunk_count in the specification and the response models. No operation, tool,
+  parameter or response field is added or removed.
 for_callers: >-
   Documents indexed before this release keep any over-long passage until an operator
   runs migrate_vault on each vault; that run re-embeds the affected documents and

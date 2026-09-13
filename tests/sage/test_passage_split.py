@@ -84,6 +84,27 @@ def test_an_oversize_paragraph_splits_at_line_boundaries_not_mid_line() -> None:
     assert all(piece.endswith("\n") for piece in pieces[:-1])
 
 
+def test_fitting_multi_line_paragraphs_are_never_split_across_pieces() -> None:
+    """A paragraph that fits stays whole even when its lines would pack tighter.
+
+    A splitter cutting at lines alone passes every other test here, because
+    their paragraphs carry no inner newline or stand alone.
+    """
+    # Two paragraphs overflow the bound, but one and a half do not, so a
+    # line-packing splitter would carry lines of the next paragraph along.
+    paragraph = "\n".join(f"line {i} " + "q" * 7 for i in range(4))
+    assert N / 2 < len(paragraph) + 2 < N
+    text = "\n\n".join([paragraph] * 5)
+    fits = _fits_chars()
+
+    pieces = split_passage(text, fits)
+
+    _assert_exact_and_fitting(text, pieces, fits)
+    assert len(pieces) > 1
+    assert all(piece.endswith("\n\n") for piece in pieces[:-1])
+    assert all(piece.rstrip("\n") == paragraph for piece in pieces)
+
+
 def test_a_single_long_line_is_hard_split() -> None:
     text = "```\n" + "0123456789" * 50 + "\n```"
     body_line = "0123456789" * 50

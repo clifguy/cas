@@ -21,7 +21,7 @@ import pytest
 from sage.adapters.content_store_postgres import PostgresContentStore
 from sage.adapters.interfaces import Chunk
 from sage.adapters.stubs import StubAbstractionProvider, StubEmbeddingProvider
-from sage.models.enums import SourceType
+from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document
 from sage.services.ingestion import IngestionService
 from sage.services.maintenance import BACKFILL_PASSAGE_INPUT_BOUND, MaintenanceService
@@ -43,12 +43,17 @@ class _QuarterTokenEmbedder(StubEmbeddingProvider):
     def __init__(self) -> None:
         super().__init__(max_input_tokens=BOUND)
         self.embedded: list[str] = []
+        # Awaited inside ``embed``, where the migration is between its read of a
+        # document's passages and its rewrite of them.
+        self.during_embed = None
 
     def count_tokens(self, text: str) -> int:
         return len(text.encode("utf-8")) // 4 + 2
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         self.embedded.extend(texts)
+        if self.during_embed is not None:
+            await self.during_embed()
         return await super().embed(texts)
 
 
@@ -90,6 +95,7 @@ def _doc(document_id: str) -> Document:
         last_modified_by="t",
         updated_at=now,
         doc_type="ticket",
+        pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
     )
 
 
@@ -261,3 +267,94 @@ async def test_migrated_passages_match_what_ingest_now_writes(
         return [(c.heading_path, c.section_index, c.content, c.chunk_index) for c in chunks]
 
     assert shape(migrated) == shape(fresh)
+
+
+# ---------------------------------------------------------------------------
+# The migration shares the server with ingest, and must not overwrite a
+# document that is being re-indexed while it works.
+# ---------------------------------------------------------------------------
+
+
+def _shape(chunks):
+    return [(c.heading_path, c.content, c.section_index) for c in chunks]
+
+
+async def test_a_document_with_pipeline_work_in_flight_is_left_for_a_later_run(
+    graph_store, store, ingestion, embedder, minimal_config, tmp_vault_dir, legacy_vault
+):
+    maintenance = _maintenance(graph_store, store, ingestion, minimal_config, tmp_vault_dir)
+    assert ingestion._try_claim(OVERSIZE, "recompute") is None
+
+    report = await maintenance.migrate_vault()
+
+    assert BACKFILL_PASSAGE_INPUT_BOUND not in report.backfills_applied
+    assert embedder.embedded == []
+    assert _shape(await store.get_all_chunks(OVERSIZE)) == _shape(legacy_vault)
+
+    ingestion._release_claim(OVERSIZE)
+    report = await maintenance.migrate_vault()
+
+    assert BACKFILL_PASSAGE_INPUT_BOUND in report.backfills_applied, (
+        "control: the same document is divided once nothing holds it"
+    )
+
+
+async def test_a_document_mid_pipeline_is_left_for_a_later_run(
+    graph_store, store, ingestion, embedder, minimal_config, tmp_vault_dir, legacy_vault
+):
+    await graph_store.update_document(
+        OVERSIZE, {"pipeline_status": PipelineStatus.INDEXING_IN_PROGRESS.value}
+    )
+
+    report = await _maintenance(
+        graph_store, store, ingestion, minimal_config, tmp_vault_dir
+    ).migrate_vault()
+
+    assert BACKFILL_PASSAGE_INPUT_BOUND not in report.backfills_applied
+    assert embedder.embedded == []
+    assert _shape(await store.get_all_chunks(OVERSIZE)) == _shape(legacy_vault)
+
+
+async def test_passages_rewritten_while_the_division_embeds_are_not_overwritten(
+    graph_store, store, ingestion, embedder, minimal_config, tmp_vault_dir, legacy_vault
+):
+    concurrent = [
+        Chunk(
+            document_id=OVERSIZE,
+            heading_path="Doc",
+            content="# Doc\n\nre-indexed meanwhile",
+            embedding=[0.5] * EMBEDDING_DIM,
+            chunk_index=0,
+            section_index=0,
+        )
+    ]
+
+    async def reindex_meanwhile():
+        embedder.during_embed = None
+        await store.index_chunks(OVERSIZE, concurrent)
+
+    embedder.during_embed = reindex_meanwhile
+
+    report = await _maintenance(
+        graph_store, store, ingestion, minimal_config, tmp_vault_dir
+    ).migrate_vault()
+
+    assert embedder.embedded, "control: the division reached its embed call"
+    assert _shape(await store.get_all_chunks(OVERSIZE)) == _shape(concurrent)
+    assert BACKFILL_PASSAGE_INPUT_BOUND not in report.backfills_applied
+
+
+async def test_the_division_holds_the_document_while_it_embeds(
+    graph_store, store, ingestion, embedder, minimal_config, tmp_vault_dir, legacy_vault
+):
+    observed = []
+
+    async def try_to_claim():
+        observed.append(ingestion._try_claim(OVERSIZE, "recompute"))
+
+    embedder.during_embed = try_to_claim
+
+    await _maintenance(graph_store, store, ingestion, minimal_config, tmp_vault_dir).migrate_vault()
+
+    assert observed and observed[0] is not None, "a recompute could start mid-division"
+    assert OVERSIZE not in ingestion._inflight, "the division's claim outlived it"

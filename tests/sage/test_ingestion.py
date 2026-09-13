@@ -857,6 +857,35 @@ def test_chunk_projection_leaves_sections_under_the_bound_unsplit(ingestion_serv
     assert chunks[2].content == "## Tail\n\nShort closing."
 
 
+def test_chunk_projection_keeps_a_section_whole_when_its_heading_path_fills_the_bound(
+    ingestion_service,
+):
+    """No division can fit when the heading path alone overflows the bound.
+
+    Dividing anyway emits one passage per code point, each embedded as the same
+    truncated heading path; one passage is the least-bad outcome.
+    """
+    from sage.source_adapters.base import HeadingNode, ProjectionResult
+
+    service = _bounded(ingestion_service, bound=40)
+    path = "Doc > " + "An extremely long heading promoted from a styled paragraph"
+    body = "First paragraph of the section.\n\nSecond paragraph of the section."
+
+    chunks = service._chunk_projection(
+        "doc_long_heading",
+        ProjectionResult(
+            text="unused",
+            headings=[HeadingNode(level=2, text=path[6:], path=path, content=body)],
+            content_hash="sha256:longheading",
+            adapter_version="0.1.0",
+            title="Doc",
+        ),
+    )
+
+    assert len(path.encode()) > 40
+    assert [(c.heading_path, c.content) for c in chunks] == [(path, f"## {path[6:]}\n\n{body}")]
+
+
 def _document_for_surface(
     *,
     title: str,

@@ -3793,12 +3793,13 @@ class DiscoverHit(BaseModel):
     matched_chunk_count: int | None = Field(
         default=None,
         description=(
-            "Number of passages of this document that matched the query. "
-            "Present in semantic and keyword modes. A document with many "
-            "matching passages is a stronger hit than one with a single match "
-            "at a similar peak score. Useful as a reranking signal. Zero when "
-            "the document matched through its document-level text alone, which "
-            "is not a passage."
+            "Number of sections of this document that matched the query. "
+            "Present in semantic and keyword modes. A section the index stores "
+            "as several passages counts once, however many of them matched. A "
+            "document with many matching sections is a stronger hit than one "
+            "with a single match at a similar peak score. Useful as a reranking "
+            "signal. Zero when the document matched through its document-level "
+            "text alone, which is not a section."
         ),
     )
 
@@ -4139,7 +4140,12 @@ class ReadSectionResponse(BaseModel):
     document_id: DocumentIdStr = Field(description="Id of the document whose section was read.")
     title: str = Field(description="Human-readable title of the document.")
     heading_path: str = Field(description="Heading-path prefix that scoped the section read.")
-    chunk_count: int = Field(description="Number of chunks matched by the heading_path prefix.")
+    chunk_count: int = Field(
+        description=(
+            "Number of sections matched by the heading_path prefix. A section the "
+            "index stores as several passages counts once."
+        )
+    )
     section_text: str = Field(description="Concatenated text of all chunks under the heading path.")
     read_meta: ReadMeta = Field(
         default_factory=lambda: ReadMeta(success=True, body_present=False),

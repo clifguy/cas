@@ -3003,7 +3003,12 @@ class IngestionService:
         """
         chunks: list[Chunk] = []
         for section_index, (heading_path, content) in enumerate(sections):
-            for piece in split_passage(content, self._fits_embedding_input(heading_path)):
+            fits = self._fits_embedding_input(heading_path)
+            # Where the heading path leaves no room for any content, no division
+            # fits, and dividing anyway yields a passage per code point, each
+            # embedded as the same truncated path. The section stays whole.
+            pieces = split_passage(content, fits) if fits(content[:1]) else [content]
+            for piece in pieces:
                 chunks.append(
                     Chunk(
                         document_id=document_id,
@@ -3066,30 +3071,50 @@ class IngestionService:
         scalars stamped on it -- are carried from its section, and the document's
         passages are re-embedded together, since they are replaced together.
 
+        The migration runs in the server that serves ingest, and pipeline work
+        replaces a document's passages without the document lock, so the lock
+        would not exclude it. A document with pipeline work in flight or not yet
+        at a terminal status is left for a later run instead; the division holds
+        the document's pipeline claim while it embeds, so no reabstract or
+        recompute starts meanwhile; and the passages are read again before the
+        write, which is abandoned if they changed in the interval.
+
         Returns:
             Whether the passages were rewritten. A document whose division is
-            unchanged is not, so nothing is re-embedded for it.
+            unchanged, or that is skipped or changed under the division, is not.
         """
-        stored = await self._content_store.get_all_chunks(document_id)
-        sections = group_sections(stored)
-        divided = self._passages_for_sections(
-            document_id, [(section[0].heading_path, section_text(section)) for section in sections]
-        )
-        if [(c.heading_path, c.content) for c in divided] == [
-            (c.heading_path, c.content) for c in stored
-        ]:
+        doc = await self._store.get_document(document_id)
+        if doc is None or doc.pipeline_status not in TERMINAL_PIPELINE_STATUS_VALUES:
             return False
+        if self._try_claim(document_id, "divide") is not None:
+            return False
+        try:
+            stored = await self._content_store.get_all_chunks(document_id)
+            sections = group_sections(stored)
+            divided = self._passages_for_sections(
+                document_id,
+                [(section[0].heading_path, section_text(section)) for section in sections],
+            )
+            as_read = [(c.heading_path, c.content) for c in stored]
+            if [(c.heading_path, c.content) for c in divided] == as_read:
+                return False
 
-        for chunk in divided:
-            origin = sections[chunk.section_key][0]
-            chunk.indexed_structure = origin.indexed_structure
-            chunk.doc_type = origin.doc_type
-            chunk.lifecycle_status = origin.lifecycle_status
-            chunk.project = origin.project
-        embeddings = await self._embedding.embed(
-            [embedding_input(c.heading_path, c.content) for c in divided]
-        )
-        for chunk, embedding in zip(divided, embeddings):
-            chunk.embedding = embedding
-        await self._content_store.index_chunks(document_id, divided)
-        return True
+            for chunk in divided:
+                origin = sections[chunk.section_key][0]
+                chunk.indexed_structure = origin.indexed_structure
+                chunk.doc_type = origin.doc_type
+                chunk.lifecycle_status = origin.lifecycle_status
+                chunk.project = origin.project
+            embeddings = await self._embedding.embed(
+                [embedding_input(c.heading_path, c.content) for c in divided]
+            )
+            for chunk, embedding in zip(divided, embeddings):
+                chunk.embedding = embedding
+
+            current = await self._content_store.get_all_chunks(document_id)
+            if [(c.heading_path, c.content) for c in current] != as_read:
+                return False
+            await self._content_store.index_chunks(document_id, divided)
+            return True
+        finally:
+            self._release_claim(document_id)
