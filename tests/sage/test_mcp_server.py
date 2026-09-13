@@ -1570,6 +1570,30 @@ async def test_discover_catalog_sort_by_title_through_mcp_wrapper(vault_services
     assert titles_asc == list(reversed(titles_desc))
 
 
+async def test_search_catalog_limit_zero_through_mcp_wrapper(vault_services):
+    """limit=0 on the MCP wrapper returns the catalog count with no rows.
+
+    Anti-coincidental: the expected total is the one a row-returning call
+    reports, and that call must see both seeded documents, so a wrapper that
+    defaulted or clamped limit=0 (returning rows) or a total taken from the
+    empty page (zero) both fail.
+    """
+    doc_a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    doc_b = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
+    await _await_document_idle(vault_services, "test_vault", doc_a["id"])
+    await _await_document_idle(vault_services, "test_vault", doc_b["id"])
+
+    rows = _parse(await search("test_vault", mode="catalog", limit=10))
+    assert len(rows["results"]) == 2
+    assert rows["total_available"] == 2
+
+    counted = _parse(await search("test_vault", mode="catalog", limit=0))
+
+    assert "error" not in counted, counted
+    assert counted["results"] == []
+    assert counted["total_available"] == rows["total_available"]
+
+
 async def test_discover_deterministic(vault_services):
     doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
     await _await_document_idle(vault_services, "test_vault", doc["id"])

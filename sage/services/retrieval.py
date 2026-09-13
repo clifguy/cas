@@ -1113,7 +1113,8 @@ class RetrievalService:
                 response = await self._catalog(request, phases)
 
             # Relevance threshold: drop scored results below min_relevance.
-            # Unscored results (catalog, deterministic) are always kept.
+            # Unscored results (catalog, deterministic) are always kept, so
+            # catalog's total stays the filtered count rather than the page.
             with phases.phase("post_filter_min_relevance"):
                 if request.min_relevance is not None:
                     response.results = [
@@ -1121,7 +1122,8 @@ class RetrievalService:
                         for h in response.results
                         if h.relevance_score is None or h.relevance_score >= request.min_relevance
                     ]
-                    response.total_available = len(response.results)
+                    if request.mode != RetrievalMode.CATALOG:
+                        response.total_available = len(response.results)
 
                 if not request.include_abstracts:
                     for hit in response.results:

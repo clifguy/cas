@@ -1,0 +1,19 @@
+classification: minor
+category: [capability]
+summary: >-
+  DiscoverRequest.limit accepts 0 (minimum 1 to 0) in sage_core_api.openapi.yaml
+  and on the search tool in sage_mcp_tools.catalog.json. A catalog request with
+  limit 0, on the documents or edges target, returns total_available and no
+  results. limit 0 in semantic, keyword, or deterministic mode is refused with
+  mode_parameter_mismatch, where the former floor refused it with
+  invalid_parameter; on the facets target it is refused as any non-default limit
+  already was. The catalog total is also no longer replaced by the page size
+  when min_relevance is supplied, which has no effect on unscored catalog
+  results.
+for_callers: >-
+  Catalog search accepts limit=0 as a count-only request: the response carries
+  total_available and no results, for documents and for edges. limit=0 in any
+  other mode, or on the facets target, is refused with mode_parameter_mismatch
+  (400) rather than invalid_parameter (422). A catalog search that supplies
+  min_relevance now reports the full filtered count in total_available rather
+  than the size of the page.
