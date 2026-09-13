@@ -512,8 +512,8 @@ def register_sage_tools(
           ``existing_document_id``. ``force=true`` does NOT override this --
           uniqueness is independent of content-hash deduplication.
         - ``vault_migration_in_flight`` (409): ``migrate_vault`` is running
-          on this vault. ``detail`` carries ``vault_id`` and the time the
-          migration started. Raised before anything else, a ``dry_run``
+          on this vault. ``detail`` carries ``vault_id`` and the migration's
+          ISO 8601 ``start_time``. Raised before anything else, a ``dry_run``
           included; retry once the migration has returned.
 
         An ingest that fails after redeeming a ``transfer_token`` -- for any
@@ -3103,7 +3103,9 @@ def register_sage_tools(
         rewrite stored passages, so the migration and pipeline work exclude
         each other: the call is refused while any ingest, reabstract or
         recompute is queued or running on the vault, and while it runs those
-        calls are refused in turn.
+        calls are refused in turn. The exclusion covers this server process only:
+        a reabstract sweep run as its own job is not seen, so do not run one
+        during a migration.
 
         **The last backfill is expensive and exclusive, and runs once.** It
         rewrites the passage table and rebuilds every index over it, including

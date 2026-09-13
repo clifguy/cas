@@ -828,8 +828,8 @@ paths:
 
 
             `vault_migration_in_flight`: `migrate_vault` is running on this
-            vault. Detail carries `vault_id` and the time the migration
-            started; retry once it has returned.
+            vault. Detail carries `vault_id` and the migration's ISO 8601
+            `start_time`; retry once it has returned.
           content:
             application/json:
               schema:
@@ -3255,7 +3255,9 @@ paths:
         rewrite stored passages, so the migration and pipeline work exclude
         each other: the call is refused while any ingest, reabstract or
         recompute is queued or running on the vault, and while it runs
-        those calls are refused in turn.
+        those calls are refused in turn. The exclusion covers this server
+        process only: a reabstract sweep run as its own job is not seen, so
+        do not run one during a migration.
 
 
         Idempotent: a re-call against an already-migrated vault with

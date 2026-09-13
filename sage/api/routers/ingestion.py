@@ -173,8 +173,8 @@ router = APIRouter(tags=["Ingestion"])
                 "is never disturbed. Detail carries `doc_type`, `field`, "
                 "`colliding_value` and `existing_document_id`.\n\n"
                 "`vault_migration_in_flight`: `migrate_vault` is running on this "
-                "vault. Detail carries `vault_id` and the time the migration "
-                "started; retry once it has returned."
+                "vault. Detail carries `vault_id` and the migration's ISO 8601 "
+                "`start_time`; retry once it has returned."
             ),
         },
         422: {

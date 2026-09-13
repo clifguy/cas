@@ -398,9 +398,9 @@ class IngestionService:
         """Hold the vault free of pipeline work for a migration, however the block ends.
 
         Check and hold happen with no await between them. The state is this
-        process's, which suffices only while the deployment pins one replica;
-        a second would run work it cannot see, and the exclusion would have to
-        move to the store.
+        process's, which suffices only while the deployment pins one replica and
+        no separate job (a scheduled reabstract sweep) runs pipeline work beside
+        it; otherwise the exclusion would have to move to the store.
         """
         self.refuse_during_migration()
         if self._inflight or self._ingests_running:

@@ -368,7 +368,8 @@ class MaintenanceService:
 
         The backfills have no per-document concurrency control, so the migration
         and pipeline work -- a deferred reabstract pass included -- exclude each
-        other on the vault (``PipelineWorkInFlightError``).
+        other on the vault (``PipelineWorkInFlightError``). Without an ingestion
+        service the process runs no pipeline work, so there is nothing to exclude.
         """
         if self._reabstract_lock.locked():
             raise PipelineWorkInFlightError(self._vault_id)
@@ -1459,6 +1460,8 @@ class MaintenanceService:
         until the first ``__anext__()``).
         """
         async with self._reabstract_lock:
+            # A streaming caller suspends between the checks above and this body.
+            ingestion.refuse_during_migration()
             self._reabstract_started_at = datetime.now(timezone.utc)
             try:
                 all_docs = await self._graph_store.list_all_documents()

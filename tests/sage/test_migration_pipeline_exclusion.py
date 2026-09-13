@@ -332,6 +332,24 @@ async def test_a_deferred_reabstract_pass_is_refused_mid_migration(
     await migration
 
 
+async def test_a_streaming_deferred_pass_started_before_a_migration_is_refused_at_its_lock(
+    ingestion_service, maintenance, backfill, minimal_config
+):
+    """Rival: taking the pass's lock without re-checking. A streaming caller
+    passes the synchronous checks, then suspends before the body takes the lock,
+    and a migration admitted in between would run alongside the pass."""
+    events = maintenance.reabstract_deferred_events()
+    migration, started = await _start_held_migration(maintenance, backfill)
+
+    with pytest.raises(VaultMigrationInFlightError) as excinfo:
+        await _within(events.__anext__())
+
+    _assert_migration_refusal(excinfo, minimal_config, started)
+    assert not maintenance._reabstract_lock.locked()
+    backfill.gate.set()
+    await migration
+
+
 async def test_a_second_migration_is_refused_while_one_runs(
     ingestion_service, maintenance, backfill, minimal_config
 ):

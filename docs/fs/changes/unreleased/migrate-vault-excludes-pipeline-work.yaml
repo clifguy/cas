@@ -26,4 +26,5 @@ for_callers: >-
   included), recompute_abstract, recompute_pipeline and
   recompute_deferred_vault_abstracts return vault_migration_in_flight (409), and a batch
   ingest records it per file; retry once the migration has returned. A migration no
-  longer leaves documents for a later call.
+  longer leaves documents for a later call. The exclusion covers the serving process only;
+  do not run a separately scheduled reabstract job during a migration.
