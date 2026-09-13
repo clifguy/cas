@@ -1,8 +1,12 @@
-classification: minor
-category:
-  - capability
-  - caller-adaptation
-  - operator-adaptation
+classification: patch
+detector_override:
+  reason: >-
+    Owner judgment, released as a patch. The new 409 responses arise only while
+    migrate_vault runs, an operator-initiated maintenance call: a caller making ingest,
+    reabstract or recompute calls outside a migration receives exactly the responses it
+    did before. migrate_vault's own refusal replaces the previous in-flight handling
+    (documents left for a later call) rather than adding a capability, and no operation,
+    parameter or response field is added or removed.
 summary: >-
   migrate_vault and pipeline work exclude each other on a vault. migrate_vault is
   refused with pipeline_work_in_flight (409) while an ingest, reabstract, recompute or
