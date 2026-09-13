@@ -1448,16 +1448,21 @@ describe('Search view: active constraints are named and clearable', () => {
 
     const user = userEvent.setup();
     await user.click(screen.getByRole('button', { name: 'Clear filter: Document type' }));
-    await screen.findByRole('button', { name: /^browse$/i });
     mockDiscover.mockClear();
 
     // The form's doc-type buffer was seeded from the URL. If clearing the
     // URL does not re-seed it, submitting writes the cleared value back.
+    // The submit changes another filter so the URL differs and a request
+    // actually fires -- resubmitting an identical URL does not refetch,
+    // and an assertion over its requests would read none.
+    await user.click(screen.getByRole('button', { name: /show filters/i }));
+    // selects[0] is mode, selects[1] is doc type, selects[2] is lifecycle
+    await user.selectOptions(screen.getAllByRole('combobox')[2], 'draft');
     await user.click(screen.getByRole('button', { name: /^browse$/i }));
 
+    await vi.waitFor(() => expect(mockDiscover).toHaveBeenCalled());
     expect(new URLSearchParams(locationRef.current).has('doc_type')).toBe(false);
-    for (const [, request] of mockDiscover.mock.calls) {
-      expect(request.filters).toBeUndefined();
-    }
+    const [, request] = mockDiscover.mock.calls[mockDiscover.mock.calls.length - 1];
+    expect(request.filters).toEqual({ lifecycle_status: 'draft' });
   });
 });

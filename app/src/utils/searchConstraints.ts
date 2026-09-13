@@ -21,6 +21,12 @@ const LABELS: Record<string, string> = {
   exclude_terminal_lifecycle: 'Excluding terminal lifecycle states',
 };
 
+// Identifier-valued keys render with underscores as spaces, the form the
+// doc-type heading and the project select already use. Tags are literal
+// values and an unknown key has no display convention, so both render as
+// given.
+const SPACED_VALUES = new Set(['doc_type', 'lifecycle_status', 'project', 'pipeline_status']);
+
 export function describeConstraints(filters: Filters | undefined): Constraint[] {
   if (!filters) return [];
   const out: Constraint[] = [];
@@ -28,7 +34,8 @@ export function describeConstraints(filters: Filters | undefined): Constraint[] 
     // Values that narrow nothing are not constraints.
     if (raw === undefined || raw === null || raw === false || raw === '') continue;
     if (Array.isArray(raw) && raw.length === 0) continue;
-    const value = Array.isArray(raw) ? raw.join(', ') : raw === true ? '' : String(raw);
+    let value = Array.isArray(raw) ? raw.join(', ') : raw === true ? '' : String(raw);
+    if (SPACED_VALUES.has(key)) value = value.replace(/_/g, ' ');
     out.push({ key, label: LABELS[key] ?? key, value });
   }
   return out;

@@ -9,26 +9,28 @@ describe('describeConstraints', () => {
     // request without a matching label has to reach the screen anyway,
     // or the table becomes the hand-maintained list that let a filter
     // narrow results invisibly in the first place.
-    expect(describeConstraints({ future_filter: 'x' } as never)).toEqual([
-      { key: 'future_filter', label: 'future_filter', value: 'x' },
+    expect(describeConstraints({ future_filter: 'x_y' } as never)).toEqual([
+      { key: 'future_filter', label: 'future_filter', value: 'x_y' },
     ]);
   });
 
   it('shapes array and boolean values, and labels known keys', () => {
+    // Identifier values read with spaces, as the doc-type heading and the
+    // project select show them; a tag is a literal and keeps its underscore.
     expect(
       describeConstraints({
-        tags: ['a', 'b'],
+        tags: ['a_b', 'c'],
         exclude_terminal_lifecycle: true,
-        doc_type: 'reference',
+        doc_type: 'reference_document',
       }),
     ).toEqual([
-      { key: 'tags', label: 'Tags', value: 'a, b' },
+      { key: 'tags', label: 'Tags', value: 'a_b, c' },
       {
         key: 'exclude_terminal_lifecycle',
         label: 'Excluding terminal lifecycle states',
         value: '',
       },
-      { key: 'doc_type', label: 'Document type', value: 'reference' },
+      { key: 'doc_type', label: 'Document type', value: 'reference document' },
     ]);
   });
 
