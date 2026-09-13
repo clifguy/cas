@@ -8,6 +8,7 @@ three-layer service + router + MCP-tool shape.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
@@ -19,6 +20,7 @@ from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.api.errors import (
     DocumentNotFoundError,
     DocumentScopeUnmatchedError,
+    PipelineWorkInFlightError,
     ReabstractAlreadyInFlightError,
     RestoreProvenanceMismatchError,
     RestoreSourceNotAbsoluteError,
@@ -363,7 +365,22 @@ class MaintenanceService:
         torn down. The returned MigrationReport carries both
         ``tier3_uniqueness_activations`` (successful installs) and
         ``tier3_uniqueness_collisions`` (refused activations).
+
+        The backfills have no per-document concurrency control, so the migration
+        and pipeline work -- a deferred reabstract pass included -- exclude each
+        other on the vault (``PipelineWorkInFlightError``). Without an ingestion
+        service the process runs no pipeline work, so there is nothing to exclude.
         """
+        if self._reabstract_lock.locked():
+            raise PipelineWorkInFlightError(self._vault_id)
+        exclude = (
+            self._ingestion.exclude_pipeline_work if self._ingestion else contextlib.nullcontext
+        )
+        with exclude():
+            return await self._migrate_vault()
+
+    async def _migrate_vault(self) -> MigrationReport:
+        """The body of ``migrate_vault``, run while pipeline work is excluded."""
         cleared = await self._graph_store.clear_pipeline_error_for_statuses(
             sorted(status.value for status in SUCCESSFUL_TERMINAL_PIPELINE_STATUSES)
         )
@@ -1426,6 +1443,7 @@ class MaintenanceService:
                 "explicitly."
             )
 
+        self._ingestion.refuse_during_migration()
         self._reject_if_in_flight()
         # Local capture narrows `IngestionService | None` to
         # `IngestionService` for the inner-generator call site; the
@@ -1442,6 +1460,8 @@ class MaintenanceService:
         until the first ``__anext__()``).
         """
         async with self._reabstract_lock:
+            # A streaming caller suspends between the checks above and this body.
+            ingestion.refuse_during_migration()
             self._reabstract_started_at = datetime.now(timezone.utc)
             try:
                 all_docs = await self._graph_store.list_all_documents()

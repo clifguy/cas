@@ -79,7 +79,10 @@ async def open_document(
             "model": ErrorResponse,
             "description": (
                 "`reabstract_document_already_in_flight`: a re-abstraction is "
-                "already running for this document."
+                "already running for this document.\n\n"
+                "`vault_migration_in_flight`: `migrate_vault` is running on this "
+                "vault. Detail carries `vault_id` and the migration's ISO 8601 "
+                "`start_time`; retry once it has returned."
             ),
         },
     },

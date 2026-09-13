@@ -68,6 +68,16 @@ async def _format_reabstract_stream(
             "model": ErrorResponse,
             "description": "`vault_not_found`: no vault registered with that id.",
         },
+        409: {
+            "model": ErrorResponse,
+            "description": (
+                "`pipeline_work_in_flight`: an ingest, reabstract or recompute is "
+                "queued or running on the vault. Detail carries `vault_id`; retry "
+                "once it has drained.\n\n"
+                "`vault_migration_in_flight`: another `migrate_vault` is running "
+                "on this vault. Detail carries `vault_id` and the time it started."
+            ),
+        },
     },
 )
 async def migrate_vault(
@@ -116,7 +126,11 @@ async def detect_drift(
         409: {
             "model": ErrorResponse,
             "description": (
-                "`reabstract_already_in_flight`: a reabstract is already running on this vault."
+                "`reabstract_already_in_flight`: a reabstract is already running on "
+                "this vault.\n\n"
+                "`vault_migration_in_flight`: `migrate_vault` is running on this "
+                "vault. Detail carries `vault_id` and the migration's ISO 8601 "
+                "`start_time`; retry once it has returned."
             ),
         },
     },

@@ -150,6 +150,42 @@ KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
         "bare-name heritage; the forms it still refuses are pinned by "
         "test_reader_refuses_heritage_it_does_not_model"
     ),
+    "tests/sage/test_passage_replace_if_unchanged.py": (
+        "the content-store compare-and-replace and per-document passage write lock it pinned "
+        "are removed; migrate_vault now excludes pipeline work at the vault level"
+    ),
+    **{
+        f"tests/sage/test_content_store_seam.py::"
+        f"test_cs5_binding_signature_matches_port[replace_chunks_if_unchanged-{binding}]": (
+            "signature arm for a port method removed from the port and every binding"
+        )
+        for binding in ("PostgresContentStore", "StubContentStore")
+    },
+    **{
+        f"tests/sage/test_passage_bound_migration.py::{name}": (
+            "pinned the division deferring a document to a later migration run, which the "
+            "vault-level migration exclusion replaces; covered by "
+            "test_migration_pipeline_exclusion.py"
+        )
+        for name in (
+            "test_a_document_with_pipeline_work_in_flight_is_left_for_a_later_run",
+            "test_passages_rewritten_while_the_division_embeds_are_not_overwritten",
+            "test_a_document_left_for_a_later_run_is_logged_with_its_reason",
+        )
+    },
+    **{
+        f"tests/sage/test_passage_bound_migration.py::"
+        f"test_a_document_mid_pipeline_is_left_for_a_later_run[{status}]": (
+            "inverted and renamed test_a_document_at_a_non_terminal_status_is_divided now that "
+            "the division no longer skips a non-terminal document"
+        )
+        for status in ("indexing_in_progress", "abstraction_in_progress")
+    },
+    "tests/sage/test_passage_bound_migration.py::"
+    "test_the_division_holds_the_document_while_it_embeds": (
+        "renamed test_the_division_holds_the_document_from_its_read_to_its_write when it began "
+        "observing the per-document lock at the read as well as the embed"
+    ),
 }
 
 
