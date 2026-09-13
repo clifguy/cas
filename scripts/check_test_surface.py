@@ -145,6 +145,11 @@ KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
         "renamed test_no_fixture_hands_off_an_unsettled_document when the unwaited-fixture "
         "arm began anchoring on return and completion as well as yield"
     ),
+    "tests/app/test_frontend_type_conformance.py::test_reader_refuses_a_heritage_clause": (
+        "replaced by test_reader_resolves_a_heritage_clause when the reader began resolving "
+        "bare-name heritage; the forms it still refuses are pinned by "
+        "test_reader_refuses_heritage_it_does_not_model"
+    ),
     "tests/sage/test_passage_replace_if_unchanged.py": (
         "the content-store compare-and-replace and per-document passage write lock it pinned "
         "are removed; migrate_vault now excludes pipeline work at the vault level"
