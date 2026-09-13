@@ -2181,6 +2181,38 @@ async def test_verify_source_files_unmatched_scope_is_refused_naming_ids(
     assert calls == []
 
 
+async def test_verify_source_files_scope_does_not_enumerate_the_vault(
+    graph_store, minimal_config, stub_content_store, monkeypatch
+):
+    """A scoped audit reads its documents by id and never lists the vault, so
+    its graph work is bounded by the scope as its store work is.
+
+    Anti-coincidental-pass: both of the graph store's listing reads are made to
+    fail outright, so an implementation that listed documents and filtered the
+    list fails here however few documents it went on to audit. The unscoped call
+    in the same test must still fail, proving the patch reached the store the
+    service reads.
+    """
+    gs = graph_store
+    maint = _maintenance_for(gs, minimal_config, content_store=stub_content_store)
+    await _seed_scope_vault(gs, minimal_config)
+
+    async def _enumeration_refused(*_args, **_kwargs):
+        raise AssertionError("list_all_documents called")
+
+    async def _query_refused(*_args, **_kwargs):
+        raise AssertionError("query_documents called")
+
+    monkeypatch.setattr(gs, "list_all_documents", _enumeration_refused)
+    monkeypatch.setattr(gs, "query_documents", _query_refused)
+
+    report = await maint.verify_vault_source_files(document_ids=["aaaaaaaa_ina"])
+    assert report.total_documents_checked == 1
+
+    with pytest.raises(AssertionError, match="list_all_documents called"):
+        await maint.verify_vault_source_files()
+
+
 async def test_verify_source_files_scope_duplicates_collapse(
     graph_store, minimal_config, stub_content_store
 ):

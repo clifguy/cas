@@ -627,9 +627,9 @@ class MaintenanceService:
         at the far end, so it outranks ``missing``: an absent copy at such
         a path is not repaired by re-delivering the content.
 
-        A scope is applied to the enumeration, before the store is consulted,
-        so the store's work is bounded by the scope and not by the vault. An id
-        in the scope that names no document raises
+        A scoped audit reads its documents by id rather than listing the vault,
+        so both its graph and its store work are bounded by the scope rather
+        than by the vault. An id in the scope that names no document raises
         :class:`DocumentScopeUnmatchedError` before any store call: auditing
         only the ids that matched would hand back a report covering less than
         the caller asked about, and a misspelled id a clean report over nothing.
@@ -639,13 +639,19 @@ class MaintenanceService:
         aggregate counts over the documents inspected; documents with an
         intact source file are absent from ``entries``.
         """
-        docs = await self._graph_store.list_all_documents()
-        if document_ids is not None:
-            scope = set(document_ids)
-            docs = [doc for doc in docs if doc.id in scope]
-            unmatched = scope - {doc.id for doc in docs}
+        if document_ids is None:
+            docs = await self._graph_store.list_all_documents()
+        else:
+            docs = []
+            unmatched: list[str] = []
+            for doc_id in sorted(set(document_ids)):
+                doc = await self._graph_store.get_document(doc_id)
+                if doc is None:
+                    unmatched.append(doc_id)
+                else:
+                    docs.append(doc)
             if unmatched:
-                raise DocumentScopeUnmatchedError(sorted(unmatched))
+                raise DocumentScopeUnmatchedError(unmatched)
         storage_root = self._storage_root()
         store = self._vault_source_store()
 

@@ -244,3 +244,35 @@ async def test_post_verify_source_files_unmatched_scope_returns_404(maintenance_
     body = resp.json()
     assert body["code"] == "document_scope_unmatched"
     assert body["detail"] == {"unmatched_ids": ["deadbeef_absent"]}
+
+
+@pytest.mark.parametrize(
+    ("document_ids", "status", "code"),
+    [
+        (["not a document id!"], 400, "invalid_document_id"),
+        ([], 422, "invalid_parameter"),
+    ],
+)
+async def test_post_verify_source_files_rejects_malformed_or_empty_scope(
+    maintenance_app, document_ids, status, code
+):
+    """A malformed id or an empty scope is refused at the request boundary.
+
+    Anti-coincidental-pass: a route that accepted the body unvalidated would
+    answer both with a 200 report -- an empty scope as a clean report over no
+    documents, which is the outcome the at-least-one rule exists to prevent.
+    """
+    app, vault_id, _content_store, _vault_dir = maintenance_app
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/maintenance/verify-source-files",
+            json={"document_ids": document_ids},
+        )
+
+    assert resp.status_code == status, resp.text
+    body = resp.json()
+    assert body["code"] == code
+    if code == "invalid_parameter":
+        assert body["detail"]["parameter"] == "document_ids"

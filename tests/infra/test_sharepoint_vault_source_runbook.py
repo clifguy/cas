@@ -155,9 +155,8 @@ def test_runbook_describes_the_audit_as_scoped_in_work_as_well_as_verdict() -> N
     """
     text = _runbook_text()
     assert "document_ids" in text, "runbook must name the scope the audit is called with"
-    assert "the audit's cost grows with it" not in text, (
-        "runbook still warns that residue grows the audit's work"
-    )
+    for stale in ("Residue grows", "the audit's cost grows with it"):
+        assert stale not in text, f"runbook still warns that residue grows the audit: {stale!r}"
 
 
 def test_operator_command_blocks_declare_the_rewrite_expectation() -> None:
