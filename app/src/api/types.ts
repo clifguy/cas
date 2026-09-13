@@ -623,10 +623,32 @@ export type DefaultVaultConfig = {
   [key: string]: unknown;
 };
 
+// Body of a vault config update: any subset of sections, each replacing the
+// persisted section whole. `dry_run` evaluates the update and persists nothing.
+export interface UpdateVaultConfigRequest {
+  vault?: VaultIdentityConfig;
+  document_types?: { doc_types: DocTypeConfig[] };
+  lifecycle?: LifecycleConfig;
+  adapter_defaults?: Record<string, unknown>;
+  metadata_extraction?: Record<string, unknown>;
+  edge_inference?: Record<string, unknown>;
+  abstraction?: VaultAbstractionConfig;
+  access_control_defaults?: Record<string, unknown> | null;
+  retrieval_health?: Record<string, unknown> | null;
+  dry_run?: boolean;
+}
+
+// The top-level config sections a dry-run update would change.
+export interface VaultConfigPreview {
+  changed_sections: string[];
+}
+
 export interface UpdateConfigResponse {
   status: string;
   vault_id: string;
   warnings: string[];
+  dry_run?: boolean;
+  preview?: VaultConfigPreview | null;
 }
 
 // --- Metadata update (CAS-ADR-028 ops-object shape) ---

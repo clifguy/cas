@@ -82,6 +82,16 @@ component with properties of its own that has no enrolled mirror is pinned in
 where it says it stops. F8 checks that the interface name appears in the
 member's type, not that the type is otherwise what the schema declares.
 
+Reach
+-----
+
+The gate reads the exported interfaces of ``types.ts`` and nothing else. Every
+one of them is either enrolled or named in ``UNENROLLED_INTERFACES`` with the
+reason it mirrors no Core component (F10), so an interface left out of the
+enrollment is a recorded decision rather than an omission the file cannot tell
+apart from one. Interfaces declared in other frontend modules are outside the
+scan.
+
 Invariants
 ----------
 
@@ -99,13 +109,16 @@ F5  The comparison fires on a removed declaration, including one inherited
     through a heritage clause and one on an interface other interfaces reference;
     the optionality checks fire on a relaxed required member and, for streams, on
     either direction; the reference check fires on a member that stops naming
-    its component; and the staleness checks fire on a stale entry.
+    its component; the export check fires on an interface neither enrolled nor
+    excluded; and the staleness checks fire on a stale entry.
 F6  Every property a request component requires is non-optional on its interface.
 F7  A stream interface marks a member optional exactly when its component does.
 F8  A member whose schema references an enrolled component names that
     component's interface in its type.
 F9  Every component with properties that an enrolled component references is
     enrolled, or pinned with a reason.
+F10 Every exported interface in the source is enrolled or excluded with a reason,
+    never both, and every exclusion names an interface the source still exports.
 
 The reader
 ----------
@@ -170,6 +183,8 @@ ENROLLED: Final[dict[str, str]] = {
     "StagingEdge": "StagingEdge",
     "TraversalNode": "TraversalNode",
     "TraverseResponse": "TraverseResponse",
+    "UpdateConfigResponse": "UpdateVaultConfigResponse",
+    "VaultConfigPreview": "VaultConfigPreview",
     "VaultStats": "VaultStatsResponse",
     "VaultSummary": "VaultSummary",
 }
@@ -193,6 +208,7 @@ ENROLLED_REQUESTS: Final[dict[str, str]] = {
     "Tier3Patch": "Tier3Patch",
     "TraverseRequest": "TraverseRequest",
     "UpdateMetadataRequest": "UpdateMetadataRequest",
+    "UpdateVaultConfigRequest": "UpdateVaultConfigRequest",
 }
 
 # Stream interfaces, which F7 holds to their components' required lists in both
@@ -231,6 +247,38 @@ KNOWN_FRONTEND_TYPE_DIVERGENCE: Final[dict[tuple[str, str, Side], str]] = {
     ("BulkMetadataItem", "doc_id", "schema_only"): _DOC_ID_ALIAS_REASON,
 }
 
+_VAULT_CONFIG_FILE_REASON: Final[str] = (
+    "a section of the vault configuration file; the config read route publishes it as an "
+    "open object governed by vault_config.schema.json, not as a component"
+)
+_APP_API_REASON: Final[str] = (
+    "mirrors a component of the CAS App API specification, which this gate does not read"
+)
+
+# Exported interfaces that mirror no SAGE Core component, with the reason. F10 holds
+# every exported interface to being enrolled or named here.
+UNENROLLED_INTERFACES: Final[dict[str, str]] = {
+    "BulkItemErrorEnvelope": (
+        "the per-item error of a bulk result, which the result components publish as an "
+        "inline object rather than a component"
+    ),
+    "DocTypeConfig": _VAULT_CONFIG_FILE_REASON,
+    "IngestProgressEvent": _APP_API_REASON,
+    "IngestSummaryEvent": _APP_API_REASON,
+    "LifecycleConfig": _VAULT_CONFIG_FILE_REASON,
+    "LifecycleStateConfig": _VAULT_CONFIG_FILE_REASON,
+    "LifecycleTransitionConfig": _VAULT_CONFIG_FILE_REASON,
+    "ParsedMetadataItem": _APP_API_REASON,
+    "ScanResponse": _APP_API_REASON,
+    "ScanResultItem": _APP_API_REASON,
+    "StackAbstractionConfig": (
+        "a section of the stack configuration report, which publishes no schema"
+    ),
+    "VaultAbstractionConfig": _VAULT_CONFIG_FILE_REASON,
+    "VaultConfig": _VAULT_CONFIG_FILE_REASON,
+    "VaultIdentityConfig": _VAULT_CONFIG_FILE_REASON,
+}
+
 _DOCUMENTS_TARGET_ONLY_REASON: Final[str] = (
     "the frontend never sets a discover target, so every response it reads is the "
     "documents target, whose rows are DiscoverHit"
@@ -249,9 +297,9 @@ UNGATED_REFERENCED_COMPONENTS: Final[dict[tuple[str, str, str], str]] = {
 }
 
 # Vacuity floors for F4, each set below today's count so ordinary movement does not
-# trip it while a lookup returning nothing does. The response pairs compare 213
-# schema properties, the request pairs 109, and the stream pairs 71; the request
-# components require 15; F8 checks 45 references to enrolled components; and the
+# trip it while a lookup returning nothing does. The response pairs compare 219
+# schema properties, the request pairs 119, and the stream pairs 71; the request
+# components require 15; F8 checks 46 references to enrolled components; and the
 # event-stream descriptions name 4 event components.
 MIN_PROPERTIES_COMPARED: Final[int] = 170
 MIN_REQUEST_PROPERTIES_COMPARED: Final[int] = 85
@@ -330,6 +378,34 @@ def read_interface_types(source: str, name: str) -> dict[str, frozenset[str]]:
     Reads the declaration exactly as ``read_interface`` does and fails on the same terms.
     """
     return {member: idents for member, (_, idents) in _read_source(source, name).items()}
+
+
+def exported_interfaces(source: str) -> set[str]:
+    """The names of the interfaces ``source`` declares with ``export``."""
+    tokens = _lex(source)
+    return {
+        tokens[i + 2][1]
+        for i in range(len(tokens) - 2)
+        if tokens[i] == ("ident", "export")
+        and tokens[i + 1] == ("ident", "interface")
+        and tokens[i + 2][0] == "ident"
+    }
+
+
+def unaccounted_interfaces(
+    source: str, enrolled: dict[str, str], excluded: dict[str, str]
+) -> tuple[set[str], set[str], set[str]]:
+    """Return ``(unaccounted, both, stale)`` for the exports of ``source``.
+
+    ``unaccounted`` are exported and neither enrolled nor excluded; ``both`` are
+    enrolled and excluded at once; ``stale`` are excluded but no longer exported.
+    """
+    exported = exported_interfaces(source)
+    return (
+        exported - set(enrolled) - set(excluded),
+        set(enrolled) & set(excluded),
+        set(excluded) - exported,
+    )
 
 
 def _read_source(source: str, name: str) -> dict[str, _Member]:
@@ -1022,6 +1098,19 @@ def test_ungated_reference_pins_have_no_stale_entries(core_spec: dict) -> None:
     assert not stale, "stale UNGATED_REFERENCED_COMPONENTS entries:\n" + "\n".join(stale)
 
 
+def test_every_exported_interface_is_enrolled_or_excluded(types_source: str) -> None:
+    """F10: an exported interface is enrolled or excluded with a reason, never both."""
+    unaccounted, both, stale = unaccounted_interfaces(
+        types_source, ALL_ENROLLED, UNENROLLED_INTERFACES
+    )
+    assert not unaccounted and not both and not stale, (
+        f"Exported interfaces in {TYPES_TS_PATH.name} neither enrolled nor excluded: "
+        f"{sorted(unaccounted)}; both enrolled and excluded: {sorted(both)}; excluded but no "
+        f"longer exported: {sorted(stale)}. Enroll each mirror of a Core component, and name "
+        "every other interface in UNENROLLED_INTERFACES with the reason it mirrors none."
+    )
+
+
 def test_stream_enrollment_matches_the_event_stream_contract(core_spec: dict) -> None:
     """F4: the stream enrollment is exactly the enrolled components an event stream reaches."""
     roots = event_stream_roots(core_spec)
@@ -1306,6 +1395,29 @@ def test_optionality_mismatch_reports_both_directions() -> None:
     assert optionality_mismatch(members, schema_props, required) == ({"req_opt"}, {"opt_req"})
 
 
+def test_export_check_fires_on_an_unaccounted_interface(types_source: str) -> None:
+    """F5: F10 reports a new unenrolled export and a dropped exclusion, each by name."""
+    assert unaccounted_interfaces(types_source, ALL_ENROLLED, UNENROLLED_INTERFACES) == (
+        set(),
+        set(),
+        set(),
+    )
+    added = types_source + "\nexport interface Unmirrored {\n  a: string;\n}\n"
+    assert unaccounted_interfaces(added, ALL_ENROLLED, UNENROLLED_INTERFACES)[0] == {"Unmirrored"}
+    dropped = {name: r for name, r in UNENROLLED_INTERFACES.items() if name != "VaultConfig"}
+    assert unaccounted_interfaces(types_source, ALL_ENROLLED, dropped)[0] == {"VaultConfig"}
+
+
+def test_export_check_reports_overlap_and_stale_exclusions() -> None:
+    """F10: an interface enrolled and excluded at once, and a stale exclusion, are reported."""
+    source = "export interface A { a: string }\nexport interface B { b: string }"
+    assert unaccounted_interfaces(source, {"A": "A"}, {"A": "r", "B": "r", "Gone": "r"}) == (
+        set(),
+        {"A"},
+        {"Gone"},
+    )
+
+
 def test_component_required_reads_the_required_list() -> None:
     """F6: the required list is read as declared, and its absence means nothing is required."""
     spec = {
@@ -1448,6 +1560,18 @@ def test_reader_collects_member_type_identifiers() -> None:
         "d": frozenset({"inner", "Edge"}),
         "last": frozenset({"string"}),
     }
+
+
+def test_reader_lists_only_exported_interface_declarations() -> None:
+    """P13: exports are read as tokens; comments, strings and private interfaces do not count."""
+    source = """
+    // export interface Commented { a: string }
+    const s = "export interface Quoted { a: string }";
+    interface Private { a: string }
+    export interface Real { a: string }
+    export type Alias = { a: string };
+    """
+    assert exported_interfaces(source) == {"Real"}
 
 
 def test_reader_carries_type_identifiers_through_heritage() -> None:

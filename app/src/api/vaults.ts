@@ -5,6 +5,7 @@ import type {
   VaultConfig,
   DefaultVaultConfig,
   UpdateConfigResponse,
+  UpdateVaultConfigRequest,
 } from './types';
 
 export async function listVaults(): Promise<VaultSummary[]> {
@@ -21,7 +22,7 @@ export async function getVaultConfig(vaultId: string): Promise<VaultConfig> {
 
 export async function updateVaultConfig(
   vaultId: string,
-  sections: Partial<VaultConfig>,
+  sections: UpdateVaultConfigRequest,
 ): Promise<UpdateConfigResponse> {
   return apiPut<UpdateConfigResponse>(`/sage_vaults/${vaultId}/config`, sections);
 }
