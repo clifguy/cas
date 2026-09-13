@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Inventory and version tracking for the CAS Formal Substrate (CAS-ADR-008). Each artifact's version is the release MAJOR.MINOR in which it last changed, or null until a release first publishes it; no counter is assigned when a change is authored. revision_history is assembled per release: a change adds a numberless change record under changes/unreleased/, and the release step folds every unreleased record into one entry for the new release, newest first. Entries written before this scheme, which carry a substrate counter in their version field, follow the release entries and are kept verbatim.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-09-12",
+  "manifest_date": "2026-09-13",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -84,7 +84,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "2.3",
+      "version": "2.4",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -92,7 +92,7 @@
       "path": "cas_app_api.openapi.yaml",
       "title": "CAS Application API",
       "status": "draft",
-      "version": "2.3",
+      "version": "2.4",
       "role": "OpenAPI 3.1.0 specification for the CAS Application backend HTTP surface (mounted at the /app prefix). Defines directory scan and batch-ingest endpoints used by the CAS Application UI. Architecturally distinct from the SAGE Core API; the two specs are validated together by tests/sage/test_openapi_conformance.py and must respect URL-prefix boundaries (sage_core_api owns /sage_vaults/*, cas_app_api owns /app/*).",
       "instantiation_checklist_items": []
     },
@@ -100,7 +100,7 @@
       "path": "sage/sage_mcp_tools.catalog.json",
       "title": "SAGE MCP Tool Catalog",
       "status": "draft",
-      "version": null,
+      "version": "2.4",
       "role": "The tools the SAGE MCP surfaces publish through tools/list: name, input and output schemas, annotations, and description, for the ordinary surface (/mcp) and the maintenance surface (/mcp_maint). Generated from the servers by scripts/dump_mcp_catalog.py and held to them by a test gate; the contract comparison reads it as the MCP half of the published contract.",
       "instantiation_checklist_items": []
     },
@@ -182,13 +182,49 @@
       "path": "changes/change_record.schema.json",
       "title": "Formal Substrate Change Record",
       "status": "draft",
-      "version": null,
+      "version": "2.4",
       "role": "The per-change release classification record (patch or minor, with category and release-note text) that every change to the published contract adds under changes/unreleased/, and that the release step folds into revision_history.",
       "instantiation_checklist_items": []
     }
   ],
   "deferred": [],
   "revision_history": [
+    {
+      "release": "2.4",
+      "date": "2026-09-13",
+      "changes": [
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "DiscoverRequest.limit accepts 0 (minimum 1 to 0) in sage_core_api.openapi.yaml and on the search tool in sage_mcp_tools.catalog.json. A catalog request with limit 0, on the documents or edges target, returns total_available and no results. limit 0 in semantic, keyword, or deterministic mode is refused with mode_parameter_mismatch, where the former floor refused it with invalid_parameter; on the facets target it is refused as any non-default limit already was. The catalog total is also no longer replaced by the page size when min_relevance is supplied, which has no effect on unscored catalog results.",
+          "for_callers": "Catalog search accepts limit=0 as a count-only request: the response carries total_available and no results, for documents and for edges. limit=0 in any other mode, or on the facets target, is refused with mode_parameter_mismatch (400) rather than invalid_parameter (422). A catalog search that supplies min_relevance now reports the full filtered count in total_available rather than the size of the page."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "caller-adaptation",
+            "operator-adaptation"
+          ],
+          "summary": "Passages are bounded by the embedding provider's input bound. A section longer than the bound is stored as consecutive passages sharing its heading path, so every passage is embedded whole rather than truncated at the embedder's window. Section reads, deterministic search, heading enumeration and projection text read a divided section as the one section it is, and matched_chunk_count counts sections, so neither depends on how a section was divided. migrate_vault gains a fifth backfill, split_passages_over_embedding_input_bound, which divides stored over-bound sections from the stored passages and re-embeds only the documents it rewrites; its descriptions in sage_core_api.openapi.yaml and the MCP tool catalog now say so, as do the descriptions of matched_chunk_count and of read_section's chunk_count in the specification and the response models. A document with pipeline work in flight is left for a later migrate_vault call, and the division writes through a new content-store compare-and-replace under a per-document write lock that every per-document passage writer -- replacing, removing or updating a document's rows -- now takes. No operation, tool, parameter or response field is added or removed.",
+          "for_callers": "matched_chunk_count and read_section's chunk_count now count sections rather than stored passages, so a caller thresholding either sees smaller values for a document whose long sections were divided. Documents indexed before this release keep any over-long passage until an operator runs migrate_vault on each vault; that run re-embeds the affected documents and reports split_passages_over_embedding_input_bound in backfills_applied, and a document with pipeline work in flight is left for a later call."
+        },
+        {
+          "classification": "patch",
+          "summary": "Adopt the CAS-ADR-008 versioning format. manifest.json drops substrate_version; each artifact's version becomes the release MAJOR.MINOR in which it last changed, backfilled from the release tags, and revision_history grows per release from change records, above the counter-scheme entries, which stay verbatim. Adds changes/change_record.schema.json and the unreleased/ directory that holds records until a release folds them, and sage/sage_mcp_tools.catalog.json, the generated tools/list catalog for both MCP surfaces, so the MCP contract is a committed artifact the contract comparison can read. No operation, tool, parameter, or response changes; the catalog declares tools that already existed.",
+          "for_callers": ""
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "The source-file integrity audit accepts an optional document scope. sage_core_api.openapi.yaml: SourceFileIntegrityRequest gains document_ids, an array of at least one id; the verify_vault_source_files operation declares invalid_document_id under 400 and document_scope_unmatched under 404, and the SourceFileIntegrityReport descriptions of total_documents_checked and summary describe the documents inspected rather than the vault. The MCP catalog's verify_vault_source_files tool gains the matching document_ids argument. A scoped audit reads the named documents by id rather than listing the vault, so its graph and vault-source store work are bounded by the scope rather than by the vault; an id naming no document is refused with the unmatched ids, before any store call, rather than narrowing the audit. Omitting the scope leaves the audit vault-wide, as before.",
+          "for_callers": "verify_vault_source_files takes an optional document_ids to audit only the named documents, reading the store for those alone; ids that name no document are refused with document_scope_unmatched (404) listing them."
+        }
+      ]
+    },
     {
       "version": "1.98",
       "date": "2026-09-12",
