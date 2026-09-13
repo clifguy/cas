@@ -1,0 +1,12 @@
+classification: patch
+summary: >-
+  Adopt the CAS-ADR-008 versioning format. manifest.json drops substrate_version;
+  each artifact's version becomes the release MAJOR.MINOR in which it last changed,
+  backfilled from the release tags, and revision_history grows per release from
+  change records, above the counter-scheme entries, which stay verbatim. Adds
+  changes/change_record.schema.json and the unreleased/ directory that holds
+  records until a release folds them, and sage/sage_mcp_tools.catalog.json, the
+  generated tools/list catalog for both MCP surfaces, so the MCP contract is a
+  committed artifact the contract comparison can read. No operation, tool,
+  parameter, or response changes; the catalog declares tools that already existed.
+for_callers: ""

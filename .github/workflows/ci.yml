@@ -178,6 +178,51 @@ jobs:
         # pinned in pyproject; mlx-lm is excluded (Apple-Silicon-only).
         run: uv sync --locked --extra test
 
+      - name: Resolve the change's base revision
+        id: substrate-base
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          # The same resolution as the test-surface job's base step, for the
+          # reasons stated there: on the merged-tree events the base is the
+          # checked-out merge commit's first parent, never the payload's base
+          # sha, so the change measured is this branch's contribution alone.
+          case "$EVENT_NAME" in
+            pull_request|merge_group)
+              parents="$(( $(git rev-list --parents -n 1 HEAD | wc -w) - 1 ))"
+              if [ "$parents" -ne 2 ]; then
+                echo "expected a merged tree on a ${EVENT_NAME} event, but HEAD has ${parents} parent(s)" >&2
+                exit 1
+              fi
+              sha="$(git rev-parse 'HEAD^1')"
+              ;;
+            push)
+              if [ "$PUSH_BEFORE_SHA" = "0000000000000000000000000000000000000000" ]; then
+                sha=""
+              else
+                sha="$PUSH_BEFORE_SHA"
+              fi
+              ;;
+            *) sha="" ;;
+          esac
+          if [ -z "$sha" ] && [ "$EVENT_NAME" != push ]; then
+            echo "no base revision resolved for a ${EVENT_NAME} event, which always carries one" >&2
+            exit 1
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+
+      - name: Check substrate change records
+        # The change-record gate (CAS-ADR-008): a change to the published
+        # contract adds a change record whose classification the contract
+        # comparison agrees with, and only a release moves a version. Runs
+        # before the suite so a missing record is reported in seconds.
+        if: steps.substrate-base.outputs.sha != ''
+        env:
+          BASE_SHA: ${{ steps.substrate-base.outputs.sha }}
+        run: .venv/bin/python -m scripts.substrate_changes check --base "$BASE_SHA"
+
       - name: Pre-cache nomic-embed-text model (via runtime path)
         run: |
           .venv/bin/python -c "from sage.adapters.embedding_nomic import NomicEmbeddingProvider; NomicEmbeddingProvider()"
