@@ -8,7 +8,9 @@ Executable specifications for CAS: API contracts, configuration schemas, data mo
 - API specifications use OpenAPI 3.1.0.
 - Schema files use `.schema.json` extension; API specs use `.openapi.yaml`.
 - The root configuration schema (`sage/vault_config.schema.json`) uses `$ref` to compose the SAGE vault sub-schemas (enumerated in `manifest.json`).
-- `manifest.json` is the inventory. Update it whenever schemas are added, removed, or promoted.
+- `manifest.json` is the inventory. Update it whenever schemas are added, removed, or promoted. A newly listed artifact carries `version: null` until a release publishes it.
+- Versions follow CAS-ADR-008. An artifact's `version` is the release `MAJOR.MINOR` in which it last changed, and only the release step moves it. The same holds for both specifications' `info.version` and for `revision_history`. A change to the published contract instead adds a change record under `changes/unreleased/`; see `changes/README.md`. The release procedure is `docs/process/substrate-releases.md`.
+- `sage/sage_mcp_tools.catalog.json` is generated. Regenerate it with `python -m scripts.dump_mcp_catalog --write` whenever an MCP tool's signature or docstring changes; a test gate fails while it is stale.
 
 ## Null fields on the wire
 

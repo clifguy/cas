@@ -1,15 +1,16 @@
 {
   "title": "CAS Formal Substrate Manifest",
-  "description": "Version tracking and schema inventory for the CAS Formal Substrate (CAS-ADR-008). The manifest records which schemas are present in each version, their status, and their role within the substrate.",
+  "description": "Inventory and version tracking for the CAS Formal Substrate (CAS-ADR-008). Each artifact's version is the release MAJOR.MINOR in which it last changed, or null until a release first publishes it; no counter is assigned when a change is authored. revision_history is assembled per release: a change adds a numberless change record under changes/unreleased/, and the release step folds every unreleased record into one entry for the new release, newest first. Entries written before this scheme, which carry a substrate counter in their version field, follow the release entries and are kept verbatim.",
   "manifest_version": "1.0",
   "manifest_date": "2026-09-12",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
     "structure": {
-      "sage/": "SAGE configuration schemas, Core API OpenAPI specification, and data model schemas. vault_config.schema.json is the root configuration schema; it $ref's to the five sub-schemas.",
+      "sage/": "SAGE configuration schemas, Core API OpenAPI specification, data model schemas, and the generated MCP tool catalog for both MCP surfaces. vault_config.schema.json is the root configuration schema; it $ref's to the five sub-schemas.",
       "root_harness/": "ROOT Harness configuration schemas, Orchestration API OpenAPI specification, event stream schema, and interrupt contracts.",
-      "cas_app_api.openapi.yaml": "CAS Application API OpenAPI specification (workflow tools mounted under /app prefix)."
+      "cas_app_api.openapi.yaml": "CAS Application API OpenAPI specification (workflow tools mounted under /app prefix).",
+      "changes/": "The change-record schema, and unreleased/, which holds one change record per unreleased change until the release step folds them into revision_history."
     }
   },
   "schemas": [
@@ -17,7 +18,7 @@
       "path": "sage/vault_config.schema.json",
       "title": "SAGE Vault Configuration",
       "status": "draft",
-      "version": "0.4",
+      "version": "2.2",
       "role": "Root schema for SAGE vault configuration. A domain instantiation produces a single YAML file that validates against this schema.",
       "instantiation_checklist_items": [
         1
@@ -27,7 +28,7 @@
       "path": "sage/sage_core_config.schema.json",
       "title": "SAGE Core API Configuration",
       "status": "draft",
-      "version": "0.12",
+      "version": "2.3",
       "role": "Stack-wide configuration for the SAGE Core API process (CAS-ADR-030, CAS-ADR-042, CAS-ADR-043). Loaded once at process startup before any vault is registered; carries resources whose enforcement spans the whole SAGE process (the abstraction provider, its model, and the local provider's optional context-window override and clause (f) opener constraint), the deployment-profile marker that co-binds the adapter-port implementations for one deployment target, the durable-storage binding selector (postgres, the storage port's sole binding), the vault-source-store binding selector (filesystem default, tenant document-store alternative), the Postgres storage-engine connection parameters (non-secret; password from the environment), the optional OAuth resource-server auth binding (absent by default; non-secret issuer/audience coordinates when a deployment authenticates its callers), and the caller-local transfer channel block (the public endpoint base minted recipes embed and the one-time token lifetime; omitted by deployments that never mint recipes). The on-disk file is sage/config.yaml at the repo root.",
       "instantiation_checklist_items": []
     },
@@ -35,7 +36,7 @@
       "path": "sage/document_types.schema.json",
       "title": "SAGE Document Types",
       "status": "draft",
-      "version": "0.3",
+      "version": "1.0",
       "role": "Defines the doc_type enum for a vault's domain vocabulary. Tier 2 (the vocabulary itself), optional Tier 3 metadata_schema (per-doc_type structured metadata schema for tier3_metadata payloads), and optional unique_keys declaration (tier3_metadata fields whose values must be unique within the doc_type, enforced atomically by the storage substrate per CAS-ADR-031).",
       "instantiation_checklist_items": [
         2
@@ -45,7 +46,7 @@
       "path": "sage/lifecycle.schema.json",
       "title": "SAGE Lifecycle State Machine",
       "status": "draft",
-      "version": "0.4",
+      "version": "2.3",
       "role": "Defines lifecycle states and valid transitions. Base set is always present; domains extend it.",
       "instantiation_checklist_items": [
         3
@@ -55,7 +56,7 @@
       "path": "sage/metadata_extraction.schema.json",
       "title": "SAGE Metadata Extraction Configuration",
       "status": "draft",
-      "version": "0.1",
+      "version": "1.0",
       "role": "Defines the two-stage metadata extraction pipeline: filename patterns with code-to-doc_type maps, then content extraction rules.",
       "instantiation_checklist_items": [
         5
@@ -65,7 +66,7 @@
       "path": "sage/edge_inference.schema.json",
       "title": "SAGE Edge Inference Configuration",
       "status": "draft",
-      "version": "0.4",
+      "version": "2.3",
       "role": "Defines three-tier edge inference model: tier assignments, inference rules, and staging table behavior.",
       "instantiation_checklist_items": [
         6
@@ -75,7 +76,7 @@
       "path": "sage/edge_type_registry.schema.json",
       "title": "SAGE Edge Type Registry",
       "status": "draft",
-      "version": "0.1",
+      "version": "1.0",
       "role": "Per-vault registry assigning a resolution_policy to every edge type used by the vault. Consulted at edge creation for write-time invariant enforcement and at traversal for chain-scoped resolution. See CAS-ADR-017.",
       "instantiation_checklist_items": []
     },
@@ -83,7 +84,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "0.54",
+      "version": "2.3",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -91,15 +92,23 @@
       "path": "cas_app_api.openapi.yaml",
       "title": "CAS Application API",
       "status": "draft",
-      "version": "0.13",
+      "version": "2.3",
       "role": "OpenAPI 3.1.0 specification for the CAS Application backend HTTP surface (mounted at the /app prefix). Defines directory scan and batch-ingest endpoints used by the CAS Application UI. Architecturally distinct from the SAGE Core API; the two specs are validated together by tests/sage/test_openapi_conformance.py and must respect URL-prefix boundaries (sage_core_api owns /sage_vaults/*, cas_app_api owns /app/*).",
+      "instantiation_checklist_items": []
+    },
+    {
+      "path": "sage/sage_mcp_tools.catalog.json",
+      "title": "SAGE MCP Tool Catalog",
+      "status": "draft",
+      "version": null,
+      "role": "The tools the SAGE MCP surfaces publish through tools/list: name, input and output schemas, annotations, and description, for the ordinary surface (/mcp) and the maintenance surface (/mcp_maint). Generated from the servers by scripts/dump_mcp_catalog.py and held to them by a test gate; the contract comparison reads it as the MCP half of the published contract.",
       "instantiation_checklist_items": []
     },
     {
       "path": "sage/decision_log.schema.json",
       "title": "Decision Log",
       "status": "draft",
-      "version": "0.1",
+      "version": "1.0",
       "role": "Schema for SAGE-managed decision logs owned by steward and orchestrator agents. Captures operational judgment not recorded in artifact revision histories: decisions not to act, decisions deferred, and cross-artifact reasoning. Append-only with supersession back-references. See CAS-ADR-012.",
       "instantiation_checklist_items": []
     },
@@ -107,7 +116,7 @@
       "path": "root_harness/pipeline.schema.json",
       "title": "ROOT Harness Pipeline Configuration",
       "status": "draft",
-      "version": "0.2",
+      "version": "2.3",
       "role": "Defines pipeline stages, transitions, gatekeeper bindings, and precondition expressions.",
       "instantiation_checklist_items": [
         7,
@@ -118,7 +127,7 @@
       "path": "root_harness/agent.schema.json",
       "title": "ROOT Harness Agent Registration",
       "status": "draft",
-      "version": "0.1",
+      "version": "1.0",
       "role": "Defines agent registration records: type, owned artifact, autonomy level, capabilities, policy reference, LLM configuration.",
       "instantiation_checklist_items": [
         8
@@ -128,7 +137,7 @@
       "path": "root_harness/policy.schema.json",
       "title": "ROOT Harness Policy Configuration",
       "status": "draft",
-      "version": "0.2",
+      "version": "2.3",
       "role": "Defines behavioral constraints: permitted operations, scope restrictions, and tool-level approval policy.",
       "instantiation_checklist_items": [
         9
@@ -138,7 +147,7 @@
       "path": "root_harness/workflow.schema.json",
       "title": "ROOT Harness Workflow Graph",
       "status": "draft",
-      "version": "0.1",
+      "version": "1.0",
       "role": "Defines LangGraph workflow definitions: nodes, edges, state dictionary, and interrupt placement.",
       "instantiation_checklist_items": [
         11,
@@ -149,7 +158,7 @@
       "path": "root_harness/orchestration_api.openapi.yaml",
       "title": "ROOT Harness Orchestration API",
       "status": "draft",
-      "version": "0.1",
+      "version": "1.0",
       "role": "OpenAPI 3.1.0 specification for the ROOT Harness Orchestration API. Defines the REST surface for workflow triggering, status monitoring, human-in-the-loop interrupt resolution, agent registration, pipeline status queries, and real-time event streaming. Consumed by the CAS Application, MCP adapter, and CLI. Source authority: ROOT Harness Architecture Reference Section 2.5.",
       "instantiation_checklist_items": []
     },
@@ -157,7 +166,7 @@
       "path": "root_harness/event_stream.schema.json",
       "title": "AgentEvent",
       "status": "draft",
-      "version": "0.1",
+      "version": "1.0",
       "role": "Schema for typed event records emitted by the ROOT Harness event stream during workflow execution. Seven event categories: workflow lifecycle, node transitions, tool interactions, LLM cycles, interrupt lifecycle, steward governance, and checkpoint operations. Consumed by the CAS Application and MCP clients via subscribe_events. See CAS-ADR-013.",
       "instantiation_checklist_items": []
     },
@@ -165,13 +174,20 @@
       "path": "root_harness/interrupt.schema.json",
       "title": "Interrupt Contracts",
       "status": "draft",
-      "version": "0.1",
+      "version": "1.0",
       "role": "Schema for human-in-the-loop interrupt descriptors and tool-level approval policies. Defines InterruptDescriptor (runtime data structure for pending interrupts), ApproveRequest (resolution payload for the approve operation), and ApprovalPolicy (per-agent configuration for tool-call approval gating). Two interrupt origins: interrupt nodes (autonomy Level 3) and approval callbacks (Levels 1-2). See ROOT Harness Architecture Reference Sections 2.5, 2.7, 4.4, and 5.2.",
+      "instantiation_checklist_items": []
+    },
+    {
+      "path": "changes/change_record.schema.json",
+      "title": "Formal Substrate Change Record",
+      "status": "draft",
+      "version": null,
+      "role": "The per-change release classification record (patch or minor, with category and release-note text) that every change to the published contract adds under changes/unreleased/, and that the release step folds into revision_history.",
       "instantiation_checklist_items": []
     }
   ],
   "deferred": [],
-  "substrate_version": "1.98",
   "revision_history": [
     {
       "version": "1.98",

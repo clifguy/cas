@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://cas.local/fs/changes/change_record.schema.json",
+  "title": "Formal Substrate Change Record",
+  "description": "The release classification one change carries (CAS-ADR-008). Every change that touches the published contract adds one record as a YAML file under docs/fs/changes/unreleased/. A record carries no version number: the release step assigns every unreleased record to the release that publishes it, folding the records into the manifest's revision_history and deleting the files, so concurrent changes add independent files rather than contending for the next number. The file name is a short kebab-case slug describing the change; it is not read.",
+  "type": "object",
+  "required": ["classification", "summary"],
+  "additionalProperties": false,
+  "properties": {
+    "classification": {
+      "type": "string",
+      "enum": ["patch", "minor"],
+      "description": "Whether the change is released as a patch, which needs no versioning act, or requires a new minor release because it crosses one of the three minor boundaries. A contract comparison finding a minor-level change refuses a patch classification unless detector_override records why."
+    },
+    "category": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "description": "The minor boundaries the change crosses; required for a minor and absent for a patch. More than one applies where several do.",
+      "items": {
+        "type": "string",
+        "enum": ["capability", "caller-adaptation", "operator-adaptation"],
+        "description": "capability: a caller can do something it could not do before. caller-adaptation: a caller must change what it does, or its current calls change meaning. operator-adaptation: someone running CAS must act beyond deploying the new build."
+      }
+    },
+    "summary": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S",
+      "description": "What changed and why, for maintainers: the substrate artifacts touched and the shape of the change. Becomes the change's entry in the release's revision history."
+    },
+    "for_callers": {
+      "type": "string",
+      "description": "Release-note text a caller or operator needs, in one or two sentences. Required and non-empty for a minor; empty or omitted for a pure patch."
+    },
+    "detector_override": {
+      "type": "object",
+      "required": ["reason"],
+      "additionalProperties": false,
+      "description": "The project owner's explicit downgrade of a contract-comparison finding, recorded in the change for review. Present only when the comparison finds a minor-level change that the owner has judged a patch, such as declaring behaviour the server already had.",
+      "properties": {
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S",
+          "description": "Why the finding asks nothing new of callers, stated so a reviewer can check it."
+        }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "classification": { "const": "minor" } },
+        "required": ["classification"]
+      },
+      "then": {
+        "required": ["category", "for_callers"],
+        "properties": { "for_callers": { "minLength": 1, "pattern": "\\S" } }
+      }
+    },
+    {
+      "if": {
+        "properties": { "classification": { "const": "patch" } },
+        "required": ["classification"]
+      },
+      "then": { "not": { "required": ["category"] } }
+    }
+  ]
+}

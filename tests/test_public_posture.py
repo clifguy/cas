@@ -2311,6 +2311,14 @@ def test_t15_scan_scope_is_non_empty_and_honours_exclusions() -> None:
     )
     assert "docs/fs/sage/vault_config.schema.json" in substrate_scanned
     assert not any(rel.startswith((".claude/", "domains/")) for rel in substrate_scanned)
+    # Change records are published prose that the release step folds into the
+    # manifest and then deletes, so the directory may hold none at a given
+    # commit. The scope decision is asserted on the enumeration's own predicate
+    # rather than on whichever record happens to be tracked.
+    record = REPO_ROOT / "docs" / "fs" / "changes" / "unreleased" / "example-change.yaml"
+    assert record.suffix in (".yaml", ".yml", ".json") and not _is_excluded(record), (
+        "change records are out of the substrate scan's scope"
+    )
 
     assert PUBLISHED_TICKET_REF_ALLOWLIST == {}, (
         f"T15's allowlist is no longer empty: {PUBLISHED_TICKET_REF_ALLOWLIST}"

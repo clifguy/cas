@@ -35,6 +35,13 @@ worse, stale prose that no gate catches. Work through the full blast radius.
 6. **Tests** — hard-coded spot-guards in `tests/sage/test_openapi_conformance.py`
    and body/attribute assertions in the app and service test suites.
 7. **Test-plan docs** — `tests/app/*.md` list response fields by name.
+8. **Change record** — add one under `docs/fs/changes/unreleased/` classifying
+   the change (see `docs/fs/changes/README.md`). A renamed or reshaped response
+   field is a `minor` (`caller-adaptation`), and the contract comparison refuses a
+   `patch` record for it. Do not edit the manifest's versions or history: only the
+   release step moves them. If the change also touches an MCP tool's signature or
+   docstring, regenerate the tool catalog with
+   `python -m scripts.dump_mcp_catalog --write`.
 
 ## Sweep
 
@@ -47,8 +54,9 @@ test-plan markdown (item 7); the repo-wide grep catches them.
 
 ## Leave alone
 
-- **`docs/fs/manifest.json` changelog summaries** — dated historical records,
-  accurate as of their date; don't rewrite them.
+- **`docs/fs/manifest.json` revision history** — dated historical records,
+  accurate as of their date; don't rewrite them. The change-record gate fails a
+  change that does.
 - **Genuine internal identifiers** — adapter names, internal module paths, and
   similar that happen to share the old token but are not the renamed field.
 

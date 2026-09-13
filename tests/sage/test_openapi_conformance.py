@@ -37,6 +37,7 @@ from pydantic_core import PydanticCustomError
 from sage import build_info
 from sage.app import create_app
 from sage.models.schemas import DocumentIdStr
+from scripts.substrate_changes import contract_version_ok, head_release, tag_exists
 from tests.helpers.adapter_claims import ENABLEMENT_CLAIM_MARKERS
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -552,36 +553,51 @@ def test_openapi_info_version_matches_api_version(
     cas_app_spec: dict | None,
     live_openapi: dict,
 ):
-    """The live /openapi.json info.version and BOTH committed specs that the
-    single FastAPI app serves (SAGE Core API and CAS Application API) equal
-    build_info.API_VERSION.
+    """The live /openapi.json info.version, BOTH committed specs that the
+    single FastAPI app serves (SAGE Core API and CAS Application API), and
+    build_info.API_VERSION agree.
 
     Single-source guard. The API version is VCS-derived and read once via
     build_info.API_VERSION; the FastAPI ``version=`` argument (and thus the
-    live OpenAPI document) and every committed contract for that one app must
-    track it, so the literals that previously drifted (app version, package
-    version, committed specs) can no longer diverge. The CAS App spec is
-    mounted at /app on the same server, so it shares the live version and is
-    checked alongside the SAGE Core spec. Skipped only when the distribution
-    metadata is absent (API_VERSION == UNKNOWN), i.e. a bare uninstalled
-    checkout where no version can resolve.
+    live OpenAPI document) must equal it exactly. The committed specs declare
+    it too, with one sequencing allowance (CAS-ADR-008): once a release change
+    has landed, both specs declare the manifest's newest release while the
+    build still derives the previous version, and only until that release's
+    tag exists. The rule itself lives in ``contract_version_ok`` so the release
+    tooling and this gate cannot disagree about it. Where git cannot say whether
+    the tag exists, no allowance is made.
+
+    The CAS App spec is mounted at /app on the same server, so it shares the
+    live version and is checked alongside the SAGE Core spec. Skipped only when
+    no version can resolve at all (API_VERSION == UNKNOWN).
     """
     assert sage_core_spec is not None, f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
     assert cas_app_spec is not None, f"CAS Application API spec missing at {CAS_APP_SPEC_PATH}"
     if build_info.API_VERSION == build_info.UNKNOWN:
-        pytest.skip("distribution metadata absent; API_VERSION is unknown")
+        pytest.skip("no release version resolves (API_VERSION is unknown)")
 
     assert live_openapi["info"]["version"] == build_info.API_VERSION, (
         "live /openapi.json info.version diverges from build_info.API_VERSION "
         "(the FastAPI version= argument is not wired to the single source)"
     )
-    for label, spec in (("sage_core_api", sage_core_spec), ("cas_app_api", cas_app_spec)):
-        assert spec["info"]["version"] == build_info.API_VERSION, (
-            f"committed {label}.openapi.yaml info.version "
-            f"{spec['info']['version']!r} diverges from build_info.API_VERSION "
-            f"{build_info.API_VERSION!r}; update the committed info.version to track the "
-            "release tag"
-        )
+
+    release = head_release(json.loads(SUBSTRATE_MANIFEST_PATH.read_text()))
+    exists = True if release is None else tag_exists(_REPO_ROOT, release)
+    errors = contract_version_ok(
+        build_info.API_VERSION,
+        {
+            "sage_core_api": sage_core_spec["info"]["version"],
+            "cas_app_api": cas_app_spec["info"]["version"],
+        },
+        release,
+        tag_exists=exists is not False,
+    )
+    assert not errors, (
+        "committed spec info.version disagrees with the release version:\n  "
+        + "\n  ".join(errors)
+        + "\nThe contract version moves only through the release step; see "
+        "docs/process/substrate-releases.md"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -983,10 +999,21 @@ def test_every_substrate_property_has_description():
             if not _has_nonempty_description(schema):
                 issues.append(f"{rel_path}::#")
             _walk_substrate_schema(schema, "#", rel_path, issues)
+        elif rel_path.endswith(".catalog.json"):
+            # A generated tool catalog: each tool's description is the caller-facing
+            # text. Its input schemas are generated from signatures, whose parameter
+            # prose lives in the tool docstring rather than in per-property fields.
+            catalog = json.loads(file_path.read_text())
+            if not _has_nonempty_description(catalog):
+                issues.append(f"{rel_path}::#")
+            for surface, tools in (catalog.get("surfaces") or {}).items():
+                for tool in tools:
+                    if not _has_nonempty_description(tool):
+                        issues.append(f"{rel_path}::{surface}/{tool.get('name')}")
         else:
             issues.append(
                 f"{rel_path}: unknown substrate file extension; expected "
-                f".openapi.yaml or .schema.json"
+                f".openapi.yaml, .schema.json, or .catalog.json"
             )
 
     msg_lines: list[str] = []
