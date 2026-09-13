@@ -7,6 +7,7 @@ import { BulkActionBar } from '../components/BulkActionBar';
 import { BulkLifecycleDialog } from '../components/BulkLifecycleDialog';
 import { BulkMetadataDialog } from '../components/BulkMetadataDialog';
 import { formatDate } from '../utils/format';
+import { describeConstraints, type Constraint } from '../utils/searchConstraints';
 
 const PAGE_SIZE = 50;
 
@@ -24,29 +25,19 @@ export default function Search() {
   const [searchParams, setSearchParams] = useSearchParams();
 
   // --- URL-derived state ---
-  const urlQuery = searchParams.get('q') ?? '';
-  const urlMode = searchParams.get('mode') as Mode | null;
-  const urlDocType = searchParams.get('doc_type') ?? '';
-  const urlLifecycle = searchParams.get('lifecycle_status') ?? '';
-  const urlProject = searchParams.get('project') ?? '';
-  const urlPipelineStatus = searchParams.get('pipeline_status') ?? '';
-  // A boolean carried in a URL, so only the affirmative spellings set it.
-  // '0' and an absent param both mean "do not narrow", which keeps a
-  // hand-edited link from silently hiding rows.
-  const urlExcludeTerminal = ['1', 'true'].includes(
-    (searchParams.get('exclude_terminal_lifecycle') ?? '').toLowerCase(),
-  );
-  const urlTags = (searchParams.get('tags') ?? '')
-    .split(',')
-    .map((s) => s.trim())
-    .filter(Boolean);
-  const urlOffset = Math.max(0, parseInt(searchParams.get('offset') ?? '0', 10) || 0);
-  const urlSortBy = searchParams.get('sort_by') as SortColumn | null;
-  const urlSortOrder = searchParams.get('sort_order') as SortDir | null;
-
-  // Drill-down: filter params present but no mode param (dashboard deep-link).
-  const isDrillDown =
-    !urlMode && Boolean(urlPipelineStatus || urlLifecycle || urlDocType || urlExcludeTerminal);
+  const {
+    query: urlQuery,
+    mode: urlMode,
+    docType: urlDocType,
+    lifecycle: urlLifecycle,
+    project: urlProject,
+    pipelineStatus: urlPipelineStatus,
+    excludeTerminal: urlExcludeTerminal,
+    offset: urlOffset,
+    sortBy: urlSortBy,
+    sortOrder: urlSortOrder,
+    isDrillDown,
+  } = parseSearchUrl(searchParams);
 
   // --- Form buffer state (syncs from URL so back/forward restores inputs) ---
   const [queryInput, setQueryInput] = useState(urlQuery);
@@ -82,19 +73,12 @@ export default function Search() {
   const [lifecycleDialogOpen, setLifecycleDialogOpen] = useState(false);
   const [metadataDialogOpen, setMetadataDialogOpen] = useState(false);
 
-  // Filters derived from the URL, shared by the search effect and handlers.
-  function buildUrlFilters(): NonNullable<DiscoverRequest['filters']> {
-    const f: NonNullable<DiscoverRequest['filters']> = {};
-    if (urlDocType) f.doc_type = urlDocType;
-    if (urlLifecycle) f.lifecycle_status = urlLifecycle;
-    if (urlProject) f.project = urlProject;
-    if (urlTags.length) f.tags = urlTags;
-    if (urlExcludeTerminal) f.exclude_terminal_lifecycle = true;
-    return f;
-  }
-
   // --- Execute search whenever the URL changes ---
   const paramsKey = searchParams.toString();
+
+  // The constraints named on screen are read from the same request the
+  // effect below sends, so a filter cannot reach one without the other.
+  const constraints = describeConstraints(buildSearchRequest(searchParams)?.filters);
 
   // Selection is bound to the current filter result set; clear it whenever the
   // URL (hence the rows under the user's fingers) changes. Resetting during
@@ -139,49 +123,7 @@ export default function Search() {
       if (!cancelled) setSearching(false);
     }
 
-    let req: DiscoverRequest | null = null;
-    if (isDrillDown) {
-      const filters: NonNullable<DiscoverRequest['filters']> = {};
-      if (urlPipelineStatus) filters.pipeline_status = urlPipelineStatus;
-      if (urlLifecycle) filters.lifecycle_status = urlLifecycle;
-      if (urlDocType) filters.doc_type = urlDocType;
-      if (urlExcludeTerminal) filters.exclude_terminal_lifecycle = true;
-      req = {
-        mode: 'catalog',
-        filters,
-        limit: PAGE_SIZE,
-        offset: urlOffset,
-        response_mode: 'full',
-      };
-      if (urlSortBy && urlSortOrder) {
-        req.sort_by = urlSortBy;
-        req.sort_order = urlSortOrder;
-      }
-    } else if (urlMode === 'browse') {
-      const filters = buildUrlFilters();
-      req = {
-        mode: 'catalog',
-        filters: Object.keys(filters).length > 0 ? filters : undefined,
-        limit: PAGE_SIZE,
-        offset: urlOffset,
-        response_mode: 'full',
-      };
-      if (urlSortBy && urlSortOrder) {
-        req.sort_by = urlSortBy;
-        req.sort_order = urlSortOrder;
-      }
-    } else if (urlMode && urlQuery.trim()) {
-      const filters = buildUrlFilters();
-      req = {
-        mode: urlMode === 'keyword' ? 'keyword' : 'semantic',
-        query: urlQuery.trim(),
-        filters: Object.keys(filters).length > 0 ? filters : undefined,
-        use_hybrid: urlMode === 'hybrid',
-        limit: 20,
-        response_mode: 'full',
-      };
-    }
-    run(req);
+    run(buildSearchRequest(searchParams));
 
     return () => {
       cancelled = true;
@@ -210,16 +152,33 @@ export default function Search() {
     const currentTags = searchParams.get('tags');
     if (currentTags) next.set('tags', currentTags);
     // `exclude_terminal_lifecycle` is deliberately not carried forward
-    // beside it. It is a worklist affordance rather than a filter the
-    // user chose, nothing names it on screen outside the drill-down
-    // heading, and no control can clear it -- so a submit is where it
-    // ends rather than where it becomes permanent.
+    // beside it. It is a worklist affordance meaning "the open
+    // population", not a filter the user chose, and a new search is the
+    // user leaving that worklist -- so a submit is where it ends rather
+    // than where it follows them into an unrelated query.
     setSearchParams(next);
   }
 
   function goToOffset(offset: number) {
     const next = new URLSearchParams(searchParams);
     next.set('offset', String(offset));
+    setSearchParams(next);
+  }
+
+  // Filter keys and URL parameter names are the same spelling, so a
+  // constraint named from the request is cleared by deleting its
+  // parameter. The offset goes too: a page of the narrower result is not
+  // a page of the wider one.
+  function clearConstraint(key: string) {
+    const next = new URLSearchParams(searchParams);
+    next.delete(key);
+    next.delete('offset');
+    // A drill-down is recognised by its filters alone, so clearing its
+    // last one leaves nothing to run and would blank the list instead of
+    // widening it. Browse is the same catalog query with nothing applied.
+    if (!next.has('mode') && buildSearchRequest(next) === null) {
+      next.set('mode', 'browse');
+    }
     setSearchParams(next);
   }
 
@@ -291,6 +250,7 @@ export default function Search() {
     return (
       <div>
         <h1 style={{ margin: '0 0 4px', textTransform: 'capitalize' }}>{heading}</h1>
+        <ActiveConstraints constraints={constraints} onClear={clearConstraint} />
         <p style={{ margin: '0 0 16px', fontSize: 13, color: '#666' }}>
           {totalAvailable} result{totalAvailable !== 1 ? 's' : ''}
         </p>
@@ -459,6 +419,8 @@ export default function Search() {
         )}
       </form>
 
+      <ActiveConstraints constraints={constraints} onClear={clearConstraint} />
+
       {!hasSearched && !searching && (
         <div style={{ color: '#999', marginTop: 32, textAlign: 'center' }}>
           {isBrowse ? 'Click Browse to list documents.' : 'Enter a query to search.'}
@@ -573,6 +535,38 @@ export default function Search() {
   );
 }
 
+// -- Active constraints --
+
+function ActiveConstraints({
+  constraints,
+  onClear,
+}: {
+  constraints: Constraint[];
+  onClear: (key: string) => void;
+}) {
+  if (constraints.length === 0) return null;
+  return (
+    <ul aria-label="Active filters" style={constraintListStyle}>
+      {constraints.map((c) => (
+        <li key={c.key} data-constraint={c.key} style={constraintChipStyle}>
+          <span>
+            {c.label}
+            {c.value && <>: <strong>{c.value}</strong></>}
+          </span>
+          <button
+            type="button"
+            aria-label={`Clear filter: ${c.label}`}
+            onClick={() => onClear(c.key)}
+            style={constraintClearStyle}
+          >
+            &times;
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 // -- Sortable catalog table --
 
 function CatalogTable({
@@ -669,6 +663,102 @@ function SortableHeader({
   );
 }
 
+// -- URL and request --
+
+function parseSearchUrl(params: URLSearchParams) {
+  const mode = params.get('mode') as Mode | null;
+  const docType = params.get('doc_type') ?? '';
+  const lifecycle = params.get('lifecycle_status') ?? '';
+  const pipelineStatus = params.get('pipeline_status') ?? '';
+  // A boolean carried in a URL, so only the affirmative spellings set it.
+  // '0' and an absent param both mean "do not narrow", which keeps a
+  // hand-edited link from silently hiding rows.
+  const excludeTerminal = ['1', 'true'].includes(
+    (params.get('exclude_terminal_lifecycle') ?? '').toLowerCase(),
+  );
+  return {
+    query: params.get('q') ?? '',
+    mode,
+    docType,
+    lifecycle,
+    project: params.get('project') ?? '',
+    pipelineStatus,
+    excludeTerminal,
+    tags: (params.get('tags') ?? '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean),
+    offset: Math.max(0, parseInt(params.get('offset') ?? '0', 10) || 0),
+    sortBy: params.get('sort_by') as SortColumn | null,
+    sortOrder: params.get('sort_order') as SortDir | null,
+    // Drill-down: filter params present but no mode param (dashboard deep-link).
+    isDrillDown: !mode && Boolean(pipelineStatus || lifecycle || docType || excludeTerminal),
+  };
+}
+
+// The one place a request is built from the URL. The search effect sends
+// what this returns and the constraint strip names its filters, so the two
+// cannot disagree about what narrowed the result.
+function buildSearchRequest(params: URLSearchParams): DiscoverRequest | null {
+  const url = parseSearchUrl(params);
+  let req: DiscoverRequest | null = null;
+  if (url.isDrillDown) {
+    // The same filters the other modes apply, plus the pipeline status
+    // only a drill-down reads. A link carrying tags or a project narrows
+    // here exactly as it would in browse.
+    const filters: NonNullable<DiscoverRequest['filters']> = buildUrlFilters(url);
+    if (url.pipelineStatus) filters.pipeline_status = url.pipelineStatus;
+    req = {
+      mode: 'catalog',
+      filters,
+      limit: PAGE_SIZE,
+      offset: url.offset,
+      response_mode: 'full',
+    };
+    if (url.sortBy && url.sortOrder) {
+      req.sort_by = url.sortBy;
+      req.sort_order = url.sortOrder;
+    }
+  } else if (url.mode === 'browse') {
+    const filters = buildUrlFilters(url);
+    req = {
+      mode: 'catalog',
+      filters: Object.keys(filters).length > 0 ? filters : undefined,
+      limit: PAGE_SIZE,
+      offset: url.offset,
+      response_mode: 'full',
+    };
+    if (url.sortBy && url.sortOrder) {
+      req.sort_by = url.sortBy;
+      req.sort_order = url.sortOrder;
+    }
+  } else if (url.mode && url.query.trim()) {
+    const filters = buildUrlFilters(url);
+    req = {
+      mode: url.mode === 'keyword' ? 'keyword' : 'semantic',
+      query: url.query.trim(),
+      filters: Object.keys(filters).length > 0 ? filters : undefined,
+      use_hybrid: url.mode === 'hybrid',
+      limit: 20,
+      response_mode: 'full',
+    };
+  }
+  return req;
+}
+
+// Filters for the browse and scored modes.
+function buildUrlFilters(
+  url: ReturnType<typeof parseSearchUrl>,
+): NonNullable<DiscoverRequest['filters']> {
+  const f: NonNullable<DiscoverRequest['filters']> = {};
+  if (url.docType) f.doc_type = url.docType;
+  if (url.lifecycle) f.lifecycle_status = url.lifecycle;
+  if (url.project) f.project = url.project;
+  if (url.tags.length) f.tags = url.tags;
+  if (url.excludeTerminal) f.exclude_terminal_lifecycle = true;
+  return f;
+}
+
 // -- Helpers --
 
 function toggleSort(current: SortState | null, column: SortColumn): SortState {
@@ -726,4 +816,7 @@ const thStyle: React.CSSProperties = { textAlign: 'left', padding: '6px 10px', b
 const tdStyle: React.CSSProperties = { padding: '6px 10px', borderBottom: '1px solid #eee', fontSize: 13 };
 const paginationStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 12, marginTop: 16, justifyContent: 'center' };
 const pageBtnStyle: React.CSSProperties = { padding: '4px 14px', border: '1px solid #ccc', borderRadius: 4, background: '#fff', cursor: 'pointer', fontSize: 12 };
+const constraintListStyle: React.CSSProperties = { display: 'flex', flexWrap: 'wrap', gap: 6, listStyle: 'none', margin: '0 0 12px', padding: 0 };
+const constraintChipStyle: React.CSSProperties = { display: 'flex', alignItems: 'center', gap: 4, padding: '2px 4px 2px 10px', border: '1px solid #bbdefb', borderRadius: 12, background: '#e3f2fd', color: '#0d47a1', fontSize: 12 };
+const constraintClearStyle: React.CSSProperties = { background: 'none', border: 'none', cursor: 'pointer', color: '#0d47a1', fontSize: 14, lineHeight: 1, padding: '0 4px' };
 const sortBtnStyle: React.CSSProperties = { background: 'none', border: 'none', cursor: 'pointer', fontSize: 12, color: '#666', fontWeight: 600, padding: 0 };

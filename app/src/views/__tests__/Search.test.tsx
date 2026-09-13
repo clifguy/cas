@@ -1172,15 +1172,13 @@ describe('Search view: the exclusion holds outside drill-down mode', () => {
     // are, and the asymmetry is the point. Tags are a filter someone
     // chose and would want kept across a refinement. The exclusion is a
     // worklist affordance meaning "show the open population", and
-    // nothing names it on screen once the drill-down heading is gone --
-    // so carrying it into an unrelated keyword search silently hides
-    // every retired document from someone looking for one, with no
-    // result and no explanation.
+    // carrying it into an unrelated keyword search hides every retired
+    // document from someone looking for one.
     //
     // Submitting the form is the user leaving the worklist, and it is
     // the one moment they can be understood to have asked for something
-    // else. A constraint that survives it is unreachable: no control
-    // sets it, so no control can clear it.
+    // else. Naming the exclusion on screen makes it visible and clearable
+    // while it holds; it does not make it a filter the user chose.
     mockDiscover.mockResolvedValue(makeCatalogResponse(0, 0));
     const locationRef = { current: '' };
 
@@ -1209,5 +1207,262 @@ describe('Search view: the exclusion holds outside drill-down mode', () => {
     // a view that drops the parameter and keeps applying the constraint
     // from a stale render.
     expect(request.filters?.exclude_terminal_lifecycle).toBeUndefined();
+  });
+});
+
+describe('Search view: active constraints are named and clearable', () => {
+  // Every filter a request applies narrows what comes back, and a
+  // narrowing the screen does not name is indistinguishable from the
+  // documents not existing. The strip is read from the request the view
+  // sends, so these tests compare it against the request rather than
+  // against the URL.
+
+  function strip() {
+    return screen.getByRole('list', { name: /active filters/i });
+  }
+
+  function constraintKeys(): string[] {
+    return within(strip())
+      .getAllByRole('listitem')
+      .map((li) => li.getAttribute('data-constraint') ?? '')
+      .sort();
+  }
+
+  it('names a tags filter that only the URL carries', async () => {
+    mockDiscover.mockResolvedValueOnce(makeCatalogResponse(2, 2));
+
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=browse&tags=alpha,beta']}
+      />,
+    );
+
+    await screen.findByText('Document 1');
+    const item = strip().querySelector('[data-constraint="tags"]');
+    expect(item).not.toBeNull();
+    expect(item?.textContent).toContain('Tags');
+    expect(item?.textContent).toContain('alpha, beta');
+  });
+
+  it('names the terminal-lifecycle exclusion in a scored mode, and renders no strip without constraints', async () => {
+    mockDiscover.mockResolvedValue(makeCatalogResponse(1, 1));
+
+    const { unmount } = render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=keyword&q=notes&exclude_terminal_lifecycle=1']}
+      />,
+    );
+    await screen.findByText('Document 1');
+    expect(constraintKeys()).toEqual(['exclude_terminal_lifecycle']);
+    unmount();
+
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=keyword&q=notes']}
+      />,
+    );
+    await screen.findByText('Document 1');
+    expect(screen.queryByRole('list', { name: /active filters/i })).toBeNull();
+  });
+
+  it.each([
+    // `exclude_terminal_lifecycle=0` is present in the URL and narrows
+    // nothing, so the request does not carry it. A strip read from the
+    // query string names it; a strip read from the request does not.
+    [
+      'drill-down',
+      '/search?pipeline_status=failed&doc_type=reference&project=example_vault&tags=a&exclude_terminal_lifecycle=0',
+    ],
+    [
+      'browse',
+      '/search?mode=browse&doc_type=reference&lifecycle_status=draft&project=example_vault&tags=a&exclude_terminal_lifecycle=1',
+    ],
+    ['keyword', '/search?mode=keyword&q=x&tags=a'],
+  ])('names exactly the filters the %s request applies', async (_label, url) => {
+    mockDiscover.mockResolvedValueOnce(makeCatalogResponse(1, 1));
+
+    render(<TestWrapper vaultId="test_vault" vault={mockVault} initialEntries={[url]} />);
+
+    await screen.findByText('Document 1');
+    const [, request] = mockDiscover.mock.calls[0];
+    expect(constraintKeys()).toEqual(Object.keys(request.filters ?? {}).sort());
+  });
+
+  it('applies tags and a project carried by a drill-down URL, as browse does', async () => {
+    // The drill-down built its filters from a list of its own and dropped
+    // both, so a shared link carrying them narrowed in browse and not
+    // here -- and with the strip read from the request, nothing on
+    // screen would say they had been ignored.
+    mockDiscover.mockResolvedValueOnce(makeCatalogResponse(1, 1));
+
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?doc_type=reference&tags=a,b&project=example_vault']}
+      />,
+    );
+
+    await screen.findByText('Document 1');
+    const [, request] = mockDiscover.mock.calls[0];
+    expect(request.mode).toBe('catalog');
+    expect(request.filters).toEqual({
+      doc_type: 'reference',
+      tags: ['a', 'b'],
+      project: 'example_vault',
+    });
+  });
+
+  it('names every constraint a drill-down applies, not only the one its heading names', async () => {
+    mockDiscover.mockResolvedValueOnce(makeCatalogResponse(1, 1));
+
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?pipeline_status=failed&exclude_terminal_lifecycle=1']}
+      />,
+    );
+
+    await screen.findByText('Document 1');
+    expect(screen.getByRole('heading', { name: /failed ingestions/i })).toBeInTheDocument();
+    expect(constraintKeys()).toEqual(['exclude_terminal_lifecycle', 'pipeline_status']);
+    expect(strip().querySelector('[data-constraint="pipeline_status"]')?.textContent).toContain('failed');
+  });
+
+  it('re-runs the search without a cleared constraint and keeps the others', async () => {
+    mockDiscover.mockResolvedValue(makeCatalogResponse(1, 1));
+    const locationRef = { current: '' };
+
+    render(
+      <TestWrapperWithLocation
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=browse&tags=alpha&doc_type=reference&offset=50']}
+        locationRef={locationRef}
+      />,
+    );
+
+    await screen.findByText('Document 1');
+    mockDiscover.mockClear();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Clear filter: Tags' }));
+
+    await vi.waitFor(() => expect(mockDiscover).toHaveBeenCalled());
+    // Both halves: the URL no longer names the constraint, and the request
+    // built from it no longer applies it. The offset goes with it -- the
+    // page a narrower result was on is not a page of the wider one.
+    const params = new URLSearchParams(locationRef.current);
+    expect(params.has('tags')).toBe(false);
+    expect(params.has('offset')).toBe(false);
+    expect(params.get('mode')).toBe('browse');
+    expect(params.get('doc_type')).toBe('reference');
+    const [, request] = mockDiscover.mock.calls[mockDiscover.mock.calls.length - 1];
+    expect(request.filters).toEqual({ doc_type: 'reference' });
+    expect(request.offset).toBe(0);
+    // And the third half: the strip names what is left, not what was.
+    await vi.waitFor(() => expect(constraintKeys()).toEqual(['doc_type']));
+  });
+
+  it('keeps a drill-down a drill-down when one of several constraints is cleared', async () => {
+    mockDiscover.mockResolvedValue(makeCatalogResponse(1, 1));
+    const locationRef = { current: '' };
+
+    render(
+      <TestWrapperWithLocation
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?pipeline_status=failed&exclude_terminal_lifecycle=1']}
+        locationRef={locationRef}
+      />,
+    );
+
+    await screen.findByText('Document 1');
+    mockDiscover.mockClear();
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Clear filter: Pipeline status' }));
+
+    await vi.waitFor(() => expect(mockDiscover).toHaveBeenCalled());
+    expect(locationRef.current).toBe('?exclude_terminal_lifecycle=1');
+    expect(await screen.findByRole('heading', { name: /open documents/i })).toBeInTheDocument();
+    const [, request] = mockDiscover.mock.calls[mockDiscover.mock.calls.length - 1];
+    expect(request.mode).toBe('catalog');
+    expect(request.filters).toEqual({ exclude_terminal_lifecycle: true });
+  });
+
+  it('re-runs as a browse rather than blanking when the last drill-down constraint is cleared', async () => {
+    mockDiscover.mockResolvedValue(makeCatalogResponse(1, 1));
+    const locationRef = { current: '' };
+
+    render(
+      <TestWrapperWithLocation
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?exclude_terminal_lifecycle=1']}
+        locationRef={locationRef}
+      />,
+    );
+
+    await screen.findByText('Document 1');
+    mockDiscover.mockClear();
+
+    const user = userEvent.setup();
+    await user.click(
+      screen.getByRole('button', { name: 'Clear filter: Excluding terminal lifecycle states' }),
+    );
+
+    // A bare delete leaves a URL with nothing actionable in it, which is
+    // the empty landing view: no request, no rows, and the user's list
+    // gone rather than widened.
+    await vi.waitFor(() => expect(mockDiscover).toHaveBeenCalled());
+    expect(new URLSearchParams(locationRef.current).get('mode')).toBe('browse');
+    const [, request] = mockDiscover.mock.calls[mockDiscover.mock.calls.length - 1];
+    expect(request.mode).toBe('catalog');
+    expect(request.filters).toBeUndefined();
+    expect(await screen.findByText('Document 1')).toBeInTheDocument();
+    expect(screen.queryByText(/click browse to list documents/i)).toBeNull();
+  });
+
+  it('does not re-apply a cleared form-backed filter on the next submit', async () => {
+    mockDiscover.mockResolvedValue(makeCatalogResponse(1, 1));
+    const locationRef = { current: '' };
+
+    render(
+      <TestWrapperWithLocation
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?mode=browse&doc_type=reference']}
+        locationRef={locationRef}
+      />,
+    );
+
+    await screen.findByText('Document 1');
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Clear filter: Document type' }));
+    mockDiscover.mockClear();
+
+    // The form's doc-type buffer was seeded from the URL. If clearing the
+    // URL does not re-seed it, submitting writes the cleared value back.
+    // The submit changes another filter so the URL differs and a request
+    // actually fires -- resubmitting an identical URL does not refetch,
+    // and an assertion over its requests would read none.
+    await user.click(screen.getByRole('button', { name: /show filters/i }));
+    // selects[0] is mode, selects[1] is doc type, selects[2] is lifecycle
+    await user.selectOptions(screen.getAllByRole('combobox')[2], 'draft');
+    await user.click(screen.getByRole('button', { name: /^browse$/i }));
+
+    await vi.waitFor(() => expect(mockDiscover).toHaveBeenCalled());
+    expect(new URLSearchParams(locationRef.current).has('doc_type')).toBe(false);
+    const [, request] = mockDiscover.mock.calls[mockDiscover.mock.calls.length - 1];
+    expect(request.filters).toEqual({ lifecycle_status: 'draft' });
   });
 });
