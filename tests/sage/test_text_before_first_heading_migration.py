@@ -79,10 +79,21 @@ class _CountingAbstraction(StubAbstractionProvider):
         return await super().generate_abstract(text, max_tokens, doc_type)
 
 
+# The version each seeding adapter reports: the last before its adapter began
+# reporting text before the first heading, which documents indexed then carry.
+_EARLIER_VERSION = {MarkdownAdapter: "0.5.0", PdfAdapter: "0.5.0"}
+
+
 def _observed(base: type, *, withhold: bool):
-    """An adapter of ``base`` that records each source it projects."""
+    """An adapter of ``base`` that records each source it projects.
+
+    Withholding the preamble, it also reports the version that preceded it, so the
+    document it indexes reads as one an earlier adapter projected.
+    """
 
     class Observed(base):
+        VERSION = _EARLIER_VERSION[base] if withhold else base.VERSION
+
         def __init__(self) -> None:
             super().__init__()
             self.projected: list[str] = []
@@ -205,19 +216,52 @@ async def test_the_text_before_the_first_heading_becomes_the_first_passage(vault
     assert vault.abstraction.calls == 0
 
 
-async def test_a_second_run_rewrites_nothing(vault):
+async def test_a_second_run_reads_no_source_and_rewrites_nothing(vault):
     await _led(vault)
-    vault.ship_adapters()
+    await vault.ingest("plain.md", b"# Plain\n\nPlain body.\n", SourceType.MARKDOWN)
+    first = vault.ship_adapters()
     await vault.migrate()
     assert vault.store.writes == 1, "control: the first run must have rewritten"
-    vault.embedder.embedded.clear()
-    vault.store.writes = 0
+    assert sorted(first[SourceType.MARKDOWN].projected) == ["led.md", "plain.md"], (
+        "control: the first run must have read both sources"
+    )
+    second = vault.ship_adapters()
 
     report = await vault.migrate()
 
     assert BACKFILL_TEXT_BEFORE_FIRST_HEADING not in report.backfills_applied
+    assert second[SourceType.MARKDOWN].projected == []
     assert vault.embedder.embedded == []
     assert vault.store.writes == 0
+
+
+async def test_an_examined_document_is_stamped_with_the_shipped_adapter_version(vault):
+    led = await _led(vault)
+    plain = await vault.ingest("plain.md", b"# Plain\n\nPlain body.\n", SourceType.MARKDOWN)
+    for document_id in (led, plain):
+        doc = await vault.graph_store.get_document(document_id)
+        assert doc.adapter_version == "0.5.0", "control: seeded as an earlier adapter"
+    vault.ship_adapters()
+
+    await vault.migrate()
+
+    for document_id in (led, plain):
+        doc = await vault.graph_store.get_document(document_id)
+        assert doc.adapter_version == MarkdownAdapter.VERSION
+
+
+async def test_a_document_the_shipped_adapter_projected_is_not_read(vault):
+    shipped = vault.ship_adapters()
+    # Opening at a heading, it holds no empty-path passage, so only its version
+    # can keep it from being read.
+    await vault.ingest("fresh.md", BODY.encode(), SourceType.MARKDOWN)
+    assert shipped[SourceType.MARKDOWN].projected == ["fresh.md"], "control: ingest projected it"
+    later = vault.ship_adapters()
+
+    report = await vault.migrate()
+
+    assert later[SourceType.MARKDOWN].projected == []
+    assert BACKFILL_TEXT_BEFORE_FIRST_HEADING not in report.backfills_applied
 
 
 async def test_a_document_opening_at_a_heading_is_read_and_left_alone(vault):
@@ -256,7 +300,7 @@ async def test_a_headingless_document_is_not_projected(vault):
 
 
 @requires_pdf
-async def test_a_pdf_without_an_outline_is_not_projected(vault, tmp_path):
+async def test_every_earlier_pdf_is_examined_once_whatever_its_tags(vault, tmp_path):
     flat = await vault.ingest(
         "flat.pdf",
         _make_pdf_with_pages(
@@ -273,6 +317,11 @@ async def test_a_pdf_without_an_outline_is_not_projected(vault, tmp_path):
         ).read_bytes(),
         SourceType.PDF,
     )
+    tags = (await vault.graph_store.get_document(led)).tags
+    assert "pdf:has_outline" in tags, "control: the outline tag must be there to remove"
+    await vault.graph_store.update_document(
+        led, {"tags": [tag for tag in tags if tag != "pdf:has_outline"]}
+    )
     before = _shape(await vault.store.get_all_chunks(flat))
     adapters = vault.ship_adapters()
 
@@ -281,8 +330,11 @@ async def test_a_pdf_without_an_outline_is_not_projected(vault, tmp_path):
     assert BACKFILL_TEXT_BEFORE_FIRST_HEADING in report.backfills_applied
     first = (await vault.store.get_all_chunks(led))[0]
     assert (first.heading_path, first.content) == ("", "COVER_PAGE_DELTA")
-    assert adapters[SourceType.PDF].projected == ["led.pdf"]
+    assert sorted(adapters[SourceType.PDF].projected) == ["flat.pdf", "led.pdf"]
     assert _shape(await vault.store.get_all_chunks(flat)) == before
+    again = vault.ship_adapters()
+    await vault.migrate()
+    assert again[SourceType.PDF].projected == []
 
 
 async def test_a_source_changed_since_it_was_indexed_is_skipped_and_logged(vault, caplog):
@@ -298,6 +350,9 @@ async def test_a_source_changed_since_it_was_indexed_is_skipped_and_logged(vault
     assert BACKFILL_TEXT_BEFORE_FIRST_HEADING not in report.backfills_applied
     assert _shape(await vault.store.get_all_chunks(led)) == before
     assert vault.embedder.embedded == []
+    assert (await vault.graph_store.get_document(led)).adapter_version == "0.5.0", (
+        "a skipped document is not stamped, so a later run examines it again"
+    )
     skipped = [
         r.getMessage() for r in caplog.records if "not stored by migrate_vault" in r.getMessage()
     ]
@@ -324,20 +379,28 @@ async def test_a_source_held_only_by_the_source_store_is_recovered(vault, monkey
     from sage.services.vault_source_errors import wrap_vault_source_store
 
     led = await _led(vault)
-    doc = await vault.graph_store.get_document(led)
-    local = vault.root / "sources" / doc.source_path
-    remote = _InMemorySourceStore({doc.source_path: local.read_bytes()})
-    local.unlink()
-    assert not local.exists()
-    monkeypatch.setattr(
-        "sage.mcp_init.resolve_stack_vault_source_store",
-        lambda *args, **kwargs: wrap_vault_source_store(remote),
-    )
+    plain = await vault.ingest("plain.md", b"# Plain\n\nPlain body.\n", SourceType.MARKDOWN)
+    sources = {}
+    for document_id in (led, plain):
+        doc = await vault.graph_store.get_document(document_id)
+        local = vault.root / "sources" / doc.source_path
+        sources[doc.source_path] = local.read_bytes()
+        local.unlink()
+        assert not local.exists()
+    remote = _InMemorySourceStore(sources)
+    resolutions = []
+
+    def resolve(*args, **kwargs):
+        resolutions.append(1)
+        return wrap_vault_source_store(remote)
+
+    monkeypatch.setattr("sage.mcp_init.resolve_stack_vault_source_store", resolve)
     vault.ship_adapters()
 
     report = await vault.migrate()
 
-    assert remote.reads == [doc.source_path]
+    assert sorted(remote.reads) == sorted(sources)
+    assert len(resolutions) == 1, "the source store is resolved once per run, not per document"
     assert BACKFILL_TEXT_BEFORE_FIRST_HEADING in report.backfills_applied
     assert (await vault.store.get_all_chunks(led))[0].content == LEAD
 
@@ -438,3 +501,19 @@ async def test_a_lifecycle_stamp_while_the_text_is_added_is_not_reverted(vault):
     chunks = await vault.store.get_all_chunks(led)
     assert chunks[0].heading_path == ""
     assert {c.lifecycle_status for c in chunks} == {"archived"}
+
+
+async def test_a_document_with_no_adapter_to_project_it_is_skipped_and_logged(vault, caplog):
+    led = await _led(vault)
+    adapters = vault.ship_adapters()
+    del adapters[SourceType.MARKDOWN]
+
+    with caplog.at_level("INFO", logger="sage.services.ingestion"):
+        report = await vault.migrate()
+
+    assert BACKFILL_TEXT_BEFORE_FIRST_HEADING not in report.backfills_applied
+    messages = [record.getMessage() for record in caplog.records]
+    assert any(
+        led in message and "not stored by migrate_vault" in message and "adapter" in message
+        for message in messages
+    ), messages

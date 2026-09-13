@@ -113,12 +113,23 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Formats whose adapters can report text before a document's first heading.
-_PREAMBLE_SOURCE_TYPES = frozenset({SourceType.MARKDOWN, SourceType.DOCX, SourceType.PDF})
+# The first version of each adapter that reports the text before a document's
+# first heading. A document an earlier version projected may lack a passage for
+# that text; one projected by this version or later cannot.
+_PREAMBLE_SINCE_ADAPTER_VERSION: dict[SourceType, tuple[int, ...]] = {
+    SourceType.MARKDOWN: (0, 6, 0),
+    SourceType.DOCX: (0, 5, 0),
+    SourceType.PDF: (0, 6, 0),
+}
 
-# Tag the PDF adapter records on a document projected from an outline, the only
-# structure through which a PDF places text before a heading.
-_PDF_OUTLINE_TAG = "pdf:has_outline"
+
+def _projected_before(adapter_version: str | None, since: tuple[int, ...]) -> bool:
+    """Whether ``adapter_version`` predates ``since``; an unreadable version does."""
+    try:
+        return tuple(int(part) for part in (adapter_version or "").split(".")) < since
+    except ValueError:
+        return True
+
 
 # Provider-neutral abstraction latency records. Shares the logger name with
 # the local provider's implementation-specific breakdown so one pipeline
@@ -3177,30 +3188,40 @@ class IngestionService:
 
         A document indexed before that text had a passage holds none of it, and
         its stored passages cannot supply it, so the source is re-projected. The
-        candidates are the documents whose format can place text before a heading
-        and whose stored passages include headings but no passage under none: a
-        document without headings already stores its whole text under the empty
-        heading path, as does one this pass has repaired. A PDF can place text
-        before a heading only through its outline, so a PDF without one is not
-        read. Only a candidate whose projection carries such text is rewritten.
+        candidates are the documents an adapter version older than the first to
+        report that text projected, and whose stored passages include headings but
+        no passage under none: a document without headings already stores its
+        whole text under the empty heading path. Only a candidate whose projection
+        carries such text is rewritten, and every candidate whose source is
+        examined is stamped with the adapter version that examined it, so a later
+        run reads no source it has already read.
 
         Returns:
             The number of documents whose passages were rewritten.
         """
-        rewritten = 0
+        candidates = []
         for doc in await self._store.list_all_documents():
-            if doc.source_type not in _PREAMBLE_SOURCE_TYPES:
-                continue
-            if doc.source_type == SourceType.PDF and _PDF_OUTLINE_TAG not in (doc.tags or []):
+            since = _PREAMBLE_SINCE_ADAPTER_VERSION.get(doc.source_type)
+            if since is None or not _projected_before(doc.adapter_version, since):
                 continue
             paths = await self._content_store.get_heading_paths(doc.id)
-            if not paths or "" in paths:
-                continue
-            if await self._store_stored_preamble(doc):
+            if paths and "" not in paths:
+                candidates.append(doc)
+        if not candidates:
+            return 0
+
+        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+
+        vault_source_store = resolve_stack_vault_source_store(get_stack_config())
+        rewritten = 0
+        for doc in candidates:
+            if await self._store_stored_preamble(doc, vault_source_store):
                 rewritten += 1
         return rewritten
 
-    async def _store_stored_preamble(self, doc: Document) -> bool:
+    async def _store_stored_preamble(
+        self, doc: Document, vault_source_store: "VaultSourceStore"
+    ) -> bool:
         """Add a document's text before its first heading to its stored passages.
 
         The passages already stored are kept exactly as they read -- heading
@@ -3214,7 +3235,9 @@ class IngestionService:
         The source must still be the one the passages were projected from: a
         source whose bytes changed since is skipped, since adding new text above
         old passages would store a document that never existed, and so is a
-        source that cannot be projected. Each skip is logged with its reason.
+        source that cannot be projected, or that no adapter is registered to
+        project. Each skip is logged with its reason and leaves the document's
+        adapter version as it was, so a later run examines it again.
 
         The migration excludes pipeline work, so only a metadata stamp can reach
         the document meanwhile; the passages are read and rewritten under the
@@ -3226,12 +3249,11 @@ class IngestionService:
         """
         document_id = doc.id
         adapter = self._adapters.get(doc.source_type)
-        if adapter is None or doc.source_path is None:
-            return False
+        if adapter is None:
+            return self._preamble_skipped(document_id, "no adapter is registered for its format")
+        if doc.source_path is None:
+            return self._preamble_skipped(document_id, "it records no source path")
         storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
-        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
-
-        vault_source_store = resolve_stack_vault_source_store(get_stack_config())
         try:
             merged_config = self._merge_adapter_config(doc.source_type, None)
             with self._project_source(
@@ -3248,6 +3270,7 @@ class IngestionService:
                 document_id, "source differs from the one its passages hold"
             )
         if not projection.headings or not projection.preamble.strip():
+            await self._stamp_examined(document_id, adapter.VERSION)
             return False
 
         async with self._locks.lock(document_id):
@@ -3255,6 +3278,7 @@ class IngestionService:
             # Candidacy was read before the projection; passages that hold the
             # text by now must not be given it twice.
             if not stored or any(chunk.heading_path == "" for chunk in stored):
+                await self._stamp_examined(document_id, adapter.VERSION)
                 return False
             sections = group_sections(stored)
             rebuilt = self._passages_for_sections(
@@ -3278,7 +3302,16 @@ class IngestionService:
             for chunk, embedding in zip(rebuilt, embeddings):
                 chunk.embedding = embedding
             await self._content_store.index_chunks(document_id, rebuilt)
-            return True
+        await self._stamp_examined(document_id, adapter.VERSION)
+        return True
+
+    async def _stamp_examined(self, document_id: str, adapter_version: str) -> None:
+        """Record that ``adapter_version`` examined the document's source.
+
+        Its stored passages now hold whatever text that version reports before
+        the first heading, which is what the candidate filter reads.
+        """
+        await self._store.update_document(document_id, {"adapter_version": adapter_version})
 
     @staticmethod
     def _preamble_skipped(document_id: str, reason: str) -> bool:

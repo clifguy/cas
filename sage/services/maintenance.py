@@ -500,9 +500,11 @@ class MaintenanceService:
         A vault indexed before that text had a passage holds none of it, and the
         stored passages cannot supply it, so this backfill -- unlike the others --
         reads sources, re-projecting each candidate through the vault-source
-        binding. The text is added ahead of the passages already stored, which
-        are kept as they read; nothing is re-abstracted, and only a document it
-        rewrites is re-embedded.
+        binding. A candidate is a document an adapter version older than the first
+        to report that text projected, and each one examined is stamped with the
+        examining version, so no source is read twice. The text is added ahead of
+        the passages already stored, which are kept as they read; nothing is
+        re-abstracted, and only a document it rewrites is re-embedded.
 
         Returns:
             The number of documents rewritten -- zero on a vault with nothing to
