@@ -3400,3 +3400,64 @@ async def test_empty_content_heading_still_emits_chunk(
     assert "Some body content" not in parent.content, (
         "Body of FIRST CHILD must not leak into the EMPTY PARENT chunk."
     )
+
+
+# ---------------------------------------------------------------------------
+# Text before a document's first heading is a passage of its own, addressed by
+# the empty heading path that text under no heading already has.
+# ---------------------------------------------------------------------------
+
+
+def _preamble_projection(preamble: str):
+    from sage.source_adapters.base import ProjectionResult
+
+    base = _three_section_projection()
+    return ProjectionResult(
+        text=base.text,
+        headings=base.headings,
+        content_hash=base.content_hash,
+        adapter_version=base.adapter_version,
+        title=base.title,
+        preamble=preamble,
+    )
+
+
+def test_chunk_projection_stores_text_before_the_first_heading_first(ingestion_service):
+    service = _bounded(ingestion_service, bound=10_000)
+
+    chunks = service._chunk_projection("doc_lead", _preamble_projection("Opening sentinel."))
+    twin = service._chunk_projection("doc_lead", _preamble_projection(""))
+
+    assert (chunks[0].heading_path, chunks[0].content) == ("", "Opening sentinel.")
+    assert (chunks[0].chunk_index, chunks[0].section_index) == (0, 0)
+    assert [(c.heading_path, c.content) for c in chunks[1:]] == [
+        (c.heading_path, c.content) for c in twin
+    ]
+    assert [c.section_index for c in chunks[1:]] == [c.section_index + 1 for c in twin]
+    assert [c.chunk_index for c in chunks] == list(range(len(chunks)))
+    assert [c.heading_path for c in twin] == ["Doc", "Doc > Long", "Doc > Tail"]
+
+
+def test_chunk_projection_ignores_a_blank_preamble(ingestion_service):
+    service = _bounded(ingestion_service, bound=10_000)
+
+    chunks = service._chunk_projection("doc_blank", _preamble_projection(" \n\n\t "))
+    twin = service._chunk_projection("doc_blank", _preamble_projection(""))
+
+    assert [(c.heading_path, c.content, c.section_index) for c in chunks] == [
+        (c.heading_path, c.content, c.section_index) for c in twin
+    ]
+    assert "" not in {c.heading_path for c in chunks}
+
+
+def test_chunk_projection_divides_a_preamble_over_the_bound(ingestion_service):
+    service = _bounded(ingestion_service)
+    lead = _long_body()
+
+    chunks = service._chunk_projection("doc_long_lead", _preamble_projection(lead))
+
+    lead_chunks = [c for c in chunks if c.heading_path == ""]
+    assert len(lead_chunks) > 1
+    assert {c.section_index for c in lead_chunks} == {0}
+    assert chunks[: len(lead_chunks)] == lead_chunks, "the preamble passages come first"
+    assert "".join(c.content for c in lead_chunks) == lead

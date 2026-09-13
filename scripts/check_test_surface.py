@@ -186,6 +186,10 @@ KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
         "renamed test_the_division_holds_the_document_from_its_read_to_its_write when it began "
         "observing the per-document lock at the read as well as the embed"
     ),
+    "tests/sage/test_list_headings.py::test_list_headings_returns_only_authored_headings": (
+        "renamed test_list_headings_leaks_no_internal_marker: the listing may now carry the "
+        "empty path, so the name states the property the unchanged assertion checks"
+    ),
 }
 
 

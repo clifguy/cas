@@ -4322,3 +4322,209 @@ class TestPptxAdapter:
         assert _slide_heading(result, 1).text == "Slide 1: Inferred Heading Text"
         # ...but the document title stays on the placeholder-or-stem chain.
         assert result.title == "stem-name"
+
+
+# ── Text before the first heading ──────────────────────────────────────
+#
+# Text above a document's first heading belongs to no heading. Each adapter
+# reports it as ``preamble``, apart from the headings, which keep exactly the
+# content they had without it.
+
+
+def _heading_shape(result) -> list[tuple[int, str, str, str]]:
+    return [(h.level, h.text, h.path, h.content) for h in result.headings]
+
+
+class TestMarkdownPreamble:
+    async def test_ad_137_text_before_the_first_heading_is_the_preamble(self, tmp_path):
+        """AD-137: Markdown text before the first heading is the preamble."""
+        from sage.source_adapters.markdown_adapter import MarkdownAdapter
+
+        body = "# Guide\n\nGuide body.\n\n## Part\n\nPart body.\n"
+        lead = "Opening sentinel alpha.\n\n| Site | Room |\n|---|---|\n| Larkspur | 12 |\n\n"
+        with_lead = tmp_path / "with_lead.md"
+        with_lead.write_text(lead + body)
+        without_lead = tmp_path / "without_lead.md"
+        without_lead.write_text(body)
+
+        result = await MarkdownAdapter().project(with_lead)
+        twin = await MarkdownAdapter().project(without_lead)
+
+        assert result.preamble.startswith("Opening sentinel alpha.")
+        assert result.preamble.index("alpha") < result.preamble.index("Larkspur")
+        assert "# Guide" not in result.preamble
+        assert _heading_shape(result) == _heading_shape(twin)
+        assert [h.path for h in result.headings] == ["Guide", "Guide > Part"]
+
+    async def test_ad_138_front_matter_is_not_part_of_the_preamble(self, tmp_path):
+        """AD-138: Markdown front matter is not part of the preamble."""
+        from sage.source_adapters.markdown_adapter import MarkdownAdapter
+
+        path = tmp_path / "front.md"
+        path.write_text("---\nname: x\n---\n\nIntro beta.\n\n# H\n\nBody.\n")
+
+        result = await MarkdownAdapter().project(path)
+
+        assert result.preamble == "Intro beta."
+        assert [h.path for h in result.headings] == ["H"]
+
+    async def test_ad_139_front_matter_directly_before_a_heading_leaves_no_preamble(self, tmp_path):
+        """AD-139: Front matter directly before the first heading leaves no preamble."""
+        from sage.source_adapters.markdown_adapter import MarkdownAdapter
+
+        path = tmp_path / "front_only.md"
+        path.write_text("---\nname: x\n---\n# H\n\nBody.\n")
+
+        result = await MarkdownAdapter().project(path)
+
+        assert [h.path for h in result.headings] == ["H"], "control: the heading must parse"
+        assert result.preamble == ""
+
+    async def test_ad_140_a_headingless_document_reports_no_preamble(self, tmp_path):
+        """AD-140: A markdown document with no headings reports no preamble."""
+        from sage.source_adapters.markdown_adapter import MarkdownAdapter
+
+        path = tmp_path / "flat.md"
+        path.write_text("Just a paragraph.\n\nAnd another.\n")
+
+        result = await MarkdownAdapter().project(path)
+
+        assert result.headings == []
+        assert result.preamble == ""
+        assert "And another." in result.text
+
+    async def test_ad_141_rows_above_a_setext_heading_formed_by_a_table_rule_are_kept(
+        self, tmp_path
+    ):
+        """AD-141: Rows above a setext heading formed by a table rule are kept."""
+        from sage.source_adapters.markdown_adapter import MarkdownAdapter
+
+        path = tmp_path / "pandoc.md"
+        # A rule with internal spaces is a thematic break; only the unbroken
+        # closing rule under the second table's last row is a setext underline.
+        path.write_text(
+            "Locations\n\n"
+            "  Site        Room\n"
+            "  ----------- ------\n"
+            "  Larkspur    12\n\n"
+            "  Service     Host\n"
+            "  ----------- ------\n"
+            "  Tamarack    nas01\n"
+            "-------------------\n\n"
+            "Below the table.\n"
+        )
+
+        result = await MarkdownAdapter().project(path)
+
+        assert [h.text for h in result.headings] == ["Tamarack    nas01"], (
+            "control: the closing rule must form a setext heading"
+        )
+        assert "Larkspur" in result.preamble
+        assert "Service" in result.preamble
+        assert result.headings[0].content == "Below the table."
+
+
+@requires_docx
+class TestDocxPreamble:
+    async def test_ad_142_paragraphs_and_tables_before_the_first_heading_are_the_preamble(
+        self, tmp_path
+    ):
+        """AD-142: DOCX paragraphs and tables before the first heading are the preamble."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        def build(name: str, with_lead: bool) -> Path:
+            doc = docx.Document()
+            if with_lead:
+                doc.add_paragraph("Handbook Title", style="Title")
+                doc.add_paragraph("Opening paragraph gamma.")
+                _add_table(doc, [["Site", "Room"], ["Larkspur", "12"]])
+            doc.add_paragraph("Overview", style="Heading 1")
+            doc.add_paragraph("Overview body.")
+            path = tmp_path / name
+            doc.save(str(path))
+            return path
+
+        result = await DocxAdapter().project(build("lead.docx", True))
+        twin = await DocxAdapter().project(build("plain.docx", False))
+
+        preamble = result.preamble
+        assert preamble.index("Handbook Title") < preamble.index("gamma")
+        assert preamble.index("gamma") < preamble.index("Larkspur")
+        assert _heading_shape(result) == _heading_shape(twin)
+        assert result.headings[0].content == "Overview body."
+
+
+@requires_pdf
+class TestPdfPreamble:
+    async def test_ad_143_pages_before_the_first_outline_entry_are_the_preamble(self, tmp_path):
+        """AD-143: PDF pages before the first outline entry are the preamble."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        pages = [["COVER_PAGE_DELTA"], ["INTRO_BODY"], ["DETAIL_BODY"]]
+        outline = [(1, "Intro", 1), (2, "Detail", 2)]
+        led = _make_pdf_with_outline(tmp_path / "led.pdf", outline=outline, pages=pages)
+        result = await PdfAdapter().project(led)
+
+        assert [h.path for h in result.headings] == ["Intro", "Intro > Detail"]
+        assert result.preamble == "COVER_PAGE_DELTA"
+        assert "COVER_PAGE_DELTA" not in "".join(h.content for h in result.headings)
+        assert [h.content for h in result.headings] == ["INTRO_BODY", "DETAIL_BODY"]
+
+    async def test_ad_144_a_pdf_without_an_outline_reports_no_preamble(self, tmp_path):
+        """AD-144: A PDF without an outline reports no preamble."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        path = _make_pdf_with_pages(tmp_path / "flat.pdf", [["PAGE_ONE"], ["PAGE_TWO"]], "Flat")
+
+        result = await PdfAdapter().project(path)
+
+        assert len(result.headings) == 1
+        assert "PAGE_ONE" in result.headings[0].content
+        assert result.preamble == ""
+
+
+class TestSlideAndSheetPreamble:
+    @requires_pptx
+    async def test_ad_145_slides_leave_nothing_before_the_first_heading(self, tmp_path):
+        """AD-145: Slides leave nothing before the first heading."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_pptx(
+            tmp_path,
+            [{"title": None, "body": ["UNTITLED_SLIDE_BODY"]}, {"title": "Second"}],
+        )
+
+        result = await PptxAdapter().project(path)
+
+        # An untitled slide's heading is inferred from its text.
+        assert result.headings[0].path == "Slide 1: UNTITLED_SLIDE_BODY"
+        assert result.preamble == ""
+
+    @requires_openpyxl
+    async def test_ad_145_sheets_leave_nothing_before_the_first_heading(self, tmp_path):
+        """AD-145: Sheets leave nothing before the first heading."""
+        from sage.source_adapters.xlsx_adapter import XlsxAdapter
+
+        path = _make_multisheet_xlsx(tmp_path, {"First": [["FIRST_CELL"]], "Second": [["x"]]})
+
+        result = await XlsxAdapter().project(path)
+
+        assert "FIRST_CELL" in result.headings[0].content
+        assert result.preamble == ""
+
+
+@requires_docx
+class TestDotxPreamble:
+    async def test_ad_146_a_templates_style_surface_precedes_its_first_heading(self, tmp_path):
+        """AD-146: A template's style-surface description precedes its first heading."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        path = _build_template_fixture(tmp_path, "styled.dotx")
+
+        result = await DocxAdapter().project(path)
+
+        assert [h.path for h in result.headings] == ["Intro"], "control: the template has a heading"
+        assert "Appendix Heading" in result.preamble
+        assert result.text.startswith(result.preamble)
+        assert result.headings[0].content.startswith("Body paragraph.")
+        assert "Appendix Heading" not in result.headings[0].content

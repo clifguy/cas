@@ -2637,3 +2637,98 @@ leaves the other disclosed.
 
 **Expected:** Both the symlinked and the resolved form are replaced by the
 marker; the diagnosis survives.
+
+### TEST-SAGE-AD-137: Markdown text before the first heading is the preamble
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** projection completeness
+**Decision:** Text above a document's first heading belongs to no heading, so a
+projection that carries only headings loses it. The adapter reports it apart
+from the headings, which keep exactly the content they had.
+
+**Expected:** `preamble` holds the leading paragraph and table in source order;
+the first heading's path and content equal those of the same source without the
+leading text.
+
+### TEST-SAGE-AD-138: Markdown front matter is not part of the preamble
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** projection completeness, guard
+**Decision:** Front matter is metadata about the document, not authored body
+text, and the projection has never carried it into a passage.
+
+**Expected:** With front matter followed by a paragraph and a heading, `preamble`
+is the paragraph alone.
+
+### TEST-SAGE-AD-139: Front matter directly before the first heading leaves no preamble
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** boundary
+**Expected:** `preamble` is empty.
+
+### TEST-SAGE-AD-140: A markdown document with no headings reports no preamble
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** regression guard
+**Decision:** A headingless document's whole text is its one passage already;
+reporting it again as a preamble would store it twice.
+
+**Expected:** `preamble` is empty and `text` carries the body.
+
+### TEST-SAGE-AD-141: Rows above a setext heading formed by a table rule are kept
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** projection completeness
+**Decision:** A table's last row followed by its closing dash rule parses as a
+setext heading under CommonMark. The parse stands; the rows above it must not be
+lost.
+
+**Expected:** `preamble` holds the earlier rows.
+
+### TEST-SAGE-AD-142: DOCX paragraphs and tables before the first heading are the preamble
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection completeness
+**Decision:** A Title-styled paragraph is not a heading, so it is preamble text
+alongside any body paragraph or table that precedes the first heading.
+
+**Expected:** `preamble` holds all three in document order; the heading's content
+is unchanged.
+
+### TEST-SAGE-AD-143: PDF pages before the first outline entry are the preamble
+
+**Artifact:** `PdfAdapter.project`
+**Category:** projection completeness
+**Expected:** With the first bookmark on the second page, `preamble` is the first
+page's text and each heading's content equals that of the same outline over the
+same pages.
+
+### TEST-SAGE-AD-144: A PDF without an outline reports no preamble
+
+**Artifact:** `PdfAdapter.project`
+**Category:** regression guard
+**Decision:** Such a document projects as one heading holding its whole text, so
+nothing precedes that heading.
+
+**Expected:** `preamble` is empty.
+
+### TEST-SAGE-AD-145: Slides and sheets leave nothing before the first heading
+
+**Artifact:** `PptxAdapter.project`, `XlsxAdapter.project`
+**Category:** projection completeness
+**Decision:** Every slide and every sheet is a level-1 heading, so no content can
+precede the first one.
+
+**Expected:** `preamble` is empty for both.
+
+### TEST-SAGE-AD-146: A template's style-surface description precedes its first heading
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection completeness
+**Decision:** A template's projection opens with a synthesized description of its
+style surface, placed first so retrieval indexes the template by its styles. When
+the template has headings that text precedes the first one, so it is preamble
+text; carried only in `text`, it would reach no passage.
+
+**Expected:** `preamble` opens with the style-surface description, followed by any
+body text before the first heading; the heading's content carries none of it.

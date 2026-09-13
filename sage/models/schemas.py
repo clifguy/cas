@@ -461,7 +461,11 @@ class Document(BaseModel):
         ),
     )
     adapter_version: str = Field(
-        description="Version of the source adapter used at last ingestion."
+        description=(
+            "Version of the source adapter whose output the document's stored passages "
+            "are: the adapter of its last ingestion, or of a later migrate_vault that "
+            "brought the passages current with that adapter."
+        )
     )
     created_by: str = Field(
         description="User ID of the actor (human or agent) that created this document."
@@ -3793,8 +3797,10 @@ class DiscoverHit(BaseModel):
             "the chunk's first `hints.excerpt_chars` characters. A "
             "deterministic request for the hit's document and "
             "`heading_path` returns it whole; where the hit's "
-            "`heading_path` is null, the passage is the document's whole "
-            "body, which `read_projection` returns."
+            "`heading_path` is null, the passage is text under no heading -- "
+            "the whole body of a document with no headings, or the text "
+            "before a document's first heading -- which `read_section` "
+            "returns whole for an empty `heading_path`."
         ),
     )
     heading_path: str | None = Field(

@@ -113,6 +113,24 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# The first version of each adapter that reports the text before a document's
+# first heading. A document an earlier version projected may lack a passage for
+# that text; one projected by this version or later cannot.
+_PREAMBLE_SINCE_ADAPTER_VERSION: dict[SourceType, tuple[int, ...]] = {
+    SourceType.MARKDOWN: (0, 6, 0),
+    SourceType.DOCX: (0, 5, 0),
+    SourceType.PDF: (0, 6, 0),
+}
+
+
+def _projected_before(adapter_version: str | None, since: tuple[int, ...]) -> bool:
+    """Whether ``adapter_version`` predates ``since``; an unreadable version does."""
+    try:
+        return tuple(int(part) for part in (adapter_version or "").split(".")) < since
+    except ValueError:
+        return True
+
+
 # Provider-neutral abstraction latency records. Shares the logger name with
 # the local provider's implementation-specific breakdown so one pipeline
 # reads both; the two are joined on the input size they both carry.
@@ -3021,11 +3039,18 @@ class IngestionService:
         searches for the heading text find the document, matching the behavior
         of Word's Find on a heading paragraph.
 
+        Text before the first heading belongs to no heading, and is the first
+        section, addressed by the empty heading path -- the address text under
+        no heading has in a document without headings, where the whole text is
+        that one section. Every heading keeps the address it has without it.
+
         Passages carry projected content only. Document-identity signals
         (title, source filename, tags, semantic abstract, and their
         expansions) live on the document surface (CAS-ADR-049).
         """
         sections: list[tuple[str, str]] = []
+        if projection.headings and projection.preamble.strip():
+            sections.append(("", projection.preamble))
         for heading in projection.headings:
             # Prepend the ATX heading line to the section's content so the
             # heading mark survives into the reconstructed projection text.
@@ -3157,3 +3182,133 @@ class IngestionService:
                 chunk.embedding = embedding
             await self._content_store.index_chunks(document_id, divided)
             return True
+
+    async def store_text_before_first_heading(self) -> int:
+        """Store the text each document carries before its first heading, vault-wide.
+
+        A document indexed before that text had a passage holds none of it, and
+        its stored passages cannot supply it, so the source is re-projected. The
+        candidates are the documents an adapter version older than the first to
+        report that text projected, and whose stored passages include headings but
+        no passage under none: a document without headings already stores its
+        whole text under the empty heading path. A candidate's passages are
+        rebuilt from the fresh projection wherever they differ from it, and every
+        candidate whose source is examined is stamped with the adapter version
+        that examined it, so a later run reads no source it has already read.
+
+        Returns:
+            The number of documents whose passages were rewritten.
+        """
+        candidates = []
+        for doc in await self._store.list_all_documents():
+            since = _PREAMBLE_SINCE_ADAPTER_VERSION.get(doc.source_type)
+            if since is None or not _projected_before(doc.adapter_version, since):
+                continue
+            paths = await self._content_store.get_heading_paths(doc.id)
+            if paths and "" not in paths:
+                candidates.append(doc)
+        if not candidates:
+            return 0
+
+        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+
+        vault_source_store = resolve_stack_vault_source_store(get_stack_config())
+        rewritten = 0
+        for doc in candidates:
+            if await self._bring_passages_current(doc, vault_source_store):
+                rewritten += 1
+        return rewritten
+
+    async def _bring_passages_current(
+        self, doc: Document, vault_source_store: "VaultSourceStore"
+    ) -> bool:
+        """Make a document's stored passages the ones its adapter now writes.
+
+        The source is re-projected and chunked exactly as ingest chunks it. Where
+        the stored passages already read as that result, nothing is written.
+        Otherwise the fresh passages replace them: ordinarily the only difference
+        is the text before the first heading, added as the first passage with
+        every other heading path, section and passage unchanged, but passages an
+        older adapter shaped differently -- a heading it mistook, content it
+        rendered otherwise -- are corrected too, which is what makes the version
+        stamp afterwards true of all of them. The abstract was generated from the
+        projection's whole text and is left as it is; the document's passages are
+        re-embedded together, since they are replaced together.
+
+        The source must still be the one the passages were projected from: a
+        source whose bytes changed since is skipped, since rebuilding from it would
+        store a document that was never indexed, and so is a source that cannot
+        be projected, or that no adapter is registered to project. Each skip is
+        logged with its reason and leaves the document's adapter version as it
+        was, so a later run examines it again.
+
+        The migration excludes pipeline work, so only a metadata stamp can reach
+        the document meanwhile; the passages are read and rewritten under the
+        lock stamps take, as the division above does, and the rewrite carries the
+        scalars stamped on the rows it read. The source is projected before that
+        lock is taken, since projection can be slow.
+
+        Returns:
+            Whether the passages were rewritten.
+        """
+        document_id = doc.id
+        adapter = self._adapters.get(doc.source_type)
+        if adapter is None:
+            return self._preamble_skipped(document_id, "no adapter is registered for its format")
+        if doc.source_path is None:
+            return self._preamble_skipped(document_id, "it records no source path")
+        storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
+        try:
+            merged_config = self._merge_adapter_config(doc.source_type, None)
+            with self._project_source(
+                vault_source_store, storage_root, doc.source_path
+            ) as project_path:
+                projection = await adapter.project(project_path, merged_config)
+        except Exception as exc:
+            return self._preamble_skipped(
+                document_id, f"source not projected: {type(exc).__name__}"
+            )
+        expected_hash = doc.stored_content_hash or doc.source_content_hash
+        if canonicalize_sha256(projection.content_hash) != expected_hash:
+            return self._preamble_skipped(
+                document_id, "source differs from the one its passages hold"
+            )
+        fresh = self._chunk_projection(document_id, projection)
+
+        async with self._locks.lock(document_id):
+            stored = await self._content_store.get_all_chunks(document_id)
+            if not stored or [(c.heading_path, c.content) for c in fresh] == [
+                (c.heading_path, c.content) for c in stored
+            ]:
+                await self._stamp_examined(document_id, adapter.VERSION)
+                return False
+            for chunk in fresh:
+                chunk.indexed_structure = indexed_structure(chunk.heading_path, doc.title)
+                chunk.doc_type = stored[0].doc_type
+                chunk.lifecycle_status = stored[0].lifecycle_status
+                chunk.project = stored[0].project
+            embeddings = await self._embedding.embed(
+                [embedding_input(c.heading_path, c.content) for c in fresh]
+            )
+            for chunk, embedding in zip(fresh, embeddings):
+                chunk.embedding = embedding
+            await self._content_store.index_chunks(document_id, fresh)
+        await self._stamp_examined(document_id, adapter.VERSION)
+        return True
+
+    async def _stamp_examined(self, document_id: str, adapter_version: str) -> None:
+        """Record that the stored passages are what ``adapter_version`` writes.
+
+        The candidate filter reads this, so a document it records is not read again.
+        """
+        await self._store.update_document(document_id, {"adapter_version": adapter_version})
+
+    @staticmethod
+    def _preamble_skipped(document_id: str, reason: str) -> bool:
+        """Record why a document's text before its first heading was not stored."""
+        logger.info(
+            "text before the first heading of %s not stored by migrate_vault: %s",
+            document_id,
+            reason,
+        )
+        return False

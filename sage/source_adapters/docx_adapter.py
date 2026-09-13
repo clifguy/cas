@@ -269,7 +269,10 @@ class DocxAdapter(SourceAdapter):
     # 0.4.0: chunker emits one chunk per heading regardless of body content,
     # so heading paragraphs whose next paragraph is another heading still
     # have their heading_path indexed (Word-Find equivalence).
-    VERSION = "0.4.0"
+    # 0.5.0: paragraphs and tables before the first heading are reported as
+    # the projection's preamble rather than discarded; a template's
+    # style-surface description opens that preamble.
+    VERSION = "0.5.0"
     EXTENSIONS = [".docx", ".dotx"]
 
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
@@ -294,6 +297,7 @@ class DocxAdapter(SourceAdapter):
         stack: list[tuple[int, str]] = []
         current_content_lines: list[str] = []
         current_heading_idx = -1
+        preamble = ""
         title_style_text: str | None = None
         first_body_para: str | None = None
 
@@ -313,11 +317,14 @@ class DocxAdapter(SourceAdapter):
                     title_style_text = para_text.strip()
 
                 if level is not None:
-                    # Flush content to previous heading
+                    # Flush content to the previous heading, or, before the
+                    # first heading, to the preamble.
                     if current_heading_idx >= 0:
                         headings[current_heading_idx].content = "\n".join(
                             current_content_lines
                         ).strip()
+                    else:
+                        preamble = "\n".join(current_content_lines).strip()
                     current_content_lines = []
 
                     # Check for numbering
@@ -397,6 +404,10 @@ class DocxAdapter(SourceAdapter):
                 projected_text = style_surface_text + "\n\n" + projected_text
             else:
                 projected_text = style_surface_text
+            # With headings, the description precedes the first of them, so it
+            # is the start of the preamble rather than text no passage carries.
+            if headings:
+                preamble = f"{style_surface_text}\n\n{preamble}" if preamble else style_surface_text
 
         return ProjectionResult(
             text=projected_text,
@@ -405,6 +416,7 @@ class DocxAdapter(SourceAdapter):
             adapter_version=self.VERSION,
             title=title,
             metadata=metadata,
+            preamble=preamble,
         )
 
     @staticmethod

@@ -217,3 +217,69 @@ async def test_tc7_read_section_emits_own_heading_line(
     first_nonempty = next(ln for ln in section.section_text.splitlines() if ln.strip())
     assert first_nonempty == "## Sub"
     assert "sub-body" in section.section_text
+
+
+# ---------------------------------------------------------------------------
+# Text before the first heading: stored, emitted in order, and addressed by
+# the empty heading path, while every heading keeps its own address.
+# ---------------------------------------------------------------------------
+
+_LEAD = "Opening sentence alpha.\n\n| Site | Room |\n|---|---|\n| Larkspur | 12 |"
+_BODY = "# Guide\n\nGuide body.\n\n## Part\n\nPart body.\n"
+
+
+async def test_read_projection_emits_text_before_the_first_heading_first(
+    ingestion_service, utilities_service, tmp_vault_dir
+):
+    doc = await _ingest_markdown(
+        ingestion_service, tmp_vault_dir, "lead/doc.md", f"{_LEAD}\n\n{_BODY}"
+    )
+
+    text = (await utilities_service.read_projection(doc.id)).projection_text
+
+    assert text.startswith("Opening sentence alpha.")
+    assert text.index("Larkspur") < text.index("# Guide") < text.index("## Part")
+
+
+async def test_text_before_the_first_heading_survives_a_round_trip(
+    ingestion_service, utilities_service, tmp_vault_dir
+):
+    first_text, second_paths = await _round_trip(
+        ingestion_service, utilities_service, tmp_vault_dir, "lead_rt", f"{_LEAD}\n\n{_BODY}"
+    )
+
+    assert second_paths == ["", "Guide", "Guide > Part"]
+    assert first_text.startswith("Opening sentence alpha.")
+
+
+async def test_heading_paths_are_unchanged_by_text_before_the_first_heading(
+    ingestion_service, utilities_service, tmp_vault_dir
+):
+    led = await _ingest_markdown(
+        ingestion_service, tmp_vault_dir, "paths/led.md", f"{_LEAD}\n\n{_BODY}"
+    )
+    plain = await _ingest_markdown(ingestion_service, tmp_vault_dir, "paths/plain.md", _BODY)
+
+    led_paths = list((await utilities_service.list_headings(led.id)).headings)
+    plain_paths = list((await utilities_service.list_headings(plain.id)).headings)
+
+    assert plain_paths == ["Guide", "Guide > Part"]
+    assert led_paths == ["", *plain_paths]
+
+
+async def test_the_empty_heading_path_reads_the_text_before_the_first_heading(
+    ingestion_service, utilities_service, tmp_vault_dir
+):
+    led = await _ingest_markdown(
+        ingestion_service, tmp_vault_dir, "sections/led.md", f"{_LEAD}\n\n{_BODY}"
+    )
+    plain = await _ingest_markdown(ingestion_service, tmp_vault_dir, "sections/plain.md", _BODY)
+
+    lead_section = await utilities_service.read_section(led.id, "")
+
+    assert lead_section.section_text.strip() == _LEAD
+    for path in ("Guide", "Guide > Part"):
+        led_text = (await utilities_service.read_section(led.id, path)).section_text
+        plain_text = (await utilities_service.read_section(plain.id, path)).section_text
+        assert led_text == plain_text
+        assert "Larkspur" not in led_text

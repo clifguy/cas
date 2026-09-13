@@ -154,11 +154,12 @@ async def test_list_headings_dedupes(listing_services, multi_section_doc):
     assert len(result.headings) == len(set(result.headings))
 
 
-async def test_list_headings_returns_only_authored_headings(listing_services, multi_section_doc):
-    """Nothing but authored headings can reach the listing.
+async def test_list_headings_leaks_no_internal_marker(listing_services, multi_section_doc):
+    """No internal marker can reach the listing.
 
     Document-level text lives on its own surface (CAS-ADR-049), so the
-    enumeration needs no exclusion and no internal marker exists to leak.
+    enumeration needs no exclusion and no internal marker exists to leak;
+    every path listed is one a caller may pass to read_section.
     Asserted as a property of every returned path rather than against one
     known sentinel string, so a marker introduced later is caught too.
     """
@@ -168,7 +169,7 @@ async def test_list_headings_returns_only_authored_headings(listing_services, mu
     assert result.headings, "positive control: the document has headings to list"
     for heading in result.headings:
         assert not heading.startswith("__"), (
-            f"{heading!r} looks like an internal marker, not an authored heading"
+            f"{heading!r} looks like an internal marker, not a readable heading path"
         )
 
 

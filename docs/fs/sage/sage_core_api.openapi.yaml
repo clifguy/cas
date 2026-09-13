@@ -2822,8 +2822,11 @@ paths:
         `heading_not_found` error response.
 
 
-        Every returned path is an authored heading, so heading paths in
-        this response are exactly those a caller may pass to `read_section`.
+        Every returned path is one a caller may pass to `read_section`.
+        An authored heading is listed by its path. The empty path, first
+        where present, addresses the text under no heading: the text
+        before the document's first heading, or the whole of a document
+        that has none.
       tags: [Utilities]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -3215,7 +3218,7 @@ paths:
         the registry so subsequent operations observe the new schema.
 
 
-        Five data backfills run, and backfills_applied names each one only
+        Six data backfills run, and backfills_applied names each one only
         when it changed rows, so a vault with nothing to repair reports an
         empty list. Documents already at a successful
         terminal pipeline_status that still carry the pipeline_error of a
@@ -3234,7 +3237,21 @@ paths:
         each fit. The division works from the stored passages -- no source
         is read and nothing is re-abstracted -- and re-embeds only the
         documents it rewrites; section reads, heading enumeration and
-        projection text read exactly as before. And every passage
+        projection text read exactly as before. A document indexed before
+        the text above its first heading had a passage of its own gains that
+        passage, addressed by the empty heading path. This is the one
+        backfill that reads sources: it re-projects, through the vault's
+        source binding, each document an adapter version older than the first
+        to report that text projected, and replaces its stored passages with
+        the ones that adapter writes wherever the two differ. Ordinarily the
+        only difference is the new passage, and every other heading path and
+        section reads exactly as before; a passage an older adapter shaped
+        differently, such as a heading it mistook, is corrected. Each examined
+        document is stamped with the adapter version that examined it, so a
+        source is read once rather than on every call. Nothing is re-abstracted, and only the documents it
+        rewrites are re-embedded. A document whose source changed since it was
+        indexed or cannot be read is skipped, unstamped, and the server log
+        names each one. And every passage
         gains its structure relative to its document -- its heading path
         with a root element equal to the document title removed -- so a
         title that a source format made the document's top-level heading
@@ -4115,7 +4132,10 @@ components:
             hash is unrecoverable.
         adapter_version:
           type: string
-          description: Version of the source adapter used at last ingestion.
+          description: >-
+            Version of the source adapter whose output the document's stored
+            passages are: the adapter of its last ingestion, or of a later
+            migrate_vault that brought the passages current with that adapter.
         created_by:
           type: string
           description: User ID of the actor (human or agent) that created this document.
@@ -5501,8 +5521,10 @@ components:
             `scored_response_excerpted`: the chunk's first
             `hints.excerpt_chars` characters. A deterministic request
             for the hit's document and `heading_path` returns it whole;
-            where the hit's `heading_path` is null, the passage is the
-            document's whole body, which `read_projection` returns.
+            where the hit's `heading_path` is null, the passage is text
+            under no heading -- the whole body of a document with no
+            headings, or the text before a document's first heading --
+            which `read_section` returns whole for an empty `heading_path`.
         heading_path:
           type: [string, "null"]
           description: >-
@@ -7561,7 +7583,9 @@ components:
       description: >-
         Response body for the list-headings endpoint; returns the distinct
         heading paths of a document in document order. Body content is not
-        included; every path is an authored heading.
+        included. Every path is one `read_section` accepts: an authored
+        heading's path, or the empty path, listed first where present, which
+        addresses the text under no heading.
       properties:
         document_id:
           type: string
