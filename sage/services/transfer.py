@@ -651,8 +651,15 @@ def caller_local_delivery(
     vault_id: str,
     declarations: Sequence[DeliveryDeclaration],
     consume: bool = True,
+    *,
+    source_parameter: str = "source",
 ) -> Iterator[DeliveryPlan]:
     """Apply the caller-local delivery gate to one call's declarations.
+
+    ``source_parameter`` is the caller's own name for a declaration's path,
+    carried into the delivery-shape refusals so they name what that caller can
+    correct. The gate raises those before resolving anything that could tell
+    its callers apart, so it is told the spelling rather than inferring it.
 
     ``consume=False`` reads the staged bytes without spending the token: every
     redeemed entry goes back on the way out of a *successful* block, exactly
@@ -704,9 +711,9 @@ def caller_local_delivery(
 
     for declaration in declarations:
         if declaration.source is not None and declaration.transfer_token is not None:
-            raise AmbiguousIngestSourceError()
+            raise AmbiguousIngestSourceError(source_parameter=source_parameter)
         if declaration.source is None and declaration.transfer_token is None:
-            raise MissingIngestSourceError()
+            raise MissingIngestSourceError(source_parameter=source_parameter)
 
     reachable = caller_local_filesystem_reachable()
 

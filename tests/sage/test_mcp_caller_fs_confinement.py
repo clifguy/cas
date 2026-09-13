@@ -1145,6 +1145,118 @@ async def test_b7c_restore_ambiguous_outranks_relative_refusal(confined_vault):
     assert result["error"] == "ambiguous_ingest_source", result
 
 
+# The delivery-shape refusals, written out in full. A refusal exists to
+# correct the caller's spelling, so each tool's must name the parameter that
+# tool accepts. Literals rather than messages rebuilt from the error classes:
+# an expectation derived from the code under test moves with it and pins
+# nothing. The tests below pin no profile: the refusal precedes the gate's
+# reachability decision, so the profile is not in its causal path.
+_AMBIGUOUS_NAMING_SOURCE = (
+    "Supply exactly one of `source` (a source file path) or "
+    "`transfer_token` (redeeming an already-delivered upload); "
+    "both were provided."
+)
+_MISSING_NAMING_SOURCE = (
+    "Supply exactly one of `source` (a source file path) or "
+    "`transfer_token` (redeeming an already-delivered upload); "
+    "neither was provided."
+)
+_AMBIGUOUS_NAMING_FILE_PATH = (
+    "Supply exactly one of `file_path` (a source file path) or "
+    "`transfer_token` (redeeming an already-delivered upload); "
+    "both were provided."
+)
+_MISSING_NAMING_FILE_PATH = (
+    "Supply exactly one of `file_path` (a source file path) or "
+    "`transfer_token` (redeeming an already-delivered upload); "
+    "neither was provided."
+)
+
+
+@pytest.mark.parametrize(
+    ("shape", "code", "message"),
+    [
+        ("both", "ambiguous_ingest_source", _AMBIGUOUS_NAMING_FILE_PATH),
+        ("neither", "missing_ingest_source", _MISSING_NAMING_FILE_PATH),
+    ],
+    ids=["ambiguous", "missing"],
+)
+async def test_b6d_bulk_ingest_source_refusals_name_file_path(
+    confined_vault, tmp_path, shape, code, message
+):
+    """B6d: a batch entry's delivery-shape refusal names ``file_path``.
+
+    The batch tool reaches the same gate as the single-file tools but spells
+    the path differently, inside each ``files`` entry; a refusal naming
+    ``source`` points its caller at a parameter it cannot set. The message is
+    compared whole, since a template that kept ``source`` and added
+    ``file_path`` elsewhere would satisfy a containment check.
+    """
+    _services, _config, _handle = confined_vault
+    entry: dict = {"source_type": "markdown"}
+    if shape == "both":
+        entry |= {"file_path": str(tmp_path / "b6d_note.md"), "transfer_token": "whatever"}
+
+    result = _parse(await bulk_ingest_document(_VAULT_ID, [entry]))
+
+    assert result["error"] == code, result
+    assert result["message"] == message, result
+
+
+@pytest.mark.parametrize(
+    ("shape", "code", "message"),
+    [
+        ("both", "ambiguous_ingest_source", _AMBIGUOUS_NAMING_SOURCE),
+        ("neither", "missing_ingest_source", _MISSING_NAMING_SOURCE),
+    ],
+    ids=["ambiguous", "missing"],
+)
+async def test_b1g_ingest_source_refusals_name_source(
+    confined_vault, tmp_path, shape, code, message
+):
+    """B1g: ``ingest_document``'s delivery-shape refusal still names ``source``.
+
+    The counterpart to B6d. Teaching the gate the batch spelling must leave
+    the single-file message byte-identical.
+    """
+    _services, _config, _handle = confined_vault
+    kwargs: dict = {}
+    if shape == "both":
+        kwargs = {"source": str(tmp_path / "b1g_note.md"), "transfer_token": "whatever"}
+
+    result = _parse(await ingest_document(_VAULT_ID, source_type="markdown", **kwargs))
+
+    assert result["error"] == code, result
+    assert result["message"] == message, result
+
+
+@pytest.mark.parametrize(
+    ("shape", "code", "message"),
+    [
+        ("both", "ambiguous_ingest_source", _AMBIGUOUS_NAMING_SOURCE),
+        ("neither", "missing_ingest_source", _MISSING_NAMING_SOURCE),
+    ],
+    ids=["ambiguous", "missing"],
+)
+async def test_b7g_restore_source_refusals_name_source(
+    confined_vault, tmp_path, shape, code, message
+):
+    """B7g: the restore tool's delivery-shape refusal names ``source``.
+
+    The third tool through the gate, and one that spells the path as the
+    single-file ingest does.
+    """
+    _services, _config, _handle = confined_vault
+    kwargs: dict = {}
+    if shape == "both":
+        kwargs = {"source": str(tmp_path / "b7g_note.md"), "transfer_token": "whatever"}
+
+    result = _parse(await restore_vault_source_file(_VAULT_ID, **kwargs))
+
+    assert result["error"] == code, result
+    assert result["message"] == message, result
+
+
 async def test_b6c_cloud_mixed_batch_mints_for_paths_and_spares_tokens(confined_vault, tmp_path):
     """B6c: a cloud batch mixing an absolute path with an already-staged token
     answers with a recipe covering only the path, and leaves the token
