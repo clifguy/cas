@@ -1,0 +1,39 @@
+classification: minor
+category:
+  - capability
+  - caller-adaptation
+summary: >-
+  An omitted source_type is inferred from the extension of the source being ingested
+  inside the ingestion service, beneath every request surface, rather than in the MCP
+  ingest_document tool alone. The inference reads the path the delivery resolved to,
+  so a transfer_token completion infers from the staged file, which carries the
+  caller's basename; an explicit value is never overridden. IngestRequest.source_type
+  and BatchIngestFileMetadata.source_type become optional in sage_core_api.openapi.yaml
+  and in the models derived from it, and the ingest_document operation description
+  states the precedence, explicit then extension. The MCP bulk_ingest_document entries
+  follow the same rule, which also stops an entry lacking the key from surfacing as an
+  internal error. An omitted type whose extension no registered adapter claims is
+  refused by one error raised from one place, source_type_unresolved (400), whose
+  detail carries the extension (null when the source has none) and the registered
+  source types and never names a path. A source its adapter cannot read -- malformed,
+  truncated, encrypted, or not in the format its type names -- is now refused as
+  source_unreadable (400), with a detail naming the source type and the caller's own
+  spelling of the source, on ingest_document, each file of a batch ingest, and
+  recompute_pipeline. Each adapter reports such a source by raising a read-error
+  subclass of ValueError, including the xlsx and markdown adapters whose library
+  failures previously escaped unwrapped; a failure an adapter does not report as a
+  read failure, such as a missing OCR dependency, keeps its reporting. The
+  ingest_document and recompute_pipeline 400 responses declare the new codes, the
+  BatchIngestFileError code description in both OpenAPI specifications lists them
+  among the per-file codes, and the MCP tool catalog names them. The CAS
+  Application's own batch request keeps source_type required: its client supplies the
+  type from the extension before the request is sent.
+for_callers: >-
+  The Core API's JSON ingest and multipart batch ingest, and each bulk_ingest_document
+  entry, may now omit source_type, which is inferred from the file extension exactly as
+  ingest_document already did; an omitted type that cannot be inferred is refused with
+  source_type_unresolved (400) on every surface, in place of the Core API's 422
+  invalid_parameter, the batch's invalid_batch_metadata, and the MCP tool's validation
+  refusal. A file its adapter cannot read is now refused with source_unreadable (400),
+  where the Core API returned an undeclared 500, the MCP tools internal_error, and a
+  batch a per-file error with no code.

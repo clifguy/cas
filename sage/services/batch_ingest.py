@@ -75,7 +75,8 @@ class FileDescriptor:
     """Neutral file descriptor accepted from any caller."""
 
     file_path: str
-    source_type: str
+    #: None infers the type from ``file_path``'s extension at ingest.
+    source_type: str | None
     parsed_metadata: ParsedMetadataInput | None = None
     #: The path the caller named, for a caller that put something else in
     #: ``file_path``: a delivery that staged the bytes server-side first
@@ -318,7 +319,7 @@ class BatchIngestService:
 
             try:
                 metadata_dict = _metadata_dict_from_parsed(fd.parsed_metadata)
-                source_type = SourceType(fd.source_type)
+                source_type = SourceType(fd.source_type) if fd.source_type is not None else None
                 try:
                     request = IngestRequest(
                         source=fd.file_path,

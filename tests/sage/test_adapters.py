@@ -5521,7 +5521,13 @@ class TestAdapterConfigRefusal:
     async def test_ad_180_a_malformed_source_is_not_reported_as_a_config_refusal(
         self, tmp_path, kind
     ):
-        """AD-180: A malformed source is not reported as a config refusal."""
+        """AD-180: A malformed source is not reported as a config refusal.
+
+        It is reported as the read failure it is, which is what the request
+        surfaces translate to ``source_unreadable``.
+        """
+        from sage.source_adapters.base import AdapterConfigError, SourceReadError
+
         adapter, _ = _config_source(kind, tmp_path)
         corrupt = tmp_path / f"corrupt.{kind}"
         corrupt.write_bytes(b"PK\x03\x04this is not a valid OPC package at all\n")
@@ -5529,4 +5535,5 @@ class TestAdapterConfigRefusal:
         with pytest.raises(ValueError) as failed:
             await adapter.project(corrupt, None)
 
-        assert type(failed.value) is ValueError
+        assert type(failed.value) is SourceReadError
+        assert not isinstance(failed.value, AdapterConfigError)

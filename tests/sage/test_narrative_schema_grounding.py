@@ -675,6 +675,9 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "valid_types": ERROR_DETAIL_KEY,
         # Key of the ``vault_migration_in_flight`` detail.
         "start_time": ERROR_DETAIL_KEY,
+        # Keys of the ``source_type_unresolved`` detail.
+        "extension": ERROR_DETAIL_KEY,
+        "registered_source_types": ERROR_DETAIL_KEY,
         "sage_vaults": (
             "the vault-scoped route prefix, in the endpoint paths this "
             "narrative names; a URL segment, not a contract node"

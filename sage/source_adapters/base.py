@@ -101,6 +101,19 @@ def redact_temp_base(text: str, base: Path | str, given: Path | str) -> str:
     return given_str.join(redact(part) for part in text.split(given_str))
 
 
+class SourceReadError(ValueError):
+    """A source the adapter cannot read: malformed, truncated, encrypted, or not
+    in the format the adapter projects.
+
+    The caller's to correct, and so reported to it as such, where any other
+    failure an adapter raises -- a missing processing dependency, a defect --
+    stays a server fault. Raised with a single message naming the source, so the
+    projection seam can respell its path. Adapters sit below the API layer and may
+    not import its error hierarchy, so the translation to a public error happens at
+    the service. A ``ValueError`` subclass, so nothing catching that type changes.
+    """
+
+
 class AdapterConfigError(ValueError):
     """A config value the adapter cannot use, refused before the source is read.
 

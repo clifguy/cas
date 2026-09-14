@@ -19,6 +19,7 @@ from sage.source_adapters.base import (
     HeadingNode,
     ProjectionResult,
     SourceAdapter,
+    SourceReadError,
     extract_adr_id_from_filename,
 )
 
@@ -52,7 +53,12 @@ class MarkdownAdapter(SourceAdapter):
         dialect = _declared_dialect(config)
         raw_bytes = source_path.read_bytes()
         content_hash = hashlib.sha256(raw_bytes).hexdigest()
-        text = raw_bytes.decode("utf-8")
+        try:
+            text = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise SourceReadError(
+                f"Markdown source is not valid UTF-8: {source_path}: {exc}"
+            ) from exc
 
         headings, preamble = self._parse_headings(text, self._tokens(text, dialect))
         title = self._extract_title(headings, source_path)

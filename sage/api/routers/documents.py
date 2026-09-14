@@ -125,7 +125,10 @@ async def recompute_abstract(
             "document's `source_type`.\n\n"
             "`adapter_config_invalid`: the source adapter refused a value it "
             "cannot use in the vault's `adapter_defaults`. The detail names the "
-            "source type, the key and the value.",
+            "source type, the key and the value.\n\n"
+            "`source_unreadable`: the source adapter could not read the "
+            "document's retained source. The detail names the source type and "
+            "the document's `source_path`.",
         ),
         404: {
             "model": ErrorResponse,

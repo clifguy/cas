@@ -36,6 +36,7 @@ from sage.source_adapters.base import (
     HeadingNode,
     ProjectionResult,
     SourceAdapter,
+    SourceReadError,
     positive_int,
     redact_temp_base,
     respell_created_path,
@@ -259,15 +260,15 @@ def _extract_from_path(
         try:
             reader = pypdf.PdfReader(str(path), strict=False)
         except Exception as e:
-            raise ValueError(f"Failed to open PDF {path}: {e}") from e
+            raise SourceReadError(f"Failed to open PDF {path}: {e}") from e
 
         if reader.is_encrypted:
-            raise ValueError(f"PDF is encrypted and cannot be projected: {path}")
+            raise SourceReadError(f"PDF is encrypted and cannot be projected: {path}")
 
         try:
             actual_page_count = len(reader.pages)
         except Exception as e:
-            raise ValueError(f"Failed to read pages from PDF {path}: {e}") from e
+            raise SourceReadError(f"Failed to read pages from PDF {path}: {e}") from e
 
         info_title = _extract_info_title(reader)
 
@@ -290,7 +291,7 @@ def _extract_from_path(
                             pt = ""
                         page_texts.append(_decode_safe_cid(pt))
             except Exception as e:
-                raise ValueError(f"Failed to extract text from PDF {path}: {e}") from e
+                raise SourceReadError(f"Failed to extract text from PDF {path}: {e}") from e
 
     return page_texts, outline_entries, info_title, actual_page_count, pages_extracted
 

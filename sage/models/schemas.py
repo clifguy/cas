@@ -1001,12 +1001,20 @@ class IngestRequest(BaseModel):
             "dry run the token is read but not spent."
         ),
     )
-    source_type: SourceType = Field(
+    source_type: SourceType | None = Field(
+        default=None,
         description=(
             "Source artifact format. Determines which source adapter "
             "processes the artifact. Must be a source type with a "
-            "registered adapter."
-        )
+            "registered adapter. Optional: when omitted, it is inferred "
+            "from the extension of the source being ingested against the "
+            "registered adapters' declared extensions -- for a "
+            "`transfer_token` completion, the staged file, which carries "
+            "the caller's own basename. An explicit value is never "
+            "overridden, even where it disagrees with the extension. An "
+            "omitted value whose extension no registered adapter claims is "
+            "refused with `source_type_unresolved`."
+        ),
     )
     config: dict | None = Field(
         default=None,
@@ -5111,12 +5119,16 @@ class BatchIngestFileMetadata(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    source_type: str = Field(
+    source_type: str | None = Field(
+        default=None,
         description=(
             "Source artifact format for this file (closed SourceType "
             "vocabulary: markdown, docx, xlsx, pptx, pdf). Must be a source "
-            "type with a registered adapter."
-        )
+            "type with a registered adapter. Optional: when omitted, it is "
+            "inferred from the uploaded file's extension, and an extension no "
+            "registered adapter claims is reported for that file as "
+            "`source_type_unresolved`."
+        ),
     )
     parsed_metadata: dict[str, Any] | None = Field(
         default=None,
@@ -5320,7 +5332,8 @@ class BatchIngestFileError(BaseModel):
             "`adapter_not_found`, `duplicate_content`, `invalid_doc_type`, "
             "`invalid_document_date`, "
             "`reserved_transition`, `source_file_not_found`, "
-            "`tier3_schema_violation`, `tier3_unique_constraint_violation`, "
+            "`source_type_unresolved`, `source_unreadable`, `tier3_schema_violation`, "
+            "`tier3_unique_constraint_violation`, "
             "`vault_migration_in_flight`, `vault_source_path_refused`, "
             "`vault_source_store_refused` and `vault_source_store_unavailable`. "
             "Of these, `vault_migration_in_flight` and "

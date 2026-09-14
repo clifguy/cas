@@ -596,6 +596,15 @@ paths:
         Records provenance: source_content_hash, adapter_version, created_by.
 
 
+        **Source type:** an explicit `source_type` selects the adapter and
+        is never overridden. When it is omitted, the type is inferred from
+        the extension of the source being ingested against the registered
+        adapters' declared extensions; for a `transfer_token` completion
+        that is the staged file, which carries the caller's own basename.
+        An extension no registered adapter claims is refused rather than
+        guessed.
+
+
         Per CAS-ADR-021, callers are authoritative for metadata. Pass
         prepared values in the request body's metadata fields and leave
         `needs_review` at its default `false`; the document is
@@ -694,6 +703,16 @@ paths:
             cannot use in its config, the vault's `adapter_defaults` merged
             with the request's `config`. The detail names the source type,
             the key and the value.
+
+            `source_type_unresolved`: `source_type` was omitted and no
+            registered adapter claims the source's extension. The detail
+            carries `extension` (null when the source has none) and
+            `registered_source_types`.
+
+            `source_unreadable`: the source adapter could not read the source
+            -- malformed, truncated, encrypted, or not in the format its source
+            type names. The detail names the source type and the source as the
+            caller sent it.
 
             `ambiguous_ingest_source`: both `source` and `transfer_token`
             were supplied.
@@ -2794,6 +2813,10 @@ paths:
             `adapter_config_invalid`: the source adapter refused a value it
             cannot use in the vault's `adapter_defaults`. The detail names the
             source type, the key and the value.
+
+            `source_unreadable`: the source adapter could not read the
+            document's retained source. The detail names the source type and
+            the document's `source_path`.
 
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
 
@@ -5438,7 +5461,6 @@ components:
     IngestRequest:
       type: object
       additionalProperties: false
-      required: [source_type]
       description: >-
         Request body for the ingest endpoint. Identifies the source
         artifact and source_type to project it through, plus optional
@@ -5472,7 +5494,14 @@ components:
           description: >-
             Source artifact format. Determines which source adapter
             processes the artifact. Must be a source type with a
-            registered adapter.
+            registered adapter. Optional: when omitted, it is inferred
+            from the extension of the source being ingested against the
+            registered adapters' declared extensions -- for a
+            `transfer_token` completion, the staged file, which carries
+            the caller's own basename. An explicit value is never
+            overridden, even where it disagrees with the extension. An
+            omitted value whose extension no registered adapter claims is
+            refused with `source_type_unresolved`.
         config:
           type: object
           additionalProperties: true
@@ -9082,14 +9111,16 @@ components:
         Per-file source type and optional parsed metadata for a bulk upload.
         Aligned by position with the multipart file parts: the Nth entry in
         BatchIngestUploadMetadata.files describes the Nth uploaded file.
-      required: [source_type]
       properties:
         source_type:
-          type: string
+          type: [string, "null"]
           description: >-
             Source artifact format for this file (closed SourceType
             vocabulary: markdown, docx, xlsx, pptx, pdf). Must be a source
-            type with a registered adapter.
+            type with a registered adapter. Optional: when omitted, it is
+            inferred from the uploaded file's extension, and an extension no
+            registered adapter claims is reported for that file as
+            `source_type_unresolved`.
         parsed_metadata:
           type: object
           additionalProperties: true
@@ -9286,7 +9317,7 @@ components:
             token or a relocation pointer: `adapter_config_invalid`,
             `adapter_not_found`, `duplicate_content`, `invalid_doc_type`, `invalid_document_date`,
             `reserved_transition`, `source_file_not_found`,
-            `tier3_schema_violation`, `tier3_unique_constraint_violation`,
+            `source_type_unresolved`, `source_unreadable`, `tier3_schema_violation`, `tier3_unique_constraint_violation`,
             `vault_migration_in_flight`, `vault_source_path_refused`,
             `vault_source_store_refused` and `vault_source_store_unavailable`.
             Of these, `vault_migration_in_flight` and

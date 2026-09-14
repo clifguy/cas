@@ -9,15 +9,18 @@ Computes SHA-256 of raw .xlsx bytes for content_hash.
 """
 
 import hashlib
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 from openpyxl import load_workbook
+from openpyxl.utils.exceptions import InvalidFileException
 
 from sage.source_adapters.base import (
     HeadingNode,
     ProjectionResult,
     SourceAdapter,
+    SourceReadError,
     optional_positive_int,
     positive_int,
 )
@@ -47,7 +50,10 @@ class XlsxAdapter(SourceAdapter):
         raw_bytes = source_path.read_bytes()
         content_hash = hashlib.sha256(raw_bytes).hexdigest()
 
-        wb = load_workbook(source_path, read_only=True, data_only=True)
+        try:
+            wb = load_workbook(source_path, read_only=True, data_only=True)
+        except (zipfile.BadZipFile, KeyError, InvalidFileException) as exc:
+            raise SourceReadError(f"Failed to open workbook {source_path}: {exc}") from exc
         try:
             sheet_names_all = wb.sheetnames
             sheets_to_process = sheet_names_all[:max_sheets] if max_sheets else sheet_names_all

@@ -1172,6 +1172,32 @@ class AdapterNotFoundError(SAGEError):
         )
 
 
+class SourceTypeUnresolvedError(SAGEError):
+    """400: no source type was supplied and none could be inferred.
+
+    Inference reads the extension of the source being ingested against the
+    registered adapters' declared extensions, and refuses rather than guesses
+    when none claims it, because routing bytes to the wrong adapter is worse
+    than an explicit failure. The detail names only the extension -- never the
+    path, which for a two-phase delivery is a server-side staging location --
+    and the source types the caller may supply instead.
+    """
+
+    def __init__(self, extension: str | None, registered_source_types: list[str]) -> None:
+        subject = (
+            f"extension {extension!r} is not claimed by any registered adapter"
+            if extension
+            else "the source has no extension"
+        )
+        super().__init__(
+            "source_type_unresolved",
+            f"source_type was not supplied and could not be inferred: {subject}. "
+            f"Supply source_type as one of: {', '.join(registered_source_types)}.",
+            400,
+            {"extension": extension, "registered_source_types": registered_source_types},
+        )
+
+
 class AdapterConfigInvalidError(SAGEError):
     """400: the source adapter refused a config value it cannot use.
 
@@ -1192,6 +1218,26 @@ class AdapterConfigInvalidError(SAGEError):
             reason,
             400,
             {"source_type": source_type, "key": key, "value": value},
+        )
+
+
+class SourceUnreadableError(SAGEError):
+    """400: the source adapter could not read the source.
+
+    The file is malformed, truncated, encrypted, or not in the format its source
+    type names, which is the caller's to correct. The detail names the source type
+    and the source in the spelling the caller used, and the message carries the
+    adapter's own statement of what failed. A failure the adapter does not report
+    as a read failure is not this error, so a server fault is never presented as a
+    fault in the caller's file.
+    """
+
+    def __init__(self, source_type: str, source_path: str, reason: str) -> None:
+        super().__init__(
+            "source_unreadable",
+            reason,
+            400,
+            {"source_type": source_type, "source_path": source_path},
         )
 
 
