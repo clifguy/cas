@@ -6,8 +6,7 @@ import { resolveInitialVaultId } from './activeVault';
 import * as vaultsApi from './api/vaults';
 import * as authApi from './api/auth';
 import { ApiError, notifyAuthRequired } from './api/client';
-import type { VaultSummary } from './api/types';
-import type { SessionInfo, UserClaims } from './api/auth';
+import type { SessionInfo, UserClaims, VaultSummary } from './api/types';
 
 const pending = <T,>(): Promise<T> => new Promise<T>(() => {});
 

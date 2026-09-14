@@ -11,8 +11,7 @@ import MaintenancePanel from './components/MaintenancePanel';
 import DocumentDetail from './views/DocumentDetail';
 import GraphExplorer from './views/GraphExplorer';
 import { listVaults } from './api/vaults';
-import type { VaultSummary } from './api/types';
-import type { UserClaims } from './api/auth';
+import type { UserClaims, VaultSummary } from './api/types';
 import { VAULT_STORAGE_KEY, resolveInitialVaultId } from './activeVault';
 import { useSession } from './useSession';
 
