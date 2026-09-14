@@ -118,26 +118,32 @@ def test_every_core_route_refuses_undeclared_parameters():
     assert missing == []
 
 
-def test_request_name_refusal_flattens_each_route_once():
-    """The refusal keeps a route's flattened parameters on the route it walked.
+def test_request_name_refusal_flattens_each_route_once(monkeypatch):
+    """The refusal walks a route's parameters once, however many requests arrive.
 
-    Driven through a real request, so a refusal that walked the route afresh
-    each time -- leaving the helper unused -- would leave nothing on the route.
+    The walk itself is counted, at the name the refusal calls. Asserting only
+    that a cached value exists would pass against a refusal that stores the
+    walk and repeats it on every request anyway.
     """
     from fastapi.testclient import TestClient
 
-    from sage.api.dependencies import _FLAT_DEPENDANT_ATTR, _flat_dependant
+    import sage.api.dependencies as dependencies
 
-    app = create_app()
-    route = next(r for r in app.routes if isinstance(r, APIRoute) and r.path == "/sage_vaults")
-    assert getattr(route, _FLAT_DEPENDANT_ATTR, None) is None
+    walks: list[object] = []
+    real_walk = dependencies.get_flat_dependant
 
-    resp = TestClient(app).get("/sage_vaults", params={"bogus_q": "1"})
+    def counting_walk(dependant, *args, **kwargs):
+        walks.append(dependant)
+        return real_walk(dependant, *args, **kwargs)
 
-    assert resp.status_code == 400, resp.text
-    cached = getattr(route, _FLAT_DEPENDANT_ATTR, None)
-    assert cached is not None
-    assert _flat_dependant(route) is cached
+    monkeypatch.setattr(dependencies, "get_flat_dependant", counting_walk)
+    client = TestClient(create_app())
+
+    first = client.get("/sage_vaults", params={"bogus_q": "1"})
+    second = client.get("/sage_vaults", params={"bogus_q": "2"})
+
+    assert first.status_code == second.status_code == 400, (first.text, second.text)
+    assert len(walks) == 1
 
 
 def test_every_request_body_model_forbids_undeclared_fields():

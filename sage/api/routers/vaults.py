@@ -138,8 +138,7 @@ async def get_vault_config(
             path=("invalid_vault_id",),
             request=("unknown_parameter",),
             extra="`vault_config_validation_error`: the merged config failed "
-            "schema validation, an unknown section name was passed, or "
-            "the request attempts to change `vault.id`.",
+            "schema validation, or the request attempts to change `vault.id`.",
         ),
         404: {
             "model": ErrorResponse,
