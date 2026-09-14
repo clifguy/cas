@@ -11,9 +11,11 @@ summary: >-
   that text; a document with none reports heading_not_found. An omitted heading_path is
   still refused with missing_heading_path. Descriptions change in
   sage_core_api.openapi.yaml and the MCP tool catalog: DiscoverRequest.heading_path says
-  the empty string addresses text under no heading, DiscoverHit.heading_path says it is
-  null for that text, and DiscoverHit.chunk_content and search name a deterministic
-  request alongside read_section for reading a hit with a null heading_path whole. No
+  the empty string addresses text under no heading, as read_section's heading_path now
+  also says, DiscoverHit.heading_path says it is null where the hit carries no chunk and
+  where the chunk is text under no heading, and DiscoverHit.chunk_content and search name
+  a deterministic request alongside read_section for reading a hit with a null
+  heading_path whole. No
   operation, tool, parameter or response field is added or removed.
 for_callers: >-
   A search hit with a null heading_path can now be read whole with

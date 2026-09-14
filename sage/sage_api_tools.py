@@ -2237,6 +2237,7 @@ def register_sage_tools(
             doc_id: Alias for ``document_id``; supply exactly one.
             heading_path: Heading path prefix
                 (e.g. "Technical Description > Composite Claim Binding").
+                The empty string addresses the text under no heading.
         """
         try:
             # See get_document: validate each id param by literal name for the

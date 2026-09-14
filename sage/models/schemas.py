@@ -3810,7 +3810,8 @@ class DiscoverHit(BaseModel):
         description=(
             "Heading hierarchy path of the retrieved chunk (e.g., "
             '"Section 3 > Definitions > Normalization"). Null where the '
-            "chunk is text under no heading."
+            "hit carries no chunk, and where the chunk is text under no "
+            "heading."
         ),
     )
     relevance_score: float | None = Field(
