@@ -94,10 +94,10 @@ UNREACHABLE_PER_FILE: dict[str, tuple[str, ...]] = {
 #: operation's own status and never as a per-file entry.
 BATCH_BOUNDARY: frozenset[str] = frozenset({"invalid_vault_id"})
 
-#: Codes the Core API refuses at its request boundary, before any operation
-#: runs, for a name the operation does not declare. A batch file carries no
-#: request of its own to refuse, and the application API is a separate contract
-#: that does not raise them, so they are neither per-file nor a batch's own.
+#: Codes a request surface refuses at its boundary, before any operation runs,
+#: for a name the operation does not declare. A batch file carries no request of
+#: its own to refuse, so they are never per-file; a batch operation refuses them
+#: for the call as a whole, before any file is attempted.
 REQUEST_BOUNDARY: frozenset[str] = frozenset({"unknown_parameter"})
 
 #: Codes of the caller-local delivery gate, which settles how a call's bytes

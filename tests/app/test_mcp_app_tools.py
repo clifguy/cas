@@ -935,6 +935,74 @@ class TestAppBatchIngest:
         assert "error" in result
         assert result["error"] == "empty_file_list"
 
+    async def test_undeclared_file_entry_key_is_refused(self, single_vault):
+        """An undeclared key in any file entry is refused before anything is ingested.
+
+        The undeclared key sits on the second entry, so the refusal has to walk
+        the batch rather than inspect the first entry, and its parameter path
+        matches the one the application API gives. The control ingests the
+        same two entries without the key and must create both documents: an
+        entry the refused call had ingested first would come back as duplicate
+        content instead.
+        """
+        _, config = single_vault
+        sources = Path(config.vault.storage_root)
+        first = {"file_path": str(sources / "sample.md"), "source_type": "markdown"}
+        second = {"file_path": str(sources / "second.md"), "source_type": "markdown"}
+
+        refused = _parse(
+            await bulk_ingest_document("test_vault", [first, {**second, "bogus_field_x": 1}])
+        )
+        control = _parse(await bulk_ingest_document("test_vault", [first, second]))
+
+        assert refused["error"] == "invalid_parameter", refused
+        assert refused["detail"]["parameter"] == "files.1.bogus_field_x"
+        assert control["error_count"] == 0, control
+        assert control["documents_created"]["new"] == 2
+
+    async def test_undeclared_parsed_metadata_key_is_refused(self, single_vault):
+        """An undeclared key in any entry's parsed_metadata is refused, not discarded.
+
+        As above, the key sits on the second entry and the control must ingest
+        both. The parsed_metadata omits ``title``, which this tool, unlike the
+        application API, does not require; closing the keys must not start
+        requiring it.
+        """
+        _, config = single_vault
+        sources = Path(config.vault.storage_root)
+        metadata = {"codes": ["PV06"], "version": "v1"}
+        first = {"file_path": str(sources / "sample.md"), "source_type": "markdown"}
+
+        def second(parsed: dict) -> dict:
+            return {
+                "file_path": str(sources / "second.md"),
+                "source_type": "markdown",
+                "parsed_metadata": parsed,
+            }
+
+        refused = _parse(
+            await bulk_ingest_document(
+                "test_vault", [first, second({**metadata, "bogus_field_x": 1})]
+            )
+        )
+        control = _parse(await bulk_ingest_document("test_vault", [first, second(metadata)]))
+
+        assert refused["error"] == "invalid_parameter", refused
+        assert refused["detail"]["parameter"] == "files.1.parsed_metadata.bogus_field_x"
+        assert control["error_count"] == 0, control
+        assert control["documents_created"]["new"] == 2
+
+    async def test_transfer_token_entry_is_not_an_undeclared_key(self, single_vault):
+        """``transfer_token`` is a declared delivery shape, so it reaches the transfer gate."""
+        result = _parse(
+            await bulk_ingest_document(
+                "test_vault", [{"transfer_token": "not-a-real-token", "source_type": "markdown"}]
+            )
+        )
+
+        assert result.get("error") != "invalid_parameter", result
+        assert result.get("error") == "transfer_token_invalid", result
+
 
 # ---------------------------------------------------------------------------
 # 9. Cross-Cutting Conventions (MCP-023, MCP-024, MCP-025)

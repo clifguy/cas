@@ -1070,7 +1070,7 @@ class InvalidParameterError(SAGEError):
         message = f"Invalid value for parameter {parameter!r}: {constraint}."
         detail: dict = {
             "parameter": parameter,
-            "value": value,
+            "value": value if isinstance(value, _JSON_NATIVE_TYPES) else str(value),
             "constraint": constraint,
         }
         if hint is not None:
@@ -2518,13 +2518,9 @@ def _generic_parameter_error(
     err = errors[0]
     loc = _strip_transport_segment(tuple(err.get("loc") or ()), exc)
     parameter = ".".join(str(segment) for segment in loc) or "request"
-    value = err.get("input")
-    if not isinstance(value, _JSON_NATIVE_TYPES):
-        value = str(value)
-
     return InvalidParameterError(
         parameter=parameter,
-        value=value,
+        value=err.get("input"),
         constraint=str(err.get("msg", "Invalid value")),
         hint=_PARAMETER_HINTS.get((str(loc[-1]) if loc else "", str(err.get("type", "")))),
     )
@@ -2569,16 +2565,22 @@ def request_operation_name(request: Request) -> str:
 
 
 def _declared_body_names(request: Request) -> list[str]:
-    """Return the top-level body names the operation a request reached declares."""
+    """Return the top-level body names the operation a request reached declares.
+
+    A dependency that binds the same body the handler does contributes it a
+    second time under the same name, and the framework treats the repeats as
+    one body, so the decision is made on the distinct names.
+    """
     route = request.scope.get("route")
     if not isinstance(route, APIRoute):
         return []
     body_params = get_flat_dependant(route.dependant).body_params
-    if len(body_params) == 1 and not getattr(body_params[0].field_info, "embed", False):
+    names = sorted({param.alias for param in body_params})
+    if len(names) == 1 and not getattr(body_params[0].field_info, "embed", False):
         annotation = body_params[0].field_info.annotation
         if isinstance(annotation, type) and issubclass(annotation, BaseModel):
             return sorted(annotation.model_fields)
-    return sorted(param.alias for param in body_params)
+    return names
 
 
 def register_exception_handlers(app: FastAPI) -> None:

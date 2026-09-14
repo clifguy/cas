@@ -13,7 +13,7 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import TypeAdapter
 
 from sage._tool_annotations import READ_ONLY, WRITE_DESTRUCTIVE
-from sage.api.errors import SAGEError
+from sage.api.errors import InvalidParameterError, SAGEError
 from sage.mcp_init import SAGEServices, require_caller_local_filesystem
 from sage.models.schemas import VaultIdStr
 from sage.services.transfer import DeliveryDeclaration, caller_local_delivery
@@ -22,6 +22,36 @@ from sage.services.transfer import DeliveryDeclaration, caller_local_delivery
 # parallel adapter declarations and rationale in
 # ``sage/sage_api_tools.py``.
 _VAULT_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(VaultIdStr)
+
+# The names a ``bulk_ingest_document`` file entry, and the parsed metadata it
+# may carry, declare. The request surface refuses any other name in the same
+# places (CAS-ADR-037, CAS-ADR-052).
+_FILE_ENTRY_FIELDS = frozenset({"file_path", "transfer_token", "source_type", "parsed_metadata"})
+_PARSED_METADATA_FIELDS = frozenset({"title", "date", "project", "codes", "version", "doc_type"})
+
+
+def _refuse_undeclared_entry_fields(files: list[dict]) -> None:
+    """Refuse a name a file entry or its parsed metadata does not declare.
+
+    The entries arrive as plain mappings, so a misspelled or misplaced name
+    would otherwise be read past without a word. The refusal is the
+    ``invalid_parameter`` envelope the request surface gives the same name,
+    located the same way, and it is raised before anything in the batch is
+    delivered or ingested.
+    """
+    for index, entry in enumerate(files):
+        locations = [(f"files.{index}", entry, _FILE_ENTRY_FIELDS)]
+        parsed = entry.get("parsed_metadata")
+        if isinstance(parsed, dict):
+            locations.append((f"files.{index}.parsed_metadata", parsed, _PARSED_METADATA_FIELDS))
+        for prefix, mapping, declared in locations:
+            undeclared = sorted(name for name in mapping if name not in declared)
+            if undeclared:
+                raise InvalidParameterError(
+                    parameter=f"{prefix}.{undeclared[0]}",
+                    value=mapping[undeclared[0]],
+                    constraint="Extra inputs are not permitted",
+                )
 
 
 def register_app_tools(
@@ -269,6 +299,11 @@ def register_app_tools(
           calendar date. The ingest of that one file fails and the call still
           returns its summary, so a caller checking only the envelope sees a
           success.
+        - ``invalid_parameter`` (422): a file entry, or the
+          ``parsed_metadata`` it carries, names a key the tool does not
+          declare; ``detail.parameter`` locates it (``files.<n>.<key>`` or
+          ``files.<n>.parsed_metadata.<key>``). A batch-boundary refusal
+          raised before any file is delivered or ingested.
         - ``ambiguous_ingest_source`` / ``missing_ingest_source`` (400): a
           file entry set both ``file_path`` and ``transfer_token``, or
           neither; each entry needs exactly one.
@@ -351,6 +386,8 @@ def register_app_tools(
                     "error": "empty_file_list",
                     "message": "No files selected for ingestion",
                 }
+
+            _refuse_undeclared_entry_fields(files)
 
             # Each entry arrives by exactly one delivery shape: a
             # ``file_path``, or a ``transfer_token`` redeeming bytes the

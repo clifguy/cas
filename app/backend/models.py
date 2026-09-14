@@ -16,13 +16,18 @@ the shared ``ErrorResponse`` envelope are re-exported from
 ``sage.models.schemas``: the bulk-ingest SSE shape is substrate-resident
 so the co-located and hosted profiles emit identical events, and /scan
 and /ingest error responses match the YAML.
+
+The request models forbid undeclared fields (CAS-ADR-037). ``ParsedMetadata``
+is closed in both directions on purpose: a scan returns it and a caller posts
+it back into ingest unchanged, so one shape is what keeps that round trip
+valid.
 """
 
 from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from sage.models.schemas import (
     BatchIngestFileError,
@@ -60,6 +65,8 @@ __all__ = [
 
 
 class ScanRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     vault_id: VaultIdStr = Field(description="Target vault identifier.")
     directory: str = Field(
         description=(
@@ -81,6 +88,8 @@ class ScanRequest(BaseModel):
 
 
 class ParsedMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     title: str = Field(description="Human-readable title extracted from the filename or content.")
     date: DocumentDateStr = Field(
         default=None,
@@ -157,6 +166,8 @@ class ScanResponse(BaseModel):
 
 
 class IngestFileItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     file_path: str = Field(description="Absolute file path on disk.")
     source_type: str = Field(description="Source artifact format name to use for this file.")
     parsed_metadata: ParsedMetadata | None = Field(
@@ -169,6 +180,8 @@ class IngestFileItem(BaseModel):
 
 
 class IngestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     vault_id: VaultIdStr = Field(description="Target vault identifier.")
     files: list[IngestFileItem] = Field(description="Files to ingest. Empty list returns 400.")
     infer_edges: bool = Field(

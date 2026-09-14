@@ -780,8 +780,9 @@ def create_app(
 
     # Cross-vault endpoints (no vault_id prefix). The transfer routes are
     # process-scoped byte legs: the vault binding travels inside the token.
-    # Every Core API operation refuses a request name it does not declare; the
-    # application backend's routers below are a separate contract.
+    # Every Core API operation refuses a request name it does not declare. The
+    # application backend's router below is a separate contract and carries its
+    # own refusal, since the standalone backend-for-frontend includes it too.
     app.state.operations_declaring_a_body = _load_operations_declaring_a_body()
     core_api = [Depends(refuse_undeclared_parameters)]
     app.include_router(vaults.router, dependencies=core_api)

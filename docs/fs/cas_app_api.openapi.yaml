@@ -141,6 +141,9 @@ paths:
 
             `invalid_vault_id`: a vault id in the request is not
             well-formed.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -238,6 +241,9 @@ paths:
 
             `invalid_document_date`: a document date in the request is not
             a well-formed calendar date (`YYYY-MM-DD`).
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -351,6 +357,7 @@ components:
 
     ScanRequest:
       type: object
+      additionalProperties: false
       required: [vault_id, directory]
       description: Request body for the directory-scan endpoint.
       properties:
@@ -427,6 +434,7 @@ components:
 
     ParsedMetadata:
       type: object
+      additionalProperties: false
       required: [title]
       description: Filename-derived metadata for one file; surfaced inside scan results and used as caller-authoritative input to ingest.
       properties:
@@ -464,6 +472,7 @@ components:
 
     IngestRequest:
       type: object
+      additionalProperties: false
       required: [vault_id, files]
       description: Request body for the batch-ingest endpoint; identifies the target vault and the files to ingest with optional edge inference.
       properties:
@@ -499,6 +508,7 @@ components:
 
     IngestFileItem:
       type: object
+      additionalProperties: false
       required: [file_path, source_type]
       description: One file entry in a batch-ingest request; pairs a path with its source_type and optional caller-supplied parsed metadata.
       properties:
