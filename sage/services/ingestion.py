@@ -89,6 +89,7 @@ from sage.models.schemas import (
     IngestRequest,
     ParseFilenameResponse,
     SetLifecycleRequest,
+    UploadRecipe,
     canonicalize_sha256,
 )
 from sage.services._dry_run import doc_type_requirements
@@ -105,6 +106,7 @@ from sage.services.passage_split import (
     split_passage,
 )
 from sage.services.passage_structure import indexed_structure
+from sage.services.transfer import DeliveryDeclaration, caller_local_delivery
 from sage.services.vault_source_errors import report_refusal_as
 from sage.source_adapters.base import ProjectionResult, SourceAdapter
 from sage.storage.locks import DocumentLockManager
@@ -1049,13 +1051,109 @@ class IngestionService:
                 supplied.
             VaultMigrationInFlightError: ``migrate_vault`` is running on the
                 vault. Raised before anything else, dry runs included.
+            ValueError: the request carries a ``transfer_token`` or no
+                ``source``. This entry ingests a path already resolved; a
+                request naming its delivery goes through
+                :meth:`ingest_from_request`, which settles it first.
         """
+        if request.transfer_token is not None:
+            raise ValueError(
+                "ingest takes a resolved source; a request carrying transfer_token "
+                "must be delivered through ingest_from_request"
+            )
+        if request.source is None:
+            raise ValueError(
+                "ingest takes a resolved source; a request naming no source must be "
+                "delivered through ingest_from_request"
+            )
         self.refuse_during_migration()
         self._ingests_running += 1
         try:
             return await self._ingest(request, wait_for_pipeline, caller_source)
         finally:
             self._ingests_running -= 1
+
+    async def ingest_from_request(
+        self, request: IngestRequest, wait_for_pipeline: bool = True
+    ) -> IngestResult | IngestPreview | UploadRecipe:
+        """Ingest a request that names its source by either delivery shape.
+
+        The request-contract entry point: ``request.source`` or
+        ``request.transfer_token``, exactly one, settled by
+        :meth:`ingest_from_caller`. Every other field of the request carries
+        through to the ingest unchanged.
+
+        Raises:
+            AmbiguousIngestSourceError: both delivery shapes were supplied.
+            MissingIngestSourceError: neither was supplied.
+            TransferTokenInvalidError: the token is unknown, expired, spent,
+                or scoped to another vault.
+            TransferNotStagedError: the token's bytes have not been delivered.
+            SourceFileNotFoundError: ``request.source`` does not resolve to a
+                readable source.
+            Every refusal :meth:`ingest` raises.
+        """
+        return await self.ingest_from_caller(
+            DeliveryDeclaration(source=request.source, transfer_token=request.transfer_token),
+            lambda path: request.model_copy(update={"source": path, "transfer_token": None}),
+            dry_run=request.dry_run,
+            wait_for_pipeline=wait_for_pipeline,
+        )
+
+    async def ingest_from_caller(
+        self,
+        declaration: DeliveryDeclaration,
+        build_request: Callable[[str], IngestRequest],
+        *,
+        dry_run: bool = False,
+        wait_for_pipeline: bool = True,
+    ) -> IngestResult | IngestPreview | UploadRecipe:
+        """Apply the caller-local delivery gate, then ingest what it resolves.
+
+        Whether this process can read the caller's filesystem is a property of
+        where the two sit, which callers of every request surface share, so the
+        gate is applied here rather than by each surface (CAS-ADR-052). An
+        absolute caller path this process cannot reach returns an
+        ``UploadRecipe`` in place of an ingest; a ``transfer_token`` redeems the
+        bytes a recipe's upload leg delivered.
+
+        ``build_request`` turns the resolved, server-readable path into the
+        request to ingest. It runs only after the gate has resolved the
+        delivery, so a caller that derives anything from the path -- the staged
+        file carries the caller's own basename -- derives it from the bytes
+        actually being ingested. The path the caller named reaches the refusal
+        messages through :meth:`ingest`'s ``caller_source``.
+
+        A dry run reads redeemed bytes without spending the token, so the real
+        ingest it previews can still redeem it. A failure after redemption
+        returns the token with its staged bytes, so a retry repeats the ingest
+        rather than the upload.
+
+        Raises:
+            VaultMigrationInFlightError: ``migrate_vault`` is running on the
+                vault. Raised before the gate, so no recipe is minted for an
+                ingest that could not complete.
+            AmbiguousIngestSourceError: both delivery shapes were supplied.
+            MissingIngestSourceError: neither was supplied.
+            TransferTokenInvalidError: the token is unknown, expired, spent,
+                or scoped to another vault.
+            TransferNotStagedError: the token's bytes have not been delivered.
+            TransferEndpointNotConfiguredError: a recipe is due but the
+                deployment declares no public base URL.
+            Every refusal :meth:`ingest` raises.
+        """
+        self.refuse_during_migration()
+        with caller_local_delivery(
+            self._config.vault.id, [declaration], consume=not dry_run
+        ) as plan:
+            if plan.recipe is not None:
+                return plan.recipe
+            (delivery,) = plan.resolved
+            return await self.ingest(
+                build_request(delivery.path),
+                wait_for_pipeline=wait_for_pipeline,
+                caller_source=delivery.declared_source,
+            )
 
     async def _ingest(
         self,

@@ -7,15 +7,16 @@ there, and this module holds that list to a derivation rather than to a second
 hand-kept copy:
 
     vocabulary == declared(ingest_document) - UNREACHABLE_PER_FILE - BATCH_BOUNDARY
+                  - REQUEST_BOUNDARY - DELIVERY_GATE
 
 Two further gates make the derivation sound rather than merely consistent.
 
 - **The ingest operation declares what its path raises.** A code the ingest
   service raises but the operation never declares would otherwise be missing
   from both lists at once, and the equality above would stay green over it.
-  The ingest path is walked from ``IngestionService.ingest`` through the
-  methods and module functions it calls, and every error it constructs must
-  have its code declared on the operation.
+  The ingest path is walked from ``IngestionService.ingest_from_request``, the
+  operation's entry, through the methods and module functions it calls, and
+  every error it constructs must have its code declared on the operation.
 - **An exclusion stays true.** Each code left out of the vocabulary is keyed to
   the request fields it depends on, and the batch's single request
   construction must not pass any of them. A batch that starts passing one
@@ -98,6 +99,24 @@ BATCH_BOUNDARY: frozenset[str] = frozenset({"invalid_vault_id"})
 #: request of its own to refuse, and the application API is a separate contract
 #: that does not raise them, so they are neither per-file nor a batch's own.
 REQUEST_BOUNDARY: frozenset[str] = frozenset({"unknown_parameter"})
+
+#: Codes of the caller-local delivery gate, which settles how a call's bytes
+#: arrive before anything is ingested. The single-document ingest applies it to
+#: its one declaration. A batch either applies it once to every file's
+#: declaration before any file is attempted, or receives the bytes in its
+#: request body and has no delivery to settle; each file is then ingested from
+#: a path already resolved, through the entry that applies no gate. So these
+#: codes are never a per-file entry, which
+#: ``test_batch_ingests_each_file_through_the_ungated_entry`` holds true.
+DELIVERY_GATE: frozenset[str] = frozenset(
+    {
+        "ambiguous_ingest_source",
+        "missing_ingest_source",
+        "transfer_endpoint_not_configured",
+        "transfer_not_staged",
+        "transfer_token_invalid",
+    }
+)
 
 
 # ---------------------------------------------------------------------------
@@ -227,7 +246,7 @@ def _raised_on_ingest_path() -> set[str]:
 
     codes: set[str] = set()
     visited: set[tuple[str, str]] = set()
-    pending: list[tuple[str, str]] = [("method", "ingest")]
+    pending: list[tuple[str, str]] = [("method", "ingest_from_request")]
     while pending:
         key = pending.pop()
         if key in visited:
@@ -311,7 +330,7 @@ def _vocabulary(spec: dict[str, Any], catalog: frozenset[str]) -> set[str]:
 
 def _derived(core: dict[str, Any], catalog: frozenset[str]) -> set[str]:
     declared = _declared(core, _INGEST_OPERATION, catalog)
-    return declared - set(UNREACHABLE_PER_FILE) - BATCH_BOUNDARY - REQUEST_BOUNDARY
+    return declared - set(UNREACHABLE_PER_FILE) - BATCH_BOUNDARY - REQUEST_BOUNDARY - DELIVERY_GATE
 
 
 @pytest.fixture(scope="module")
@@ -417,6 +436,38 @@ def test_per_file_vocabulary_is_derived_from_the_ingest_operation(spec_name, cor
     assert listed == derived, (
         f"{spec_name}: BatchIngestFileError.code lists {sorted(listed)}; "
         f"missing {sorted(derived - listed)}, not reachable per file {sorted(listed - derived)}"
+    )
+
+
+def test_batch_ingests_each_file_through_the_ungated_entry():
+    """Each batch file reaches the ingest service by the entry that applies no gate.
+
+    The delivery-gate codes are excluded from the per-file vocabulary because a
+    file's delivery is settled before its ingest runs. A batch that called a
+    gated entry per file would make them reachable per file, and the exclusion
+    false.
+    """
+    tree = ast.parse(_BATCH_MODULE.read_text(encoding="utf-8"))
+    # Every name the module references -- bare, as an attribute, or imported --
+    # and whether called or not: a gated entry bound to a local name before it
+    # is called, or the gate itself imported and applied around each file, both
+    # make the delivery codes reachable per file.
+    referenced = (
+        {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+        | {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+        | {node.name for node in ast.walk(tree) if isinstance(node, ast.alias)}
+    )
+    gated = sorted(
+        referenced & {"ingest_from_request", "ingest_from_caller", "caller_local_delivery"}
+    )
+    assert not gated, f"the batch reaches a delivery gate: {gated}"
+    called = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    assert "ingest" in called, (
+        "the batch's ingest call was not found; the scan read the wrong module"
     )
 
 

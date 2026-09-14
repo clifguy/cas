@@ -537,7 +537,10 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     ("sage_core", "recompute_abstract"): Pin(3, 20),
     ("sage_core", "recompute_deferred_vault_abstracts"): Pin(5, 6),
     ("sage_core", "recompute_views"): Pin(4, 10),
-    ("sage_core", "restore_vault_source_file"): Pin(0, 10),
+    # doc_only fell from 10 as the operation gained the two-phase transfer
+    # paragraph the docstring already stated, once the transfer became
+    # reachable over this surface too.
+    ("sage_core", "restore_vault_source_file"): Pin(0, 9),
     ("sage_core", "search"): Pin(3, 9),
     # spec_only fell from 5 for the same reason as get_filename_metadata:
     # the docstring now declares the boundary refusals, covering one claim

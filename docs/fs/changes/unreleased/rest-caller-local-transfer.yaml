@@ -1,0 +1,31 @@
+classification: minor
+category:
+  - capability
+  - caller-adaptation
+summary: >-
+  The two-phase caller-local byte transfer is reachable through the Core API's JSON
+  ingest and source-file restore operations, on the same terms as the MCP tools of the
+  same name. Where the server cannot read the caller's filesystem, an absolute source
+  on POST /sage_vaults/{vault_id}/documents or
+  POST /sage_vaults/{vault_id}/maintenance/restore-source-file returns 200 with an
+  UploadRecipe (status upload_required) instead of reading the server's own tree; the
+  caller delivers the bytes to the recipe's upload leg and repeats the call with the
+  recipe's token as transfer_token. IngestRequest and SourceFileRestoreRequest gain an
+  optional transfer_token, and source becomes optional, exactly one of the two being
+  required. The refusals are the MCP surface's: ambiguous_ingest_source and
+  missing_ingest_source (400), transfer_not_staged (409) and transfer_token_invalid
+  (410), with identical messages, and a deployment declaring no public transfer
+  endpoint answers transfer_endpoint_not_configured (500) where a recipe is due. Both
+  operations' 200 responses now include UploadRecipe, which the restore operation's
+  200 did not previously admit. The
+  specification's overview names the completion argument as the token rather than the
+  transfer_id, which only correlates a leg with its recipe.
+for_callers: >-
+  A REST ingest or source-file restore naming an absolute path on a machine the server
+  cannot reach now returns 200 with an upload recipe rather than failing with
+  source_file_not_found or restore_source_not_absolute: PUT the file to the recipe's
+  url with its token in X-Upload-Token, then repeat the call with transfer_token set to
+  that token and source omitted. A client decoding the restore operation's 200 body
+  must now accept an UploadRecipe (status upload_required) as well as a
+  SourceFileRestoreReport. Supplying both source and transfer_token, or neither, is
+  refused with 400 ambiguous_ingest_source or missing_ingest_source.

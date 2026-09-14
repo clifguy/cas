@@ -566,13 +566,15 @@ def mint_download_recipe_for_projection(
 
 # -- the caller-local delivery gate ----------------------------------------
 #
-# Every tool that reads bytes from the caller's filesystem faces the same
+# Every operation that reads bytes from the caller's filesystem faces the same
 # question in the same order: is this call's delivery shape well formed, can
 # this process reach the paths it names, and if it cannot, what recipe does
-# the caller's environment run before calling back? The answer straddles the
-# tool boundary -- it decides whether to return a recipe *instead of* doing
-# the work -- so it cannot be a service the tools call through. It is instead
-# a gate the tools apply, expressed once here.
+# the caller's environment run before calling back? The answer turns on where
+# the caller sits relative to the server, which callers of every request
+# surface share, so the gate is applied by the service beneath those surfaces
+# (CAS-ADR-052): the service returns a recipe *instead of* doing the work, as
+# the download side returns its recipe in place of the bytes. It is expressed
+# once here.
 #
 # The gate is one context-managed call rather than a set of helpers on
 # purpose. Separate validate/plan/redeem helpers can each be omitted

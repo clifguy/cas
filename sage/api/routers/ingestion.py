@@ -18,6 +18,7 @@ from sage.models.schemas import (
     IngestPreview,
     IngestRequest,
     IngestResponse,
+    UploadRecipe,
     VaultIdStr,
 )
 from sage.services.batch_ingest_stream import UploadedFile, stream_uploaded_batch_ingest
@@ -38,13 +39,17 @@ router = APIRouter(tags=["Ingestion"])
     status_code=201,
     responses={
         200: {
-            "model": IngestPreview | IngestResponse,
+            "model": IngestPreview | IngestResponse | UploadRecipe,
             "description": (
-                "Returned in two cases, distinguished by the body. With "
+                "Returned in three cases, distinguished by the body. With "
                 "`dry_run` true, an `IngestPreview` reporting what a real run "
-                "would do, having persisted nothing. Otherwise an "
-                "`IngestResponse` for a `force` re-ingest that reused an "
-                "existing record rather than creating one."
+                "would do, having persisted nothing. For an absolute `source` "
+                "on a machine the server cannot reach, an `UploadRecipe` "
+                "(`status: upload_required`): deliver the file to the recipe's "
+                "URL with its token, then repeat the call with "
+                "`transfer_token`. Otherwise an `IngestResponse` for a `force` "
+                "re-ingest that reused an existing record rather than creating "
+                "one."
             ),
         },
         400: boundary_400(
@@ -57,6 +62,10 @@ router = APIRouter(tags=["Ingestion"])
             ),
             extra="`adapter_not_found`: no source adapter is registered for "
             "`source_type`.\n\n"
+            "`ambiguous_ingest_source`: both `source` and `transfer_token` "
+            "were supplied.\n\n"
+            "`missing_ingest_source`: neither `source` nor `transfer_token` "
+            "was supplied.\n\n"
             "`vault_source_path_refused`: the vault-source store refused "
             "the destination it would have retained the source at.\n\n"
             "`expected_head_version_requires_predecessor`: "
@@ -107,6 +116,8 @@ router = APIRouter(tags=["Ingestion"])
         409: {
             "model": ErrorResponse,
             "description": (
+                "`transfer_not_staged`: `transfer_token` names a transfer whose "
+                "bytes have not been delivered to the upload endpoint yet.\n\n"
                 "`duplicate_content`: a document already carries this content "
                 "hash. The key is the hash alone, so identical bytes at a "
                 "path the vault has never seen refuse too. Where several "
@@ -182,11 +193,28 @@ router = APIRouter(tags=["Ingestion"])
                 "`start_time`; retry once it has returned."
             ),
         },
+        410: {
+            "model": ErrorResponse,
+            "description": (
+                "`transfer_token_invalid`: `transfer_token` names no redeemable "
+                "pending transfer -- unknown, expired, already spent, or scoped "
+                "to another vault. Re-issue the originating call to mint a "
+                "fresh recipe."
+            ),
+        },
         422: {
             "model": ErrorResponse,
             "description": (
                 "Ingestion failure. The source adapter could not produce a "
                 "valid projection (unsupported format, corrupt content)."
+            ),
+        },
+        500: {
+            "model": ErrorResponse,
+            "description": (
+                "`transfer_endpoint_not_configured`: an absolute `source` needs "
+                "the caller-local transfer, but this deployment declares no "
+                "public transfer endpoint, so no recipe can be minted."
             ),
         },
         502: {
@@ -214,7 +242,10 @@ async def ingest(
     vault_id: VaultIdStr = Depends(get_vault_id),
     ingestion_service: IngestionService = Depends(get_ingestion_service),
 ) -> JSONResponse:
-    result = await ingestion_service.ingest(request)
+    result = await ingestion_service.ingest_from_request(request)
+    if isinstance(result, UploadRecipe):
+        # 200: nothing was created; the recipe says how to complete the call.
+        return JSONResponse(status_code=200, content=result.model_dump(mode="json"))
     if isinstance(result, IngestPreview):
         # 200 rather than 201: a preview reports on a creation it did not
         # make, so the status that means "created" would be a lie.
