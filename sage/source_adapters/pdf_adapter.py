@@ -119,8 +119,8 @@ def _flatten_outline(
     construction). So are entries with no title: a path built from one would be
     the empty path, which addresses text under no heading, or would carry an
     empty segment. Their pages fall to the entry before them, or to the pages
-    before the first entry, and their children nest under the nearest titled
-    ancestor.
+    before the first entry, and their children attach to the nearest titled entry
+    above them at a lower level.
     """
     entries: list[tuple[int, str, int]] = []
 

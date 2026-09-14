@@ -321,7 +321,9 @@ class DocxAdapter(SourceAdapter):
                 heading_text = None
                 if level is not None:
                     prefix = self._get_numbering_prefix(element, engine)
-                    numbered_text = f"{prefix} {para_text}" if prefix else para_text
+                    numbered_text = (
+                        f"{prefix} {para_text}" if prefix and para_text else prefix or para_text
+                    )
                     # A heading with no text addresses nothing: its path would
                     # be the empty path that addresses text under no heading,
                     # or carry an empty segment. It is read as the body text it

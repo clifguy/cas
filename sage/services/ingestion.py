@@ -137,6 +137,11 @@ _UNTITLED_HEADING_SINCE_ADAPTER_VERSION: dict[SourceType, tuple[int, ...]] = {
 # ingest writes ahead of every heading's content, followed by nothing.
 _UNTITLED_HEADING_LINE = re.compile(r"#{1,6} ?")
 
+# How a PDF adapter older than the first to read an untitled outline entry as none
+# titled such an entry: with the representation of the outline object itself, which
+# no authored title reproduces.
+_UNTITLED_PDF_ENTRY_TITLE = "{'/Title': '',"
+
 
 def _projected_before(adapter_version: str | None, since: tuple[int, ...]) -> bool:
     """Whether ``adapter_version`` predates ``since``; an unreadable version does."""
@@ -3242,7 +3247,9 @@ class IngestionService:
         ahead of its first heading had a passage: its passages include headings but
         none at the empty path, since a document without headings stores its whole
         text there. And one whose passages hold a heading with no text, which is
-        addressed by a path with an empty segment, or by the empty path itself. An
+        addressed by a path with an empty segment, by the empty path itself, or --
+        for a PDF outline entry with no title -- by a segment holding the outline
+        object's representation. An
         empty path beside other paths is such a heading when the adapter predates
         the text before the first heading, which it could not have stored. Where
         the adapter does not predate it, the empty path is that heading only when a
@@ -3252,7 +3259,7 @@ class IngestionService:
         """
         paths = await self._content_store.get_heading_paths(doc.id)
         if any(
-            not segment.strip()
+            not segment.strip() or segment.startswith(_UNTITLED_PDF_ENTRY_TITLE)
             for path in paths
             if path
             for segment in path.split(HEADING_PATH_SEPARATOR)
@@ -3265,10 +3272,10 @@ class IngestionService:
             return bool(paths) and before_preamble
         if before_preamble and len(paths) > 1:
             return True
-        section_openings: dict[int | None, str] = {}
+        section_openings: dict[int, str] = {}
         for chunk in await self._content_store.get_all_chunks(doc.id):
             if chunk.heading_path == "":
-                section_openings.setdefault(chunk.section_index, chunk.content)
+                section_openings.setdefault(chunk.section_key, chunk.content)
         return any(
             _UNTITLED_HEADING_LINE.fullmatch(opening.split("\n", 1)[0])
             for opening in section_openings.values()

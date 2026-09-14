@@ -4731,7 +4731,7 @@ class TestDocxUntitledHeadings:
 
         result = await self._project(tmp_path, doc, untitled=1)
 
-        assert [h.text.strip() for h in result.headings] == ["1 Named", "2"]
+        assert [(h.text, h.path) for h in result.headings] == [("1 Named", "1 Named"), ("2", "2")]
         assert result.headings[1].content == "Numbered body."
 
     async def test_ad_157_a_heading_under_an_untitled_one_nests_under_the_named_ancestor(

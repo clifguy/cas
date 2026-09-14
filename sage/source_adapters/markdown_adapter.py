@@ -78,6 +78,8 @@ class MarkdownAdapter(SourceAdapter):
         the empty path, which addresses text under no heading, or would carry an
         empty segment. Its line is dropped, the text under it joins the section
         before it, and a heading below it nests under the nearest named ancestor.
+        A document whose every heading is untitled has no headings, so its text is
+        its one passage exactly as written, the untitled heading lines included.
         """
         md = MarkdownIt("commonmark")
         md.use(front_matter_plugin)

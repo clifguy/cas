@@ -29,7 +29,7 @@ from sage.services.lifecycle import LifecycleService
 from sage.services.maintenance import BACKFILL_TEXT_BEFORE_FIRST_HEADING, MaintenanceService
 from sage.services.retrieval import RetrievalService
 from sage.services.utilities import UtilitiesService
-from sage.source_adapters.base import ProjectionResult
+from sage.source_adapters.base import ProjectionResult, SourceAdapter
 from sage.source_adapters.docx_adapter import DocxAdapter
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.source_adapters.pdf_adapter import PdfAdapter
@@ -619,12 +619,24 @@ async def test_a_docx_document_an_earlier_adapter_projected_is_recovered(vault, 
 # unread beside them.
 
 # The last version of each adapter to read a heading with no text as a heading.
-_UNTITLED_READ_AS_HEADING = {SourceType.MARKDOWN: "0.6.0"}
+_UNTITLED_READ_AS_HEADING = {
+    SourceType.MARKDOWN: "0.6.0",
+    SourceType.DOCX: "0.5.0",
+    SourceType.PDF: "0.6.0",
+}
 
 
-async def _seeded(vault: Vault, name: str, source: str, sections, version: str) -> str:
+async def _seeded(
+    vault: Vault,
+    name: str,
+    source: str | bytes,
+    sections,
+    version: str,
+    source_type: SourceType = SourceType.MARKDOWN,
+) -> str:
     """Ingest ``source``, then store ``sections`` as its passages, stamped ``version``."""
-    document_id = await vault.ingest(name, source.encode(), SourceType.MARKDOWN)
+    content = source.encode() if isinstance(source, str) else source
+    document_id = await vault.ingest(name, content, source_type)
     await vault.store.index_chunks(
         document_id,
         [
@@ -643,9 +655,12 @@ async def _seeded(vault: Vault, name: str, source: str, sections, version: str) 
     return document_id
 
 
-async def _shipped_passages(vault: Vault, document_id: str) -> list[tuple[str, str]]:
+async def _shipped_passages(
+    vault: Vault, document_id: str, adapter: SourceAdapter | None = None
+) -> list[tuple[str, str]]:
     doc = await vault.graph_store.get_document(document_id)
-    projection = await MarkdownAdapter().project(vault.root / "sources" / doc.source_path)
+    adapter = adapter or MarkdownAdapter()
+    projection = await adapter.project(vault.root / "sources" / doc.source_path)
     return [
         (c.heading_path, c.content)
         for c in vault.ingestion._chunk_projection(document_id, projection)
@@ -816,3 +831,69 @@ async def test_an_empty_path_beside_headings_from_before_the_text_before_them_is
 
     assert adapters[SourceType.MARKDOWN].projected == ["unmarked.md"]
     assert (await vault.utilities().read_section(led, "")).section_text == LEAD
+
+
+@requires_docx
+async def test_a_docx_untitled_heading_beside_the_text_before_the_first_heading_is_rebuilt(
+    vault, tmp_path
+):
+    import docx
+
+    built = docx.Document()
+    built.add_paragraph("Lead sentinel.")
+    built.add_paragraph("Goal", style="Heading 1")
+    built.add_paragraph("Goal body.")
+    built.add_paragraph("", style="Heading 1")
+    built.add_paragraph("Tail.")
+    path = tmp_path / "beside.docx"
+    built.save(str(path))
+    led = await _seeded(
+        vault,
+        "beside.docx",
+        path.read_bytes(),
+        [("", "Lead sentinel."), ("Goal", "# Goal\n\nGoal body."), ("", "# \n\nTail.")],
+        _UNTITLED_READ_AS_HEADING[SourceType.DOCX],
+        SourceType.DOCX,
+    )
+    expected = await _shipped_passages(vault, led, DocxAdapter())
+    adapters = vault.ship_adapters()
+
+    await vault.migrate()
+
+    assert adapters[SourceType.DOCX].projected == ["beside.docx"]
+    assert [(c.heading_path, c.content) for c in await vault.store.get_all_chunks(led)] == expected
+    assert (await vault.utilities().read_section(led, "")).section_text == "Lead sentinel."
+
+
+@requires_pdf
+async def test_a_pdf_heading_titled_by_its_outline_entry_object_is_read(vault, tmp_path):
+    path = _make_pdf_with_outline(
+        tmp_path / "repr.pdf",
+        outline=[(1, "Named", 0), (1, "", 1), (1, "After", 2)],
+        pages=[["NAMED_BODY"], ["ORPHAN_BODY"], ["AFTER_BODY"]],
+    )
+    untitled = "{'/Title': '', '/Page': IndirectObject(4, 0, 4402), '/Type': '/Fit'}"
+    led = await _seeded(
+        vault,
+        "repr.pdf",
+        path.read_bytes(),
+        [
+            ("Named", "# Named\n\nNAMED_BODY"),
+            (untitled, f"# {untitled}\n\nORPHAN_BODY"),
+            ("After", "# After\n\nAFTER_BODY"),
+        ],
+        _UNTITLED_READ_AS_HEADING[SourceType.PDF],
+        SourceType.PDF,
+    )
+    paths = await vault.store.get_heading_paths(led)
+    assert "" not in paths and all(segment.strip() for p in paths for segment in p.split(" > ")), (
+        "control: no empty path or empty segment marks the untitled entry"
+    )
+    expected = await _shipped_passages(vault, led, PdfAdapter())
+    adapters = vault.ship_adapters()
+
+    await vault.migrate()
+
+    assert adapters[SourceType.PDF].projected == ["repr.pdf"]
+    assert [(c.heading_path, c.content) for c in await vault.store.get_all_chunks(led)] == expected
+    assert await vault.store.get_heading_paths(led) == ["Named", "After"]
