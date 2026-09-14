@@ -4719,13 +4719,14 @@ class TestDocxUntitledHeadings:
             ("Named", "N body.\nOrphan body.")
         ]
 
-    async def test_ad_156_a_numbered_heading_without_text_keeps_its_number(self, tmp_path):
+    @pytest.mark.parametrize("blank", ["", "   ", "\t"], ids=["empty", "spaces", "tab"])
+    async def test_ad_156_a_numbered_heading_without_text_keeps_its_number(self, tmp_path, blank):
         """AD-156: A numbered DOCX heading without text is titled by its number."""
         doc = docx.Document()
         _inject_numbering(doc, DECIMAL_ABSTRACT_NUM_XML, DECIMAL_NUM_XML)
         first = doc.add_paragraph("Named", style="Heading 1")
         _set_paragraph_numbering(first, num_id=100, ilvl=0)
-        numbered = doc.add_paragraph("", style="Heading 1")
+        numbered = doc.add_paragraph(blank, style="Heading 1")
         _set_paragraph_numbering(numbered, num_id=100, ilvl=0)
         doc.add_paragraph("Numbered body.")
 

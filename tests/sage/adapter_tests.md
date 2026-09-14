@@ -2812,8 +2812,9 @@ named heading are part of the preamble.
 **Decision:** A list number is text the reader sees, so a numbered heading
 paragraph with no text of its own is titled by its number and remains a heading.
 
-**Expected:** The heading's text and path are its number alone, with no trailing
-space, and it holds the body after it.
+**Expected:** Whether the paragraph's own text is empty or only whitespace, the
+heading's text and path are its number alone, with no trailing whitespace, and it
+holds the body after it.
 
 ### TEST-SAGE-AD-157: A DOCX heading under an untitled one nests under the nearest named ancestor
 
