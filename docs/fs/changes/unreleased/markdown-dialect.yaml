@@ -17,7 +17,8 @@ summary: >-
   CommonMark read, with one exception: a pipe table directly followed by a dash rule
   is a table, so its rows are no longer read as a heading. vault_config.schema.json
   gains the dialect property under adapter_defaults, taking gfm or pandoc; any other
-  value is refused when a document is projected. The IngestRequest config description
+  value is refused when the vault config is written, and a per-ingest config naming
+  one is refused when the document is projected. The IngestRequest config description
   in sage_core_api.openapi.yaml and the ingest_document description in the MCP tool
   catalog name the setting. The ingest_document description and the adapter_defaults
   entry in vault_config.schema.json stop saying an adapter rejects a config key it

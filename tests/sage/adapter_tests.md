@@ -2909,8 +2909,9 @@ title block is part of the preamble.
 
 **Artifact:** `MarkdownAdapter.project`
 **Category:** dialect
-**Expected:** AD-163's source with no config reports no headings. Control: declared
-as GFM it reports the table heading, so detection, not the reader alone, removes it.
+**Expected:** AD-163's source with no config reports no headings, and so does the same
+kind of table inside a blockquote. Control: declared as GFM each reports the table
+heading, so detection, not the reader alone, removes it.
 
 ### TEST-SAGE-AD-168: A declared dialect takes precedence over detection
 
@@ -2984,3 +2985,16 @@ reported (level, text) sequence is a subsequence of the CommonMark reading's.
 **Category:** provenance
 **Expected:** `MarkdownAdapter.VERSION` and a projection's `adapter_version` are
 `0.8.0`.
+
+### TEST-SAGE-AD-176: A vault config naming an unknown markdown dialect is refused
+
+**Artifact:** `VaultConfig` (`adapter_defaults.markdown.dialect`)
+**Category:** configuration
+**Decision:** A dialect the adapter would refuse at projection is refused when the
+vault config is written, so the error reaches whoever wrote it rather than every
+later ingest.
+
+**Expected:** `dialect: pandc` under `adapter_defaults.markdown` fails validation,
+naming the key and both accepted values; `gfm` and `pandoc` are each accepted; the
+schema's enum equals the adapter's dialect set. Tests live in
+`tests/sage/test_adapter_defaults_migration.py`.

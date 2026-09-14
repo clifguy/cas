@@ -172,6 +172,7 @@ _FULL_RULE = re.compile(r"-{3,}[ \t]*$")
 _COLUMN_RULE = re.compile(r"-{2,}(?: +-{2,})+[ \t]*$")
 _GRID_BORDER = re.compile(r"\+(?:[-=:]+\+)+[ \t]*$")
 _ATX_HEADING = re.compile(r"#{1,6}(?:[ \t]|$)")
+_BLOCKQUOTE_MARKERS = re.compile(r"(?: {0,3}> ?)+")
 
 # Blocks whose lines are not markdown structure, so hold no dialect marker.
 _OPAQUE_BLOCKS = frozenset({"fence", "code_block", "front_matter", "html_block"})
@@ -193,12 +194,16 @@ def _detect_dialect(text: str, tokens: list[Token]) -> str:
     """``pandoc`` when ``text`` carries a marker only Pandoc Markdown writes, else ``gfm``.
 
     The markers are a column rule beside a line of text, a grid-table border
-    followed by a row, and a ``%`` title block opening the document. None of them
-    counts inside code, front matter or raw HTML. A table ruled only by
+    followed by a row, and a ``%`` title block opening the document. A marker
+    inside a blockquote counts; none of them counts inside code, front matter or
+    raw HTML. A table ruled only by
     full-width dash lines is not a marker: to CommonMark it is a thematic break
     and a setext heading, which an author writing CommonMark means.
     """
-    lines = text.split("\n")
+    lines = [
+        _BLOCKQUOTE_MARKERS.sub("", line, count=1) if line.lstrip(" ").startswith(">") else line
+        for line in text.split("\n")
+    ]
     opaque: set[int] = set()
     for token in tokens:
         if token.type in _OPAQUE_BLOCKS and token.map is not None:

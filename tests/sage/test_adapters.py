@@ -5031,6 +5031,21 @@ _GFM_SHAPES = [
 
 _PIPE_TABLE_THEN_RULE = "| a | b |\n|---|---|\n| c | d |\n---\n\n# Real\n\nBody.\n"
 
+# A Pandoc multiline table inside a blockquote.
+_QUOTED_PANDOC_TABLE = (
+    "> Site Codes\n"
+    ">\n"
+    ">   -------------------------------\n"
+    ">   **Code**    **Site**\n"
+    ">   ----------- -------------------\n"
+    ">   NTH         North Campus\n"
+    ">\n"
+    ">   EST         East Office\n"
+    ">   -------------------------------\n"
+    "\n"
+    "Closing text.\n"
+)
+
 
 def _commonmark_reference():
     """The markdown adapter reading every document as CommonMark."""
@@ -5080,6 +5095,7 @@ def _dialect_sources() -> list[str]:
         *_MARKER_IN_CODE.values(),
         *(source for _, source, _ in _GFM_SHAPES),
         _PIPE_TABLE_THEN_RULE,
+        _QUOTED_PANDOC_TABLE,
     ]
 
 
@@ -5166,6 +5182,17 @@ class TestMarkdownDialect:
         assert len(declared.headings) == 1, "control: read as GFM, the table yields a heading"
 
         result = await self._project(tmp_path, _PANDOC_MULTILINE, None)
+
+        assert result.headings == []
+
+    async def test_ad_167_a_pandoc_table_in_a_blockquote_is_detected(self, tmp_path):
+        """AD-167: The dialect is detected from a table inside a blockquote."""
+        declared = await self._project(tmp_path, _QUOTED_PANDOC_TABLE, {"dialect": "gfm"})
+        assert [h.text for h in declared.headings] == ["EST         East Office"], (
+            "control: read as GFM, the quoted table yields a heading"
+        )
+
+        result = await self._project(tmp_path, _QUOTED_PANDOC_TABLE)
 
         assert result.headings == []
 
