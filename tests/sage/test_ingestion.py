@@ -27,6 +27,7 @@ from sage.config import VaultConfig
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document, IngestRequest
 from sage.services.document_surface import compose_document_surface
+from sage.source_adapters.base import SourceAdapter
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from tests.helpers.pipeline_wait import await_pipeline_idle
 
@@ -2371,7 +2372,7 @@ async def test_recompute_pipeline_source_path_missing_raises(
 # contribute to document.tags from projection metadata.
 
 
-class _TagEmittingStubAdapter:
+class _TagEmittingStubAdapter(SourceAdapter):
     """Stub adapter that emits configurable adapter_tags in projection metadata.
 
     Used to exercise the ingestion-level tag-merge plumbing (BH-131..133)
@@ -2657,7 +2658,7 @@ async def test_bh_133_byte_identical_reingest_raises_duplicate(
 # ---------------------------------------------------------------------------
 
 
-class _EmptyTextStubAdapter:
+class _EmptyTextStubAdapter(SourceAdapter):
     """Stub adapter that returns an empty projection text, simulating a
     Word template or other content-thin source."""
 

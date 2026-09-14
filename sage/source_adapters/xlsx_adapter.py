@@ -14,7 +14,13 @@ from pathlib import Path
 
 from openpyxl import load_workbook
 
-from sage.source_adapters.base import HeadingNode, ProjectionResult, SourceAdapter
+from sage.source_adapters.base import (
+    HeadingNode,
+    ProjectionResult,
+    SourceAdapter,
+    optional_positive_int,
+    positive_int,
+)
 
 # Default sheet names that signal "the user never renamed it"
 _DEFAULT_SHEET_NAMES = {"Sheet", "Sheet1"}
@@ -30,10 +36,13 @@ class XlsxAdapter(SourceAdapter):
     VERSION = "0.3.0"
     EXTENSIONS = [".xlsx"]
 
+    def check_config(self, config: dict | None) -> None:
+        positive_int(config, "preview_rows", _DEFAULT_PREVIEW_ROWS)
+        optional_positive_int(config, "max_sheets")
+
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
-        config = config or {}
-        preview_rows = config.get("preview_rows", _DEFAULT_PREVIEW_ROWS)
-        max_sheets = config.get("max_sheets", None)
+        preview_rows = positive_int(config, "preview_rows", _DEFAULT_PREVIEW_ROWS)
+        max_sheets = optional_positive_int(config, "max_sheets")
 
         raw_bytes = source_path.read_bytes()
         content_hash = hashlib.sha256(raw_bytes).hexdigest()

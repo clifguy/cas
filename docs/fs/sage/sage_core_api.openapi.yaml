@@ -690,6 +690,11 @@ paths:
             `adapter_not_found`: no source adapter is registered for
             `source_type`.
 
+            `adapter_config_invalid`: the source adapter refused a value it
+            cannot use in its config, the vault's `adapter_defaults` merged
+            with the request's `config`. The detail names the source type,
+            the key and the value.
+
             `ambiguous_ingest_source`: both `source` and `transfer_token`
             were supplied.
 
@@ -8983,8 +8988,8 @@ components:
             request from its source, source type and parsed metadata alone,
             so the codes that can appear are the single-document codes that
             depend on none of a predecessor, a force re-ingest, a chain-head
-            token or a relocation pointer: `adapter_not_found`,
-            `duplicate_content`, `invalid_doc_type`, `invalid_document_date`,
+            token or a relocation pointer: `adapter_config_invalid`,
+            `adapter_not_found`, `duplicate_content`, `invalid_doc_type`, `invalid_document_date`,
             `reserved_transition`, `source_file_not_found`,
             `tier3_schema_violation`, `tier3_unique_constraint_violation`,
             `vault_migration_in_flight`, `vault_source_path_refused`,

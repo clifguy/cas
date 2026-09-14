@@ -46,6 +46,7 @@ from sage.adapters.interfaces import (
     NonRetryableAbstractionError,
 )
 from sage.api.errors import (
+    AdapterConfigInvalidError,
     AdapterNotFoundError,
     DocumentNotFoundError,
     DuplicateContentError,
@@ -108,7 +109,7 @@ from sage.services.passage_split import (
 from sage.services.passage_structure import indexed_structure
 from sage.services.transfer import DeliveryDeclaration, caller_local_delivery
 from sage.services.vault_source_errors import report_refusal_as
-from sage.source_adapters.base import ProjectionResult, SourceAdapter
+from sage.source_adapters.base import AdapterConfigError, ProjectionResult, SourceAdapter
 from sage.storage.locks import DocumentLockManager
 from sage.storage.tier3_uniqueness import Tier3UniqueViolation
 
@@ -207,6 +208,24 @@ def _refuse_retention_as(source: str) -> Iterator[None]:
             yield
     except VaultRootEscapeError as exc:
         raise VaultSourcePathRefusedError(source, str(exc)) from exc
+
+
+@contextlib.contextmanager
+def _refuse_adapter_config(source_type: SourceType) -> Iterator[None]:
+    """Report an adapter's refusal of a config value as the caller's error.
+
+    The adapter refuses a value it cannot use before reading the source, and
+    raises its own ``ValueError`` subclass to say so -- it sits below the API
+    layer and may not import its error hierarchy. Left to propagate, that
+    reaches an MCP caller as a generic internal error and an HTTP caller as a
+    bare 500, describing a server fault rather than the value the caller
+    supplied. Every other projection failure passes through untouched: a source
+    the adapter cannot read is not a config error, and keeps its reporting.
+    """
+    try:
+        yield
+    except AdapterConfigError as exc:
+        raise AdapterConfigInvalidError(source_type.value, exc.key, exc.value, str(exc)) from exc
 
 
 @contextlib.contextmanager
@@ -1025,6 +1044,9 @@ class IngestionService:
                 hash, or no document at all. A pin may select any holder of
                 the hash, never a record holding other bytes.
             AdapterNotFoundError: No adapter for requested source type.
+            AdapterConfigInvalidError: the source adapter refused a value in
+                the merged config; raised before the source is retained, and by
+                a dry run.
             DocumentNotFoundError: `predecessor_id` does not exist.
             SupersedeTargetNotActiveError: the vault's lifecycle
                 transition table does not permit ``supersede`` from the
@@ -1210,6 +1232,13 @@ class IngestionService:
         # file with no row, which no audit walks.
         self._validate_caller_doc_type(request)
         self._validate_ingest_landing_state()
+        # A config value the adapter cannot use is refused here, among the checks
+        # that read and write nothing, for the reason the relocation guard sits
+        # above retention: refused below it, a novel external file would be
+        # copied into the vault and then declined, leaving a retained file with
+        # no row. Here too a preview reports the refusal the ingest would raise.
+        with _refuse_adapter_config(request.source_type):
+            adapter.check_config(self._merge_adapter_config(request.source_type, request.config))
 
         # A preview stops here, before the source is read into the vault.
         # Everything above is a validator that reads nothing and writes
@@ -1384,7 +1413,10 @@ class IngestionService:
         # per-call escape hatch.
         merged_config = self._merge_adapter_config(request.source_type, request.config)
         with self._project_source(vault_source_store, storage_root, vault_relative) as project_path:
-            with _translate_projection_failure(project_path, reported_source):
+            with (
+                _translate_projection_failure(project_path, reported_source),
+                _refuse_adapter_config(request.source_type),
+            ):
                 projection = await adapter.project(project_path, merged_config)
 
         # Parse filename per vault config (CAS-ADR-015) only when the caller
@@ -2463,6 +2495,8 @@ class IngestionService:
             DocumentNotFoundError: Document does not exist.
             AdapterNotFoundError: No adapter registered for the document's
                 source_type.
+            AdapterConfigInvalidError: the source adapter refused a value in
+                the vault's adapter_defaults.
             SourceFileNotFoundError: Source file resolved from
                 ``document.source_path`` does not exist on disk.
             RecomputePipelineAlreadyInFlightError: Abstraction work is already
@@ -2503,7 +2537,10 @@ class IngestionService:
                 # This caller named a document, not a path, so the record's own
                 # vault-relative source_path is the spelling it can relate to
                 # what it asked for.
-                with _translate_projection_failure(project_path, doc.source_path):
+                with (
+                    _translate_projection_failure(project_path, doc.source_path),
+                    _refuse_adapter_config(doc.source_type),
+                ):
                     projection = await adapter.project(project_path, merged_config)
             await self._store.update_document(
                 document_id,

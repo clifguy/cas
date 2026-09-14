@@ -64,6 +64,37 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
     return worker_budget(os.cpu_count(), max_connections)
 
 
+_SURFACE_CONFORMANCE_GATE = "tests/sage/test_mcp_tool_conformance.py::"
+
+
+def _surface_gate_reported(stats: dict[str, list[Any]]) -> bool:
+    """Whether any report in the terminal reporter's stats came from the gate module."""
+    return any(
+        getattr(report, "nodeid", "").startswith(_SURFACE_CONFORMANCE_GATE)
+        for reports in stats.values()
+        for report in reports
+    )
+
+
+def pytest_terminal_summary(terminalreporter: Any) -> None:
+    """Print the surface divergences still pending remediation (CAS-ADR-052).
+
+    Printed whenever the surface conformance gate reported in this run, so the
+    backlog of capability gaps between the MCP and REST surfaces stays visible
+    without opening the register. Permanent divergences are never printed.
+    Runs on the controller, where reports from every worker arrive.
+    """
+    if not _surface_gate_reported(terminalreporter.stats):
+        return
+
+    from tests.sage.surface_divergences import REGISTERS, pending_remediation_lines
+
+    lines = pending_remediation_lines(REGISTERS)
+    terminalreporter.write_sep("=", f"pending surface-divergence remediation ({len(lines)})")
+    for line in lines:
+        terminalreporter.write_line(line)
+
+
 @pytest.fixture(scope="session")
 def schema_validator() -> SchemaValidator:
     """Session-scoped SchemaValidator with pre-built registry."""

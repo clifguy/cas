@@ -103,7 +103,7 @@ Scope — top-level directories excluded from T1/T3/T4/T12/T13/T14:
 
 The six allowlist constants near the top of the module follow the
 pattern of ``KNOWN_VIOLATIONS`` in ``tests/sage/test_typed_alias_coverage.py``
-and ``KNOWN_ARG_DRIFT`` in ``tests/sage/test_mcp_tool_conformance.py``.
+and ``MCP_ONLY_ARGUMENTS`` in ``tests/sage/surface_divergences.py``.
 All six are empty at the close of the establishing cleanup. Every
 entry added later requires a 1-line rationale.
 
