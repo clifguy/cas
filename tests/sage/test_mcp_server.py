@@ -3688,3 +3688,30 @@ async def test_read_section_reads_text_before_the_first_heading_by_the_empty_pat
     assert headings["headings"] == ["", "Heading"]
     assert "error" not in result, result
     assert result["section_text"].strip() == "Opening sentinel larkspur."
+
+
+async def test_search_deterministic_reads_text_before_the_first_heading_by_the_empty_path(
+    vault_services, tmp_vault_dir
+):
+    """Deterministic search takes the empty heading path read_section takes, while an
+    omitted heading_path is still refused as missing."""
+    (tmp_vault_dir / "sources" / "test" / "led.md").write_text(
+        "Opening sentinel larkspur.\n\n# Heading\n\nHeading body.\n"
+    )
+    doc = _parse(await ingest_document("test_vault", "test/led.md", "markdown"))
+    await _await_document_idle(vault_services, "test_vault", doc["id"])
+
+    section = _parse(
+        await read_section(vault_id="test_vault", document_id=doc["id"], heading_path="")
+    )
+    found = _parse(
+        await search("test_vault", mode="deterministic", document_id=doc["id"], heading_path="")
+    )
+    omitted = _parse(await search("test_vault", mode="deterministic", document_id=doc["id"]))
+
+    assert "error" not in found, found
+    [hit] = found["results"]
+    assert hit["chunk_content"] == section["section_text"]
+    assert "Heading body." not in hit["chunk_content"]
+    assert hit.get("heading_path") is None
+    assert omitted["error"] == "missing_heading_path"

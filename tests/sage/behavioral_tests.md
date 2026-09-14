@@ -3520,3 +3520,77 @@ another.
 **Rationale:** Edge enumeration reports its total from the same kind of
 separate count, so the count-only spelling costs nothing to extend to it, and a
 caller counting edges has the same reason to avoid a page of rows.
+
+
+### TEST-SAGE-BH-145: deterministic retrieval with an empty heading path returns the text under no heading
+
+**Artifact:** `sage/services/retrieval.py` (`_deterministic`)
+**Category:** retrieval, deterministic
+
+**Decision:** The empty heading path addresses text under no heading -- the text
+before a document's first heading, or the whole body of a document with no
+headings -- and deterministic retrieval admits it as it admits any other path.
+An omitted `heading_path` is still refused as missing; only an explicit empty
+string is admitted. A hit for that text carries a null `heading_path`, as the
+scored arms render it.
+
+**Precondition:** A markdown document ingested with a sentence before its first
+heading and a `Guide` section after it.
+
+**Input:** `discover(mode="deterministic", document_id=doc.id, heading_path="")`,
+and the same request with `heading_path` omitted.
+
+**Expected:**
+- The empty path returns one hit whose `chunk_content` is the sentence before the
+  heading and nothing under `Guide`; its `heading_path` and `relevance_score` are
+  null.
+- The omitted path is refused with `missing_heading_path`.
+
+**Rationale:** A scored hit with a null `heading_path` can otherwise be read whole
+only through `read_section`, while every other hit is read through the
+deterministic request the hit guidance recommends.
+
+
+### TEST-SAGE-BH-146: an empty heading path on a document with no text under no heading is heading_not_found
+
+**Artifact:** `sage/services/retrieval.py` (`_deterministic`)
+**Category:** retrieval, error_semantics
+
+**Decision:** A document whose passages all sit under headings has nothing at the
+empty path, and the request reports it as any other absent heading.
+
+**Precondition:** A document with a `Guide` section and no text before it.
+
+**Input:** `discover(mode="deterministic", document_id=doc.id, heading_path="")`
+
+**Expected:**
+- HTTP 404, `code: "heading_not_found"`
+- The detail names `heading_path: ""`, and `available_headings` lists the
+  document's headings without the empty path.
+
+**Rationale:** Admitting the empty string must not turn an absent section into a
+missing-parameter refusal or an empty success.
+
+
+### TEST-SAGE-BH-147: an empty heading path reads a divided headingless body whole
+
+**Artifact:** `sage/services/retrieval.py` (`_deterministic`)
+**Category:** retrieval, deterministic, passages
+
+**Decision:** A headingless body longer than the embedder's input bound is stored
+as several passages of one section; the empty-path request returns that section
+as one hit, whole and in order.
+
+**Precondition:** One headingless document's passages written twice -- once under
+a bound nothing exceeds, once under a bound that divides the body.
+
+**Input:** `discover(mode="deterministic", document_id=doc.id, heading_path="")`
+after each write.
+
+**Expected:**
+- One hit after each write, whose `chunk_content` equals
+  `read_section(doc.id, "").section_text`.
+- The divided write produced more passages than the undivided one.
+
+**Rationale:** A read that returned the first passage of a divided section would
+pass against an undivided one.

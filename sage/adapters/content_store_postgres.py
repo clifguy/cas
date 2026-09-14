@@ -1288,12 +1288,17 @@ class PostgresContentStore(ContentStore):
     async def get_chunks_by_heading_prefix(
         self, document_id: str, heading_prefix: str
     ) -> list[Chunk]:
-        """Return chunks at the heading or any child heading, document order."""
+        """Return chunks at the heading or any child heading, document order.
+
+        Scoped to the passage surface by ``_passage_rows_only``, which is where
+        that scoping is explained.
+        """
         with self._query_timer.measure("get_chunks_by_heading_prefix"):
             child_pattern = self._escape_like(heading_prefix) + HEADING_PATH_SEPARATOR + "%"
             rows = await self._fetchall(
-                f"SELECT {_SELECT_CHUNK_COLUMNS} FROM chunks "  # noqa: S608 -- fixed column constant
-                "WHERE document_id = %s AND (heading_path = %s OR heading_path LIKE %s) "
+                f"SELECT {_SELECT_CHUNK_COLUMNS} FROM chunks "  # noqa: S608 -- fixed column and predicate constants
+                f"WHERE document_id = %s AND {_passage_rows_only()} "
+                "AND (heading_path = %s OR heading_path LIKE %s) "
                 "ORDER BY chunk_index",
                 (document_id, heading_prefix, child_pattern),
             )

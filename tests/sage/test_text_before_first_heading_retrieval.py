@@ -16,6 +16,7 @@ import pytest
 
 from sage.adapters.content_store_postgres import PostgresContentStore
 from sage.adapters.stubs import SeededEmbeddingProvider, StubAbstractionProvider
+from sage.api.errors import HeadingNotFoundError
 from sage.models.enums import RetrievalMode, SourceType
 from sage.models.schemas import DiscoverRequest, IngestRequest
 from sage.services.ingestion import IngestionService
@@ -121,3 +122,38 @@ async def test_a_semantic_query_reaches_the_passage_before_the_first_heading(ind
     assert top.heading_path is None
     assert top.chunk_content == LEAD
     assert all(h.chunk_content != LEAD for h in _passage_hits(response, ids["withheld"]))
+
+
+async def test_deterministic_empty_heading_path_returns_the_text_before_the_first_heading(
+    indexed,
+):
+    retrieval, ids = indexed
+
+    response = await retrieval.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.DETERMINISTIC, document_id=ids["stored"], heading_path=""
+        )
+    )
+
+    [hit] = response.results
+    assert response.total_available == 1
+    assert hit.chunk_content == LEAD
+    assert hit.heading_path is None
+    assert hit.relevance_score is None
+
+
+async def test_deterministic_empty_heading_path_without_that_passage_is_heading_not_found(
+    indexed,
+):
+    retrieval, ids = indexed
+
+    with pytest.raises(HeadingNotFoundError) as caught:
+        await retrieval.discover(
+            DiscoverRequest(
+                mode=RetrievalMode.DETERMINISTIC, document_id=ids["withheld"], heading_path=""
+            )
+        )
+
+    assert (caught.value.status_code, caught.value.code) == (404, "heading_not_found")
+    assert caught.value.detail["heading_path"] == ""
+    assert caught.value.detail["available_headings"] == ["Guide"]

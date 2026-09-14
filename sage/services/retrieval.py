@@ -2068,7 +2068,9 @@ class RetrievalService:
     ) -> DiscoverResponse:
         if not request.document_id:
             raise MissingFieldError("document_id", "document_id is required for deterministic mode")
-        if not request.heading_path:
+        # The empty path is an address, not an omission: it names the text
+        # under no heading.
+        if request.heading_path is None:
             raise MissingFieldError(
                 "heading_path", "heading_path is required for deterministic mode"
             )
@@ -2101,12 +2103,13 @@ class RetrievalService:
         summary = DocumentSummary.from_document(doc)
 
         # One hit per section: a section divided to fit the embedder is
-        # returned as the one section it is, never as its fragments.
+        # returned as the one section it is, never as its fragments. Text
+        # under no heading carries a null path, as it does on a scored hit.
         hits = [
             DiscoverHit.from_summary(
                 summary,
                 chunk_content=section_text(section),
-                heading_path=section[0].heading_path,
+                heading_path=section[0].heading_path or None,
                 relevance_score=None,  # Deterministic mode: no relevance score
             )
             for section in group_sections(chunks)

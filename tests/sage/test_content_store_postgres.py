@@ -2241,7 +2241,7 @@ async def test_passage_reads_exclude_a_legacy_document_level_row(store):
 
     The per-consumer exclusions are gone, so between deploying this code and
     running the migration the only thing keeping a legacy row out of heading
-    enumeration, reconstructed projection text and the abstraction input is
+    enumeration, section reads, reconstructed projection text and the abstraction input is
     the passage surface's own definition.
     """
     # The legacy row is the nearest thing to the query, so a semantic arm that
@@ -2267,6 +2267,12 @@ async def test_passage_reads_exclude_a_legacy_document_level_row(store):
 
     assert await store.get_heading_paths("d1") == ["Body"]
     assert [c.content for c in await store.get_all_chunks("d1")] == ["authored body"]
+    # A section read addresses a row by its path, so the legacy row's own path is
+    # the one request that could name it.
+    assert [c.content for c in await store.get_chunks_by_heading_prefix("d1", "Body")] == [
+        "authored body"
+    ]
+    assert await store.get_chunks_by_heading_prefix("d1", LEGACY_DOCUMENT_HEADER_HEADING_PATH) == []
     hits = await store.search_semantic(_emb(0), limit=10)
     assert [(h.document_id, h.heading_path) for h in hits] == [("d1", "Body")], (
         "a legacy row reached a caller through the semantic arm"

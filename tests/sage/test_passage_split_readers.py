@@ -171,6 +171,51 @@ async def test_deterministic_search_is_identical(written, graph_store, store, mi
     assert split.total_available == whole.total_available == 2
 
 
+async def test_empty_heading_path_reads_a_split_headingless_body_whole(
+    ingestion_service, graph_store, store, minimal_config
+):
+    """The empty path addresses the whole body of a document with no headings, and
+    deterministic search returns it as one section however the index divided it."""
+    headingless = ProjectionResult(
+        text=_long_body(),
+        headings=[],
+        content_hash="sha256:headingless",
+        adapter_version="0.1.0",
+        title="Doc",
+    )
+
+    def passages(bound: int) -> list[Chunk]:
+        ingestion_service._embedding = StubEmbeddingProvider(max_input_tokens=bound)
+        chunks = ingestion_service._chunk_projection(DOC_ID, headingless)
+        for chunk in chunks:
+            chunk.embedding = [0.0] * EMBEDDING_DIM
+        return chunks
+
+    await graph_store.insert_document(_doc())
+    whole, split = passages(100_000), passages(300)
+    assert len(split) > len(whole) == 1, "the bounded write must split, or nothing here is evidence"
+    retrieval = RetrievalService(
+        graph_store=graph_store,
+        content_store=store,
+        embedding_provider=StubEmbeddingProvider(),
+        config=minimal_config,
+    )
+    utilities = _utilities(graph_store, store, minimal_config)
+    request = DiscoverRequest(mode=RetrievalMode.DETERMINISTIC, document_id=DOC_ID, heading_path="")
+
+    read = []
+    for chunks in (whole, split):
+        await store.index_chunks(DOC_ID, chunks)
+        [hit] = (await retrieval.discover(request)).results
+        assert hit.chunk_content == (await utilities.read_section(DOC_ID, "")).section_text
+        assert hit.heading_path is None
+        read.append(hit.chunk_content)
+
+    # The undivided write is one passage holding the whole body, so the divided
+    # read must equal it rather than only agree with a reader sharing its grouping.
+    assert read[1] == read[0] == whole[0].content
+
+
 async def test_abstraction_input_is_identical(ingestion_service, graph_store):
     await graph_store.insert_document(_doc())
     seen: list[str] = []

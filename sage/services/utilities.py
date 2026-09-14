@@ -376,6 +376,7 @@ class UtilitiesService:
             document_id: Document to read from.
             heading_path: Heading path prefix
                 (e.g. "Technical Description > Composite Claim Binding").
+                The empty string addresses the text under no heading.
 
         Returns:
             ReadSectionResponse with section text and metadata.
