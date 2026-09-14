@@ -5027,7 +5027,31 @@ _GFM_SHAPES = [
         f"Rates\n% of users rose.\n\n{_DASH_RULED_LINE}",
         ["Cell", "Real"],
     ),
+    # A heading or rule directly over a spaced thematic break is not a table row, so
+    # the break beside it is no column rule.
+    (
+        "ATX heading directly over a spaced thematic break",
+        "# Title\n-----  -----\n\nBody.\n\n## Sub\n\nMore.\n",
+        ["Title", "Title > Sub"],
+    ),
+    (
+        "quoted ATX heading directly over a spaced thematic break",
+        "> # Title\n> -----  -----\n\nBody.\n\n## Sub\n\nMore.\n",
+        ["Title", "Title > Sub"],
+    ),
+    (
+        "setext heading directly over a spaced thematic break",
+        f"Title\n=====\n-----  -----\n\n{_DASH_RULED_LINE}",
+        ["Title", "Title > Cell", "Real"],
+    ),
 ]
+
+# An ATX heading directly over a column rule: pandoc reads the heading first, so
+# the line under it is never a table header.
+_HEADING_OVER_COLUMN_RULE = {
+    "no row": "# Title\n-----  -----\n\nBody.\n\n## Sub\n\nMore.\n",
+    "a row under the rule": "# Title\n-----  -----\nNTH   North\n\n## Sub\n\nMore.\n",
+}
 
 _PIPE_TABLE_THEN_RULE = "| a | b |\n|---|---|\n| c | d |\n---\n\n# Real\n\nBody.\n"
 
@@ -5105,6 +5129,7 @@ def _dialect_sources() -> list[str]:
         *(source for _, source, _ in _GFM_SHAPES),
         _PIPE_TABLE_THEN_RULE,
         *_NESTED_PANDOC_TABLES.values(),
+        *_HEADING_OVER_COLUMN_RULE.values(),
     ]
 
 
@@ -5173,6 +5198,15 @@ class TestMarkdownDialect:
 
         assert [h.path for h in result.headings] == ["After"]
         assert table in result.preamble
+
+    @pytest.mark.parametrize(
+        "source", _HEADING_OVER_COLUMN_RULE.values(), ids=_HEADING_OVER_COLUMN_RULE.keys()
+    )
+    async def test_ad_165_a_heading_is_never_a_pandoc_table_header(self, tmp_path, source):
+        """AD-165: Read as Pandoc, an ATX heading over a column rule stays a heading."""
+        result = await self._project(tmp_path, source, {"dialect": "pandoc"})
+
+        assert [h.path for h in result.headings] == ["Title", "Title > Sub"]
 
     async def test_ad_166_a_pandoc_title_block_marks_a_document_as_pandoc(self, tmp_path):
         """AD-166: A Pandoc title block marks a document as Pandoc."""

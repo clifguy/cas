@@ -2895,7 +2895,9 @@ headerless simple table, a headerless multiline table and a grid table each repo
 no heading, and a heading below the table is still reported. Controls: the
 CommonMark reading of each of the first three holds a heading made from the table;
 CommonMark cannot read a grid table as a heading, so that case pins only that the
-Pandoc reading consumes it.
+Pandoc reading consumes it. An ATX heading directly over a column rule, with or
+without a row under the rule, stays a heading: pandoc reads a heading before a
+table, so the heading line is never a table header.
 
 ### TEST-SAGE-AD-166: A Pandoc title block marks a document as Pandoc
 
@@ -2964,9 +2966,10 @@ CommonMark.
 **Category:** regression guard
 **Expected:** A pipe table with alignment, a pipe table set off from a following
 thematic break, setext headings, front matter, a `#` line in fenced code, a spaced thematic
-break set off by blank lines, a grid-table border with no row under it, and a `%`
-line after the first report the headings they did; the last three hold no Pandoc
-marker. The one change is pinned: a pipe table directly followed by
+break set off by blank lines, a grid-table border with no row under it, a `%`
+line after the first, and an ATX or setext heading directly over a spaced thematic
+break (bare or quoted) report the headings they did; none of those holds a Pandoc
+marker, since a heading beside a rule is not a table row. The one change is pinned: a pipe table directly followed by
 a dash rule is a GFM table, so its rows are no longer read as a heading.
 
 ### TEST-SAGE-AD-174: Reading a dialect never adds a heading

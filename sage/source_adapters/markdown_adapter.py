@@ -167,12 +167,15 @@ DIALECTS = ("gfm", "pandoc")
 
 # Pandoc table rules: a full-width dash line, and a column rule of dash runs
 # separated by spaces. A column rule is never a setext underline and seldom a
-# thematic break an author writes beside text, so it marks a Pandoc table.
+# thematic break an author writes beside a table row, so it marks a Pandoc table.
 _FULL_RULE = re.compile(r"-{3,}[ \t]*$")
 _COLUMN_RULE = re.compile(r"-{2,}(?: +-{2,})+[ \t]*$")
 _GRID_BORDER = re.compile(r"\+(?:[-=:]+\+)+[ \t]*$")
 _ATX_HEADING = re.compile(r"#{1,6}(?:[ \t]|$)")
 _BLOCKQUOTE_MARKERS = re.compile(r"(?: {0,3}> ?)+")
+# A line that cannot be a table row or header: a heading, or a rule or setext
+# underline, which pandoc reads before any table.
+_NOT_A_TABLE_ROW = re.compile(r"#{1,6}(?:[ \t]|$)|[-=*_ \t]+$")
 
 # Blocks whose lines are not markdown structure, so hold no dialect marker.
 _OPAQUE_BLOCKS = frozenset({"fence", "code_block", "front_matter", "html_block"})
@@ -193,7 +196,7 @@ def _pandoc_parser() -> MarkdownIt:
 def _detect_dialect(text: str, tokens: list[Token]) -> str:
     """``pandoc`` when ``text`` carries a marker only Pandoc Markdown writes, else ``gfm``.
 
-    The markers are a column rule beside a line of text, a grid-table border
+    The markers are a column rule beside a table row, a grid-table border
     followed by a row, and a ``%`` title block opening the document. A marker
     nested in a container block -- a blockquote, a list item -- counts, whatever
     its indentation; none of them counts inside code, front matter or raw HTML,
@@ -214,13 +217,16 @@ def _detect_dialect(text: str, tokens: list[Token]) -> str:
     def text_at(index: int) -> bool:
         return 0 <= index < len(lines) and index not in opaque and bool(lines[index].strip())
 
+    def row_at(index: int) -> bool:
+        return text_at(index) and not _NOT_A_TABLE_ROW.match(lines[index].lstrip(" \t"))
+
     if lines[0].startswith("%") and 0 not in opaque:
         return "pandoc"
     for index, line in enumerate(lines):
         stripped = line.lstrip(" \t")
         if index in opaque:
             continue
-        if _COLUMN_RULE.match(stripped) and (text_at(index - 1) or text_at(index + 1)):
+        if _COLUMN_RULE.match(stripped) and (row_at(index - 1) or row_at(index + 1)):
             return "pandoc"
         if _GRID_BORDER.match(stripped) and text_at(index + 1):
             if lines[index + 1].lstrip(" \t").startswith("|"):
@@ -240,8 +246,9 @@ def _pandoc_block(state: StateBlock, start: int, end: int, silent: bool) -> bool
       or a simple table without a header -- through the dash rule followed by a
       blank line that closes it, or, failing one before a heading, through the
       next blank line when a dash rule precedes it;
-    - a simple table with a header, a line followed by a column rule, through
-      the next blank line.
+    - a simple table with a header, a line other than a heading followed by a
+      column rule, through the next blank line; pandoc reads a heading before a
+      table, so a heading line is never a table header.
     """
     if state.sCount[start] - state.blkIndent >= 4:
         return False
@@ -275,7 +282,7 @@ def _pandoc_block(state: StateBlock, start: int, end: int, silent: bool) -> bool
                 block = through_blank(start)
                 if any(rule(index) for index in range(start + 2, block + 1)):
                     last = block
-        elif _COLUMN_RULE.match(line(start + 1)):
+        elif _COLUMN_RULE.match(line(start + 1)) and not _ATX_HEADING.match(first):
             last = through_blank(start)
     if last is None:
         return False
