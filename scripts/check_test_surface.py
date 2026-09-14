@@ -127,6 +127,36 @@ class Surface(TypedDict):
 # sanctioned anchor.
 # ---------------------------------------------------------------------------
 
+# The Core API interfaces the frontend type conformance gate enrolled when its ids
+# carried no specification, for the declaration below.
+_CONFORMANCE_INTERFACES: Final[str] = (
+    "AdapterInfo BatchDocumentsCreated BatchIngestFileError BatchIngestFileMetadata "
+    "BatchIngestUploadMetadata BatchProgressEvent BatchSummaryEvent BulkLifecycleItem "
+    "BulkLifecycleItemResult BulkLifecycleRequest BulkLifecycleResponse BulkLinkItem "
+    "BulkLinkItemResult BulkLinkRequest BulkLinkResponse BulkMetadataItem BulkMetadataItemResult "
+    "BulkMetadataRequest BulkMetadataResponse ChainEntry ChainResponse CreateVaultRequest "
+    "DiscoverHit DiscoverRequest DiscoverResponse DocTypeEntry DocTypeRequirements Document "
+    "DocumentDownloadUrlResponse DocumentSummary Edge EdgeWarning ExtractedField FieldChange "
+    "HealthIndicators IngestPreview LastOptimizeSummary LifecycleState LinkRequest ListFieldPatch "
+    "OpenDocumentResponse OptimizeContentStoreReport PendingMetadata ReabstractProgressEvent "
+    "ReabstractReport ReabstractReportEntry ReabstractRequest ReabstractStartedResponse "
+    "ReabstractSummaryEvent ReadMeta RelocationPointer ResolutionPathEntry RetrievalFilters "
+    "StagingEdge StagingEdgeConfirmResponse StagingEdgeDismissResponse Tier3Patch TraversalNode "
+    "TraverseRequest TraverseResponse UpdateConfigResponse UpdateMetadataRequest "
+    "UpdateVaultConfigRequest VaultConfigPreview VaultStats VaultSummary"
+)
+_CONFORMANCE_REQUESTS: Final[str] = (
+    "BatchIngestFileMetadata BatchIngestUploadMetadata BulkLifecycleItem BulkLifecycleRequest "
+    "BulkLinkItem BulkLinkRequest BulkMetadataItem BulkMetadataRequest CreateVaultRequest "
+    "DiscoverRequest LinkRequest ListFieldPatch ReabstractRequest RelocationPointer "
+    "RetrievalFilters Tier3Patch TraverseRequest UpdateMetadataRequest UpdateVaultConfigRequest"
+)
+_CONFORMANCE_STREAMS: Final[str] = (
+    "BatchDocumentsCreated BatchIngestFileError BatchProgressEvent BatchSummaryEvent "
+    "DocTypeRequirements EdgeWarning IngestPreview ReabstractProgressEvent ReabstractReportEntry "
+    "ReabstractSummaryEvent"
+)
+
 KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
     "tests/sage/test_graph_store_seam.py::test_stub_hash_lookup_signature_matches_port": (
         "single-method stub signature check absorbed by the stub arm of the graph-store "
@@ -189,6 +219,31 @@ KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
     "tests/sage/test_list_headings.py::test_list_headings_returns_only_authored_headings": (
         "renamed test_list_headings_leaks_no_internal_marker: the listing may now carry the "
         "empty path, so the name states the property the unchanged assertion checks"
+    ),
+    **{
+        f"tests/app/test_frontend_type_conformance.py::{gate}[{interface}]": (
+            "the frontend type conformance gate began reading a second specification and its "
+            "per-interface ids were keyed by specification; the same pair runs as core-<name>"
+        )
+        for gate, interfaces in (
+            ("test_schema_properties_are_declared_on_the_interface", _CONFORMANCE_INTERFACES),
+            ("test_interface_declares_no_property_absent_from_the_schema", _CONFORMANCE_INTERFACES),
+            (
+                "test_member_names_the_interface_of_each_enrolled_component_it_references",
+                _CONFORMANCE_INTERFACES,
+            ),
+            (
+                "test_required_request_properties_are_not_optional_on_the_interface",
+                _CONFORMANCE_REQUESTS,
+            ),
+            ("test_stream_member_optionality_matches_the_required_list", _CONFORMANCE_STREAMS),
+        )
+        for interface in interfaces.split()
+    },
+    "tests/app/test_frontend_type_conformance.py::"
+    "test_stream_enrollment_matches_the_event_stream_contract": (
+        "parametrized by specification when the gate began reading a second one; the same "
+        "check runs as [core]"
     ),
 }
 

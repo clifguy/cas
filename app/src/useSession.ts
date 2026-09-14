@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ApiError, onAuthRequired } from './api/client';
-import { getSession, logout, type UserClaims } from './api/auth';
+import { getSession, logout } from './api/auth';
+import type { UserClaims } from './api/types';
 
 // The auth gate's resolved state.
 //   loading        -- the initial /app/auth/me check is in flight.

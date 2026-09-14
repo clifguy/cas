@@ -395,12 +395,18 @@ export interface ScanResponse {
   truncated?: boolean;
 }
 
+export interface IngestFileItem {
+  file_path: string;
+  source_type: string;
+  parsed_metadata?: ParsedMetadataItem;
+}
+
 export interface IngestProgressEvent {
   event_type: 'progress';
   file_index: number;
   total_files: number;
   filename: string;
-  stage: string;
+  stage: 'projection';
   status: 'started' | 'completed' | 'failed';
   document_id?: string;
   error?: string;
@@ -439,12 +445,39 @@ export interface IngestSummaryEvent {
   metadata_pending: number;
   edges_created: Record<string, number>;
   edges_staged: Record<string, number>;
+  edges_removed: number;
   edges_dropped: number;
   abstracts_generated: number;
   abstracts_deferred: number;
   error_count: number;
   errors: BatchIngestFileError[];
   edge_warnings?: EdgeWarning[] | null;
+  dry_run?: boolean;
+  previews?: IngestPreview[] | null;
+}
+
+// --- Auth (app backend) ---
+//
+// The backend-for-frontend's interactive sign-in surface, mirrored from the
+// components of docs/fs/cas_app_api.openapi.yaml named on each interface.
+
+/** Identity claims for the signed-in user. Mirrors UserClaims. */
+export interface UserClaims {
+  subject: string;
+  name: string | null;
+  email: string | null;
+}
+
+/** The caller's session state. Mirrors SessionInfoResponse. */
+export interface SessionInfo {
+  authenticated: boolean;
+  user: UserClaims | null;
+}
+
+/** The authorization URL to start interactive sign-in. Mirrors LoginChallengeResponse. */
+export interface LoginChallenge {
+  authorization_url: string;
+  state: string;
 }
 
 // --- Batch ingest upload (SAGE documents:batch) ---
@@ -456,9 +489,9 @@ export interface IngestSummaryEvent {
 // Sent/consumed directly against POST /sage_vaults/{vault_id}/documents:batch,
 // the hosted-profile bulk-ingest surface where the browser uploads file content
 // (the server shares no filesystem with the client). Kept distinct from the
-// app-backend Ingest* shapes above so the two endpoints' contracts can evolve
-// independently; BatchSummaryEvent is a superset of IngestSummaryEvent
-// (edges_removed).
+// app-backend Ingest* shapes above, which mirror the same-named components of
+// docs/fs/cas_app_api.openapi.yaml: both endpoints deliver one wire shape today,
+// but each specification publishes its own, so each has its own mirror.
 
 export interface BatchIngestFileMetadata {
   source_type: string;

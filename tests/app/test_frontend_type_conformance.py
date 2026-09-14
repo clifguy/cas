@@ -1,11 +1,13 @@
 """The frontend API interfaces declare the published component schemas.
 
-``app/src/api/types.ts`` hand-maintains TypeScript mirrors of the shapes the
-SAGE Core API publishes: the document responses the frontend reads and the
-request bodies it sends. The spec-versus-code gates elsewhere in this suite hold
-the Pydantic models to ``sage_core_api.openapi.yaml`` and stop at the Python
-boundary; nothing else reads the TypeScript file, so a property added to a
-schema reaches the frontend only if whoever added it remembered to.
+``app/src/api/types.ts`` hand-maintains TypeScript mirrors of the shapes two
+specifications publish: the SAGE Core API (``sage_core_api.openapi.yaml``), whose
+document responses the frontend reads and whose request bodies it sends, and the
+CAS App API (``cas_app_api.openapi.yaml``), the backend-for-frontend's scan,
+ingest and sign-in surface. The spec-versus-code gates elsewhere in this suite
+hold the Pydantic models to those specifications and stop at the Python boundary;
+nothing else reads the TypeScript file, so a property added to a schema reaches
+the frontend only if whoever added it remembered to.
 
 This module reads the component schemas, not the Pydantic models, so it sits on
 the same authority those gates do and needs no opinion about which Python class
@@ -60,13 +62,32 @@ it will find a null that is not there. Stream interfaces are held to the list in
 both directions: a member is optional exactly when its component leaves it
 optional (F7).
 
+Both specifications publish an event stream, and both render through that rule:
+the App API's ingest stream is produced by the same generator as the Core API's
+upload stream, and that generator serializes every event through the wire model
+(``sage.models.wire``) rather than dumping it. The classification is a fact about
+the emitter, so a stream that stopped rendering through the wire model would
+take a rule of its own rather than inherit this one.
+
 Which shapes those are is derived, not chosen. Each ``text/event-stream``
-response in the Core API specification names its event components, and every
-component reachable from them by reference renders through the same rule, since
-a model has one wire shape wherever it is nested. F4 holds the stream enrollment
-to exactly the enrolled components that set reaches. A shape that also arrives
-over REST takes the stream rule, which REST satisfies too: an optional member
-reads a present key as readily as an absent one.
+response in a specification names its event components, and every component
+reachable from them by reference renders through the same rule, since a model
+has one wire shape wherever it is nested. F4 holds each specification's stream
+enrollment to exactly the enrolled components its own event streams reach. A
+shape that also arrives over REST takes the stream rule, which REST satisfies
+too: an optional member reads a present key as readily as an absent one.
+
+Specifications
+--------------
+
+Each specification is its own namespace of component names, and the two overlap:
+both publish a ``ProgressEvent`` and a ``SummaryEvent``, for instance. Enrollment
+is therefore keyed by specification as well as by interface, and every check
+that relates components to one another -- one interface per component (F4), the
+component-to-interface map F8 reads, the reference closure (F9), the event-stream
+derivation (F4) -- is evaluated within one specification. An interface may mirror
+one component in each, and is then compared against both; the allowlist and the
+reference pins name the specification their entry applies to.
 
 References between components
 -----------------------------
@@ -85,38 +106,43 @@ member's type, not that the type is otherwise what the schema declares.
 Reach
 -----
 
-The gate reads the exported interfaces of ``types.ts`` and nothing else. Every
-one of them is either enrolled or named in ``UNENROLLED_INTERFACES`` with the
-reason it mirrors no Core component (F10), so an interface left out of the
-enrollment is a recorded decision rather than an omission the file cannot tell
-apart from one. Interfaces declared in other frontend modules, and route bodies
-typed inline rather than through an exported interface, are outside the scan.
+The gate reads the exported interfaces of ``types.ts`` and nothing else, so the
+mirrors of either specification are declared there rather than beside the client
+functions that use them. Every exported interface is either enrolled under some
+specification or named in ``UNENROLLED_INTERFACES`` with the reason it mirrors no
+published component (F10), so an interface left out of the enrollment is a
+recorded decision rather than an omission the file cannot tell apart from one.
+Interfaces declared in other frontend modules, and route bodies typed inline
+rather than through an exported interface, are outside the scan.
 
 Invariants
 ----------
 
 F1  Every property of an enrolled component schema is declared on its interface.
 F2  An enrolled interface declares no property its component schema omits.
-F3  Every allowlist entry names an enrolled interface and a property that still
-    diverges on the side the entry names, and every pinned reference is still an
-    unenrolled component referenced by the property the pin names.
-F4  Every enrolled interface and component resolves, the response, request and
-    stream enrollments are disjoint and map one interface to each component, the
-    stream enrollment is what the event-stream contract reaches, each
-    per-interface gate iterates the whole of its enrollment, and enough is
-    compared in each to mean something (vacuity floors).
+F3  Every allowlist entry names an interface enrolled under its specification and
+    a property that still diverges on the side the entry names, and every pinned
+    reference is still an unenrolled component referenced by the property the pin
+    names.
+F4  Every enrolled interface and component resolves; within each specification
+    the response, request and stream enrollments are disjoint and map one
+    interface to each component, and the stream enrollment is what that
+    specification's event-stream contract reaches; each per-interface gate
+    iterates the whole of its enrollment across both specifications; and enough
+    is compared in each to mean something (vacuity floors, per specification).
 F5  The comparison fires on a removed declaration, including one inherited
-    through a heritage clause and one on an interface other interfaces reference;
+    through a heritage clause, one on an interface other interfaces reference, and
+    one on an interface enrolled under both specifications;
     the optionality checks fire on a relaxed required member and, for streams, on
     either direction; the reference check fires on a member that stops naming
     its component; the export check fires on an interface neither enrolled nor
     excluded; and the staleness checks fire on a stale entry.
 F6  Every property a request component requires is non-optional on its interface.
 F7  A stream interface marks a member optional exactly when its component does.
-F8  A member whose schema references an enrolled component names that
-    component's interface in its type.
+F8  A member whose schema references an enrolled component names the interface
+    enrolled for that component in the same specification.
 F9  Every component with properties that an enrolled component references is
-    enrolled, or pinned with a reason.
+    enrolled under the same specification, or pinned with a reason.
 F10 Every exported interface in the source is enrolled or excluded with a reason,
     never both, and every exclusion names an interface the source still exports.
 
@@ -142,6 +168,7 @@ behaviour on synthetic sources.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection, Iterable
 from pathlib import Path
 from typing import Final, Literal
 
@@ -151,87 +178,141 @@ import yaml
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 TYPES_TS_PATH = _REPO_ROOT / "app" / "src" / "api" / "types.ts"
 SAGE_CORE_SPEC_PATH = _REPO_ROOT / "docs" / "fs" / "sage" / "sage_core_api.openapi.yaml"
+CAS_APP_SPEC_PATH = _REPO_ROOT / "docs" / "fs" / "cas_app_api.openapi.yaml"
 
-# Response interfaces: TypeScript interface name -> SAGE Core component schema name.
-ENROLLED: Final[dict[str, str]] = {
-    "AdapterInfo": "VaultAdapterInfo",
-    "BulkLifecycleItemResult": "BulkLifecycleItemResult",
-    "BulkLifecycleResponse": "BulkLifecycleResponse",
-    "BulkLinkItemResult": "BulkLinkItemResult",
-    "BulkLinkResponse": "BulkLinkResponse",
-    "BulkMetadataItemResult": "BulkMetadataItemResult",
-    "BulkMetadataResponse": "BulkMetadataResponse",
-    "ChainEntry": "ChainEntry",
-    "ChainResponse": "ChainResponse",
-    "DiscoverHit": "DiscoverHit",
-    "DiscoverResponse": "DiscoverResponse",
-    "DocTypeEntry": "VaultDocTypeEntry",
-    "Document": "Document",
-    "DocumentDownloadUrlResponse": "DocumentDownloadUrlResponse",
-    "DocumentSummary": "DocumentSummary",
-    "Edge": "Edge",
-    "ExtractedField": "ExtractedField",
-    "FieldChange": "FieldChange",
-    "HealthIndicators": "HealthIndicators",
-    "LastOptimizeSummary": "LastOptimizeSummary",
-    "LifecycleState": "VaultLifecycleState",
-    "OpenDocumentResponse": "OpenDocumentResponse",
-    "OptimizeContentStoreReport": "OptimizeContentStoreReport",
-    "PendingMetadata": "PendingMetadataItem",
-    "ReabstractReport": "ReabstractReport",
-    "ReabstractStartedResponse": "ReabstractStartedResponse",
-    "ReadMeta": "ReadMeta",
-    "ResolutionPathEntry": "ResolutionPathEntry",
-    "StagingEdge": "StagingEdge",
-    "StagingEdgeConfirmResponse": "StagingEdgeConfirmResponse",
-    "StagingEdgeDismissResponse": "StagingEdgeDismissResponse",
-    "TraversalNode": "TraversalNode",
-    "TraverseResponse": "TraverseResponse",
-    "UpdateConfigResponse": "UpdateVaultConfigResponse",
-    "VaultConfigPreview": "VaultConfigPreview",
-    "VaultStats": "VaultStatsResponse",
-    "VaultSummary": "VaultSummary",
+# The published specifications, each a separate namespace of component names.
+Spec = Literal["core", "app"]
+SPEC_PATHS: Final[dict[Spec, Path]] = {"core": SAGE_CORE_SPEC_PATH, "app": CAS_APP_SPEC_PATH}
+
+# An enrollment: specification -> {TypeScript interface name -> component schema name}.
+Enrollment = dict[Spec, dict[str, str]]
+
+# Response interfaces.
+ENROLLED: Final[Enrollment] = {
+    "core": {
+        "AdapterInfo": "VaultAdapterInfo",
+        "BulkLifecycleItemResult": "BulkLifecycleItemResult",
+        "BulkLifecycleResponse": "BulkLifecycleResponse",
+        "BulkLinkItemResult": "BulkLinkItemResult",
+        "BulkLinkResponse": "BulkLinkResponse",
+        "BulkMetadataItemResult": "BulkMetadataItemResult",
+        "BulkMetadataResponse": "BulkMetadataResponse",
+        "ChainEntry": "ChainEntry",
+        "ChainResponse": "ChainResponse",
+        "DiscoverHit": "DiscoverHit",
+        "DiscoverResponse": "DiscoverResponse",
+        "DocTypeEntry": "VaultDocTypeEntry",
+        "Document": "Document",
+        "DocumentDownloadUrlResponse": "DocumentDownloadUrlResponse",
+        "DocumentSummary": "DocumentSummary",
+        "Edge": "Edge",
+        "ExtractedField": "ExtractedField",
+        "FieldChange": "FieldChange",
+        "HealthIndicators": "HealthIndicators",
+        "LastOptimizeSummary": "LastOptimizeSummary",
+        "LifecycleState": "VaultLifecycleState",
+        "OpenDocumentResponse": "OpenDocumentResponse",
+        "OptimizeContentStoreReport": "OptimizeContentStoreReport",
+        "PendingMetadata": "PendingMetadataItem",
+        "ReabstractReport": "ReabstractReport",
+        "ReabstractStartedResponse": "ReabstractStartedResponse",
+        "ReadMeta": "ReadMeta",
+        "ResolutionPathEntry": "ResolutionPathEntry",
+        "StagingEdge": "StagingEdge",
+        "StagingEdgeConfirmResponse": "StagingEdgeConfirmResponse",
+        "StagingEdgeDismissResponse": "StagingEdgeDismissResponse",
+        "TraversalNode": "TraversalNode",
+        "TraverseResponse": "TraverseResponse",
+        "UpdateConfigResponse": "UpdateVaultConfigResponse",
+        "VaultConfigPreview": "VaultConfigPreview",
+        "VaultStats": "VaultStatsResponse",
+        "VaultSummary": "VaultSummary",
+    },
+    "app": {
+        "LoginChallenge": "LoginChallengeResponse",
+        "ScanResponse": "ScanResponse",
+        "ScanResultItem": "ScanResultResponse",
+        "SessionInfo": "SessionInfoResponse",
+        "UserClaims": "UserClaims",
+    },
 }
 
 # Request interfaces, which F6 additionally holds to their components' required lists.
-ENROLLED_REQUESTS: Final[dict[str, str]] = {
-    "BatchIngestFileMetadata": "BatchIngestFileMetadata",
-    "BatchIngestUploadMetadata": "BatchIngestUploadMetadata",
-    "BulkLifecycleItem": "BulkLifecycleItem",
-    "BulkLifecycleRequest": "BulkLifecycleRequest",
-    "BulkLinkItem": "BulkLinkItem",
-    "BulkLinkRequest": "BulkLinkRequest",
-    "BulkMetadataItem": "BulkMetadataItem",
-    "BulkMetadataRequest": "BulkMetadataRequest",
-    "CreateVaultRequest": "CreateVaultRequest",
-    "DiscoverRequest": "DiscoverRequest",
-    "LinkRequest": "LinkRequest",
-    "ListFieldPatch": "ListFieldPatch",
-    "ReabstractRequest": "ReabstractRequest",
-    "RelocationPointer": "RelocationPointer",
-    "RetrievalFilters": "RetrievalFilters",
-    "Tier3Patch": "Tier3Patch",
-    "TraverseRequest": "TraverseRequest",
-    "UpdateMetadataRequest": "UpdateMetadataRequest",
-    "UpdateVaultConfigRequest": "UpdateVaultConfigRequest",
+ENROLLED_REQUESTS: Final[Enrollment] = {
+    "core": {
+        "BatchIngestFileMetadata": "BatchIngestFileMetadata",
+        "BatchIngestUploadMetadata": "BatchIngestUploadMetadata",
+        "BulkLifecycleItem": "BulkLifecycleItem",
+        "BulkLifecycleRequest": "BulkLifecycleRequest",
+        "BulkLinkItem": "BulkLinkItem",
+        "BulkLinkRequest": "BulkLinkRequest",
+        "BulkMetadataItem": "BulkMetadataItem",
+        "BulkMetadataRequest": "BulkMetadataRequest",
+        "CreateVaultRequest": "CreateVaultRequest",
+        "DiscoverRequest": "DiscoverRequest",
+        "LinkRequest": "LinkRequest",
+        "ListFieldPatch": "ListFieldPatch",
+        "ReabstractRequest": "ReabstractRequest",
+        "RelocationPointer": "RelocationPointer",
+        "RetrievalFilters": "RetrievalFilters",
+        "Tier3Patch": "Tier3Patch",
+        "TraverseRequest": "TraverseRequest",
+        "UpdateMetadataRequest": "UpdateMetadataRequest",
+        "UpdateVaultConfigRequest": "UpdateVaultConfigRequest",
+    },
+    "app": {
+        "IngestFileItem": "IngestFileItem",
+        "ParsedMetadataItem": "ParsedMetadata",
+    },
 }
 
 # Stream interfaces, which F7 holds to their components' required lists in both
-# directions. F4 holds this set to what the event-stream contract reaches.
-ENROLLED_STREAMS: Final[dict[str, str]] = {
-    "BatchDocumentsCreated": "DocumentsCreated",
-    "BatchIngestFileError": "BatchIngestFileError",
-    "BatchProgressEvent": "ProgressEvent",
-    "BatchSummaryEvent": "SummaryEvent",
-    "DocTypeRequirements": "DocTypeRequirements",
-    "EdgeWarning": "EdgeWarning",
-    "IngestPreview": "IngestPreview",
-    "ReabstractProgressEvent": "ReabstractProgressEvent",
-    "ReabstractReportEntry": "ReabstractReportEntry",
-    "ReabstractSummaryEvent": "ReabstractSummaryEvent",
+# directions. F4 holds each specification's set to what its event-stream contract reaches.
+ENROLLED_STREAMS: Final[Enrollment] = {
+    "core": {
+        "BatchDocumentsCreated": "DocumentsCreated",
+        "BatchIngestFileError": "BatchIngestFileError",
+        "BatchProgressEvent": "ProgressEvent",
+        "BatchSummaryEvent": "SummaryEvent",
+        "DocTypeRequirements": "DocTypeRequirements",
+        "EdgeWarning": "EdgeWarning",
+        "IngestPreview": "IngestPreview",
+        "ReabstractProgressEvent": "ReabstractProgressEvent",
+        "ReabstractReportEntry": "ReabstractReportEntry",
+        "ReabstractSummaryEvent": "ReabstractSummaryEvent",
+    },
+    "app": {
+        "BatchIngestFileError": "BatchIngestFileError",
+        "DocTypeRequirements": "DocTypeRequirements",
+        "EdgeWarning": "EdgeWarning",
+        "IngestPreview": "IngestPreview",
+        "IngestProgressEvent": "ProgressEvent",
+        "IngestSummaryEvent": "SummaryEvent",
+    },
 }
 
-ALL_ENROLLED: Final[dict[str, str]] = {**ENROLLED, **ENROLLED_REQUESTS, **ENROLLED_STREAMS}
+
+def merge_enrollments(enrollments: Iterable[Enrollment]) -> Enrollment:
+    """Combine enrollments specification by specification."""
+    merged: Enrollment = {}
+    for enrollment in enrollments:
+        for spec, enrolled in enrollment.items():
+            merged.setdefault(spec, {}).update(enrolled)
+    return merged
+
+
+def pairs(enrollment: Enrollment) -> list[tuple[Spec, str]]:
+    """The ``(specification, interface)`` pairs of an enrollment, in a stable order."""
+    return sorted(
+        (spec, interface) for spec, enrolled in enrollment.items() for interface in enrolled
+    )
+
+
+def pair_ids(enrollment: Enrollment) -> list[str]:
+    return [f"{spec}-{interface}" for spec, interface in pairs(enrollment)]
+
+
+ALL_ENROLLED: Final[Enrollment] = merge_enrollments((ENROLLED, ENROLLED_REQUESTS, ENROLLED_STREAMS))
 
 # Which side of a divergence carries the property: published by the schema only, or
 # declared by the interface only.
@@ -242,40 +323,34 @@ _DOC_ID_ALIAS_REASON: Final[str] = (
     "two per item, so declaring both would type-permit a body the server refuses"
 )
 
-# (interface, property, side) -> the reason the divergence is kept rather than closed.
-# The side is part of the key so an entry justifying one direction cannot silence
-# the other: a frontend-only field that later becomes schema-only is drift again.
-# An entry is an admission that the frontend and the published contract disagree
-# about a shape, and should be justified in review.
-KNOWN_FRONTEND_TYPE_DIVERGENCE: Final[dict[tuple[str, str, Side], str]] = {
-    ("BulkLifecycleItem", "doc_id", "schema_only"): _DOC_ID_ALIAS_REASON,
-    ("BulkMetadataItem", "doc_id", "schema_only"): _DOC_ID_ALIAS_REASON,
+# (specification, interface, property, side) -> the reason the divergence is kept rather
+# than closed. The side is part of the key so an entry justifying one direction cannot
+# silence the other: a frontend-only field that later becomes schema-only is drift
+# again. The specification is part of it because an interface may mirror a component in
+# each, and a divergence from one is not a divergence from the other. An entry is an
+# admission that the frontend and the published contract disagree about a shape, and
+# should be justified in review.
+KNOWN_FRONTEND_TYPE_DIVERGENCE: Final[dict[tuple[Spec, str, str, Side], str]] = {
+    ("core", "BulkLifecycleItem", "doc_id", "schema_only"): _DOC_ID_ALIAS_REASON,
+    ("core", "BulkMetadataItem", "doc_id", "schema_only"): _DOC_ID_ALIAS_REASON,
 }
 
 _VAULT_CONFIG_FILE_REASON: Final[str] = (
     "a section of the vault configuration file; the config read route publishes it as an "
     "open object governed by vault_config.schema.json, not as a component"
 )
-_APP_API_REASON: Final[str] = (
-    "mirrors a component of the CAS App API specification, which this gate does not read"
-)
 
-# Exported interfaces that mirror no SAGE Core component, with the reason. F10 holds
-# every exported interface to being enrolled or named here.
+# Exported interfaces that mirror no published component, with the reason. F10 holds
+# every exported interface to being enrolled under some specification or named here.
 UNENROLLED_INTERFACES: Final[dict[str, str]] = {
     "BulkItemErrorEnvelope": (
         "the per-item error of a bulk result, which the result components publish as an "
         "inline object rather than a component"
     ),
     "DocTypeConfig": _VAULT_CONFIG_FILE_REASON,
-    "IngestProgressEvent": _APP_API_REASON,
-    "IngestSummaryEvent": _APP_API_REASON,
     "LifecycleConfig": _VAULT_CONFIG_FILE_REASON,
     "LifecycleStateConfig": _VAULT_CONFIG_FILE_REASON,
     "LifecycleTransitionConfig": _VAULT_CONFIG_FILE_REASON,
-    "ParsedMetadataItem": _APP_API_REASON,
-    "ScanResponse": _APP_API_REASON,
-    "ScanResultItem": _APP_API_REASON,
     "VaultAbstractionConfig": _VAULT_CONFIG_FILE_REASON,
     "VaultConfig": _VAULT_CONFIG_FILE_REASON,
     "VaultIdentityConfig": _VAULT_CONFIG_FILE_REASON,
@@ -286,29 +361,31 @@ _DOCUMENTS_TARGET_ONLY_REASON: Final[str] = (
     "documents target, whose rows are DiscoverHit"
 )
 
-# (interface, property, component) -> the reason a component the property references has
-# no enrolled mirror. Each entry marks where F8 and F9 stop reaching.
-UNGATED_REFERENCED_COMPONENTS: Final[dict[tuple[str, str, str], str]] = {
-    ("DiscoverHit", "document", "DocumentSummaryLight"): (
+# (specification, interface, property, component) -> the reason a component the property
+# references has no enrolled mirror in that specification. Each entry marks where F8 and
+# F9 stop reaching.
+UNGATED_REFERENCED_COMPONENTS: Final[dict[tuple[Spec, str, str, str], str]] = {
+    ("core", "DiscoverHit", "document", "DocumentSummaryLight"): (
         "the light projection is returned only to a request that leaves response_mode "
         "unset or asks for light, and every discover request whose rows the frontend "
         "reads asks for full"
     ),
-    ("DiscoverResponse", "results", "EdgeHit"): _DOCUMENTS_TARGET_ONLY_REASON,
-    ("DiscoverResponse", "results", "FacetHit"): _DOCUMENTS_TARGET_ONLY_REASON,
+    ("core", "DiscoverResponse", "results", "EdgeHit"): _DOCUMENTS_TARGET_ONLY_REASON,
+    ("core", "DiscoverResponse", "results", "FacetHit"): _DOCUMENTS_TARGET_ONLY_REASON,
 }
 
-# Vacuity floors for F4, each set below today's count so ordinary movement does not
-# trip it while a lookup returning nothing does. The response pairs compare 227
-# schema properties, the request pairs 120, and the stream pairs 71; the request
-# components require 16; F8 checks 46 references to enrolled components; and the
-# event-stream descriptions name 4 event components.
-MIN_PROPERTIES_COMPARED: Final[int] = 170
-MIN_REQUEST_PROPERTIES_COMPARED: Final[int] = 85
-MIN_STREAM_PROPERTIES_COMPARED: Final[int] = 55
-MIN_REQUIRED_PROPERTIES_COMPARED: Final[int] = 12
-MIN_REFERENCES_CHECKED: Final[int] = 36
-MIN_EVENT_STREAM_ROOTS: Final[int] = 3
+# Vacuity floors for F4, per specification, each set below today's count so ordinary
+# movement does not trip it while a lookup returning nothing does. In the Core API the
+# response pairs compare 227 schema properties, the request pairs 120, and the stream
+# pairs 71; the request components require 16; F8 checks 46 references to enrolled
+# components; and the event-stream descriptions name 4 event components. In the App API
+# those counts are 16, 9, 50, 3, 8 and 2.
+MIN_PROPERTIES_COMPARED: Final[dict[Spec, int]] = {"core": 170, "app": 12}
+MIN_REQUEST_PROPERTIES_COMPARED: Final[dict[Spec, int]] = {"core": 85, "app": 7}
+MIN_STREAM_PROPERTIES_COMPARED: Final[dict[Spec, int]] = {"core": 55, "app": 40}
+MIN_REQUIRED_PROPERTIES_COMPARED: Final[dict[Spec, int]] = {"core": 12, "app": 2}
+MIN_REFERENCES_CHECKED: Final[dict[Spec, int]] = {"core": 36, "app": 6}
+MIN_EVENT_STREAM_ROOTS: Final[dict[Spec, int]] = {"core": 3, "app": 1}
 
 
 # ---------------------------------------------------------------------------
@@ -395,7 +472,7 @@ def exported_interfaces(source: str) -> set[str]:
 
 
 def unaccounted_interfaces(
-    source: str, enrolled: dict[str, str], excluded: dict[str, str]
+    source: str, enrolled: Collection[str], excluded: dict[str, str]
 ) -> tuple[set[str], set[str], set[str]]:
     """Return ``(unaccounted, both, stale)`` for the exports of ``source``.
 
@@ -644,29 +721,32 @@ def relaxed_required(members: dict[str, bool], required: set[str]) -> set[str]:
 
 
 def stale_entries(
-    allowlist: dict[tuple[str, str, Side], str],
+    allowlist: dict[tuple[Spec, str, str, Side], str],
     interface_props: dict[str, set[str]],
-    schema_props: dict[str, set[str]],
+    schema_props: dict[tuple[Spec, str], set[str]],
 ) -> list[str]:
-    """Allowlist entries that name no enrolled interface or no longer diverge on their side."""
+    """Allowlist entries that name no enrolled pair or no longer diverge on their side.
+
+    ``schema_props`` is keyed by ``(specification, interface)``, so an entry names an
+    enrolled pair only when the interface is enrolled under the specification it names.
+    """
     stale: list[str] = []
-    for interface, prop, side in sorted(allowlist):
-        if interface not in interface_props or interface not in schema_props:
-            stale.append(f"{interface}.{prop}: {interface!r} is not enrolled")
+    for spec, interface, prop, side in sorted(allowlist):
+        label = f"{spec}:{interface}.{prop}"
+        if interface not in interface_props or (spec, interface) not in schema_props:
+            stale.append(f"{label}: {interface!r} is not enrolled under {spec!r}")
             continue
         schema_only, interface_only = divergence(
-            interface_props[interface], schema_props[interface]
+            interface_props[interface], schema_props[(spec, interface)]
         )
         sides: dict[Side, set[str]] = {"schema_only": schema_only, "interface_only": interface_only}
         if prop in sides[side]:
             continue
         other: Side = "interface_only" if side == "schema_only" else "schema_only"
         if prop in sides[other]:
-            stale.append(
-                f"{interface}.{prop} ({side}): now diverges as {other}; re-examine the entry"
-            )
+            stale.append(f"{label} ({side}): now diverges as {other}; re-examine the entry")
         else:
-            stale.append(f"{interface}.{prop} ({side}): no longer diverges; remove the entry")
+            stale.append(f"{label} ({side}): no longer diverges; remove the entry")
     return stale
 
 
@@ -789,38 +869,70 @@ def unnamed_references(
 
 
 def unpinned_references(
-    spec: dict, enrolled: dict[str, str], pins: dict[tuple[str, str, str], str]
-) -> set[tuple[str, str, str]]:
-    """``(interface, property, component)`` references to an object component with no mirror."""
-    enrolled_components = set(enrolled.values())
-    findings: set[tuple[str, str, str]] = set()
-    for interface, component in enrolled.items():
-        for prop, referenced in component_references(spec, component).items():
-            for target in referenced:
-                key = (interface, prop, target)
-                if (
-                    target not in enrolled_components
-                    and carries_properties(spec, target)
-                    and key not in pins
-                ):
-                    findings.add(key)
+    specs: dict[Spec, dict],
+    enrollment: Enrollment,
+    pins: dict[tuple[Spec, str, str, str], str],
+) -> set[tuple[Spec, str, str, str]]:
+    """``(specification, interface, property, component)`` references with no mirror.
+
+    A reference is closed only by a mirror enrolled under the specification that
+    publishes both components: a same-named component in another specification is a
+    different component.
+    """
+    findings: set[tuple[Spec, str, str, str]] = set()
+    for spec, enrolled in enrollment.items():
+        enrolled_components = set(enrolled.values())
+        for interface, component in enrolled.items():
+            for prop, referenced in component_references(specs[spec], component).items():
+                for target in referenced:
+                    key = (spec, interface, prop, target)
+                    if (
+                        target not in enrolled_components
+                        and carries_properties(specs[spec], target)
+                        and key not in pins
+                    ):
+                        findings.add(key)
     return findings
 
 
 def stale_reference_pins(
-    spec: dict, enrolled: dict[str, str], pins: dict[tuple[str, str, str], str]
+    specs: dict[Spec, dict],
+    enrollment: Enrollment,
+    pins: dict[tuple[Spec, str, str, str], str],
 ) -> list[str]:
-    """Pins that name no enrolled interface, no live reference, or a component now enrolled."""
+    """Pins that name no enrolled pair, no live reference, or a component now enrolled."""
     stale: list[str] = []
-    for interface, prop, target in sorted(pins):
-        label = f"{interface}.{prop} -> {target}"
+    for spec, interface, prop, target in sorted(pins):
+        label = f"{spec}:{interface}.{prop} -> {target}"
+        enrolled = enrollment.get(spec, {})
         if interface not in enrolled:
-            stale.append(f"{label}: {interface!r} is not enrolled")
-        elif target not in component_references(spec, enrolled[interface]).get(prop, set()):
+            stale.append(f"{label}: {interface!r} is not enrolled under {spec!r}")
+        elif target not in component_references(specs[spec], enrolled[interface]).get(prop, set()):
             stale.append(f"{label}: the property no longer references it; remove the pin")
         elif target in enrolled.values():
             stale.append(f"{label}: the component is enrolled; remove the pin")
     return stale
+
+
+def enrollment_conflicts(enrollments: Iterable[Enrollment]) -> list[str]:
+    """Within each specification: interfaces enrolled under more than one rule, and
+    components mirrored by more than one interface.
+
+    Each specification is its own namespace, so an interface may mirror one component in
+    each, and two specifications may publish components of the same name.
+    """
+    kinds = list(enrollments)
+    conflicts: list[str] = []
+    for spec in sorted({spec for enrollment in kinds for spec in enrollment}):
+        interfaces = [i for enrollment in kinds for i in enrollment.get(spec, {})]
+        repeated = sorted({i for i in interfaces if interfaces.count(i) > 1})
+        if repeated:
+            conflicts.append(f"{spec}: interfaces enrolled under more than one rule: {repeated}")
+        components = [c for enrollment in kinds for c in enrollment.get(spec, {}).values()]
+        shared = sorted({c for c in components if components.count(c) > 1})
+        if shared:
+            conflicts.append(f"{spec}: components mirrored by more than one interface: {shared}")
+    return conflicts
 
 
 # ---------------------------------------------------------------------------
@@ -834,19 +946,33 @@ def types_source() -> str:
 
 
 @pytest.fixture(scope="module")
-def core_spec() -> dict:
-    with SAGE_CORE_SPEC_PATH.open(encoding="utf-8") as f:
-        return yaml.safe_load(f)
+def specs() -> dict[Spec, dict]:
+    loaded: dict[Spec, dict] = {}
+    for spec, path in SPEC_PATHS.items():
+        with path.open(encoding="utf-8") as f:
+            loaded[spec] = yaml.safe_load(f)
+    return loaded
+
+
+def enrolled_interfaces(enrollment: Enrollment) -> set[str]:
+    """Every interface an enrollment names, under any specification."""
+    return {interface for enrolled in enrollment.values() for interface in enrolled}
 
 
 @pytest.fixture(scope="module")
 def interface_members(types_source: str) -> dict[str, dict[str, bool]]:
-    return {interface: read_interface(types_source, interface) for interface in ALL_ENROLLED}
+    return {
+        interface: read_interface(types_source, interface)
+        for interface in enrolled_interfaces(ALL_ENROLLED)
+    }
 
 
 @pytest.fixture(scope="module")
 def interface_types(types_source: str) -> dict[str, dict[str, frozenset[str]]]:
-    return {interface: read_interface_types(types_source, interface) for interface in ALL_ENROLLED}
+    return {
+        interface: read_interface_types(types_source, interface)
+        for interface in enrolled_interfaces(ALL_ENROLLED)
+    }
 
 
 @pytest.fixture(scope="module")
@@ -855,80 +981,100 @@ def interface_props(interface_members: dict[str, dict[str, bool]]) -> dict[str, 
 
 
 @pytest.fixture(scope="module")
-def schema_props(core_spec: dict) -> dict[str, set[str]]:
+def schema_props(specs: dict[Spec, dict]) -> dict[tuple[Spec, str], set[str]]:
     return {
-        interface: component_properties(core_spec, component)
-        for interface, component in ALL_ENROLLED.items()
+        (spec, interface): component_properties(specs[spec], ALL_ENROLLED[spec][interface])
+        for spec, interface in pairs(ALL_ENROLLED)
     }
 
 
 def allowlisted(
-    interface: str, side: Side, allowlist: dict[tuple[str, str, Side], str]
+    spec: Spec,
+    interface: str,
+    side: Side,
+    allowlist: dict[tuple[Spec, str, str, Side], str],
 ) -> set[str]:
-    """The properties ``allowlist`` exempts on ``interface`` for one side of a divergence."""
+    """The properties ``allowlist`` exempts on one enrolled pair for one side of a divergence."""
     return {
-        prop for (name, prop, entry_side) in allowlist if name == interface and entry_side == side
+        prop
+        for (entry_spec, name, prop, entry_side) in allowlist
+        if entry_spec == spec and name == interface and entry_side == side
     }
 
 
-def unexempted_schema_only(source: str, spec: dict) -> dict[str, set[str]]:
-    """F1's findings over ``source``: each enrolled interface with a non-exempt omission."""
-    findings: dict[str, set[str]] = {}
-    for interface, component in ALL_ENROLLED.items():
+def unexempted_schema_only(
+    source: str,
+    specs: dict[Spec, dict],
+    enrollment: Enrollment = ALL_ENROLLED,
+    allowlist: dict[tuple[Spec, str, str, Side], str] = KNOWN_FRONTEND_TYPE_DIVERGENCE,
+) -> dict[tuple[Spec, str], set[str]]:
+    """F1's findings over ``source``: each enrolled pair with a non-exempt omission."""
+    findings: dict[tuple[Spec, str], set[str]] = {}
+    for spec, interface in pairs(enrollment):
         schema_only, _ = divergence(
-            set(read_interface(source, interface)), component_properties(spec, component)
+            set(read_interface(source, interface)),
+            component_properties(specs[spec], enrollment[spec][interface]),
         )
-        missing = schema_only - allowlisted(
-            interface, "schema_only", KNOWN_FRONTEND_TYPE_DIVERGENCE
-        )
+        missing = schema_only - allowlisted(spec, interface, "schema_only", allowlist)
         if missing:
-            findings[interface] = missing
+            findings[(spec, interface)] = missing
     return findings
 
 
-def relaxed_request_members(source: str, spec: dict) -> dict[str, set[str]]:
+def relaxed_request_members(
+    source: str, specs: dict[Spec, dict], enrollment: Enrollment = ENROLLED_REQUESTS
+) -> dict[tuple[Spec, str], set[str]]:
     """F6's findings over ``source``: each enrolled request with a relaxed required member."""
-    findings: dict[str, set[str]] = {}
-    for interface, component in ENROLLED_REQUESTS.items():
+    findings: dict[tuple[Spec, str], set[str]] = {}
+    for spec, interface in pairs(enrollment):
         relaxed = relaxed_required(
-            read_interface(source, interface), component_required(spec, component)
+            read_interface(source, interface),
+            component_required(specs[spec], enrollment[spec][interface]),
         )
         if relaxed:
-            findings[interface] = relaxed
+            findings[(spec, interface)] = relaxed
     return findings
 
 
 def interface_for_component(enrolled: dict[str, str]) -> dict[str, str]:
-    """Invert an enrollment to ``{component: interface}``; F4 holds it to one-to-one."""
+    """Invert one specification's enrollment to ``{component: interface}``.
+
+    F4 holds each specification's enrollment to one-to-one, so the inversion is taken per
+    specification: across two, one component name can name two components.
+    """
     return {component: interface for interface, component in enrolled.items()}
 
 
-def stream_optionality_findings(source: str, spec: dict) -> dict[str, set[str]]:
-    """F7's findings over ``source``: each stream interface with a mismatched member."""
-    findings: dict[str, set[str]] = {}
-    for interface, component in ENROLLED_STREAMS.items():
+def stream_optionality_findings(
+    source: str, specs: dict[Spec, dict], enrollment: Enrollment = ENROLLED_STREAMS
+) -> dict[tuple[Spec, str], set[str]]:
+    """F7's findings over ``source``: each stream pair with a mismatched member."""
+    findings: dict[tuple[Spec, str], set[str]] = {}
+    for spec, interface in pairs(enrollment):
+        component = enrollment[spec][interface]
         relaxed, tightened = optionality_mismatch(
             read_interface(source, interface),
-            component_properties(spec, component),
-            component_required(spec, component),
+            component_properties(specs[spec], component),
+            component_required(specs[spec], component),
         )
         if relaxed | tightened:
-            findings[interface] = relaxed | tightened
+            findings[(spec, interface)] = relaxed | tightened
     return findings
 
 
-def unnamed_reference_findings(source: str, spec: dict) -> dict[str, set[str]]:
-    """F8's findings over ``source``: each enrolled interface with an unnamed reference."""
-    interface_for = interface_for_component(ALL_ENROLLED)
-    findings: dict[str, set[str]] = {}
-    for interface, component in ALL_ENROLLED.items():
+def unnamed_reference_findings(
+    source: str, specs: dict[Spec, dict], enrollment: Enrollment = ALL_ENROLLED
+) -> dict[tuple[Spec, str], set[str]]:
+    """F8's findings over ``source``: each enrolled pair with an unnamed reference."""
+    findings: dict[tuple[Spec, str], set[str]] = {}
+    for spec, interface in pairs(enrollment):
         unnamed = unnamed_references(
             read_interface_types(source, interface),
-            component_references(spec, component),
-            interface_for,
+            component_references(specs[spec], enrollment[spec][interface]),
+            interface_for_component(enrollment[spec]),
         )
         if unnamed:
-            findings[interface] = set(unnamed)
+            findings[(spec, interface)] = set(unnamed)
     return findings
 
 
@@ -977,154 +1123,170 @@ def rewrite_member(source: str, interface: str, member: str, replacement: str) -
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("interface", sorted(ALL_ENROLLED))
+@pytest.mark.parametrize(("spec", "interface"), pairs(ALL_ENROLLED), ids=pair_ids(ALL_ENROLLED))
 def test_schema_properties_are_declared_on_the_interface(
+    spec: Spec,
     interface: str,
     interface_props: dict[str, set[str]],
-    schema_props: dict[str, set[str]],
+    schema_props: dict[tuple[Spec, str], set[str]],
 ) -> None:
     """F1: a property the published schema declares is declared on the interface."""
-    schema_only, _ = divergence(interface_props[interface], schema_props[interface])
+    schema_only, _ = divergence(interface_props[interface], schema_props[(spec, interface)])
     missing = sorted(
-        schema_only - allowlisted(interface, "schema_only", KNOWN_FRONTEND_TYPE_DIVERGENCE)
+        schema_only - allowlisted(spec, interface, "schema_only", KNOWN_FRONTEND_TYPE_DIVERGENCE)
     )
     assert not missing, (
-        f"{ALL_ENROLLED[interface]} publishes properties the TypeScript {interface} interface "
-        f"does not declare: {missing}. The published schema is authoritative; "
-        f"declare them in {TYPES_TS_PATH.name}."
+        f"{ALL_ENROLLED[spec][interface]} in {SPEC_PATHS[spec].name} publishes properties the "
+        f"TypeScript {interface} interface does not declare: {missing}. The published schema "
+        f"is authoritative; declare them in {TYPES_TS_PATH.name}."
     )
 
 
-@pytest.mark.parametrize("interface", sorted(ALL_ENROLLED))
+@pytest.mark.parametrize(("spec", "interface"), pairs(ALL_ENROLLED), ids=pair_ids(ALL_ENROLLED))
 def test_interface_declares_no_property_absent_from_the_schema(
+    spec: Spec,
     interface: str,
     interface_props: dict[str, set[str]],
-    schema_props: dict[str, set[str]],
+    schema_props: dict[tuple[Spec, str], set[str]],
 ) -> None:
     """F2: a property only the interface declares is not supplied by the wire."""
-    _, interface_only = divergence(interface_props[interface], schema_props[interface])
+    _, interface_only = divergence(interface_props[interface], schema_props[(spec, interface)])
     extra = sorted(
-        interface_only - allowlisted(interface, "interface_only", KNOWN_FRONTEND_TYPE_DIVERGENCE)
+        interface_only
+        - allowlisted(spec, interface, "interface_only", KNOWN_FRONTEND_TYPE_DIVERGENCE)
     )
     assert not extra, (
-        f"The TypeScript {interface} interface declares properties {ALL_ENROLLED[interface]} "
-        f"does not publish: {extra}. Remove them, or add a KNOWN_FRONTEND_TYPE_DIVERGENCE entry "
-        "naming why a frontend-only field exists."
+        f"The TypeScript {interface} interface declares properties "
+        f"{ALL_ENROLLED[spec][interface]} in {SPEC_PATHS[spec].name} does not publish: {extra}. "
+        "Remove them, or add a KNOWN_FRONTEND_TYPE_DIVERGENCE entry naming why a frontend-only "
+        "field exists."
     )
 
 
 def test_divergence_allowlist_has_no_stale_entries(
     interface_props: dict[str, set[str]],
-    schema_props: dict[str, set[str]],
+    schema_props: dict[tuple[Spec, str], set[str]],
 ) -> None:
     """F3: every allowlist entry still names a live divergence."""
     stale = stale_entries(KNOWN_FRONTEND_TYPE_DIVERGENCE, interface_props, schema_props)
     assert not stale, "stale KNOWN_FRONTEND_TYPE_DIVERGENCE entries:\n" + "\n".join(stale)
 
 
-@pytest.mark.parametrize("interface", sorted(ENROLLED_REQUESTS))
+@pytest.mark.parametrize(
+    ("spec", "interface"), pairs(ENROLLED_REQUESTS), ids=pair_ids(ENROLLED_REQUESTS)
+)
 def test_required_request_properties_are_not_optional_on_the_interface(
+    spec: Spec,
     interface: str,
     interface_members: dict[str, dict[str, bool]],
-    core_spec: dict,
+    specs: dict[Spec, dict],
 ) -> None:
     """F6: a property the request component requires is non-optional on the interface."""
+    component = ENROLLED_REQUESTS[spec][interface]
     relaxed = sorted(
-        relaxed_required(
-            interface_members[interface],
-            component_required(core_spec, ENROLLED_REQUESTS[interface]),
-        )
+        relaxed_required(interface_members[interface], component_required(specs[spec], component))
     )
     assert not relaxed, (
-        f"{ENROLLED_REQUESTS[interface]} requires properties the TypeScript {interface} interface "
-        f"marks optional: {relaxed}. The server refuses a body without them; "
+        f"{component} in {SPEC_PATHS[spec].name} requires properties the TypeScript {interface} "
+        f"interface marks optional: {relaxed}. The server refuses a body without them; "
         f"remove the '?' in {TYPES_TS_PATH.name}."
     )
 
 
-@pytest.mark.parametrize("interface", sorted(ENROLLED_STREAMS))
+@pytest.mark.parametrize(
+    ("spec", "interface"), pairs(ENROLLED_STREAMS), ids=pair_ids(ENROLLED_STREAMS)
+)
 def test_stream_member_optionality_matches_the_required_list(
+    spec: Spec,
     interface: str,
     interface_members: dict[str, dict[str, bool]],
-    core_spec: dict,
+    specs: dict[Spec, dict],
 ) -> None:
     """F7: a stream interface marks a member optional exactly when its component does."""
-    component = ENROLLED_STREAMS[interface]
+    component = ENROLLED_STREAMS[spec][interface]
     relaxed, tightened = optionality_mismatch(
         interface_members[interface],
-        component_properties(core_spec, component),
-        component_required(core_spec, component),
+        component_properties(specs[spec], component),
+        component_required(specs[spec], component),
     )
     assert not relaxed and not tightened, (
-        f"{component} is delivered over an event stream, where a required key is always "
-        f"present and an optional null key is omitted. The TypeScript {interface} interface "
-        f"marks required members optional: {sorted(relaxed)}; and marks optional members "
-        f"required, which the stream may omit: {sorted(tightened)}. "
+        f"{component} in {SPEC_PATHS[spec].name} is delivered over an event stream, where a "
+        "required key is always present and an optional null key is omitted. The TypeScript "
+        f"{interface} interface marks required members optional: {sorted(relaxed)}; and marks "
+        f"optional members required, which the stream may omit: {sorted(tightened)}. "
         f"Match the '?' to the component's required list in {TYPES_TS_PATH.name}."
     )
 
 
-@pytest.mark.parametrize("interface", sorted(ALL_ENROLLED))
+@pytest.mark.parametrize(("spec", "interface"), pairs(ALL_ENROLLED), ids=pair_ids(ALL_ENROLLED))
 def test_member_names_the_interface_of_each_enrolled_component_it_references(
+    spec: Spec,
     interface: str,
     interface_types: dict[str, dict[str, frozenset[str]]],
-    core_spec: dict,
+    specs: dict[Spec, dict],
 ) -> None:
     """F8: a member referencing an enrolled component names that component's interface."""
     unnamed = unnamed_references(
         interface_types[interface],
-        component_references(core_spec, ALL_ENROLLED[interface]),
-        interface_for_component(ALL_ENROLLED),
+        component_references(specs[spec], ALL_ENROLLED[spec][interface]),
+        interface_for_component(ALL_ENROLLED[spec]),
     )
     assert not unnamed, (
         f"Members of the TypeScript {interface} interface reference enrolled components in "
-        f"{ALL_ENROLLED[interface]} but their types do not name the mirroring interfaces: "
+        f"{ALL_ENROLLED[spec][interface]} ({SPEC_PATHS[spec].name}) but their types do not "
+        "name the mirroring interfaces: "
         f"{ {prop: sorted(names) for prop, names in sorted(unnamed.items())} }. "
         f"Type each member with its component's interface in {TYPES_TS_PATH.name}."
     )
 
 
-def test_referenced_object_components_are_enrolled_or_pinned(core_spec: dict) -> None:
+def test_referenced_object_components_are_enrolled_or_pinned(specs: dict[Spec, dict]) -> None:
     """F9: every object component an enrolled component references is enrolled or pinned."""
-    unpinned = sorted(unpinned_references(core_spec, ALL_ENROLLED, UNGATED_REFERENCED_COMPONENTS))
+    unpinned = sorted(unpinned_references(specs, ALL_ENROLLED, UNGATED_REFERENCED_COMPONENTS))
     assert not unpinned, (
-        "Enrolled components reference object components with no enrolled interface: "
-        f"{[f'{i}.{p} -> {c}' for i, p, c in unpinned]}. Enroll a mirroring interface, or pin "
-        "the reference in UNGATED_REFERENCED_COMPONENTS naming why it is not mirrored."
+        "Enrolled components reference object components with no interface enrolled under "
+        f"the same specification: {[f'{s}:{i}.{p} -> {c}' for s, i, p, c in unpinned]}. "
+        "Enroll a mirroring interface, or pin the reference in UNGATED_REFERENCED_COMPONENTS "
+        "naming why it is not mirrored."
     )
 
 
-def test_ungated_reference_pins_have_no_stale_entries(core_spec: dict) -> None:
+def test_ungated_reference_pins_have_no_stale_entries(specs: dict[Spec, dict]) -> None:
     """F3: every pin still names an unenrolled component its property references."""
-    stale = stale_reference_pins(core_spec, ALL_ENROLLED, UNGATED_REFERENCED_COMPONENTS)
+    stale = stale_reference_pins(specs, ALL_ENROLLED, UNGATED_REFERENCED_COMPONENTS)
     assert not stale, "stale UNGATED_REFERENCED_COMPONENTS entries:\n" + "\n".join(stale)
 
 
 def test_every_exported_interface_is_enrolled_or_excluded(types_source: str) -> None:
     """F10: an exported interface is enrolled or excluded with a reason, never both."""
     unaccounted, both, stale = unaccounted_interfaces(
-        types_source, ALL_ENROLLED, UNENROLLED_INTERFACES
+        types_source, enrolled_interfaces(ALL_ENROLLED), UNENROLLED_INTERFACES
     )
     assert not unaccounted and not both and not stale, (
         f"Exported interfaces in {TYPES_TS_PATH.name} neither enrolled nor excluded: "
         f"{sorted(unaccounted)}; both enrolled and excluded: {sorted(both)}; excluded but no "
-        f"longer exported: {sorted(stale)}. Enroll each mirror of a Core component, and name "
-        "every other interface in UNENROLLED_INTERFACES with the reason it mirrors none."
+        f"longer exported: {sorted(stale)}. Enroll each mirror of a published component, and "
+        "name every other interface in UNENROLLED_INTERFACES with the reason it mirrors none."
     )
 
 
-def test_stream_enrollment_matches_the_event_stream_contract(core_spec: dict) -> None:
+@pytest.mark.parametrize("spec", sorted(SPEC_PATHS))
+def test_stream_enrollment_matches_the_event_stream_contract(
+    spec: Spec, specs: dict[Spec, dict]
+) -> None:
     """F4: the stream enrollment is exactly the enrolled components an event stream reaches."""
-    roots = event_stream_roots(core_spec)
-    assert len(roots) >= MIN_EVENT_STREAM_ROOTS, (
-        f"only {sorted(roots)} named as event-stream components; floor is {MIN_EVENT_STREAM_ROOTS}"
+    roots = event_stream_roots(specs[spec])
+    assert len(roots) >= MIN_EVENT_STREAM_ROOTS[spec], (
+        f"only {sorted(roots)} named as event-stream components in {SPEC_PATHS[spec].name}; "
+        f"floor is {MIN_EVENT_STREAM_ROOTS[spec]}"
     )
-    reached = stream_components(core_spec) & set(ALL_ENROLLED.values())
-    enrolled = set(ENROLLED_STREAMS.values())
+    reached = stream_components(specs[spec]) & set(ALL_ENROLLED[spec].values())
+    enrolled = set(ENROLLED_STREAMS[spec].values())
     assert reached == enrolled, (
-        "Components delivered over an event stream and enrolled under another rule: "
-        f"{sorted(reached - enrolled)}; enrolled as stream shapes but not reachable from an "
-        f"event stream: {sorted(enrolled - reached)}. Move them into or out of ENROLLED_STREAMS."
+        f"Components {SPEC_PATHS[spec].name} delivers over an event stream and enrolled under "
+        f"another rule: {sorted(reached - enrolled)}; enrolled as stream shapes but not "
+        f"reachable from an event stream: {sorted(enrolled - reached)}. Move them into or out "
+        f"of ENROLLED_STREAMS[{spec!r}]."
     )
 
 
@@ -1142,66 +1304,65 @@ def test_stream_enrollment_matches_the_event_stream_contract(core_spec: dict) ->
     ],
     ids=["F1", "F2", "F6", "F7", "F8"],
 )
-def test_gates_are_parametrized_over_their_enrollment(
-    gate: object, enrollment: dict[str, str]
-) -> None:
+def test_gates_are_parametrized_over_their_enrollment(gate: object, enrollment: Enrollment) -> None:
     """F4: each per-interface gate iterates the whole of the enrollment it enforces.
 
     The F5 probes exercise the comparison helpers, not the parametrized gates, so a
-    gate narrowed back to a subset of its enrollment would leave them green.
+    gate narrowed back to a subset of its enrollment, or to one specification, would
+    leave them green.
     """
     marks = [mark for mark in getattr(gate, "pytestmark", []) if mark.name == "parametrize"]
     assert len(marks) == 1, (
         f"{getattr(gate, '__name__', gate)} carries {len(marks)} parametrizations"
     )
-    assert marks[0].args == ("interface", sorted(enrollment))
+    assert marks[0].args == (("spec", "interface"), pairs(enrollment))
+    assert set(enrollment) == set(SPEC_PATHS)
 
 
-def test_enrollment_resolves_and_is_not_vacuous(types_source: str, core_spec: dict) -> None:
+def test_enrollment_resolves_and_is_not_vacuous(types_source: str, specs: dict[Spec, dict]) -> None:
     """F4: every enrolled pair resolves, and each kind compares enough properties."""
-    kinds = {"response": ENROLLED, "request": ENROLLED_REQUESTS, "stream": ENROLLED_STREAMS}
-    assert sum(len(enrolled) for enrolled in kinds.values()) == len(ALL_ENROLLED), (
-        "an interface is enrolled under more than one rule: "
-        f"{sorted(i for i in ALL_ENROLLED if sum(i in e for e in kinds.values()) > 1)}"
-    )
-    components = sorted(ALL_ENROLLED.values())
-    shared = sorted({c for c in components if components.count(c) > 1})
-    assert not shared, f"components mirrored by more than one interface: {shared}"
-    floors = (
-        ("response", ENROLLED, MIN_PROPERTIES_COMPARED),
-        ("request", ENROLLED_REQUESTS, MIN_REQUEST_PROPERTIES_COMPARED),
-        ("stream", ENROLLED_STREAMS, MIN_STREAM_PROPERTIES_COMPARED),
-    )
-    for kind, enrolled, floor in floors:
-        compared = 0
-        for interface, component in enrolled.items():
-            assert read_interface(types_source, interface), (
-                f"interface {interface!r} declares no properties"
-            )
-            compared += len(component_properties(core_spec, component))
-        assert compared >= floor, (
-            f"only {compared} {kind} schema properties compared; floor is {floor}"
+    conflicts = enrollment_conflicts((ENROLLED, ENROLLED_REQUESTS, ENROLLED_STREAMS))
+    assert not conflicts, "\n".join(conflicts)
+    for spec in SPEC_PATHS:
+        floors = (
+            ("response", ENROLLED, MIN_PROPERTIES_COMPARED),
+            ("request", ENROLLED_REQUESTS, MIN_REQUEST_PROPERTIES_COMPARED),
+            ("stream", ENROLLED_STREAMS, MIN_STREAM_PROPERTIES_COMPARED),
         )
-    required = sum(
-        len(component_required(core_spec, component)) for component in ENROLLED_REQUESTS.values()
-    )
-    assert required >= MIN_REQUIRED_PROPERTIES_COMPARED, (
-        f"only {required} required request properties compared; "
-        f"floor is {MIN_REQUIRED_PROPERTIES_COMPARED}"
-    )
-    interface_for = interface_for_component(ALL_ENROLLED)
-    references = sum(
-        len(referenced & set(interface_for))
-        for component in ALL_ENROLLED.values()
-        for referenced in component_references(core_spec, component).values()
-    )
-    assert references >= MIN_REFERENCES_CHECKED, (
-        f"only {references} references to enrolled components checked; "
-        f"floor is {MIN_REFERENCES_CHECKED}"
-    )
+        for kind, enrollment, floor in floors:
+            compared = 0
+            for interface, component in enrollment[spec].items():
+                assert read_interface(types_source, interface), (
+                    f"interface {interface!r} declares no properties"
+                )
+                compared += len(component_properties(specs[spec], component))
+            assert compared >= floor[spec], (
+                f"only {compared} {kind} schema properties compared in {spec}; "
+                f"floor is {floor[spec]}"
+            )
+        required = sum(
+            len(component_required(specs[spec], component))
+            for component in ENROLLED_REQUESTS[spec].values()
+        )
+        assert required >= MIN_REQUIRED_PROPERTIES_COMPARED[spec], (
+            f"only {required} required request properties compared in {spec}; "
+            f"floor is {MIN_REQUIRED_PROPERTIES_COMPARED[spec]}"
+        )
+        interface_for = interface_for_component(ALL_ENROLLED[spec])
+        references = sum(
+            len(referenced & set(interface_for))
+            for component in ALL_ENROLLED[spec].values()
+            for referenced in component_references(specs[spec], component).values()
+        )
+        assert references >= MIN_REFERENCES_CHECKED[spec], (
+            f"only {references} references to enrolled components checked in {spec}; "
+            f"floor is {MIN_REFERENCES_CHECKED[spec]}"
+        )
 
 
-def test_gate_fires_when_a_declared_property_is_removed(types_source: str, core_spec: dict) -> None:
+def test_gate_fires_when_a_declared_property_is_removed(
+    types_source: str, specs: dict[Spec, dict]
+) -> None:
     """F5: removing a declaration from the real file surfaces exactly that property."""
     declaration = re.compile(r"^[ \t]*stored_content_hash\??[ \t]*:[^\n]*\n", re.MULTILINE)
     mutated, removed = declaration.subn("", types_source)
@@ -1209,76 +1370,182 @@ def test_gate_fires_when_a_declared_property_is_removed(types_source: str, core_
     assert mutated != types_source
 
     document_only, _ = divergence(
-        set(read_interface(mutated, "Document")), component_properties(core_spec, "Document")
+        set(read_interface(mutated, "Document")), component_properties(specs["core"], "Document")
     )
     summary_only, _ = divergence(
         set(read_interface(mutated, "DocumentSummary")),
-        component_properties(core_spec, "DocumentSummary"),
+        component_properties(specs["core"], "DocumentSummary"),
     )
     assert document_only == {"stored_content_hash"}
     assert summary_only == set()
 
 
 def test_gate_fires_when_a_request_declaration_is_removed(
-    types_source: str, core_spec: dict
+    types_source: str, specs: dict[Spec, dict]
 ) -> None:
     """F5: removing one request member surfaces exactly that member, on that interface only."""
-    assert unexempted_schema_only(types_source, core_spec) == {}
+    assert unexempted_schema_only(types_source, specs) == {}
     mutated = rewrite_member(types_source, "DiscoverRequest", "facet_value_limit", "")
-    assert unexempted_schema_only(mutated, core_spec) == {"DiscoverRequest": {"facet_value_limit"}}
+    assert unexempted_schema_only(mutated, specs) == {
+        ("core", "DiscoverRequest"): {"facet_value_limit"}
+    }
 
 
 def test_gate_sees_a_base_member_removed_through_heritage(
-    types_source: str, core_spec: dict
+    types_source: str, specs: dict[Spec, dict]
 ) -> None:
     """F5: a member removed from a base is missing from the interface that inherits it."""
-    assert unexempted_schema_only(types_source, core_spec) == {}
+    assert unexempted_schema_only(types_source, specs) == {}
     mutated = rewrite_member(types_source, "BulkLinkItem", "rationale_kind", "")
-    assert unexempted_schema_only(mutated, core_spec) == {
-        "BulkLinkItem": {"rationale_kind"},
-        "LinkRequest": {"rationale_kind"},
+    assert unexempted_schema_only(mutated, specs) == {
+        ("core", "BulkLinkItem"): {"rationale_kind"},
+        ("core", "LinkRequest"): {"rationale_kind"},
     }
 
 
 def test_optionality_check_fires_when_a_required_member_is_relaxed(
-    types_source: str, core_spec: dict
+    types_source: str, specs: dict[Spec, dict]
 ) -> None:
     """F5: marking an inherited required member optional is reported wherever it is inherited."""
-    assert relaxed_request_members(types_source, core_spec) == {}
+    assert relaxed_request_members(types_source, specs) == {}
     mutated = rewrite_member(types_source, "BulkLinkItem", "edge_type", "edge_type?:")
-    assert relaxed_request_members(mutated, core_spec) == {
-        "BulkLinkItem": {"edge_type"},
-        "LinkRequest": {"edge_type"},
+    assert relaxed_request_members(mutated, specs) == {
+        ("core", "BulkLinkItem"): {"edge_type"},
+        ("core", "LinkRequest"): {"edge_type"},
     }
 
 
-def test_gate_fires_on_a_newly_enrolled_interface(types_source: str, core_spec: dict) -> None:
+def test_gate_fires_on_a_newly_enrolled_interface(
+    types_source: str, specs: dict[Spec, dict]
+) -> None:
     """F5: a member removed from a referenced interface is reported on that interface alone."""
-    assert unexempted_schema_only(types_source, core_spec) == {}
+    assert unexempted_schema_only(types_source, specs) == {}
     mutated = rewrite_member(types_source, "Edge", "rationale", "")
-    assert unexempted_schema_only(mutated, core_spec) == {"Edge": {"rationale"}}
+    assert unexempted_schema_only(mutated, specs) == {("core", "Edge"): {"rationale"}}
 
 
 def test_stream_optionality_check_fires_in_both_directions(
-    types_source: str, core_spec: dict
+    types_source: str, specs: dict[Spec, dict]
 ) -> None:
     """F5: F7 reports a stream member made required and one made optional, each where it is."""
-    assert stream_optionality_findings(types_source, core_spec) == {}
+    assert stream_optionality_findings(types_source, specs) == {}
     tightened = rewrite_member(types_source, "ReabstractProgressEvent", "outcome", "outcome:")
-    assert stream_optionality_findings(tightened, core_spec) == {
-        "ReabstractProgressEvent": {"outcome"}
+    assert stream_optionality_findings(tightened, specs) == {
+        ("core", "ReabstractProgressEvent"): {"outcome"}
     }
     relaxed = rewrite_member(types_source, "IngestPreview", "would_create", "would_create?:")
-    assert stream_optionality_findings(relaxed, core_spec) == {"IngestPreview": {"would_create"}}
+    assert stream_optionality_findings(relaxed, specs) == {
+        ("core", "IngestPreview"): {"would_create"},
+        ("app", "IngestPreview"): {"would_create"},
+    }
 
 
 def test_reference_check_fires_when_a_member_stops_naming_its_component(
-    types_source: str, core_spec: dict
+    types_source: str, specs: dict[Spec, dict]
 ) -> None:
     """F5: F8 reports a member retyped away from the interface of the component it references."""
-    assert unnamed_reference_findings(types_source, core_spec) == {}
+    assert unnamed_reference_findings(types_source, specs) == {}
     mutated = rewrite_member_type(types_source, "TraversalNode", "edge", "StagingEdge")
-    assert unnamed_reference_findings(mutated, core_spec) == {"TraversalNode": {"edge"}}
+    assert unnamed_reference_findings(mutated, specs) == {("core", "TraversalNode"): {"edge"}}
+
+
+def test_gate_fires_on_a_newly_enrolled_app_interface(
+    types_source: str, specs: dict[Spec, dict]
+) -> None:
+    """F5: a member removed from an App API mirror is reported under that specification alone."""
+    assert unexempted_schema_only(types_source, specs) == {}
+    mutated = rewrite_member(types_source, "IngestSummaryEvent", "edges_removed", "")
+    assert unexempted_schema_only(mutated, specs) == {
+        ("app", "IngestSummaryEvent"): {"edges_removed"}
+    }
+
+
+def test_gate_reports_a_doubly_enrolled_interface_under_each_specification(
+    types_source: str, specs: dict[Spec, dict]
+) -> None:
+    """F5: an interface mirroring a component in each specification is compared against both."""
+    assert unexempted_schema_only(types_source, specs) == {}
+    mutated = rewrite_member(types_source, "IngestPreview", "would_supersede", "")
+    assert unexempted_schema_only(mutated, specs) == {
+        ("core", "IngestPreview"): {"would_supersede"},
+        ("app", "IngestPreview"): {"would_supersede"},
+    }
+
+
+def test_reference_check_fires_on_an_app_interface(
+    types_source: str, specs: dict[Spec, dict]
+) -> None:
+    """F5: F8 reports an App API mirror retyped away from the interface its component references."""
+    assert unnamed_reference_findings(types_source, specs) == {}
+    mutated = rewrite_member_type(types_source, "SessionInfo", "user", "string | null")
+    assert unnamed_reference_findings(mutated, specs) == {("app", "SessionInfo"): {"user"}}
+
+
+def test_enrollment_checks_are_evaluated_within_one_specification() -> None:
+    """F4/F1/F8: one component name published by two specifications is two components."""
+    specs: dict[Spec, dict] = {
+        "core": {
+            "components": {
+                "schemas": {
+                    "E": {"properties": {"a": {}}},
+                    "R": {"properties": {"e": {"$ref": "#/components/schemas/E"}}},
+                }
+            }
+        },
+        "app": {
+            "components": {
+                "schemas": {
+                    "E": {"properties": {"b": {}}},
+                    "R": {"properties": {"e": {"$ref": "#/components/schemas/E"}}},
+                }
+            }
+        },
+    }
+    source = """
+    interface A { a: string }
+    interface B { b: string }
+    interface CoreR { e: A }
+    interface AppR { e: B }
+    """
+    enrolled: Enrollment = {"core": {"A": "E", "CoreR": "R"}, "app": {"B": "E", "AppR": "R"}}
+    assert enrollment_conflicts([enrolled]) == []
+    assert unexempted_schema_only(source, specs, enrolled, {}) == {}
+    assert unnamed_reference_findings(source, specs, enrolled) == {}
+
+    swapped: Enrollment = {"core": {"B": "E", "CoreR": "R"}, "app": {"A": "E", "AppR": "R"}}
+    assert unexempted_schema_only(source, specs, swapped, {}) == {
+        ("core", "B"): {"a"},
+        ("app", "A"): {"b"},
+    }
+    assert unnamed_reference_findings(source, specs, swapped) == {
+        ("core", "CoreR"): {"e"},
+        ("app", "AppR"): {"e"},
+    }
+    assert enrollment_conflicts([{"core": {"A": "E", "B": "E"}}]) == [
+        "core: components mirrored by more than one interface: ['E']"
+    ]
+    assert enrollment_conflicts([{"core": {"A": "E"}}, {"core": {"A": "R"}}]) == [
+        "core: interfaces enrolled under more than one rule: ['A']"
+    ]
+
+
+def test_reference_closure_is_evaluated_within_one_specification() -> None:
+    """F9: a component enrolled under one specification does not close a reference in another."""
+    schemas = {
+        "X": {"properties": {"y": {"$ref": "#/components/schemas/Y"}}},
+        "Y": {"properties": {"a": {}}},
+    }
+    specs: dict[Spec, dict] = {
+        "core": {"components": {"schemas": schemas}},
+        "app": {"components": {"schemas": schemas}},
+    }
+    enrolled: Enrollment = {"core": {"X": "X", "Y": "Y"}, "app": {"X": "X"}}
+    assert unpinned_references(specs, enrolled, {}) == {("app", "X", "y", "Y")}
+    assert unpinned_references(specs, enrolled, {("app", "X", "y", "Y"): "reason"}) == set()
+    assert stale_reference_pins(specs, enrolled, {("app", "X", "y", "Y"): "reason"}) == []
+    assert stale_reference_pins(specs, enrolled, {("core", "X", "y", "Y"): "reason"}) == [
+        "core:X.y -> Y: the component is enrolled; remove the pin"
+    ]
 
 
 def test_reference_closure_flags_an_unpinned_component() -> None:
@@ -1299,22 +1566,23 @@ def test_reference_closure_flags_an_unpinned_component() -> None:
             }
         }
     }
-    enrolled = {"X": "X", "ZMirror": "Z"}
-    assert unpinned_references(spec, enrolled, {}) == {("X", "ys", "Y")}
-    assert unpinned_references(spec, enrolled, {("X", "ys", "Y"): "reason"}) == set()
+    specs: dict[Spec, dict] = {"core": spec}
+    enrolled: Enrollment = {"core": {"X": "X", "ZMirror": "Z"}}
+    assert unpinned_references(specs, enrolled, {}) == {("core", "X", "ys", "Y")}
+    assert unpinned_references(specs, enrolled, {("core", "X", "ys", "Y"): "reason"}) == set()
     assert stale_reference_pins(
-        spec,
+        specs,
         enrolled,
         {
-            ("X", "ys", "Y"): "live",
-            ("X", "kind", "Y"): "not referenced by that property",
-            ("X", "z", "Z"): "enrolled",
-            ("Other", "ys", "Y"): "unenrolled interface",
+            ("core", "X", "ys", "Y"): "live",
+            ("core", "X", "kind", "Y"): "not referenced by that property",
+            ("core", "X", "z", "Z"): "enrolled",
+            ("core", "Other", "ys", "Y"): "unenrolled interface",
         },
     ) == [
-        "Other.ys -> Y: 'Other' is not enrolled",
-        "X.kind -> Y: the property no longer references it; remove the pin",
-        "X.z -> Z: the component is enrolled; remove the pin",
+        "core:Other.ys -> Y: 'Other' is not enrolled under 'core'",
+        "core:X.kind -> Y: the property no longer references it; remove the pin",
+        "core:X.z -> Z: the component is enrolled; remove the pin",
     ]
 
 
@@ -1399,15 +1667,16 @@ def test_optionality_mismatch_reports_both_directions() -> None:
 
 def test_export_check_fires_on_an_unaccounted_interface(types_source: str) -> None:
     """F5: F10 reports a new unenrolled export and a dropped exclusion, each by name."""
-    assert unaccounted_interfaces(types_source, ALL_ENROLLED, UNENROLLED_INTERFACES) == (
+    enrolled = enrolled_interfaces(ALL_ENROLLED)
+    assert unaccounted_interfaces(types_source, enrolled, UNENROLLED_INTERFACES) == (
         set(),
         set(),
         set(),
     )
     added = types_source + "\nexport interface Unmirrored {\n  a: string;\n}\n"
-    assert unaccounted_interfaces(added, ALL_ENROLLED, UNENROLLED_INTERFACES)[0] == {"Unmirrored"}
+    assert unaccounted_interfaces(added, enrolled, UNENROLLED_INTERFACES)[0] == {"Unmirrored"}
     dropped = {name: r for name, r in UNENROLLED_INTERFACES.items() if name != "VaultConfig"}
-    assert unaccounted_interfaces(types_source, ALL_ENROLLED, dropped)[0] == {"VaultConfig"}
+    assert unaccounted_interfaces(types_source, enrolled, dropped)[0] == {"VaultConfig"}
 
 
 def test_export_check_reports_overlap_and_stale_exclusions() -> None:
@@ -1439,19 +1708,22 @@ def test_component_required_reads_the_required_list() -> None:
 def test_stale_check_flags_an_entry_that_no_longer_diverges() -> None:
     """F5: the staleness check keeps live entries and flags stale, flipped and unenrolled ones."""
     interface_props = {"Thing": {"shared", "frontend_only"}}
-    schema_props = {"Thing": {"shared", "schema_only"}}
-    allowlist: dict[tuple[str, str, Side], str] = {
-        ("Thing", "frontend_only", "interface_only"): "live",
-        ("Thing", "schema_only", "schema_only"): "live",
-        ("Thing", "shared", "interface_only"): "stale",
-        ("Thing", "schema_only", "interface_only"): "diverges, but on the other side",
-        ("Other", "anything", "schema_only"): "unenrolled",
+    schema_props: dict[tuple[Spec, str], set[str]] = {("core", "Thing"): {"shared", "schema_only"}}
+    allowlist: dict[tuple[Spec, str, str, Side], str] = {
+        ("core", "Thing", "frontend_only", "interface_only"): "live",
+        ("core", "Thing", "schema_only", "schema_only"): "live",
+        ("core", "Thing", "shared", "interface_only"): "stale",
+        ("core", "Thing", "schema_only", "interface_only"): "diverges, but on the other side",
+        ("core", "Other", "anything", "schema_only"): "unenrolled",
+        ("app", "Thing", "schema_only", "schema_only"): "enrolled, but not under this spec",
     }
     stale = stale_entries(allowlist, interface_props, schema_props)
     assert stale == [
-        "Other.anything: 'Other' is not enrolled",
-        "Thing.schema_only (interface_only): now diverges as schema_only; re-examine the entry",
-        "Thing.shared (interface_only): no longer diverges; remove the entry",
+        "app:Thing.schema_only: 'Thing' is not enrolled under 'app'",
+        "core:Other.anything: 'Other' is not enrolled under 'core'",
+        "core:Thing.schema_only (interface_only): now diverges as schema_only; "
+        "re-examine the entry",
+        "core:Thing.shared (interface_only): no longer diverges; remove the entry",
     ]
 
 
@@ -1467,14 +1739,15 @@ def test_component_with_composed_shape_is_refused(keyword: str) -> None:
 
 
 def test_allowlist_exempts_a_property_only_on_the_interface_it_names() -> None:
-    """F1/F2: an entry exempts its property only on the interface and side it names."""
-    allowlist: dict[tuple[str, str, Side], str] = {
-        ("Document", "frontend_field", "interface_only"): "reason",
-        ("Document", "schema_field", "schema_only"): "reason",
+    """F1/F2: an entry exempts its property only on the pair and side it names."""
+    allowlist: dict[tuple[Spec, str, str, Side], str] = {
+        ("core", "Document", "frontend_field", "interface_only"): "reason",
+        ("core", "Document", "schema_field", "schema_only"): "reason",
     }
-    assert allowlisted("Document", "interface_only", allowlist) == {"frontend_field"}
-    assert allowlisted("Document", "schema_only", allowlist) == {"schema_field"}
-    assert allowlisted("DocumentSummary", "interface_only", allowlist) == set()
+    assert allowlisted("core", "Document", "interface_only", allowlist) == {"frontend_field"}
+    assert allowlisted("core", "Document", "schema_only", allowlist) == {"schema_field"}
+    assert allowlisted("core", "DocumentSummary", "interface_only", allowlist) == set()
+    assert allowlisted("app", "Document", "schema_only", allowlist) == set()
 
 
 # ---------------------------------------------------------------------------

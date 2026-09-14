@@ -1,7 +1,6 @@
 import { Outlet } from 'react-router';
 import Sidebar from './Sidebar';
-import type { VaultSummary } from '../api/types';
-import type { UserClaims } from '../api/auth';
+import type { UserClaims, VaultSummary } from '../api/types';
 import type { VaultContext } from '../App';
 
 interface LayoutProps {

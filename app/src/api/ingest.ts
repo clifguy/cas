@@ -1,7 +1,7 @@
 import { ApiError, apiPost, apiStream, apiUploadStream, readSSEStream } from './client';
 import type {
   ScanResponse,
-  ParsedMetadataItem,
+  IngestFileItem,
   IngestProgressEvent,
   IngestSummaryEvent,
   BatchIngestUploadMetadata,
@@ -18,12 +18,6 @@ export async function scanDirectory(
     directory,
     max_depth: maxDepth ?? null,
   });
-}
-
-export interface IngestFileItem {
-  file_path: string;
-  source_type: string;
-  parsed_metadata?: ParsedMetadataItem;
 }
 
 export type IngestEvent = IngestProgressEvent | IngestSummaryEvent;

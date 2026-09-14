@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { ApiError } from '../client';
 import * as client from '../client';
 import { getSession, beginLogin, logout } from '../auth';
-import type { SessionInfo, LoginChallenge } from '../auth';
+import type { SessionInfo, LoginChallenge } from '../types';
 
 vi.mock('../client', async () => {
   const actual = await vi.importActual<typeof import('../client')>('../client');

@@ -2,29 +2,10 @@
 // surface (login / session / logout). The browser-facing redirect endpoints
 // (authorization, callback) are navigated to by the browser, not fetched here.
 //
-// The types mirror the backend response models (app/backend/models.py):
-// LoginChallengeResponse, UserClaims, SessionInfoResponse.
+// The response shapes are declared in ./types with the other published mirrors.
 
 import { apiGet, apiPostVoid } from './client';
-
-/** Identity claims for the signed-in user. Mirrors UserClaims. */
-export interface UserClaims {
-  subject: string;
-  name: string | null;
-  email: string | null;
-}
-
-/** The caller's session state. Mirrors SessionInfoResponse. */
-export interface SessionInfo {
-  authenticated: boolean;
-  user: UserClaims | null;
-}
-
-/** The authorization URL to start interactive sign-in. Mirrors LoginChallengeResponse. */
-export interface LoginChallenge {
-  authorization_url: string;
-  state: string;
-}
+import type { LoginChallenge, SessionInfo } from './types';
 
 /**
  * Report the caller's session state. Resolves SessionInfo on 200. In the local
