@@ -1688,7 +1688,8 @@ class VaultConfig(BaseModel):
                 )
             elif (
                 key == SourceType.MARKDOWN.value
-                and value.get("dialect", DIALECTS[0]) not in DIALECTS
+                and "dialect" in value
+                and value["dialect"] not in DIALECTS
             ):
                 errors.append(
                     f"adapter_defaults.markdown.dialect: not a markdown dialect "

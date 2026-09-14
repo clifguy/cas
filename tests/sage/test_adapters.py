@@ -5031,20 +5031,29 @@ _GFM_SHAPES = [
 
 _PIPE_TABLE_THEN_RULE = "| a | b |\n|---|---|\n| c | d |\n---\n\n# Real\n\nBody.\n"
 
-# A Pandoc multiline table inside a blockquote.
-_QUOTED_PANDOC_TABLE = (
-    "> Site Codes\n"
-    ">\n"
-    ">   -------------------------------\n"
-    ">   **Code**    **Site**\n"
-    ">   ----------- -------------------\n"
-    ">   NTH         North Campus\n"
-    ">\n"
-    ">   EST         East Office\n"
-    ">   -------------------------------\n"
-    "\n"
-    "Closing text.\n"
+_NESTED_TABLE = (
+    "-------------------------------",
+    "**Code**    **Site**",
+    "----------- -------------------",
+    "NTH         North Campus",
+    "",
+    "EST         East Office",
+    "-------------------------------",
 )
+
+
+def _nested(opening: str, prefix: str) -> str:
+    """A Pandoc multiline table under ``opening``, each line carrying ``prefix``."""
+    body = "".join((prefix + line if line else prefix.rstrip()) + "\n" for line in _NESTED_TABLE)
+    return f"{opening}{body}\nClosing text.\n"
+
+
+# A Pandoc multiline table nested in each kind of container block.
+_NESTED_PANDOC_TABLES = {
+    "blockquote": _nested("> Site Codes\n>\n", ">   "),
+    "bullet list item": _nested("- Site Codes\n\n", "    "),
+    "list item in a blockquote": _nested("> - Site Codes\n>\n", ">     "),
+}
 
 
 def _commonmark_reference():
@@ -5095,7 +5104,7 @@ def _dialect_sources() -> list[str]:
         *_MARKER_IN_CODE.values(),
         *(source for _, source, _ in _GFM_SHAPES),
         _PIPE_TABLE_THEN_RULE,
-        _QUOTED_PANDOC_TABLE,
+        *_NESTED_PANDOC_TABLES.values(),
     ]
 
 
@@ -5185,14 +5194,17 @@ class TestMarkdownDialect:
 
         assert result.headings == []
 
-    async def test_ad_167_a_pandoc_table_in_a_blockquote_is_detected(self, tmp_path):
-        """AD-167: The dialect is detected from a table inside a blockquote."""
-        declared = await self._project(tmp_path, _QUOTED_PANDOC_TABLE, {"dialect": "gfm"})
+    @pytest.mark.parametrize(
+        "source", _NESTED_PANDOC_TABLES.values(), ids=_NESTED_PANDOC_TABLES.keys()
+    )
+    async def test_ad_167_a_pandoc_table_in_a_container_block_is_detected(self, tmp_path, source):
+        """AD-167: The dialect is detected from a table nested in a container block."""
+        declared = await self._project(tmp_path, source, {"dialect": "gfm"})
         assert [h.text for h in declared.headings] == ["EST         East Office"], (
-            "control: read as GFM, the quoted table yields a heading"
+            "control: read as GFM, the nested table yields a heading"
         )
 
-        result = await self._project(tmp_path, _QUOTED_PANDOC_TABLE)
+        result = await self._project(tmp_path, source)
 
         assert result.headings == []
 

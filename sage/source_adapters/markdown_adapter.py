@@ -195,10 +195,12 @@ def _detect_dialect(text: str, tokens: list[Token]) -> str:
 
     The markers are a column rule beside a line of text, a grid-table border
     followed by a row, and a ``%`` title block opening the document. A marker
-    inside a blockquote counts; none of them counts inside code, front matter or
-    raw HTML. A table ruled only by
-    full-width dash lines is not a marker: to CommonMark it is a thematic break
-    and a setext heading, which an author writing CommonMark means.
+    nested in a container block -- a blockquote, a list item -- counts, whatever
+    its indentation; none of them counts inside code, front matter or raw HTML,
+    which are the parse's own blocks rather than a guess from indentation. A
+    table ruled only by full-width dash lines is not a marker: to CommonMark it
+    is a thematic break and a setext heading, which an author writing CommonMark
+    means.
     """
     lines = [
         _BLOCKQUOTE_MARKERS.sub("", line, count=1) if line.lstrip(" ").startswith(">") else line
@@ -215,13 +217,13 @@ def _detect_dialect(text: str, tokens: list[Token]) -> str:
     if lines[0].startswith("%") and 0 not in opaque:
         return "pandoc"
     for index, line in enumerate(lines):
-        stripped = line.lstrip(" ")
-        if index in opaque or len(line) - len(stripped) >= 4:
+        stripped = line.lstrip(" \t")
+        if index in opaque:
             continue
         if _COLUMN_RULE.match(stripped) and (text_at(index - 1) or text_at(index + 1)):
             return "pandoc"
         if _GRID_BORDER.match(stripped) and text_at(index + 1):
-            if lines[index + 1].lstrip(" ").startswith("|"):
+            if lines[index + 1].lstrip(" \t").startswith("|"):
                 return "pandoc"
     return "gfm"
 

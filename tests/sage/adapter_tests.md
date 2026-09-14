@@ -2910,7 +2910,7 @@ title block is part of the preamble.
 **Artifact:** `MarkdownAdapter.project`
 **Category:** dialect
 **Expected:** AD-163's source with no config reports no headings, and so does the same
-kind of table inside a blockquote. Control: declared as GFM each reports the table
+kind of table nested in a blockquote, a list item, or a list item inside a blockquote. Control: declared as GFM each reports the table
 heading, so detection, not the reader alone, removes it.
 
 ### TEST-SAGE-AD-168: A declared dialect takes precedence over detection
