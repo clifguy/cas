@@ -49,6 +49,7 @@ from sage.source_adapters.base import (
     HeadingNode,
     ProjectionResult,
     SourceAdapter,
+    SourceReadError,
     positive_int,
     respell_created_path,
 )
@@ -244,13 +245,16 @@ def _open_presentation(source_path: Path) -> Presentation:
         with zipfile.ZipFile(source_path) as package:
             content_types = package.read("[Content_Types].xml")
     except (zipfile.BadZipFile, KeyError, OSError) as exc:
-        raise ValueError(f"Failed to read presentation package {source_path}: {exc}") from exc
+        # An OSError is this process failing to read the file, not the package.
+        error = ValueError if isinstance(exc, OSError) else SourceReadError
+        raise error(f"Failed to read presentation package {source_path}: {exc}") from exc
 
     if _POTX_MAIN_TYPE.encode("utf-8") not in content_types:
         try:
             return Presentation(str(source_path))
         except Exception as exc:
-            raise ValueError(f"Failed to open presentation {source_path}: {exc}") from exc
+            error = ValueError if isinstance(exc, OSError) else SourceReadError
+            raise error(f"Failed to open presentation {source_path}: {exc}") from exc
 
     tmp_dir = Path(tempfile.mkdtemp(prefix="sage_potx_"))
     try:
@@ -270,9 +274,8 @@ def _open_presentation(source_path: Path) -> Presentation:
             # can name either file. Unwrapped, a write-side OSError would escape
             # naming only the scratch copy.
             detail = respell_created_path(str(exc), shadow, source_path)
-            raise ValueError(
-                f"Failed to read presentation package {source_path}: {detail}"
-            ) from exc
+            error = ValueError if isinstance(exc, OSError) else SourceReadError
+            raise error(f"Failed to read presentation package {source_path}: {detail}") from exc
         try:
             return Presentation(str(shadow))
         except Exception as exc:
@@ -285,9 +288,8 @@ def _open_presentation(source_path: Path) -> Presentation:
             # part, enters this branch and still fails the library's content-type
             # check against the shadow.
             detail = respell_created_path(str(exc), shadow, source_path)
-            raise ValueError(
-                f"Failed to open presentation template {source_path}: {detail}"
-            ) from exc
+            error = ValueError if isinstance(exc, OSError) else SourceReadError
+            raise error(f"Failed to open presentation template {source_path}: {detail}") from exc
     finally:
         # python-pptx has read the package into memory by the time
         # Presentation() returns, so the temp dir is safe to remove.
@@ -313,12 +315,12 @@ class PptxAdapter(SourceAdapter):
         content_hash = hashlib.sha256(raw_bytes).hexdigest()
 
         if raw_bytes.startswith(_OLE2_MAGIC):
-            raise ValueError(
+            raise SourceReadError(
                 f"Presentation is password-protected or otherwise encrypted "
                 f"and cannot be projected: {source_path}"
             )
         if not raw_bytes.startswith(_ZIP_MAGIC):
-            raise ValueError(
+            raise SourceReadError(
                 f"Presentation is not a readable OPC package (bad or truncated file): {source_path}"
             )
 

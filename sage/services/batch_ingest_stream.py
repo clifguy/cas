@@ -50,7 +50,7 @@ class UploadedFile:
 
     filename: str
     content: bytes
-    source_type: str
+    source_type: str | None
     parsed_metadata: dict[str, Any] | None = None
 
 

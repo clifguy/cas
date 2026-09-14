@@ -379,6 +379,10 @@ def register_sage_tools(
           ``metadata``. Detail carries ``fields`` (every misplaced key, so a
           single retry fixes them all), ``recognized`` (the full key set),
           and ``example``. No document is created.
+        - ``source_type_unresolved`` (400): ``source_type`` was omitted and no
+          registered adapter claims the source's extension. Detail carries
+          ``extension`` (null when the source has none) and
+          ``registered_source_types``. No document is created.
         - ``adapter_not_found`` (400): no source adapter is registered for
           ``source_type``.
         - ``adapter_config_invalid`` (400): the source adapter refused a value
@@ -386,6 +390,10 @@ def register_sage_tools(
           with ``config``. Detail names the source type, the key and the
           value. Raised before the source is retained, and by a ``dry_run``
           call too. No document is created.
+        - ``source_unreadable`` (400): the source adapter could not read the
+          source -- malformed, truncated, encrypted, or not in the format its
+          source type names. Detail names the source type and the source as
+          supplied. No document is created.
         - ``source_file_not_found`` (404): ``source`` does not resolve to a
           readable file.
         - ``vault_source_path_refused`` (400): the vault-source store refused
@@ -550,8 +558,10 @@ def register_sage_tools(
                 registered adapters' declared extensions (``.md`` and
                 ``.markdown`` to markdown, ``.docx``/``.dotx`` to docx, and
                 so on). An explicit value is never overridden by inference,
-                and an extension no registered adapter claims leaves the
-                format unresolved rather than guessed.
+                and an extension no registered adapter claims is refused with
+                ``source_type_unresolved`` rather than guessed. For a
+                ``transfer_token`` completion the extension read is the
+                staged file's, which carries the caller's own basename.
             config: Adapter-specific configuration (optional). Not a
                 SAGE-wide shape; inspect ``adapter_defaults`` in
                 ``get_vault_config`` for the per-adapter shape, such as
@@ -667,25 +677,10 @@ def register_sage_tools(
                 document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
 
-            def effective_source_type(resolved_source: str) -> str | None:
-                """Caller's ``source_type`` when given, else inferred from the extension.
-
-                Inference is strictly a fallback: an explicit value is
-                passed through untouched even when it disagrees with the
-                extension, because the caller may legitimately know better
-                than the filename does. An unrecognized extension resolves
-                to None and the existing missing-source-type validation
-                error stands.
-                """
-                if source_type is not None:
-                    return source_type
-                inferred = v.ingestion_service.infer_source_type(resolved_source)
-                return inferred.value if inferred is not None else None
-
             def _build_request(resolved_source: str) -> IngestRequest:
                 return IngestRequest(
                     source=resolved_source,
-                    source_type=effective_source_type(resolved_source),
+                    source_type=source_type,
                     config=config,
                     created_by=created_by,
                     force=force,
@@ -701,9 +696,8 @@ def register_sage_tools(
 
             # The delivery gate runs beneath the tool, in the service, so this
             # surface and the HTTP one reach the caller-local transfer on the
-            # same terms. The request is built from the path the gate
-            # resolves, so a source_type inferred from the extension is read
-            # off the bytes actually being ingested.
+            # same terms. An omitted source_type is inferred beneath it too,
+            # from the path the gate resolves.
             #
             # Fire-and-forget pipeline keeps this RPC under the 60s MCP client
             # timeout (BH-130). Callers wait for a terminal pipeline_status on
@@ -2981,6 +2975,9 @@ def register_sage_tools(
         - ``adapter_config_invalid`` (400): the source adapter refused a value
           it cannot use in the vault's ``adapter_defaults``. Detail names the
           source type, the key and the value.
+        - ``source_unreadable`` (400): the source adapter could not read the
+          document's retained source. Detail names the source type and the
+          document's ``source_path``.
         - ``source_file_not_found`` (404): the document's ``source_path`` no
           longer resolves to a readable file.
         - ``recompute_pipeline_already_in_flight`` (409): a recompute is

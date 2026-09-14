@@ -277,7 +277,8 @@ def register_app_tools(
         codes an entry can carry are ``adapter_config_invalid``,
         ``adapter_not_found``, ``duplicate_content``, ``invalid_doc_type``,
         ``invalid_document_date``, ``reserved_transition``,
-        ``source_file_not_found``, ``tier3_schema_violation``,
+        ``source_file_not_found``, ``source_type_unresolved``, ``source_unreadable``,
+        ``tier3_schema_violation``,
         ``tier3_unique_constraint_violation``, ``vault_migration_in_flight``,
         ``vault_source_path_refused``, ``vault_source_store_refused`` and
         ``vault_source_store_unavailable``.
@@ -339,10 +340,13 @@ def register_app_tools(
                 window; the recipe's own ``expires_at`` is authoritative
                 where a deployment has tuned the lifetime. A lapsed recipe
                 cannot be resumed, and its staged bytes are gone: re-issue
-                this call for a fresh one. Each entry also carries
+                this call for a fresh one. Each entry may also carry
                 ``source_type`` (str — closed ``SourceType`` vocabulary:
                 ``markdown``, ``docx``, ``xlsx``, ``pptx``, ``pdf`` — the source
-                types with a registered adapter),
+                types with a registered adapter; when omitted it is inferred
+                from the file's extension, and an extension no registered
+                adapter claims is reported for that file as
+                ``source_type_unresolved``),
                 and optional ``parsed_metadata`` (dict with ``title``,
                 ``date``, ``project``, ``codes``, ``version``, ``doc_type``).
                 When ``parsed_metadata`` is omitted, the stem of the source
@@ -437,7 +441,7 @@ def register_app_tools(
                     descriptors.append(
                         FileDescriptor(
                             file_path=delivery.path,
-                            source_type=f["source_type"],
+                            source_type=f.get("source_type"),
                             parsed_metadata=parsed,
                             declared_source=delivery.declared_source,
                         )
