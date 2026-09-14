@@ -278,6 +278,9 @@ class DocxAdapter(SourceAdapter):
     VERSION = "0.6.0"
     EXTENSIONS = [".docx", ".dotx"]
 
+    def check_config(self, config: dict | None) -> None:
+        self._build_style_map(config)
+
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
         style_map = self._build_style_map(config)
         raw_bytes = source_path.read_bytes()

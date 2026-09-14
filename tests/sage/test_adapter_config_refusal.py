@@ -241,6 +241,49 @@ async def test_ad_184_recompute_pipeline_reports_a_refused_vault_default(
     assert second.get("error") == "adapter_config_invalid", second
 
 
+async def test_ad_186_a_refused_config_value_retains_nothing(
+    minimal_vault_config_dict, tmp_vault_dir, tmp_path
+):
+    """AD-186: A refused config value retains nothing.
+
+    An absolute source is copied into the vault when it is retained, so a refusal
+    raised below retention leaves that copy behind with no document.
+    """
+    external = tmp_path / "external"
+    external.mkdir()
+    source = external / "outside.md"
+    source.write_bytes(b"# Outside\n\nBody.\n")
+
+    async with _mcp_vault(minimal_vault_config_dict):
+        result = _parse(
+            await ingest_document(_VAULT, str(source), "markdown", config={"dialect": "pandc"})
+        )
+
+    assert result["error"] == "adapter_config_invalid", result
+    assert list((tmp_vault_dir / "sources").rglob("outside*")) == []
+
+
+async def test_ad_187_a_dry_run_reports_a_refused_config_value(
+    minimal_vault_config_dict, tmp_vault_dir
+):
+    """AD-187: A dry run reports a refused config value.
+
+    The preview projects nothing, so without a refusal above it a dry run would
+    preview an ingest the real call refuses.
+    """
+    source = _write_source(tmp_vault_dir, "test/dialect.md", b"# A\n\nBody.\n")
+
+    async with _mcp_vault(minimal_vault_config_dict):
+        result = _parse(
+            await ingest_document(
+                _VAULT, source, "markdown", config={"dialect": "pandc"}, dry_run=True
+            )
+        )
+
+    assert result.get("error") == "adapter_config_invalid", result
+    assert result["detail"] == {"source_type": "markdown", "key": "dialect", "value": "pandc"}
+
+
 async def test_ad_185_a_malformed_source_keeps_its_reporting_in_a_batch(
     minimal_vault_config_dict, monkeypatch
 ):

@@ -36,6 +36,10 @@ class XlsxAdapter(SourceAdapter):
     VERSION = "0.3.0"
     EXTENSIONS = [".xlsx"]
 
+    def check_config(self, config: dict | None) -> None:
+        positive_int(config, "preview_rows", _DEFAULT_PREVIEW_ROWS)
+        optional_positive_int(config, "max_sheets")
+
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
         preview_rows = positive_int(config, "preview_rows", _DEFAULT_PREVIEW_ROWS)
         max_sheets = optional_positive_int(config, "max_sheets")

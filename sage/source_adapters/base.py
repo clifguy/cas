@@ -206,6 +206,18 @@ class SourceAdapter(ABC):
     VERSION: str = "0.0.0"
     EXTENSIONS: list[str] = []
 
+    def check_config(self, config: dict | None) -> None:
+        """Refuse a config value this adapter cannot use, without reading any source.
+
+        Lets a caller refuse a request before acting on its source -- an ingest
+        retains the bytes before projecting them. ``project`` refuses the same
+        values, so an adapter overriding one keeps the other in step; an adapter
+        whose config needs no checking leaves both alone.
+
+        Raises:
+            AdapterConfigError: a value in ``config`` the adapter cannot use.
+        """
+
     @abstractmethod
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
         """Read source file and produce structured projection."""

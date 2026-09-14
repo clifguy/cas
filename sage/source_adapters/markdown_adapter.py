@@ -45,6 +45,9 @@ class MarkdownAdapter(SourceAdapter):
     VERSION = "0.8.0"
     EXTENSIONS = [".md", ".markdown"]
 
+    def check_config(self, config: dict | None) -> None:
+        _declared_dialect(config)
+
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
         dialect = _declared_dialect(config)
         raw_bytes = source_path.read_bytes()

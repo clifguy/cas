@@ -3020,7 +3020,9 @@ values are the ones `vault_config.schema.json` documents under `adapter_defaults
 style to a level outside 1 to 9 or to a non-integer (docx), each raise
 `AdapterConfigError` whose `key` and `value` equal the offending key and value. The
 same config against a source that does not exist raises `AdapterConfigError` too,
-so the refusal precedes reading the source.
+so the refusal precedes reading the source, and `check_config` refuses every case
+with the same key and value without being given a source at all. A boolean heading
+level in `heading_style_map` is refused like any other non-integer.
 
 ### TEST-SAGE-AD-178: Config values the schema accepts still take effect
 
@@ -3030,7 +3032,7 @@ so the refusal precedes reading the source.
 `max_pages: 1` projects one page of a two-page PDF, `max_slides: 1` one slide of a
 two-slide deck, `preview_rows: 1` one data row, `max_sheets: null` every sheet,
 `heading_style_map: {"Title": 9}` a level-9 heading, and `dialect: "pandoc"`
-projects.
+projects; `check_config` accepts each of them.
 
 ### TEST-SAGE-AD-179: An unrecognized config key is ignored, not refused
 
@@ -3087,3 +3089,23 @@ the same error rather than reporting work in flight.
 **Expected:** A corrupt `.docx` with no config is reported as it was before the
 config refusal existed: a per-file error with no `code`, and an MCP envelope of
 `internal_error`.
+
+### TEST-SAGE-AD-186: A refused config value retains nothing
+
+**Artifact:** `IngestionService.ingest` (MCP `ingest_document`)
+**Category:** error-envelope
+**Decision:** A config refusal is the caller's to correct and depends on nothing
+but the request, so it is raised above retention, as the relocation and force-pin
+refusals are: below it, a novel external file would be copied into the vault and
+then refused, leaving a retained file with no document.
+
+**Expected:** Ingesting an absolute markdown source from outside the vault with
+`config={"dialect": "pandc"}` returns `adapter_config_invalid`, and no file of that
+name exists anywhere under the vault's source tree.
+
+### TEST-SAGE-AD-187: A dry run reports a refused config value
+
+**Artifact:** MCP `ingest_document` with `dry_run=true`
+**Category:** error-envelope
+**Expected:** The same request as a dry run returns `adapter_config_invalid` with the
+same detail, rather than a preview of an ingest that would be refused.

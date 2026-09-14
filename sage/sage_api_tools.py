@@ -390,7 +390,8 @@ def register_sage_tools(
         - ``adapter_config_invalid`` (400): the source adapter refused a value
           it cannot use in its config, the vault's ``adapter_defaults`` merged
           with ``config``. Detail names the source type, the key and the
-          value. No document is created.
+          value. Raised before the source is retained, and by a ``dry_run``
+          call too. No document is created.
         - ``source_file_not_found`` (404): ``source`` does not resolve to a
           readable file.
         - ``vault_source_path_refused`` (400): the vault-source store refused

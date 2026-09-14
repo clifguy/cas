@@ -5434,6 +5434,7 @@ _REFUSED_CONFIG = [
     ("docx", "heading_style_map", "Title"),
     ("docx", "heading_style_map", {"Title": 12}),
     ("docx", "heading_style_map", {"Title": "one"}),
+    ("docx", "heading_style_map", {"Title": True}),
 ]
 
 
@@ -5461,6 +5462,12 @@ class TestAdapterConfigRefusal:
         with pytest.raises(AdapterConfigError):
             await adapter.project(path.with_name(f"absent{path.suffix}"), {key: value})
 
+        # The service refuses through check_config before retaining anything, so
+        # it must refuse every case project does.
+        with pytest.raises(AdapterConfigError) as checked:
+            adapter.check_config({key: value})
+        assert (checked.value.key, checked.value.value) == (key, value)
+
     async def test_ad_178_config_values_the_schema_accepts_still_take_effect(self, tmp_path):
         """AD-178: Config values the schema accepts still take effect."""
         pdf, pdf_path = _config_source("pdf", tmp_path)
@@ -5487,6 +5494,15 @@ class TestAdapterConfigRefusal:
         markdown, markdown_path = _config_source("markdown", tmp_path)
         pandoc = await markdown.project(markdown_path, {"dialect": "pandoc"})
         assert [h.text for h in pandoc.headings] == ["A"]
+
+        for adapter, config in [
+            (pdf, {"max_pages": 1}),
+            (pptx, {"max_slides": 1}),
+            (xlsx, {"preview_rows": 1, "max_sheets": None}),
+            (docx_adapter, {"heading_style_map": {"Title": 9}}),
+            (markdown, {"dialect": "pandoc"}),
+        ]:
+            adapter.check_config(config)
 
     @pytest.mark.parametrize("kind", ["markdown", "pdf", "pptx", "xlsx", "docx"])
     async def test_ad_179_an_unrecognized_config_key_is_ignored_not_refused(self, tmp_path, kind):

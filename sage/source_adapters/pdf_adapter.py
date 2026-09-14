@@ -464,6 +464,9 @@ class PdfAdapter(SourceAdapter):
     VERSION = "0.7.0"
     EXTENSIONS = [".pdf"]
 
+    def check_config(self, config: dict | None) -> None:
+        positive_int(config, "max_pages", _DEFAULT_MAX_PAGES)
+
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
         max_pages = positive_int(config, "max_pages", _DEFAULT_MAX_PAGES)
 

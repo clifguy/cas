@@ -1044,6 +1044,9 @@ class IngestionService:
                 hash, or no document at all. A pin may select any holder of
                 the hash, never a record holding other bytes.
             AdapterNotFoundError: No adapter for requested source type.
+            AdapterConfigInvalidError: the source adapter refused a value in
+                the merged config; raised before the source is retained, and by
+                a dry run.
             DocumentNotFoundError: `predecessor_id` does not exist.
             SupersedeTargetNotActiveError: the vault's lifecycle
                 transition table does not permit ``supersede`` from the
@@ -1229,6 +1232,13 @@ class IngestionService:
         # file with no row, which no audit walks.
         self._validate_caller_doc_type(request)
         self._validate_ingest_landing_state()
+        # A config value the adapter cannot use is refused here, among the checks
+        # that read and write nothing, for the reason the relocation guard sits
+        # above retention: refused below it, a novel external file would be
+        # copied into the vault and then declined, leaving a retained file with
+        # no row. Here too a preview reports the refusal the ingest would raise.
+        with _refuse_adapter_config(request.source_type):
+            adapter.check_config(self._merge_adapter_config(request.source_type, request.config))
 
         # A preview stops here, before the source is read into the vault.
         # Everything above is a validator that reads nothing and writes
@@ -2485,6 +2495,8 @@ class IngestionService:
             DocumentNotFoundError: Document does not exist.
             AdapterNotFoundError: No adapter registered for the document's
                 source_type.
+            AdapterConfigInvalidError: the source adapter refused a value in
+                the vault's adapter_defaults.
             SourceFileNotFoundError: Source file resolved from
                 ``document.source_path`` does not exist on disk.
             RecomputePipelineAlreadyInFlightError: Abstraction work is already
