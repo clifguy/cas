@@ -5490,7 +5490,9 @@ components:
             this completion call exactly as on the originating call. On a
             dry run the token is read but not spent.
         source_type:
-          $ref: "#/components/schemas/SourceType"
+          anyOf:
+            - $ref: "#/components/schemas/SourceType"
+            - type: "null"
           description: >-
             Source artifact format. Determines which source adapter
             processes the artifact. Must be a source type with a

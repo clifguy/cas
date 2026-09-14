@@ -135,8 +135,9 @@ def _caller_file(tmp_path: Path, name: str, body: bytes) -> Path:
 async def _staged_token(client: AsyncClient, src: Path, body: bytes) -> tuple[str, Path]:
     """Mint a recipe naming no type, deliver the bytes, and return the token.
 
-    The completion sends the token alone, so the only path it can infer from is
-    the staged file's.
+    The completion sends the token alone. The staged file is named after the
+    caller's own basename, so an inference read from either spelling finds the
+    same extension; the completion cannot tell them apart and does not try to.
     """
     minted = await client.post(_INGEST, json={"source": str(src)})
     assert minted.status_code == 200, minted.text
@@ -179,7 +180,12 @@ async def test_rest_ingest_infers_a_non_markdown_type(vault, client):
 
 
 async def test_rest_transfer_token_completion_infers_from_staged_basename(client, tmp_path):
-    """A completion carrying only the token infers from the staged file's name."""
+    """A completion carrying only the token has a type inferred at all.
+
+    The staged file carries the caller's basename, so this shows inference runs on
+    the completion leg; it does not distinguish the staged spelling from the
+    declared one, which share an extension by construction.
+    """
     body = b"# Staged\n\nDelivered over the upload leg.\n"
     src = _caller_file(tmp_path, "staged_note.md", body)
 
@@ -357,10 +363,23 @@ async def test_multipart_batch_entry_without_source_type_infers_and_refuses_per_
     [("IngestRequest", IngestRequest), ("BatchIngestFileMetadata", BatchIngestFileMetadata)],
 )
 def test_source_type_is_optional_in_spec_and_model(schema_name, model):
-    """The formal substrate and the model derived from it both admit an omitted type."""
+    """The formal substrate and the model derived from it both admit an omitted type.
+
+    Both also admit an explicit null. The model's ``| None`` accepts one, so a
+    spec property with no null arm states a narrower contract than the surface
+    serves -- which the ``required`` list alone cannot show.
+    """
     schema = yaml.safe_load(_SPEC.read_text())["components"]["schemas"][schema_name]
+    prop = schema["properties"]["source_type"]
+    types = prop.get("type")
+    admits_null = (isinstance(types, list) and "null" in types) or any(
+        arm.get("type") == "null" for arm in prop.get("anyOf", [])
+    )
 
     assert "source_type" not in schema.get("required", []), schema.get("required")
+    assert admits_null, prop
     field = model.model_fields["source_type"]
     assert not field.is_required()
     assert field.default is None
+    body = {"source_type": None} | ({"source": "a.md"} if model is IngestRequest else {})
+    assert model.model_validate(body).source_type is None

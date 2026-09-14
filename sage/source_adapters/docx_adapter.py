@@ -499,7 +499,9 @@ class DocxAdapter(SourceAdapter):
             try:
                 return Document(str(source_path))
             except Exception as exc:
-                raise SourceReadError(f"Failed to open document {source_path}: {exc}") from exc
+                # An OSError is this process failing to reach the file, not the file.
+                error = ValueError if isinstance(exc, OSError) else SourceReadError
+                raise error(f"Failed to open document {source_path}: {exc}") from exc
 
         tmp_dir = Path(tempfile.mkdtemp(prefix="sage_dotx_"))
         try:
@@ -531,9 +533,8 @@ class DocxAdapter(SourceAdapter):
                 # file named .dotx carrying a third flavor reaches the library's
                 # own content-type complaint with the shadow's path in it.
                 detail = respell_created_path(str(exc), shadow, source_path)
-                raise SourceReadError(
-                    f"Failed to open document template {source_path}: {detail}"
-                ) from exc
+                error = ValueError if isinstance(exc, OSError) else SourceReadError
+                raise error(f"Failed to open document template {source_path}: {detail}") from exc
         finally:
             # python-docx has loaded the file into memory by the time
             # Document() returns, so the temp dir is safe to remove.

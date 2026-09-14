@@ -9,7 +9,7 @@ summary: >-
   so a transfer_token completion infers from the staged file, which carries the
   caller's basename; an explicit value is never overridden. IngestRequest.source_type
   and BatchIngestFileMetadata.source_type become optional in sage_core_api.openapi.yaml
-  and in the models derived from it, and the ingest_document operation description
+  and in the models derived from it, each admitting an explicit null as the model does, and the ingest_document operation description
   states the precedence, explicit then extension. The MCP bulk_ingest_document entries
   follow the same rule, which also stops an entry lacking the key from surfacing as an
   internal error. An omitted type whose extension no registered adapter claims is
@@ -22,7 +22,8 @@ summary: >-
   recompute_pipeline. Each adapter reports such a source by raising a read-error
   subclass of ValueError, including the xlsx and markdown adapters whose library
   failures previously escaped unwrapped; a failure an adapter does not report as a
-  read failure, such as a missing OCR dependency, keeps its reporting. The
+  read failure keeps its reporting: a missing OCR dependency, or an OSError from this
+  process's own filesystem at any point an adapter opens the source. The
   ingest_document and recompute_pipeline 400 responses declare the new codes, the
   BatchIngestFileError code description in both OpenAPI specifications lists them
   among the per-file codes, and the MCP tool catalog names them. The CAS

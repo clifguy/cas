@@ -16,6 +16,7 @@ server fault is never presented to a caller as something to fix in the file.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import zipfile
 from pathlib import Path
@@ -46,6 +47,24 @@ _BATCH = f"/sage_vaults/{_VAULT_ID}/documents:batch"
 _DOCX_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 _CORRUPT_ZIP = b"PK\x03\x04this is not a valid OPC package at all\n"
+
+
+def _package(main_type: str) -> bytes:
+    """A zip whose content-types part names ``main_type`` and holds nothing else.
+
+    Enough for an adapter's own package handling to succeed, so a patched library
+    open is the first thing to fail.
+    """
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as package:
+        package.writestr(
+            "[Content_Types].xml", f'<Types><Override ContentType="{main_type}"/></Types>'
+        )
+    return buffer.getvalue()
+
+
+_PPTX_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.presentation.main+xml"
+_POTX_TYPE = "application/vnd.openxmlformats-officedocument.presentationml.template.main+xml"
 
 
 def _parse(result: str | dict) -> dict:
@@ -178,6 +197,103 @@ async def test_a_filesystem_failure_opening_a_package_is_not_a_read_error(
 
     assert type(filesystem.value) is ValueError, filesystem.value
     assert type(package.value) is SourceReadError, package.value
+
+
+class _PagesRaise:
+    """A reader whose page list raises the error it is given, and is never encrypted."""
+
+    is_encrypted = False
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    @property
+    def pages(self):
+        raise self._error
+
+
+@pytest.mark.parametrize(
+    ("adapter", "name", "target", "make", "body"),
+    [
+        (PdfAdapter, "doc.pdf", "sage.source_adapters.pdf_adapter.pypdf.PdfReader", None, None),
+        (
+            PdfAdapter,
+            "doc.pdf",
+            "sage.source_adapters.pdf_adapter.pypdf.PdfReader",
+            _PagesRaise,
+            None,
+        ),
+        (PdfAdapter, "doc.pdf", "sage.source_adapters.pdf_adapter.pdfplumber.open", None, None),
+        (DocxAdapter, "doc.docx", "sage.source_adapters.docx_adapter.Document", None, None),
+        (
+            DocxAdapter,
+            "doc.dotx",
+            "sage.source_adapters.docx_adapter.Document",
+            None,
+            _package("application/vnd.openxmlformats-officedocument.wordprocessingml.template"),
+        ),
+        (
+            PptxAdapter,
+            "deck.pptx",
+            "sage.source_adapters.pptx_adapter.Presentation",
+            None,
+            _package(_PPTX_TYPE),
+        ),
+        (
+            PptxAdapter,
+            "deck.potx",
+            "sage.source_adapters.pptx_adapter.Presentation",
+            None,
+            _package(_POTX_TYPE),
+        ),
+    ],
+    ids=[
+        "pdf-open",
+        "pdf-page-count",
+        "pdf-extract",
+        "docx-open",
+        "docx-template-open",
+        "pptx-open",
+        "pptx-template-open",
+    ],
+)
+async def test_a_filesystem_failure_in_a_library_open_is_not_a_read_error(
+    tmp_path, monkeypatch, adapter, name, target, make, body
+):
+    """An ``OSError`` past the hash read is this process's fault; anything else is the file's.
+
+    Each site catches every exception its library raises, so the split is by type.
+    The paired arm raises a non-OS error through the identical patched call and
+    must come back as ``SourceReadError``, so a site that stopped raising the read
+    error at all fails too.
+    """
+    path = tmp_path / name
+    path.write_bytes(body if body is not None else b"%PDF-1.4 placeholder\n")
+    if target.endswith("pdfplumber.open"):
+        # Extraction runs only once a real reader reports at least one page.
+        class _OnePage:
+            is_encrypted = False
+            pages = [object()]
+
+        monkeypatch.setattr(
+            "sage.source_adapters.pdf_adapter.pypdf.PdfReader", lambda *a, **k: _OnePage()
+        )
+
+    async def raised(error: Exception) -> type:
+        if make is None:
+
+            def _raise(*args, **kwargs):
+                raise error
+
+            monkeypatch.setattr(target, _raise)
+        else:
+            monkeypatch.setattr(target, lambda *args, **kwargs: make(error))
+        with pytest.raises(ValueError) as caught:
+            await adapter().project(path, None)
+        return type(caught.value)
+
+    assert await raised(PermissionError("denied")) is ValueError
+    assert await raised(RuntimeError("library could not parse")) is SourceReadError
 
 
 # ---------------------------------------------------------------------------

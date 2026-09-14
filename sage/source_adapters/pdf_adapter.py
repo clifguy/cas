@@ -260,7 +260,9 @@ def _extract_from_path(
         try:
             reader = pypdf.PdfReader(str(path), strict=False)
         except Exception as e:
-            raise SourceReadError(f"Failed to open PDF {path}: {e}") from e
+            # An OSError is this process failing to reach the file, not the file.
+            error = ValueError if isinstance(e, OSError) else SourceReadError
+            raise error(f"Failed to open PDF {path}: {e}") from e
 
         if reader.is_encrypted:
             raise SourceReadError(f"PDF is encrypted and cannot be projected: {path}")
@@ -268,7 +270,8 @@ def _extract_from_path(
         try:
             actual_page_count = len(reader.pages)
         except Exception as e:
-            raise SourceReadError(f"Failed to read pages from PDF {path}: {e}") from e
+            error = ValueError if isinstance(e, OSError) else SourceReadError
+            raise error(f"Failed to read pages from PDF {path}: {e}") from e
 
         info_title = _extract_info_title(reader)
 
@@ -291,7 +294,8 @@ def _extract_from_path(
                             pt = ""
                         page_texts.append(_decode_safe_cid(pt))
             except Exception as e:
-                raise SourceReadError(f"Failed to extract text from PDF {path}: {e}") from e
+                error = ValueError if isinstance(e, OSError) else SourceReadError
+                raise error(f"Failed to extract text from PDF {path}: {e}") from e
 
     return page_texts, outline_entries, info_title, actual_page_count, pages_extracted
 
