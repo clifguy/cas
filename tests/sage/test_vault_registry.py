@@ -22,6 +22,7 @@ import logging
 from typing import Any
 
 import psycopg
+import pytest
 from pydantic_core import PydanticUndefined
 
 from sage.adapters.stubs import StubAbstractionProvider
@@ -667,3 +668,227 @@ async def test_graph_store_port_reports_storage_present_by_default() -> None:
     from sage.adapters.stubs import StubGraphStore
 
     assert await StubGraphStore().storage_present("any_vault") is True
+
+
+# ---------------------------------------------------------------------------
+# reload_vault: the entry point both request surfaces call
+# ---------------------------------------------------------------------------
+
+
+class _CountingGraphStore:
+    """A store whose only affordance is the count the reload report carries."""
+
+    async def get_total_document_count(self) -> int:
+        return 7
+
+
+async def test_reload_vault_rereads_the_declaration_and_threads_its_path(
+    minimal_vault_config_dict: dict, tmp_path: Any, monkeypatch: Any
+) -> None:
+    """The reload rebuilds from the on-disk declaration, not the loaded config.
+
+    The old bundle carries the pre-edit config in memory, so a reload that
+    reused it would hand the rebuild the old name. The path is threaded
+    forward too, so the next reload can re-read it again.
+    """
+    import yaml
+
+    import sage.mcp_init as sage_mcp_init
+    from sage.services.vault_registry import VaultRegistryService
+
+    config_path = tmp_path / "vault_config.yaml"
+    edited = json_roundtrip(minimal_vault_config_dict)
+    edited["vault"]["name"] = "Edited On Disk"
+    config_path.write_text(yaml.safe_dump(edited, sort_keys=False))
+
+    class _Old:
+        config = VaultConfig.model_validate(minimal_vault_config_dict)
+
+    _Old.config_path = config_path
+
+    class _New:
+        graph_store = _CountingGraphStore()
+
+    captured: dict[str, Any] = {}
+
+    async def fake_reload(registry, vault_id, config, config_path=None, registry_service=None):
+        captured.update(
+            vault_id=vault_id,
+            name=config.vault.name,
+            config_path=config_path,
+            registry_service=registry_service,
+        )
+        return _New()
+
+    monkeypatch.setattr(sage_mcp_init, "reload_vault_in_registry", fake_reload)
+    service = VaultRegistryService({"test_vault": _Old()}, initialize_services=None)  # type: ignore[arg-type]
+
+    report = await service.reload_vault("test_vault")
+
+    assert captured == {
+        "vault_id": "test_vault",
+        "name": "Edited On Disk",
+        "config_path": config_path,
+        "registry_service": service,
+    }
+    assert (report.vault_id, report.reloaded, report.document_count) == ("test_vault", True, 7)
+
+
+async def test_reload_vault_refuses_an_unregistered_vault() -> None:
+    """An id with no registry slot is refused as not found, before any rebuild."""
+    import pytest
+
+    from sage.api.errors import VaultNotFoundError
+    from sage.services.vault_registry import VaultRegistryService
+
+    service = VaultRegistryService({}, initialize_services=None)  # type: ignore[arg-type]
+
+    with pytest.raises(VaultNotFoundError):
+        await service.reload_vault("ghost_vault")
+
+
+async def test_reload_vault_reads_the_declaration_through_the_vault_source_store(
+    minimal_vault_config_dict: dict, tmp_path: Any, monkeypatch: Any
+) -> None:
+    """The declaration arrives from the store, not from the path directly.
+
+    Under the filesystem binding the store reads the very file a direct
+    ``open`` would, so every test that edits the file on disk passes against a
+    reload that bypasses the store. The fake store here returns a config the
+    file does not contain, which is the one input that separates them.
+    """
+    import yaml
+
+    import sage.mcp_init as sage_mcp_init
+    from sage.services.vault_registry import VaultRegistryService
+
+    config_path = tmp_path / "vault_config.yaml"
+    on_disk = json_roundtrip(minimal_vault_config_dict)
+    on_disk["vault"]["name"] = "What The File Says"
+    config_path.write_text(yaml.safe_dump(on_disk, sort_keys=False))
+
+    from_store = json_roundtrip(minimal_vault_config_dict)
+    from_store["vault"]["name"] = "What The Store Says"
+
+    class _FakeStore:
+        def load_config(self, discovered: Any) -> VaultConfig:
+            assert discovered.config_path == config_path
+            return VaultConfig.model_validate(from_store)
+
+    class _Old:
+        config = VaultConfig.model_validate(minimal_vault_config_dict)
+
+    _Old.config_path = config_path
+
+    class _New:
+        graph_store = _CountingGraphStore()
+
+    captured: dict[str, Any] = {}
+
+    async def fake_reload(registry, vault_id, config, config_path=None, registry_service=None):
+        captured["name"] = config.vault.name
+        return _New()
+
+    monkeypatch.setattr(
+        sage_mcp_init, "resolve_stack_vault_source_store", lambda _cfg: _FakeStore()
+    )
+    monkeypatch.setattr(sage_mcp_init, "reload_vault_in_registry", fake_reload)
+    service = VaultRegistryService({"test_vault": _Old()}, initialize_services=None)  # type: ignore[arg-type]
+
+    await service.reload_vault("test_vault")
+
+    assert captured["name"] == "What The Store Says"
+
+
+def _reload_service_over(config_path: Any, minimal_vault_config_dict: dict, monkeypatch: Any):
+    """A registry service whose one vault was declared at ``config_path``.
+
+    The rebuild is replaced by a callable that fails the test if it runs, so a
+    refusal is observed as a refusal rather than as whatever the rebuild would
+    have made of an unusable declaration.
+    """
+    import sage.mcp_init as sage_mcp_init
+    from sage.services.vault_registry import VaultRegistryService
+
+    class _Old:
+        config = VaultConfig.model_validate(minimal_vault_config_dict)
+
+    _Old.config_path = config_path
+
+    async def unreachable_reload(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("the rebuild must not start on an unusable declaration")
+
+    monkeypatch.setattr(sage_mcp_init, "reload_vault_in_registry", unreachable_reload)
+    return VaultRegistryService({"test_vault": _Old()}, initialize_services=None)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize(
+    ("declaration", "expected_fragment"),
+    [
+        pytest.param("BAD_ID", "vault.id", id="fails_validation"),
+        pytest.param("vault:\n  id: [unclosed\n", "not valid YAML", id="fails_to_parse"),
+        pytest.param("", "valid dictionary", id="empty"),
+    ],
+)
+async def test_reload_vault_refuses_a_declaration_it_cannot_use(
+    minimal_vault_config_dict: dict,
+    tmp_path: Any,
+    monkeypatch: Any,
+    declaration: str,
+    expected_fragment: str,
+) -> None:
+    """Every way a declaration can be unusable is the one typed refusal.
+
+    Untranslated, each escapes as a bare exception: the MCP arm reports a
+    validation envelope naming the wrong subject or nothing at all, and the
+    REST arm answers an opaque 500, on the very edit the reload exists for.
+    The three inputs reach different members of ``CONFIG_FAILURES`` -- a
+    validation failure, a parse failure, and a file that parses to no mapping
+    -- so a translator narrowed to any one of them fails here.
+    """
+    import yaml
+
+    from sage.api.errors import VaultConfigValidationError
+
+    config_path = tmp_path / "vault_config.yaml"
+    if declaration == "BAD_ID":
+        malformed = json_roundtrip(minimal_vault_config_dict)
+        malformed["vault"]["id"] = "Not A Valid Id!!"
+        config_path.write_text(yaml.safe_dump(malformed, sort_keys=False))
+    else:
+        config_path.write_text(declaration)
+
+    service = _reload_service_over(config_path, minimal_vault_config_dict, monkeypatch)
+
+    with pytest.raises(VaultConfigValidationError) as excinfo:
+        await service.reload_vault("test_vault")
+
+    assert excinfo.value.code == "vault_config_validation_error"
+    assert excinfo.value.status_code == 400
+    assert any(expected_fragment in message for message in excinfo.value.detail["errors"])
+
+
+async def test_reload_vault_lets_an_absent_declaration_propagate(
+    minimal_vault_config_dict: dict, tmp_path: Any, monkeypatch: Any
+) -> None:
+    """A declaration that is absent is not a declaration that is wrong.
+
+    The refusal describes what a caller must correct in a file that exists, so
+    translating a missing file into it would tell an operator to fix contents
+    that are not there. Asserted rather than assumed: it is the boundary of
+    ``CONFIG_FAILURES``, and a translator widened to ``except Exception``
+    passes every other test in this module.
+    """
+    service = _reload_service_over(
+        tmp_path / "vault_config.yaml", minimal_vault_config_dict, monkeypatch
+    )
+
+    with pytest.raises(FileNotFoundError):
+        await service.reload_vault("test_vault")
+
+
+def json_roundtrip(value: dict) -> dict:
+    """A deep copy through JSON, so a test edit cannot reach the shared fixture."""
+    import json
+
+    return json.loads(json.dumps(value))

@@ -145,10 +145,16 @@ YAML_ONLY_FORWARD_DECLARATIONS: set[str] = {
 # must not perform. It sits under /sage_vaults/ all the same, because the
 # CAS Application reaches SAGE through a backend-for-frontend that proxies
 # that subtree and nothing else.
+#
+# The stack-configuration read is stack-scoped: its unit of work is the SAGE
+# process, not any vault, so it carries no {vault_id}. It sits in the
+# maintenance family one level below the vault collection for the same proxy
+# reason, and is declared ahead of the vault-scoped routes.
 SAGE_NON_VAULT_PATHS: set[str] = {
     "/upload",
     "/download/{transfer_id}",
     "/sage_vaults/default-config",
+    "/sage_vaults/maintenance/stack-config",
 }
 
 # Prefix every vault-scoped path carries. The vault collection itself sits

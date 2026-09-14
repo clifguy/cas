@@ -149,7 +149,7 @@ CONTENDING_CALLS: Final[frozenset[str]] = frozenset(
 # surface names the route, not the function, so the name walk alone cannot see
 # it. Only routes that actually exist are listed; a new contending route has to
 # be added here, and the walk stays blind to it until it is.
-CONTENDING_ROUTE_SEGMENTS: Final[tuple[str, ...]] = ("/reabstract",)
+CONTENDING_ROUTE_SEGMENTS: Final[tuple[str, ...]] = ("/reabstract", "/recompute-pipeline")
 
 # Enum member name -> wire value, so ``PipelineStatus.INDEXING_COMPLETE`` in an
 # accept-set is recognized as readily as the ``"indexing_complete"`` literal.

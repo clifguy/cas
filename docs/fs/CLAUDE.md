@@ -54,9 +54,11 @@ already says `detail` is omitted when empty. The error normalizes an empty
 per-item, batch-ingest per-file — omits it under the ordinary null rule rather
 than by a test of its own.
 
-One thing the rule does not reach, by decision rather than by oversight. A
-response with no published schema at all, such as the stack-configuration
-report, is dumped whole: the rule's authority is the schema, and there is none.
+One thing the rule does not reach, by decision rather than by oversight. The
+stack-configuration report is dumped whole on both surfaces: its published
+response declares only the sections callers most often read and admits the
+rest, so the schema cannot say which absent keys a caller may rely on, and a
+field the stack leaves unset is reported null rather than dropped.
 
 Express nullability the OpenAPI 3.1 way — `type: [string, "null"]`, or an
 `anyOf` branch beside a `$ref`. The 3.0 `nullable: true` keyword is not part of

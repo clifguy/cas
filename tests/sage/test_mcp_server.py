@@ -2015,7 +2015,7 @@ async def test_reload_vault_count_comes_from_the_store_total(vault_services, mon
     degraded to ``None``. Both go red, the second on the value rather than on
     the exception, which is why the assertion is on 4242 and not on the raise.
     """
-    import sage.sage_api_tools as _sage_tools_module
+    import sage.mcp_init as _mcp_init
 
     class _CountOnlyGraphStore:
         async def get_total_document_count(self) -> int:
@@ -2032,10 +2032,9 @@ async def test_reload_vault_count_comes_from_the_store_total(vault_services, mon
     async def fake_reload(*args, **kwargs):
         return _FakeServices()
 
-    # The tool closure resolves ``reload_vault_in_registry`` through its
-    # defining module's globals, so the patch must land there rather than on
-    # sage.mcp_server, which only re-exports the closure.
-    monkeypatch.setattr(_sage_tools_module, "reload_vault_in_registry", fake_reload)
+    # The shared reload entry point imports ``reload_vault_in_registry`` from
+    # sage.mcp_init at call time, so the patch lands on that module.
+    monkeypatch.setattr(_mcp_init, "reload_vault_in_registry", fake_reload)
 
     result = _parse(await reload_vault("test_vault"))
 
@@ -2096,7 +2095,7 @@ async def test_reload_vault_reports_success_when_the_count_read_fails(
     what escapes is neither a ``SAGEError`` nor a ``ValueError`` and no
     existing handler in the tool body sees it.
     """
-    import sage.sage_api_tools as _sage_tools_module
+    import sage.mcp_init as _mcp_init
 
     class _FailingCountGraphStore:
         async def get_total_document_count(self) -> int:
@@ -2108,7 +2107,7 @@ async def test_reload_vault_reports_success_when_the_count_read_fails(
     async def fake_reload(*args, **kwargs):
         return _FakeServices()
 
-    monkeypatch.setattr(_sage_tools_module, "reload_vault_in_registry", fake_reload)
+    monkeypatch.setattr(_mcp_init, "reload_vault_in_registry", fake_reload)
 
     with caplog.at_level(logging.ERROR):
         result = _parse(await reload_vault("test_vault"))
@@ -3587,10 +3586,9 @@ def test_reload_vault_and_get_stack_config_in_sage_tools_registry():
 
     Both are substrate-maintenance operations, placed on the maintenance
     surface by the surface-assignment table (CAS-ADR-029) rather than by
-    anything in their names. The two tools have no HTTP counterpart by design and are
-    operationally MCP-only; they nonetheless ride the canonical
-    registration path so the conformance gates and the ``_sage_tools``
-    registry view cover them on the same terms as every other tool.
+    anything in their names. Both ride the canonical registration path so
+    the conformance gates and the ``_sage_tools`` registry view cover them on
+    the same terms as every other tool.
 
     Anti-coincidental: identity (``is``) check against the module-level
     re-export rules out bare-key stubs and cross-wired keys; equality
