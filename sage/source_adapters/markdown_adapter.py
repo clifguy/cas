@@ -249,9 +249,21 @@ def _pandoc_block(state: StateBlock, start: int, end: int, silent: bool) -> bool
     - a simple table with a header, a line other than a heading followed by a
       column rule, through the next blank line; pandoc reads a heading before a
       table, so a heading line is never a table header.
+
+    None of these reaches past the container block it starts in: a line indented
+    less than the container's content, such as the first line after a list item,
+    ends the search for a closing rule, as it ends a fenced code block.
     """
     if state.sCount[start] - state.blkIndent >= 4:
         return False
+    end = next(
+        (
+            index
+            for index in range(start + 1, end)
+            if not state.isEmpty(index) and state.sCount[index] < state.blkIndent
+        ),
+        end,
+    )
 
     def line(index: int) -> str:
         return state.src[state.bMarks[index] + state.tShift[index] : state.eMarks[index]]

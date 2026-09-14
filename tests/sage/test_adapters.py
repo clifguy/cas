@@ -5046,6 +5046,29 @@ _GFM_SHAPES = [
     ),
 ]
 
+# A Pandoc block opened by a rule inside a list item, left unclosed there: its reach
+# ends with the item, so a heading after the list stays a heading.
+# (name, source, expected heading paths)
+_UNCLOSED_TABLE_IN_A_LIST_ITEM = [
+    (
+        "bullet item, setext heading after the list",
+        "- item\n\n    -----  -----\n    NTH    North\n\n"
+        "Title\n=====\n\nBody.\n\n---------\n\n## After\n\nMore.\n",
+        ["Title", "Title > After"],
+    ),
+    (
+        "ordered item, setext heading after the list",
+        "1. item\n\n   -----  -----\n   NTH    North\n\n   More item text.\n\nSub\n---\n\nBody.\n",
+        ["Sub"],
+    ),
+    (
+        "control: table closed inside the item",
+        "- item\n\n    -----  -----\n    NTH    North\n    -----  -----\n\n"
+        "Title\n=====\n\nBody.\n\n---------\n\n## After\n\nMore.\n",
+        ["Title", "Title > After"],
+    ),
+]
+
 # An ATX heading directly over a column rule: pandoc reads the heading first, so
 # the line under it is never a table header.
 _HEADING_OVER_COLUMN_RULE = {
@@ -5130,6 +5153,7 @@ def _dialect_sources() -> list[str]:
         _PIPE_TABLE_THEN_RULE,
         *_NESTED_PANDOC_TABLES.values(),
         *_HEADING_OVER_COLUMN_RULE.values(),
+        *(source for _, source, _ in _UNCLOSED_TABLE_IN_A_LIST_ITEM),
     ]
 
 
@@ -5241,6 +5265,24 @@ class TestMarkdownDialect:
         result = await self._project(tmp_path, source)
 
         assert result.headings == []
+
+    @pytest.mark.parametrize("dialect", [None, "pandoc"])
+    @pytest.mark.parametrize(
+        ("source", "paths"),
+        [(source, paths) for _, source, paths in _UNCLOSED_TABLE_IN_A_LIST_ITEM],
+        ids=[name for name, _, _ in _UNCLOSED_TABLE_IN_A_LIST_ITEM],
+    )
+    async def test_ad_167_a_pandoc_block_ends_with_its_list_item(
+        self, tmp_path, source, paths, dialect
+    ):
+        """AD-167: A Pandoc block opened inside a list item reaches no further than the item."""
+        config = {"dialect": dialect} if dialect else None
+        as_gfm = await self._project(tmp_path, source, {"dialect": "gfm"})
+        assert [h.path for h in as_gfm.headings] == paths, "control: the GFM reading"
+
+        result = await self._project(tmp_path, source, config)
+
+        assert [h.path for h in result.headings] == paths
 
     async def test_ad_168_a_declared_dialect_takes_precedence_over_detection(self, tmp_path):
         """AD-168: A declared dialect takes precedence over detection."""
