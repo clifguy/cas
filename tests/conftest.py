@@ -67,6 +67,15 @@ def pytest_xdist_auto_num_workers(config: pytest.Config) -> int:
 _SURFACE_CONFORMANCE_GATE = "tests/sage/test_mcp_tool_conformance.py::"
 
 
+def _surface_gate_reported(stats: dict[str, list[Any]]) -> bool:
+    """Whether any report in the terminal reporter's stats came from the gate module."""
+    return any(
+        getattr(report, "nodeid", "").startswith(_SURFACE_CONFORMANCE_GATE)
+        for reports in stats.values()
+        for report in reports
+    )
+
+
 def pytest_terminal_summary(terminalreporter: Any) -> None:
     """Print the surface divergences still pending remediation (CAS-ADR-052).
 
@@ -75,12 +84,7 @@ def pytest_terminal_summary(terminalreporter: Any) -> None:
     without opening the register. Permanent divergences are never printed.
     Runs on the controller, where reports from every worker arrive.
     """
-    ran_gate = any(
-        getattr(report, "nodeid", "").startswith(_SURFACE_CONFORMANCE_GATE)
-        for reports in terminalreporter.stats.values()
-        for report in reports
-    )
-    if not ran_gate:
+    if not _surface_gate_reported(terminalreporter.stats):
         return
 
     from tests.sage.surface_divergences import REGISTERS, pending_remediation_lines

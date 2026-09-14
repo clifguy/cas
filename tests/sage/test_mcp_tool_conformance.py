@@ -27,7 +27,8 @@ parameter or request-body field of the operation on its tool. A gap in
 any of the four directions is admitted only by an entry in the matching
 register in ``surface_divergences.py`` -- ``MCP_ONLY_TOOLS``,
 ``REST_ONLY_OPERATIONS``, ``MCP_ONLY_ARGUMENTS``, ``REST_ONLY_ARGUMENTS``
--- and every register fails on a stale entry.
+-- and every register fails on a stale entry: one whose divergence has
+closed, or one naming a tool, operation, or mapped pair that no longer exists.
 
 Under CAS-ADR-052 a divergence between the surfaces is admissible only
 in a closed set of categories, and doubt resolves to parity. Each
@@ -744,6 +745,114 @@ def test_rest_argument_walk_is_not_empty():
     assert sum(len(names) for names in fields.values()) >= 100
     assert "filters" in fields[("sage_core", "search")]
     assert "transfer_token" in fields[("sage_core", "ingest_document")]
+
+    unwalked = [
+        f"{surface_name}/{tool_name}: {reason}"
+        for surface_name, tool_name in _mapped_tool_pairs()
+        for reason in _unwalked_request_body(
+            _load_spec(_SURFACES_BY_NAME[surface_name].spec_path),
+            _mapped_operation(surface_name, tool_name)[1],
+        )
+    ]
+    assert unwalked == [], (
+        "The argument walk reads only top-level properties of an application/json "
+        "request body; these bodies would contribute fields it cannot see."
+    )
+
+
+def _unwalked_request_body(spec: dict[str, Any], op: dict[str, Any]) -> list[str]:
+    """Ways an operation's request body escapes ``_operation_parameters``.
+
+    The walk reads the top-level ``properties`` of an ``application/json`` body.
+    A body in another media type, or one whose schema names no top-level
+    properties (a composed ``oneOf``/``anyOf``/``allOf``), contributes no fields,
+    so the REST-to-MCP direction would pass over it vacuously.
+    """
+    body = op.get("requestBody")
+    if not body:
+        return []
+    if "$ref" in body:
+        body = _resolve_ref(spec, body["$ref"])
+    reasons: list[str] = []
+    media_types = set(body.get("content", {}))
+    if media_types != {"application/json"}:
+        reasons.append(f"media types {sorted(media_types)!r}")
+    schema = body.get("content", {}).get("application/json", {}).get("schema", {})
+    if "$ref" in schema:
+        schema = _resolve_ref(spec, schema["$ref"])
+    if "application/json" in media_types and not schema.get("properties"):
+        reasons.append("JSON body schema has no top-level properties")
+    return reasons
+
+
+def test_unwalked_request_body_flags_what_the_walk_cannot_read():
+    spec: dict[str, Any] = {}
+    json_body = {"content": {"application/json": {"schema": {"properties": {"a": {}}}}}}
+    composed = {"content": {"application/json": {"schema": {"oneOf": [{}, {}]}}}}
+    multipart = {"content": {"multipart/form-data": {"schema": {"properties": {"a": {}}}}}}
+
+    assert _unwalked_request_body(spec, {}) == []
+    assert _unwalked_request_body(spec, {"requestBody": json_body}) == []
+    assert len(_unwalked_request_body(spec, {"requestBody": composed})) == 1
+    assert len(_unwalked_request_body(spec, {"requestBody": multipart})) == 1
+
+
+def test_every_register_entry_names_a_live_subject():
+    """A register row outliving its subject on both surfaces is stale too.
+
+    The per-element tests consult a register only when their walk over the live
+    surfaces reaches its key, so a row for a deleted tool, a removed operation,
+    or an argument on a tool that is no longer mapped would never be read.
+    """
+    registered_tools = {
+        (surface.name, tool) for surface in TOOL_SURFACES for tool in _surface_registry(surface)
+    }
+    operation_ids = {
+        (surface.name, op_id)
+        for surface in TOOL_SURFACES
+        for op_id in _all_operation_ids(_load_spec(surface.spec_path))
+    }
+    mapped = set(_mapped_tool_pairs())
+
+    orphaned = sorted(
+        [f"MCP_ONLY_TOOLS{key!r}" for key in MCP_ONLY_TOOLS if key not in registered_tools]
+        + [
+            f"REST_ONLY_OPERATIONS{key!r}"
+            for key in REST_ONLY_OPERATIONS
+            if key not in operation_ids
+        ]
+        + [
+            f"{name}{key!r}"
+            for name, register in (
+                ("MCP_ONLY_ARGUMENTS", MCP_ONLY_ARGUMENTS),
+                ("REST_ONLY_ARGUMENTS", REST_ONLY_ARGUMENTS),
+            )
+            for key in register
+            if key[:2] not in mapped
+        ]
+    )
+    assert orphaned == [], "register rows naming a subject that exists on neither surface"
+
+
+def test_pending_summary_hook_is_keyed_to_this_module():
+    """A rename of this module would otherwise silence the summary with nothing red."""
+    from tests.conftest import _SURFACE_CONFORMANCE_GATE
+
+    assert _SURFACE_CONFORMANCE_GATE == f"{Path(__file__).relative_to(_REPO_ROOT).as_posix()}::"
+
+
+def test_surface_gate_reported_predicate():
+    from tests.conftest import _SURFACE_CONFORMANCE_GATE, _surface_gate_reported
+
+    class _Report:
+        def __init__(self, nodeid: str) -> None:
+            self.nodeid = nodeid
+
+    gate_report = _Report(f"{_SURFACE_CONFORMANCE_GATE}test_example")
+    other_report = _Report("tests/sage/test_other.py::test_example")
+
+    assert _surface_gate_reported({"passed": [other_report, gate_report]}) is True
+    assert _surface_gate_reported({"passed": [other_report], "": [object()]}) is False
 
 
 # ---------------------------------------------------------------------------
