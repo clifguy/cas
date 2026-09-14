@@ -1872,6 +1872,7 @@ def register_sage_tools(
                 "references"}``.
             document_id: Target document (required for deterministic mode).
             heading_path: Heading path prefix (required for deterministic mode).
+                The empty string addresses the text under no heading.
             limit: Maximum results (0-100). Default: 10. 0 is catalog-only and
                 returns total_available with no results, for documents and for
                 edges alike; other modes and the facets target refuse it.
@@ -1958,8 +1959,9 @@ def register_sage_tools(
             ``heading_path``. A hit whose ``heading_path`` is null comes
             from text under no heading -- the whole body of a document
             with no headings, or the text before a document's first
-            heading; ``read_section`` with an empty ``heading_path``
-            returns it whole. An
+            heading; ``search`` with ``mode="deterministic"`` or
+            ``read_section``, given an empty ``heading_path``, returns it
+            whole. An
             explicit ``response_mode`` suppresses the excerpt, as it
             suppresses the catalog degrade.
 

@@ -3312,7 +3312,8 @@ class DiscoverRequest(BaseModel):
         description=(
             "Heading hierarchy path for deterministic extraction (e.g., "
             '"Section 3 > Definitions > Normalization"). Required for '
-            "deterministic mode, and refused outside it. A catalog-only "
+            "deterministic mode, and refused outside it. The empty string "
+            "addresses the text under no heading. A catalog-only "
             "target refuses it on the target axis, naming documents as "
             "the target that takes one."
         ),
@@ -3799,15 +3800,17 @@ class DiscoverHit(BaseModel):
             "`heading_path` returns it whole; where the hit's "
             "`heading_path` is null, the passage is text under no heading -- "
             "the whole body of a document with no headings, or the text "
-            "before a document's first heading -- which `read_section` "
-            "returns whole for an empty `heading_path`."
+            "before a document's first heading -- which a deterministic "
+            "request or `read_section` returns whole for an empty "
+            "`heading_path`."
         ),
     )
     heading_path: str | None = Field(
         default=None,
         description=(
             "Heading hierarchy path of the retrieved chunk (e.g., "
-            '"Section 3 > Definitions > Normalization").'
+            '"Section 3 > Definitions > Normalization"). Null where the '
+            "chunk is text under no heading."
         ),
     )
     relevance_score: float | None = Field(

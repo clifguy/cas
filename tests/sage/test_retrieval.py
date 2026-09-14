@@ -667,8 +667,9 @@ async def test_deterministic_requires_heading_path(retrieval_service):
         mode=RetrievalMode.DETERMINISTIC,
         document_id=_id("some_doc"),
     )
-    with pytest.raises(MissingFieldError):
+    with pytest.raises(MissingFieldError) as caught:
         await retrieval_service.discover(request)
+    assert caught.value.code == "missing_heading_path"
 
 
 async def test_deterministic_nonexistent_document(graph_store, retrieval_service):
