@@ -201,6 +201,17 @@ def test_nothing_restates_the_separator():
     (``"Section 3 > Definitions"``), which is why three field descriptions in
     the models are not flagged and need no allowlist to stay unflagged.
 
+    The edge test has one collision it cannot resolve. The delimiter is also a
+    comparison operator with a space either side, so ``f"{column} > {value}"``
+    leaves the same constant in the same position as a join, and no predicate
+    over the literal separates them. The contextual signals fare no better. The
+    module and the SQL text nearby both fail on the child-heading prefix query,
+    which is a heading path built inside SQL in the SQL binding, so exempting
+    comparisons on either would exempt the site the scan exists for; the names
+    in the placeholders are a guess that renaming a variable defeats. The
+    predicate therefore stays whole, and the failure message carries the remedy
+    for both readings instead of advice that is wrong for one.
+
     Anti-coincidental-pass: the assertion is bracketed by a positive control
     that the tree was actually read. A glob that matched nothing would otherwise
     report a clean scan. The module that *defines* the constant is the one
@@ -211,27 +222,137 @@ def test_nothing_restates_the_separator():
     assert len(modules) >= 50, "the sage package was not read; the scan proves nothing"
 
     definition = root / "adapters" / "interfaces.py"
-    restated: dict[str, list[int]] = {}
+    restated: dict[str, list[tuple[int, str]]] = {}
     for path in modules:
         if path == definition:
             continue
-        tree = ast.parse(path.read_text())
-        lines = sorted(
-            {
-                node.lineno
-                for node in ast.walk(tree)
-                if isinstance(node, ast.Constant)
-                and isinstance(node.value, str)
-                and (
-                    node.value.startswith(HEADING_PATH_SEPARATOR)
-                    or node.value.endswith(HEADING_PATH_SEPARATOR)
-                )
-            }
-        )
+        source = path.read_text()
+        lines = _restated_separator_lines(source)
         if lines:
-            restated[str(path.relative_to(root))] = lines
+            text = source.splitlines()
+            restated[str(path.relative_to(root))] = [(n, text[n - 1].strip()) for n in lines]
 
-    assert not restated, (
-        f"these modules spell the heading-path delimiter themselves: {restated}; "
-        "import HEADING_PATH_SEPARATOR from sage.adapters.interfaces instead"
+    assert not restated, _restatement_message(restated)
+
+
+# The spelling the failure message offers for a comparison operator. Closing up
+# either space takes the operator off the literal's edge.
+_SANCTIONED_COMPARISON = 'f"{column}>{value}"'
+
+
+def _restated_separator_lines(source: str) -> list[int]:
+    """The lines on which a string literal starts or ends with the delimiter."""
+    return sorted(
+        {
+            node.lineno
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and (
+                node.value.startswith(HEADING_PATH_SEPARATOR)
+                or node.value.endswith(HEADING_PATH_SEPARATOR)
+            )
+        }
     )
+
+
+def _restatement_message(restated: dict[str, list[tuple[int, str]]]) -> str:
+    """The failure text, naming the fix for each reading a flagged literal can have."""
+    hits = "\n".join(
+        f"  {module}:{line}: {text}" for module, found in restated.items() for line, text in found
+    )
+    return (
+        f"these literals start or end with the heading-path delimiter {HEADING_PATH_SEPARATOR!r}:\n"
+        f"{hits}\n"
+        "If a line spells the delimiter, import HEADING_PATH_SEPARATOR from "
+        "sage.adapters.interfaces instead.\n"
+        "If it is a comparison operator (a SQL predicate, say), importing the delimiter "
+        "would break it; close up a space beside the operator instead, as in "
+        f"{_SANCTIONED_COMPARISON}."
+    )
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'f"{a} > {b}"',
+        'prefix + " > %"',
+        '" > ".join(parts)',
+        'path.split(" > ")',
+        'f"{root} > Notes"',
+        '"Notes > " + child',
+    ],
+    ids=["fstring-join", "like-pattern", "join", "split", "leading-edge", "trailing-edge"],
+)
+def test_the_scan_flags_each_restating_spelling(source):
+    """Every spelling the scan exists to catch is caught.
+
+    Anti-coincidental-pass: the f-string join is the case a narrowing aimed at
+    comparisons would lose, since the two leave the same constant between two
+    placeholders. A scan that exempted placeholder-flanked constants, or that
+    reported nothing at all, fails here. The two edge cases each hold the
+    delimiter at one end only, so a scan that tested a single edge fails one of
+    them; every other spelling here satisfies both edges at once.
+    """
+    assert _restated_separator_lines(source) == [1]
+
+
+def test_the_scan_leaves_prose_alone():
+    """A delimiter in the middle of a literal is prose about a path, not a spelling."""
+    assert _restated_separator_lines('x = "Section 3 > Definitions"') == []
+
+
+def test_a_comparison_is_flagged_like_a_join():
+    """A spaced comparison operator in an f-string is flagged, by design.
+
+    Pinned rather than tolerated: the scan cannot tell this shape from a join,
+    so the remedy lives in the failure message. Narrowing the predicate to pass
+    it should be a deliberate edit against this test.
+    """
+    assert _restated_separator_lines('f"{column} > {value}"') == [1]
+
+
+def test_the_message_names_both_readings():
+    """The advice on failure is right whichever reading the flagged code has.
+
+    Anti-coincidental-pass: a message that drops either reading, the recommended
+    spelling, or any flagged line fails here. Two rivals keep every one of those
+    strings and are still wrong, so the assertions are shaped against them: a
+    message rendering only the first hit of each module fails on the second hit
+    in ``adapters/x.py``, and a message pairing each remedy with the other
+    reading fails the per-line checks, since the two readings are stated on
+    lines of their own. What this does not reach is the scan ceasing to use the
+    message: nothing in the suite trips the scan on purpose, so that is held by
+    the scan's own assertion reading ``_restatement_message`` rather than by a
+    test.
+    """
+    hits = {
+        "adapters/x.py": [(3, 'f"{column} > {value}"'), (9, 'prefix + " > %"')],
+        "services/y.py": [(4, '" > ".join(parts)')],
+    }
+    message = _restatement_message(hits)
+    for module, found in hits.items():
+        for line, text in found:
+            assert f"{module}:{line}: {text}" in message
+
+    lines = message.splitlines()
+    (delimiter,) = [line for line in lines if "spells the delimiter" in line]
+    (comparison,) = [line for line in lines if "comparison operator" in line]
+    assert "import HEADING_PATH_SEPARATOR from sage.adapters.interfaces" in delimiter
+    assert _SANCTIONED_COMPARISON not in delimiter
+    assert _SANCTIONED_COMPARISON in comparison
+    assert "import HEADING_PATH_SEPARATOR" not in comparison
+
+
+@pytest.mark.parametrize(
+    "source",
+    [_SANCTIONED_COMPARISON, 'f"{c}> {v}"', 'f"{c} >{v}"', 'f"{c}> %s"'],
+)
+def test_the_sanctioned_comparison_spelling_passes_the_scan(source):
+    """The way past the message recommends really does get past the scan.
+
+    Anti-coincidental-pass: a scan that flagged any ``>``, or that compared a
+    stripped literal, would still flag every spelling above and would flag
+    these too, leaving the message's advice as wrong as the advice it replaced.
+    """
+    assert _restated_separator_lines(source) == []
