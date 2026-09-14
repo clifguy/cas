@@ -1070,7 +1070,7 @@ class InvalidParameterError(SAGEError):
         message = f"Invalid value for parameter {parameter!r}: {constraint}."
         detail: dict = {
             "parameter": parameter,
-            "value": value,
+            "value": value if isinstance(value, _JSON_NATIVE_TYPES) else str(value),
             "constraint": constraint,
         }
         if hint is not None:
@@ -2495,13 +2495,9 @@ def _generic_parameter_error(
     err = errors[0]
     loc = _strip_transport_segment(tuple(err.get("loc") or ()), exc)
     parameter = ".".join(str(segment) for segment in loc) or "request"
-    value = err.get("input")
-    if not isinstance(value, _JSON_NATIVE_TYPES):
-        value = str(value)
-
     return InvalidParameterError(
         parameter=parameter,
-        value=value,
+        value=err.get("input"),
         constraint=str(err.get("msg", "Invalid value")),
         hint=_PARAMETER_HINTS.get((str(loc[-1]) if loc else "", str(err.get("type", "")))),
     )

@@ -28,7 +28,6 @@ _VAULT_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(VaultIdStr)
 # places (CAS-ADR-037, CAS-ADR-052).
 _FILE_ENTRY_FIELDS = frozenset({"file_path", "transfer_token", "source_type", "parsed_metadata"})
 _PARSED_METADATA_FIELDS = frozenset({"title", "date", "project", "codes", "version", "doc_type"})
-_JSON_NATIVE_TYPES = (str, int, float, bool, type(None))
 
 
 def _refuse_undeclared_entry_fields(files: list[dict]) -> None:
@@ -48,10 +47,9 @@ def _refuse_undeclared_entry_fields(files: list[dict]) -> None:
         for prefix, mapping, declared in locations:
             undeclared = sorted(name for name in mapping if name not in declared)
             if undeclared:
-                value = mapping[undeclared[0]]
                 raise InvalidParameterError(
                     parameter=f"{prefix}.{undeclared[0]}",
-                    value=value if isinstance(value, _JSON_NATIVE_TYPES) else str(value),
+                    value=mapping[undeclared[0]],
                     constraint="Extra inputs are not permitted",
                 )
 
@@ -301,6 +299,11 @@ def register_app_tools(
           calendar date. The ingest of that one file fails and the call still
           returns its summary, so a caller checking only the envelope sees a
           success.
+        - ``invalid_parameter`` (422): a file entry, or the
+          ``parsed_metadata`` it carries, names a key the tool does not
+          declare; ``detail.parameter`` locates it (``files.<n>.<key>`` or
+          ``files.<n>.parsed_metadata.<key>``). A batch-boundary refusal
+          raised before any file is delivered or ingested.
         - ``ambiguous_ingest_source`` / ``missing_ingest_source`` (400): a
           file entry set both ``file_path`` and ``transfer_token``, or
           neither; each entry needs exactly one.

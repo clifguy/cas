@@ -370,3 +370,29 @@ async def test_standalone_app_refuses_undeclared_names(
 
     _assert_unknown_parameter(refused, tool=tool, rejected=rejected, valid=valid)
     _assert_code(control, 501, "local_profile_only")
+
+
+# ---------------------------------------------------------------------------
+# The MCP tool's declared names track the shapes they mirror
+# ---------------------------------------------------------------------------
+
+
+def test_mcp_file_entry_names_match_the_request_shapes():
+    """The MCP tool declares the names the application request models declare.
+
+    The tool reads plain mappings, so its declared names are listed by hand;
+    this holds each list to the model it restates. A field added to either
+    model and not to the tool would be accepted on one surface and refused on
+    the other. ``transfer_token`` is the one entry name the tool has beyond
+    the model: the upload delivery shape, which the application API, reading
+    paths on a shared filesystem, does not offer.
+    """
+    from dataclasses import fields
+
+    from app.backend.models import IngestFileItem, ParsedMetadata
+    from sage.app_tools import _FILE_ENTRY_FIELDS, _PARSED_METADATA_FIELDS
+    from sage.services.batch_ingest import ParsedMetadataInput
+
+    assert _FILE_ENTRY_FIELDS == set(IngestFileItem.model_fields) | {"transfer_token"}
+    assert _PARSED_METADATA_FIELDS == set(ParsedMetadata.model_fields)
+    assert _PARSED_METADATA_FIELDS == {field.name for field in fields(ParsedMetadataInput)}
