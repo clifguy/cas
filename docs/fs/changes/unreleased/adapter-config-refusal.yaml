@@ -1,0 +1,28 @@
+classification: minor
+category:
+  - caller-adaptation
+summary: >-
+  A source adapter refuses a config value it cannot use, before reading the source,
+  and the refusal is reported as adapter_config_invalid (400) with a detail naming the
+  source type, the key and the value, rather than as an untyped internal error or a
+  500. An ingest refuses it before retaining the source, so a refused external file is
+  not copied into the vault, and a dry-run ingest reports the same refusal. The values refused are those vault_config.schema.json already documents as
+  unacceptable under adapter_defaults: a markdown dialect other than gfm or pandoc, a
+  pdf max_pages, pptx max_slides or xlsx preview_rows that is not an integer of at
+  least 1, an xlsx max_sheets that is neither that nor null, and a docx
+  heading_style_map that is not a mapping of style names to heading levels 1 through
+  9. A config key an adapter does not read is still ignored. The ingest_document 400
+  response in sage_core_api.openapi.yaml declares the code; the BatchIngestFileError
+  code description in both OpenAPI specifications lists it among the per-file codes;
+  and the ingest_document, bulk_ingest_document and recompute_pipeline descriptions in
+  the MCP tool catalog name it. A source an adapter cannot read keeps its reporting.
+  No operation, tool, parameter or response field is added or removed.
+for_callers: >-
+  An adapter config value the adapter cannot use is now refused with
+  adapter_config_invalid, on ingest_document, on each file of a batch ingest, and on
+  recompute_pipeline, whose detail names the key and the value to correct; a dry-run
+  ingest reports it too. Some values were accepted before and are refused now: a
+  max_pages, max_slides or max_sheets of 0 (a max_slides or max_sheets of 0 used to
+  project every slide or sheet), a preview_rows of 0 (a header with no data rows), and
+  a boolean in place of a count. A vault whose adapter_defaults holds such a value refuses every ingest and
+  re-projection of that format until the value is corrected with update_vault_config.

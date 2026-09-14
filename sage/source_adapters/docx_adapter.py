@@ -30,6 +30,7 @@ from lxml import etree
 
 from sage.adapters.interfaces import HEADING_PATH_SEPARATOR
 from sage.source_adapters.base import (
+    AdapterConfigError,
     HeadingNode,
     ProjectionResult,
     SourceAdapter,
@@ -277,13 +278,16 @@ class DocxAdapter(SourceAdapter):
     VERSION = "0.6.0"
     EXTENSIONS = [".docx", ".dotx"]
 
+    def check_config(self, config: dict | None) -> None:
+        self._build_style_map(config)
+
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
+        style_map = self._build_style_map(config)
         raw_bytes = source_path.read_bytes()
         content_hash = hashlib.sha256(raw_bytes).hexdigest()
 
         is_template = source_path.suffix.lower() == ".dotx"
         doc = self._open_document(source_path, is_template)
-        style_map = self._build_style_map(config)
         style_id_to_name = self._build_style_id_to_name(doc)
 
         # Initialize numbering engine
@@ -791,10 +795,28 @@ class DocxAdapter(SourceAdapter):
         return tags
 
     def _build_style_map(self, config: dict | None) -> dict[str, int]:
-        """Build heading style map from config, merging with defaults."""
+        """Build heading style map from config, merging with defaults.
+
+        Raises:
+            AdapterConfigError: ``heading_style_map`` is not a mapping of style
+                names to heading levels 1 through 9.
+        """
         style_map = dict(_DEFAULT_STYLE_MAP)
         if config and "heading_style_map" in config:
-            style_map.update(config["heading_style_map"])
+            configured = config["heading_style_map"]
+            if not isinstance(configured, dict) or not all(
+                isinstance(style, str)
+                and isinstance(level, int)
+                and not isinstance(level, bool)
+                and 1 <= level <= 9
+                for style, level in configured.items()
+            ):
+                raise AdapterConfigError(
+                    "heading_style_map",
+                    configured,
+                    "expected a mapping of style names to heading levels 1 through 9",
+                )
+            style_map.update(configured)
         return style_map
 
     def _build_style_id_to_name(self, doc: Document) -> dict[str, str]:

@@ -387,6 +387,11 @@ def register_sage_tools(
           and ``example``. No document is created.
         - ``adapter_not_found`` (400): no source adapter is registered for
           ``source_type``.
+        - ``adapter_config_invalid`` (400): the source adapter refused a value
+          it cannot use in its config, the vault's ``adapter_defaults`` merged
+          with ``config``. Detail names the source type, the key and the
+          value. Raised before the source is retained, and by a ``dry_run``
+          call too. No document is created.
         - ``source_file_not_found`` (404): ``source`` does not resolve to a
           readable file.
         - ``vault_source_path_refused`` (400): the vault-source store refused
@@ -2992,6 +2997,9 @@ def register_sage_tools(
         - ``document_not_found`` (404): no document with that id.
         - ``adapter_not_found`` (400): no source adapter for the document's
           ``source_type``.
+        - ``adapter_config_invalid`` (400): the source adapter refused a value
+          it cannot use in the vault's ``adapter_defaults``. Detail names the
+          source type, the key and the value.
         - ``source_file_not_found`` (404): the document's ``source_path`` no
           longer resolves to a readable file.
         - ``recompute_pipeline_already_in_flight`` (409): a recompute is

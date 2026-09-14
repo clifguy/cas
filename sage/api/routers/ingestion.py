@@ -62,6 +62,10 @@ router = APIRouter(tags=["Ingestion"])
             ),
             extra="`adapter_not_found`: no source adapter is registered for "
             "`source_type`.\n\n"
+            "`adapter_config_invalid`: the source adapter refused a value it "
+            "cannot use in its config, the vault's `adapter_defaults` merged "
+            "with the request's `config`. The detail names the source type, "
+            "the key and the value.\n\n"
             "`ambiguous_ingest_source`: both `source` and `transfer_token` "
             "were supplied.\n\n"
             "`missing_ingest_source`: neither `source` nor `transfer_token` "

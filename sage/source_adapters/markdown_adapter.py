@@ -15,6 +15,7 @@ from mdit_py_plugins.front_matter import front_matter_plugin
 
 from sage.adapters.interfaces import HEADING_PATH_SEPARATOR
 from sage.source_adapters.base import (
+    AdapterConfigError,
     HeadingNode,
     ProjectionResult,
     SourceAdapter,
@@ -44,12 +45,16 @@ class MarkdownAdapter(SourceAdapter):
     VERSION = "0.8.0"
     EXTENSIONS = [".md", ".markdown"]
 
+    def check_config(self, config: dict | None) -> None:
+        _declared_dialect(config)
+
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
+        dialect = _declared_dialect(config)
         raw_bytes = source_path.read_bytes()
         content_hash = hashlib.sha256(raw_bytes).hexdigest()
         text = raw_bytes.decode("utf-8")
 
-        headings, preamble = self._parse_headings(text, self._tokens(text, config))
+        headings, preamble = self._parse_headings(text, self._tokens(text, dialect))
         title = self._extract_title(headings, source_path)
 
         source_mtime = datetime.fromtimestamp(source_path.stat().st_mtime, tz=timezone.utc)
@@ -69,22 +74,15 @@ class MarkdownAdapter(SourceAdapter):
             preamble=preamble,
         )
 
-    def _tokens(self, text: str, config: dict | None) -> list[Token]:
+    def _tokens(self, text: str, dialect: str | None) -> list[Token]:
         """The block token stream of ``text``, read in its dialect.
 
-        The dialect is ``config["dialect"]`` when declared, and otherwise detected
+        The dialect is the declared one when given, and otherwise detected
         (see ``_detect_dialect``). GFM is CommonMark with its tables; Pandoc
         Markdown additionally has tables ruled with dash lines and a title block,
         which CommonMark would read as thematic breaks, setext headings and
-        paragraphs. A dialect that is neither is refused rather than detected
-        over, so a misspelling cannot pass unnoticed.
+        paragraphs.
         """
-        dialect = (config or {}).get("dialect")
-        if dialect is not None and dialect not in DIALECTS:
-            raise ValueError(
-                f"unrecognized markdown dialect {dialect!r}; expected one of "
-                + ", ".join(repr(name) for name in DIALECTS)
-            )
         tokens = _gfm_parser().parse(text)
         if dialect is None:
             dialect = _detect_dialect(text, tokens)
@@ -164,6 +162,24 @@ class MarkdownAdapter(SourceAdapter):
 
 # The dialects a document can be read in.
 DIALECTS = ("gfm", "pandoc")
+
+
+def _declared_dialect(config: dict | None) -> str | None:
+    """The dialect ``config`` declares, or ``None`` when it declares none.
+
+    A dialect that is neither is refused rather than detected over, so a
+    misspelling cannot pass unnoticed.
+
+    Raises:
+        AdapterConfigError: ``config["dialect"]`` names no dialect.
+    """
+    dialect = (config or {}).get("dialect")
+    if dialect is not None and dialect not in DIALECTS:
+        raise AdapterConfigError(
+            "dialect", dialect, "expected one of " + ", ".join(repr(name) for name in DIALECTS)
+        )
+    return dialect
+
 
 # Pandoc table rules: a full-width dash line, and a column rule of dash runs
 # separated by spaces. A column rule is never a setext underline and seldom a

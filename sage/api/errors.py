@@ -1172,6 +1172,29 @@ class AdapterNotFoundError(SAGEError):
         )
 
 
+class AdapterConfigInvalidError(SAGEError):
+    """400: the source adapter refused a config value it cannot use.
+
+    The value reaches the adapter from the vault's ``adapter_defaults`` merged
+    with any per-request ``config``, so the detail names the source type, the
+    key and the value as supplied, and the message carries the adapter's own
+    statement of what it accepts.
+
+    Exists because the adapter raises a plain ``ValueError`` subclass: it sits
+    below the API layer and may not import it, so without a translation at the
+    service boundary the refusal reaches an MCP caller as a generic internal
+    error and an HTTP caller as a bare 500 against a spec that declares neither.
+    """
+
+    def __init__(self, source_type: str, key: str, value: object, reason: str) -> None:
+        super().__init__(
+            "adapter_config_invalid",
+            reason,
+            400,
+            {"source_type": source_type, "key": key, "value": value},
+        )
+
+
 class SourceFileNotFoundError(SAGEError):
     """404: source file does not exist at the resolved path."""
 

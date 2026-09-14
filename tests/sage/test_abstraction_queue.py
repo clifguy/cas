@@ -40,6 +40,7 @@ from sage.config import VaultConfig
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import IngestRequest
 from sage.services.ingestion import IngestionService
+from sage.source_adapters.base import SourceAdapter
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.storage.locks import DocumentLockManager
 from tests.helpers.pipeline_wait import TERMINAL_PIPELINE_STATES, await_pipeline_idle
@@ -165,13 +166,16 @@ class _ConcurrencyTrackingProvider(AbstractionProvider):
         return "concurrency abstract"
 
 
-class _SpyAdapter:
+class _SpyAdapter(SourceAdapter):
     """Wraps a real source adapter and counts project() calls, so a test can
     assert recovery-from-chunks did NOT re-project from source."""
 
     def __init__(self, inner) -> None:
         self._inner = inner
         self.project_calls = 0
+
+    def check_config(self, config):
+        self._inner.check_config(config)
 
     async def project(self, path, config):
         self.project_calls += 1
