@@ -204,12 +204,13 @@ def test_nothing_restates_the_separator():
     The edge test has one collision it cannot resolve. The delimiter is also a
     comparison operator with a space either side, so ``f"{column} > {value}"``
     leaves the same constant in the same position as a join, and no predicate
-    over the literal separates them. Every contextual signal -- the module, SQL
-    text nearby, the names in the placeholders -- fails on the child-heading
-    prefix query, which is a heading path built inside SQL in the SQL binding,
-    so exempting comparisons that way would exempt the site the scan exists
-    for. The predicate therefore stays whole, and the failure message carries
-    the remedy for both readings instead of advice that is wrong for one.
+    over the literal separates them. The contextual signals fare no better. The
+    module and the SQL text nearby both fail on the child-heading prefix query,
+    which is a heading path built inside SQL in the SQL binding, so exempting
+    comparisons on either would exempt the site the scan exists for; the names
+    in the placeholders are a guess that renaming a variable defeats. The
+    predicate therefore stays whole, and the failure message carries the remedy
+    for both readings instead of advice that is wrong for one.
 
     Anti-coincidental-pass: the assertion is bracketed by a positive control
     that the tree was actually read. A glob that matched nothing would otherwise
@@ -315,16 +316,32 @@ def test_the_message_names_both_readings():
     """The advice on failure is right whichever reading the flagged code has.
 
     Anti-coincidental-pass: a message that drops either reading, the recommended
-    spelling, or the flagged line fails here. What this does not reach is the
-    scan ceasing to use the message: nothing in the suite trips the scan on
-    purpose, so that is held by the scan's own assertion reading
-    ``_restatement_message`` rather than by a test.
+    spelling, or any flagged line fails here. Two rivals keep every one of those
+    strings and are still wrong, so the assertions are shaped against them: a
+    message rendering only the first hit of each module fails on the second hit
+    in ``adapters/x.py``, and a message pairing each remedy with the other
+    reading fails the per-line checks, since the two readings are stated on
+    lines of their own. What this does not reach is the scan ceasing to use the
+    message: nothing in the suite trips the scan on purpose, so that is held by
+    the scan's own assertion reading ``_restatement_message`` rather than by a
+    test.
     """
-    message = _restatement_message({"adapters/x.py": [(3, 'f"{column} > {value}"')]})
-    assert "import HEADING_PATH_SEPARATOR from sage.adapters.interfaces" in message
-    assert "comparison operator" in message
-    assert _SANCTIONED_COMPARISON in message
-    assert 'adapters/x.py:3: f"{column} > {value}"' in message
+    hits = {
+        "adapters/x.py": [(3, 'f"{column} > {value}"'), (9, 'prefix + " > %"')],
+        "services/y.py": [(4, '" > ".join(parts)')],
+    }
+    message = _restatement_message(hits)
+    for module, found in hits.items():
+        for line, text in found:
+            assert f"{module}:{line}: {text}" in message
+
+    lines = message.splitlines()
+    (delimiter,) = [line for line in lines if "spells the delimiter" in line]
+    (comparison,) = [line for line in lines if "comparison operator" in line]
+    assert "import HEADING_PATH_SEPARATOR from sage.adapters.interfaces" in delimiter
+    assert _SANCTIONED_COMPARISON not in delimiter
+    assert _SANCTIONED_COMPARISON in comparison
+    assert "import HEADING_PATH_SEPARATOR" not in comparison
 
 
 @pytest.mark.parametrize(
