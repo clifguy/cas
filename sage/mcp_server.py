@@ -50,7 +50,12 @@ from pydantic import BaseModel, ValidationError
 import sage._fastmcp_strict_args  # noqa: F401 -- substrate side-effect import
 import sage.app  # noqa: F401 -- import side-effect: installs root-logger filter
 from sage._tool_naming import SERVER_ASSIGNMENT, SURFACE_MOUNT_PATHS, TOOL_ALIASES
-from sage.api.errors import SAGEError, validation_error_envelope
+from sage.api.errors import (
+    SAGEError,
+    UnknownParameterError,
+    unknown_parameter_names,
+    validation_error_envelope,
+)
 from sage.app_tools import register_app_tools
 from sage.build_info import SERVER_INSTRUCTIONS, VERSION_WITH_BUILD
 from sage.mcp_init import (
@@ -256,11 +261,7 @@ def _argument_validation_envelope(
     if not isinstance(cause, ValidationError):
         return None
 
-    rejected = [
-        err["loc"][0]
-        for err in cause.errors()
-        if err.get("type") == "extra_forbidden" and err.get("loc")
-    ]
+    rejected = unknown_parameter_names(cause)
 
     if rejected:
         tool = tool_manager.get_tool(tool_name)
@@ -268,18 +269,7 @@ def _argument_validation_envelope(
             valid_params = sorted(tool.parameters.get("properties", {}).keys())
         else:  # pragma: no cover -- defensive; ToolError implies the tool exists
             valid_params = []
-        rejected_sorted = sorted(set(rejected))
-
-        sage_err: SAGEError = SAGEError(
-            code="unknown_parameter",
-            message=(f"Tool {tool_name!r} received unknown parameter(s): {rejected_sorted}."),
-            status_code=400,
-            detail={
-                "tool": tool_name,
-                "rejected_params": rejected_sorted,
-                "valid_params": valid_params,
-            },
-        )
+        sage_err: SAGEError = UnknownParameterError(tool_name, rejected, valid_params)
     else:
         sage_err = validation_error_envelope(cause)
 

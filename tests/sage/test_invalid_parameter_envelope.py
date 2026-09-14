@@ -27,6 +27,7 @@ from sage.api.errors import (
     _FILTER_FIELD_TYPE_NAMES,
     InvalidParameterError,
     translate_validation_error,
+    unknown_parameter_names,
     validation_error_envelope,
 )
 from sage.models.schemas import BulkLifecycleRequest, DiscoverRequest, RetrievalFilters
@@ -239,6 +240,38 @@ def test_transport_prefix_is_stripped():
     err = validation_error_envelope(wrapped)
 
     assert err.detail["parameter"] == "limit"
+
+
+@pytest.mark.parametrize("name", ["query", "path", "body"])
+def test_parameter_named_like_a_transport_segment_is_not_stripped(name):
+    """Only a RequestValidationError carries a transport segment to strip.
+
+    A validation error raised by a model directly -- on the MCP surface, or
+    inside an operation -- has no such segment, so its first location is the
+    parameter itself. Stripping it anyway turns ``query`` into no parameter at
+    all, and a caller is told ``request`` failed rather than the field it sent.
+    ``DiscoverRequest`` really has a ``query`` field; the other two names are
+    rejected as unknown and read through ``unknown_parameter_names``.
+    """
+    if name == "query":
+        err = validation_error_envelope(_discover_error(query=[1]))
+        assert err.detail["parameter"] == "query"
+    else:
+        assert unknown_parameter_names(_discover_error(**{name: 1})) == [name]
+
+
+@pytest.mark.parametrize("name", ["query", "path", "body"])
+def test_transport_segment_stripped_once_from_a_request_validation_error(name):
+    """The HTTP form keeps stripping: its first segment is the transport."""
+    inner = _discover_error(**{name: 1})
+    wrapped = RequestValidationError(
+        [{**err, "loc": ("body", *err["loc"])} for err in inner.errors()]
+    )
+
+    if name == "query":
+        assert validation_error_envelope(wrapped).detail["parameter"] == "query"
+    else:
+        assert unknown_parameter_names(wrapped) == [name]
 
 
 # ---------------------------------------------------------------------------

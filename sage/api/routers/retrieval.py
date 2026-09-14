@@ -16,7 +16,7 @@ router = APIRouter(tags=["Retrieval"])
     responses={
         400: boundary_400(
             path=("invalid_vault_id",),
-            request=("invalid_document_id",),
+            request=("invalid_document_id", "unknown_parameter"),
             extra="Invalid parameters (unknown mode, scope, or filter field), or "
             "`mode_parameter_mismatch` when a parameter is set that the chosen "
             "mode or the chosen target forbids. Its detail carries `mode`, "

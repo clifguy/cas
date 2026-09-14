@@ -63,7 +63,7 @@ async def _format_reabstract_stream(
     "/maintenance/migrate",
     response_model=MigrationReport,
     responses={
-        400: boundary_400(path=("invalid_vault_id",)),
+        400: boundary_400(path=("invalid_vault_id",), request=("unknown_parameter",)),
         404: {
             "model": ErrorResponse,
             "description": "`vault_not_found`: no vault registered with that id.",
@@ -91,7 +91,7 @@ async def migrate_vault(
     "/maintenance/detect-drift",
     response_model=DriftReport,
     responses={
-        400: boundary_400(path=("invalid_vault_id",)),
+        400: boundary_400(path=("invalid_vault_id",), request=("unknown_parameter",)),
         404: {
             "model": ErrorResponse,
             "description": "`vault_not_found`: no vault registered with that id.",
@@ -108,7 +108,7 @@ async def detect_drift(
 @router.post(
     "/maintenance/reabstract-deferred",
     responses={
-        400: boundary_400(path=("invalid_vault_id",)),
+        400: boundary_400(path=("invalid_vault_id",), request=("unknown_parameter",)),
         200: {
             "content": {"text/event-stream": {}},
             "description": (
@@ -160,7 +160,7 @@ async def reabstract_deferred(
     "/maintenance/optimize-content-store",
     response_model=OptimizeContentStoreReport,
     responses={
-        400: boundary_400(path=("invalid_vault_id",)),
+        400: boundary_400(path=("invalid_vault_id",), request=("unknown_parameter",)),
         404: {
             "model": ErrorResponse,
             "description": "`vault_not_found`: no vault registered with that id.",
@@ -181,7 +181,9 @@ async def optimize_content_store(
     "/maintenance/verify-source-files",
     response_model=SourceFileIntegrityReport,
     responses={
-        400: boundary_400(path=("invalid_vault_id",), request=("invalid_document_id",)),
+        400: boundary_400(
+            path=("invalid_vault_id",), request=("invalid_document_id", "unknown_parameter")
+        ),
         404: {
             "model": ErrorResponse,
             "description": (
@@ -225,7 +227,7 @@ async def verify_vault_source_files(
     responses={
         400: boundary_400(
             path=("invalid_vault_id",),
-            request=("invalid_document_id",),
+            request=("invalid_document_id", "unknown_parameter"),
             extra="`restore_provenance_mismatch`: the pinned document was not "
             "ingested from the delivered bytes. "
             "`restore_source_not_absolute`: the source path is not absolute. "

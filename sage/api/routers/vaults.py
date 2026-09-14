@@ -34,7 +34,11 @@ from sage.services.vault_registry import VaultRegistryService
 router = APIRouter(tags=["vaults"])
 
 
-@router.get("/sage_vaults", response_model=list[VaultSummary])
+@router.get(
+    "/sage_vaults",
+    response_model=list[VaultSummary],
+    responses={400: boundary_400(request=("unknown_parameter",))},
+)
 async def list_vaults(
     service: VaultRegistryService = Depends(get_vault_registry_service),
 ) -> list[VaultSummary]:
@@ -49,7 +53,7 @@ async def list_vaults(
     operation_id="get_default_vault_config",
     summary="Return the default configuration a new vault would be created with.",
     responses={
-        400: boundary_400(request=("invalid_vault_id",)),
+        400: boundary_400(request=("invalid_vault_id", "unknown_parameter")),
     },
 )
 async def get_default_vault_config(
@@ -71,7 +75,7 @@ async def get_default_vault_config(
     "/sage_vaults/{vault_id}/stats",
     response_model=VaultStatsResponse,
     responses={
-        400: boundary_400(path=("invalid_vault_id",)),
+        400: boundary_400(path=("invalid_vault_id",), request=("unknown_parameter",)),
         404: {
             "model": ErrorResponse,
             "description": "Vault not found.",
@@ -90,7 +94,9 @@ async def vault_stats(
     "/sage_vaults/{vault_id}/hash-check",
     response_model=dict[str, HashCheckMatch],
     responses={
-        400: boundary_400(path=("invalid_vault_id",), request=("invalid_sha256",)),
+        400: boundary_400(
+            path=("invalid_vault_id",), request=("invalid_sha256", "unknown_parameter")
+        ),
         404: {
             "model": ErrorResponse,
             "description": "Vault not found.",
@@ -109,7 +115,7 @@ async def hash_check(
 @router.get(
     "/sage_vaults/{vault_id}/config",
     responses={
-        400: boundary_400(path=("invalid_vault_id",)),
+        400: boundary_400(path=("invalid_vault_id",), request=("unknown_parameter",)),
         404: {
             "model": ErrorResponse,
             "description": "Vault not found.",
@@ -130,9 +136,9 @@ async def get_vault_config(
     responses={
         400: boundary_400(
             path=("invalid_vault_id",),
+            request=("unknown_parameter",),
             extra="`vault_config_validation_error`: the merged config failed "
-            "schema validation, an unknown section name was passed, or "
-            "the request attempts to change `vault.id`.",
+            "schema validation, or the request attempts to change `vault.id`.",
         ),
         404: {
             "model": ErrorResponse,
@@ -174,14 +180,14 @@ async def update_vault_config(
     status_code=201,
     response_model=VaultSummary,
     responses={
-        400: {
-            "model": ErrorResponse,
-            "description": (
+        400: boundary_400(
+            request=("unknown_parameter",),
+            extra=(
                 "`vault_config_validation_error`: the supplied configuration "
                 "failed schema validation (detail includes the list of "
                 "failed constraints)."
             ),
-        },
+        ),
         409: {
             "model": ErrorResponse,
             "description": (

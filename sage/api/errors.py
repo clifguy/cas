@@ -8,9 +8,11 @@ from datetime import datetime
 from enum import StrEnum
 
 from fastapi import FastAPI, Request
+from fastapi.dependencies.utils import get_flat_dependant
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import ValidationError
+from fastapi.routing import APIRoute
+from pydantic import BaseModel, ValidationError
 
 from sage.config import render_state_set
 from sage.models.enums import EdgeType, SourceType
@@ -1075,6 +1077,34 @@ class InvalidParameterError(SAGEError):
             message = f"{message} {hint}"
             detail["hint"] = hint
         super().__init__("invalid_parameter", message, 422, detail)
+
+
+class UnknownParameterError(SAGEError):
+    """400: a call carried a parameter name the operation does not declare.
+
+    Raised at each request surface's framework boundary rather than in any
+    operation, so an undeclared name is refused before the operation runs
+    instead of being discarded (CAS-ADR-037). Both surfaces build it here, so
+    a caller meets one refusal shape whichever surface it reached
+    (CAS-ADR-052).
+
+    ``tool`` is the operation's name -- the tool name on the MCP surface, the
+    published operation id on the HTTP surface, which are the same name.
+    ``valid_params`` lists what the operation accepts where the rejected names
+    were sent, so the caller can correct the call in one round-trip.
+    """
+
+    def __init__(self, tool: str, rejected_params: list[str], valid_params: list[str]) -> None:
+        super().__init__(
+            "unknown_parameter",
+            f"Tool {tool!r} received unknown parameter(s): {rejected_params}.",
+            400,
+            {
+                "tool": tool,
+                "rejected_params": rejected_params,
+                "valid_params": valid_params,
+            },
+        )
 
 
 class PipelineIncompleteError(SAGEError):
@@ -2255,7 +2285,9 @@ _PARAMETER_HINTS: dict[tuple[str, str], str] = {
 # Request components FastAPI prepends to a validation error's location to
 # name where the value came from. They are part of the framing, not part of
 # the parameter path, so they are stripped before any location is matched
-# against a rule or reported back to a caller.
+# against a rule or reported back to a caller. Only a RequestValidationError
+# carries one: a model's own ValidationError starts at the parameter, and a
+# parameter may be named ``query`` or ``path``.
 _TRANSPORT_LOC_SEGMENTS = ("body", "query", "path", "header", "cookie")
 
 # Types whose ``input`` a caller can be shown verbatim. Anything else is
@@ -2264,11 +2296,30 @@ _TRANSPORT_LOC_SEGMENTS = ("body", "query", "path", "header", "cookie")
 _JSON_NATIVE_TYPES = (str, int, float, bool, type(None))
 
 
-def _strip_transport_segment(loc: tuple) -> tuple:
-    """Drop a leading FastAPI request-component segment from a location."""
-    if loc and loc[0] in _TRANSPORT_LOC_SEGMENTS:
+def _strip_transport_segment(loc: tuple, exc: ValidationError | RequestValidationError) -> tuple:
+    """Drop the request-component segment FastAPI prepends to a location."""
+    if isinstance(exc, RequestValidationError) and loc and loc[0] in _TRANSPORT_LOC_SEGMENTS:
         return loc[1:]
     return loc
+
+
+def unknown_parameter_names(exc: ValidationError | RequestValidationError) -> list[str]:
+    """Return the undeclared top-level names a validation error rejected.
+
+    Only a name at the top of the call counts: a parameter the operation does
+    not declare. An undeclared key nested inside a declared parameter -- a
+    batch item's field, a filter key -- is a malformed value of that
+    parameter, and keeps the code its own rule selects. The names come back
+    sorted and once each, so the refusal does not depend on the order the
+    validator reported them in.
+    """
+    names = {
+        str(loc[0])
+        for err in exc.errors()
+        if err.get("type") == "extra_forbidden"
+        and len(loc := _strip_transport_segment(tuple(err.get("loc") or ()), exc)) == 1
+    }
+    return sorted(names)
 
 
 def translate_validation_error(
@@ -2301,10 +2352,9 @@ def translate_validation_error(
         loc = tuple(err.get("loc") or ())
         # FastAPI's RequestValidationError prepends a "body" / "query" /
         # "path" location segment naming the request component the value
-        # came from. Pydantic's ValidationError does not. Strip a leading
-        # transport-component segment so one set of loc rules works for
-        # both call sites.
-        loc = _strip_transport_segment(loc)
+        # came from. Pydantic's ValidationError does not. Strip that segment
+        # so one set of loc rules works for both call sites.
+        loc = _strip_transport_segment(loc, exc)
         err_type = err.get("type", "")
         input_value = err.get("input")
         ctx = err.get("ctx") or {}
@@ -2443,7 +2493,7 @@ def _generic_parameter_error(
         )
 
     err = errors[0]
-    loc = _strip_transport_segment(tuple(err.get("loc") or ()))
+    loc = _strip_transport_segment(tuple(err.get("loc") or ()), exc)
     parameter = ".".join(str(segment) for segment in loc) or "request"
     value = err.get("input")
     if not isinstance(value, _JSON_NATIVE_TYPES):
@@ -2475,6 +2525,39 @@ def validation_error_envelope(
     return translate_validation_error(exc) or _generic_parameter_error(exc)
 
 
+def request_operation_name(request: Request) -> str:
+    """Return the published operation id of the operation a request reached.
+
+    The id is read from the document the app serves, which carries the
+    authored operation ids rather than the handler names the framework would
+    generate -- the names the MCP surface calls its tools. A request that
+    reached no documented operation is named by its path.
+    """
+    route = request.scope.get("route")
+    if isinstance(route, APIRoute):
+        operation = (
+            request.app.openapi()
+            .get("paths", {})
+            .get(route.path_format, {})
+            .get(request.method.lower(), {})
+        )
+        return str(operation.get("operationId") or route.name)
+    return request.url.path
+
+
+def _declared_body_names(request: Request) -> list[str]:
+    """Return the top-level body names the operation a request reached declares."""
+    route = request.scope.get("route")
+    if not isinstance(route, APIRoute):
+        return []
+    body_params = get_flat_dependant(route.dependant).body_params
+    if len(body_params) == 1 and not getattr(body_params[0].field_info, "embed", False):
+        annotation = body_params[0].field_info.annotation
+        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            return sorted(annotation.model_fields)
+    return sorted(param.alias for param in body_params)
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """Register SAGE exception handlers on the FastAPI app."""
 
@@ -2504,8 +2587,18 @@ def register_exception_handlers(app: FastAPI) -> None:
         response body, not any endpoint's status code. Endpoints whose
         failures translate to a more specific code keep the 400 that code
         declares.
+
+        An undeclared top-level body field wins outright, as an unknown
+        argument does on the MCP surface: naming the fields the operation
+        accepts is the more useful answer, whatever else failed alongside it.
         """
-        sage_err = validation_error_envelope(exc)
+        rejected = unknown_parameter_names(exc)
+        if rejected:
+            sage_err: SAGEError = UnknownParameterError(
+                request_operation_name(request), rejected, _declared_body_names(request)
+            )
+        else:
+            sage_err = validation_error_envelope(exc)
         return JSONResponse(
             status_code=sage_err.status_code,
             content=to_wire(

@@ -15,7 +15,7 @@ from functools import cache
 from pathlib import Path
 
 import yaml
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
@@ -24,6 +24,7 @@ from app.backend.auth.router import router as auth_router
 from app.backend.router import router as app_backend_router
 from sage._tool_naming import MCP_HTTP_MOUNTS
 from sage.adapters.interfaces import ContentStore
+from sage.api.dependencies import refuse_undeclared_parameters
 from sage.api.errors import register_exception_handlers
 from sage.api.routers import (
     documents,
@@ -423,6 +424,26 @@ def _load_published_prose() -> dict:
     }
 
 
+@cache
+def _load_operations_declaring_a_body() -> frozenset[tuple[str, str]]:
+    """Return the Core API operations whose published contract declares a request body.
+
+    Keyed by ``(path, method)``. An operation can take a body its handler reads
+    as a raw stream rather than binding it, and only the specification says so;
+    the request-name refusal reads this to leave such a body uninspected.
+    Unguarded for the reason ``_load_published_prose`` is.
+    """
+    core_spec = yaml.safe_load(_SAGE_CORE_SPEC_PATH.read_text()) or {}
+    return frozenset(
+        (path, method.lower())
+        for path, path_item in (core_spec.get("paths") or {}).items()
+        for method, operation in (path_item or {}).items()
+        if method.lower() in _HTTP_METHODS
+        and isinstance(operation, dict)
+        and "requestBody" in operation
+    )
+
+
 def _overlay_prose(document: dict, prose: dict) -> dict:
     """Return ``document`` with the authored prose applied.
 
@@ -759,22 +780,31 @@ def create_app(
 
     # Cross-vault endpoints (no vault_id prefix). The transfer routes are
     # process-scoped byte legs: the vault binding travels inside the token.
-    app.include_router(vaults.router)
-    app.include_router(transfer.router)
+    # Every Core API operation refuses a request name it does not declare; the
+    # application backend's routers below are a separate contract.
+    app.state.operations_declaring_a_body = _load_operations_declaring_a_body()
+    core_api = [Depends(refuse_undeclared_parameters)]
+    app.include_router(vaults.router, dependencies=core_api)
+    app.include_router(transfer.router, dependencies=core_api)
 
     # Vault-scoped endpoints
-    app.include_router(ingestion.router, prefix="/sage_vaults/{vault_id}")
-    app.include_router(documents.router, prefix="/sage_vaults/{vault_id}")
-    app.include_router(lifecycle.router, prefix="/sage_vaults/{vault_id}")
-    app.include_router(metadata.router, prefix="/sage_vaults/{vault_id}")
-    app.include_router(users.router, prefix="/sage_vaults/{vault_id}")
-    app.include_router(graph_ops.router, prefix="/sage_vaults/{vault_id}")
-    app.include_router(retrieval.router, prefix="/sage_vaults/{vault_id}")
-    app.include_router(utilities.router, prefix="/sage_vaults/{vault_id}")
-    app.include_router(staging_edges.router, prefix="/sage_vaults/{vault_id}")
-    app.include_router(pending_metadata.router, prefix="/sage_vaults/{vault_id}")
-    app.include_router(filename_parser.router, prefix="/sage_vaults/{vault_id}")
-    app.include_router(maintenance.router, prefix="/sage_vaults/{vault_id}")
+    for vault_scoped in (
+        ingestion,
+        documents,
+        lifecycle,
+        metadata,
+        users,
+        graph_ops,
+        retrieval,
+        utilities,
+        staging_edges,
+        pending_metadata,
+        filename_parser,
+        maintenance,
+    ):
+        app.include_router(
+            vault_scoped.router, prefix="/sage_vaults/{vault_id}", dependencies=core_api
+        )
 
     # Application backend endpoints (BE-017 through BE-035)
     app.include_router(app_backend_router)

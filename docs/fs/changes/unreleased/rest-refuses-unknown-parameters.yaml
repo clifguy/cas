@@ -1,0 +1,34 @@
+classification: minor
+category:
+  - capability
+  - caller-adaptation
+summary: >-
+  Every Core API operation refuses a top-level JSON body field or a query parameter it
+  does not declare, where both were previously ignored without a word. An operation
+  whose published contract declares no request body refuses any field of a JSON object
+  body sent to it; an empty object is accepted, and the upload leg of a byte transfer,
+  whose body the contract declares as a byte stream, is not inspected. The refusal is
+  the unknown_parameter envelope the MCP surface already returns for an unknown
+  argument, carrying tool (the published operation id), rejected_params and
+  valid_params, with status 400; an undeclared body field wins over any other
+  validation failure in the same request, and an undeclared query parameter is
+  reported ahead of an undeclared body field. The request models behind the Core API
+  forbid undeclared fields, including the batch lifecycle item and the batch-ingest
+  file metadata, and sage_core_api.openapi.yaml declares additionalProperties false on
+  each of those request schemas, which also closes RetrievalFilters and BulkLinkItem,
+  whose models already refused extras. Every Core API operation's 400 response names
+  unknown_parameter, and list_vaults, transfer_upload and transfer_download gain a 400
+  response for it. Both surfaces now build the refusal from one error type. A name
+  nested inside a declared field keeps the code it had (unknown_filter_key under
+  filters, invalid_parameter inside a batch item), so update_lifecycles on the MCP
+  surface now also refuses an undeclared item field. Fields typed as open mappings --
+  metadata, tier3_metadata, config and the vault configuration sections -- still
+  accept any key. The CAS Application API is unchanged.
+for_callers: >-
+  A Core API request carrying a body field or query parameter the operation does not
+  declare is now refused with 400 unknown_parameter instead of running as though the
+  name were absent; detail.valid_params lists the names the operation accepts where the
+  rejected one was sent, which is empty for a JSON field sent to an operation that
+  takes no body. An undeclared field inside a lifecycle batch item is likewise
+  refused, on both surfaces, as invalid_parameter. Keys inside open mappings such as
+  metadata and the vault configuration sections are unaffected.

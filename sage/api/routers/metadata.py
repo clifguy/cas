@@ -38,7 +38,8 @@ router = APIRouter(tags=["Document Metadata"])
     ),
     responses={
         400: boundary_400(
-            path=("invalid_vault_id",), request=("invalid_document_date", "invalid_document_id")
+            path=("invalid_vault_id",),
+            request=("invalid_document_date", "invalid_document_id", "unknown_parameter"),
         ),
         404: {
             "model": ErrorResponse,

@@ -26,7 +26,7 @@ router = APIRouter(tags=["staging_edges"])
     "/staging-edges",
     response_model=list[StagingEdge],
     responses={
-        400: boundary_400(path=("invalid_vault_id",)),
+        400: boundary_400(path=("invalid_vault_id",), request=("unknown_parameter",)),
         404: {
             "model": ErrorResponse,
             "description": "Vault not found.",
@@ -45,7 +45,9 @@ async def list_staging_edges(
     "/staging-edges/{edge_id}/confirm",
     response_model=StagingEdgeConfirmResponse,
     responses={
-        400: boundary_400(path=("invalid_edge_id", "invalid_vault_id")),
+        400: boundary_400(
+            path=("invalid_edge_id", "invalid_vault_id"), request=("unknown_parameter",)
+        ),
         404: {
             "model": ErrorResponse,
             "description": (
@@ -69,7 +71,9 @@ async def confirm_staging_edge(
     "/staging-edges/{edge_id}/dismiss",
     response_model=StagingEdgeDismissResponse,
     responses={
-        400: boundary_400(path=("invalid_edge_id", "invalid_vault_id")),
+        400: boundary_400(
+            path=("invalid_edge_id", "invalid_vault_id"), request=("unknown_parameter",)
+        ),
         404: {
             "model": ErrorResponse,
             "description": (

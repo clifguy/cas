@@ -29,6 +29,7 @@ router = APIRouter(tags=["Utilities"])
     responses={
         400: boundary_400(
             path=("invalid_vault_id",),
+            request=("unknown_parameter",),
             extra="`adapter_not_found`: no source adapter is registered for `source_type`.",
         ),
         404: {

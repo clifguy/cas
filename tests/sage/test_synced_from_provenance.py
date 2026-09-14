@@ -314,13 +314,20 @@ async def test_t5_pydantic_rejects_non_string_at_router_boundary(client, tmp_vau
     resp = await client.post(
         "/sage_vaults/test_vault/edges",
         json={
-            "source_id": src_id,
-            "target_id": tgt_id,
-            "edge_type": "derived_from",
-            "source_valid_from_version": src_id,
-            "synced_from_version": 42,  # int, not str — must be rejected
+            "items": [
+                {
+                    "source_id": src_id,
+                    "target_id": tgt_id,
+                    "edge_type": "derived_from",
+                    "source_valid_from_version": src_id,
+                    "synced_from_version": 42,  # int, not str — must be rejected
+                }
+            ]
         },
     )
     assert resp.status_code == 422, (
         f"expected 422 for non-string synced_from_version, got {resp.status_code}: {resp.text}"
     )
+    body = resp.json()
+    assert body["code"] == "invalid_parameter", body
+    assert body["detail"]["parameter"].endswith("synced_from_version"), body

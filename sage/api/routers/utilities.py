@@ -33,6 +33,7 @@ _DocumentIdPath = Annotated[DocumentIdStr, Path(description="Document identifier
     responses={
         400: boundary_400(
             path=("invalid_document_id", "invalid_vault_id"),
+            request=("unknown_parameter",),
             extra="`path_traversal_denied`: `output_path` resolves outside the "
             "vault's `storage_root`.",
         ),
@@ -60,7 +61,9 @@ async def export_projection(
     "/documents/{document_id}/projection",
     response_model=ReadProjectionResponse,
     responses={
-        400: boundary_400(path=("invalid_document_id", "invalid_vault_id")),
+        400: boundary_400(
+            path=("invalid_document_id", "invalid_vault_id"), request=("unknown_parameter",)
+        ),
         404: {
             "model": ErrorResponse,
             "description": (
@@ -86,7 +89,9 @@ async def read_projection(
     "/documents/{document_id}/section/{heading_path:path}",
     response_model=ReadSectionResponse,
     responses={
-        400: boundary_400(path=("invalid_document_id", "invalid_vault_id")),
+        400: boundary_400(
+            path=("invalid_document_id", "invalid_vault_id"), request=("unknown_parameter",)
+        ),
         404: {
             "model": ErrorResponse,
             "description": (
@@ -113,7 +118,9 @@ async def read_section(
     "/documents/{document_id}/headings",
     response_model=ListHeadingsResponse,
     responses={
-        400: boundary_400(path=("invalid_document_id", "invalid_vault_id")),
+        400: boundary_400(
+            path=("invalid_document_id", "invalid_vault_id"), request=("unknown_parameter",)
+        ),
         404: {
             "model": ErrorResponse,
             "description": (
@@ -140,6 +147,7 @@ async def list_headings(
     responses={
         400: boundary_400(
             path=("invalid_vault_id",),
+            request=("unknown_parameter",),
             extra="`assertions_file_invalid`: the referenced YAML is malformed "
             "or has the wrong structure.\n\n"
             "`assertions_not_configured`: the vault config has no "
@@ -166,7 +174,7 @@ async def eval_retrieval(
     "/refresh-views",
     response_model=RefreshViewsResponse,
     responses={
-        400: boundary_400(path=("invalid_vault_id",)),
+        400: boundary_400(path=("invalid_vault_id",), request=("unknown_parameter",)),
         404: {
             "model": ErrorResponse,
             "description": "Vault not found.",

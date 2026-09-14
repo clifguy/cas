@@ -38,7 +38,8 @@ router = APIRouter(tags=["Document Lifecycle"])
     ),
     responses={
         400: boundary_400(
-            path=("invalid_vault_id",), request=("invalid_document_id", "invalid_sha256")
+            path=("invalid_vault_id",),
+            request=("invalid_document_id", "invalid_sha256", "unknown_parameter"),
         ),
         404: {
             "model": ErrorResponse,
