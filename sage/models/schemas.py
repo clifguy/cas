@@ -463,8 +463,8 @@ class Document(BaseModel):
     adapter_version: str = Field(
         description=(
             "Version of the source adapter whose output the document's stored passages "
-            "are: the adapter of its last ingestion, or of a later migrate_vault that "
-            "brought the passages current with that adapter."
+            "are: the adapter of its last ingestion or recompute_pipeline, or of a later "
+            "migrate_vault that brought the passages current with that adapter."
         )
     )
     created_by: str = Field(
@@ -989,7 +989,8 @@ class IngestRequest(BaseModel):
     config: dict | None = Field(
         default=None,
         description=(
-            "Adapter-specific configuration overrides. Structure depends on the adapter type."
+            "Adapter-specific configuration overrides. Structure depends on the adapter type; "
+            "the markdown adapter, for example, takes the dialect to read the document in."
         ),
     )
     created_by: str | None = Field(

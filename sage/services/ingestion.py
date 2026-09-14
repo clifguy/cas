@@ -2412,6 +2412,7 @@ class IngestionService:
                 {
                     "pipeline_status": PipelineStatus.PROJECTION_COMPLETE.value,
                     "pipeline_error": None,
+                    "adapter_version": projection.adapter_version,
                     "projected_at": start_time.isoformat(),
                     "updated_at": start_time.isoformat(),
                 },
@@ -2471,6 +2472,7 @@ class IngestionService:
             {
                 "pipeline_status": PipelineStatus.PROJECTION_COMPLETE.value,
                 "pipeline_error": None,
+                "adapter_version": projection.adapter_version,
                 "projected_at": now.isoformat(),
                 "updated_at": now.isoformat(),
             },

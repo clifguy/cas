@@ -170,6 +170,47 @@ def test_adapter_defaults_accepts_every_registered_source_type(minimal_vault_con
     assert set(config.adapter_defaults) == {st.value for st in SourceType}
 
 
+def test_adapter_defaults_rejects_an_unrecognized_markdown_dialect(minimal_vault_config_dict):
+    """A markdown dialect the adapter does not read is rejected when written.
+
+    The adapter refuses it at projection, so accepting it here would leave every
+    later markdown ingest and re-projection of the vault failing, far from the
+    write that caused it.
+    """
+    minimal_vault_config_dict["adapter_defaults"] = {"markdown": {"dialect": "pandc"}}
+
+    with pytest.raises(ValidationError) as exc:
+        VaultConfig.model_validate(minimal_vault_config_dict)
+
+    message = str(exc.value)
+    assert "adapter_defaults.markdown.dialect" in message
+    assert "gfm" in message and "pandoc" in message
+
+
+@pytest.mark.parametrize("dialect", ["gfm", "pandoc"])
+def test_adapter_defaults_accepts_each_markdown_dialect(minimal_vault_config_dict, dialect):
+    """Each dialect the adapter reads is accepted.
+
+    Anti-coincidental partner to the rejection above: a check that refused every
+    dialect would satisfy it.
+    """
+    minimal_vault_config_dict["adapter_defaults"] = {"markdown": {"dialect": dialect}}
+
+    config = VaultConfig.model_validate(minimal_vault_config_dict)
+
+    assert config.adapter_defaults["markdown"]["dialect"] == dialect
+
+
+def test_schema_markdown_dialect_enum_matches_the_adapter():
+    """The schema's dialect values are the ones the adapter reads."""
+    from sage.source_adapters.markdown_adapter import DIALECTS
+
+    schema = json.loads(_VAULT_CONFIG_SCHEMA_PATH.read_text())
+    per_adapter = schema["properties"]["adapter_defaults"]["additionalProperties"]
+
+    assert per_adapter["properties"]["dialect"]["enum"] == list(DIALECTS)
+
+
 def test_schema_declares_adapter_defaults_and_drops_source_adapters():
     """The formal substrate matches the model: no ``source_adapters``
     anywhere, ``adapter_defaults`` present and optional.

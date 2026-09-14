@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, PrivateAttr, ValidationInfo, model_valida
 from sage.instrumentation.timing import TimingConfig
 from sage.models.enums import SourceType
 from sage.models.schemas import VaultIdStr
+from sage.source_adapters.markdown_adapter import DIALECTS
 
 logger = logging.getLogger(__name__)
 
@@ -1661,14 +1662,16 @@ class VaultConfig(BaseModel):
 
     @model_validator(mode="after")
     def _validate_adapter_defaults(self) -> "VaultConfig":
-        """Reject adapter_defaults keys that name no source type.
+        """Reject adapter_defaults keys that name no source type, and markdown dialects none reads.
 
         The section is consulted by source-type lookup, so a key that does
         not name one is never read: a typo would otherwise configure
         nothing, silently and permanently. Rejecting at construction puts
         the error in front of whoever just wrote the value, rather than
         leaving a vault projecting at adapter defaults for reasons nobody
-        can see (CAS-ADR-046).
+        can see (CAS-ADR-046). A markdown ``dialect`` the adapter does not read
+        is rejected on the same ground: the adapter refuses it at projection, so
+        accepting it here would fail every later markdown ingest of the vault.
         """
         valid = {source_type.value for source_type in SourceType}
         errors: list[str] = []
@@ -1682,6 +1685,15 @@ class VaultConfig(BaseModel):
                 errors.append(
                     f"adapter_defaults.{key}: expected a parameter mapping, "
                     f"got {type(value).__name__}"
+                )
+            elif (
+                key == SourceType.MARKDOWN.value
+                and "dialect" in value
+                and value["dialect"] not in DIALECTS
+            ):
+                errors.append(
+                    f"adapter_defaults.markdown.dialect: not a markdown dialect "
+                    f"(expected one of {', '.join(DIALECTS)})"
                 )
         if errors:
             raise ValueError("; ".join(errors))
