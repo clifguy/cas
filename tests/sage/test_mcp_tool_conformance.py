@@ -20,22 +20,36 @@ table below: a Python ``str`` argument may stand in for an OpenAPI
 where the spec declares ``filters`` as an object). The tolerance is
 asymmetric and scoped: ``int`` cannot stand in for ``object``, etc.
 
-The check is bi-directional: every MCP tool must map to an OpenAPI
-operation (allowlisted in ``DIVERGENT_TOOLS`` otherwise), and every
-OpenAPI operation must have an MCP tool (allowlisted in
-``HTTP_ONLY_OPERATIONS`` otherwise). MCP-side argument gaps that
-predate the gate are pinned in ``KNOWN_ARG_DRIFT`` until reconciled.
-All three allowlists fail when stale.
+The check is bi-directional at both levels. Every MCP tool must map to an
+OpenAPI operation and every OpenAPI operation to an MCP tool; every
+argument of a mapped tool must appear on its operation and every
+parameter or request-body field of the operation on its tool. A gap in
+any of the four directions is admitted only by an entry in the matching
+register in ``surface_divergences.py`` -- ``MCP_ONLY_TOOLS``,
+``REST_ONLY_OPERATIONS``, ``MCP_ONLY_ARGUMENTS``, ``REST_ONLY_ARGUMENTS``
+-- and every register fails on a stale entry.
 
-The ROOT Harness Orchestration spec exists today but no MCP tools
-yet implement its operations (/); the entire spec is
-allowlisted at the operation level until those tools land.
+Under CAS-ADR-052 a divergence between the surfaces is admissible only
+in a closed set of categories, and doubt resolves to parity. Each
+register entry therefore names a ``DivergenceCategory``; an entry
+justified in prose alone fails here. The register's home is the
+*Surface divergences* section of the *SAGE MCP Tool Surface* steering
+document, which ``surface_divergences.py`` transcribes. Entries pending
+remediation are printed at the end of any run that exercises this module.
+
+Refusal parity -- an undeclared argument refused on the same terms by
+both surfaces -- is gated by ``test_rest_request_strictness_conformance.py``.
+
+The ROOT Harness Orchestration spec exists today but no MCP tools yet
+implement its operations; the entire spec is registered as pending
+remediation at the operation level until those tools land.
 """
 
 from __future__ import annotations
 
 import functools
 import inspect
+import re
 import types
 import typing
 from pathlib import Path
@@ -43,6 +57,18 @@ from typing import Any, Callable, NamedTuple
 
 import pytest
 import yaml
+
+from tests.sage.surface_divergences import (
+    MCP_ONLY_ARGUMENTS,
+    MCP_ONLY_TOOLS,
+    REGISTERS,
+    REST_ONLY_ARGUMENTS,
+    REST_ONLY_OPERATIONS,
+    Divergence,
+    DivergenceCategory,
+    pending_remediation_lines,
+    uncategorized,
+)
 
 # ---------------------------------------------------------------------------
 # Paths to OpenAPI specs (reused from test_openapi_conformance.py)
@@ -73,7 +99,7 @@ class ToolSurface(NamedTuple):
 # ``sage.mcp_server`` that holds the registered MCP tool dict.
 # ``tool_registry_attr=None`` means "no MCP surface exists for this
 # spec yet"; the gate runs the operation-coverage direction only and
-# expects every operation to be listed in HTTP_ONLY_OPERATIONS until
+# expects every operation to be registered in REST_ONLY_OPERATIONS until
 # the tools land. ``operation_prefix`` and ``tool_prefix`` are both
 # empty for the SAGE surfaces post the verb-convention rename: MCP
 # tool names match OpenAPI operationIds directly (per CAS-ADR-033).
@@ -114,302 +140,9 @@ _SURFACES_BY_NAME: dict[str, ToolSurface] = {s.name: s for s in TOOL_SURFACES}
 # the SAGE surfaces; this allowlist is empty.
 OPERATION_RENAMES: dict[tuple[str, str], str] = {}
 
-# (surface_name, tool_name) -> justification for MCP tools that
-# legitimately have no HTTP counterpart.
-DIVERGENT_TOOLS: dict[tuple[str, str], str] = {
-    (
-        "sage_core",
-        "recompute_pipeline",
-    ): (
-        "Operator-only ingestion-pipeline repair for documents stuck at "
-        "pipeline_status=projection_complete with no chunks; no HTTP route by "
-        "design -- the recovery surface lives on the MCP transport alongside "
-        "recompute_abstract."
-    ),
-    (
-        "sage_core",
-        "update_staging_edge",
-    ): (
-        "MCP-only consolidation of confirm_staging_edge + dismiss_staging_edge "
-        "per the SAGE MCP Tool Surface enumeration discipline (CAS-ADR-035). "
-        "REST exposes the two operations separately; MCP collapses them via the "
-        "action parameter."
-    ),
-    (
-        "sage_core",
-        "reload_vault",
-    ): (
-        "MCP-only operational tool: closes a vault's services and "
-        "re-initializes them after on-disk vault_config.yaml edits or "
-        "external DB writes. No HTTP counterpart by design — the FastAPI "
-        "vault-config PUT endpoint owns the reload path on the REST side."
-    ),
-    (
-        "sage_core",
-        "get_stack_config",
-    ): (
-        "MCP-only introspection of the SAGE-stack-wide config singleton "
-        "(CAS-ADR-030). No HTTP counterpart by design; the stack config is "
-        "process-scoped and only the MCP transport carries the agent-facing "
-        "read."
-    ),
-}
-
-# (surface_name, tool_name) -> set of MCP argument names that
-# legitimately do not appear in the OpenAPI operation. Each entry
-# must be either remediated (by adding the field to the spec or
-# removing it from the tool) or replaced with a justification for
-# permanent divergence. The test fails on stale entries (drift
-# remediated but allowlist not pruned).
-KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
-    # ``document_id`` is an MCP-only alias for ``start_id`` on the
-    # ``traverse`` tool, added to unify document-ID parameter naming
-    # across MCP tools after a field report. The HTTP API surface is
-    # explicitly out of scope (HTTP callers see the OpenAPI schema and
-    # don't suffer the same field-name guessing cost). Permanent
-    # divergence by design, not pending remediation.
-    ("sage_core", "traverse"): frozenset({"document_id"}),
-    # ``write_to_path`` was added to the ``read_projection`` MCP tool
-    # as the consolidated home for the write-to-disk delivery mode
-    # that previously lived on a separate export_projection tool. The
-    # REST surface keeps ``export_projection`` as its own discrete
-    # endpoint (storage_root-relative semantics); the MCP-side
-    # ``write_to_path`` is an absolute-path mode mirroring
-    # ``get_document``. ``delivery`` (inline | spill | auto) pins the
-    # inline-vs-spill shape and is meaningful only alongside the
-    # MCP-only ``write_to_path``; the REST projection endpoint has no
-    # write-to-disk target to spill to, so the selector is MCP-only by
-    # construction. ``doc_id`` is the MCP-only inbound alias for
-    # ``document_id`` (see the read-tool cluster below). All three are
-    # permanent divergences by design.
-    ("sage_core", "read_projection"): frozenset({"write_to_path", "doc_id", "delivery"}),
-    # ``doc_id`` is an MCP-only inbound alias for ``document_id`` on the
-    # document-id read tools, mirroring the ``traverse`` alias above.
-    # External agents (notably Cowork over /mcp) supply the ``doc_id``
-    # shorthand; the published schema must accept it so the client's
-    # additionalProperties:false coercion does not strip it before
-    # dispatch. The HTTP API surface is out of scope (HTTP callers read
-    # the OpenAPI schema and don't guess field names). Permanent
-    # divergence by design, not pending remediation.
-    ("sage_core", "get_document"): frozenset({"doc_id"}),
-    ("sage_core", "read_section"): frozenset({"doc_id"}),
-    ("sage_core", "list_headings"): frozenset({"doc_id"}),
-    ("sage_core", "chain"): frozenset({"doc_id"}),
-    # The seven metadata keys are tripwires, not functional arguments.
-    # Caller metadata belongs nested under ``metadata``; these spellings
-    # are published at the top level solely so a wrong-level call
-    # reaches the ``misplaced_metadata`` guard. Publication is what makes the
-    # mistake reachable: an MCP client coerces arguments to the published
-    # schema and strips unknown properties, so an unpublished parameter is
-    # discarded in transit and the framework-level rejection (CAS-ADR-037)
-    # never sees it. They are deliberately absent from the REST surface,
-    # where callers read the OpenAPI schema and do not guess field names.
-    # Permanent MCP-side divergence by design, not pending remediation.
-    ("sage_core", "ingest_document"): frozenset(
-        {
-            "title",
-            "version_label",
-            "project",
-            "doc_type",
-            "authority_scope",
-            "document_date",
-            "tags",
-        }
-    ),
-    # The twelve filter keys are tripwires, not functional arguments, on
-    # the same mechanism as the ingest metadata keys above. Scope
-    # constraints belong nested under ``filters``; these spellings are
-    # published at the top level solely so a wrong-level call reaches the
-    # ``misplaced_filters`` guard instead of being stripped in transit by
-    # a client's published-schema coercion, which returned an unfiltered
-    # result set with nothing naming the dropped constraint. The set is
-    # the whole ``RetrievalFilters`` vocabulary rather than a chosen
-    # subset, so no filter key retains the silent-drop behavior. They are
-    # deliberately absent from the REST surface, where callers read the
-    # OpenAPI schema and do not guess field names.
-    # Permanent MCP-side divergence by design, not pending remediation.
-    ("sage_core", "search"): frozenset(
-        {
-            "doc_type",
-            "project",
-            "lifecycle_status",
-            "exclude_terminal_lifecycle",
-            "tags",
-            "document_ids",
-            "pipeline_status",
-            "source_type",
-            "tier3_metadata",
-            "source_id",
-            "target_id",
-            "edge_type",
-        }
-    ),
-}
-
-
-# (surface_name, operation_id) -> justification for OpenAPI
-# operations that legitimately have no MCP tool. Drains as
-# operations are exposed via MCP.
-HTTP_ONLY_OPERATIONS: dict[tuple[str, str], str] = {
-    ("sage_core", "eval_retrieval"): "HTTP-only retrieval evaluation harness.",
-    (
-        "sage_core",
-        "get_default_vault_config",
-    ): (
-        "REST-only per the SAGE MCP Tool Surface enumeration discipline "
-        "(CAS-ADR-035): the operation exists so a browser client can read "
-        "the creation-time scaffold it cannot construct. An in-process "
-        "caller reaches the same builder directly, so a tool would add a "
-        "name to the surface without adding an affordance."
-    ),
-    (
-        "sage_core",
-        "register_user",
-    ): (
-        "REST-only per the SAGE MCP Tool Surface enumeration discipline "
-        "(CAS-ADR-035): user registration is a CAS App account-creation concern. "
-        "Agents pass ad-hoc `created_by` strings per CAS-ADR-021 and do not need "
-        "an MCP path."
-    ),
-    (
-        "sage_core",
-        "confirm_staging_edge",
-    ): (
-        "REST keeps the operation as a discrete endpoint; MCP collapses "
-        "confirm+dismiss into update_staging_edge(action=...) per the SAGE "
-        "MCP Tool Surface enumeration discipline (CAS-ADR-035)."
-    ),
-    (
-        "sage_core",
-        "dismiss_staging_edge",
-    ): (
-        "REST keeps the operation as a discrete endpoint; MCP collapses "
-        "confirm+dismiss into update_staging_edge(action=...) per the SAGE "
-        "MCP Tool Surface enumeration discipline (CAS-ADR-035)."
-    ),
-    (
-        "sage_core",
-        "export_projection",
-    ): (
-        "REST keeps export_projection (storage_root-relative write semantics); "
-        "MCP folds the write-to-disk capability into "
-        "read_projection(write_to_path=...) (absolute-path semantics, mirroring "
-        "get_document) per the SAGE MCP Tool Surface enumeration discipline "
-        "(CAS-ADR-035)."
-    ),
-    (
-        "sage_core",
-        "get_editors",
-    ): "Editor-model write control; forward-declared per SAGE Architecture Ref §4.3/§6.3.",
-    (
-        "sage_core",
-        "set_editors",
-    ): "Editor-model write control; forward-declared per SAGE Architecture Ref §4.3/§6.3.",
-    ("sage_core", "open_document"): "HTTP-only UI affordance.",
-    (
-        "sage_core",
-        "get_document_download_url",
-    ): (
-        "HTTP-only browser-delivery affordance: mints a short-lived "
-        "pre-authenticated URL the browser fetches directly from the backing "
-        "store. Agents read source bytes via get_document/read_projection and "
-        "have no need for a browser download URL, so there is no MCP tool."
-    ),
-    (
-        "sage_core",
-        "get_document_content",
-    ): (
-        "HTTP-only browser-delivery affordance: streams a document's retained "
-        "source bytes as a raw download, chunked from the vault-source store so "
-        "no hop holds the whole file. Agents read source bytes via "
-        "get_document/read_projection, and a raw byte stream has no MCP "
-        "tool-result equivalent, so there is no MCP tool."
-    ),
-    (
-        "sage_core",
-        "transfer_upload",
-    ): (
-        "HTTP-only byte leg of the caller-local transfer channel: the raw "
-        "PUT body the caller's environment delivers against a one-time "
-        "upload token from a recipe. The MCP side of the exchange is the "
-        "recipe-minting and completion behavior on the ingest tools; a raw "
-        "byte stream has no MCP tool-result equivalent, so there is no MCP "
-        "tool."
-    ),
-    (
-        "sage_core",
-        "transfer_download",
-    ): (
-        "HTTP-only byte leg of the caller-local transfer channel: streams a "
-        "pending transfer's bytes against a one-time download token from a "
-        "recipe. The MCP side of the exchange is the recipe-minting behavior "
-        "on get_document/read_projection; a raw byte stream has no MCP "
-        "tool-result equivalent, so there is no MCP tool."
-    ),
-    (
-        "sage_core",
-        "batch_ingest_documents",
-    ): (
-        "Multipart upload + SSE batch-ingest endpoint for the hosted profile "
-        "(content delivered by upload across the BFF/SAGE container boundary). "
-        "Has no MCP tool counterpart: the path-based bulk_ingest_document MCP "
-        "tool serves the co-located local-filesystem case, and multipart file "
-        "upload has no MCP-transport equivalent (CAS-ADR-042)."
-    ),
-    # Backend-for-frontend interactive sign-in: browser-facing redirect and
-    # cookie flows that have no agent-facing MCP surface by design.
-    (
-        "cas_app",
-        "begin_login",
-    ): "Browser-interactive OIDC sign-in entry (redirect + cookie); no MCP tool by design.",
-    (
-        "cas_app",
-        "get_session",
-    ): "Cookie-scoped session-state read for the SPA; no MCP tool by design.",
-    (
-        "cas_app",
-        "end_session",
-    ): "Cookie-scoped sign-out; no MCP tool by design.",
-    # ROOT Harness Orchestration API: no MCP surface yet. Each
-    # operation must drain individually once the orchestrator MCP
-    # tools land.
-    (
-        "root_harness",
-        "trigger_workflow",
-    ): "ROOT Harness MCP surface not yet implemented; see T-0015/T-0016.",
-    (
-        "root_harness",
-        "get_status",
-    ): "ROOT Harness MCP surface not yet implemented; see T-0015/T-0016.",
-    (
-        "root_harness",
-        "approve",
-    ): "ROOT Harness MCP surface not yet implemented; see T-0015/T-0016.",
-    (
-        "root_harness",
-        "list_pending",
-    ): "ROOT Harness MCP surface not yet implemented; see T-0015/T-0016.",
-    (
-        "root_harness",
-        "subscribe_events",
-    ): "ROOT Harness MCP surface not yet implemented; see T-0015/T-0016.",
-    (
-        "root_harness",
-        "register_agent",
-    ): "ROOT Harness MCP surface not yet implemented; see T-0015/T-0016.",
-    (
-        "root_harness",
-        "get_agent",
-    ): "ROOT Harness MCP surface not yet implemented; see T-0015/T-0016.",
-    (
-        "root_harness",
-        "get_agent_history",
-    ): "ROOT Harness MCP surface not yet implemented; see T-0015/T-0016.",
-    (
-        "root_harness",
-        "get_pipeline_status",
-    ): "ROOT Harness MCP surface not yet implemented; see T-0015/T-0016.",
-}
+# The divergence registers -- MCP-only tools, REST-only operations, and the
+# arguments present on one surface only -- live in ``surface_divergences.py``,
+# each entry carrying its CAS-ADR-052 category.
 
 
 # ---------------------------------------------------------------------------
@@ -684,27 +417,28 @@ def _tool_id_pairs() -> list[tuple[str, str]]:
     ids=[f"{s}-{t}" for s, t in _tool_id_pairs()],
 )
 def test_mcp_tool_has_openapi_counterpart(surface_name: str, tool_name: str):
-    """Each registered MCP tool maps to an OpenAPI operation or is allowlisted."""
+    """Each registered MCP tool maps to an OpenAPI operation or is registered as divergent."""
     surface = _SURFACES_BY_NAME[surface_name]
     spec = _load_spec(surface.spec_path)
     expected_op_id = _resolve_expected_operation_id(surface, tool_name)
     op = _find_operation(spec, expected_op_id)
-    divergent = (surface_name, tool_name) in DIVERGENT_TOOLS
+    divergent = (surface_name, tool_name) in MCP_ONLY_TOOLS
 
     if op is None and divergent:
-        return  # allowlisted; legitimate divergence
+        return  # registered divergence; its category is gated separately
     if op is None and not divergent:
         pytest.fail(
             f"MCP tool {tool_name!r} on surface {surface_name!r} has no OpenAPI "
             f"operation (expected operationId {expected_op_id!r}). Either add "
             "the operation to the spec, file an OPERATION_RENAMES override, or "
-            "add (surface, tool) to DIVERGENT_TOOLS with a justification."
+            "register (surface, tool) in MCP_ONLY_TOOLS as a Divergence naming "
+            "its CAS-ADR-052 category."
         )
     if op is not None and divergent:
         pytest.fail(
-            f"MCP tool {tool_name!r} on surface {surface_name!r} is allowlisted "
-            f"in DIVERGENT_TOOLS but OpenAPI now has operationId "
-            f"{expected_op_id!r}. Remove the stale allowlist entry."
+            f"MCP tool {tool_name!r} on surface {surface_name!r} is registered "
+            f"in MCP_ONLY_TOOLS but OpenAPI now has operationId "
+            f"{expected_op_id!r}. Remove the stale register entry."
         )
 
 
@@ -724,39 +458,81 @@ def _operation_id_pairs() -> list[tuple[str, str]]:
     ids=[f"{s}-{o}" for s, o in _operation_id_pairs()],
 )
 def test_openapi_operation_has_mcp_tool(surface_name: str, operation_id: str):
-    """Each OpenAPI operation has an MCP tool or is allowlisted."""
+    """Each OpenAPI operation has an MCP tool or is registered as divergent."""
     surface = _SURFACES_BY_NAME[surface_name]
     registry = _surface_registry(surface)
     expected_tool = _resolve_expected_tool_name(surface, operation_id)
     present = expected_tool in registry
-    http_only = (surface_name, operation_id) in HTTP_ONLY_OPERATIONS
+    http_only = (surface_name, operation_id) in REST_ONLY_OPERATIONS
 
     if not present and http_only:
-        return  # allowlisted; legitimate HTTP-only operation
+        return  # registered divergence; its category is gated separately
     if not present and not http_only:
         pytest.fail(
             f"OpenAPI operationId {operation_id!r} on surface {surface_name!r} "
             f"has no MCP tool (expected tool name {expected_tool!r}). Either "
             "add the MCP tool, add an OPERATION_RENAMES override if the tool "
-            "exists under a different name, or add (surface, operation_id) to "
-            "HTTP_ONLY_OPERATIONS with a justification."
+            "exists under a different name, or register (surface, operation_id) "
+            "in REST_ONLY_OPERATIONS as a Divergence naming its CAS-ADR-052 "
+            "category."
         )
     if present and http_only:
         pytest.fail(
             f"OpenAPI operationId {operation_id!r} on surface {surface_name!r} "
-            f"is allowlisted in HTTP_ONLY_OPERATIONS but MCP tool "
+            f"is registered in REST_ONLY_OPERATIONS but MCP tool "
             f"{expected_tool!r} is now registered. Remove the stale entry."
         )
 
 
 def _mapped_tool_pairs() -> list[tuple[str, str]]:
-    """Tool pairs that resolve to an OpenAPI operation (excludes DIVERGENT_TOOLS)."""
+    """Tool pairs that resolve to an OpenAPI operation (excludes MCP_ONLY_TOOLS)."""
     pairs: list[tuple[str, str]] = []
     for surface_name, tool_name in _tool_id_pairs():
-        if (surface_name, tool_name) in DIVERGENT_TOOLS:
+        if (surface_name, tool_name) in MCP_ONLY_TOOLS:
             continue
         pairs.append((surface_name, tool_name))
     return pairs
+
+
+def _registered_arguments(
+    register: dict[tuple[str, str, str], Divergence], surface_name: str, tool_name: str
+) -> set[str]:
+    """The arguments a per-argument register admits for one tool."""
+    return {arg for (surf, tool, arg) in register if (surf, tool) == (surface_name, tool_name)}
+
+
+def _argument_gaps(
+    present: set[str], declared: set[str], allowed: set[str]
+) -> tuple[set[str], set[str]]:
+    """Compare one surface's arguments against the other's, net of a register.
+
+    ``present`` are the names on the surface being checked and ``declared``
+    those on its counterpart. Returns ``(new, stale)``: names present but
+    neither declared nor registered, and registered names that no longer
+    diverge.
+    """
+    missing = present - declared
+    return missing - allowed, allowed - missing
+
+
+def _mapped_operation(surface_name: str, tool_name: str) -> tuple[str, dict[str, Any]]:
+    surface = _SURFACES_BY_NAME[surface_name]
+    op_id = _resolve_expected_operation_id(surface, tool_name)
+    op = _find_operation(_load_spec(surface.spec_path), op_id)
+    assert op is not None, (
+        f"Internal: expected operation {op_id!r} to exist (covered by "
+        "test_mcp_tool_has_openapi_counterpart)."
+    )
+    return op_id, op
+
+
+def _tool_arguments(surface_name: str, tool_name: str) -> dict[str, inspect.Parameter]:
+    tool_fn = _surface_registry(_SURFACES_BY_NAME[surface_name])[tool_name]
+    return {
+        name: param
+        for name, param in inspect.signature(tool_fn).parameters.items()
+        if param.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    }
 
 
 @pytest.mark.parametrize(
@@ -773,31 +549,32 @@ def test_mcp_tool_args_conform_to_openapi(surface_name: str, tool_name: str):
     JSON-string-as-carrier tolerance for ``str``).
     """
     surface = _SURFACES_BY_NAME[surface_name]
-    spec = _load_spec(surface.spec_path)
-    registry = _surface_registry(surface)
-    op_id = _resolve_expected_operation_id(surface, tool_name)
-    op = _find_operation(spec, op_id)
-    assert op is not None, (
-        f"Internal: expected operation {op_id!r} to exist (covered by "
-        "test_mcp_tool_has_openapi_counterpart)."
+    op_id, op = _mapped_operation(surface_name, tool_name)
+    openapi_fields = _operation_parameters(_load_spec(surface.spec_path), op)
+    arguments = _tool_arguments(surface_name, tool_name)
+
+    new_drift, stale_register = _argument_gaps(
+        present=set(arguments),
+        declared=set(openapi_fields),
+        allowed=_registered_arguments(MCP_ONLY_ARGUMENTS, surface_name, tool_name),
+    )
+    assert not new_drift, (
+        f"MCP tool {tool_name!r} (operationId {op_id!r}) exposes argument(s) "
+        f"{sorted(new_drift)!r} that do not appear in the OpenAPI operation's "
+        "parameters or requestBody schema. Either rename the MCP argument to "
+        "match the spec, add the field to the spec, or register "
+        "(surface, tool, argument) in MCP_ONLY_ARGUMENTS as a Divergence naming "
+        "its CAS-ADR-052 category."
+    )
+    assert not stale_register, (
+        f"MCP tool {tool_name!r} (operationId {op_id!r}) is registered in "
+        f"MCP_ONLY_ARGUMENTS for argument(s) {sorted(stale_register)!r} but no "
+        "longer exhibits the gap. Remove the stale entries."
     )
 
-    tool_fn = registry[tool_name]
-    sig = inspect.signature(tool_fn)
-    openapi_fields = _operation_parameters(spec, op)
-    allowed = KNOWN_ARG_DRIFT.get((surface_name, tool_name), frozenset())
-
-    actual_missing: set[str] = set()
     type_violations: list[str] = []
-
-    for param_name, param in sig.parameters.items():
-        if param.kind in (
-            inspect.Parameter.VAR_POSITIONAL,
-            inspect.Parameter.VAR_KEYWORD,
-        ):
-            continue
+    for param_name, param in arguments.items():
         if param_name not in openapi_fields:
-            actual_missing.add(param_name)
             continue
         openapi_type, _ = openapi_fields[param_name]
         py_types, _ = _python_types_and_optional(param.annotation)
@@ -805,29 +582,168 @@ def test_mcp_tool_args_conform_to_openapi(surface_name: str, tool_name: str):
             py_repr = sorted(t.__name__ for t in py_types) or [repr(param.annotation)]
             type_violations.append(f"{param_name}: python={py_repr} openapi={openapi_type!r}")
 
-    new_drift = actual_missing - allowed
-    assert not new_drift, (
-        f"MCP tool {tool_name!r} (operationId {op_id!r}) exposes argument(s) "
-        f"{sorted(new_drift)!r} that do not appear in the OpenAPI operation's "
-        "parameters or requestBody schema. Either rename the MCP argument to "
-        "match the spec, add the field to the spec, or pin the new gap in "
-        "KNOWN_ARG_DRIFT with a remediation-ticket reference."
-    )
-
-    stale_allowlist = allowed - actual_missing
-    assert not stale_allowlist, (
-        f"MCP tool {tool_name!r} (operationId {op_id!r}) is allowlisted in "
-        f"KNOWN_ARG_DRIFT for argument(s) {sorted(stale_allowlist)!r} but no "
-        "longer exhibits the gap. Remove the stale entry (or delete the whole "
-        "key if it was the only one)."
-    )
-
     assert not type_violations, (
         f"MCP tool {tool_name!r} (operationId {op_id!r}) has argument(s) with "
         f"types incompatible with the OpenAPI schema: {type_violations!r}. "
         "Adjust either side so the types line up (consult the type-compat "
         "table in the test module docstring)."
     )
+
+
+# ---------------------------------------------------------------------------
+# Divergence categories (CAS-ADR-052)
+# ---------------------------------------------------------------------------
+
+
+def test_uncategorized_reports_each_malformed_entry():
+    """Each way an entry can fail to name an admissible category is reported.
+
+    The raw-string arm matters most: ``DivergenceCategory`` is a ``StrEnum``,
+    so a bare ``"translation artifact"`` compares equal to its member and a
+    membership test by equality would admit it.
+    """
+    register = {
+        ("s", "bare_string"): "Justified in prose alone.",
+        ("s", "raw_category"): Divergence("translation artifact", "x"),
+        ("s", "no_category"): Divergence(None, "x"),
+        ("s", "empty_basis"): Divergence(DivergenceCategory.DELIVERY_FORM, ""),
+        ("s", "well_formed"): Divergence(DivergenceCategory.DELIVERY_FORM, "x"),
+    }
+
+    # A second register, so a walk that stops after the first is caught.
+    later = {("s", "later_bare_string"): "Justified in prose alone."}
+
+    reported = uncategorized((("SYNTHETIC", register), ("LATER", later)))
+
+    assert len(reported) == 5, reported
+    for key in ("bare_string", "raw_category", "no_category", "empty_basis", "later_bare_string"):
+        assert sum(f"'{key}'" in line for line in reported) == 1, (key, reported)
+    assert not any("well_formed" in line for line in reported)
+
+
+def test_pending_remediation_lines_report_only_pending_entries():
+    register = {
+        ("s", "permanent_tool"): Divergence(DivergenceCategory.OPERATION_FACTORING, "factored"),
+        ("s", "pending_tool"): Divergence(
+            DivergenceCategory.PENDING_REMEDIATION, "add the REST operation"
+        ),
+    }
+
+    lines = pending_remediation_lines((("SYNTHETIC", register),))
+
+    assert len(lines) == 1, lines
+    assert "pending_tool" in lines[0]
+    assert "add the REST operation" in lines[0]
+    assert "SYNTHETIC" in lines[0]
+
+
+def test_argument_gaps_reports_new_and_stale():
+    new, stale = _argument_gaps(present={"a", "b"}, declared={"a"}, allowed={"b", "c"})
+    assert (new, stale) == (set(), {"c"})
+
+    new, stale = _argument_gaps(present={"a", "b"}, declared={"a"}, allowed=set())
+    assert (new, stale) == ({"b"}, set())
+
+
+def test_every_divergence_names_an_admissible_category():
+    # The walk covers exactly the registers the gate consults; a register
+    # left out of REGISTERS would escape the category check unnoticed.
+    assert list(REGISTERS) == [
+        ("MCP_ONLY_TOOLS", MCP_ONLY_TOOLS),
+        ("REST_ONLY_OPERATIONS", REST_ONLY_OPERATIONS),
+        ("MCP_ONLY_ARGUMENTS", MCP_ONLY_ARGUMENTS),
+        ("REST_ONLY_ARGUMENTS", REST_ONLY_ARGUMENTS),
+    ]
+    assert all(register is globals()[name] for name, register in REGISTERS)
+    assert uncategorized(REGISTERS) == []
+
+    sizes = {name: len(register) for name, register in REGISTERS}
+    assert all(size > 0 for name, size in sizes.items() if name != "REST_ONLY_ARGUMENTS"), sizes
+    assert sum(sizes.values()) >= 50, sizes
+
+
+def test_divergence_bases_cite_no_tickets():
+    """A basis states a protocol reason or the closing work, never a ticket id."""
+    ticket = re.compile(r"\bT-\d{4}\b")
+    citing = [
+        f"{name}{key!r}"
+        for name, register in REGISTERS
+        for key, entry in register.items()
+        if ticket.search(repr(key)) or ticket.search(entry.basis)
+    ]
+    assert citing == []
+
+
+def test_pending_remediation_lines_list_exactly_the_pending_entries():
+    pending = {
+        (name, key)
+        for name, register in REGISTERS
+        for key, entry in register.items()
+        if entry.category is DivergenceCategory.PENDING_REMEDIATION
+    }
+    permanent = {
+        (name, key)
+        for name, register in REGISTERS
+        for key, entry in register.items()
+        if entry.category is not DivergenceCategory.PENDING_REMEDIATION
+    }
+
+    lines = pending_remediation_lines(REGISTERS)
+
+    # Population pin: recategorizing or remediating an entry is a deliberate
+    # edit here as well as in the register.
+    assert len(pending) == 17
+    assert len(lines) == len(pending)
+    for name, key in pending:
+        entry = dict(REGISTERS)[name][key]
+        assert sum(f"{name} {'/'.join(key)}: {entry.basis}" == line for line in lines) == 1
+    for name, key in permanent:
+        assert not any(line.startswith(f"{name} {'/'.join(key)}:") for line in lines)
+
+
+@pytest.mark.parametrize(
+    ("surface_name", "tool_name"),
+    _mapped_tool_pairs(),
+    ids=[f"{s}-{t}" for s, t in _mapped_tool_pairs()],
+)
+def test_rest_operation_args_appear_on_mcp_tool(surface_name: str, tool_name: str):
+    """Every parameter or request-body field of a mapped operation is on its tool."""
+    surface = _SURFACES_BY_NAME[surface_name]
+    op_id, op = _mapped_operation(surface_name, tool_name)
+
+    new_gap, stale_register = _argument_gaps(
+        present=set(_operation_parameters(_load_spec(surface.spec_path), op)),
+        declared=set(_tool_arguments(surface_name, tool_name)),
+        allowed=_registered_arguments(REST_ONLY_ARGUMENTS, surface_name, tool_name),
+    )
+    assert not new_gap, (
+        f"OpenAPI operation {op_id!r} accepts argument(s) {sorted(new_gap)!r} that "
+        f"MCP tool {tool_name!r} does not. Add them to the tool, or register "
+        "(surface, tool, argument) in REST_ONLY_ARGUMENTS as a Divergence naming "
+        "its CAS-ADR-052 category."
+    )
+    assert not stale_register, (
+        f"MCP tool {tool_name!r} (operationId {op_id!r}) is registered in "
+        f"REST_ONLY_ARGUMENTS for argument(s) {sorted(stale_register)!r} but no "
+        "longer exhibits the gap. Remove the stale entries."
+    )
+
+
+def test_rest_argument_walk_is_not_empty():
+    """The REST-to-MCP direction would pass vacuously on empty field sets."""
+    fields = {
+        (surface_name, tool_name): set(
+            _operation_parameters(
+                _load_spec(_SURFACES_BY_NAME[surface_name].spec_path),
+                _mapped_operation(surface_name, tool_name)[1],
+            )
+        )
+        for surface_name, tool_name in _mapped_tool_pairs()
+    }
+
+    assert sum(len(names) for names in fields.values()) >= 100
+    assert "filters" in fields[("sage_core", "search")]
+    assert "transfer_token" in fields[("sage_core", "ingest_document")]
 
 
 # ---------------------------------------------------------------------------

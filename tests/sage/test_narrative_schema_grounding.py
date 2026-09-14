@@ -774,7 +774,7 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
     },
     ("sage_core", "read_projection"): {
         # Values of ``delivery``, an MCP-only argument with no REST
-        # counterpart (see KNOWN_ARG_DRIFT); the argument name resolves,
+        # counterpart (see MCP_ONLY_ARGUMENTS); the argument name resolves,
         # its values are not enumerated in either spec.
         "auto": "value of the MCP-only delivery argument",
         "inline": "value of the MCP-only delivery argument",
