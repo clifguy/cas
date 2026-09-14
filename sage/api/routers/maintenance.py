@@ -98,7 +98,13 @@ async def migrate_vault(
     operation_id="reload_vault",
     response_model=ReloadVaultResponse,
     responses={
-        400: boundary_400(path=("invalid_vault_id",), request=("unknown_parameter",)),
+        400: boundary_400(
+            path=("invalid_vault_id",),
+            request=("unknown_parameter",),
+            extra="`vault_config_validation_error`: the vault's declaration on the "
+            "store is not valid YAML, or does not validate as a vault "
+            "configuration. `detail.errors` names each problem to correct.",
+        ),
         404: {
             "model": ErrorResponse,
             "description": "`vault_not_found`: no vault registered with that id.",

@@ -1204,10 +1204,6 @@ async def reload_vault_in_registry(
     Partial-allocation cleanup inside ``initialize_services`` is best-effort
     (see ``initialize_services``'s transactional cleanup block).
 
-    Used by:
-    - ``VaultRegistryService.reload`` (FastAPI PUT-config endpoint).
-    - ``reload_vault`` MCP tool (via delegation).
-
     Carries the predecessor's ``content_store_factory`` / ``graph_store_factory``
     and (when the caller does not supply one) ``config_path`` forward so
     hermetic-lifespan-test setups survive reload and on-disk YAML edits

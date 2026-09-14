@@ -3318,6 +3318,10 @@ paths:
                 $ref: "#/components/schemas/ReloadVaultResponse"
         "400":
           description: >-
+            `vault_config_validation_error`: the vault's declaration on the
+            store is not valid YAML, or does not validate as a vault
+            configuration. `detail.errors` names each problem to correct.
+
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
 
             `unknown_parameter`: the request carries a body field or query

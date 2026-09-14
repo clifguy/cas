@@ -203,6 +203,10 @@ async def test_recompute_pipeline_tool_and_route_agree(
     assert via_tool["document_id"] == via_route["document_id"] == doc_id
     datetime.fromisoformat(via_tool["dispatched_at"])
     datetime.fromisoformat(via_route["dispatched_at"])
+    # Both spellings parse, so parsing alone would pass an arm that serialized
+    # the service's raw ISO string instead of the response model.
+    assert via_tool["dispatched_at"].endswith("Z")
+    assert via_route["dispatched_at"].endswith("Z")
     assert tool_doc.pipeline_status == route_doc.pipeline_status
     assert tool_chunks == route_chunks > 0
 
@@ -254,7 +258,7 @@ async def test_reload_vault_route_failure_keeps_the_serving_services(yaml_app, m
 
     async def failing_initialize_services(*args: Any, **kwargs: Any) -> SAGEServices:
         raise SAGEError(
-            code="schema_migration_required",
+            code="simulated_rebuild_failure",
             message="simulated rebuild failure",
             status_code=409,
         )
@@ -265,7 +269,7 @@ async def test_reload_vault_route_failure_keeps_the_serving_services(yaml_app, m
         resp = await client.post(f"/sage_vaults/{vault_id}/maintenance/reload")
 
     assert resp.status_code == 409, resp.text
-    assert resp.json()["code"] == "schema_migration_required"
+    assert resp.json()["code"] == "simulated_rebuild_failure"
     assert app.state.vault_registry[vault_id] is old
     assert isinstance(await old.graph_store.list_all_documents(), list)
 
@@ -293,6 +297,39 @@ async def test_reload_vault_tool_and_route_agree(
     assert via_tool == via_route == {"vault_id": vault_id, "reloaded": True, "document_count": 1}
     assert name_after_tool == "Edit Before Tool"
     assert name_after_route == "Edit Before Route"
+
+
+async def test_reload_vault_refuses_a_malformed_declaration_on_both_surfaces(
+    yaml_app, tool_payload: Callable[[object], dict]
+):
+    """RV-6: an unusable declaration is the same typed refusal on both arms.
+
+    The edit that breaks the declaration is the edit this operation exists to
+    pick up, so an untranslated failure surfaces where callers meet it: an
+    opaque 500 on REST and an envelope naming the wrong subject on MCP. Both
+    arms also leave the vault serving, which is what the refusal claims.
+    """
+    app, vault_id, config_path = yaml_app
+    services: SAGEServices = app.state.vault_registry[vault_id]
+
+    raw = yaml.safe_load(config_path.read_text())
+    raw["vault"]["id"] = "Not A Valid Id!!"
+    config_path.write_text(yaml.safe_dump(raw, sort_keys=False))
+
+    maint = app.state.mcp_mounts["/mcp_maint"]
+    via_tool = tool_payload(await maint.call_tool("reload_vault", {"vault_id": vault_id}))
+
+    async with _client(app) as client:
+        resp = await client.post(f"/sage_vaults/{vault_id}/maintenance/reload")
+
+    assert resp.status_code == 400, resp.text
+    via_route = resp.json()
+    assert via_tool["error"] == via_route["code"] == "vault_config_validation_error"
+    assert via_tool["detail"]["errors"] == via_route["detail"]["errors"]
+    assert any("vault.id" in message for message in via_route["detail"]["errors"])
+    # The vault kept serving from the services it already had, on both arms.
+    assert app.state.vault_registry[vault_id] is services
+    assert isinstance(await services.graph_store.list_all_documents(), list)
 
 
 async def test_reload_vault_route_reports_success_when_the_count_fails(yaml_app, monkeypatch):

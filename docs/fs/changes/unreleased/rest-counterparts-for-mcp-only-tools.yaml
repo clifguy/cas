@@ -15,10 +15,15 @@ summary: >-
   through the same response models, so recompute_pipeline's dispatched_at is spelled with a Z offset, the same
   instant as before. In the MCP tool catalog the three descriptions are rewritten to
   state the same claims as their operations, and reload_vault no longer lists
-  schema_migration_required and duplicate_edges_present, codes nothing raises.
+  schema_migration_required and duplicate_edges_present, codes nothing raises. Both
+  reload_vault surfaces declare and answer vault_config_validation_error (400) where the
+  declaration on the store is not valid YAML or does not validate as a vault
+  configuration, translated once in the shared service.
 for_callers: >-
   A REST caller can now repair a document stalled with no chunks
   (POST …/documents/{document_id}/recompute-pipeline), reload a vault after a change
   SAGE did not make (POST …/maintenance/reload), and read the stack-wide configuration
   (GET /sage_vaults/maintenance/stack-config), with the same results and refusals as
-  the MCP tools of the same names.
+  the MCP tools of the same names. A reload whose declaration does not parse is refused
+  with vault_config_validation_error, whose detail.errors names each problem to correct,
+  and the vault keeps serving from the services it already had.

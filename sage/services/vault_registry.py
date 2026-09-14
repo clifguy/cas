@@ -29,9 +29,11 @@ from sage.models.schemas import (
     VaultSummary,
 )
 from sage.vault_management import (
+    CONFIG_FAILURES,
     _atomic_write_bytes,
     _validate_config,
     bound_vault_root,
+    config_refusal,
 )
 
 logger = logging.getLogger(__name__)
@@ -361,6 +363,8 @@ class VaultRegistryService:
 
         Raises:
             VaultNotFoundError: No vault with this id is registered.
+            VaultConfigValidationError: The declaration on the store is not
+                valid YAML, or does not validate as a vault configuration.
         """
         from sage.mcp_init import (
             get_stack_config,
@@ -375,7 +379,16 @@ class VaultRegistryService:
         config_path = old_services.config_path
         if config_path is not None:
             store = resolve_stack_vault_source_store(get_stack_config())
-            config = store.load_config(DiscoveredVault(config_path=config_path))
+            try:
+                config = store.load_config(DiscoveredVault(config_path=config_path))
+            except CONFIG_FAILURES as exc:
+                # The declaration this reload exists to pick up is the one a
+                # caller just edited, so a malformed edit is an ordinary
+                # outcome of the operation rather than an internal error. The
+                # refusal names what to correct; the vault keeps serving from
+                # the services it already has, since nothing has been torn
+                # down at this point.
+                raise config_refusal(exc) from exc
         else:
             config = old_services.config
 

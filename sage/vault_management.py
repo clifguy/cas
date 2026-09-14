@@ -79,6 +79,38 @@ def bound_vault_root() -> Path:
     return get_vault_root() or default_vault_root()
 
 
+def config_refusal(exc: Exception) -> VaultConfigValidationError:
+    """Translate a configuration parse or validation failure into a refusal.
+
+    One translator for every caller that turns a declaration into a
+    ``VaultConfig``, whether it validates a dict in hand or reads the
+    declaration back through a vault-source store. Each accepted cause names
+    what a caller has to correct: a field and its message, the schema path
+    inside ``metadata_schema``, or the YAML parse position. Anything else is
+    re-raised by the caller rather than described as a configuration error.
+    """
+    if isinstance(exc, ValidationError):
+        errors = [f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()]
+        return VaultConfigValidationError(errors)
+    if isinstance(exc, jsonschema.SchemaError):
+        path_str = ".".join(str(p) for p in exc.path) or "<root>"
+        return VaultConfigValidationError(
+            [f"document_types.metadata_schema {path_str}: {exc.message}"]
+        )
+    if isinstance(exc, yaml.YAMLError):
+        return VaultConfigValidationError([f"declaration is not valid YAML: {exc}"])
+    raise TypeError(f"not a configuration failure: {type(exc).__name__}")
+
+
+#: The failures :func:`config_refusal` translates. A caller catches exactly
+#: these and lets anything else propagate.
+CONFIG_FAILURES: tuple[type[Exception], ...] = (
+    ValidationError,
+    jsonschema.SchemaError,
+    yaml.YAMLError,
+)
+
+
 def _validate_config(config_dict: dict) -> VaultConfig:
     """Validate a config dict, raising VaultConfigValidationError on failure.
 
@@ -90,14 +122,8 @@ def _validate_config(config_dict: dict) -> VaultConfig:
     warn_on_retired_sections(config_dict)
     try:
         return VaultConfig.model_validate(config_dict)
-    except ValidationError as exc:
-        errors = [f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()]
-        raise VaultConfigValidationError(errors) from exc
-    except jsonschema.SchemaError as exc:
-        path_str = ".".join(str(p) for p in exc.path) or "<root>"
-        raise VaultConfigValidationError(
-            [f"document_types.metadata_schema {path_str}: {exc.message}"]
-        ) from exc
+    except (ValidationError, jsonschema.SchemaError) as exc:
+        raise config_refusal(exc) from exc
 
 
 def _write_config_yaml(config_path: Path, config_dict: dict) -> None:

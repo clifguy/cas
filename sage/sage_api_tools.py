@@ -3627,6 +3627,9 @@ def register_sage_tools(
           validation at the boundary.
         - ``unknown_vault`` (404): ``vault_id`` is not a registered vault.
           The message enumerates the available vaults.
+        - ``vault_config_validation_error`` (400): the vault's declaration on the
+          store is not valid YAML, or does not validate as a vault configuration.
+          ``detail.errors`` names each problem to correct.
 
         Args:
             vault_id: Target vault identifier.
