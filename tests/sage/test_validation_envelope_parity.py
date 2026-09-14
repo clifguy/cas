@@ -294,6 +294,52 @@ async def test_envelope_shape_parity_between_surfaces(vault_services, http_clien
     assert set(mcp_envelope) - set(http_body) == {"error"}
 
 
+async def test_unknown_parameter_parity_between_surfaces(vault_services, http_client):
+    """An unknown top-level name is one refusal on both surfaces.
+
+    The valid-name set is the one field allowed to differ in value: each
+    surface names what it accepts where the unknown name was sent, and the
+    MCP tool accepts arguments the HTTP body carries in its path or not at
+    all. Its presence and type are still held equal, and the code, message,
+    tool and rejected names must match exactly.
+    """
+    mcp_envelope = await _call_search(query="x", bogus_field_x=1)
+    resp = await http_client.post(
+        f"/sage_vaults/{VAULT_ID}/discover", json={"query": "x", "bogus_field_x": 1}
+    )
+    http_body = resp.json()
+
+    assert resp.status_code == 400, resp.text
+    assert mcp_envelope["error"] == http_body["code"] == "unknown_parameter"
+    assert mcp_envelope["message"] == http_body["message"]
+    assert set(mcp_envelope["detail"]) == set(http_body["detail"])
+    for key in ("tool", "rejected_params"):
+        assert mcp_envelope["detail"][key] == http_body["detail"][key]
+    assert http_body["detail"]["rejected_params"] == ["bogus_field_x"]
+    assert isinstance(http_body["detail"]["valid_params"], list)
+    assert "query" in http_body["detail"]["valid_params"]
+    assert set(http_body) - set(mcp_envelope) == {"code", "read_meta"}
+    assert set(mcp_envelope) - set(http_body) == {"error"}
+
+
+async def test_unknown_item_field_parity_between_surfaces(vault_services, http_client):
+    """A name nested inside a batch item is refused alike on both surfaces.
+
+    Neither surface names it an unknown parameter -- it is not one of the
+    operation's parameters -- and neither lets it through.
+    """
+    item = {"document_id": "00000000_absent_document", "action": "archive", "bogus": 1}
+    mcp_envelope = _decode_envelope(
+        await mcp.call_tool("update_lifecycles", {"vault_id": VAULT_ID, "items": [item]})
+    )
+    resp = await http_client.post(f"/sage_vaults/{VAULT_ID}/lifecycles", json={"items": [item]})
+    http_body = resp.json()
+
+    assert mcp_envelope["error"] == http_body["code"] == "invalid_parameter"
+    assert mcp_envelope["detail"]["parameter"].endswith("bogus")
+    assert http_body["detail"]["parameter"].endswith("bogus")
+
+
 # ---------------------------------------------------------------------------
 # Negative control -- the filter-scoped codes keep their distinct payloads
 # ---------------------------------------------------------------------------

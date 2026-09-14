@@ -49,7 +49,12 @@ router = APIRouter(tags=["Ingestion"])
         },
         400: boundary_400(
             path=("invalid_vault_id",),
-            request=("invalid_document_id", "invalid_sha256", "invalid_document_date"),
+            request=(
+                "invalid_document_id",
+                "invalid_sha256",
+                "invalid_document_date",
+                "unknown_parameter",
+            ),
             extra="`adapter_not_found`: no source adapter is registered for "
             "`source_type`.\n\n"
             "`vault_source_path_refused`: the vault-source store refused "
@@ -243,6 +248,7 @@ async def ingest(
         },
         400: boundary_400(
             path=("invalid_vault_id",),
+            request=("unknown_parameter",),
             extra="`empty_file_list`: no files were uploaded.\n\n"
             "`invalid_batch_metadata`: the `metadata` form field is not "
             "valid JSON for the BatchIngestUploadMetadata schema, or its "

@@ -48,6 +48,10 @@ REQUEST_400_SENTENCES: dict[str, str] = {
         "well-formed calendar date (`YYYY-MM-DD`)."
     ),
     "invalid_user_id": "`invalid_user_id`: a user id in the request is not well-formed.",
+    "unknown_parameter": (
+        "`unknown_parameter`: the request carries a body field or query parameter "
+        "the operation does not declare."
+    ),
 }
 
 

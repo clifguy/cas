@@ -38,7 +38,9 @@ router = APIRouter(tags=["Document Metadata"])
     "/documents/{document_id}/open",
     response_model=OpenDocumentResponse,
     responses={
-        400: boundary_400(path=("invalid_document_id", "invalid_vault_id")),
+        400: boundary_400(
+            path=("invalid_document_id", "invalid_vault_id"), request=("unknown_parameter",)
+        ),
         404: {
             "model": ErrorResponse,
             "description": "Document, vault, or backing source file not found.",
@@ -66,7 +68,9 @@ async def open_document(
     operation_id="recompute_abstract",
     response_model=ReabstractStartedResponse,
     responses={
-        400: boundary_400(path=("invalid_document_id", "invalid_vault_id")),
+        400: boundary_400(
+            path=("invalid_document_id", "invalid_vault_id"), request=("unknown_parameter",)
+        ),
         404: {
             "model": ErrorResponse,
             "description": (
@@ -112,7 +116,9 @@ async def recompute_abstract(
     "/documents/{document_id}/download-url",
     response_model=DocumentDownloadUrlResponse,
     responses={
-        400: boundary_400(path=("invalid_document_id", "invalid_vault_id")),
+        400: boundary_400(
+            path=("invalid_document_id", "invalid_vault_id"), request=("unknown_parameter",)
+        ),
         404: {
             "model": ErrorResponse,
             "description": "Vault or document not found.",
@@ -156,7 +162,9 @@ async def get_document_download_url(
 @router.get(
     "/documents/{document_id}/content",
     responses={
-        400: boundary_400(path=("invalid_document_id", "invalid_vault_id")),
+        400: boundary_400(
+            path=("invalid_document_id", "invalid_vault_id"), request=("unknown_parameter",)
+        ),
         404: {
             "model": ErrorResponse,
             "description": (
@@ -226,6 +234,7 @@ async def get_document_content(
     responses={
         400: boundary_400(
             path=("invalid_document_id", "invalid_vault_id"),
+            request=("unknown_parameter",),
             extra="Both `include_content` and `write_to_path` supplied "
             "(`content_delivery_conflict`). Also returned with `write_path_invalid` "
             "when `write_to_path` is not absolute, its parent is missing or not "

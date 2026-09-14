@@ -93,6 +93,12 @@ UNREACHABLE_PER_FILE: dict[str, tuple[str, ...]] = {
 #: operation's own status and never as a per-file entry.
 BATCH_BOUNDARY: frozenset[str] = frozenset({"invalid_vault_id"})
 
+#: Codes the Core API refuses at its request boundary, before any operation
+#: runs, for a name the operation does not declare. A batch file carries no
+#: request of its own to refuse, and the application API is a separate contract
+#: that does not raise them, so they are neither per-file nor a batch's own.
+REQUEST_BOUNDARY: frozenset[str] = frozenset({"unknown_parameter"})
+
 
 # ---------------------------------------------------------------------------
 # Error classes and their codes
@@ -305,7 +311,7 @@ def _vocabulary(spec: dict[str, Any], catalog: frozenset[str]) -> set[str]:
 
 def _derived(core: dict[str, Any], catalog: frozenset[str]) -> set[str]:
     declared = _declared(core, _INGEST_OPERATION, catalog)
-    return declared - set(UNREACHABLE_PER_FILE) - BATCH_BOUNDARY
+    return declared - set(UNREACHABLE_PER_FILE) - BATCH_BOUNDARY - REQUEST_BOUNDARY
 
 
 @pytest.fixture(scope="module")
@@ -537,7 +543,7 @@ def test_translation_is_confined_to_request_construction():
 def test_exclusion_tables_are_not_stale(core, catalog):
     """Every exclusion names a declared code, and the boundary codes are the batch's own."""
     declared = _declared(core, _INGEST_OPERATION, catalog)
-    stale = sorted((set(UNREACHABLE_PER_FILE) | BATCH_BOUNDARY) - declared)
+    stale = sorted((set(UNREACHABLE_PER_FILE) | BATCH_BOUNDARY | REQUEST_BOUNDARY) - declared)
     assert not stale, f"exclusions naming codes {_INGEST_OPERATION} does not declare: {stale}"
     for spec_name, operation_id in _BATCH_OPERATIONS:
         missing = sorted(BATCH_BOUNDARY - _declared(_load(spec_name), operation_id, catalog))

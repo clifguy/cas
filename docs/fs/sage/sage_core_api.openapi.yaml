@@ -256,6 +256,9 @@ paths:
 
             `invalid_document_id`: a document id in the request is not
             well-formed.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -414,6 +417,9 @@ paths:
 
             `invalid_sha256`: a content hash in the request is not a
             well-formed sha256 digest.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -510,6 +516,9 @@ paths:
 
             `invalid_document_date`: a document date in the request is not
             a well-formed calendar date (`YYYY-MM-DD`).
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -726,6 +735,9 @@ paths:
 
             `invalid_document_date`: a document date in the request is not a
             well-formed calendar date (`YYYY-MM-DD`).
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -978,6 +990,9 @@ paths:
             parts.
 
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -1086,6 +1101,9 @@ paths:
 
             `invalid_document_id`: `document_id` is not a well-formed
             document id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -1212,6 +1230,9 @@ paths:
 
             `invalid_sha256`: a content hash in the request is not a
             well-formed sha256 digest.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -1282,6 +1303,9 @@ paths:
 
             `invalid_document_id`: a document id in the request is not
             well-formed.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -1361,6 +1385,9 @@ paths:
 
             `invalid_document_id`: a document id in the request is not
             well-formed.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -1426,6 +1453,9 @@ paths:
 
             `invalid_document_id`: `document_id` is not a well-formed
             document id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -1481,6 +1511,9 @@ paths:
             Invalid user type or missing required field.
 
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -1634,6 +1667,9 @@ paths:
 
             `invalid_document_id`: `document_id` is not a well-formed
             document id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -1694,6 +1730,9 @@ paths:
             `retrieval_health.assertions_file` entry.
 
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -1738,6 +1777,9 @@ paths:
         "400":
           description: >-
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -1779,6 +1821,14 @@ paths:
                 items:
                   $ref: "#/components/schemas/VaultSummary"
 
+        "400":
+          description: >-
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
     post:
       operationId: create_vault
       summary: Create a new vault from a full configuration object.
@@ -1808,6 +1858,9 @@ paths:
             `vault_config_validation_error`: the supplied configuration
             failed schema validation (detail includes the list of
             failed constraints).
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -1867,6 +1920,9 @@ paths:
           description: >-
             `invalid_vault_id`: a vault id in the request is not
             well-formed.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -1921,6 +1977,9 @@ paths:
         "400":
           description: >-
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -1992,6 +2051,9 @@ paths:
         "400":
           description: >-
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -2058,6 +2120,9 @@ paths:
             request attempts to change `vault.id`.
 
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -2137,6 +2202,9 @@ paths:
 
             `invalid_sha256`: a content hash in the request is not a
             well-formed sha256 digest.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -2195,6 +2263,9 @@ paths:
         "400":
           description: >-
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -2239,6 +2310,9 @@ paths:
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
 
             `invalid_edge_id`: `edge_id` is not a well-formed edge id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -2291,6 +2365,9 @@ paths:
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
 
             `invalid_edge_id`: `edge_id` is not a well-formed edge id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -2355,6 +2432,9 @@ paths:
         "400":
           description: >-
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -2412,6 +2492,9 @@ paths:
             `source_type`.
 
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -2456,6 +2539,9 @@ paths:
 
             `invalid_document_id`: `document_id` is not a well-formed
             document id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -2515,6 +2601,9 @@ paths:
 
             `invalid_document_id`: `document_id` is not a well-formed
             document id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -2570,6 +2659,9 @@ paths:
 
             `invalid_document_id`: `document_id` is not a well-formed
             document id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -2649,6 +2741,9 @@ paths:
 
             `invalid_document_id`: `document_id` is not a well-formed
             document id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -2710,6 +2805,9 @@ paths:
 
             `invalid_document_id`: `document_id` is not a well-formed
             document id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -2784,6 +2882,9 @@ paths:
 
             `invalid_document_id`: `document_id` is not a well-formed
             document id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -2846,6 +2947,9 @@ paths:
 
             `invalid_document_id`: `document_id` is not a well-formed
             document id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -2929,6 +3033,9 @@ paths:
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
 
             `invalid_edge_id`: `edge_id` is not a well-formed edge id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -2984,6 +3091,9 @@ paths:
         "400":
           description: >-
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -3067,6 +3177,9 @@ paths:
 
             `invalid_document_id`: a document id in the request is not
             well-formed.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -3171,6 +3284,9 @@ paths:
 
             `invalid_document_id`: a document id in the request is not
             well-formed.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -3307,6 +3423,9 @@ paths:
         "400":
           description: >-
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -3429,6 +3548,9 @@ paths:
         "400":
           description: >-
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -3506,6 +3628,9 @@ paths:
         "400":
           description: >-
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
           content:
             application/json:
               schema:
@@ -3564,6 +3689,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/TransferUploadResult"
+        "400":
+          description: >-
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: >-
             `transfer_token_already_used`: this transfer already holds staged
@@ -3638,6 +3771,14 @@ paths:
                   The raw bytes. The concrete Content-Type is derived from
                   the transfer's filename and may be more specific than
                   octet-stream.
+        "400":
+          description: >-
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "410":
           description: >-
             `transfer_token_invalid`: the token names no redeemable pending
@@ -4520,6 +4661,7 @@ components:
 
     DiscoverRequest:
       type: object
+      additionalProperties: false
       description: >-
         Retrieval request. Required fields vary by mode:
 
@@ -4695,6 +4837,7 @@ components:
 
     RetrievalFilters:
       type: object
+      additionalProperties: false
       description: >-
         Metadata filters applied before retrieval. Used when scope
         is "filtered", but also applicable as additional constraints
@@ -4967,6 +5110,7 @@ components:
 
     IngestRequest:
       type: object
+      additionalProperties: false
       required: [source, source_type]
       description: >-
         Request body for the ingest endpoint. Identifies the source
@@ -5140,6 +5284,7 @@ components:
 
     ParseFilenameRequest:
       type: object
+      additionalProperties: false
       required: [filename, source_type]
       description: >-
         Inputs for the side-effect-free filename parser endpoint.
@@ -5304,6 +5449,7 @@ components:
 
     TraverseRequest:
       type: object
+      additionalProperties: false
       required: [start_id]
       description: >-
         Request body for the graph traversal endpoint. Walks the document
@@ -5339,6 +5485,7 @@ components:
 
     ChainRequest:
       type: object
+      additionalProperties: false
       required: [document_id, edge_type]
       description: >-
         Request body for the chain walk endpoint. Walks an edge chain in
@@ -5374,6 +5521,7 @@ components:
 
     RegisterUserRequest:
       type: object
+      additionalProperties: false
       required: [display_name, user_type]
       description: Request body for the user-registration endpoint.
       properties:
@@ -5398,6 +5546,7 @@ components:
 
     ExportProjectionRequest:
       type: object
+      additionalProperties: false
       required: [output_path]
       description: Request body for the export-projection endpoint that writes the document projection to a Markdown file.
       properties:
@@ -5760,6 +5909,7 @@ components:
 
     BulkLifecycleItem:
       type: object
+      additionalProperties: false
       required: [action]
       description: >-
         One lifecycle transition request inside a bulk batch. Mirrors
@@ -5805,6 +5955,7 @@ components:
 
     BulkLifecycleRequest:
       type: object
+      additionalProperties: false
       required: [items]
       description: >-
         Request body for `POST /sage_vaults/{vault_id}/lifecycles`.
@@ -5956,6 +6107,7 @@ components:
 
     BulkLinkItem:
       type: object
+      additionalProperties: false
       required: [source_id, edge_type]
       description: >-
         One edge-creation request inside a bulk batch. Mirrors
@@ -6015,6 +6167,7 @@ components:
 
     BulkLinkRequest:
       type: object
+      additionalProperties: false
       required: [items]
       description: >-
         Request body for `POST /sage_vaults/{vault_id}/edges`.
@@ -6219,6 +6372,7 @@ components:
 
     BulkMetadataRequest:
       type: object
+      additionalProperties: false
       required: [items]
       description: >-
         Request body for `POST /sage_vaults/{vault_id}/metadata`.
@@ -7243,6 +7397,7 @@ components:
 
     CreateVaultRequest:
       type: object
+      additionalProperties: false
       required: [config]
       description: >-
         Request body for the create-vault endpoint. The single `config`
@@ -7262,6 +7417,7 @@ components:
 
     UpdateVaultConfigRequest:
       type: object
+      additionalProperties: false
       description: >-
         Section-level config update. Each provided top-level section
         replaces the current section wholesale; omitted sections are
@@ -7394,6 +7550,7 @@ components:
 
     HashCheckRequest:
       type: object
+      additionalProperties: false
       required: [hashes]
       description: Request body for the hash-check endpoint; carries a batch of content hashes to test for existence in the vault.
       properties:
@@ -7829,6 +7986,7 @@ components:
 
     ReabstractRequest:
       type: object
+      additionalProperties: false
       description: Request body for recompute_deferred_vault_abstracts.
       properties:
         include_pdf:
@@ -7842,6 +8000,7 @@ components:
 
     OptimizeContentStoreRequest:
       type: object
+      additionalProperties: false
       description: Request body for optimize_vault_content_store.
       properties:
         cleanup_older_than_days:
@@ -8070,6 +8229,7 @@ components:
 
     SourceFileIntegrityRequest:
       type: object
+      additionalProperties: false
       description: Request body for the verify-source-files maintenance operation.
       properties:
         check_hashes:
@@ -8195,6 +8355,7 @@ components:
 
     SourceFileRestoreRequest:
       type: object
+      additionalProperties: false
       required: [source]
       description: Request body for the restore-source-file maintenance operation.
       properties:
@@ -8518,6 +8679,7 @@ components:
 
     BatchIngestFileMetadata:
       type: object
+      additionalProperties: false
       description: >-
         Per-file source type and optional parsed metadata for a bulk upload.
         Aligned by position with the multipart file parts: the Nth entry in
@@ -8541,6 +8703,7 @@ components:
 
     BatchIngestUploadMetadata:
       type: object
+      additionalProperties: false
       description: >-
         JSON metadata envelope accompanying multipart batch-ingest uploads.
         Sent as the `metadata` form field alongside the `files` parts of a

@@ -18,7 +18,7 @@ router = APIRouter(tags=["pending_metadata"])
     "/pending-metadata",
     response_model=list[PendingMetadataItem],
     responses={
-        400: boundary_400(path=("invalid_vault_id",)),
+        400: boundary_400(path=("invalid_vault_id",), request=("unknown_parameter",)),
         404: {
             "model": ErrorResponse,
             "description": "Vault not found.",

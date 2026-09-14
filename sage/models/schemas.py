@@ -974,6 +974,8 @@ class User(BaseModel):
 
 
 class IngestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     source: str = Field(
         description=(
             "Path or URI to the source artifact. Resolved relative to the vault's storage_root."
@@ -1160,6 +1162,8 @@ class ParseFilenameRequest(BaseModel):
     Carries the bare filename (basename, not a full path) and the
     source_type under whose vault configuration the parse should run.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     filename: str = Field(
         description=(
@@ -1474,6 +1478,8 @@ class BulkLifecycleItem(BaseModel):
     via the URL path).
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     document_id: DocumentIdStr | None = Field(
         default=None,
         description=(
@@ -1524,6 +1530,8 @@ class BulkLifecycleRequest(BaseModel):
     Carries an ordered list of per-item lifecycle requests. The list may
     be empty; the response then has an empty ``results`` array.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     items: list[BulkLifecycleItem] = Field(
         description=(
@@ -2006,6 +2014,8 @@ class BulkMetadataRequest(BaseModel):
     may be empty; the response then has an empty `results` array.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     items: list[BulkMetadataItem] = Field(
         description=(
             "Items processed in order. Each item runs in its own "
@@ -2168,6 +2178,8 @@ class UpdateMetadataResponse(BaseModel):
 
 
 class RegisterUserRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     display_name: str = Field(description="Human-readable name for the user or agent.")
     user_type: UserType = Field(description="Actor type for provenance and access control.")
 
@@ -2605,6 +2617,8 @@ class BulkLinkRequest(BaseModel):
     may be empty; the response then has an empty ``results`` array.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     items: list[BulkLinkItem] = Field(
         description=(
             "Items processed in order. Each item runs under the process-"
@@ -2818,6 +2832,8 @@ class ResolutionPathEntry(BaseModel):
 
 
 class TraverseRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     start_id: DocumentIdStr = Field(description="Document ID to start traversal from.")
     edge_type: EdgeType | None = Field(
         default=None,
@@ -2911,6 +2927,8 @@ class TraverseResponse(BaseModel):
 
 
 class ChainRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     document_id: DocumentIdStr = Field(
         description=(
             "Document ID to start the chain walk from. The walk proceeds in "
@@ -3269,6 +3287,8 @@ class DiscoverRequest(BaseModel):
       limit + offset.
     - deterministic: document_id and heading_path are required.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     mode: RetrievalMode = Field(
         default=RetrievalMode.SEMANTIC,
@@ -4078,6 +4098,8 @@ class DiscoverResponse(BaseModel):
 
 
 class ExportProjectionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     output_path: str = Field(
         description=(
             "File path to write the projection Markdown file. Resolved "
@@ -4384,6 +4406,8 @@ class MigrationReport(BaseModel):
 
 
 class ReabstractRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     include_pdf: bool = Field(
         default=False,
         description=(
@@ -4396,6 +4420,8 @@ class ReabstractRequest(BaseModel):
 
 
 class OptimizeContentStoreRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     cleanup_older_than_days: int = Field(
         default=7,
         ge=0,
@@ -4712,6 +4738,8 @@ class SourceFileIntegrityEntry(BaseModel):
 
 
 class SourceFileIntegrityRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     check_hashes: bool = Field(
         default=False,
         description=(
@@ -4779,6 +4807,8 @@ class SourceFileIntegrityReport(BaseModel):
 
 
 class SourceFileRestoreRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     source: str = Field(
         description=(
             "Absolute path to a file holding the bytes that were originally "
@@ -5013,6 +5043,8 @@ class BatchIngestFileMetadata(BaseModel):
     ``BatchIngestUploadMetadata.files`` describes the Nth uploaded file.
     """
 
+    model_config = ConfigDict(extra="forbid")
+
     source_type: str = Field(
         description=(
             "Source artifact format for this file (closed SourceType "
@@ -5037,6 +5069,8 @@ class BatchIngestUploadMetadata(BaseModel):
     Sent as the ``metadata`` form field alongside the ``files`` parts of a
     multipart/form-data batch-ingest request.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     infer_edges: bool = Field(
         default=True,
@@ -5511,6 +5545,8 @@ class VaultStatsResponse(BaseModel):
 
 
 class HashCheckRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     hashes: list[Sha256Str] = Field(description="SHA-256 hex digests to check for existence.")
 
 
@@ -5540,6 +5576,8 @@ class UpdateVaultConfigRequest(BaseModel):
     wholesale; omitted sections are preserved unchanged. Section
     structure follows docs/fs/sage/vault_config.schema.json.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     vault: dict | None = Field(
         default=None,
@@ -5628,6 +5666,8 @@ class UpdateVaultConfigRequest(BaseModel):
 
 class CreateVaultRequest(BaseModel):
     """Full config dict for new vault creation."""
+
+    model_config = ConfigDict(extra="forbid")
 
     config: dict = Field(
         description=(

@@ -58,7 +58,12 @@ router = APIRouter(tags=["Graph Operations"])
     responses={
         400: boundary_400(
             path=("invalid_vault_id",),
-            request=("invalid_document_id", "invalid_edge_id", "invalid_sha256"),
+            request=(
+                "invalid_document_id",
+                "invalid_edge_id",
+                "invalid_sha256",
+                "unknown_parameter",
+            ),
         ),
         404: {
             "model": ErrorResponse,
@@ -78,7 +83,9 @@ async def create_edges(
     "/edges/{edge_id}",
     response_model=UnlinkResponse,
     responses={
-        400: boundary_400(path=("invalid_edge_id", "invalid_vault_id")),
+        400: boundary_400(
+            path=("invalid_edge_id", "invalid_vault_id"), request=("unknown_parameter",)
+        ),
         404: {
             "model": ErrorResponse,
             "description": (
@@ -104,7 +111,9 @@ async def unlink(
     "/preconditions/{document_id}",
     response_model=PreconditionResult,
     responses={
-        400: boundary_400(path=("invalid_document_id", "invalid_vault_id")),
+        400: boundary_400(
+            path=("invalid_document_id", "invalid_vault_id"), request=("unknown_parameter",)
+        ),
         404: {
             "model": ErrorResponse,
             "description": ("`document_not_found`: no document with that id; or vault not found."),
@@ -125,7 +134,7 @@ async def check_preconditions(
     responses={
         400: boundary_400(
             path=("invalid_vault_id",),
-            request=("invalid_document_id",),
+            request=("invalid_document_id", "unknown_parameter"),
             extra="Invalid edge type or direction.",
         ),
         404: {
@@ -147,7 +156,9 @@ async def traverse(
     response_model=ChainResponse,
     responses={
         400: boundary_400(
-            path=("invalid_vault_id",), request=("invalid_document_id",), extra="Invalid edge type."
+            path=("invalid_vault_id",),
+            request=("invalid_document_id", "unknown_parameter"),
+            extra="Invalid edge type.",
         ),
         404: {
             "model": ErrorResponse,

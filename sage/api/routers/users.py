@@ -16,7 +16,9 @@ router = APIRouter(tags=["Access Control"])
     status_code=201,
     responses={
         400: boundary_400(
-            path=("invalid_vault_id",), extra="Invalid user type or missing required field."
+            path=("invalid_vault_id",),
+            request=("unknown_parameter",),
+            extra="Invalid user type or missing required field.",
         ),
         404: {
             "model": ErrorResponse,

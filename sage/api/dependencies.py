@@ -6,10 +6,14 @@ and makes it available downstream. Service dependencies use it to
 look up the correct SAGEServices instance.
 """
 
+import json
+
 from fastapi import Depends, Request
+from fastapi.dependencies.utils import get_flat_dependant
+from fastapi.routing import APIRoute
 
 from sage.adapters.interfaces import GraphStore
-from sage.api.errors import VaultNotFoundError
+from sage.api.errors import UnknownParameterError, VaultNotFoundError, request_operation_name
 from sage.config import VaultConfig
 from sage.mcp_init import SAGEServices
 from sage.models.schemas import VaultIdStr
@@ -27,6 +31,63 @@ from sage.services.utilities import UtilitiesService
 from sage.services.vault_config import VaultConfigService
 from sage.services.vault_registry import VaultRegistryService
 from sage.storage.locks import DocumentLockManager
+
+
+async def refuse_undeclared_parameters(request: Request) -> None:
+    """Refuse a request name the operation a request reached does not declare.
+
+    The framework binds the names an operation declares and passes over the
+    rest, so an undeclared one -- a misspelling, a parameter from another
+    operation -- would change nothing and say nothing. Refusing it here,
+    before the operation runs, holds the whole request to what the operation
+    declares, as the MCP surface holds its arguments (CAS-ADR-037,
+    CAS-ADR-052). Two places are checked; a body field an operation's request
+    model does not declare is refused by the model itself.
+
+    * The query string, on every operation.
+    * A JSON object body sent to an operation whose published contract
+      declares no request body. Its parameters are its path and query, so any
+      field names nothing it accepts. An operation that streams a request body
+      it declares only in the published contract -- the upload leg of a byte
+      transfer -- is exempt by that declaration, so its stream is never
+      buffered here. An empty object names no field and is accepted.
+
+    Attached to the Core API routers as a router-level dependency, so it runs
+    ahead of each operation's own parameters: an undeclared query parameter is
+    reported before an undeclared body field.
+    """
+    route = request.scope.get("route")
+    if not isinstance(route, APIRoute):
+        return
+    flat = get_flat_dependant(route.dependant)
+
+    declared = frozenset(param.alias for param in flat.query_params)
+    rejected = sorted({name for name in request.query_params if name not in declared})
+    if rejected:
+        raise UnknownParameterError(request_operation_name(request), rejected, sorted(declared))
+
+    if flat.body_params or not _is_json(request):
+        return
+    published_bodies = getattr(request.app.state, "operations_declaring_a_body", frozenset())
+    if (route.path_format, request.method.lower()) in published_bodies:
+        return
+    fields = _json_object_fields(await request.body())
+    if fields:
+        raise UnknownParameterError(request_operation_name(request), fields, [])
+
+
+def _is_json(request: Request) -> bool:
+    media_type = request.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+    return media_type == "application/json" or media_type.endswith("+json")
+
+
+def _json_object_fields(body: bytes) -> list[str]:
+    """Return the sorted field names of a JSON object body, or none for anything else."""
+    try:
+        payload = json.loads(body) if body.strip() else None
+    except ValueError:
+        return []
+    return sorted(payload) if isinstance(payload, dict) else []
 
 
 def _get_services(request: Request, vault_id: str) -> SAGEServices:

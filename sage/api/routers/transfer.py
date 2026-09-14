@@ -25,6 +25,7 @@ from sage.api.errors import (
     TransferContentTooLargeError,
     VaultNotFoundError,
 )
+from sage.api.response_docs import boundary_400
 from sage.models.schemas import ErrorResponse, TransferUploadResult
 from sage.services.transfer import (
     PendingTransfer,
@@ -41,6 +42,7 @@ _SPOOL_CHUNK_BYTES = 65536
     "/upload",
     status_code=201,
     responses={
+        400: boundary_400(request=("unknown_parameter",)),
         409: {
             "model": ErrorResponse,
             "description": (
@@ -117,6 +119,7 @@ def _spool_chunks(entry: PendingTransfer) -> Iterator[bytes]:
 @router.get(
     "/download/{transfer_id}",
     responses={
+        400: boundary_400(request=("unknown_parameter",)),
         410: {
             "model": ErrorResponse,
             "description": (
