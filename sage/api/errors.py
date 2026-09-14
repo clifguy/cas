@@ -2285,7 +2285,9 @@ _PARAMETER_HINTS: dict[tuple[str, str], str] = {
 # Request components FastAPI prepends to a validation error's location to
 # name where the value came from. They are part of the framing, not part of
 # the parameter path, so they are stripped before any location is matched
-# against a rule or reported back to a caller.
+# against a rule or reported back to a caller. Only a RequestValidationError
+# carries one: a model's own ValidationError starts at the parameter, and a
+# parameter may be named ``query`` or ``path``.
 _TRANSPORT_LOC_SEGMENTS = ("body", "query", "path", "header", "cookie")
 
 # Types whose ``input`` a caller can be shown verbatim. Anything else is
@@ -2294,9 +2296,9 @@ _TRANSPORT_LOC_SEGMENTS = ("body", "query", "path", "header", "cookie")
 _JSON_NATIVE_TYPES = (str, int, float, bool, type(None))
 
 
-def _strip_transport_segment(loc: tuple) -> tuple:
-    """Drop a leading FastAPI request-component segment from a location."""
-    if loc and loc[0] in _TRANSPORT_LOC_SEGMENTS:
+def _strip_transport_segment(loc: tuple, exc: ValidationError | RequestValidationError) -> tuple:
+    """Drop the request-component segment FastAPI prepends to a location."""
+    if isinstance(exc, RequestValidationError) and loc and loc[0] in _TRANSPORT_LOC_SEGMENTS:
         return loc[1:]
     return loc
 
@@ -2315,7 +2317,7 @@ def unknown_parameter_names(exc: ValidationError | RequestValidationError) -> li
         str(loc[0])
         for err in exc.errors()
         if err.get("type") == "extra_forbidden"
-        and len(loc := _strip_transport_segment(tuple(err.get("loc") or ()))) == 1
+        and len(loc := _strip_transport_segment(tuple(err.get("loc") or ()), exc)) == 1
     }
     return sorted(names)
 
@@ -2350,10 +2352,9 @@ def translate_validation_error(
         loc = tuple(err.get("loc") or ())
         # FastAPI's RequestValidationError prepends a "body" / "query" /
         # "path" location segment naming the request component the value
-        # came from. Pydantic's ValidationError does not. Strip a leading
-        # transport-component segment so one set of loc rules works for
-        # both call sites.
-        loc = _strip_transport_segment(loc)
+        # came from. Pydantic's ValidationError does not. Strip that segment
+        # so one set of loc rules works for both call sites.
+        loc = _strip_transport_segment(loc, exc)
         err_type = err.get("type", "")
         input_value = err.get("input")
         ctx = err.get("ctx") or {}
@@ -2492,7 +2493,7 @@ def _generic_parameter_error(
         )
 
     err = errors[0]
-    loc = _strip_transport_segment(tuple(err.get("loc") or ()))
+    loc = _strip_transport_segment(tuple(err.get("loc") or ()), exc)
     parameter = ".".join(str(segment) for segment in loc) or "request"
     value = err.get("input")
     if not isinstance(value, _JSON_NATIVE_TYPES):

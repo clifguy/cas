@@ -9,6 +9,7 @@ look up the correct SAGEServices instance.
 import json
 
 from fastapi import Depends, Request
+from fastapi.dependencies.models import Dependant
 from fastapi.dependencies.utils import get_flat_dependant
 from fastapi.routing import APIRoute
 
@@ -59,7 +60,7 @@ async def refuse_undeclared_parameters(request: Request) -> None:
     route = request.scope.get("route")
     if not isinstance(route, APIRoute):
         return
-    flat = get_flat_dependant(route.dependant)
+    flat = _flat_dependant(route)
 
     declared = frozenset(param.alias for param in flat.query_params)
     rejected = sorted({name for name in request.query_params if name not in declared})
@@ -74,6 +75,23 @@ async def refuse_undeclared_parameters(request: Request) -> None:
     fields = _json_object_fields(await request.body())
     if fields:
         raise UnknownParameterError(request_operation_name(request), fields, [])
+
+
+_FLAT_DEPENDANT_ATTR = "_refusal_flat_dependant"
+
+
+def _flat_dependant(route: APIRoute) -> Dependant:
+    """Return a route's flattened dependant, computed once and kept on the route.
+
+    A route's declared parameters are fixed when it is built, so the walk is
+    done on its first request rather than on every one, and the result lives
+    exactly as long as the route that owns it.
+    """
+    flat = getattr(route, _FLAT_DEPENDANT_ATTR, None)
+    if flat is None:
+        flat = get_flat_dependant(route.dependant)
+        setattr(route, _FLAT_DEPENDANT_ATTR, flat)
+    return flat
 
 
 def _is_json(request: Request) -> bool:

@@ -322,6 +322,27 @@ async def test_unknown_parameter_parity_between_surfaces(vault_services, http_cl
     assert set(mcp_envelope) - set(http_body) == {"error"}
 
 
+@pytest.mark.parametrize("name", ["path", "body", "query_string"])
+async def test_unknown_argument_named_like_a_transport_segment(vault_services, http_client, name):
+    """An unknown name that happens to spell a request component is still unknown.
+
+    The HTTP refusal strips the component FastAPI prepends to a location; the
+    MCP argument model prepends none, so a shared helper that stripped
+    unconditionally would consume an argument named ``path`` and report the
+    call as an ordinary invalid value. ``query_string`` is the control: a
+    name that spells nothing, refused as unknown either way.
+    """
+    mcp_envelope = await _call_search(query="x", **{name: 1})
+    resp = await http_client.post(f"/sage_vaults/{VAULT_ID}/discover", json={"query": "x", name: 1})
+    http_body = resp.json()
+
+    assert mcp_envelope["error"] == "unknown_parameter", mcp_envelope
+    assert mcp_envelope["detail"]["rejected_params"] == [name]
+    assert resp.status_code == 400, resp.text
+    assert http_body["code"] == "unknown_parameter"
+    assert http_body["detail"]["rejected_params"] == [name]
+
+
 async def test_unknown_item_field_parity_between_surfaces(vault_services, http_client):
     """A name nested inside a batch item is refused alike on both surfaces.
 

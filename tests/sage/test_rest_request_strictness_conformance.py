@@ -118,6 +118,28 @@ def test_every_core_route_refuses_undeclared_parameters():
     assert missing == []
 
 
+def test_request_name_refusal_flattens_each_route_once():
+    """The refusal keeps a route's flattened parameters on the route it walked.
+
+    Driven through a real request, so a refusal that walked the route afresh
+    each time -- leaving the helper unused -- would leave nothing on the route.
+    """
+    from fastapi.testclient import TestClient
+
+    from sage.api.dependencies import _FLAT_DEPENDANT_ATTR, _flat_dependant
+
+    app = create_app()
+    route = next(r for r in app.routes if isinstance(r, APIRoute) and r.path == "/sage_vaults")
+    assert getattr(route, _FLAT_DEPENDANT_ATTR, None) is None
+
+    resp = TestClient(app).get("/sage_vaults", params={"bogus_q": "1"})
+
+    assert resp.status_code == 400, resp.text
+    cached = getattr(route, _FLAT_DEPENDANT_ATTR, None)
+    assert cached is not None
+    assert _flat_dependant(route) is cached
+
+
 def test_every_request_body_model_forbids_undeclared_fields():
     models = _body_models()
     names = {model.__name__ for model in models}
