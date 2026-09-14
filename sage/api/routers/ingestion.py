@@ -209,6 +209,14 @@ router = APIRouter(tags=["Ingestion"])
                 "valid projection (unsupported format, corrupt content)."
             ),
         },
+        500: {
+            "model": ErrorResponse,
+            "description": (
+                "`transfer_endpoint_not_configured`: an absolute `source` needs "
+                "the caller-local transfer, but this deployment declares no "
+                "public transfer endpoint, so no recipe can be minted."
+            ),
+        },
         502: {
             "model": ErrorResponse,
             "description": (

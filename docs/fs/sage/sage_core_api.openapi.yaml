@@ -882,6 +882,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: >-
+            `transfer_endpoint_not_configured`: an absolute `source` needs
+            the caller-local transfer, but this deployment declares no
+            public transfer endpoint, so no recipe can be minted.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
         "502":
           description: >-
@@ -3359,6 +3368,15 @@ paths:
             pending transfer -- unknown, expired, already spent, or scoped
             to another vault. Re-issue the originating call to mint a
             fresh recipe.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          description: >-
+            `transfer_endpoint_not_configured`: an absolute `source` needs
+            the caller-local transfer, but this deployment declares no
+            public transfer endpoint, so no recipe can be minted.
           content:
             application/json:
               schema:

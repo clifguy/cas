@@ -112,6 +112,7 @@ DELIVERY_GATE: frozenset[str] = frozenset(
     {
         "ambiguous_ingest_source",
         "missing_ingest_source",
+        "transfer_endpoint_not_configured",
         "transfer_not_staged",
         "transfer_token_invalid",
     }
@@ -447,17 +448,24 @@ def test_batch_ingests_each_file_through_the_ungated_entry():
     false.
     """
     tree = ast.parse(_BATCH_MODULE.read_text(encoding="utf-8"))
-    called = [
+    # Every name the module references -- bare, as an attribute, or imported --
+    # and whether called or not: a gated entry bound to a local name before it
+    # is called, or the gate itself imported and applied around each file, both
+    # make the delivery codes reachable per file.
+    referenced = (
+        {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+        | {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+        | {node.name for node in ast.walk(tree) if isinstance(node, ast.alias)}
+    )
+    gated = sorted(
+        referenced & {"ingest_from_request", "ingest_from_caller", "caller_local_delivery"}
+    )
+    assert not gated, f"the batch reaches a delivery gate: {gated}"
+    called = {
         node.func.attr
         for node in ast.walk(tree)
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-    ]
-    # Matched by method name wherever it is called, so a service reached
-    # through a local alias is not a way around the check.
-    gated = sorted(
-        {name for name in called if name in {"ingest_from_request", "ingest_from_caller"}}
-    )
-    assert not gated, f"the batch calls a gated ingest entry: {gated}"
+    }
     assert "ingest" in called, (
         "the batch's ingest call was not found; the scan read the wrong module"
     )

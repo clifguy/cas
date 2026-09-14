@@ -274,6 +274,14 @@ async def verify_vault_source_files(
                 "fresh recipe."
             ),
         },
+        500: {
+            "model": ErrorResponse,
+            "description": (
+                "`transfer_endpoint_not_configured`: an absolute `source` needs "
+                "the caller-local transfer, but this deployment declares no "
+                "public transfer endpoint, so no recipe can be minted."
+            ),
+        },
         502: {
             "model": ErrorResponse,
             "description": (

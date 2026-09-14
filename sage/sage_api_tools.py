@@ -3405,6 +3405,16 @@ def register_sage_tools(
         - ``ambiguous_ingest_source`` (400): both ``source`` and
           ``transfer_token`` were supplied.
         - ``missing_ingest_source`` (400): neither was supplied.
+        - ``transfer_token_invalid`` (410): ``transfer_token`` names no
+          redeemable pending transfer (unknown, expired, already used, or
+          scoped to a different vault). Re-issue the call with the original
+          ``source`` to mint a fresh recipe.
+        - ``transfer_not_staged`` (409): ``transfer_token`` is valid but the
+          bytes have not been delivered to the upload endpoint yet. Run the
+          recipe's byte leg, then repeat this call; the token stays valid.
+        - ``transfer_endpoint_not_configured`` (500): this deployment needs
+          the transfer channel but declares no public transfer endpoint, so
+          no recipe can be minted.
         - ``vault_source_path_refused`` (400): the document's recorded source_path
           cannot be written at the path it names.
         - ``vault_source_store_refused`` (502): the store declined the operation

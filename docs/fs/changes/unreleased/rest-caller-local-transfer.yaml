@@ -14,8 +14,10 @@ summary: >-
   optional transfer_token, and source becomes optional, exactly one of the two being
   required. The refusals are the MCP surface's: ambiguous_ingest_source and
   missing_ingest_source (400), transfer_not_staged (409) and transfer_token_invalid
-  (410), with identical messages. Both operations' 200 responses now include
-  UploadRecipe, which the restore operation's 200 did not previously admit. The
+  (410), with identical messages, and a deployment declaring no public transfer
+  endpoint answers transfer_endpoint_not_configured (500) where a recipe is due. Both
+  operations' 200 responses now include UploadRecipe, which the restore operation's
+  200 did not previously admit. The
   specification's overview names the completion argument as the token rather than the
   transfer_id, which only correlates a leg with its recipe.
 for_callers: >-

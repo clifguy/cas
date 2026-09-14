@@ -360,16 +360,19 @@ async def test_resolved_path_ingest_refuses_an_undelivered_request(vault):
     It ingests a path already resolved, so a request still carrying a
     ``transfer_token``, or carrying no ``source``, would otherwise have its
     token ignored or fail on the missing path with no word about why.
+
+    Each arm carries only the shape its guard refuses and matches that guard's
+    own wording, so neither arm can pass on the other guard's refusal.
     """
     application, _root = vault
     service = application.state.vault_registry[_VAULT_ID].ingestion_service
 
-    with pytest.raises(ValueError, match="transfer_token"):
+    with pytest.raises(ValueError, match="carrying transfer_token"):
         await service.ingest(
             IngestRequest(source="/x/a.md", transfer_token="t", source_type="markdown")
         )
-    with pytest.raises(ValueError, match="source"):
-        await service.ingest(IngestRequest(transfer_token="t", source_type="markdown"))
+    with pytest.raises(ValueError, match="naming no source"):
+        await service.ingest(IngestRequest(source_type="markdown"))
 
 
 # ---------------------------------------------------------------------------
