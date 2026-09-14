@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import json
 import logging
+import re
 import shutil
 import tempfile
 import time
@@ -36,6 +37,7 @@ from sage.adapters.abstraction_utils import (
     trim_to_sentence_boundary,
 )
 from sage.adapters.interfaces import (
+    HEADING_PATH_SEPARATOR,
     AbstractionProvider,
     Chunk,
     ContentStore,
@@ -121,6 +123,24 @@ _PREAMBLE_SINCE_ADAPTER_VERSION: dict[SourceType, tuple[int, ...]] = {
     SourceType.DOCX: (0, 5, 0),
     SourceType.PDF: (0, 6, 0),
 }
+
+# The first version of each adapter that reads a heading with no text as no
+# heading. An earlier version stored the text under such a heading at the empty
+# path, or at a path with an empty segment.
+_UNTITLED_HEADING_SINCE_ADAPTER_VERSION: dict[SourceType, tuple[int, ...]] = {
+    SourceType.MARKDOWN: (0, 7, 0),
+    SourceType.DOCX: (0, 6, 0),
+    SourceType.PDF: (0, 7, 0),
+}
+
+# The first line of a section under a heading with no text: the heading mark that
+# ingest writes ahead of every heading's content, followed by nothing.
+_UNTITLED_HEADING_LINE = re.compile(r"#{1,6} ?")
+
+# How a PDF adapter older than the first to read an untitled outline entry as none
+# titled such an entry: with the representation of the outline object itself, which
+# no authored title reproduces.
+_UNTITLED_PDF_ENTRY_TITLE = "{'/Title': '',"
 
 
 def _projected_before(adapter_version: str | None, since: tuple[int, ...]) -> bool:
@@ -3187,25 +3207,26 @@ class IngestionService:
         """Store the text each document carries before its first heading, vault-wide.
 
         A document indexed before that text had a passage holds none of it, and
-        its stored passages cannot supply it, so the source is re-projected. The
-        candidates are the documents an adapter version older than the first to
-        report that text projected, and whose stored passages include headings but
-        no passage under none: a document without headings already stores its
-        whole text under the empty heading path. A candidate's passages are
-        rebuilt from the fresh projection wherever they differ from it, and every
-        candidate whose source is examined is stamped with the adapter version
-        that examined it, so a later run reads no source it has already read.
+        its stored passages cannot supply it, so the source is re-projected. So is
+        a document whose adapter read a heading with no text as a heading, since
+        the text under that heading is stored at the empty path, where it reads as
+        text under no heading, or at a path with an empty segment. The candidates
+        are the documents an adapter version older than the first to read such a
+        heading as none projected, and whose stored passages are one of those two
+        kinds (see ``_needs_reprojection``). A candidate's passages are rebuilt from
+        the fresh projection wherever they differ from it, and every candidate
+        whose source is examined is stamped with the adapter version that examined
+        it, so a later run reads no source it has already read.
 
         Returns:
             The number of documents whose passages were rewritten.
         """
         candidates = []
         for doc in await self._store.list_all_documents():
-            since = _PREAMBLE_SINCE_ADAPTER_VERSION.get(doc.source_type)
+            since = _UNTITLED_HEADING_SINCE_ADAPTER_VERSION.get(doc.source_type)
             if since is None or not _projected_before(doc.adapter_version, since):
                 continue
-            paths = await self._content_store.get_heading_paths(doc.id)
-            if paths and "" not in paths:
+            if await self._needs_reprojection(doc):
                 candidates.append(doc)
         if not candidates:
             return 0
@@ -3218,6 +3239,47 @@ class IngestionService:
             if await self._bring_passages_current(doc, vault_source_store):
                 rewritten += 1
         return rewritten
+
+    async def _needs_reprojection(self, doc: Document) -> bool:
+        """Whether a document's stored passages lack text only its source can supply.
+
+        Two kinds of document qualify. One an adapter projected before the text
+        ahead of its first heading had a passage: its passages include headings but
+        none at the empty path, since a document without headings stores its whole
+        text there. And one whose passages hold a heading with no text, which is
+        addressed by a path with an empty segment, by the empty path itself, or --
+        for a PDF outline entry with no title -- by a segment holding the outline
+        object's representation. An
+        empty path beside other paths is such a heading when the adapter predates
+        the text before the first heading, which it could not have stored. Where
+        the adapter does not predate it, the empty path is that heading only when a
+        section there opens with a bare heading mark, which ingest writes ahead of
+        every heading's content and never ahead of text under no heading; only
+        then are the passages read.
+        """
+        paths = await self._content_store.get_heading_paths(doc.id)
+        if any(
+            not segment.strip() or segment.startswith(_UNTITLED_PDF_ENTRY_TITLE)
+            for path in paths
+            if path
+            for segment in path.split(HEADING_PATH_SEPARATOR)
+        ):
+            return True
+        before_preamble = _projected_before(
+            doc.adapter_version, _PREAMBLE_SINCE_ADAPTER_VERSION[doc.source_type]
+        )
+        if "" not in paths:
+            return bool(paths) and before_preamble
+        if before_preamble and len(paths) > 1:
+            return True
+        section_openings: dict[int, str] = {}
+        for chunk in await self._content_store.get_all_chunks(doc.id):
+            if chunk.heading_path == "":
+                section_openings.setdefault(chunk.section_key, chunk.content)
+        return any(
+            _UNTITLED_HEADING_LINE.fullmatch(opening.split("\n", 1)[0])
+            for opening in section_openings.values()
+        )
 
     async def _bring_passages_current(
         self, doc: Document, vault_source_store: "VaultSourceStore"

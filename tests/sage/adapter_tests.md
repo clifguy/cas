@@ -2732,3 +2732,133 @@ text; carried only in `text`, it would reach no passage.
 
 **Expected:** `preamble` opens with the style-surface description, followed by any
 body text before the first heading; the heading's content carries none of it.
+
+### TEST-SAGE-AD-147: An untitled markdown heading joins the section before it
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** heading addressing
+**Decision:** A heading with no text addresses nothing. A path built from it
+would be the empty path, which addresses text under no heading, or would carry an
+empty segment. It is not a heading: its line is dropped and the text under it joins
+the section before it.
+
+**Expected:** The named headings alone are reported; the section before the
+untitled heading holds its own body and then the untitled heading's body, with no
+bare `#` line; the preamble is unchanged.
+
+### TEST-SAGE-AD-148: An untitled heading before any named one joins the preamble
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** heading addressing
+**Expected:** The text under an untitled heading that precedes every named heading
+is part of the preamble, after the text before it.
+
+### TEST-SAGE-AD-149: A heading under an untitled one nests under the nearest named ancestor
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** heading addressing
+**Decision:** An untitled heading does not close the named heading before it, at
+its own level or any other, so a heading after it nests under the nearest named
+ancestor.
+
+**Expected:** For an untitled level-2 and an untitled level-1 heading between `# A`
+and `## B`, the paths are `A` and `A > B`, and `A` holds the untitled heading's body.
+
+### TEST-SAGE-AD-150: Closing-sequence-only and whitespace-only headings are untitled
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** heading addressing
+**Expected:** `# #` and `#   ` are untitled like a bare `#`.
+
+### TEST-SAGE-AD-151: An untitled first heading does not title the document
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** regression guard
+**Expected:** A bare `#` before `# Real` leaves the title `Real`.
+
+### TEST-SAGE-AD-152: A document whose only heading is untitled has no headings
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** heading addressing
+**Decision:** With no named heading the document is headingless, so its whole text
+is its one passage and no preamble is reported (AD-140).
+
+**Expected:** `headings` and `preamble` are empty; `text` carries the body.
+
+### TEST-SAGE-AD-153: An untitled DOCX heading joins the section before it
+
+**Artifact:** `DocxAdapter.project`
+**Category:** heading addressing
+**Expected:** A heading-styled paragraph with no text is not reported; the
+paragraphs after it join the preceding heading's content.
+
+### TEST-SAGE-AD-154: An untitled DOCX heading before any named one joins the preamble
+
+**Artifact:** `DocxAdapter.project`
+**Category:** heading addressing
+**Expected:** Paragraphs and tables after an untitled heading that precedes every
+named heading are part of the preamble.
+
+### TEST-SAGE-AD-155: A whitespace-only DOCX heading is untitled
+
+**Artifact:** `DocxAdapter.project`
+**Category:** heading addressing
+**Expected:** A heading paragraph holding only spaces is untitled, at any level.
+
+### TEST-SAGE-AD-156: A numbered DOCX heading without text is titled by its number
+
+**Artifact:** `DocxAdapter.project`
+**Category:** scope boundary
+**Decision:** A list number is text the reader sees, so a numbered heading
+paragraph with no text of its own is titled by its number and remains a heading.
+
+**Expected:** Whether the paragraph's own text is empty or only whitespace, the
+heading's text and path are its number alone, with no trailing whitespace, and it
+holds the body after it.
+
+### TEST-SAGE-AD-157: A DOCX heading under an untitled one nests under the nearest named ancestor
+
+**Artifact:** `DocxAdapter.project`
+**Category:** heading addressing
+**Expected:** `Heading 1 "A"`, an untitled `Heading 1`, then `Heading 2 "Child"`
+gives the paths `A` and `A > Child`.
+
+### TEST-SAGE-AD-158: An untitled PDF outline entry's pages join the entry before it
+
+**Artifact:** `PdfAdapter.project`
+**Category:** heading addressing
+**Decision:** An outline entry with no title is dropped as an entry beyond the depth
+cap is, so its pages fall into the preceding entry's range. Its object
+representation is never used as a title.
+
+**Expected:** The named entries alone are reported; the first holds its own page
+and then the untitled entry's.
+
+### TEST-SAGE-AD-159: An untitled first PDF outline entry's pages join the preamble
+
+**Artifact:** `PdfAdapter.project`
+**Category:** heading addressing
+**Expected:** The preamble holds every page before the first titled entry.
+
+### TEST-SAGE-AD-160: A whitespace-only PDF outline entry is untitled
+
+**Artifact:** `PdfAdapter.project`
+**Category:** heading addressing
+**Expected:** A level-2 entry titled with spaces is dropped, its pages join the
+entry before it, and a level-2 sibling after it keeps the path `Named > Child`.
+
+### TEST-SAGE-AD-161: A PDF outline holding only untitled entries is no outline
+
+**Artifact:** `PdfAdapter.project`
+**Category:** heading addressing
+**Expected:** The document projects as a PDF without an outline does: one heading
+holding its whole text, `has_outline` false, no `pdf:has_outline` tag, and no
+preamble.
+
+### TEST-SAGE-AD-162: No heading path names an untitled heading
+
+**Artifact:** `MarkdownAdapter.project`, `DocxAdapter.project`, `PdfAdapter.project`,
+`PptxAdapter.project`, `XlsxAdapter.project`
+**Category:** invariant
+**Expected:** Every reported heading has text, and no segment of its path is empty.
+An untitled slide is titled `Slide N`; a sheet always has a name.

@@ -2278,7 +2278,9 @@ def register_sage_tools(
         deliberately wrong heading path to harvest ``available_headings``
         from the resulting ``heading_not_found`` error response.
         Every returned path is one a caller may pass to read_section.
-        An authored heading is listed by its path. The empty path, first
+        An authored heading is listed by its path. A heading with no text is
+        not a heading and is not listed: the text under it is read in the
+        section before it. The empty path, first
         where present, addresses the text under no heading: the text
         before the document's first heading, or the whole of a document
         that has none.
@@ -3094,9 +3096,13 @@ def register_sage_tools(
         rewrites; section reads, heading enumeration and projection text read
         exactly as before. A document indexed before the text above its first
         heading had a passage of its own gains that passage, addressed by the
-        empty heading path. This is the one backfill that reads sources: it
-        re-projects, through the vault's source binding, each document an
-        adapter version older than the first to report that text projected, and
+        empty heading path. A document whose adapter read a heading with no
+        text as a heading, storing the text under it at the empty path or at a
+        path with an empty segment, has that text moved into the section before
+        it, leaving the empty path to the text under no heading. This is the
+        one backfill that reads sources: it re-projects, through the vault's
+        source binding, each document of either kind that an adapter version
+        older than the first to read such a heading as none projected, and
         replaces its stored passages with the ones that adapter writes wherever
         the two differ. Ordinarily the only difference is the new passage, and
         every other heading path and section reads exactly as before; a passage

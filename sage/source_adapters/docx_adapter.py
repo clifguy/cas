@@ -272,7 +272,9 @@ class DocxAdapter(SourceAdapter):
     # 0.5.0: paragraphs and tables before the first heading are reported as
     # the projection's preamble rather than discarded; a template's
     # style-surface description opens that preamble.
-    VERSION = "0.5.0"
+    # 0.6.0: a heading-styled paragraph with no text, and no number, is not a
+    # heading; the paragraphs under it join the section before it.
+    VERSION = "0.6.0"
     EXTENSIONS = [".docx", ".dotx"]
 
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
@@ -316,7 +318,23 @@ class DocxAdapter(SourceAdapter):
                 if title_style_text is None and style_name == "Title" and para_text.strip():
                     title_style_text = para_text.strip()
 
+                heading_text = None
                 if level is not None:
+                    prefix = self._get_numbering_prefix(element, engine)
+                    numbered_text = (
+                        f"{prefix} {para_text}"
+                        if prefix and para_text.strip()
+                        else prefix or para_text
+                    )
+                    # A heading with no text addresses nothing: its path would
+                    # be the empty path that addresses text under no heading,
+                    # or carry an empty segment. It is read as the body text it
+                    # holds, which is none, so what follows it stays in the
+                    # current section.
+                    if numbered_text.strip():
+                        heading_text = numbered_text
+
+                if heading_text is not None:
                     # Flush content to the previous heading, or, before the
                     # first heading, to the preamble.
                     if current_heading_idx >= 0:
@@ -326,10 +344,6 @@ class DocxAdapter(SourceAdapter):
                     else:
                         preamble = "\n".join(current_content_lines).strip()
                     current_content_lines = []
-
-                    # Check for numbering
-                    prefix = self._get_numbering_prefix(element, engine)
-                    heading_text = f"{prefix} {para_text}" if prefix else para_text
 
                     # Update heading stack
                     while stack and stack[-1][0] >= level:

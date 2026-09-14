@@ -7,7 +7,8 @@ record of what the source authored, and any of its words missing from the
 stored passages is text no reader can reach.
 
 Each case carries authored text before its first heading, the position the
-passage builder once dropped.
+passage builder once dropped. The untitled cases also carry text under a heading
+with no text, which is not a heading and so belongs to the section before it.
 """
 
 from __future__ import annotations
@@ -99,6 +100,34 @@ def _pptx(directory: Path) -> Path:
     )
 
 
+def _markdown_untitled(directory: Path) -> Path:
+    path = directory / "untitled.md"
+    path.write_text("#\n\nOpening zeta.\n\n# Guide\n\nGuide body.\n\n##\n\nOrphan eta.\n")
+    return path
+
+
+def _docx_untitled(directory: Path) -> Path:
+    import docx
+
+    doc = docx.Document()
+    doc.add_paragraph("", style="Heading 1")
+    doc.add_paragraph("Opening theta.")
+    doc.add_paragraph("Overview", style="Heading 1")
+    doc.add_paragraph("   ", style="Heading 2")
+    _add_table(doc, [["Site", "Room"], ["Orphan", "iota"]])
+    path = directory / "untitled.docx"
+    doc.save(str(path))
+    return path
+
+
+def _pdf_untitled(directory: Path) -> Path:
+    return _make_pdf_with_outline(
+        directory / "untitled.pdf",
+        outline=[(1, "", 0), (1, "Intro", 1), (2, "", 2)],
+        pages=[["Cover kappa"], ["Intro body"], ["Orphan lambda"]],
+    )
+
+
 def _xlsx(directory: Path) -> Path:
     return _make_multisheet_xlsx(
         directory, {"First": [["FIRST_CELL"]], "Second": [["SECOND_CELL"]]}, filename="lead.xlsx"
@@ -117,6 +146,13 @@ CASES = [
     ),
     pytest.param(SourceType.DOCX, _dotx, {"appendix"}, id="dotx", marks=requires_docx),
     pytest.param(SourceType.PDF, _pdf, {"delta", "epsilon"}, id="pdf-outline", marks=requires_pdf),
+    pytest.param(SourceType.MARKDOWN, _markdown_untitled, {"zeta", "eta"}, id="markdown-untitled"),
+    pytest.param(
+        SourceType.DOCX, _docx_untitled, {"theta", "iota"}, id="docx-untitled", marks=requires_docx
+    ),
+    pytest.param(
+        SourceType.PDF, _pdf_untitled, {"kappa", "lambda"}, id="pdf-untitled", marks=requires_pdf
+    ),
     pytest.param(SourceType.PPTX, _pptx, {"untitled_slide_body"}, id="pptx", marks=requires_pptx),
     pytest.param(SourceType.XLSX, _xlsx, {"first_cell"}, id="xlsx", marks=requires_openpyxl),
 ]

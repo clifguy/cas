@@ -4528,3 +4528,370 @@ class TestDotxPreamble:
         assert result.text.startswith(result.preamble)
         assert result.headings[0].content.startswith("Body paragraph.")
         assert "Appendix Heading" not in result.headings[0].content
+
+
+# ── Untitled headings ───────────────────────────────────────────────
+#
+# A heading whose text is empty or only whitespace addresses nothing: a path built
+# from it would be the empty path that addresses text under no heading, or a path
+# with an empty segment. It is not a heading. Its content joins the section before
+# it, or the text before the first heading when no named heading precedes it, and a
+# heading nested under it attaches to the nearest named ancestor.
+
+
+def _markdown_untitled_heading_count(source: str) -> int:
+    from markdown_it import MarkdownIt
+
+    tokens = MarkdownIt("commonmark").parse(source)
+    return sum(
+        1
+        for i, tok in enumerate(tokens)
+        if tok.type == "heading_open" and not tokens[i + 1].content.strip()
+    )
+
+
+def _docx_untitled_heading_count(path: Path) -> int:
+    return sum(
+        1
+        for p in docx.Document(str(path)).paragraphs
+        if p.style.name.startswith("Heading") and not p.text.strip()
+    )
+
+
+def _pdf_untitled_outline_count(path: Path) -> int:
+    import pypdf
+
+    def walk(items: list) -> int:
+        return sum(
+            walk(item) if isinstance(item, list) else int(not str(item.title).strip())
+            for item in items
+        )
+
+    return walk(pypdf.PdfReader(str(path)).outline)
+
+
+def _no_path_names_an_untitled_heading(result) -> bool:
+    from sage.adapters.interfaces import HEADING_PATH_SEPARATOR
+
+    return all(
+        h.text.strip() and "" not in [s.strip() for s in h.path.split(HEADING_PATH_SEPARATOR)]
+        for h in result.headings
+    )
+
+
+class TestMarkdownUntitledHeadings:
+    async def _project(self, tmp_path: Path, source: str, untitled: int):
+        from sage.source_adapters.markdown_adapter import MarkdownAdapter
+
+        assert _markdown_untitled_heading_count(source) == untitled, (
+            "control: the source must hold the untitled headings"
+        )
+        path = tmp_path / "untitled.md"
+        path.write_text(source)
+        return await MarkdownAdapter().project(path)
+
+    async def test_ad_147_an_untitled_heading_joins_the_section_before_it(self, tmp_path):
+        """AD-147: An untitled markdown heading joins the section before it."""
+        source = "Lead.\n\n# Named\n\nN body.\n\n#\n\nOrphan body.\n\n# After\n\nA body.\n"
+
+        result = await self._project(tmp_path, source, untitled=1)
+
+        assert [(h.path, h.content) for h in result.headings] == [
+            ("Named", "N body.\n\nOrphan body."),
+            ("After", "A body."),
+        ]
+        assert result.preamble == "Lead."
+
+    async def test_ad_148_an_untitled_heading_before_any_named_one_joins_the_preamble(
+        self, tmp_path
+    ):
+        """AD-148: An untitled heading before any named one joins the preamble."""
+        source = "Lead.\n\n#\n\nUnder.\n\n# Named\n\nN body.\n"
+
+        result = await self._project(tmp_path, source, untitled=1)
+
+        assert result.preamble == "Lead.\n\nUnder."
+        assert [(h.path, h.content) for h in result.headings] == [("Named", "N body.")]
+
+    async def test_ad_149_a_heading_under_an_untitled_one_nests_under_the_named_ancestor(
+        self, tmp_path
+    ):
+        """AD-149: A heading under an untitled one nests under the nearest named ancestor."""
+        nested = await self._project(
+            tmp_path, "# A\n\nA body.\n\n##\n\nx\n\n## B\n\nB body.\n", untitled=1
+        )
+        top = await self._project(
+            tmp_path, "# A\n\nA body.\n\n#\n\ny\n\n## B\n\nB body.\n", untitled=1
+        )
+
+        assert [(h.path, h.content) for h in nested.headings] == [
+            ("A", "A body.\n\nx"),
+            ("A > B", "B body."),
+        ]
+        assert [(h.path, h.content) for h in top.headings] == [
+            ("A", "A body.\n\ny"),
+            ("A > B", "B body."),
+        ]
+
+    async def test_ad_150_closing_sequence_and_whitespace_headings_are_untitled(self, tmp_path):
+        """AD-150: Closing-sequence-only and whitespace-only headings are untitled."""
+        source = "# Named\n\nN body.\n\n# #\n\nOne.\n\n#   \n\nTwo.\n"
+
+        result = await self._project(tmp_path, source, untitled=2)
+
+        assert [(h.path, h.content) for h in result.headings] == [
+            ("Named", "N body.\n\nOne.\n\nTwo.")
+        ]
+
+    async def test_ad_151_an_untitled_first_heading_does_not_title_the_document(self, tmp_path):
+        """AD-151: An untitled first heading does not title the document."""
+        result = await self._project(tmp_path, "#\n\n# Real\n\nBody.\n", untitled=1)
+
+        assert result.title == "Real"
+
+    async def test_ad_152_a_document_whose_only_heading_is_untitled_has_no_headings(self, tmp_path):
+        """AD-152: A document whose only heading is untitled has no headings."""
+        result = await self._project(tmp_path, "Lead.\n\n#\n\nUnder.\n", untitled=1)
+
+        assert result.headings == []
+        assert result.preamble == ""
+        assert "Under." in result.text
+
+
+@requires_docx
+class TestDocxUntitledHeadings:
+    async def _project(self, tmp_path: Path, doc, untitled: int):
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        path = tmp_path / "untitled.docx"
+        doc.save(str(path))
+        assert _docx_untitled_heading_count(path) == untitled, (
+            "control: the document must hold the untitled headings"
+        )
+        return await DocxAdapter().project(path)
+
+    async def test_ad_153_an_untitled_heading_joins_the_section_before_it(self, tmp_path):
+        """AD-153: An untitled DOCX heading joins the section before it."""
+        doc = docx.Document()
+        doc.add_paragraph("Named", style="Heading 1")
+        doc.add_paragraph("N body.")
+        doc.add_paragraph("", style="Heading 1")
+        doc.add_paragraph("Orphan body.")
+        doc.add_paragraph("After", style="Heading 1")
+        doc.add_paragraph("A body.")
+
+        result = await self._project(tmp_path, doc, untitled=1)
+
+        assert [(h.path, h.content) for h in result.headings] == [
+            ("Named", "N body.\nOrphan body."),
+            ("After", "A body."),
+        ]
+
+    async def test_ad_154_an_untitled_heading_before_any_named_one_joins_the_preamble(
+        self, tmp_path
+    ):
+        """AD-154: An untitled DOCX heading before any named one joins the preamble."""
+        doc = docx.Document()
+        doc.add_paragraph("Lead.")
+        doc.add_paragraph("", style="Heading 1")
+        doc.add_paragraph("Under.")
+        _add_table(doc, [["Site", "Room"], ["Larkspur", "12"]])
+        doc.add_paragraph("Named", style="Heading 1")
+        doc.add_paragraph("N body.")
+
+        result = await self._project(tmp_path, doc, untitled=1)
+
+        assert result.preamble.startswith("Lead.\nUnder.\n")
+        assert "Larkspur" in result.preamble
+        assert [(h.path, h.content) for h in result.headings] == [("Named", "N body.")]
+
+    async def test_ad_155_a_whitespace_heading_is_untitled(self, tmp_path):
+        """AD-155: A whitespace-only DOCX heading is untitled."""
+        doc = docx.Document()
+        doc.add_paragraph("Named", style="Heading 1")
+        doc.add_paragraph("N body.")
+        doc.add_paragraph("   ", style="Heading 2")
+        doc.add_paragraph("Orphan body.")
+
+        result = await self._project(tmp_path, doc, untitled=1)
+
+        assert [(h.path, h.content) for h in result.headings] == [
+            ("Named", "N body.\nOrphan body.")
+        ]
+
+    @pytest.mark.parametrize("blank", ["", "   ", "\t"], ids=["empty", "spaces", "tab"])
+    async def test_ad_156_a_numbered_heading_without_text_keeps_its_number(self, tmp_path, blank):
+        """AD-156: A numbered DOCX heading without text is titled by its number."""
+        doc = docx.Document()
+        _inject_numbering(doc, DECIMAL_ABSTRACT_NUM_XML, DECIMAL_NUM_XML)
+        first = doc.add_paragraph("Named", style="Heading 1")
+        _set_paragraph_numbering(first, num_id=100, ilvl=0)
+        numbered = doc.add_paragraph(blank, style="Heading 1")
+        _set_paragraph_numbering(numbered, num_id=100, ilvl=0)
+        doc.add_paragraph("Numbered body.")
+
+        result = await self._project(tmp_path, doc, untitled=1)
+
+        assert [(h.text, h.path) for h in result.headings] == [("1 Named", "1 Named"), ("2", "2")]
+        assert result.headings[1].content == "Numbered body."
+
+    async def test_ad_157_a_heading_under_an_untitled_one_nests_under_the_named_ancestor(
+        self, tmp_path
+    ):
+        """AD-157: A DOCX heading under an untitled one nests under the nearest named ancestor."""
+        doc = docx.Document()
+        doc.add_paragraph("A", style="Heading 1")
+        doc.add_paragraph("", style="Heading 1")
+        doc.add_paragraph("Child", style="Heading 2")
+        doc.add_paragraph("Child body.")
+
+        result = await self._project(tmp_path, doc, untitled=1)
+
+        assert [(h.path, h.content) for h in result.headings] == [
+            ("A", ""),
+            ("A > Child", "Child body."),
+        ]
+
+
+@requires_pdf
+class TestPdfUntitledOutline:
+    async def _project(self, tmp_path: Path, outline, pages, untitled: int):
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        path = _make_pdf_with_outline(tmp_path / "untitled.pdf", outline=outline, pages=pages)
+        assert _pdf_untitled_outline_count(path) == untitled, (
+            "control: the outline must hold the untitled entries"
+        )
+        return await PdfAdapter().project(path)
+
+    async def test_ad_158_an_untitled_entry_joins_the_entry_before_it(self, tmp_path):
+        """AD-158: An untitled PDF outline entry's pages join the entry before it."""
+        result = await self._project(
+            tmp_path,
+            outline=[(1, "Named", 0), (1, "", 1), (1, "After", 2)],
+            pages=[["NAMED_BODY"], ["ORPHAN_BODY"], ["AFTER_BODY"]],
+            untitled=1,
+        )
+
+        assert [(h.path, h.content) for h in result.headings] == [
+            ("Named", "NAMED_BODY\n\nORPHAN_BODY"),
+            ("After", "AFTER_BODY"),
+        ]
+
+    async def test_ad_159_an_untitled_first_entry_joins_the_preamble(self, tmp_path):
+        """AD-159: An untitled first PDF outline entry's pages join the preamble."""
+        result = await self._project(
+            tmp_path,
+            outline=[(1, "", 1), (1, "Named", 2)],
+            pages=[["COVER_BODY"], ["ORPHAN_BODY"], ["NAMED_BODY"]],
+            untitled=1,
+        )
+
+        assert result.preamble == "COVER_BODY\n\nORPHAN_BODY"
+        assert [(h.path, h.content) for h in result.headings] == [("Named", "NAMED_BODY")]
+
+    async def test_ad_160_a_whitespace_entry_is_untitled(self, tmp_path):
+        """AD-160: A whitespace-only PDF outline entry is untitled."""
+        result = await self._project(
+            tmp_path,
+            outline=[(1, "Named", 0), (2, "   ", 1), (2, "Child", 2)],
+            pages=[["NAMED_BODY"], ["ORPHAN_BODY"], ["CHILD_BODY"]],
+            untitled=1,
+        )
+
+        assert [(h.path, h.content) for h in result.headings] == [
+            ("Named", "NAMED_BODY\n\nORPHAN_BODY"),
+            ("Named > Child", "CHILD_BODY"),
+        ]
+
+    async def test_ad_161_an_outline_of_untitled_entries_is_no_outline(self, tmp_path):
+        """AD-161: A PDF outline holding only untitled entries is no outline."""
+        result = await self._project(
+            tmp_path,
+            outline=[(1, "", 0), (1, " ", 1)],
+            pages=[["PAGE_ONE"], ["PAGE_TWO"]],
+            untitled=2,
+        )
+
+        assert len(result.headings) == 1
+        assert "PAGE_ONE" in result.headings[0].content
+        assert "PAGE_TWO" in result.headings[0].content
+        assert result.metadata["has_outline"] is False
+        assert "pdf:has_outline" not in result.metadata.get("adapter_tags", [])
+        assert result.preamble == ""
+
+
+class TestNoPathNamesAnUntitledHeading:
+    async def test_ad_162_markdown(self, tmp_path):
+        """AD-162: No markdown heading path names an untitled heading."""
+        from sage.source_adapters.markdown_adapter import MarkdownAdapter
+
+        source = "#\n\nLead.\n\n# A\n\n##\n\n### B\n\n#  #\n\nTail.\n"
+        assert _markdown_untitled_heading_count(source) == 3, "control: untitled headings"
+        path = tmp_path / "inv.md"
+        path.write_text(source)
+
+        result = await MarkdownAdapter().project(path)
+
+        assert [h.path for h in result.headings] == ["A", "A > B"]
+        assert _no_path_names_an_untitled_heading(result)
+
+    @requires_docx
+    async def test_ad_162_docx(self, tmp_path):
+        """AD-162: No DOCX heading path names an untitled heading."""
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        doc = docx.Document()
+        doc.add_paragraph("", style="Heading 1")
+        doc.add_paragraph("A", style="Heading 1")
+        doc.add_paragraph(" ", style="Heading 2")
+        doc.add_paragraph("B", style="Heading 3")
+        path = tmp_path / "inv.docx"
+        doc.save(str(path))
+        assert _docx_untitled_heading_count(path) == 2, "control: untitled headings"
+
+        result = await DocxAdapter().project(path)
+
+        assert [h.path for h in result.headings] == ["A", "A > B"]
+        assert _no_path_names_an_untitled_heading(result)
+
+    @requires_pdf
+    async def test_ad_162_pdf(self, tmp_path):
+        """AD-162: No PDF heading path names an untitled outline entry."""
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        path = _make_pdf_with_outline(
+            tmp_path / "inv.pdf",
+            outline=[(1, "A", 0), (2, "", 1), (3, "B", 2)],
+            pages=[["P1"], ["P2"], ["P3"]],
+        )
+        assert _pdf_untitled_outline_count(path) == 1, "control: untitled entry"
+
+        result = await PdfAdapter().project(path)
+
+        assert [h.path for h in result.headings] == ["A", "A > B"]
+        assert _no_path_names_an_untitled_heading(result)
+
+    @requires_pptx
+    async def test_ad_162_pptx(self, tmp_path):
+        """AD-162: No slide heading path names an untitled heading."""
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_pptx(tmp_path, [{"title": None}, {"title": "Second", "notes": "N"}])
+
+        result = await PptxAdapter().project(path)
+
+        assert result.headings[0].path == "Slide 1", "control: an untitled slide"
+        assert _no_path_names_an_untitled_heading(result)
+
+    @requires_openpyxl
+    async def test_ad_162_xlsx(self, tmp_path):
+        """AD-162: No sheet heading path names an untitled heading."""
+        from sage.source_adapters.xlsx_adapter import XlsxAdapter
+
+        path = _make_multisheet_xlsx(tmp_path, {"First": [["x"]], "Second": [[None]]})
+
+        result = await XlsxAdapter().project(path)
+
+        assert [h.path for h in result.headings] == ["First", "Second"]
+        assert _no_path_names_an_untitled_heading(result)

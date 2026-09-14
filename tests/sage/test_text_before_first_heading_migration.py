@@ -29,7 +29,7 @@ from sage.services.lifecycle import LifecycleService
 from sage.services.maintenance import BACKFILL_TEXT_BEFORE_FIRST_HEADING, MaintenanceService
 from sage.services.retrieval import RetrievalService
 from sage.services.utilities import UtilitiesService
-from sage.source_adapters.base import ProjectionResult
+from sage.source_adapters.base import ProjectionResult, SourceAdapter
 from sage.source_adapters.docx_adapter import DocxAdapter
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.source_adapters.pdf_adapter import PdfAdapter
@@ -607,3 +607,293 @@ async def test_a_docx_document_an_earlier_adapter_projected_is_recovered(vault, 
     assert first.heading_path == ""
     assert "gamma" in first.content and "Larkspur" in first.content
     assert (await vault.graph_store.get_document(led)).adapter_version == DocxAdapter.VERSION
+
+
+# ── Untitled headings ───────────────────────────────────────────────
+#
+# An adapter that read a heading with no text as a heading stored the text under it
+# at the empty path, or at a path with an empty segment. Where that path is the empty
+# one it cannot be told from the text before the first heading by path alone, so the
+# documents below are seeded with the passages such an adapter wrote, stamped with
+# its version. A document whose empty path is its text under no heading is left
+# unread beside them.
+
+# The last version of each adapter to read a heading with no text as a heading.
+_UNTITLED_READ_AS_HEADING = {
+    SourceType.MARKDOWN: "0.6.0",
+    SourceType.DOCX: "0.5.0",
+    SourceType.PDF: "0.6.0",
+}
+
+
+async def _seeded(
+    vault: Vault,
+    name: str,
+    source: str | bytes,
+    sections,
+    version: str,
+    source_type: SourceType = SourceType.MARKDOWN,
+) -> str:
+    """Ingest ``source``, then store ``sections`` as its passages, stamped ``version``."""
+    content = source.encode() if isinstance(source, str) else source
+    document_id = await vault.ingest(name, content, source_type)
+    await vault.store.index_chunks(
+        document_id,
+        [
+            Chunk(
+                document_id=document_id,
+                heading_path=path,
+                content=content,
+                embedding=[0.25] * EMBEDDING_DIM,
+                chunk_index=index,
+                section_index=index,
+            )
+            for index, (path, content) in enumerate(sections)
+        ],
+    )
+    await vault.graph_store.update_document(document_id, {"adapter_version": version})
+    return document_id
+
+
+async def _shipped_passages(
+    vault: Vault, document_id: str, adapter: SourceAdapter | None = None
+) -> list[tuple[str, str]]:
+    doc = await vault.graph_store.get_document(document_id)
+    adapter = adapter or MarkdownAdapter()
+    projection = await adapter.project(vault.root / "sources" / doc.source_path)
+    return [
+        (c.heading_path, c.content)
+        for c in vault.ingestion._chunk_projection(document_id, projection)
+    ]
+
+
+async def _untitled_opening(vault: Vault) -> str:
+    return await _seeded(
+        vault,
+        "opening.md",
+        "#\n\nUnder sentinel.\n\n# Named\n\nNamed body.\n",
+        [("", "# \n\nUnder sentinel."), ("Named", "# Named\n\nNamed body.")],
+        _UNTITLED_READ_AS_HEADING[SourceType.MARKDOWN],
+    )
+
+
+async def test_an_untitled_heading_stored_before_the_text_before_the_first_heading_is_recovered(
+    vault,
+):
+    led = await _seeded(
+        vault,
+        "goal.md",
+        f"{LEAD}\n\n# Goal\n\nGoal body.\n\n# Targets\n\n#\n\nTail.\n",
+        [("Goal", "# Goal\n\nGoal body."), ("Targets", "# Targets"), ("", "# \n\nTail.")],
+        _EARLIER_VERSION[MarkdownAdapter],
+    )
+    assert "" in await vault.store.get_heading_paths(led), (
+        "control: the untitled heading holds the empty path"
+    )
+    expected = await _shipped_passages(vault, led)
+    adapters = vault.ship_adapters()
+
+    report = await vault.migrate()
+
+    assert adapters[SourceType.MARKDOWN].projected == ["goal.md"]
+    assert BACKFILL_TEXT_BEFORE_FIRST_HEADING in report.backfills_applied
+    assert [(c.heading_path, c.content) for c in await vault.store.get_all_chunks(led)] == expected
+    assert (await vault.utilities().read_section(led, "")).section_text == LEAD
+    assert (await vault.utilities().read_section(led, "Targets")).section_text == (
+        "# Targets\n\nTail."
+    )
+    assert (await vault.graph_store.get_document(led)).adapter_version == MarkdownAdapter.VERSION
+
+
+async def test_an_untitled_heading_stored_beside_the_text_before_the_first_heading_is_rebuilt(
+    vault,
+):
+    led = await _seeded(
+        vault,
+        "beside.md",
+        f"{LEAD}\n\n# Named\n\nNamed body.\n\n#\n\nOrphan body.\n",
+        [("", LEAD), ("Named", "# Named\n\nNamed body."), ("", "# \n\nOrphan body.")],
+        _UNTITLED_READ_AS_HEADING[SourceType.MARKDOWN],
+    )
+    assert "Orphan" in (await vault.utilities().read_section(led, "")).section_text, (
+        "control: the empty path addresses the untitled heading's text too"
+    )
+    adapters = vault.ship_adapters()
+
+    await vault.migrate()
+
+    assert adapters[SourceType.MARKDOWN].projected == ["beside.md"]
+    assert (await vault.utilities().read_section(led, "")).section_text == LEAD
+    assert (await vault.utilities().read_section(led, "Named")).section_text == (
+        "# Named\n\nNamed body.\n\nOrphan body."
+    )
+
+
+async def test_an_untitled_heading_opening_a_document_is_read(vault):
+    opening = await _untitled_opening(vault)
+    expected = await _shipped_passages(vault, opening)
+    adapters = vault.ship_adapters()
+
+    await vault.migrate()
+
+    assert adapters[SourceType.MARKDOWN].projected == ["opening.md"]
+    assert [
+        (c.heading_path, c.content) for c in await vault.store.get_all_chunks(opening)
+    ] == expected
+    assert expected[0] == ("", "Under sentinel."), "control: the fresh passage differs"
+
+
+async def test_a_path_with_an_empty_segment_is_read(vault):
+    nested = await _seeded(
+        vault,
+        "nested.md",
+        "# A\n\nA body.\n\n##\n\nNested sentinel.\n",
+        [("A", "# A\n\nA body."), ("A > ", "## \n\nNested sentinel.")],
+        _UNTITLED_READ_AS_HEADING[SourceType.MARKDOWN],
+    )
+    adapters = vault.ship_adapters()
+
+    await vault.migrate()
+
+    assert adapters[SourceType.MARKDOWN].projected == ["nested.md"]
+    assert await vault.store.get_heading_paths(nested) == ["A"]
+
+
+async def test_text_before_the_first_heading_stored_by_its_adapter_is_not_read(vault):
+    await _untitled_opening(vault)
+    source = f"{LEAD}\n\n# Named\n\nNamed body.\n"
+    led = await vault.ingest("genuine.md", source.encode(), SourceType.MARKDOWN)
+    fresh = await _shipped_passages(vault, led)
+    assert fresh[0] == ("", LEAD), "control: the empty path holds the text before the heading"
+    await vault.store.index_chunks(
+        led,
+        [
+            Chunk(
+                document_id=led,
+                heading_path=path,
+                content=content,
+                embedding=[0.25] * EMBEDDING_DIM,
+                chunk_index=index,
+                section_index=index,
+            )
+            for index, (path, content) in enumerate(fresh)
+        ],
+    )
+    await vault.graph_store.update_document(
+        led, {"adapter_version": _UNTITLED_READ_AS_HEADING[SourceType.MARKDOWN]}
+    )
+    adapters = vault.ship_adapters()
+
+    await vault.migrate()
+
+    projected = adapters[SourceType.MARKDOWN].projected
+    assert "opening.md" in projected, "control: the migration projected its candidates"
+    assert "genuine.md" not in projected
+
+
+@pytest.mark.parametrize(
+    "body", ["Only a paragraph.\n\nAnd another.\n", "#1 priority stays plain.\n\nAnd another.\n"]
+)
+async def test_a_headingless_document_stamped_by_an_untitled_reading_adapter_is_not_read(
+    vault, body
+):
+    await _untitled_opening(vault)
+    flat = await _seeded(
+        vault,
+        "flat.md",
+        body,
+        [("", body.strip())],
+        _UNTITLED_READ_AS_HEADING[SourceType.MARKDOWN],
+    )
+    adapters = vault.ship_adapters()
+
+    await vault.migrate()
+
+    projected = adapters[SourceType.MARKDOWN].projected
+    assert "opening.md" in projected, "control: the migration projected its candidates"
+    assert "flat.md" not in projected
+    assert await vault.store.get_heading_paths(flat) == [""]
+
+
+async def test_an_empty_path_beside_headings_from_before_the_text_before_them_is_read(vault):
+    """An adapter that stored no text before the first heading can only have put a
+    heading at the empty path, whatever that passage opens with."""
+    led = await _seeded(
+        vault,
+        "unmarked.md",
+        f"{LEAD}\n\n# Goal\n\nGoal body.\n\n#\n\nTail.\n",
+        [("Goal", "# Goal\n\nGoal body."), ("", "Tail.")],
+        _EARLIER_VERSION[MarkdownAdapter],
+    )
+    adapters = vault.ship_adapters()
+
+    await vault.migrate()
+
+    assert adapters[SourceType.MARKDOWN].projected == ["unmarked.md"]
+    assert (await vault.utilities().read_section(led, "")).section_text == LEAD
+
+
+@requires_docx
+async def test_a_docx_untitled_heading_beside_the_text_before_the_first_heading_is_rebuilt(
+    vault, tmp_path
+):
+    import docx
+
+    built = docx.Document()
+    built.add_paragraph("Lead sentinel.")
+    built.add_paragraph("Goal", style="Heading 1")
+    built.add_paragraph("Goal body.")
+    built.add_paragraph("", style="Heading 1")
+    built.add_paragraph("Tail.")
+    path = tmp_path / "beside.docx"
+    built.save(str(path))
+    led = await _seeded(
+        vault,
+        "beside.docx",
+        path.read_bytes(),
+        [("", "Lead sentinel."), ("Goal", "# Goal\n\nGoal body."), ("", "# \n\nTail.")],
+        _UNTITLED_READ_AS_HEADING[SourceType.DOCX],
+        SourceType.DOCX,
+    )
+    expected = await _shipped_passages(vault, led, DocxAdapter())
+    adapters = vault.ship_adapters()
+
+    await vault.migrate()
+
+    assert adapters[SourceType.DOCX].projected == ["beside.docx"]
+    assert [(c.heading_path, c.content) for c in await vault.store.get_all_chunks(led)] == expected
+    assert (await vault.utilities().read_section(led, "")).section_text == "Lead sentinel."
+
+
+@requires_pdf
+async def test_a_pdf_heading_titled_by_its_outline_entry_object_is_read(vault, tmp_path):
+    path = _make_pdf_with_outline(
+        tmp_path / "repr.pdf",
+        outline=[(1, "Named", 0), (1, "", 1), (1, "After", 2)],
+        pages=[["NAMED_BODY"], ["ORPHAN_BODY"], ["AFTER_BODY"]],
+    )
+    untitled = "{'/Title': '', '/Page': IndirectObject(4, 0, 4402), '/Type': '/Fit'}"
+    led = await _seeded(
+        vault,
+        "repr.pdf",
+        path.read_bytes(),
+        [
+            ("Named", "# Named\n\nNAMED_BODY"),
+            (untitled, f"# {untitled}\n\nORPHAN_BODY"),
+            ("After", "# After\n\nAFTER_BODY"),
+        ],
+        _UNTITLED_READ_AS_HEADING[SourceType.PDF],
+        SourceType.PDF,
+    )
+    paths = await vault.store.get_heading_paths(led)
+    assert "" not in paths and all(segment.strip() for p in paths for segment in p.split(" > ")), (
+        "control: no empty path or empty segment marks the untitled entry"
+    )
+    expected = await _shipped_passages(vault, led, PdfAdapter())
+    adapters = vault.ship_adapters()
+
+    await vault.migrate()
+
+    assert adapters[SourceType.PDF].projected == ["repr.pdf"]
+    assert [(c.heading_path, c.content) for c in await vault.store.get_all_chunks(led)] == expected
+    assert await vault.store.get_heading_paths(led) == ["Named", "After"]

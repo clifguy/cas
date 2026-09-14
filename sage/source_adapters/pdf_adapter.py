@@ -116,7 +116,11 @@ def _flatten_outline(
     entry, and a list immediately following an entry contains its children.
     Entries deeper than max_depth are dropped (their underlying page text
     remains accessible via the nearest ancestor's page range, by
-    construction).
+    construction). So are entries with no title: a path built from one would be
+    the empty path, which addresses text under no heading, or would carry an
+    empty segment. Their pages fall to the entry before them, or to the pages
+    before the first entry, and their children attach to the nearest titled entry
+    above them at a lower level.
     """
     entries: list[tuple[int, str, int]] = []
 
@@ -127,14 +131,16 @@ def _flatten_outline(
                 continue
             if level > max_depth:
                 continue
-            title = getattr(item, "title", None) or str(item)
+            title = str(getattr(item, "title", None) or "").strip()
+            if not title:
+                continue
             try:
                 page_idx = reader.get_destination_page_number(item)
             except Exception:
                 page_idx = None
             if page_idx is None:
                 continue
-            entries.append((level, str(title).strip(), int(page_idx)))
+            entries.append((level, title, int(page_idx)))
 
     _walk(outline, 1)
     return entries
@@ -452,7 +458,9 @@ class PdfAdapter(SourceAdapter):
     # (mitigates a pdfminer.six side-effect after the ocrmypdf import).
     # 0.6.0: pages before the first outline entry are reported as the
     # projection's preamble rather than dropped.
-    VERSION = "0.6.0"
+    # 0.7.0: outline entries with no title are not headings; their pages
+    # fall to the entry before them.
+    VERSION = "0.7.0"
     EXTENSIONS = [".pdf"]
 
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
