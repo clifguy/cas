@@ -2220,6 +2220,53 @@ async def test_recompute_pipeline_idempotent_on_terminal_document(
     assert chunks
 
 
+class _EarlierMarkdownAdapter(MarkdownAdapter):
+    """The markdown adapter reporting a version older than the shipped one."""
+
+    VERSION = "0.0.1"
+
+
+async def _ingested_by_an_earlier_adapter(tmp_vault_dir, ingestion_service, graph_store, name):
+    shipped = ingestion_service._adapters[SourceType.MARKDOWN]
+    ingestion_service._adapters[SourceType.MARKDOWN] = _EarlierMarkdownAdapter()
+    _create_test_file(tmp_vault_dir, name, "# Stamp\n\nContent.")
+    result = await ingestion_service.ingest(
+        IngestRequest(source=name, source_type=SourceType.MARKDOWN)
+    )
+    ingestion_service._adapters[SourceType.MARKDOWN] = shipped
+    doc = await graph_store.get_document(result.document.id)
+    assert doc.adapter_version == "0.0.1", "control: the earlier adapter's version is recorded"
+    return doc.id
+
+
+async def test_recompute_pipeline_stamps_the_adapter_version_that_re_projected(
+    tmp_vault_dir, ingestion_service, graph_store
+):
+    """A recomputed document's adapter_version names the adapter that rebuilt its passages."""
+    doc_id = await _ingested_by_an_earlier_adapter(
+        tmp_vault_dir, ingestion_service, graph_store, "samples/stamp_recompute.md"
+    )
+
+    await ingestion_service.recompute_pipeline(doc_id)
+    terminal = await _await_pipeline_terminal(graph_store, doc_id, service=ingestion_service)
+
+    assert terminal.adapter_version == MarkdownAdapter.VERSION
+
+
+async def test_recovery_re_projection_stamps_the_adapter_version(
+    tmp_vault_dir, ingestion_service, graph_store
+):
+    """The recovery path's re-projection stamps the adapter that re-projected."""
+    doc_id = await _ingested_by_an_earlier_adapter(
+        tmp_vault_dir, ingestion_service, graph_store, "samples/stamp_recovery.md"
+    )
+
+    projection = await ingestion_service._reproject_from_source(doc_id)
+
+    assert projection.adapter_version == MarkdownAdapter.VERSION
+    assert (await graph_store.get_document(doc_id)).adapter_version == MarkdownAdapter.VERSION
+
+
 async def test_recompute_pipeline_unknown_document_raises(ingestion_service):
     """Unknown document_id must raise ``DocumentNotFoundError`` synchronously
     (before background dispatch)."""
@@ -3172,6 +3219,61 @@ async def test_no_request_config_and_no_vault_adapter_config_uses_defaults(
     # Heading 1 is in defaults; Title is not.
     assert "BuiltInH1" in heading_paths
     assert "CustomTitle" not in heading_paths
+
+
+# A dash rule, a line and a dash rule: a table to Pandoc, a heading to GFM, and no
+# marker either way, so only a declared dialect reads it as Pandoc.
+_DASH_RULED_LINE = "Intro.\n\n---\nCell\n---\n\n# Real\n\nBody.\n"
+
+
+@pytest.mark.parametrize(
+    ("vault_dialect", "request_config", "cell_is_a_heading"),
+    [
+        (None, None, True),
+        ("pandoc", None, False),
+        ("pandoc", {"dialect": "gfm"}, True),
+    ],
+    ids=["undeclared", "vault-declared", "request-overrides-vault"],
+)
+async def test_ad_171_a_vault_declared_dialect_reaches_the_adapter_and_a_request_wins(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_vault_config_dict,
+    vault_dialect,
+    request_config,
+    cell_is_a_heading,
+):
+    """AD-171: A vault's declared dialect reaches the adapter, and a request's wins."""
+    from sage.services.ingestion import IngestionService
+    from sage.services.lifecycle import LifecycleService
+
+    config_dict: dict[str, Any] = _copy.deepcopy(minimal_vault_config_dict)
+    if vault_dialect is not None:
+        config_dict.setdefault("adapter_defaults", {})["markdown"] = {"dialect": vault_dialect}
+    config = VaultConfig.model_validate(config_dict)
+    service = IngestionService(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=stub_abstraction_provider,
+        config=config,
+        source_adapters={SourceType.MARKDOWN: MarkdownAdapter()},
+        lifecycle_service=LifecycleService(graph_store, lock_manager, config),
+    )
+    _create_test_file(tmp_vault_dir, "dialect.md", content=_DASH_RULED_LINE)
+
+    result = await service.ingest(
+        IngestRequest(source="dialect.md", source_type=SourceType.MARKDOWN, config=request_config)
+    )
+
+    heading_paths = await stub_content_store.get_heading_paths(result.document.id)
+    assert "Real" in heading_paths, "control: the document was projected with its heading"
+    assert ("Cell" in heading_paths) is cell_is_a_heading
 
 
 # ---------------------------------------------------------------------------

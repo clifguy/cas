@@ -555,9 +555,10 @@ def register_sage_tools(
                 format unresolved rather than guessed.
             config: Adapter-specific configuration (optional). Not a
                 SAGE-wide shape; inspect ``adapter_defaults`` in
-                ``get_vault_config`` for the per-adapter shape.
-                Deep-merged over the vault's adapter defaults; unknown
-                keys are rejected by the adapter.
+                ``get_vault_config`` for the per-adapter shape, such as
+                the markdown adapter's dialect. Deep-merged over the
+                vault's adapter defaults; a key the adapter does not read
+                is ignored.
             created_by: Creator name. Defaults to vault owner.
             force: Allow re-ingestion of duplicate content. The record to
                 reuse is resolved by content hash alone, not by ``source``

@@ -94,9 +94,14 @@
       },
       "additionalProperties": {
         "type": "object",
-        "description": "Projection parameters for one adapter. Structure varies by source type; unknown keys are rejected by the adapter that receives them.",
+        "description": "Projection parameters for one adapter. Structure varies by source type; a key the receiving adapter does not read is ignored.",
         "additionalProperties": true,
         "properties": {
+          "dialect": {
+            "type": "string",
+            "enum": ["gfm", "pandoc"],
+            "description": "For the markdown adapter: the Markdown dialect a document is read in, GFM or Pandoc Markdown. Unset, a document carrying a construct only Pandoc Markdown writes (a table ruled with dash lines, a grid table, a title block) is read as Pandoc Markdown and any other as GFM. A document read as Pandoc Markdown takes no heading from a table's rows or rules."
+          },
           "heading_style_map": {
             "type": "object",
             "description": "For the docx adapter: maps Word paragraph style names to heading levels in the projection. Merged over the adapter's standard Heading 1 through Heading 9 defaults.",

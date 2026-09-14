@@ -4400,8 +4400,9 @@ class TestMarkdownPreamble:
         from sage.source_adapters.markdown_adapter import MarkdownAdapter
 
         path = tmp_path / "pandoc.md"
-        # A rule with internal spaces is a thematic break; only the unbroken
-        # closing rule under the second table's last row is a setext underline.
+        # Read as GFM, a rule with internal spaces is a thematic break; only the
+        # unbroken closing rule under the second table's last row is a setext
+        # underline. Read as Pandoc, the tables hold no heading (AD-163).
         path.write_text(
             "Locations\n\n"
             "  Site        Room\n"
@@ -4414,7 +4415,7 @@ class TestMarkdownPreamble:
             "Below the table.\n"
         )
 
-        result = await MarkdownAdapter().project(path)
+        result = await MarkdownAdapter().project(path, {"dialect": "gfm"})
 
         assert [h.text for h in result.headings] == ["Tamarack    nas01"], (
             "control: the closing rule must form a setext heading"
@@ -4895,3 +4896,365 @@ class TestNoPathNamesAnUntitledHeading:
 
         assert [h.path for h in result.headings] == ["First", "Second"]
         assert _no_path_names_an_untitled_heading(result)
+
+
+# ── Markdown dialects ───────────────────────────────────────────────
+#
+# A markdown document is read in the dialect it was written in. Pandoc Markdown
+# rules its tables with dash lines, which CommonMark reads as thematic breaks and
+# setext heading underlines; read as CommonMark, a table's last row becomes a
+# heading. Every Pandoc source below was checked against `pandoc -f markdown`.
+
+_REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+
+_PANDOC_MULTILINE = (
+    "  -----------------------------------------------------------------\n"
+    "  **Code**      **Site**                      **Details**\n"
+    "  ------------- ----------------------------- ---------------------\n"
+    "  NTH           North Campus                  Two buildings\n"
+    "\n"
+    "  STH           South Campus\n"
+    "\n"
+    "  EST           East Office\n"
+    "  -----------------------------------------------------------------\n"
+    "\n"
+    "Support Hours\n"
+    "\n"
+    "The help desk is staffed on weekdays.\n"
+)
+
+_PANDOC_AMONG_HEADINGS = (
+    "# Framework\n"
+    "\n"
+    "## Appendix\n"
+    "\n"
+    "  ---------------------------------------------------\n"
+    "  **Dimension**     **People**        **Tools**\n"
+    "  ----------------- ----------------- ---------------\n"
+    "  **1. Origin**     Called by name    Built for use\n"
+    "\n"
+    "  **2. Ending**      Held in hope      Retired when\n"
+    "                                      obsolete\n"
+    "  ---------------------------------------------------\n"
+    "\n"
+    "## Notes\n"
+    "\n"
+    "Closing remarks.\n"
+)
+
+_AFTER = "\n\n## After\n\nBody after the table.\n"
+
+# (name, table source, whether CommonMark reads a heading out of the table)
+_PANDOC_TABLE_FORMS = [
+    (
+        "headed simple",
+        "Code   Site\n-----  ------------\nNTH    North Campus\n-------------------",
+        True,
+    ),
+    (
+        "headerless simple",
+        "-----  ------------\nNTH    North Campus\n-------------------",
+        True,
+    ),
+    (
+        "headerless multiline",
+        "-------------------\nNTH    North Campus\n\nSTH    South Campus\n-------------------",
+        True,
+    ),
+    (
+        "grid",
+        "+-------+--------------+\n| Code  | Site         |\n+=======+==============+\n"
+        "| NTH   | North Campus |\n+-------+--------------+",
+        False,
+    ),
+]
+
+_PANDOC_TITLE_BLOCK = (
+    "% Team Handbook\n"
+    "% Operations\n"
+    "\n"
+    "-------------------\n"
+    "NTH    North Campus\n"
+    "\n"
+    "STH    South Campus\n"
+    "-------------------\n"
+    "\n"
+    "# Real\n"
+    "\n"
+    "Body.\n"
+)
+
+# A dash rule, a line and a dash rule: a table to Pandoc, a heading to CommonMark.
+_DASH_RULED_LINE = "Intro.\n\n---\nCell\n---\n\n# Real\n\nBody.\n"
+
+_COLUMN_RULE_TABLE = "Code   Site\n-----  ------------\nNTH    North Campus\n"
+
+_MARKER_IN_CODE = {
+    "fenced": f"```\n{_COLUMN_RULE_TABLE}```\n\n{_DASH_RULED_LINE}",
+    "indented": "".join(f"    {line}\n" for line in _COLUMN_RULE_TABLE.splitlines())
+    + f"\n{_DASH_RULED_LINE}",
+    "raw HTML": f"<div>\n{_COLUMN_RULE_TABLE}</div>\n\n{_DASH_RULED_LINE}",
+    "front matter": "---\ntitle: T\nnote: |\n"
+    + "".join(f"  {line}\n" for line in _COLUMN_RULE_TABLE.splitlines())
+    + f"---\n\n{_DASH_RULED_LINE}",
+}
+
+# (name, source, expected heading paths)
+_GFM_SHAPES = [
+    (
+        "aligned pipe table",
+        "# Top\n\n| a | b |\n|:--|--:|\n| 1 | 2 |\n\n## Next\n\nText.\n",
+        ["Top", "Top > Next"],
+    ),
+    (
+        "pipe table set off from a thematic break",
+        "| a | b |\n|---|---|\n| c | d |\n\n---\n\n# Real\n\nBody.\n",
+        ["Real"],
+    ),
+    ("setext headings", "Title\n=====\n\nBody.\n\nSub\n---\n\nMore.\n", ["Title", "Title > Sub"]),
+    ("front matter", "---\ntitle: x\n---\n\n# Heading\n\nBody.\n", ["Heading"]),
+    ("heading mark in fenced code", "# A\n\n```\n# not a heading\n```\n", ["A"]),
+    # Shapes near a Pandoc marker that are not one, so the dash-ruled line below
+    # each is still read as a heading.
+    (
+        "spaced thematic break set off by blank lines",
+        f"Before.\n\n-----  -----\n\n{_DASH_RULED_LINE}",
+        ["Cell", "Real"],
+    ),
+    ("grid border without a row", f"+-------+\nplain text\n\n{_DASH_RULED_LINE}", ["Cell", "Real"]),
+    (
+        "percent line after the first",
+        f"Rates\n% of users rose.\n\n{_DASH_RULED_LINE}",
+        ["Cell", "Real"],
+    ),
+]
+
+_PIPE_TABLE_THEN_RULE = "| a | b |\n|---|---|\n| c | d |\n---\n\n# Real\n\nBody.\n"
+
+
+def _commonmark_reference():
+    """The markdown adapter reading every document as CommonMark."""
+    from markdown_it import MarkdownIt
+    from mdit_py_plugins.front_matter import front_matter_plugin
+
+    from sage.source_adapters.markdown_adapter import MarkdownAdapter
+
+    class CommonMarkReference(MarkdownAdapter):
+        def _tokens(self, text: str, config: dict | None) -> list:
+            return MarkdownIt("commonmark").use(front_matter_plugin).parse(text)
+
+    return CommonMarkReference()
+
+
+def _markdown_heading_count(source: str) -> int:
+    from markdown_it import MarkdownIt
+
+    tokens = MarkdownIt("commonmark").parse(source)
+    return sum(
+        1
+        for i, tok in enumerate(tokens)
+        if tok.type == "heading_open" and tokens[i + 1].content.strip()
+    )
+
+
+def _repository_markdown() -> list[Path]:
+    import subprocess
+
+    listed = subprocess.run(
+        ["git", "ls-files", "*.md"],
+        cwd=_REPOSITORY_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.split()
+    return [_REPOSITORY_ROOT / name for name in listed]
+
+
+def _dialect_sources() -> list[str]:
+    return [
+        _PANDOC_MULTILINE,
+        _PANDOC_AMONG_HEADINGS,
+        *(table + _AFTER for _, table, _ in _PANDOC_TABLE_FORMS),
+        _PANDOC_TITLE_BLOCK,
+        _DASH_RULED_LINE,
+        *_MARKER_IN_CODE.values(),
+        *(source for _, source, _ in _GFM_SHAPES),
+        _PIPE_TABLE_THEN_RULE,
+    ]
+
+
+def _is_subsequence(part: list, whole: list) -> bool:
+    remaining = iter(whole)
+    return all(item in remaining for item in part)
+
+
+class TestMarkdownDialect:
+    async def _project(self, tmp_path: Path, source: str, config: dict | None = None, adapter=None):
+        from sage.source_adapters.markdown_adapter import MarkdownAdapter
+
+        path = tmp_path / "dialect.md"
+        path.write_text(source)
+        return await (adapter or MarkdownAdapter()).project(path, config)
+
+    async def test_ad_163_a_pandoc_multiline_table_produces_no_heading(self, tmp_path):
+        """AD-163: A Pandoc multiline table produces no heading."""
+        reference = await self._project(
+            tmp_path, _PANDOC_MULTILINE, adapter=_commonmark_reference()
+        )
+        assert [(h.text, h.content) for h in reference.headings] == [
+            ("EST           East Office", "Support Hours\n\nThe help desk is staffed on weekdays.")
+        ], "control: CommonMark reads the last row as a heading holding the text after it"
+
+        result = await self._project(tmp_path, _PANDOC_MULTILINE)
+
+        assert result.headings == []
+        assert result.preamble == ""
+        assert result.text == _PANDOC_MULTILINE
+
+    async def test_ad_164_a_pandoc_table_among_real_headings_leaves_only_them(self, tmp_path):
+        """AD-164: A Pandoc table among real headings leaves only the real headings."""
+        reference = await self._project(
+            tmp_path, _PANDOC_AMONG_HEADINGS, adapter=_commonmark_reference()
+        )
+        assert len(reference.headings) == 4, "control: CommonMark reads the last row as a heading"
+
+        result = await self._project(tmp_path, _PANDOC_AMONG_HEADINGS)
+
+        assert [h.path for h in result.headings] == [
+            "Framework",
+            "Framework > Appendix",
+            "Framework > Notes",
+        ]
+        appendix = result.headings[1].content
+        assert appendix.startswith("---") and appendix.endswith("---")
+        assert "**2. Ending**" in appendix and "obsolete" in appendix
+        assert result.headings[2].content == "Closing remarks."
+
+    @pytest.mark.parametrize(
+        ("table", "commonmark_heading"),
+        [(table, heading) for _, table, heading in _PANDOC_TABLE_FORMS],
+        ids=[name for name, _, _ in _PANDOC_TABLE_FORMS],
+    )
+    async def test_ad_165_no_pandoc_table_form_produces_a_heading(
+        self, tmp_path, table, commonmark_heading
+    ):
+        """AD-165: No Pandoc table form produces a heading."""
+        source = f"Before.\n\n{table}{_AFTER}"
+        assert (_markdown_heading_count(source) > 1) is commonmark_heading, (
+            "control: whether CommonMark reads a heading out of the table"
+        )
+
+        result = await self._project(tmp_path, source, {"dialect": "pandoc"})
+
+        assert [h.path for h in result.headings] == ["After"]
+        assert table in result.preamble
+
+    async def test_ad_166_a_pandoc_title_block_marks_a_document_as_pandoc(self, tmp_path):
+        """AD-166: A Pandoc title block marks a document as Pandoc."""
+        assert _markdown_heading_count(_PANDOC_TITLE_BLOCK) == 2, (
+            "control: CommonMark reads the table's last row as a heading"
+        )
+
+        result = await self._project(tmp_path, _PANDOC_TITLE_BLOCK)
+
+        assert [h.path for h in result.headings] == ["Real"]
+        assert result.preamble.startswith("% Team Handbook\n% Operations")
+
+    async def test_ad_167_the_dialect_is_detected_when_none_is_declared(self, tmp_path):
+        """AD-167: The dialect is detected when none is declared."""
+        declared = await self._project(tmp_path, _PANDOC_MULTILINE, {"dialect": "gfm"})
+        assert len(declared.headings) == 1, "control: read as GFM, the table yields a heading"
+
+        result = await self._project(tmp_path, _PANDOC_MULTILINE, None)
+
+        assert result.headings == []
+
+    async def test_ad_168_a_declared_dialect_takes_precedence_over_detection(self, tmp_path):
+        """AD-168: A declared dialect takes precedence over detection."""
+        as_gfm = await self._project(tmp_path, _PANDOC_MULTILINE, {"dialect": "gfm"})
+        undeclared = await self._project(tmp_path, _DASH_RULED_LINE)
+        as_pandoc = await self._project(tmp_path, _DASH_RULED_LINE, {"dialect": "pandoc"})
+
+        assert [h.text for h in as_gfm.headings] == ["EST           East Office"]
+        assert [h.path for h in undeclared.headings] == ["Cell", "Real"]
+        assert [h.path for h in as_pandoc.headings] == ["Real"]
+
+    @pytest.mark.parametrize("source", _MARKER_IN_CODE.values(), ids=_MARKER_IN_CODE.keys())
+    async def test_ad_169_a_marker_in_code_or_front_matter_does_not_make_a_document_pandoc(
+        self, tmp_path, source
+    ):
+        """AD-169: A marker in code or front matter does not make a document Pandoc."""
+        as_pandoc = await self._project(tmp_path, source, {"dialect": "pandoc"})
+        assert [h.path for h in as_pandoc.headings] == ["Real"], (
+            "control: read as Pandoc, the dash-ruled line is a table"
+        )
+
+        result = await self._project(tmp_path, source)
+
+        assert [h.path for h in result.headings] == ["Cell", "Real"]
+
+    async def test_ad_170_an_unrecognized_dialect_is_refused(self, tmp_path):
+        """AD-170: An unrecognized dialect is refused."""
+        with pytest.raises(ValueError, match="gfm") as refused:
+            await self._project(tmp_path, _DASH_RULED_LINE, {"dialect": "pandc"})
+        assert "pandoc" in str(refused.value)
+
+    @pytest.mark.parametrize(
+        "path", _repository_markdown(), ids=lambda p: str(p.relative_to(_REPOSITORY_ROOT))
+    )
+    async def test_ad_172_every_repository_markdown_document_projects_as_it_did(self, path):
+        """AD-172: Every markdown document in the repository projects as it did."""
+        from sage.source_adapters.markdown_adapter import MarkdownAdapter
+
+        reference = await _commonmark_reference().project(path)
+        result = await MarkdownAdapter().project(path)
+
+        assert _heading_shape(result) == _heading_shape(reference)
+        assert result.preamble == reference.preamble
+
+    @pytest.mark.parametrize(
+        ("source", "paths"),
+        [(source, paths) for _, source, paths in _GFM_SHAPES],
+        ids=[name for name, _, _ in _GFM_SHAPES],
+    )
+    async def test_ad_173_gfm_and_commonmark_shapes_project_as_they_did(
+        self, tmp_path, source, paths
+    ):
+        """AD-173: GFM and CommonMark shapes project as they did."""
+        result = await self._project(tmp_path, source)
+
+        assert [h.path for h in result.headings] == paths
+
+    async def test_ad_173_a_pipe_table_directly_followed_by_a_rule_is_a_table(self, tmp_path):
+        """AD-173: A pipe table directly followed by a dash rule is a GFM table."""
+        reference = await self._project(
+            tmp_path, _PIPE_TABLE_THEN_RULE, adapter=_commonmark_reference()
+        )
+        assert len(reference.headings) == 2, "control: CommonMark reads the rows as a heading"
+
+        result = await self._project(tmp_path, _PIPE_TABLE_THEN_RULE)
+
+        assert [h.path for h in result.headings] == ["Real"]
+
+    async def test_ad_174_reading_a_dialect_never_adds_a_heading(self, tmp_path):
+        """AD-174: Reading a dialect never adds a heading."""
+        sources = [path.read_text() for path in _repository_markdown()] + _dialect_sources()
+        removed = 0
+        for source in sources:
+            reference = await self._project(tmp_path, source, adapter=_commonmark_reference())
+            for config in (None, {"dialect": "gfm"}, {"dialect": "pandoc"}):
+                result = await self._project(tmp_path, source, config)
+                shape = [(h.level, h.text) for h in result.headings]
+                whole = [(h.level, h.text) for h in reference.headings]
+                assert _is_subsequence(shape, whole), source
+                removed += len(whole) - len(shape)
+        assert removed > 0, "control: some reading removed a heading"
+
+    async def test_ad_175_the_markdown_adapter_reports_version_0_8_0(self, tmp_path):
+        """AD-175: The markdown adapter reports version 0.8.0."""
+        from sage.source_adapters.markdown_adapter import MarkdownAdapter
+
+        result = await self._project(tmp_path, "# A\n\nBody.\n")
+
+        assert MarkdownAdapter.VERSION == "0.8.0"
+        assert result.adapter_version == "0.8.0"

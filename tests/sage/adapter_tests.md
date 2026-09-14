@@ -2680,8 +2680,9 @@ reporting it again as a preamble would store it twice.
 **Artifact:** `MarkdownAdapter.project`
 **Category:** projection completeness
 **Decision:** A table's last row followed by its closing dash rule parses as a
-setext heading under CommonMark. The parse stands; the rows above it must not be
-lost.
+setext heading when the document is read as GFM. Whatever heading a reading finds,
+the rows above it must not be lost. Read as Pandoc, the table holds no heading
+(AD-163).
 
 **Expected:** `preamble` holds the earlier rows.
 
@@ -2862,3 +2863,124 @@ preamble.
 **Category:** invariant
 **Expected:** Every reported heading has text, and no segment of its path is empty.
 An untitled slide is titled `Slide N`; a sheet always has a name.
+
+### TEST-SAGE-AD-163: A Pandoc multiline table produces no heading
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** dialect
+**Decision:** A document is read in the dialect it was written in. Pandoc writes
+a table as rows ruled with dash lines; read as CommonMark, the last row and the
+closing rule are a setext heading that files the rest of the document under it.
+The expected headings for every Pandoc source in this section were checked against
+`pandoc -f markdown` when the tests were written.
+
+**Expected:** A headed multiline table whose section titles are plain paragraphs
+projects with no headings. Control: the CommonMark reading of the same source
+holds one heading.
+
+### TEST-SAGE-AD-164: A Pandoc table among real headings leaves only the real headings
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** dialect
+**Expected:** Only the ATX headings are reported, with their paths, and the
+table's lines stay in the content of the section holding the table, including a
+last row that spans two lines.
+
+### TEST-SAGE-AD-165: No Pandoc table form produces a heading
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** dialect
+**Expected:** With the dialect declared as Pandoc, a headed simple table, a
+headerless simple table, a headerless multiline table and a grid table each report
+no heading, and a heading below the table is still reported. Controls: the
+CommonMark reading of each of the first three holds a heading made from the table;
+CommonMark cannot read a grid table as a heading, so that case pins only that the
+Pandoc reading consumes it.
+
+### TEST-SAGE-AD-166: A Pandoc title block marks a document as Pandoc
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** dialect
+**Expected:** A document opening with a `%` title block and holding a headerless
+multiline table, with no dialect declared, reports only its real heading, and the
+title block is part of the preamble.
+
+### TEST-SAGE-AD-167: The dialect is detected when none is declared
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** dialect
+**Expected:** AD-163's source with no config reports no headings. Control: declared
+as GFM it reports the table heading, so detection, not the reader alone, removes it.
+
+### TEST-SAGE-AD-168: A declared dialect takes precedence over detection
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** dialect
+**Decision:** Detection keys only on markers no CommonMark or GFM author writes: a
+column rule beside a table row, a grid-table border, a `%` title block. A dash rule,
+a line of text and a dash rule is a table to Pandoc and a heading to CommonMark, so
+it is no marker, and a document that is Pandoc only in that shape is read as Pandoc
+only when declared.
+
+**Expected:** AD-163's source declared as GFM reports the table heading. A document
+of a dash rule, a line and a dash rule, then `# Real`, reports `Cell` and `Real`
+undeclared and only `Real` declared as Pandoc.
+
+### TEST-SAGE-AD-169: A marker in code or front matter does not make a document Pandoc
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** dialect
+**Expected:** A column-rule table inside a fenced code block, an indented code
+block, raw HTML, or front matter leaves the document read as GFM: the dash-rule
+shape below it still reports its heading.
+
+### TEST-SAGE-AD-170: An unrecognized dialect is refused
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** configuration
+**Expected:** A dialect other than `gfm` or `pandoc` raises `ValueError` naming
+both, rather than falling back to detection.
+
+### TEST-SAGE-AD-171: A vault's declared dialect reaches the adapter, and a request's wins
+
+**Artifact:** `IngestionService.ingest`
+**Category:** configuration
+**Expected:** With `adapter_defaults` declaring the markdown dialect Pandoc, the
+dash-rule document of AD-168 is stored with the heading path `Real` only; the same
+ingest with a request config declaring GFM stores `Cell` as well.
+
+### TEST-SAGE-AD-172: Every markdown document in the repository projects as it did
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** regression guard
+**Expected:** For every tracked `.md` file, the headings (level, text, path and
+content) and preamble equal those of the adapter reading the same file as
+CommonMark.
+
+### TEST-SAGE-AD-173: GFM and CommonMark shapes project as they did
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** regression guard
+**Expected:** A pipe table with alignment, a pipe table set off from a following
+thematic break, setext headings, front matter, a `#` line in fenced code, a spaced thematic
+break set off by blank lines, a grid-table border with no row under it, and a `%`
+line after the first report the headings they did; the last three hold no Pandoc
+marker. The one change is pinned: a pipe table directly followed by
+a dash rule is a GFM table, so its rows are no longer read as a heading.
+
+### TEST-SAGE-AD-174: Reading a dialect never adds a heading
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** invariant
+**Decision:** A document whose CommonMark reading holds no heading projects the same
+in every dialect, so only documents with headings can be affected.
+
+**Expected:** Over the AD-172 corpus and every source in AD-163 to AD-173, the
+reported (level, text) sequence is a subsequence of the CommonMark reading's.
+
+### TEST-SAGE-AD-175: The markdown adapter reports version 0.8.0
+
+**Artifact:** `MarkdownAdapter.project`
+**Category:** provenance
+**Expected:** `MarkdownAdapter.VERSION` and a projection's `adapter_version` are
+`0.8.0`.
