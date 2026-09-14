@@ -71,4 +71,9 @@ EXPECTED_SURFACE: Final[dict[str, str]] = {
     "recompute_views": "sage_maint",
     "recompute_deferred_vault_abstracts": "sage_maint",
     "optimize_vault_content_store": "sage_maint",
+    "get_default_vault_config": "sage_maint",
+    "verify_vault_retrieval": "sage_maint",
+    # A placement decision against the scope rule: one document's projection,
+    # written into the server's own vault tree.
+    "export_projection": "sage_maint",
 }

@@ -2396,14 +2396,13 @@ def register_sage_tools(
 
         Config dict structure: the ``config`` parameter is opaque at the MCP
         boundary (typed ``dict``); its shape lives in
-        ``docs/fs/sage/vault_config.schema.json``. Five top-level sections
-        are required (``vault``, ``document_types``, ``lifecycle``,
-        ``metadata_extraction``, ``edge_inference``) and four optional
-        (``adapter_defaults``, ``abstraction``, ``access_control_defaults``,
-        ``retrieval_health``). A minimal default is served by the REST
-        operation ``get_default_vault_config`` -- there is no tool of that
-        name on this surface -- which returns the scaffold for a vault id
-        with ``vault.name`` and ``vault.owner`` left empty.
+        ``docs/fs/sage/vault_config.schema.json``. The top-level sections
+        ``vault``, ``document_types``, ``lifecycle``, ``metadata_extraction``
+        and ``edge_inference`` are required, and ``adapter_defaults``,
+        ``abstraction``, ``access_control_defaults``, ``retrieval_health`` and
+        ``timing`` are optional. A minimal default is served by
+        ``get_default_vault_config``, which returns the scaffold for a vault
+        id with ``vault.name`` and ``vault.owner`` left empty.
 
         The new vault inherits the running process's stack-wide
         abstraction-provider singleton (built once at startup); the vault
@@ -2436,8 +2435,7 @@ def register_sage_tools(
 
         Args:
             config: Full vault config dict, validating against
-                ``docs/fs/sage/vault_config.schema.json`` (six required
-                top-level sections plus three optional).
+                ``docs/fs/sage/vault_config.schema.json``.
         """
         try:
             summary = await get_vault_registry_service().create_vault(
@@ -2590,9 +2588,7 @@ def register_sage_tools(
 
         Returns aggregate counts and health summaries for the vault,
         including total document count, counts per lifecycle state,
-        counts per doc_type, counts per pipeline_status, and any
-        registered retrieval-health checks (if
-        ``retrieval_health`` is configured in vault_config). Inexpensive;
+        counts per doc_type, and counts per pipeline_status. Inexpensive;
         safe to poll.
 
         The doc-scoped health indicators are an operator worklist, so
@@ -3671,6 +3667,133 @@ def register_sage_tools(
         """
         return get_stack_config_report()
 
+    @mcp.tool(name="get_default_vault_config", annotations=READ_ONLY)
+    async def get_default_vault_config(vault_id: str) -> dict:
+        """Return the default configuration a new vault would be created with.
+
+        Returns the creation-time scaffold as a JSON object conforming to
+        ``docs/fs/sage/vault_config.schema.json``: two doc types, the three
+        base lifecycle states with their transition table, filename
+        metadata extraction, tier-1 supersedes inference, and abstraction
+        disabled.
+
+        The scaffold precedes the vault. No vault with the supplied id
+        need exist, none is created, and the response is not persisted.
+        The id is required because it shapes ``storage_root`` and
+        ``brain_root``, which the server derives rather than anything a
+        caller can compute. ``vault.name`` and ``vault.owner`` come back
+        empty for the caller to fill before passing the completed object
+        to ``create_vault``.
+
+        Error modes:
+        - ``invalid_vault_id`` (400): ``vault_id`` is not a well-formed vault id.
+
+        Args:
+            vault_id: Identifier the new vault would carry. Shapes the storage
+                and brain roots in the returned scaffold.
+        """
+        try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            # The registry service is resolved through its call-time getter;
+            # see ``register_sage_tools``' docstring for the rationale. No
+            # vault is looked up: the scaffold precedes the vault it describes.
+            return get_vault_registry_service().get_default_config(vault_id)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
+    @mcp.tool(name="verify_vault_retrieval", annotations=READ_ONLY)
+    async def verify_vault_retrieval(vault_id: str) -> dict:
+        """Run retrieval health assertions against the vault.
+
+        Loads assertions from the YAML file referenced in
+        ``retrieval_health.assertions_file`` of the vault config, runs
+        each as a semantic search, and returns a pass/fail report.
+        Each assertion is a ``(query, expected_document_id, top_k)``
+        triple: the assertion passes when the expected document
+        appears within the top-k results for the query. Failures
+        report the actual rank (out of ``top_k * 5``) when the expected
+        document was found beyond top-k, or ``null`` when it was not
+        found at all. Used as a smoke test after bulk ingestion or
+        configuration changes.
+
+        The assertions YAML file is resolved relative to the vault's
+        ``storage_root``. The file must have a top-level ``assertions:``
+        key whose value is a list of objects; each object must include
+        ``query`` and ``expected_document_id`` and may include ``top_k``
+        (default 10).
+
+        Error modes:
+        - ``invalid_vault_id`` (400): ``vault_id`` is not a well-formed vault id.
+        - ``unknown_vault`` (404): ``vault_id`` is not a registered vault.
+        - ``assertions_not_configured`` (400): the vault config has no
+          ``retrieval_health.assertions_file`` entry.
+        - ``assertions_file_invalid`` (400): the referenced YAML is malformed
+          or has the wrong structure.
+        - ``assertions_file_not_found`` (404): the configured assertions file
+          does not exist under the vault's ``storage_root``.
+
+        Args:
+            vault_id: Target vault identifier.
+        """
+        try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            v = get_vault(vault_id)
+            report = await v.utilities_service.eval_retrieval()
+            return serialize(report)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
+    @mcp.tool(name="export_projection", annotations=WRITE_DESTRUCTIVE)
+    async def export_projection(vault_id: str, document_id: str, output_path: str) -> dict:
+        """Write stored projection to a Markdown file for inspection.
+
+        Exports the stored projection text for a document to a
+        specified file path inside the vault's ``storage_root``. Used for
+        debugging and manual inspection of the adapter's output. The
+        projection is the structured plain-text rendering produced by
+        the source adapter during ingestion.
+
+        ``output_path`` may be relative (resolved against ``storage_root``)
+        or absolute, but it must resolve to a location inside the
+        vault's ``storage_root``. Targets outside the vault tree are
+        refused with ``path_traversal_denied``. Missing parent directories
+        are created, and a file already at the target is overwritten.
+
+        The destination is a path in the server's own vault tree, which a
+        caller can read back only when it shares that filesystem. Under the
+        cloud profile the export is refused with
+        ``caller_filesystem_unavailable`` before any read; ``read_projection``
+        delivers the projection to the caller instead.
+
+        Error modes:
+        - ``invalid_vault_id`` (400): ``vault_id`` is not a well-formed vault id.
+        - ``invalid_document_id`` (400): ``document_id`` is not a well-formed
+          document id.
+        - ``path_traversal_denied`` (400): ``output_path`` resolves outside the
+          vault's ``storage_root``.
+        - ``unknown_vault`` (404): ``vault_id`` is not a registered vault.
+        - ``document_not_found`` (404): no document with that id.
+        - ``no_projection`` (404): the document exists but has no stored
+          projection (e.g. ingestion failed mid-pipeline).
+        - ``caller_filesystem_unavailable`` (501): the export writes into the
+          server's own vault tree, which a caller cannot read back under the
+          cloud profile; the refusal comes before any read.
+
+        Args:
+            vault_id: Target vault identifier.
+            document_id: Document whose projection is exported.
+            output_path: Destination, relative to the vault's ``storage_root``
+                or absolute inside it.
+        """
+        try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
+            v = get_vault(vault_id)
+            response = await v.utilities_service.export_projection(document_id, output_path)
+            return serialize(response)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
     return {
         "ingest_document": ingest_document,
         "get_filename_metadata": get_filename_metadata,
@@ -3706,4 +3829,7 @@ def register_sage_tools(
         "optimize_vault_content_store": optimize_vault_content_store,
         "reload_vault": reload_vault,
         "get_stack_config": get_stack_config,
+        "get_default_vault_config": get_default_vault_config,
+        "verify_vault_retrieval": verify_vault_retrieval,
+        "export_projection": export_projection,
     }

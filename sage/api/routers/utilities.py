@@ -1,4 +1,4 @@
-"""Utilities router: export_projection, eval_retrieval, refresh_views."""
+"""Utilities router: export_projection, verify_vault_retrieval, refresh_views."""
 
 from typing import Annotated
 
@@ -44,6 +44,14 @@ _DocumentIdPath = Annotated[DocumentIdStr, Path(description="Document identifier
                 "`no_projection`: the document exists but has no stored "
                 "projection (e.g. ingestion failed mid-pipeline).\n\n"
                 "Or vault not found."
+            ),
+        },
+        501: {
+            "model": ErrorResponse,
+            "description": (
+                "`caller_filesystem_unavailable`: the export writes into the "
+                "server's own vault tree, which a caller cannot read back under "
+                "the cloud profile; the refusal comes before any read."
             ),
         },
     },
@@ -163,7 +171,7 @@ async def list_headings(
         },
     },
 )
-async def eval_retrieval(
+async def verify_vault_retrieval(
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: UtilitiesService = Depends(get_utilities_service),
 ) -> EvalRetrievalResult:
