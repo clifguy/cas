@@ -26,6 +26,7 @@ from sage.models.schemas import (
     ErrorResponse,
     OpenDocumentResponse,
     ReabstractStartedResponse,
+    RecomputePipelineStartedResponse,
     VaultIdStr,
 )
 from sage.services.documents import DocumentsService
@@ -110,6 +111,78 @@ async def recompute_abstract(
     """
     result = await service.reabstract(document_id)
     return ReabstractStartedResponse(**result)
+
+
+@router.post(
+    "/documents/{document_id}/recompute-pipeline",
+    operation_id="recompute_pipeline",
+    response_model=RecomputePipelineStartedResponse,
+    responses={
+        400: boundary_400(
+            path=("invalid_document_id", "invalid_vault_id"),
+            request=("unknown_parameter",),
+            extra="`adapter_not_found`: no source adapter is registered for the "
+            "document's `source_type`.\n\n"
+            "`adapter_config_invalid`: the source adapter refused a value it "
+            "cannot use in the vault's `adapter_defaults`. The detail names the "
+            "source type, the key and the value.",
+        ),
+        404: {
+            "model": ErrorResponse,
+            "description": (
+                "`document_not_found` / `vault_not_found`: the document or the "
+                "vault could not be resolved.\n\n"
+                "`source_file_not_found`: the document's `source_path` no longer "
+                "resolves to a readable file."
+            ),
+        },
+        409: {
+            "model": ErrorResponse,
+            "description": (
+                "`recompute_pipeline_already_in_flight`: a recompute is already "
+                "running on this document. Detail carries `document_id` and the "
+                "in-flight call's ISO 8601 `start_time`.\n\n"
+                "`vault_migration_in_flight`: `migrate_vault` is running on this "
+                "vault. Detail carries `vault_id` and the migration's ISO 8601 "
+                "`start_time`; retry once it has returned."
+            ),
+        },
+        502: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_refused`: the vault-source store declined to "
+                "serve the retained source this re-projection reads back. Resolve "
+                "it at the store before retrying; `detail.store_status` carries the "
+                "status it declined with."
+            ),
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_unavailable`: the vault-source store declined to "
+                "serve that read just now -- throttling, or a transient backend "
+                "signal. The same request may succeed on a later attempt."
+            ),
+        },
+    },
+)
+async def recompute_pipeline(
+    document_id: DocumentIdStr,
+    vault_id: VaultIdStr = Depends(get_vault_id),
+    service: IngestionService = Depends(get_ingestion_service),
+) -> RecomputePipelineStartedResponse:
+    """Re-run the full ingestion pipeline against a document (fire-and-forget).
+
+    Calls the same service entry point as the equivalent MCP tool: projection
+    re-runs within the request, so a source or adapter failure is refused
+    here, and indexing and abstraction finish in a background job. The caller
+    waits on ``GET /documents/{document_id}`` for a terminal
+    ``pipeline_status``, as a single bounded wait rather than one status read
+    per unit of caller work. A concurrent call against the same document
+    returns 409 rather than dispatching a parallel task.
+    """
+    result = await service.recompute_pipeline(document_id)
+    return RecomputePipelineStartedResponse(**result)
 
 
 @router.get(

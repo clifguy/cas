@@ -329,7 +329,6 @@ async def _verify_hashes_tool(stored_hash: str | None = None):
         lambda vault_id: _Services(),
         _serialize,
         _error_response,
-        lambda: {},
         lambda: None,
     )
     return tools["verify_hashes"], store

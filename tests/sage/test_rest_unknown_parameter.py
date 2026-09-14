@@ -253,11 +253,17 @@ QUERY_ROWS: list[tuple[str, str, str, dict[str, str], dict[str, Any] | None, lis
     ("transfer_upload", "PUT", "/upload", {}, None, []),
     ("verify_preconditions", "GET", f"{VS}/preconditions/{DOC_ID}", {}, None, []),
     ("get_vault_stats", "GET", f"{VS}/stats", {}, None, []),
+    ("get_stack_config", "GET", "/sage_vaults/maintenance/stack-config", {}, None, []),
 ]
 
 # Rows whose declared request succeeds against an empty vault, so the control
 # can assert success rather than only the absence of the refusal.
-_SUCCEEDS_WHEN_DECLARED = {"list_vaults", "list_staging_edges", "list_pending_metadata"}
+_SUCCEEDS_WHEN_DECLARED = {
+    "list_vaults",
+    "list_staging_edges",
+    "list_pending_metadata",
+    "get_stack_config",
+}
 
 
 @pytest.mark.parametrize(
@@ -347,6 +353,8 @@ async def test_open_mapping_fields_accept_any_key(client):
 BODYLESS_ROWS: list[tuple[str, str, str]] = [
     ("open_document", "POST", f"{VS}/documents/{DOC_ID}/open"),
     ("recompute_abstract", "POST", f"{VS}/documents/{DOC_ID}/reabstract"),
+    ("recompute_pipeline", "POST", f"{VS}/documents/{DOC_ID}/recompute-pipeline"),
+    ("reload_vault", "POST", f"{VS}/maintenance/reload"),
     ("confirm_staging_edge", "POST", f"{VS}/staging-edges/{EDGE_ID}/confirm"),
     ("recompute_views", "POST", f"{VS}/refresh-views"),
 ]

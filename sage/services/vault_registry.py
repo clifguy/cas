@@ -1,9 +1,10 @@
 """Cross-vault registry operations: list, create, reload.
 
 Owns the work behind the cross-vault routes (GET /sage_vaults,
-POST /sage_vaults) and the registry-mutation step of vault reload
-(invoked by VaultConfigService.update_config after a successful YAML
-write).
+POST /sage_vaults), the registry-mutation step of vault reload (invoked by
+VaultConfigService.update_config after a successful YAML write), and the
+operator reload that re-reads a vault's declaration from its store, which
+both request surfaces call.
 
 This service is a singleton on app.state, not a per-vault service. The
 registry dict it holds is the same one aliased in sage/app.py:lifespan
@@ -17,10 +18,11 @@ import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from sage.api.errors import VaultAlreadyExistsError
+from sage.api.errors import VaultAlreadyExistsError, VaultNotFoundError
 from sage.config import VaultConfig
 from sage.models.schemas import (
     CreateVaultRequest,
+    ReloadVaultResponse,
     VaultAdapterInfo,
     VaultDocTypeEntry,
     VaultLifecycleState,
@@ -340,6 +342,60 @@ class VaultRegistryService:
         return await reload_vault_in_registry(
             self._registry, vault_id, new_config, registry_service=self
         )
+
+    async def reload_vault(self, vault_id: str) -> ReloadVaultResponse:
+        """Rebuild a vault's services from its declaration as it now stands.
+
+        A vault loaded from a declaration re-reads it through the active
+        profile's vault-source store (CAS-ADR-043), so an edit SAGE did not
+        make takes effect; a vault built from an in-memory config reuses it.
+        The rebuild is build-new-first: on failure the error propagates and
+        the registry slot keeps the old, still-serving services.
+
+        ``document_count`` is read after the new services are installed. A
+        failure there degrades the count to ``None`` rather than reporting a
+        failed reload, since a caller acting on that error would tear down
+        services that are already correct. The guard is broad because the
+        count reaches the store with no service layer to translate a driver
+        error into a typed one.
+
+        Raises:
+            VaultNotFoundError: No vault with this id is registered.
+        """
+        from sage.mcp_init import (
+            get_stack_config,
+            reload_vault_in_registry,
+            resolve_stack_vault_source_store,
+        )
+        from sage.vault_source_binding import DiscoveredVault
+
+        old_services = self._registry.get(vault_id)
+        if old_services is None:
+            raise VaultNotFoundError(vault_id)
+        config_path = old_services.config_path
+        if config_path is not None:
+            store = resolve_stack_vault_source_store(get_stack_config())
+            config = store.load_config(DiscoveredVault(config_path=config_path))
+        else:
+            config = old_services.config
+
+        new_services = await reload_vault_in_registry(
+            self._registry,
+            vault_id,
+            config,
+            config_path=config_path,
+            registry_service=self,
+        )
+
+        try:
+            document_count: int | None = await new_services.graph_store.get_total_document_count()
+        except Exception:
+            logger.exception(
+                "Reload of vault %s succeeded but the document count could not be read",
+                vault_id,
+            )
+            document_count = None
+        return ReloadVaultResponse(vault_id=vault_id, reloaded=True, document_count=document_count)
 
     @staticmethod
     def _build_vault_summary(

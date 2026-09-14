@@ -13,13 +13,6 @@ from typing import Annotated, Literal
 from mcp.server.fastmcp import FastMCP
 from pydantic import Field, TypeAdapter, ValidationError
 
-# Qualified module import so the ``get_stack_config`` MCP tool below can call
-# ``sage.mcp_init.get_stack_config()`` from inside an inner function that
-# shares its name. Resolving the implementation via the module attribute
-# (rather than a ``from sage.mcp_init import get_stack_config`` binding)
-# sidesteps the LEGB shadow that would otherwise make the inner tool function
-# recurse to itself.
-import sage.mcp_init  # noqa: I001 -- module import keeps the qualified call site alias-free
 from sage._tool_annotations import READ_ONLY, WRITE_ADDITIVE, WRITE_DESTRUCTIVE
 from sage.api.errors import (
     AmbiguousDocumentIdentifierError,
@@ -30,7 +23,7 @@ from sage.api.errors import (
     SAGEError,
     translate_validation_error,
 )
-from sage.mcp_init import SAGEServices, reload_vault_in_registry
+from sage.mcp_init import SAGEServices
 from sage.models.enums import RetrievalMode, SourceType
 from sage.models.legacy_form import detect_legacy_form
 from sage.models.schemas import (
@@ -49,6 +42,7 @@ from sage.models.schemas import (
     HashCheckRequest,
     IngestPreview,
     IngestRequest,
+    RecomputePipelineStartedResponse,
     RetrievalFilters,
     Sha256Str,
     SourceFileIntegrityRequest,
@@ -57,6 +51,7 @@ from sage.models.schemas import (
     UploadRecipe,
     VaultIdStr,
 )
+from sage.services.stack_config import get_stack_config_report
 from sage.services.transfer import DeliveryDeclaration
 from sage.services.vault_registry import VaultRegistryService
 
@@ -230,7 +225,6 @@ def register_sage_tools(
     get_vault: Callable[[str], SAGEServices],
     serialize: Callable[[object], dict],
     error_response: Callable[[SAGEError | ValueError], dict],
-    get_vaults: Callable[[], dict[str, SAGEServices]],
     get_vault_registry_service: Callable[[], VaultRegistryService],
 ) -> dict[str, Callable]:
     """Register all SAGE protocol and API tools on the MCP server.
@@ -238,15 +232,15 @@ def register_sage_tools(
     Returns a dict mapping tool function names to the actual functions,
     for re-export from mcp_server.
 
-    ``get_vaults`` and ``get_vault_registry_service`` are call-time getters
-    rather than instance arguments because the registration site
-    (``sage.mcp_server``) is exposed to ``importlib.reload`` by
-    ``tests/sage/test_cleanup_refactor.py``. After a reload, the module
-    rebinds ``_vaults`` and ``_vault_registry_service`` to the original
-    instances so that other modules keep working; resolving the values via
-    getters at call time picks up the rebound originals, whereas capturing
-    the instances at registration time would freeze the closures on the
-    orphan reload-time objects.
+    ``get_vault_registry_service`` is a call-time getter rather than an
+    instance argument because the registration site (``sage.mcp_server``) is
+    exposed to ``importlib.reload`` by ``tests/sage/test_cleanup_refactor.py``.
+    After a reload, the module rebinds ``_vaults`` and
+    ``_vault_registry_service`` to the original instances so that other
+    modules keep working; resolving the service via the getter at call time
+    picks up the rebound original, whereas capturing the instance at
+    registration time would freeze the closures on the orphan reload-time
+    object.
     """
 
     # -------------------------------------------------------------------
@@ -2941,58 +2935,45 @@ def register_sage_tools(
         vault_id: str,
         document_id: str,
     ) -> dict:
-        """Re-run the full ingestion pipeline against an existing document
-        (fire-and-forget). Operator repair for documents stuck at
-        ``pipeline_status=projection_complete`` with no chunks — the
-        silent-loss state when a Stage 2 background dispatch is
-        garbage-collected or its host process dies mid-execution.
+        """Re-run the full ingestion pipeline against an existing document.
 
-        Stage 1 (projection) re-runs synchronously from
-        ``document.source_path`` so adapter / source-file errors surface in
-        this call's response rather than as a ``pipeline_status=failed``
-        stamp. Stages 2-3 (indexing, abstraction) then dispatch as a
-        background task whose strong reference is held until terminal,
-        closing the garbage-collection window.
+        Operator repair for a document stuck at
+        ``pipeline_status=projection_complete`` with no chunks -- the
+        silent-loss state left when background indexing is lost or its host
+        process dies mid-execution. Projection re-runs from the document's
+        ``source_path`` within this call, so a source or adapter failure is
+        refused here rather than stamped on the document as ``failed``.
+        Indexing and abstraction then dispatch as a background task, and the
+        call returns without waiting for them.
 
-        Fire-and-forget: this call returns immediately after Stage 1 +
-        dispatch with::
+        Fire-and-forget: the background task re-indexes the chunks,
+        regenerates the abstract, and moves ``pipeline_status`` to
+        ``abstraction_complete`` or ``abstraction_skipped`` on success, to
+        ``failed`` when indexing or abstraction errors, or to
+        ``abstraction_interrupted`` when the queue draining the work was
+        stopped before it ran, in which case the next server start re-runs it.
+        To observe the outcome, wait for a terminal ``pipeline_status`` with
+        ``get_document``, as a single bounded wait rather than one status read
+        per unit of caller work. Bound the wait: a document left in
+        ``indexing_in_progress`` or ``abstraction_in_progress`` with no work
+        in flight, because the process restarted mid-job, never reaches a
+        terminal status on its own. A failure in the background task is not
+        returned by this call; it appears as ``pipeline_status=failed`` with
+        ``pipeline_error`` populated.
 
-            {"status": "recompute_pipeline_started",
-             "document_id": "<id>",
-             "dispatched_at": "<iso8601 timestamp>"}
+        One recompute runs per document at a time: a concurrent call against
+        the same document is refused rather than dispatching a parallel task,
+        while calls against different documents run in parallel. After a
+        process-level kill interrupted a recompute or an ingest, enumerate the
+        stuck documents with a catalog ``search`` filtered on
+        ``pipeline_status=projection_complete``, and re-issue this call
+        against each.
 
-        The background task re-indexes the chunks, regenerates the abstract,
-        and flips ``pipeline_status`` to ``abstraction_complete`` /
-        ``abstraction_skipped`` (success), ``failed`` (Stage 2/3 error), or
-        ``abstraction_interrupted`` (the queue draining the work was
-        stopped, so it was dropped rather than attempted; the next server
-        start re-runs it). To
-        observe the outcome, wait for a terminal ``pipeline_status`` on the
-        document -- a single caller-side wait that returns once the status
-        is no longer ``indexing_in_progress`` or ``abstraction_in_progress``,
-        not one status request per unit of caller work. Bound the wait: a
-        document left in either in-progress state with no work in flight
-        (the process restarted mid-job) never reaches a terminal status on
-        its own.
-
-        Per-document single-flight lock: a concurrent call against the same
-        ``document_id`` while a recompute is in-flight returns a structured
-        409 (``recompute_pipeline_already_in_flight``) rather than
-        dispatching a parallel task. Calls against different document_ids run
-        in parallel.
-
-        Process-crash recovery: after a process-level kill (SIGKILL, OOM)
-        interrupted a prior recompute or ingest mid-Stage-2, enumerate stuck
-        docs via ``search(mode="catalog", filters={"pipeline_status":
-        "projection_complete"})`` and re-issue ``recompute_pipeline`` against
-        each.
-
-        Error modes (raised synchronously in this call's response;
-        background-task failures are NOT surfaced here — they manifest as
-        ``pipeline_status=failed`` with ``pipeline_error`` populated,
-        observable via ``get_document``):
-        - ``internal_error`` (500): ``vault_id`` or ``document_id`` failed
-          typed-alias validation at the boundary.
+        Error modes:
+        - ``invalid_vault_id`` (400): the supplied vault_id is not a
+          well-formed vault id.
+        - ``invalid_document_id`` (400): the supplied document_id is not a
+          well-formed document id.
         - ``unknown_vault``: ``vault_id`` is not a registered vault.
         - ``document_not_found`` (404): no document with that id.
         - ``adapter_not_found`` (400): no source adapter for the document's
@@ -3016,12 +2997,6 @@ def register_sage_tools(
           that read just now -- throttling, or a transient backend signal. The
           same call may succeed later.
 
-        Error modes:
-        - ``invalid_vault_id`` (400): the supplied vault_id is not a
-          well-formed vault id.
-        - ``invalid_document_id`` (400): the supplied document_id is not a
-          well-formed document id.
-
         Args:
             vault_id: Target vault identifier.
             document_id: Document to re-run the pipeline against.
@@ -3031,7 +3006,7 @@ def register_sage_tools(
             document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
             result = await v.ingestion_service.recompute_pipeline(document_id)
-            return serialize(result)
+            return serialize(RecomputePipelineStartedResponse(**result))
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
@@ -3613,69 +3588,45 @@ def register_sage_tools(
             return error_response(e)
 
     # -------------------------------------------------------------------
-    # Server-level operational tools (no HTTP counterpart by design)
+    # Server-level operational tools
     # -------------------------------------------------------------------
 
     @mcp.tool(name="reload_vault", annotations=WRITE_DESTRUCTIVE)
     async def reload_vault(vault_id: str) -> dict:
         """Reload a vault by closing its current services and reinitializing.
 
-        When the vault was loaded from a YAML file (the production path), the
-        file is re-read from disk so on-disk edits to vault_config.yaml take
-        effect. Vaults initialized from an in-memory ``VaultConfig`` (e.g. in
-        tests) reuse the existing config.
+        When the vault was loaded from its ``vault_config.yaml`` declaration,
+        the declaration is re-read through the vault-source store, so edits
+        made outside SAGE take effect; a vault built from an in-memory
+        configuration reuses it. Use this after editing the declaration, or
+        when changes SAGE did not make -- another process, direct database
+        writes -- have left the running services with stale data.
 
-        Use this after editing vault_config.yaml on disk, or when external
-        database changes (the FastAPI server, another MCP client, direct DB
-        writes) have left this MCP session with stale data.
+        Scope is per-vault, not stack-wide: only the target vault's
+        declaration is re-read. The stack-wide configuration is captured at
+        process start and changes only with a restart; read it with
+        ``get_stack_config`` if you suspect drift.
 
-        Scope is per-vault, NOT stack-wide: only the target vault's
-        ``vault_config.yaml`` is re-read. The stack-wide config
-        (``sage/config.yaml``, governing the abstraction-provider singleton)
-        is captured at process startup and requires a process restart to
-        change; verify it via ``get_stack_config`` if you suspect
-        drift.
+        The reload builds the new services before tearing down the old ones.
+        If construction fails, the error is returned and the vault keeps
+        serving from its existing services, so the call can be retried once
+        the cause is addressed. Abstraction work in flight does not survive a
+        successful reload: a document being abstracted or waiting to be
+        settles at ``abstraction_interrupted``, and nothing re-runs it until
+        the next server start.
 
-        Reload is atomic with respect to the registry slot: new services are
-        built first and the old ones are torn down only on success. If
-        construction raises (schema migration, duplicate edges,
-        abstraction-provider build failure), the slot keeps pointing at the
-        still-functional old services and an error envelope is returned; the
-        caller can retry after addressing the cause.
+        ``document_count`` spans every lifecycle state, including archived
+        predecessors -- it says how much a vault holds, not how much of it is
+        current; ``get_vault_stats`` gives the per-state breakdown. It is
+        null, never zero, when the count could not be read after the reload
+        succeeded: the reload is still reported, and the null says the count
+        is unknown rather than the vault empty.
 
-        Abstraction work in flight does not survive the reload. Tearing the
-        old services down stops their queue, so any document being abstracted
-        or waiting to be settles at ``abstraction_interrupted`` rather than
-        finishing. Nothing re-runs it until the next server start; to advance
-        it sooner, use the out-of-band bulk reabstract sweep, whose default
-        selector includes that status.
-
-        The response carries ``document_count`` for the reloaded vault. The
-        count spans every lifecycle state, including archived predecessors --
-        it says how much a vault holds, not how much of it is current;
-        ``get_vault_stats`` gives the per-state breakdown for one vault. It is
-        null, never zero, when the count could not be read: that read happens
-        after the reload has already succeeded, so its failure degrades the
-        reported count rather than the reported outcome, and a null there says
-        the count is unknown rather than the vault empty.
-
-        Error modes (the registry slot is preserved on every failure path;
-        the old services stay installed and the caller can retry):
+        Error modes:
         - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
           validation at the boundary.
         - ``unknown_vault`` (404): ``vault_id`` is not a registered vault.
-          Detail enumerates the available vaults.
-        - ``schema_migration_required`` (409): the vault's ``graph.db`` has
-          pending migrations or backfills, so the new graph store cannot
-          ``initialize(migrate=False)``. Run ``migrate_vault`` first.
-        - ``duplicate_edges_present`` (409): the ``edges`` or
-          ``staging_edges`` table has duplicate rows on the natural-key
-          triple ``(source_id, target_id, edge_type)``, so UNIQUE index
-          creation fails. Dedupe the offending table before retrying.
-        - Abstraction-provider build failure: reload builds the provider
-          from the current in-memory stack config; e.g.
-          ``provider="local-mlx"`` with ``model=None`` raises ``ValueError``.
-          Verify via ``get_stack_config`` if you suspect drift.
+          The message enumerates the available vaults.
 
         Args:
             vault_id: Target vault identifier.
@@ -3686,99 +3637,36 @@ def register_sage_tools(
             # subclass) when ``vault_id`` is not registered; the
             # ``except (SAGEError, ValueError)`` block below routes that
             # through ``error_response`` as the ``unknown_vault`` envelope.
-            old_services = get_vault(vault_id)
-            config_path = old_services.config_path
-            if config_path is not None:
-                # CAS-ADR-043: re-read the declaration through the active
-                # profile's vault-source store rather than the filesystem
-                # directly, so a non-filesystem binding re-reads from its store.
-                from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
-                from sage.vault_source_binding import DiscoveredVault
-
-                store = resolve_stack_vault_source_store(get_stack_config())
-                config = store.load_config(DiscoveredVault(config_path=config_path))
-            else:
-                config = old_services.config
-
-            # Delegate to the registry-aware reload. ``reload_vault_in_registry``
-            # builds new services first; only on success does it stop the old
-            # timing thread, close the old graph store, and install the new
-            # services in the registry. On failure the exception propagates
-            # here with the registry untouched, so the live ``_vaults`` dict
-            # continues to point at the still-functional old services and the
-            # caller can retry. The dict and registry service are resolved
-            # via call-time getters; see ``register_sage_tools``' docstring
-            # for the rationale (interaction with ``importlib.reload``-based
-            # tests that rebind the module-level state).
-            new_services = await reload_vault_in_registry(
-                get_vaults(),
-                vault_id,
-                config,
-                config_path=config_path,
-                registry_service=get_vault_registry_service(),
-            )
+            get_vault(vault_id)
+            # The registry service is resolved through its call-time getter;
+            # see ``register_sage_tools``' docstring for the rationale.
+            report = await get_vault_registry_service().reload_vault(vault_id)
         except (SAGEError, ValueError) as e:
             return error_response(e)
-
-        # Return confirmation with basic stats. The store's own total, not a
-        # length over materialized records and not a sum over
-        # ``get_document_counts_by_field``, which omits rows with a null
-        # field value.
-        #
-        # The reload has already succeeded here and the new services are
-        # installed, so a failure to read the count must not be reported as a
-        # failed reload: a caller acting on that error would retry, tearing
-        # down and rebuilding services that are already correct. The count is
-        # decoration on a success, so it degrades to null and is logged for an
-        # operator. The guard is broad because this call reaches the store
-        # directly, with no service layer to translate a driver error into a
-        # typed one -- the same log-and-continue discipline the vault listing
-        # applies per vault.
-        try:
-            total_docs: int | None = await new_services.graph_store.get_total_document_count()
-        except Exception:
-            logger.exception(
-                "Reload of vault %s succeeded but the document count could not be read",
-                vault_id,
-            )
-            total_docs = None
-        return {
-            "vault_id": vault_id,
-            "reloaded": True,
-            "document_count": total_docs,
-        }
+        return serialize(report)
 
     @mcp.tool(name="get_stack_config", annotations=READ_ONLY)
     async def get_stack_config() -> dict:
         """Return the SAGE-stack-wide configuration.
 
-        Stack-wide config governs resources whose enforcement spans the whole
-        SAGE process (e.g., the abstraction provider singleton). Per-vault
-        knobs live in `get_vault_config`.
+        Stack-wide configuration governs resources whose enforcement spans the
+        whole SAGE process, such as the abstraction provider singleton;
+        per-vault settings are read with ``get_vault_config``.
 
-        Today the response carries:
-          - `profile`: the active deployment-profile marker (e.g. `"local"`),
-            the stack-scope selection that co-binds the adapter ports.
-          - `abstraction`: with `provider` (dispatch key — `"local-mlx"`,
-            `"anthropic"`, or `"stub"`) and `model` (the identifier passed to
-            the provider's factory; string, or null when the stack is
-            stub-only).
+        The response carries the whole loaded configuration. ``profile`` is
+        the active deployment-profile marker, such as ``local``: the
+        stack-scope selection that co-binds the adapter ports. ``abstraction``
+        carries ``provider``, the dispatch key (``local-mlx``, ``anthropic``,
+        or ``stub``), and ``model``, the identifier passed to the provider's
+        factory, which is null when the stack is stub-only.
 
-        The shape is forward-compatible: new top-level sections can be added
-        without changing the contract of existing callers.
+        A field the stack leaves unset is reported with a null value rather
+        than omitted, and new top-level sections may be added without changing
+        the contract of existing callers. The configuration is captured at
+        process start, so a change to it takes effect only after a restart;
+        reloading a vault does not re-read it.
         """
-        # Qualified call resolves via the ``sage.mcp_init`` module attribute,
-        # bypassing the LEGB lookup that would otherwise rebind to the
-        # enclosing ``register_sage_tools`` scope (where this inner function
-        # is itself named ``get_stack_config``).
-        cfg = sage.mcp_init.get_stack_config()
-        # Dumped whole, not through ``serialize``. The rule that lets a
-        # response drop a null key is the published schema's, and this
-        # report has no published schema -- it is the process's own
-        # configuration and the tool has no HTTP counterpart. Omitting an
-        # unset field here would answer "what is this stack configured
-        # with?" by leaving the unconfigured parts out of the answer.
-        return cfg.model_dump(mode="json")
+        return get_stack_config_report()
 
     return {
         "ingest_document": ingest_document,

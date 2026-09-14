@@ -2,6 +2,7 @@
 
 GET /sage_vaults -- list all configured vaults (BE-001, BE-002)
 GET /sage_vaults/default-config -- the scaffold a new vault would be created with
+GET /sage_vaults/maintenance/stack-config -- the stack-wide configuration
 GET /sage_vaults/{vault_id}/stats -- vault statistics (BE-003 through BE-006)
 POST /sage_vaults/{vault_id}/hash-check -- bulk hash check (BE-007 through BE-009)
 GET /sage_vaults/{vault_id}/config -- read vault configuration
@@ -28,6 +29,7 @@ from sage.models.schemas import (
     VaultStatsResponse,
     VaultSummary,
 )
+from sage.services.stack_config import get_stack_config_report
 from sage.services.vault_config import VaultConfigService
 from sage.services.vault_registry import VaultRegistryService
 
@@ -69,6 +71,19 @@ async def get_default_vault_config(
     fill before posting the result to the create-vault endpoint.
     """
     return service.get_default_config(vault_id)
+
+
+# Declared ahead of the vault-scoped routes for the same reason: the literal
+# segment is matched before a vault id could be.
+@router.get(
+    "/sage_vaults/maintenance/stack-config",
+    operation_id="get_stack_config",
+    tags=["Maintenance"],
+    responses={400: boundary_400(request=("unknown_parameter",))},
+)
+async def get_stack_config() -> dict:
+    """Return the stack-wide configuration the running process loaded."""
+    return get_stack_config_report()
 
 
 @router.get(

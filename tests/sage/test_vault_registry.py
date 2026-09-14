@@ -667,3 +667,84 @@ async def test_graph_store_port_reports_storage_present_by_default() -> None:
     from sage.adapters.stubs import StubGraphStore
 
     assert await StubGraphStore().storage_present("any_vault") is True
+
+
+# ---------------------------------------------------------------------------
+# reload_vault: the entry point both request surfaces call
+# ---------------------------------------------------------------------------
+
+
+async def test_reload_vault_rereads_the_declaration_and_threads_its_path(
+    minimal_vault_config_dict: dict, tmp_path: Any, monkeypatch: Any
+) -> None:
+    """The reload rebuilds from the on-disk declaration, not the loaded config.
+
+    The old bundle carries the pre-edit config in memory, so a reload that
+    reused it would hand the rebuild the old name. The path is threaded
+    forward too, so the next reload can re-read it again.
+    """
+    import yaml
+
+    import sage.mcp_init as sage_mcp_init
+    from sage.services.vault_registry import VaultRegistryService
+
+    config_path = tmp_path / "vault_config.yaml"
+    edited = json_roundtrip(minimal_vault_config_dict)
+    edited["vault"]["name"] = "Edited On Disk"
+    config_path.write_text(yaml.safe_dump(edited, sort_keys=False))
+
+    class _Old:
+        config = VaultConfig.model_validate(minimal_vault_config_dict)
+
+    _Old.config_path = config_path
+
+    class _CountingGraphStore:
+        async def get_total_document_count(self) -> int:
+            return 7
+
+    class _New:
+        graph_store = _CountingGraphStore()
+
+    captured: dict[str, Any] = {}
+
+    async def fake_reload(registry, vault_id, config, config_path=None, registry_service=None):
+        captured.update(
+            vault_id=vault_id,
+            name=config.vault.name,
+            config_path=config_path,
+            registry_service=registry_service,
+        )
+        return _New()
+
+    monkeypatch.setattr(sage_mcp_init, "reload_vault_in_registry", fake_reload)
+    service = VaultRegistryService({"test_vault": _Old()}, initialize_services=None)  # type: ignore[arg-type]
+
+    report = await service.reload_vault("test_vault")
+
+    assert captured == {
+        "vault_id": "test_vault",
+        "name": "Edited On Disk",
+        "config_path": config_path,
+        "registry_service": service,
+    }
+    assert (report.vault_id, report.reloaded, report.document_count) == ("test_vault", True, 7)
+
+
+async def test_reload_vault_refuses_an_unregistered_vault() -> None:
+    """An id with no registry slot is refused as not found, before any rebuild."""
+    import pytest
+
+    from sage.api.errors import VaultNotFoundError
+    from sage.services.vault_registry import VaultRegistryService
+
+    service = VaultRegistryService({}, initialize_services=None)  # type: ignore[arg-type]
+
+    with pytest.raises(VaultNotFoundError):
+        await service.reload_vault("ghost_vault")
+
+
+def json_roundtrip(value: dict) -> dict:
+    """A deep copy through JSON, so a test edit cannot reach the shared fixture."""
+    import json
+
+    return json.loads(json.dumps(value))

@@ -160,22 +160,6 @@ MCP_ONLY_TOOLS: Final[dict[tuple[str, str], Divergence]] = {
         "One tool selecting by its action argument; REST offers the same capability "
         "as the discrete confirm_staging_edge and dismiss_staging_edge operations.",
     ),
-    ("sage_core", "recompute_pipeline"): Divergence(
-        _PR,
-        "A REST operator meets the same documents stalled with no chunks. Closes when "
-        "the pipeline repair is realized beneath both surfaces.",
-    ),
-    ("sage_core", "reload_vault"): Divergence(
-        _PR,
-        "Reloading a vault after a change SAGE did not make is unreachable over REST; "
-        "the vault-config write reloads only after its own edit. Closes when a REST "
-        "operation reaches the same reload.",
-    ),
-    ("sage_core", "get_stack_config"): Divergence(
-        _PR,
-        "REST agent callers need the stack-wide configuration read as well. Closes "
-        "when a REST operation serves it.",
-    ),
 }
 
 

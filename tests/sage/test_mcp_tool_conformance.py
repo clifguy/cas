@@ -694,7 +694,7 @@ def test_pending_remediation_lines_list_exactly_the_pending_entries():
 
     # Population pin: recategorizing or remediating an entry is a deliberate
     # edit here as well as in the register.
-    assert len(pending) == 17
+    assert len(pending) == 14
     assert len(lines) == len(pending)
     for name, key in pending:
         entry = dict(REGISTERS)[name][key]

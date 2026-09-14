@@ -789,10 +789,17 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "start_time": "field of the reabstract_already_in_flight error detail",
         "RuntimeError": BUILTIN_EXCEPTION,
     },
+    ("sage_core", "recompute_pipeline"): {
+        "start_time": ERROR_DETAIL_KEY,
+        "store_status": ERROR_DETAIL_KEY,
+    },
     ("sage_core", "recompute_views"): {
         # The symlink directory. The response field counting what landed
         # in it is ``by_lifecycle_status``, which resolves.
         "by_lifecycle": "generated view directory under storage_root",
+    },
+    ("sage_core", "reload_vault"): {
+        "vault_config": "the per-vault YAML file, not a contract node",
     },
     ("sage_core", "traverse"): {
         "CTEs": "prose: SQL common table expressions used by graph traversal",

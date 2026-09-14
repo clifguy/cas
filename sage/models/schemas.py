@@ -4594,6 +4594,45 @@ class ReabstractStartedResponse(BaseModel):
     )
 
 
+class RecomputePipelineStartedResponse(BaseModel):
+    status: Literal["recompute_pipeline_started"] = Field(
+        description=(
+            "Fixed discriminator confirming the document was re-projected and its "
+            "indexing and abstraction were dispatched. Always "
+            "'recompute_pipeline_started'."
+        )
+    )
+    document_id: DocumentIdStr = Field(
+        description="Identifier of the document whose pipeline is being re-run."
+    )
+    dispatched_at: datetime = Field(
+        description=(
+            "UTC timestamp at which the re-run began. Indexing and abstraction "
+            "finish in a background job, not in the call that returned this "
+            "response; wait for a terminal pipeline_status on the document to "
+            "observe the outcome, as a single bounded wait rather than one status "
+            "read per unit of caller work."
+        )
+    )
+
+
+class ReloadVaultResponse(BaseModel):
+    vault_id: VaultIdStr = Field(description="Identifier of the reloaded vault.")
+    reloaded: Literal[True] = Field(
+        description=(
+            "Always true. A reload that fails is reported as an error, and the "
+            "vault's existing services keep serving."
+        )
+    )
+    document_count: int | None = Field(
+        description=(
+            "Documents the reloaded vault holds, across every lifecycle state. "
+            "Null when the count could not be read after the reload succeeded: "
+            "the count is unknown, not zero."
+        )
+    )
+
+
 class DriftEntry(BaseModel):
     """Per-edge entry in a DriftReport.
 

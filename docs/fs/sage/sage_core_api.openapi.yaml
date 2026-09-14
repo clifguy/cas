@@ -1969,6 +1969,71 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+  /sage_vaults/maintenance/stack-config:
+    get:
+      operationId: get_stack_config
+      summary: Return the SAGE-stack-wide configuration.
+      description: >-
+        Stack-wide configuration governs resources whose enforcement spans the
+        whole SAGE process, such as the abstraction provider singleton;
+        per-vault settings are read with `get_vault_config`.
+
+
+        The response carries the whole loaded configuration. `profile` is the
+        active deployment-profile marker, such as `local`: the stack-scope
+        selection that co-binds the adapter ports. `abstraction` carries
+        `provider`, the dispatch key (`local-mlx`, `anthropic`, or `stub`),
+        and `model`, the identifier passed to the provider's factory, which is
+        null when the stack is stub-only.
+
+
+        A field the stack leaves unset is reported with a null value rather
+        than omitted, and new top-level sections may be added without changing
+        the contract of existing callers. The configuration is captured at
+        process start, so a change to it takes effect only after a restart;
+        reloading a vault does not re-read it.
+      tags: [Maintenance]
+      responses:
+        "200":
+          description: The loaded stack-wide configuration.
+          content:
+            application/json:
+              schema:
+                type: object
+                description: >-
+                  Stack configuration object. Structure defined by
+                  docs/fs/sage/sage_core_config.schema.json; the sections
+                  below are the ones callers most often read.
+                properties:
+                  profile:
+                    type: string
+                    enum: [local, cloud]
+                    description: >-
+                      The active deployment-profile marker: the stack-scope
+                      selection that co-binds the adapter ports.
+                  abstraction:
+                    type: object
+                    description: The stack-wide abstraction provider binding.
+                    properties:
+                      provider:
+                        type: string
+                        enum: [local-mlx, anthropic, stub]
+                        description: Dispatch key selecting the abstraction provider.
+                      model:
+                        type: [string, "null"]
+                        description: >-
+                          Identifier passed to the provider's factory; null when
+                          the stack is stub-only.
+                    additionalProperties: true
+                additionalProperties: true
+        "400":
+          description: >-
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
   /sage_vaults/{vault_id}/stats:
     get:
       operationId: get_vault_stats
@@ -2672,6 +2737,119 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
 
+  /sage_vaults/{vault_id}/documents/{document_id}/recompute-pipeline:
+    post:
+      operationId: recompute_pipeline
+      summary: Re-run the full ingestion pipeline against an existing document.
+      description: >-
+        Operator repair for a document stuck at
+        `pipeline_status=projection_complete` with no chunks -- the
+        silent-loss state left when background indexing is lost or its host
+        process dies mid-execution. Projection re-runs from the document's
+        `source_path` within this call, so a source or adapter failure is
+        refused here rather than stamped on the document as `failed`. Indexing
+        and abstraction then dispatch as a background task, and the call
+        returns without waiting for them.
+
+
+        Fire-and-forget: the background task re-indexes the chunks,
+        regenerates the abstract, and moves `pipeline_status` to
+        `abstraction_complete` or `abstraction_skipped` on success, to
+        `failed` when indexing or abstraction errors, or to
+        `abstraction_interrupted` when the queue draining the work was stopped
+        before it ran, in which case the next server start re-runs it. To
+        observe the outcome, wait for a terminal `pipeline_status` with
+        `get_document`, as a single bounded wait rather than one status read
+        per unit of caller work. Bound the wait: a document left in
+        `indexing_in_progress` or `abstraction_in_progress` with no work in
+        flight, because the process restarted mid-job, never reaches a
+        terminal status on its own. A failure in the background task is not
+        returned by this call; it appears as `pipeline_status=failed` with
+        `pipeline_error` populated.
+
+
+        One recompute runs per document at a time: a concurrent call against
+        the same document is refused rather than dispatching a parallel task,
+        while calls against different documents run in parallel. After a
+        process-level kill interrupted a recompute or an ingest, enumerate the
+        stuck documents with a catalog `search` filtered on
+        `pipeline_status=projection_complete`, and re-issue this call against
+        each.
+      tags: [Document Metadata]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+        - $ref: "#/components/parameters/DocumentId"
+      responses:
+        "200":
+          description: Projection re-ran; indexing and abstraction dispatched.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecomputePipelineStartedResponse"
+        "400":
+          description: >-
+            `adapter_not_found`: no source adapter is registered for the
+            document's `source_type`.
+
+            `adapter_config_invalid`: the source adapter refused a value it
+            cannot use in the vault's `adapter_defaults`. The detail names the
+            source type, the key and the value.
+
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `invalid_document_id`: `document_id` is not a well-formed
+            document id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: >-
+            `document_not_found` / `vault_not_found`: the document or the
+            vault could not be resolved.
+
+            `source_file_not_found`: the document's `source_path` no longer
+            resolves to a readable file.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            `recompute_pipeline_already_in_flight`: a recompute is already
+            running on this document. Detail carries `document_id` and the
+            in-flight call's ISO 8601 `start_time`.
+
+            `vault_migration_in_flight`: `migrate_vault` is running on this
+            vault. Detail carries `vault_id` and the migration's ISO 8601
+            `start_time`; retry once it has returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: >-
+            `vault_source_store_refused`: the vault-source store declined to
+            serve the retained source this re-projection reads back. Resolve
+            it at the store before retrying; `detail.store_status` carries the
+            status it declined with.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: >-
+            `vault_source_store_unavailable`: the vault-source store declined to
+            serve that read just now -- throttling, or a transient backend
+            signal. The same request may succeed on a later attempt.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+
   /sage_vaults/{vault_id}/documents/{document_id}/download-url:
     get:
       operationId: get_document_download_url
@@ -3093,6 +3271,67 @@ paths:
   # ---------------------------------------------------------------------------
   # Maintenance / Admin (CAS-ADR-029)
   # ---------------------------------------------------------------------------
+
+  /sage_vaults/{vault_id}/maintenance/reload:
+    post:
+      operationId: reload_vault
+      summary: Reload a vault by closing its current services and reinitializing.
+      description: >-
+        When the vault was loaded from its `vault_config.yaml` declaration,
+        the declaration is re-read through the vault-source store, so edits
+        made outside SAGE take effect; a vault built from an in-memory
+        configuration reuses it. Use this after editing the declaration, or
+        when changes SAGE did not make -- another process, direct database
+        writes -- have left the running services with stale data.
+
+
+        Scope is per-vault, not stack-wide: only the target vault's
+        declaration is re-read. The stack-wide configuration is captured at
+        process start and changes only with a restart; read it with
+        `get_stack_config` if you suspect drift.
+
+
+        The reload builds the new services before tearing down the old ones.
+        If construction fails, the error is returned and the vault keeps
+        serving from its existing services, so the call can be retried once
+        the cause is addressed. Abstraction work in flight does not survive a
+        successful reload: a document being abstracted or waiting to be
+        settles at `abstraction_interrupted`, and nothing re-runs it until the
+        next server start.
+
+
+        `document_count` spans every lifecycle state, including archived
+        predecessors -- it says how much a vault holds, not how much of it is
+        current; `get_vault_stats` gives the per-state breakdown. It is null,
+        never zero, when the count could not be read after the reload
+        succeeded: the reload is still reported, and the null says the count
+        is unknown rather than the vault empty.
+      tags: [Maintenance]
+      parameters:
+        - $ref: "#/components/parameters/VaultId"
+      responses:
+        "200":
+          description: The vault was reloaded.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReloadVaultResponse"
+        "400":
+          description: >-
+            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
+
+            `unknown_parameter`: the request carries a body field or query
+            parameter the operation does not declare.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: "`vault_not_found`: no vault registered with that id."
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /sage_vaults/{vault_id}/maintenance/detect-drift:
     post:
@@ -8629,6 +8868,58 @@ components:
             this response; wait for a terminal pipeline_status on the document to
             observe the outcome, as a single bounded wait rather than one status
             read per unit of caller work.
+
+    RecomputePipelineStartedResponse:
+      type: object
+      required: [status, document_id, dispatched_at]
+      description: >-
+        Fire-and-forget acknowledgement returned by recompute_pipeline: the
+        document was re-projected from its source and its indexing and
+        abstraction were dispatched to the background worker. Both finish in
+        that job, not in the call that returned this response.
+      properties:
+        status:
+          type: string
+          enum: [recompute_pipeline_started]
+          description: >-
+            Fixed discriminator confirming the document was re-projected and its
+            indexing and abstraction were dispatched. Always
+            'recompute_pipeline_started'.
+        document_id:
+          type: string
+          description: Identifier of the document whose pipeline is being re-run.
+        dispatched_at:
+          type: string
+          format: date-time
+          description: >-
+            UTC timestamp at which the re-run began. Indexing and abstraction
+            finish in a background job, not in the call that returned this
+            response; wait for a terminal pipeline_status on the document to
+            observe the outcome, as a single bounded wait rather than one status
+            read per unit of caller work.
+
+    ReloadVaultResponse:
+      type: object
+      required: [vault_id, reloaded, document_count]
+      description: >-
+        Confirmation returned by reload_vault: the vault's services were
+        rebuilt and installed in place of the ones they replaced.
+      properties:
+        vault_id:
+          type: string
+          description: Identifier of the reloaded vault.
+        reloaded:
+          type: boolean
+          enum: [true]
+          description: >-
+            Always true. A reload that fails is reported as an error, and the
+            vault's existing services keep serving.
+        document_count:
+          type: [integer, "null"]
+          description: >-
+            Documents the reloaded vault holds, across every lifecycle state.
+            Null when the count could not be read after the reload succeeded:
+            the count is unknown, not zero.
 
     ReabstractProgressEvent:
       type: object

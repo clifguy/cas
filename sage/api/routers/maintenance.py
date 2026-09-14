@@ -1,9 +1,8 @@
 """Maintenance router (CAS-ADR-029).
 
-Pilot operation: POST /sage_vaults/{vault_id}/maintenance/migrate. The first
-operation on the SAGE Core API maintenance surface; subsequent
-operations on the maintenance surface are added here with the
-same three-layer shape (router -> service -> MCP tool registration).
+Vault-scoped operations on the SAGE Core API maintenance surface, each with
+the same three-layer shape (router -> service -> MCP tool registration). The
+stack-scoped read sits with the cross-vault routes, since it names no vault.
 The ``/maintenance/`` URL segment is canonical; the retired ``/admin/``
 paths are not served.
 """
@@ -15,7 +14,11 @@ from fastapi import APIRouter, Body, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from sage.api.dependencies import get_maintenance_service, get_vault_id
+from sage.api.dependencies import (
+    get_maintenance_service,
+    get_vault_id,
+    get_vault_registry_service,
+)
 from sage.api.response_docs import boundary_400
 from sage.models.schemas import (
     DriftReport,
@@ -24,6 +27,7 @@ from sage.models.schemas import (
     OptimizeContentStoreReport,
     OptimizeContentStoreRequest,
     ReabstractRequest,
+    ReloadVaultResponse,
     SourceFileIntegrityReport,
     SourceFileIntegrityRequest,
     SourceFileRestoreReport,
@@ -33,6 +37,7 @@ from sage.models.schemas import (
 )
 from sage.models.wire import to_wire
 from sage.services.maintenance import MaintenanceService, ReabstractEvent
+from sage.services.vault_registry import VaultRegistryService
 
 router = APIRouter(tags=["Maintenance"])
 
@@ -86,6 +91,25 @@ async def migrate_vault(
     service: MaintenanceService = Depends(get_maintenance_service),
 ) -> MigrationReport:
     return await service.migrate_vault()
+
+
+@router.post(
+    "/maintenance/reload",
+    operation_id="reload_vault",
+    response_model=ReloadVaultResponse,
+    responses={
+        400: boundary_400(path=("invalid_vault_id",), request=("unknown_parameter",)),
+        404: {
+            "model": ErrorResponse,
+            "description": "`vault_not_found`: no vault registered with that id.",
+        },
+    },
+)
+async def reload_vault(
+    vault_id: VaultIdStr = Depends(get_vault_id),
+    service: VaultRegistryService = Depends(get_vault_registry_service),
+) -> ReloadVaultResponse:
+    return await service.reload_vault(vault_id)
 
 
 @router.post(
