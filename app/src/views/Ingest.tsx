@@ -79,8 +79,8 @@ export default function Ingest() {
   if (!vault) return <div>Vault not found.</div>;
 
   // Shared SSE handler for both the co-located ingest stream and the hosted
-  // upload stream. The two endpoints emit the same progress/summary discriminator;
-  // the hosted summary is a superset, rendered by the same table below.
+  // upload stream. The two endpoints emit the same progress/summary shapes, and
+  // either summary is rendered by the same table below.
   function onStreamEvent(event: StreamEvent) {
     if (event.event_type === 'progress') {
       const pe = event;

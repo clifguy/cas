@@ -1529,6 +1529,27 @@ def test_enrollment_checks_are_evaluated_within_one_specification() -> None:
     ]
 
 
+def test_stream_optionality_is_evaluated_within_one_specification() -> None:
+    """F7: a stream member is held to the required list of its own specification's component.
+
+    The two specifications' stream components are shape-identical today, so no real-file
+    assertion separates a check reading the pair's specification from one reading the other.
+    """
+    specs: dict[Spec, dict] = {
+        "core": {
+            "components": {
+                "schemas": {"S": {"properties": {"a": {}, "b": {}}, "required": ["a", "b"]}}
+            }
+        },
+        "app": {
+            "components": {"schemas": {"S": {"properties": {"a": {}, "b": {}}, "required": ["a"]}}}
+        },
+    }
+    source = "interface I { a: string; b: string }"
+    enrolled: Enrollment = {"core": {"I": "S"}, "app": {"I": "S"}}
+    assert stream_optionality_findings(source, specs, enrolled) == {("app", "I"): {"b"}}
+
+
 def test_reference_closure_is_evaluated_within_one_specification() -> None:
     """F9: a component enrolled under one specification does not close a reference in another."""
     schemas = {
