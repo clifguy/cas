@@ -976,10 +976,30 @@ class User(BaseModel):
 class IngestRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    source: str = Field(
+    source: str | None = Field(
+        default=None,
         description=(
-            "Path or URI to the source artifact. Resolved relative to the vault's storage_root."
-        )
+            "Path or URI to the source artifact: a path relative to the "
+            "vault's storage_root, or an absolute path naming a file on the "
+            "caller's machine. An absolute path is read directly only where "
+            "the caller and the server share a machine; where they do not, "
+            "the call returns an upload recipe (`status: upload_required`) "
+            "instead of ingesting, and is repeated with `transfer_token` once "
+            "the recipe's byte leg has delivered the file. Supply exactly one "
+            "of `source` or `transfer_token`."
+        ),
+    )
+    transfer_token: str | None = Field(
+        default=None,
+        description=(
+            "One-time token from a previously returned upload recipe, "
+            "redeemed after the recipe's byte leg has delivered the file to "
+            "the upload endpoint. The staged bytes run through the same "
+            "pipeline as a path ingest. Supply exactly one of "
+            "`transfer_token` or `source`; every other field is sent again on "
+            "this completion call exactly as on the originating call. On a "
+            "dry run the token is read but not spent."
+        ),
     )
     source_type: SourceType = Field(
         description=(
@@ -4809,23 +4829,30 @@ class SourceFileIntegrityReport(BaseModel):
 class SourceFileRestoreRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    source: str = Field(
+    source: str | None = Field(
+        default=None,
         description=(
             "Absolute path to a file holding the bytes that were originally "
             "ingested. SAGE retains no pristine second copy of a source, so "
             "the caller supplies the bytes to restore. The target document is "
             "resolved from their digest, which is why the bytes must be the "
             "originals rather than a corrected or re-exported version. "
-            "Absolute on the machine that will read the file. This request "
-            "model is the REST surface, where that machine is the server: "
-            "the path is read with the server's own conventions, and a "
-            "spelling absolute only on another platform is refused. The "
-            "caller-local transfer channel, where an unreachable caller's "
-            "path earns an upload recipe instead, is offered by the MCP "
-            "tool of the same name and is not reachable here. Unlike an "
-            "ingest, a relative path has no vault-relative reading either "
-            "way."
-        )
+            "Absolute on the machine that holds the file: where the server "
+            "cannot reach the caller's filesystem the path is read with the "
+            "calling environment's conventions and earns an upload recipe "
+            "(`status: upload_required`); where the two share a machine the "
+            "server reads it with its own conventions. Unlike an ingest, a "
+            "relative path has no vault-relative reading either way. Supply "
+            "exactly one of `source` or `transfer_token`."
+        ),
+    )
+    transfer_token: str | None = Field(
+        default=None,
+        description=(
+            "Completion handle from a prior `upload_required` recipe, "
+            "redeemed after the recipe's byte leg has delivered the file. "
+            "Supply exactly one of `transfer_token` or `source`."
+        ),
     )
     document_id: DocumentIdStr | None = Field(
         default=None,

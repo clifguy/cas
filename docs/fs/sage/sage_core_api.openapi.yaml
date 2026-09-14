@@ -113,8 +113,11 @@ info:
 
     To ingest a local file, `POST /sage_vaults/{vault_id}/documents` naming the
     source path returns a status of `upload_required` and a recipe carrying a
-    `transfer_id` and a `PUT /upload` target. Move the bytes to that target,
-    then repeat the ingest call citing the `transfer_id`.
+    one-time `token` and a `PUT /upload` target. Move the bytes to that target
+    with the token in `X-Upload-Token`, then repeat the ingest call with the
+    token as `transfer_token`. The source-file restore,
+    `POST /sage_vaults/{vault_id}/maintenance/restore-source-file`, completes
+    the same way.
 
 
     To retrieve document bytes,
@@ -126,8 +129,8 @@ info:
 
 
     Both transfer legs are exempt from the bearer requirement because authority
-    travels in the `transfer_id`, which is single-use and expiring. Treat it as
-    a credential.
+    travels in the transfer token, which is single-use and expiring. Treat it as
+    a credential; the `transfer_id` only correlates a leg with its recipe.
 
 
     ## Unauthenticated paths
@@ -656,17 +659,22 @@ paths:
       responses:
         "200":
           description: >-
-            Returned in two cases, distinguished by the body. With
+            Returned in three cases, distinguished by the body. With
             `dry_run` true, an `IngestPreview` reporting what a real run
-            would do, having persisted nothing. Otherwise an
-            `IngestResponse` for a `force` re-ingest that reused an
-            existing record rather than creating one.
+            would do, having persisted nothing. For an absolute `source`
+            on a machine the server cannot reach, an `UploadRecipe`
+            (`status: upload_required`): deliver the file to the recipe's
+            URL with its token, then repeat the call with
+            `transfer_token`. Otherwise an `IngestResponse` for a `force`
+            re-ingest that reused an existing record rather than creating
+            one.
           content:
             application/json:
               schema:
                 anyOf:
                   - $ref: "#/components/schemas/IngestPreview"
                   - $ref: "#/components/schemas/IngestResponse"
+                  - $ref: "#/components/schemas/UploadRecipe"
         "201":
           description: >-
             Document record created. For the REST surface, the pipeline
@@ -681,6 +689,12 @@ paths:
           description: >-
             `adapter_not_found`: no source adapter is registered for
             `source_type`.
+
+            `ambiguous_ingest_source`: both `source` and `transfer_token`
+            were supplied.
+
+            `missing_ingest_source`: neither `source` nor `transfer_token`
+            was supplied.
 
             `vault_source_path_refused`: the vault-source store refused
             the destination it would have retained the source at.
@@ -755,6 +769,10 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "409":
           description: >-
+            `transfer_not_staged`: `transfer_token` names a transfer whose
+            bytes have not been delivered to the upload endpoint yet.
+
+
             `duplicate_content`: a document already carries this content
             hash. The key is the hash alone, so identical bytes at a
             path the vault has never seen refuse too. Where several
@@ -842,6 +860,16 @@ paths:
             `vault_migration_in_flight`: `migrate_vault` is running on this
             vault. Detail carries `vault_id` and the migration's ISO 8601
             `start_time`; retry once it has returned.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "410":
+          description: >-
+            `transfer_token_invalid`: `transfer_token` names no redeemable
+            pending transfer -- unknown, expired, already spent, or scoped
+            to another vault. Re-issue the originating call to mint a
+            fresh recipe.
           content:
             application/json:
               schema:
@@ -3255,6 +3283,12 @@ paths:
         tree, for the same reason and with the same refusal: the store
         will not write there, so the repair cannot land where the record
         names. Re-point the path or reconfigure the vault, then re-run.
+
+
+        Two-phase when the server cannot read the caller's filesystem: an
+        absolute ``source`` returns an upload recipe (``status:
+        upload_required``), the caller's environment delivers the bytes, and
+        the call is repeated with the recipe's token as ``transfer_token``.
       tags: [Maintenance]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -3266,13 +3300,23 @@ paths:
               $ref: "#/components/schemas/SourceFileRestoreRequest"
       responses:
         "200":
-          description: Source-file restore report.
+          description: >-
+            A `SourceFileRestoreReport` for a restore that ran. For an
+            absolute `source` on a machine the server cannot reach, an
+            `UploadRecipe` (`status: upload_required`) instead: deliver the
+            file to the recipe's URL with its token, then repeat the call
+            with `transfer_token`.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/SourceFileRestoreReport"
+                anyOf:
+                  - $ref: "#/components/schemas/SourceFileRestoreReport"
+                  - $ref: "#/components/schemas/UploadRecipe"
         "400":
           description: >-
+            `ambiguous_ingest_source`: both `source` and `transfer_token`
+            were supplied. `missing_ingest_source`: neither `source` nor
+            `transfer_token` was supplied.
             `restore_provenance_mismatch`: the pinned document was not
             ingested from the delivered bytes.
             `restore_source_not_absolute`: the source path is not
@@ -3297,6 +3341,24 @@ paths:
             delivered bytes as its provenance.
             `document_not_found`: the supplied document_id names no document.
             `source_file_not_found`: the delivered source path does not exist.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            `transfer_not_staged`: `transfer_token` names a transfer whose
+            bytes have not been delivered to the upload endpoint yet.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "410":
+          description: >-
+            `transfer_token_invalid`: `transfer_token` names no redeemable
+            pending transfer -- unknown, expired, already spent, or scoped
+            to another vault. Re-issue the originating call to mint a
+            fresh recipe.
           content:
             application/json:
               schema:
@@ -5110,7 +5172,7 @@ components:
     IngestRequest:
       type: object
       additionalProperties: false
-      required: [source, source_type]
+      required: [source_type]
       description: >-
         Request body for the ingest endpoint. Identifies the source
         artifact and source_type to project it through, plus optional
@@ -5119,10 +5181,26 @@ components:
         precedence chain.
       properties:
         source:
-          type: string
+          type: [string, "null"]
           description: >-
-            Path or URI to the source artifact. Resolved relative to
-            the vault's storage_root.
+            Path or URI to the source artifact: a path relative to the
+            vault's storage_root, or an absolute path naming a file on the
+            caller's machine. An absolute path is read directly only where
+            the caller and the server share a machine; where they do not,
+            the call returns an upload recipe (`status: upload_required`)
+            instead of ingesting, and is repeated with `transfer_token` once
+            the recipe's byte leg has delivered the file. Supply exactly one
+            of `source` or `transfer_token`.
+        transfer_token:
+          type: [string, "null"]
+          description: >-
+            One-time token from a previously returned upload recipe,
+            redeemed after the recipe's byte leg has delivered the file to
+            the upload endpoint. The staged bytes run through the same
+            pipeline as a path ingest. Supply exactly one of
+            `transfer_token` or `source`; every other field is sent again on
+            this completion call exactly as on the originating call. On a
+            dry run the token is read but not spent.
         source_type:
           $ref: "#/components/schemas/SourceType"
           description: >-
@@ -8355,26 +8433,29 @@ components:
     SourceFileRestoreRequest:
       type: object
       additionalProperties: false
-      required: [source]
       description: Request body for the restore-source-file maintenance operation.
       properties:
         source:
-          type: string
+          type: [string, "null"]
           description: >-
             Absolute path to a file holding the bytes that were originally
             ingested. SAGE retains no pristine second copy of a source, so
             the caller supplies the bytes to restore. The target document
             is resolved from their digest, which is why the bytes must be
             the originals rather than a corrected or re-exported version.
-            Absolute on the machine that will read the file. This request
-            model is the REST surface, where that machine is the server:
-            the path is read with the server's own conventions, and a
-            spelling absolute only on another platform is refused. The
-            caller-local transfer channel, where an unreachable caller's
-            path earns an upload recipe instead, is offered by the MCP
-            tool of the same name and is not reachable here. Unlike an
-            ingest, a relative path has no vault-relative reading either
-            way.
+            Absolute on the machine that holds the file: where the server
+            cannot reach the caller's filesystem the path is read with the
+            calling environment's conventions and earns an upload recipe
+            (`status: upload_required`); where the two share a machine the
+            server reads it with its own conventions. Unlike an ingest, a
+            relative path has no vault-relative reading either way. Supply
+            exactly one of `source` or `transfer_token`.
+        transfer_token:
+          type: [string, "null"]
+          description: >-
+            Completion handle from a prior `upload_required` recipe,
+            redeemed after the recipe's byte leg has delivered the file.
+            Supply exactly one of `transfer_token` or `source`.
         document_id:
           type: [string, "null"]
           description: >-

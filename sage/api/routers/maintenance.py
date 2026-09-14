@@ -28,6 +28,7 @@ from sage.models.schemas import (
     SourceFileIntegrityRequest,
     SourceFileRestoreReport,
     SourceFileRestoreRequest,
+    UploadRecipe,
     VaultIdStr,
 )
 from sage.models.wire import to_wire
@@ -223,12 +224,25 @@ async def verify_vault_source_files(
 
 @router.post(
     "/maintenance/restore-source-file",
-    response_model=SourceFileRestoreReport,
+    response_model=SourceFileRestoreReport | UploadRecipe,
     responses={
+        200: {
+            "description": (
+                "A `SourceFileRestoreReport` for a restore that ran. For an "
+                "absolute `source` on a machine the server cannot reach, an "
+                "`UploadRecipe` (`status: upload_required`) instead: deliver "
+                "the file to the recipe's URL with its token, then repeat the "
+                "call with `transfer_token`."
+            ),
+        },
         400: boundary_400(
             path=("invalid_vault_id",),
             request=("invalid_document_id", "unknown_parameter"),
-            extra="`restore_provenance_mismatch`: the pinned document was not "
+            extra="`ambiguous_ingest_source`: both `source` and `transfer_token` "
+            "were supplied. "
+            "`missing_ingest_source`: neither `source` nor `transfer_token` was "
+            "supplied. "
+            "`restore_provenance_mismatch`: the pinned document was not "
             "ingested from the delivered bytes. "
             "`restore_source_not_absolute`: the source path is not absolute. "
             "`vault_source_path_refused`: the document's source_path cannot be "
@@ -242,6 +256,22 @@ async def verify_vault_source_files(
                 "delivered bytes as its provenance. "
                 "`document_not_found`: the supplied document_id names no document. "
                 "`source_file_not_found`: the delivered source path does not exist."
+            ),
+        },
+        409: {
+            "model": ErrorResponse,
+            "description": (
+                "`transfer_not_staged`: `transfer_token` names a transfer whose "
+                "bytes have not been delivered to the upload endpoint yet."
+            ),
+        },
+        410: {
+            "model": ErrorResponse,
+            "description": (
+                "`transfer_token_invalid`: `transfer_token` names no redeemable "
+                "pending transfer -- unknown, expired, already spent, or scoped "
+                "to another vault. Re-issue the originating call to mint a "
+                "fresh recipe."
             ),
         },
         502: {
@@ -268,5 +298,7 @@ async def restore_vault_source_file(
     body: SourceFileRestoreRequest,
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: MaintenanceService = Depends(get_maintenance_service),
-) -> SourceFileRestoreReport:
-    return await service.restore_vault_source_file(source=body.source, document_id=body.document_id)
+) -> SourceFileRestoreReport | UploadRecipe:
+    return await service.restore_vault_source_file(
+        source=body.source, document_id=body.document_id, transfer_token=body.transfer_token
+    )

@@ -27,7 +27,6 @@ from sage.api.errors import (
     MisplacedFilterError,
     MisplacedMetadataError,
     MissingDocumentIdentifierError,
-    RestoreSourceNotAbsoluteError,
     SAGEError,
     translate_validation_error,
 )
@@ -55,9 +54,10 @@ from sage.models.schemas import (
     SourceFileIntegrityRequest,
     TraverseRequest,
     UpdateVaultConfigRequest,
+    UploadRecipe,
     VaultIdStr,
 )
-from sage.services.transfer import DeliveryDeclaration, caller_local_delivery
+from sage.services.transfer import DeliveryDeclaration
 from sage.services.vault_registry import VaultRegistryService
 
 logger = logging.getLogger(__name__)
@@ -700,44 +700,24 @@ def register_sage_tools(
                     dry_run=dry_run,
                 )
 
-            # A document arrives by exactly one of two delivery shapes: a
-            # ``source`` path, or a ``transfer_token`` redeeming bytes the
-            # caller's environment already delivered to the upload endpoint.
-            # The gate settles which, decides whether this process can reach a
-            # named path, and reclaims any staging it redeemed on the way out
-            # of a successful call -- an ingest that fails after redeeming
-            # returns the token instead, so the caller repeats the work rather
-            # than the upload. The tool signature is identical across profiles;
-            # only where the bytes physically move differs, below the tool
-            # surface.
+            # The delivery gate runs beneath the tool, in the service, so this
+            # surface and the HTTP one reach the caller-local transfer on the
+            # same terms. The request is built from the path the gate
+            # resolves, so a source_type inferred from the extension is read
+            # off the bytes actually being ingested.
             #
-            # A preview reads the staged bytes without spending the token, so
-            # the real ingest it is a preview *of* still has them. Spending it
-            # here would charge the caller a second byte leg for asking what
-            # would happen.
-            with caller_local_delivery(
-                vault_id,
-                [DeliveryDeclaration(source=source, transfer_token=transfer_token)],
-                consume=not dry_run,
-            ) as plan:
-                if plan.recipe is not None:
-                    return serialize(plan.recipe)
-                (delivery,) = plan.resolved
-                # Fire-and-forget pipeline keeps this RPC under the 60s MCP
-                # client timeout (BH-130). Callers wait for a terminal
-                # pipeline_status on the document rather than requesting status
-                # per unit of work. ``ingest`` reads and retains the source
-                # synchronously (before the fire-and-forget stages, which act
-                # on the retained copy), so reclaiming a redeemed staging
-                # directory once this block exits is safe.
-                result = await v.ingestion_service.ingest(
-                    _build_request(delivery.path),
-                    wait_for_pipeline=False,
-                    caller_source=delivery.declared_source,
-                )
-                if isinstance(result, IngestPreview):
-                    return serialize(result)
-                return serialize(result.document)
+            # Fire-and-forget pipeline keeps this RPC under the 60s MCP client
+            # timeout (BH-130). Callers wait for a terminal pipeline_status on
+            # the document rather than requesting status per unit of work.
+            result = await v.ingestion_service.ingest_from_caller(
+                DeliveryDeclaration(source=source, transfer_token=transfer_token),
+                _build_request,
+                dry_run=dry_run,
+                wait_for_pipeline=False,
+            )
+            if isinstance(result, (UploadRecipe, IngestPreview)):
+                return serialize(result)
+            return serialize(result.document)
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
@@ -3400,8 +3380,8 @@ def register_sage_tools(
 
         Two-phase when the server cannot read the caller's filesystem: an
         absolute ``source`` returns an upload recipe (``status:
-        upload_required``), the caller's environment delivers the bytes, and the
-        call is repeated with the returned ``transfer_token``.
+        upload_required``), the caller's environment delivers the bytes, and
+        the call is repeated with the recipe's token as ``transfer_token``.
 
         A pin says which copy to write over; it does not license writing
         arbitrary bytes there. The delivered digest is checked against the
@@ -3472,48 +3452,13 @@ def register_sage_tools(
                     f"Vault {vault_id!r} was initialized without a "
                     "registry_service; maintenance_service is unavailable."
                 )
-            # The same caller-local delivery gate the ingest tool applies, so
-            # a caller generalizing that tool's completion shape does not find
-            # this one narrower: exactly one of ``source`` or
-            # ``transfer_token``, and an absolute caller path this process
-            # cannot reach answers with an upload recipe rather than reading
-            # its own tree.
-            #
-            # The gate reclaims a redeemed staging directory only where this
-            # block completes, which is what makes the repair safe to attempt
-            # against a store that may decline it: the refusal leaves the
-            # token redeemable, so a caller retries the repair rather than the
-            # upload -- and a repair's targets are the large binaries whose
-            # retained copies drifted, where the upload is the expensive half.
-            with caller_local_delivery(
-                vault_id,
-                [DeliveryDeclaration(source=source, transfer_token=transfer_token)],
-            ) as plan:
-                if plan.recipe is not None:
-                    return serialize(plan.recipe)
-                (delivery,) = plan.resolved
-
-                # A caller-named path must be absolute, under either profile.
-                # Unlike an ingest, a non-absolute path has no fallback
-                # meaning here -- there is no vault-relative reading of "the
-                # bytes to restore". The gate mints only for absolute paths,
-                # so a relative one arrives here rather than earning an upload
-                # recipe the caller's environment could not resolve either.
-                # Settled after the delivery shape, so supplying both shapes
-                # still refuses as ambiguous rather than on the path.
-                #
-                # The gate's own reading, not a second one taken here. Which
-                # spellings count depends on whose machine the path names, and
-                # the gate has already answered that to decide whether to mint;
-                # asking again would be a copy of the question free to drift
-                # from the answer minting was decided on.
-                if source is not None and not delivery.caller_absolute:
-                    raise RestoreSourceNotAbsoluteError(source)
-
-                report = await v.maintenance_service.restore_vault_source_file(
-                    source=delivery.path, document_id=document_id
-                )
-                return serialize(report)
+            # The service applies the caller-local delivery gate the ingest
+            # path applies, so a caller generalizing that tool's completion
+            # shape does not find this one narrower.
+            result = await v.maintenance_service.restore_vault_source_file(
+                source=source, document_id=document_id, transfer_token=transfer_token
+            )
+            return serialize(result)
         except (SAGEError, ValueError) as e:
             return error_response(e)
 

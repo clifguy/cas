@@ -53,11 +53,13 @@ from sage.models.schemas import (
     SourcePathNormalization,
     Tier3UniquenessActivation,
     Tier3UniquenessCollision,
+    UploadRecipe,
     canonicalize_sha256,
 )
 from sage.services.document_surface import compose_document_surface
 from sage.services.maintenance_log import MAINTENANCE_LOG_FILENAME
 from sage.services.passage_structure import indexed_structure
+from sage.services.transfer import DeliveryDeclaration, caller_local_delivery
 from sage.storage.tier3_uniqueness import Tier3UniqueIndexBlockedError
 from sage.vault_management import config_path_for_vault
 
@@ -910,7 +912,54 @@ class MaintenanceService:
         )
 
     async def restore_vault_source_file(
-        self, source: str, document_id: str | None = None
+        self,
+        source: str | None = None,
+        document_id: str | None = None,
+        transfer_token: str | None = None,
+    ) -> SourceFileRestoreReport | UploadRecipe:
+        """Apply the caller-local delivery gate, then restore from what it resolves.
+
+        Exactly one of ``source`` or ``transfer_token``. Whether this process
+        can read the caller's filesystem is a property of where the two sit,
+        which callers of every request surface share, so the gate is applied
+        here rather than by each surface (CAS-ADR-052). An absolute caller path
+        this process cannot reach returns an ``UploadRecipe`` in place of a
+        repair; a ``transfer_token`` redeems the bytes a recipe's upload leg
+        delivered. A repair that fails after redemption returns the token with
+        its staged bytes, so a retry repeats the repair rather than the upload
+        -- and a repair's targets are the large binaries whose retained copies
+        drifted, where the upload is the expensive half.
+
+        A caller-named path must be absolute under either profile: unlike an
+        ingest, a relative path has no vault-relative reading of "the bytes to
+        restore". Which spellings count as absolute depends on whose machine
+        the path names, and the gate has already answered that to decide
+        whether to mint, so its answer is read rather than the question asked
+        again. The delivery shape is settled first, so supplying both shapes
+        refuses as ambiguous rather than on the path.
+
+        Raises:
+            AmbiguousIngestSourceError: both delivery shapes were supplied.
+            MissingIngestSourceError: neither was supplied.
+            RestoreSourceNotAbsoluteError: ``source`` is not absolute on the
+                machine that holds it.
+            TransferTokenInvalidError: the token is unknown, expired, spent,
+                or scoped to another vault.
+            TransferNotStagedError: the token's bytes have not been delivered.
+            SourceFileNotFoundError: no readable file at the resolved path.
+        """
+        with caller_local_delivery(
+            self._vault_id, [DeliveryDeclaration(source=source, transfer_token=transfer_token)]
+        ) as plan:
+            if plan.recipe is not None:
+                return plan.recipe
+            (delivery,) = plan.resolved
+            if source is not None and not delivery.caller_absolute:
+                raise RestoreSourceNotAbsoluteError(source)
+            return await self._restore_delivered(delivery.path, document_id)
+
+    async def _restore_delivered(
+        self, source: str, document_id: str | None
     ) -> SourceFileRestoreReport:
         """Write delivered bytes back over a document's retained source file.
 
@@ -958,8 +1007,6 @@ class MaintenanceService:
         from have not changed.
         """
         delivered = Path(source)
-        if not delivered.is_absolute():
-            raise RestoreSourceNotAbsoluteError(source)
         if not delivered.is_file():
             raise SourceFileNotFoundError(source)
 

@@ -195,17 +195,9 @@ KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
     ("sage_core", "read_section"): frozenset({"doc_id"}),
     ("sage_core", "list_headings"): frozenset({"doc_id"}),
     ("sage_core", "chain"): frozenset({"doc_id"}),
-    # ``transfer_token`` is the MCP-only completion handle of the two-phase
-    # caller-local ingest: when the server cannot read the caller's
-    # filesystem, an absolute ``source`` returns an upload recipe, the
-    # caller's environment delivers the bytes to the transfer endpoint, and
-    # the same tool is called back with the recipe's token. The REST surface
-    # has no counterpart on the JSON ``IngestRequest`` -- HTTP callers use
-    # the discrete multipart ``/documents:batch`` upload endpoint -- so this
-    # is a permanent MCP-side divergence by design, not pending remediation.
-    # The seven metadata keys alongside it are tripwires, not functional
-    # arguments. Caller metadata belongs nested under ``metadata``; these
-    # spellings are published at the top level solely so a wrong-level call
+    # The seven metadata keys are tripwires, not functional arguments.
+    # Caller metadata belongs nested under ``metadata``; these spellings
+    # are published at the top level solely so a wrong-level call
     # reaches the ``misplaced_metadata`` guard. Publication is what makes the
     # mistake reachable: an MCP client coerces arguments to the published
     # schema and strips unknown properties, so an unpublished parameter is
@@ -215,7 +207,6 @@ KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
     # Permanent MCP-side divergence by design, not pending remediation.
     ("sage_core", "ingest_document"): frozenset(
         {
-            "transfer_token",
             "title",
             "version_label",
             "project",
@@ -225,18 +216,6 @@ KNOWN_ARG_DRIFT: dict[tuple[str, str], frozenset[str]] = {
             "tags",
         }
     ),
-    # ``transfer_token`` on the source-file restore is the same two-phase
-    # completion handle as on ``ingest_document`` above, and is there for
-    # the same reason: the restore takes bytes from the caller's own
-    # filesystem, so a server that cannot read it returns an upload recipe
-    # and is called back with the recipe's token. The REST surface has no
-    # counterpart on the JSON ``SourceFileRestoreRequest``, for the same
-    # reason ``IngestRequest`` has none: the two-phase handshake is an
-    # MCP-transport affordance, and an HTTP caller either reaches the
-    # server's filesystem or does not. Surface parity with ingest rather
-    # than a gap -- a permanent MCP-side divergence by design, not pending
-    # remediation.
-    ("sage_core", "restore_vault_source_file"): frozenset({"transfer_token"}),
     # The twelve filter keys are tripwires, not functional arguments, on
     # the same mechanism as the ingest metadata keys above. Scope
     # constraints belong nested under ``filters``; these spellings are
