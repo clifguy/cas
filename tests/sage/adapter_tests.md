@@ -3004,3 +3004,86 @@ later ingest.
 naming the key and both accepted values; `gfm` and `pandoc` are each accepted; the
 schema's enum equals the adapter's dialect set. Tests live in
 `tests/sage/test_adapter_defaults_migration.py`.
+
+### TEST-SAGE-AD-177: Each adapter refuses a config value it cannot use
+
+**Artifact:** `MarkdownAdapter`, `PdfAdapter`, `PptxAdapter`, `XlsxAdapter`, `DocxAdapter` (`project`)
+**Category:** configuration
+**Decision:** A config value an adapter cannot use is refused with
+`AdapterConfigError` naming the key and the value, before the source is read,
+rather than failing inside the adapter's library as an untyped error. The accepted
+values are the ones `vault_config.schema.json` documents under `adapter_defaults`.
+
+**Expected:** `dialect: "pandc"` (markdown); `max_pages` of `"ten"`, `0` or `true`
+(pdf); `max_slides` of `"ten"` or `0` (pptx); `preview_rows` or `max_sheets` of
+`"ten"` or `0` (xlsx); and a `heading_style_map` that is not a mapping, or maps a
+style to a level outside 1 to 9 or to a non-integer (docx), each raise
+`AdapterConfigError` whose `key` and `value` equal the offending key and value. The
+same config against a source that does not exist raises `AdapterConfigError` too,
+so the refusal precedes reading the source.
+
+### TEST-SAGE-AD-178: Config values the schema accepts still take effect
+
+**Artifact:** `PdfAdapter`, `PptxAdapter`, `XlsxAdapter`, `DocxAdapter`, `MarkdownAdapter` (`project`)
+**Category:** configuration
+**Expected:** At the boundary each accepted value projects and has its effect:
+`max_pages: 1` projects one page of a two-page PDF, `max_slides: 1` one slide of a
+two-slide deck, `preview_rows: 1` one data row, `max_sheets: null` every sheet,
+`heading_style_map: {"Title": 9}` a level-9 heading, and `dialect: "pandoc"`
+projects.
+
+### TEST-SAGE-AD-179: An unrecognized config key is ignored, not refused
+
+**Artifact:** source adapters (`project`)
+**Category:** configuration
+**Expected:** A config naming a key the adapter does not read projects exactly as
+no config does.
+
+### TEST-SAGE-AD-180: A malformed source is not reported as a config refusal
+
+**Artifact:** `PptxAdapter.project`, `DocxAdapter.project`
+**Category:** error-envelope
+**Expected:** A corrupt source with no config raises the adapter's existing
+`ValueError`, whose type is exactly `ValueError` and not `AdapterConfigError`.
+
+### TEST-SAGE-AD-181: ingest_document reports a refused config value as adapter_config_invalid
+
+**Artifact:** MCP `ingest_document`
+**Category:** error-envelope
+**Expected:** Ingesting a markdown source with `config={"dialect": "pandc"}` returns
+the envelope `error: adapter_config_invalid` with `detail` exactly
+`{"source_type": "markdown", "key": "dialect", "value": "pandc"}`, and no document
+is created.
+
+### TEST-SAGE-AD-182: The Core API ingest route reports a refused config value as a 400
+
+**Artifact:** `POST /sage_vaults/{vault_id}/documents`
+**Category:** error-envelope
+**Expected:** The same request answers 400 with `code: adapter_config_invalid` and
+the same `detail`.
+
+### TEST-SAGE-AD-183: A batch ingest reports a refused vault default per file
+
+**Artifact:** `POST /sage_vaults/{vault_id}/documents:batch`
+**Category:** error-envelope
+**Expected:** Under `adapter_defaults.xlsx.preview_rows: "ten"`, the workbook's
+per-file error carries `code: adapter_config_invalid` and `detail`
+`{"source_type": "xlsx", "key": "preview_rows", "value": "ten"}`, while a markdown
+file in the same batch is ingested.
+
+### TEST-SAGE-AD-184: recompute_pipeline reports a refused vault default as adapter_config_invalid
+
+**Artifact:** MCP `recompute_pipeline`
+**Category:** error-envelope
+**Expected:** A workbook ingested with a per-request `preview_rows` that overrides
+the vault's `"ten"` is re-projected under the vault default alone: the call returns
+`error: adapter_config_invalid` with the exact `detail`, and a second call returns
+the same error rather than reporting work in flight.
+
+### TEST-SAGE-AD-185: A malformed source keeps its reporting on the request surfaces
+
+**Artifact:** batch ingest per-file errors, MCP `ingest_document`
+**Category:** error-envelope
+**Expected:** A corrupt `.docx` with no config is reported as it was before the
+config refusal existed: a per-file error with no `code`, and an MCP envelope of
+`internal_error`.

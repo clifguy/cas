@@ -49,6 +49,7 @@ from sage.source_adapters.base import (
     HeadingNode,
     ProjectionResult,
     SourceAdapter,
+    positive_int,
     respell_created_path,
 )
 
@@ -300,8 +301,7 @@ class PptxAdapter(SourceAdapter):
     EXTENSIONS = [".pptx", ".potx"]
 
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
-        config = config or {}
-        max_slides = config.get("max_slides", _DEFAULT_MAX_SLIDES)
+        max_slides = positive_int(config, "max_slides", _DEFAULT_MAX_SLIDES)
 
         try:
             raw_bytes = source_path.read_bytes()

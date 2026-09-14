@@ -5373,3 +5373,144 @@ class TestMarkdownDialect:
 
         assert MarkdownAdapter.VERSION == "0.8.0"
         assert result.adapter_version == "0.8.0"
+
+
+# ── Adapter config refusal (AD-177 to AD-180) ───────────────────────
+
+
+def _config_source(kind: str, tmp_path: Path) -> tuple[object, Path]:
+    """A readable source of ``kind`` and the adapter that projects it."""
+    if kind == "markdown":
+        from sage.source_adapters.markdown_adapter import MarkdownAdapter
+
+        path = tmp_path / "config.md"
+        path.write_text("# A\n\nBody.\n")
+        return MarkdownAdapter(), path
+    if kind == "pdf":
+        from sage.source_adapters.pdf_adapter import PdfAdapter
+
+        path = _make_pdf_with_pages(tmp_path / "config.pdf", [["PAGE_1_BODY"], ["PAGE_2_BODY"]])
+        return PdfAdapter(), path
+    if kind == "pptx":
+        from sage.source_adapters.pptx_adapter import PptxAdapter
+
+        path = _make_pptx(
+            tmp_path,
+            [{"title": "One", "body": ["BODY_1"]}, {"title": "Two", "body": ["BODY_2"]}],
+            filename="config.pptx",
+        )
+        return PptxAdapter(), path
+    if kind == "xlsx":
+        from sage.source_adapters.xlsx_adapter import XlsxAdapter
+
+        rows = [["ID", "Value"], [1, "val_1"], [2, "val_2"]]
+        path = _make_multisheet_xlsx(
+            tmp_path, {"First": rows, "Second": rows}, filename="config.xlsx"
+        )
+        return XlsxAdapter(), path
+    if kind == "docx":
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        doc = docx.Document()
+        doc.add_paragraph("My Title", style="Title")
+        doc.add_paragraph("Body under title.")
+        path = tmp_path / "config.docx"
+        doc.save(str(path))
+        return DocxAdapter(), path
+    raise AssertionError(kind)
+
+
+_REFUSED_CONFIG = [
+    ("markdown", "dialect", "pandc"),
+    ("pdf", "max_pages", "ten"),
+    ("pdf", "max_pages", 0),
+    ("pdf", "max_pages", True),
+    ("pptx", "max_slides", "ten"),
+    ("pptx", "max_slides", 0),
+    ("xlsx", "preview_rows", "ten"),
+    ("xlsx", "preview_rows", 0),
+    ("xlsx", "max_sheets", "ten"),
+    ("xlsx", "max_sheets", 0),
+    ("docx", "heading_style_map", "Title"),
+    ("docx", "heading_style_map", {"Title": 12}),
+    ("docx", "heading_style_map", {"Title": "one"}),
+]
+
+
+@requires_pdf
+@requires_pptx
+@requires_openpyxl
+@requires_docx
+class TestAdapterConfigRefusal:
+    @pytest.mark.parametrize(("kind", "key", "value"), _REFUSED_CONFIG)
+    async def test_ad_177_each_adapter_refuses_a_config_value_it_cannot_use(
+        self, tmp_path, kind, key, value
+    ):
+        """AD-177: Each adapter refuses a config value it cannot use."""
+        from sage.source_adapters.base import AdapterConfigError
+
+        adapter, path = _config_source(kind, tmp_path)
+
+        with pytest.raises(AdapterConfigError) as refused:
+            await adapter.project(path, {key: value})
+
+        assert (refused.value.key, refused.value.value) == (key, value)
+
+        # Refused before the source is read: a source that does not exist would
+        # otherwise fail first, with an error that is not a config refusal.
+        with pytest.raises(AdapterConfigError):
+            await adapter.project(path.with_name(f"absent{path.suffix}"), {key: value})
+
+    async def test_ad_178_config_values_the_schema_accepts_still_take_effect(self, tmp_path):
+        """AD-178: Config values the schema accepts still take effect."""
+        pdf, pdf_path = _config_source("pdf", tmp_path)
+        one_page = await pdf.project(pdf_path, {"max_pages": 1})
+        assert one_page.metadata["pages_extracted"] == 1
+        assert "PAGE_2_BODY" not in one_page.text
+
+        pptx, pptx_path = _config_source("pptx", tmp_path)
+        one_slide = await pptx.project(pptx_path, {"max_slides": 1})
+        assert one_slide.metadata["slides_projected"] == 1
+        assert "BODY_2" not in one_slide.text
+
+        xlsx, xlsx_path = _config_source("xlsx", tmp_path)
+        one_row = await xlsx.project(xlsx_path, {"preview_rows": 1})
+        assert "val_1" in one_row.headings[0].content
+        assert "val_2" not in one_row.headings[0].content
+        every_sheet = await xlsx.project(xlsx_path, {"max_sheets": None})
+        assert [h.text for h in every_sheet.headings] == ["First", "Second"]
+
+        docx_adapter, docx_path = _config_source("docx", tmp_path)
+        level_nine = await docx_adapter.project(docx_path, {"heading_style_map": {"Title": 9}})
+        assert [(h.level, h.text) for h in level_nine.headings] == [(9, "My Title")]
+
+        markdown, markdown_path = _config_source("markdown", tmp_path)
+        pandoc = await markdown.project(markdown_path, {"dialect": "pandoc"})
+        assert [h.text for h in pandoc.headings] == ["A"]
+
+    @pytest.mark.parametrize("kind", ["markdown", "pdf", "pptx", "xlsx", "docx"])
+    async def test_ad_179_an_unrecognized_config_key_is_ignored_not_refused(self, tmp_path, kind):
+        """AD-179: An unrecognized config key is ignored, not refused."""
+        adapter, path = _config_source(kind, tmp_path)
+
+        plain = await adapter.project(path, None)
+        with_unknown = await adapter.project(path, {"no_such_key": "x"})
+
+        assert with_unknown.text == plain.text
+        assert [(h.level, h.path, h.content) for h in with_unknown.headings] == [
+            (h.level, h.path, h.content) for h in plain.headings
+        ]
+
+    @pytest.mark.parametrize("kind", ["pptx", "docx"])
+    async def test_ad_180_a_malformed_source_is_not_reported_as_a_config_refusal(
+        self, tmp_path, kind
+    ):
+        """AD-180: A malformed source is not reported as a config refusal."""
+        adapter, _ = _config_source(kind, tmp_path)
+        corrupt = tmp_path / f"corrupt.{kind}"
+        corrupt.write_bytes(b"PK\x03\x04this is not a valid OPC package at all\n")
+
+        with pytest.raises(ValueError) as failed:
+            await adapter.project(corrupt, None)
+
+        assert type(failed.value) is ValueError

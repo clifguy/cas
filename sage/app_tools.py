@@ -244,8 +244,8 @@ def register_app_tools(
         returns for the same failure. Each file's request carries only its
         source, source type and parsed metadata -- never a predecessor, a
         force re-ingest, a chain-head token or a relocation pointer -- so the
-        codes an entry can carry are ``adapter_not_found``,
-        ``duplicate_content``, ``invalid_doc_type``,
+        codes an entry can carry are ``adapter_config_invalid``,
+        ``adapter_not_found``, ``duplicate_content``, ``invalid_doc_type``,
         ``invalid_document_date``, ``reserved_transition``,
         ``source_file_not_found``, ``tier3_schema_violation``,
         ``tier3_unique_constraint_violation``, ``vault_migration_in_flight``,

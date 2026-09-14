@@ -36,6 +36,7 @@ from sage.source_adapters.base import (
     HeadingNode,
     ProjectionResult,
     SourceAdapter,
+    positive_int,
     redact_temp_base,
     respell_created_path,
 )
@@ -464,8 +465,7 @@ class PdfAdapter(SourceAdapter):
     EXTENSIONS = [".pdf"]
 
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
-        config = config or {}
-        max_pages = config.get("max_pages", _DEFAULT_MAX_PAGES)
+        max_pages = positive_int(config, "max_pages", _DEFAULT_MAX_PAGES)
 
         raw_bytes = source_path.read_bytes()
         content_hash = hashlib.sha256(raw_bytes).hexdigest()

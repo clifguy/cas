@@ -101,6 +101,56 @@ def redact_temp_base(text: str, base: Path | str, given: Path | str) -> str:
     return given_str.join(redact(part) for part in text.split(given_str))
 
 
+class AdapterConfigError(ValueError):
+    """A config value the adapter cannot use, refused before the source is read.
+
+    Distinct from the ``ValueError`` an adapter raises for a source it cannot
+    read: this one is the caller's to correct, and it carries the offending key
+    and value so the request surfaces can report them without parsing the
+    message. Adapters sit below the API layer and may not import its error
+    hierarchy, so the translation to a public error happens at the service.
+    """
+
+    def __init__(self, key: str, value: object, expected: str) -> None:
+        super().__init__(f"adapter config {key}={value!r}: {expected}")
+        self.key = key
+        self.value = value
+        self.expected = expected
+
+
+def _is_positive_int(value: object) -> bool:
+    # ``bool`` is an ``int`` subclass; ``True`` is not a count.
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def positive_int(config: dict | None, key: str, default: int) -> int:
+    """``config[key]`` when it is an integer of at least 1, ``default`` when absent.
+
+    Raises:
+        AdapterConfigError: the key is present with any other value.
+    """
+    if not config or key not in config:
+        return default
+    value = config[key]
+    if not _is_positive_int(value):
+        raise AdapterConfigError(key, value, "expected an integer of at least 1")
+    return value
+
+
+def optional_positive_int(config: dict | None, key: str) -> int | None:
+    """``config[key]`` when it is an integer of at least 1 or null, ``None`` when absent.
+
+    Raises:
+        AdapterConfigError: the key is present with any other value.
+    """
+    if not config or config.get(key) is None:
+        return None
+    value = config[key]
+    if not _is_positive_int(value):
+        raise AdapterConfigError(key, value, "expected an integer of at least 1, or null")
+    return value
+
+
 @dataclass
 class HeadingNode:
     """A heading in the document's structural hierarchy."""
