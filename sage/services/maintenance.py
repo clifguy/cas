@@ -362,7 +362,9 @@ class MaintenanceService:
         A later backfill stores the text a document carries before its first
         heading, which a vault indexed before that text had a passage lacks. It
         re-projects the candidates' sources and adds the text ahead of the stored
-        passages, leaving those as they read (see
+        passages, leaving those as they read. It also moves text an older adapter
+        stored under a heading with no text into the section before it, so the
+        empty heading path addresses only text under no heading (see
         ``_store_text_before_first_heading``).
 
         Scan every ``unique_keys`` declaration in vault config. For each
@@ -501,8 +503,9 @@ class MaintenanceService:
         stored passages cannot supply it, so this backfill -- unlike the others --
         reads sources, re-projecting each candidate through the vault-source
         binding. A candidate is a document an adapter version older than the first
-        to report that text projected, and each one examined is stamped with the
-        examining version, so no source is read twice. Stored passages that differ
+        to report that text projected, or one whose passages hold a heading with no
+        text that an older adapter read as a heading, and each one examined is
+        stamped with the examining version, so no source is read twice. Stored passages that differ
         from the ones the examining adapter writes are replaced by them -- ordinarily
         only by adding the new passage, but also correcting a passage an older
         adapter shaped differently; nothing is re-abstracted, and only a document it
