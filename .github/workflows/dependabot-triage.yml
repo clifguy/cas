@@ -61,7 +61,7 @@ jobs:
       # call site would crowd out entries other jobs depend on, and LRU eviction
       # would report nothing when it did. Drop the pin if the budget stops
       # binding; re-measure before assuming it has.
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           enable-cache: true
           prune-cache: true
