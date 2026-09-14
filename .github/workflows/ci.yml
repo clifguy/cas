@@ -157,7 +157,7 @@ jobs:
         # Playwright browser bundles this workflow restores -- and LRU eviction
         # would report nothing when it did. Drop the pin if the budget stops
         # binding; re-measure before assuming it has.
-        uses: astral-sh/setup-uv@v10.0.1
+        uses: astral-sh/setup-uv@v10.1.0
         with:
           enable-cache: true
           prune-cache: true
@@ -374,7 +374,7 @@ jobs:
           echo "sha=${sha}" >> "$GITHUB_OUTPUT"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+        uses: astral-sh/setup-uv@v10.1.0
         with:
           enable-cache: true
           prune-cache: true
@@ -552,7 +552,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+        uses: astral-sh/setup-uv@v10.1.0
         with:
           enable-cache: true
           prune-cache: true
@@ -670,7 +670,7 @@ jobs:
           fetch-depth: 0
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v10.0.1
+        uses: astral-sh/setup-uv@v10.1.0
         with:
           enable-cache: true
           prune-cache: true
