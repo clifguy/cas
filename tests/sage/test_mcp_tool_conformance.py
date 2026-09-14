@@ -8,7 +8,8 @@ Gates the structural alignment between the MCP tool surface
 Mirrors ``test_router_conformance.py``: a small ``ToolSurface`` tuple
 declares each surface; per-element parametrized tests assert that the
 MCP surface and the OpenAPI surface agree on names, operation coverage,
-and per-argument shapes. An allowlist drains as drift is remediated.
+and per-argument shapes. A divergence pending remediation drains from its
+register when remediated; a permanent category does not.
 
 Conformance interpretation: schema-subset. Each MCP tool argument
 must match a parameter or
@@ -764,9 +765,10 @@ def _unwalked_request_body(spec: dict[str, Any], op: dict[str, Any]) -> list[str
     """Ways an operation's request body escapes ``_operation_parameters``.
 
     The walk reads the top-level ``properties`` of an ``application/json`` body.
-    A body in another media type, or one whose schema names no top-level
-    properties (a composed ``oneOf``/``anyOf``/``allOf``), contributes no fields,
-    so the REST-to-MCP direction would pass over it vacuously.
+    A body in another media type contributes no fields, and a composed schema
+    (``oneOf``/``anyOf``/``allOf``) hides its members' fields whether or not
+    top-level properties sit beside it, so the REST-to-MCP direction would pass
+    over those fields vacuously.
     """
     body = op.get("requestBody")
     if not body:
@@ -780,7 +782,10 @@ def _unwalked_request_body(spec: dict[str, Any], op: dict[str, Any]) -> list[str
     schema = body.get("content", {}).get("application/json", {}).get("schema", {})
     if "$ref" in schema:
         schema = _resolve_ref(spec, schema["$ref"])
-    if "application/json" in media_types and not schema.get("properties"):
+    composed = sorted({"oneOf", "anyOf", "allOf"} & set(schema))
+    if composed:
+        reasons.append(f"JSON body schema composes with {composed!r}")
+    elif "application/json" in media_types and not schema.get("properties"):
         reasons.append("JSON body schema has no top-level properties")
     return reasons
 
@@ -789,11 +794,15 @@ def test_unwalked_request_body_flags_what_the_walk_cannot_read():
     spec: dict[str, Any] = {}
     json_body = {"content": {"application/json": {"schema": {"properties": {"a": {}}}}}}
     composed = {"content": {"application/json": {"schema": {"oneOf": [{}, {}]}}}}
+    composed_beside_properties = {
+        "content": {"application/json": {"schema": {"allOf": [{}], "properties": {"a": {}}}}}
+    }
     multipart = {"content": {"multipart/form-data": {"schema": {"properties": {"a": {}}}}}}
 
     assert _unwalked_request_body(spec, {}) == []
     assert _unwalked_request_body(spec, {"requestBody": json_body}) == []
     assert len(_unwalked_request_body(spec, {"requestBody": composed})) == 1
+    assert len(_unwalked_request_body(spec, {"requestBody": composed_beside_properties})) == 1
     assert len(_unwalked_request_body(spec, {"requestBody": multipart})) == 1
 
 
