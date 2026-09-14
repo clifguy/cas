@@ -23,7 +23,7 @@ summary: >-
   filters, invalid_parameter inside a batch item), so update_lifecycles on the MCP
   surface now also refuses an undeclared item field. Fields typed as open mappings --
   metadata, tier3_metadata, config and the vault configuration sections -- still
-  accept any key. The CAS Application API is unchanged.
+  accept any key.
 for_callers: >-
   A Core API request carrying a body field or query parameter the operation does not
   declare is now refused with 400 unknown_parameter instead of running as though the

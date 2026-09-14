@@ -16,8 +16,11 @@ Four properties, each with no exemption list:
   lacks nor hides strictness it has;
 * every Core API operation declares the refusal among its 400 responses.
 
-The CAS Application API (``/app/*``) is a separate published contract and is
-not walked here.
+The CAS Application API (``/app/*``) is a separate published contract, walked
+against its own specification and models by the same four properties. Its
+sign-in routes under ``/app/auth`` are held to the opposite: an identity
+provider's callback carries query parameters no operation declares, so none of
+them carries the refusal.
 """
 
 from __future__ import annotations
@@ -37,6 +40,8 @@ from sage.models import schemas
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 SAGE_CORE_SPEC_PATH = _REPO_ROOT / "docs" / "fs" / "sage" / "sage_core_api.openapi.yaml"
+CAS_APP_SPEC_PATH = _REPO_ROOT / "docs" / "fs" / "cas_app_api.openapi.yaml"
+_APP_AUTH_PREFIX = "/app/auth"
 
 # A multipart operation binds its JSON envelope as a string form field, so the
 # model it is parsed into is invisible to the route signature and is named here.
@@ -187,6 +192,127 @@ def test_every_core_operation_declares_the_refusal():
     paths = _spec()["paths"]
     undeclared = []
     for route in _core_routes():
+        for method in route.methods:
+            operation = paths[route.path_format][method.lower()]
+            description = operation.get("responses", {}).get("400", {}).get("description", "")
+            if sentence not in _normalize(description):
+                undeclared.append(operation["operationId"])
+
+    assert sorted(undeclared) == []
+
+
+# ---------------------------------------------------------------------------
+# CAS Application API
+# ---------------------------------------------------------------------------
+
+
+def _app_spec() -> dict:
+    return yaml.safe_load(CAS_APP_SPEC_PATH.read_text())
+
+
+def _app_routes() -> list[APIRoute]:
+    """Every route the app serves under ``/app``, documented or not."""
+    return [
+        route
+        for route in create_app().routes
+        if isinstance(route, APIRoute) and route.path.startswith("/app/")
+    ]
+
+
+def _app_backend_routes() -> list[APIRoute]:
+    """The documented application operations: ``/app`` outside the sign-in routes."""
+    return [
+        route
+        for route in _app_routes()
+        if route.include_in_schema and not route.path.startswith(_APP_AUTH_PREFIX)
+    ]
+
+
+def _app_body_models() -> set[type[BaseModel]]:
+    models: set[type[BaseModel]] = set()
+    for route in _app_backend_routes():
+        for param in get_flat_dependant(route.dependant).body_params:
+            models |= _models_in(param.field_info.annotation)
+    return models
+
+
+def _carries_refusal(route: APIRoute) -> bool:
+    from sage.api.dependencies import refuse_undeclared_parameters
+
+    return refuse_undeclared_parameters in {
+        dep.call for dep in get_flat_dependant(route.dependant).dependencies
+    }
+
+
+def test_app_route_walk_is_not_empty():
+    """The walks below would pass on an empty route set; this pins both sets."""
+    assert {route.path for route in _app_backend_routes()} == {"/app/scan", "/app/ingest"}
+    assert "/app/auth/callback" in {route.path for route in _app_routes()}
+
+
+def test_every_app_operation_refuses_undeclared_parameters():
+    missing = [
+        f"{sorted(route.methods)} {route.path}"
+        for route in _app_backend_routes()
+        if not _carries_refusal(route)
+    ]
+
+    assert missing == []
+
+
+def test_no_sign_in_route_refuses_undeclared_parameters():
+    carrying = [
+        f"{sorted(route.methods)} {route.path}"
+        for route in _app_routes()
+        if route.path.startswith(_APP_AUTH_PREFIX) and _carries_refusal(route)
+    ]
+
+    assert carrying == []
+
+
+def test_every_app_request_body_model_forbids_undeclared_fields():
+    models = _app_body_models()
+    names = {model.__name__ for model in models}
+
+    assert {"ScanRequest", "IngestRequest", "IngestFileItem", "ParsedMetadata"} <= names
+    tolerant = sorted(
+        model.__name__ for model in models if model.model_config.get("extra") != "forbid"
+    )
+    assert tolerant == []
+
+
+def test_app_request_schemas_close_where_the_models_do():
+    from app.backend import models as app_models
+
+    components = _app_spec()["components"]["schemas"]
+    models = _app_body_models()
+
+    open_in_spec = sorted(
+        model.__name__
+        for model in models
+        if components.get(model.__name__, {}).get("additionalProperties") is not False
+    )
+    assert open_in_spec == [], "spec leaves these request schemas open"
+
+    tolerant_in_code = sorted(
+        name
+        for name, schema in components.items()
+        if isinstance(schema, dict)
+        and schema.get("additionalProperties") is False
+        and isinstance(cls := getattr(app_models, name, None), type)
+        and issubclass(cls, BaseModel)
+        and cls.model_config.get("extra") != "forbid"
+    )
+    assert tolerant_in_code == [], "spec closes these schemas but the models accept extras"
+
+
+def test_every_app_operation_declares_the_refusal():
+    from sage.api.response_docs import REQUEST_400_SENTENCES
+
+    sentence = _normalize(REQUEST_400_SENTENCES["unknown_parameter"])
+    paths = _app_spec()["paths"]
+    undeclared = []
+    for route in _app_backend_routes():
         for method in route.methods:
             operation = paths[route.path_format][method.lower()]
             description = operation.get("responses", {}).get("400", {}).get("description", "")

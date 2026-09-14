@@ -563,7 +563,7 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # on; the pair is no better reconciled than it was.
     ("sage_core", "verify_vault_drift"): Pin(5, 6),
     ("sage_core", "verify_vault_source_files"): Pin(3, 7),
-    ("cas_app", "bulk_ingest_document"): Pin(9, 37),
+    ("cas_app", "bulk_ingest_document"): Pin(9, 36),
     ("cas_app", "list_directory"): Pin(6, 9),
 }
 
