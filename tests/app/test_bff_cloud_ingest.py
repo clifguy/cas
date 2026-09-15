@@ -22,27 +22,12 @@ import httpx
 from fastapi import FastAPI
 
 from app.backend.asgi import create_bff_app
-from app.backend.auth.config import BffAuthContext, BffAuthSettings
+from app.backend.auth.config import BffAuthContext
 from app.backend.auth.sage_client import ObOSageClient
 from app.backend.auth.session_store import InMemorySessionStore
 from app.backend.transport import HttpSageTransport
 from sage.config import SageCoreConfig
-from tests.app.test_bff_standalone_app import _auth_app, _sessioned_client
-
-
-def _settings() -> BffAuthSettings:
-    return BffAuthSettings(
-        tenant_id="t",
-        client_id="c",
-        client_secret="s",  # noqa: S106 -- test fixture, not a real secret
-        sage_app_id_uri="api://sage",
-        sage_base_url="http://sage.test",
-    )
-
-
-class _StubOidc:
-    def acquire_sage_token(self, token_cache: str) -> str:  # noqa: ARG002
-        return "delegated-token"  # noqa: S105 -- test fixture token, not a real secret
+from tests.helpers.bff_session import StubOidc, auth_app, bff_settings, sessioned_client
 
 
 def _mock_sage(recorder: list[httpx.Request]) -> httpx.AsyncClient:
@@ -67,9 +52,9 @@ async def test_app_025_cloud_ingest_route_stays_co_located_only():
     The request carries a signed-in session, so it reaches the route past the
     session requirement.
     """
-    app = await _auth_app(with_session=True)
+    app = await auth_app(with_session=True)
 
-    async with _sessioned_client(app) as client:
+    async with sessioned_client(app) as client:
         response = await client.post(
             "/app/ingest",
             json={
@@ -94,9 +79,9 @@ async def test_app_026_cloud_batch_upload_via_proxy_requires_session():
     """
     app = create_bff_app(stack_config=SageCoreConfig(profile="cloud"))
     recorder: list[httpx.Request] = []
-    oidc = _StubOidc()
+    oidc = StubOidc()
     store = InMemorySessionStore()
-    app.state.bff_auth = BffAuthContext(settings=_settings(), oidc=oidc, store=store)
+    app.state.bff_auth = BffAuthContext(settings=bff_settings(), oidc=oidc, store=store)
     app.state.sage_transport = HttpSageTransport(
         ObOSageClient("http://sage.test", oidc, client=_mock_sage(recorder))
     )

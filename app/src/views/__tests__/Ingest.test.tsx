@@ -83,7 +83,7 @@ describe('Ingest view — co-located profile', () => {
 });
 
 describe('Ingest view — profile probe refused for a lapsed session', () => {
-  it('E4: renders neither affordance and leaves no unhandled rejection', async () => {
+  it('E8: renders neither affordance and leaves no unhandled rejection', async () => {
     detectIngestProfileMock.mockRejectedValue(
       new ApiError('auth_required', 'A signed-in session is required.'),
     );
@@ -95,6 +95,19 @@ describe('Ingest view — profile probe refused for a lapsed session', () => {
     expect(screen.getByText(/Detecting deployment profile/)).toBeInTheDocument();
     expect(screen.queryByPlaceholderText('/path/to/source/directory')).not.toBeInTheDocument();
     expect(screen.queryByTestId('upload-file-input')).not.toBeInTheDocument();
+  });
+});
+
+describe('Ingest view — profile probe failing for another reason', () => {
+  it('E9: logs the failure rather than swallowing it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const failure = new TypeError('Failed to fetch');
+    detectIngestProfileMock.mockRejectedValue(failure);
+    render(<TestWrapper vaultId="example_vault" vault={mockVault} />);
+
+    await waitFor(() => expect(warn).toHaveBeenCalledWith(expect.stringContaining('[ingest]'), failure));
+    expect(screen.getByText(/Detecting deployment profile/)).toBeInTheDocument();
+    warn.mockRestore();
   });
 });
 

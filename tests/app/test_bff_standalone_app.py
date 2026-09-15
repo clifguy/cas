@@ -21,40 +21,17 @@ import pytest
 from fastapi import Depends, FastAPI
 
 from app.backend.asgi import create_bff_app
-from app.backend.auth.config import BffAuthContext, BffAuthSettings
+from app.backend.auth.config import BffAuthContext
 from app.backend.auth.dependencies import require_session
 from app.backend.auth.sage_client import ObOSageClient
 from app.backend.auth.session_store import InMemorySessionStore, Session
 from app.backend.transport import HttpSageTransport, SageTransport
 from sage.config import SageCoreConfig
-
-
-def _settings() -> BffAuthSettings:
-    return BffAuthSettings(
-        tenant_id="t",
-        client_id="c",
-        client_secret="s",
-        sage_app_id_uri="api://sage",
-        sage_base_url="http://sage.test",
-    )
-
-
-def _session() -> Session:
-    return Session(
-        session_id="sid-1",
-        subject="user-1",
-        claims={"name": "Test User"},
-        token_cache="cache-blob",
-        expires_at=time.time() + 3600,
-    )
-
-
-class _StubOidc:
-    def __init__(self, token: str = "delegated-token") -> None:  # noqa: S107 -- test fixture token, not a real secret
-        self._token = token
-
-    def acquire_sage_token(self, token_cache: str) -> str:
-        return self._token
+from tests.helpers.bff_session import StubOidc as _StubOidc
+from tests.helpers.bff_session import auth_app as _auth_app
+from tests.helpers.bff_session import bff_settings as _settings
+from tests.helpers.bff_session import live_session as _session
+from tests.helpers.bff_session import sessioned_client as _sessioned_client
 
 
 def _mock_sage(
@@ -79,26 +56,6 @@ def _raising_sage(exc: httpx.RequestError) -> httpx.AsyncClient:
 
 def _client(app: FastAPI) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://bff.test")
-
-
-async def _auth_app(*, with_session: bool) -> FastAPI:
-    """A cloud-profile standalone app with sign-in configured over an in-memory
-    session store, holding the live session ``sid-1`` when ``with_session``."""
-    app = create_bff_app(stack_config=SageCoreConfig(profile="cloud"))
-    store = InMemorySessionStore()
-    if with_session:
-        await store.create_session(_session())
-    app.state.bff_auth = BffAuthContext(settings=_settings(), oidc=_StubOidc(), store=store)
-    return app
-
-
-def _sessioned_client(app: FastAPI, session_id: str = "sid-1") -> httpx.AsyncClient:
-    """A client presenting ``session_id`` as the session cookie."""
-    return httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app),
-        base_url="http://bff.test",
-        cookies={_settings().session_cookie_name: session_id},
-    )
 
 
 async def test_app_001_boots_without_sage_in_process():
@@ -649,8 +606,10 @@ async def test_app_018_shutdown_closes_postgres_credential(monkeypatch):
 # APP-019 -- APP-024: every non-exempt route requires a signed-in session
 # ---------------------------------------------------------------------------
 
-#: The fields each application-backend operation declares. An unsessioned
-#: refusal must name none of them: ``unknown_parameter`` would enumerate them.
+#: The fields each application-backend operation declares. The unsessioned
+#: refusal is the same for every request shape, so it names none of them, where
+#: ``unknown_parameter`` would. The names are published in the specification;
+#: the property held is that the refusal does not vary with the request.
 _DECLARED_FIELDS = {
     "/app/scan": ("directory", "max_depth"),
     "/app/ingest": ("files", "dry_run", "infer_edges"),
@@ -836,15 +795,21 @@ def test_app_023_every_route_is_session_gated_or_exempt(tmp_path):
     (tmp_path / "assets").mkdir()
     app = create_bff_app(spa_dir=tmp_path, stack_config=SageCoreConfig(profile="cloud"))
 
-    served = {route.path: _requires_session(route) for route in app.routes}
+    # One entry per route object, never keyed by path alone: two routes can share
+    # a path, and a dict would let the later one's classification mask the other.
+    census = [(route.path, _requires_session(route)) for route in app.routes]
+    signatures = [(r.path, frozenset(getattr(r, "methods", None) or ())) for r in app.routes]
+    assert len(signatures) == len(set(signatures)), f"routes sharing path and methods: {signatures}"
 
-    ungated = sorted(
-        p for p, gated in served.items() if not gated and p not in SESSION_EXEMPT_ROUTES
-    )
+    ungated = sorted(p for p, gated in census if not gated and p not in SESSION_EXEMPT_ROUTES)
     assert not ungated, f"routes neither session-gated nor exempt: {ungated}"
-    stale = sorted(p for p in SESSION_EXEMPT_ROUTES if served.get(p, True))
+    stale = sorted(
+        p
+        for p in SESSION_EXEMPT_ROUTES
+        if not any(path == p for path, _ in census) or any(path == p and g for path, g in census)
+    )
     assert not stale, f"exemptions naming a gated or absent route: {stale}"
-    assert served["/app/scan"] and served["/app/ingest"]
+    assert all(gated for path, gated in census if path in ("/app/scan", "/app/ingest"))
 
 
 def test_app_023b_gate_detector_has_teeth():

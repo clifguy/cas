@@ -6,10 +6,11 @@ summary: >-
   bulk_ingest_document (POST /app/ingest) require a signed-in session, as the SAGE
   reverse proxy beside them does. A request without one is refused with the
   auth_required envelope and status 401 before the undeclared-name refusal or body
-  validation run, so an unsessioned caller no longer receives unknown_parameter,
-  validation, or local_profile_only answers. A deployment with sign-in unconfigured
-  answers auth_not_configured 503. cas_app_api.openapi.yaml declares the 401 on both
-  operations and describes the session requirement where it previously stated the
+  model validation run, so the refusal is the same whatever the request carries and
+  an unsessioned caller no longer receives unknown_parameter, validation, or
+  local_profile_only answers. A deployment with sign-in unconfigured
+  answers auth_not_configured 503. cas_app_api.openapi.yaml declares the 401 and the 503 on
+  both operations and describes the session requirement where it previously stated the
   routes were not gated at the application layer. It also declares the
   local_profile_only 501 both operations already answered in a hosted deployment, and
   its info description no longer states that the routes are always served beside the

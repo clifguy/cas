@@ -65,8 +65,9 @@ servers:
 # No `securitySchemes` block, and no operation-level `security`. A hosted
 # deployment requires the `cas_session` cookie opened by the OIDC callback on
 # `/app/scan` and `/app/ingest`, and refuses a request without a signed-in
-# session with `auth_required` 401 before the request is otherwise examined; the
-# local profile carries no identity and requires nothing. The cookie also
+# session with `auth_required` 401 before its parameters are bound or refused, so
+# the refusal is the same whatever the request carries; the local profile
+# carries no identity and requires nothing. The cookie also
 # governs on-behalf-of access to the SAGE Core API through the proxy routes --
 # which are the SAGE Core API's own surface and are specified there, not here.
 # A session cookie is not a bearer scheme, which is why the asymmetry with the
@@ -175,6 +176,14 @@ paths:
             `local_profile_only`: a hosted deployment received the request.
             Its backend shares no filesystem with SAGE, so it cannot walk a
             directory.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: >-
+            `auth_not_configured`: a hosted deployment received the request,
+            and interactive sign-in is not configured for it.
           content:
             application/json:
               schema:
@@ -293,6 +302,14 @@ paths:
             Its backend shares no filesystem with SAGE, so it cannot read files
             by path; upload their content to the SAGE Core API's batch-ingest
             endpoint instead.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: >-
+            `auth_not_configured`: a hosted deployment received the request,
+            and interactive sign-in is not configured for it.
           content:
             application/json:
               schema:

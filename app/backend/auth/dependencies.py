@@ -12,7 +12,7 @@ not part of signing in.
 
 from __future__ import annotations
 
-from fastapi import Request
+from fastapi import Depends, Request
 
 from app.backend.auth.config import BffAuthContext, BffAuthSettings
 from app.backend.auth.oidc import OidcService
@@ -53,18 +53,20 @@ def get_session_service(request: Request) -> SessionService:
     return SessionService(store=context.store, settings=context.settings)
 
 
-async def require_session(request: Request) -> Session:
+async def require_session(
+    request: Request,
+    settings: BffAuthSettings = Depends(get_auth_settings),
+    sessions: SessionService = Depends(get_session_service),
+) -> Session:
     """Resolve the caller's signed-in session, or refuse the request.
 
     Raises the structured ``auth_required`` 401 when the session cookie is
     absent or names no live session, and ``auth_not_configured`` 503 when
-    sign-in is not configured. Attached as a dependency, it runs before the
-    route's own parameters are bound or refused, so an unsessioned caller
-    learns nothing about them.
+    sign-in is not configured. Attached as a dependency, it resolves before the
+    route's own parameters are bound or refused, so no work is done for an
+    unsessioned caller and the refusal is the same whatever the request carries.
     """
-    context = _context(request)
-    sessions = SessionService(store=context.store, settings=context.settings)
-    session = await sessions.read(request.cookies.get(context.settings.session_cookie_name))
+    session = await sessions.read(request.cookies.get(settings.session_cookie_name))
     if session is None:
         raise SAGEError("auth_required", "A signed-in session is required.", 401)
     return session

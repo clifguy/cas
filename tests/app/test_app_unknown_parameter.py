@@ -40,7 +40,7 @@ from sage.adapters.stubs import (
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from tests.app.test_app_backend import _make_vault_config_dict
-from tests.app.test_bff_standalone_app import _auth_app, _sessioned_client
+from tests.helpers.bff_session import auth_app, sessioned_client
 
 VAULT_ID = "example_vault"
 BOGUS_FIELD = "bogus_field_x"
@@ -364,9 +364,9 @@ async def test_standalone_app_refuses_undeclared_names(
     requests carry a signed-in session: this application requires one ahead of
     the refusal, so an unsessioned caller never learns the declared names.
     """
-    app = await _auth_app(with_session=True)
+    app = await auth_app(with_session=True)
 
-    async with _sessioned_client(app) as c:
+    async with sessioned_client(app) as c:
         refused = await c.post(path, params=params, json={**body, **extra})
         control = await c.post(path, json=body)
 

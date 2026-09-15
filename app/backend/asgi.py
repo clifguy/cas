@@ -7,8 +7,9 @@ keeps the backend mounted inside the SAGE app instead. It boots with no SAGE in
 process: there is no vault registry, so the directory-scan and bulk-ingest
 routes (a local-filesystem capability) report that they belong to the
 co-located profile rather than failing on the absent registry. Every route but
-sign-in, the health probe, and the SPA itself requires a signed-in session, as
-the SAGE reverse proxy does.
+sign-in, the health probe, the SPA itself, and the generated schema and
+interactive documentation of the published operations requires a signed-in
+session, as the SAGE reverse proxy does.
 
 The SPA bundle is mounted last, as a catch-all serving ``index.html`` for
 unmatched client routes, so the earlier API and health routes still match
@@ -119,9 +120,10 @@ def create_bff_app(
     # app includes it, rather than on the router: the co-located application
     # includes the same router under a profile that carries no identity. An
     # include-level dependency resolves ahead of the router's own, so the
-    # session is checked before undeclared request names are refused, and an
-    # unsessioned caller learns nothing about the operations' parameters. A
-    # route added to the router inherits the requirement.
+    # session is checked before undeclared request names are refused: an
+    # unsessioned caller gets the proxy's refusal whatever the request carries,
+    # and no work is done for it. A route added to the router inherits the
+    # requirement.
     app.include_router(app_backend_router, dependencies=[Depends(require_session)])
     app.include_router(auth_router)
     app.include_router(proxy_router)

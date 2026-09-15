@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { Link, useOutletContext } from 'react-router';
 import type { VaultContext } from '../App';
+import { ApiError } from '../api/client';
 import type {
   ScanResultItem,
   IngestProgressEvent,
@@ -66,9 +67,12 @@ export default function Ingest() {
       .then((p) => {
         if (!cancelled) setProfile(p);
       })
-      // A probe refused for a lapsed session leaves the profile undetected;
-      // the refusal has already returned the app to sign-in.
-      .catch(() => {});
+      .catch((err) => {
+        // A probe refused for a lapsed session leaves the profile undetected;
+        // the refusal has already returned the app to sign-in.
+        if (err instanceof ApiError && err.code === 'auth_required') return;
+        console.warn('[ingest] Profile detection failed:', err);
+      });
     return () => {
       cancelled = true;
     };
