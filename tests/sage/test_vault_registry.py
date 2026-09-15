@@ -743,8 +743,9 @@ async def test_reload_vault_refuses_an_unregistered_vault() -> None:
 
     service = VaultRegistryService({}, initialize_services=None)  # type: ignore[arg-type]
 
-    with pytest.raises(VaultNotFoundError):
+    with pytest.raises(VaultNotFoundError) as caught:
         await service.reload_vault("ghost_vault")
+    assert caught.value.detail == {"vault_id": "ghost_vault", "available_vaults": []}
 
 
 async def test_reload_vault_reads_the_declaration_through_the_vault_source_store(

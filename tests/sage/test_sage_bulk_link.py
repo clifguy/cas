@@ -160,10 +160,10 @@ async def test_a2_mcp_tool_invalid_vault_id_returns_error_envelope(empty_registr
 
 
 async def test_a3_mcp_tool_unknown_vault_returns_error_envelope(empty_registry):
-    """A3 — Valid-shape but unregistered vault_id surfaces unknown_vault."""
+    """A3 — Valid-shape but unregistered vault_id surfaces vault_not_found."""
     result = await mcp_server.create_edges(vault_id="ghost", items=[])
     assert isinstance(result, dict)
-    assert result.get("error") == "unknown_vault"
+    assert result.get("error") == "vault_not_found"
 
 
 async def test_a4_mcp_tool_items_validation_rejects_batch_before_any_insert(

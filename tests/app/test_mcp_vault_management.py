@@ -287,7 +287,7 @@ class TestSageGetVaultConfig:
         assert "model" not in abstraction
 
         unknown = _parse(await get_vault_config("does_not_exist"))
-        assert unknown.get("error") == "unknown_vault"
+        assert unknown.get("error") == "vault_not_found"
 
     async def test_mcp_get_stack_config_returns_provider_and_model(self, registered_vault):
         """`get_stack_config` surfaces the stack-wide abstraction config

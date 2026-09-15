@@ -267,7 +267,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault not found, or document not found (for specific/deterministic scope).
+          description: >-
+            Document not found (for specific/deterministic scope).
+
+
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -428,7 +433,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: "`vault_not_found`: no vault registered with that id."
+          description: >-
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -527,7 +534,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: "`vault_not_found`: no vault registered with that id."
+          description: >-
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -782,11 +791,16 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
-            `source_file_not_found`: `source` does not resolve to a
-            readable file on disk; or vault not found.
+            `source_file_not_found`: `source` does not resolve to a readable
+            file on disk.
 
-            `document_not_found`: `predecessor_id` names no document in
-            the vault.
+
+            `document_not_found`: `predecessor_id` names no document in the
+            vault.
+
+
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -1059,7 +1073,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: "`vault_not_found`: no vault registered with that id."
+          description: >-
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -1171,9 +1187,13 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
-            Vault or document not found. Also returned when
-            `include_content=true` or `write_to_path` is set and the
-            file at `storage_root/source_path` is absent from the vault.
+            Document not found. Also returned when `include_content=true` or
+            `write_to_path` is set and the file at `storage_root/source_path` is
+            absent from the vault.
+
+
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -1299,7 +1319,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: "`vault_not_found`: no vault registered with that id."
+          description: >-
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -1372,7 +1394,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault or starting document not found.
+          description: >-
+            Starting document not found.
+
+
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -1455,8 +1482,11 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
-            `document_not_found`: no document with that id; or vault
-            not found.
+            `document_not_found`: no document with that id.
+
+
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -1523,8 +1553,11 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
-            `document_not_found`: no document with that id; or vault
-            not found.
+            `document_not_found`: no document with that id.
+
+
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -1580,7 +1613,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault not found.
+          description: >-
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -1637,8 +1672,11 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
-            `document_not_found`: no document with that id; or vault
-            not found.
+            `document_not_found`: no document with that id.
+
+
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -1675,8 +1713,11 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
-            `document_not_found`: no document with that id; or vault
-            not found.
+            `document_not_found`: no document with that id.
+
+
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -1748,11 +1789,12 @@ paths:
             `document_not_found`: no document with that id.
 
 
-            `no_projection`: the document exists but has no stored
-            projection (e.g. ingestion failed mid-pipeline).
+            `no_projection`: the document exists but has no stored projection
+            (e.g. ingestion failed mid-pipeline).
 
 
-            Or vault not found.
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -1817,11 +1859,12 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
-            `assertions_file_not_found`: the configured assertions
-            file does not exist under the vault's `storage_root`.
+            `assertions_file_not_found`: the configured assertions file does not
+            exist under the vault's `storage_root`.
 
 
-            Or vault not found.
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -1863,7 +1906,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault not found.
+          description: >-
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -2124,7 +2169,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault not found.
+          description: >-
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -2198,7 +2245,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault not found.
+          description: >-
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -2266,7 +2315,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault not found.
+          description: >-
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -2348,7 +2399,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault not found.
+          description: >-
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -2409,7 +2462,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault not found.
+          description: >-
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -2457,9 +2512,12 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
-            `staging_edge_not_found`: the id is unknown (already
-            confirmed, already dismissed, or never existed); or vault
-            not found.
+            `staging_edge_not_found`: the id is unknown (already confirmed,
+            already dismissed, or never existed).
+
+
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -2512,9 +2570,12 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
-            `staging_edge_not_found`: the id is unknown (already
-            confirmed, already dismissed, or never existed); or vault
-            not found.
+            `staging_edge_not_found`: the id is unknown (already confirmed,
+            already dismissed, or never existed).
+
+
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -2578,7 +2639,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault not found.
+          description: >-
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -2638,7 +2701,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault not found.
+          description: >-
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -2685,7 +2750,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Document, vault, or backing source file not found.
+          description: >-
+            Document or backing source file not found.
+
+
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -2748,9 +2818,11 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
-            `document_not_found` / `no_projection` / `vault_not_found`: the
-            document, its stored projection chunks, or the vault could not be
-            resolved.
+            `document_not_found` / `no_projection`: the document or its stored
+            projection chunks could not be resolved.
+
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -2844,8 +2916,10 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
-            `document_not_found` / `vault_not_found`: the document or the
-            vault could not be resolved.
+            `document_not_found`: the document could not be resolved.
+
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
 
             `source_file_not_found`: the document's `source_path` no longer
             resolves to a readable file.
@@ -2922,7 +2996,12 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: Vault or document not found.
+          description: >-
+            Document not found.
+
+
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -3005,9 +3084,12 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
-            Vault or document not found. Also returned with
-            `content_file_missing` when the retained source file is absent
-            from the vault-source store.
+            Document not found. Also returned with `content_file_missing` when
+            the retained source file is absent from the vault-source store.
+
+
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -3072,13 +3154,13 @@ paths:
             `document_not_found`: no document with that id.
 
 
-            `no_projection`: the document exists but has no stored
-            projection (e.g. ingestion failed mid-pipeline or the
-            document is awaiting reabstraction). Inspect
-            `pipeline_status` via `GET /documents/{id}`.
+            `no_projection`: the document exists but has no stored projection
+            (e.g. ingestion failed mid-pipeline or the document is awaiting
+            reabstraction). Inspect `pipeline_status` via `GET /documents/{id}`.
 
 
-            Or vault not found.
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -3149,13 +3231,13 @@ paths:
             `document_not_found`: no document with that id.
 
 
-            `heading_not_found`: no chunk's `heading_path` matches the
-            supplied prefix. The error detail includes
-            `candidate_matches`, a list of stored paths that contain
-            the query as a substring.
+            `heading_not_found`: no chunk's `heading_path` matches the supplied
+            prefix. The error detail includes `candidate_matches`, a list of
+            stored paths that contain the query as a substring.
 
 
-            Or vault not found.
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -3214,12 +3296,13 @@ paths:
             `document_not_found`: no document with that id.
 
 
-            `no_projection`: the document exists but has no stored
-            projection (e.g. ingestion failed mid-pipeline or the
-            document is awaiting reabstraction).
+            `no_projection`: the document exists but has no stored projection
+            (e.g. ingestion failed mid-pipeline or the document is awaiting
+            reabstraction).
 
 
-            Or vault not found.
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -3297,8 +3380,11 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
-            `edge_not_found`: no production edge with that id; or
-            vault not found.
+            `edge_not_found`: no production edge with that id.
+
+
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -3367,7 +3453,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: "`vault_not_found`: no vault registered with that id."
+          description: >-
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -3419,7 +3507,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: "`vault_not_found`: no vault registered with that id."
+          description: >-
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -3506,7 +3596,8 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
-            `vault_not_found`: no vault registered with that id.
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
             `document_scope_unmatched`: `document_ids` names an id with no
             document in the vault; `detail.unmatched_ids` lists every such id.
           content:
@@ -3629,7 +3720,8 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
-            `vault_not_found`: no vault registered with that id.
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
             `restore_target_unresolved`: no single document claims the
             delivered bytes as its provenance.
             `document_not_found`: the supplied document_id names no document.
@@ -3794,7 +3886,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: "`vault_not_found`: no vault registered with that id."
+          description: >-
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -3919,7 +4013,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: "`vault_not_found`: no vault registered with that id."
+          description: >-
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -3999,7 +4095,9 @@ paths:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
-          description: "`vault_not_found`: no vault registered with that id."
+          description: >-
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:

@@ -80,11 +80,11 @@ async def test_mcp_tool_invalid_vault_id_returns_error_envelope(empty_registry):
 
 
 async def test_mcp_tool_unknown_vault_returns_error_envelope(empty_registry):
-    """A syntactically valid but unregistered vault_id surfaces unknown_vault."""
+    """A syntactically valid but unregistered vault_id surfaces vault_not_found."""
     result = await mcp_server.update_lifecycles(vault_id="ghost", items=[])
 
     assert isinstance(result, dict)
-    assert result.get("error") == "unknown_vault"
+    assert result.get("error") == "vault_not_found"
 
 
 async def test_mcp_tool_missing_identifier_is_per_item_error(seeded_mcp_vault):

@@ -41,9 +41,10 @@ _DocumentIdPath = Annotated[DocumentIdStr, Path(description="Document identifier
             "model": ErrorResponse,
             "description": (
                 "`document_not_found`: no document with that id.\n\n"
-                "`no_projection`: the document exists but has no stored "
-                "projection (e.g. ingestion failed mid-pipeline).\n\n"
-                "Or vault not found."
+                "`no_projection`: the document exists but has no stored projection (e.g. "
+                "ingestion failed mid-pipeline).\n\n"
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
             ),
         },
         501: {
@@ -76,11 +77,11 @@ async def export_projection(
             "model": ErrorResponse,
             "description": (
                 "`document_not_found`: no document with that id.\n\n"
-                "`no_projection`: the document exists but has no stored "
-                "projection (e.g. ingestion failed mid-pipeline or the "
-                "document is awaiting reabstraction). Inspect "
-                "`pipeline_status` via `GET /documents/{id}`.\n\n"
-                "Or vault not found."
+                "`no_projection`: the document exists but has no stored projection (e.g. "
+                "ingestion failed mid-pipeline or the document is awaiting reabstraction). "
+                "Inspect `pipeline_status` via `GET /documents/{id}`.\n\n"
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
             ),
         },
     },
@@ -104,11 +105,11 @@ async def read_projection(
             "model": ErrorResponse,
             "description": (
                 "`document_not_found`: no document with that id.\n\n"
-                "`heading_not_found`: no chunk's `heading_path` matches the "
-                "supplied prefix. The error detail includes "
-                "`candidate_matches`, a list of stored paths that contain "
-                "the query as a substring.\n\n"
-                "Or vault not found."
+                "`heading_not_found`: no chunk's `heading_path` matches the supplied prefix. "
+                "The error detail includes `candidate_matches`, a list of stored paths that "
+                "contain the query as a substring.\n\n"
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
             ),
         },
     },
@@ -133,10 +134,10 @@ async def read_section(
             "model": ErrorResponse,
             "description": (
                 "`document_not_found`: no document with that id.\n\n"
-                "`no_projection`: the document exists but has no stored "
-                "projection (e.g. ingestion failed mid-pipeline or the "
-                "document is awaiting reabstraction).\n\n"
-                "Or vault not found."
+                "`no_projection`: the document exists but has no stored projection (e.g. "
+                "ingestion failed mid-pipeline or the document is awaiting reabstraction).\n\n"
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
             ),
         },
     },
@@ -164,9 +165,10 @@ async def list_headings(
         404: {
             "model": ErrorResponse,
             "description": (
-                "`assertions_file_not_found`: the configured assertions "
-                "file does not exist under the vault's `storage_root`.\n\n"
-                "Or vault not found."
+                "`assertions_file_not_found`: the configured assertions file does not exist "
+                "under the vault's `storage_root`.\n\n"
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
             ),
         },
     },
@@ -185,7 +187,10 @@ async def verify_vault_retrieval(
         400: boundary_400(path=("invalid_vault_id",), request=("unknown_parameter",)),
         404: {
             "model": ErrorResponse,
-            "description": "Vault not found.",
+            "description": (
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
+            ),
         },
     },
 )

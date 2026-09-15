@@ -252,13 +252,15 @@ async def _await_document_idle(services, vault_id, doc_id, *, attempts=400, dela
 
 async def test_unknown_vault_returns_error(vault_services):
     result = _parse(await get_document("nonexistent_vault", "deadbeef_doc"))
-    assert result["error"] == "unknown_vault"
+    assert result["error"] == "vault_not_found"
     assert "nonexistent_vault" in result["message"]
 
 
 async def test_unknown_vault_lists_available(vault_services):
     result = _parse(await get_document("nonexistent_vault", "deadbeef_doc"))
     assert "test_vault" in result["message"]
+    assert "test_vault" in result["detail"]["available_vaults"]
+    assert result["detail"]["vault_id"] == "nonexistent_vault"
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +271,7 @@ async def test_unknown_vault_lists_available(vault_services):
 
 
 def test_error_response_value_error_returns_internal_error():
-    """A generic ValueError is no longer mislabeled as unknown_vault."""
+    """A generic ValueError is not mislabeled as a vault-routing refusal."""
     from sage.mcp_server import _error_response
 
     result = _error_response(ValueError("boom"))
@@ -277,13 +279,17 @@ def test_error_response_value_error_returns_internal_error():
     assert result["message"] == "boom"
 
 
-def test_error_response_vault_not_found_returns_unknown_vault():
-    """The unknown_vault label is reserved for actual vault-routing failures."""
-    from sage.mcp_server import VaultNotFoundError, _error_response
+def test_error_response_vault_not_found_carries_the_typed_envelope():
+    """A vault-routing failure is the typed refusal the REST surface returns."""
+    from sage.api.errors import VaultNotFoundError
+    from sage.mcp_server import _error_response
 
-    result = _error_response(VaultNotFoundError("Unknown vault_id: x"))
-    assert result["error"] == "unknown_vault"
-    assert "Unknown vault_id: x" in result["message"]
+    result = _error_response(VaultNotFoundError("x", available_vaults=["a"]))
+    assert result == {
+        "error": "vault_not_found",
+        "message": "Vault 'x' not found. Available vaults: a",
+        "detail": {"vault_id": "x", "available_vaults": ["a"]},
+    }
 
 
 def test_error_response_malformed_document_id_returns_invalid_document_id():
@@ -2180,7 +2186,7 @@ async def test_reload_vault_settles_dropped_abstraction_work(vault_services, tmp
 async def test_reload_vault_unknown_vault_returns_error(vault_services):
     """Reload on a nonexistent vault returns structured error."""
     result = _parse(await reload_vault("nonexistent_vault"))
-    assert result["error"] == "unknown_vault"
+    assert result["error"] == "vault_not_found"
     assert "nonexistent_vault" in result["message"]
 
 
@@ -2677,7 +2683,7 @@ async def test_reabstract_returns_started_status(vault_services):
 async def test_reabstract_unknown_vault(vault_services):
     """recompute_abstract should return an error for unknown vault_id."""
     result = _parse(await recompute_abstract("nonexistent_vault", "deadbeef_doc"))
-    assert result["error"] == "unknown_vault"
+    assert result["error"] == "vault_not_found"
 
 
 async def test_reabstract_document_not_found(vault_services):
@@ -2755,9 +2761,9 @@ async def test_recompute_pipeline_tool_returns_started_status(vault_services):
 
 
 async def test_recompute_pipeline_tool_unknown_vault_returns_envelope(vault_services):
-    """Unknown vault_id must surface as the unknown_vault envelope."""
+    """Unknown vault_id must surface as the vault_not_found envelope."""
     result = _parse(await recompute_pipeline("nonexistent_vault", "deadbeef_doc"))
-    assert result["error"] == "unknown_vault"
+    assert result["error"] == "vault_not_found"
 
 
 async def test_recompute_pipeline_tool_unknown_document_returns_envelope(vault_services):

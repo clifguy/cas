@@ -72,7 +72,10 @@ async def _format_reabstract_stream(
         400: boundary_400(path=("invalid_vault_id",), request=("unknown_parameter",)),
         404: {
             "model": ErrorResponse,
-            "description": "`vault_not_found`: no vault registered with that id.",
+            "description": (
+                "`vault_not_found`: no vault registered with that id; "
+                "`detail.available_vaults` lists the registered vaults."
+            ),
         },
         409: {
             "model": ErrorResponse,
@@ -107,7 +110,10 @@ async def migrate_vault(
         ),
         404: {
             "model": ErrorResponse,
-            "description": "`vault_not_found`: no vault registered with that id.",
+            "description": (
+                "`vault_not_found`: no vault registered with that id; "
+                "`detail.available_vaults` lists the registered vaults."
+            ),
         },
     },
 )
@@ -125,7 +131,10 @@ async def reload_vault(
         400: boundary_400(path=("invalid_vault_id",), request=("unknown_parameter",)),
         404: {
             "model": ErrorResponse,
-            "description": "`vault_not_found`: no vault registered with that id.",
+            "description": (
+                "`vault_not_found`: no vault registered with that id; "
+                "`detail.available_vaults` lists the registered vaults."
+            ),
         },
     },
 )
@@ -152,7 +161,10 @@ async def detect_drift(
         },
         404: {
             "model": ErrorResponse,
-            "description": "`vault_not_found`: no vault registered with that id.",
+            "description": (
+                "`vault_not_found`: no vault registered with that id; "
+                "`detail.available_vaults` lists the registered vaults."
+            ),
         },
         409: {
             "model": ErrorResponse,
@@ -194,7 +206,10 @@ async def reabstract_deferred(
         400: boundary_400(path=("invalid_vault_id",), request=("unknown_parameter",)),
         404: {
             "model": ErrorResponse,
-            "description": "`vault_not_found`: no vault registered with that id.",
+            "description": (
+                "`vault_not_found`: no vault registered with that id; "
+                "`detail.available_vaults` lists the registered vaults."
+            ),
         },
     },
 )
@@ -218,7 +233,8 @@ async def optimize_content_store(
         404: {
             "model": ErrorResponse,
             "description": (
-                "`vault_not_found`: no vault registered with that id. "
+                "`vault_not_found`: no vault registered with that id; "
+                "`detail.available_vaults` lists the registered vaults. "
                 "`document_scope_unmatched`: `document_ids` names an id with no "
                 "document in the vault; `detail.unmatched_ids` lists every such id."
             ),
@@ -281,7 +297,8 @@ async def verify_vault_source_files(
         404: {
             "model": ErrorResponse,
             "description": (
-                "`vault_not_found`: no vault registered with that id. "
+                "`vault_not_found`: no vault registered with that id; "
+                "`detail.available_vaults` lists the registered vaults. "
                 "`restore_target_unresolved`: no single document claims the "
                 "delivered bytes as its provenance. "
                 "`document_not_found`: the supplied document_id names no document. "

@@ -67,7 +67,10 @@ router = APIRouter(tags=["Graph Operations"])
         ),
         404: {
             "model": ErrorResponse,
-            "description": "`vault_not_found`: no vault registered with that id.",
+            "description": (
+                "`vault_not_found`: no vault registered with that id; "
+                "`detail.available_vaults` lists the registered vaults."
+            ),
         },
     },
 )
@@ -89,7 +92,9 @@ async def create_edges(
         404: {
             "model": ErrorResponse,
             "description": (
-                "`edge_not_found`: no production edge with that id; or vault not found."
+                "`edge_not_found`: no production edge with that id.\n\n"
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
             ),
         },
     },
@@ -116,7 +121,11 @@ async def unlink(
         ),
         404: {
             "model": ErrorResponse,
-            "description": ("`document_not_found`: no document with that id; or vault not found."),
+            "description": (
+                "`document_not_found`: no document with that id.\n\n"
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
+            ),
         },
     },
 )
@@ -139,7 +148,11 @@ async def check_preconditions(
         ),
         404: {
             "model": ErrorResponse,
-            "description": "Vault or starting document not found.",
+            "description": (
+                "Starting document not found.\n\n"
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
+            ),
         },
     },
 )
@@ -162,7 +175,11 @@ async def traverse(
         ),
         404: {
             "model": ErrorResponse,
-            "description": ("`document_not_found`: no document with that id; or vault not found."),
+            "description": (
+                "`document_not_found`: no document with that id.\n\n"
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
+            ),
         },
     },
 )
