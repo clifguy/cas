@@ -92,6 +92,7 @@ import referencing
 import referencing.jsonschema
 import yaml
 from fastapi import Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from sage.mcp_server import _serialize
@@ -1405,6 +1406,77 @@ async def test_rest_route_keeps_what_a_dependency_sets_on_the_response():
     assert response.headers["x-dependency-probe"] == "set-by-dependency"
     assert "probe=1" in response.headers["set-cookie"]
     assert response.json() == {"start_id": "0123abcd_sentinel", "nodes": []}
+
+
+async def test_rest_route_reads_a_response_declared_through_annotated():
+    """W10 -- an endpoint declaring its response as ``Annotated[Response, ...]`` still receives it.
+
+    FastAPI unwraps ``Annotated`` before recognising the response parameter and
+    fills one such parameter per callable. A detector reading the raw annotation
+    misses it, declares a second one, and the endpoint's own is never supplied --
+    a server error on a route that runs on a plain ``APIRoute``.
+    """
+
+    def setup(router):
+        @router.get("/annotated", response_model=TraverseResponse)
+        async def annotated(response: typing.Annotated[Response, "marker"]):
+            response.headers["x-annotated-probe"] = "kept"
+            return TraverseResponse(start_id="0123abcd_sentinel", nodes=[])
+
+    async with _client(_wire_app(setup)) as client:
+        response = await client.get("/annotated")
+
+    assert response.status_code == 200, response.text
+    assert response.headers["x-annotated-probe"] == "kept"
+
+
+class _ProbeJSONResponse(JSONResponse):
+    """A JSON response class with a media type and a rendering of its own."""
+
+    media_type = "application/vnd.probe+json"
+
+    def render(self, content: Any) -> bytes:
+        return super().render(content) + b"\n"
+
+
+async def test_rest_route_renders_through_a_json_response_subclass():
+    """W10 -- a JSON response class the route admits is the class the body is sent with.
+
+    The route class accepts a ``JSONResponse`` subclass, and the OpenAPI document
+    advertises that class's media type for the operation. A body built with
+    ``JSONResponse`` itself would go out as ``application/json`` under a
+    contract naming another type. Declared on the route and as a router's
+    default alike, since the two reach the route by different paths.
+    """
+    from fastapi import APIRouter, FastAPI
+
+    from sage.api.wire_route import WireRoute
+
+    router = APIRouter(route_class=WireRoute)
+
+    @router.get("/declared", response_model=TraverseResponse, response_class=_ProbeJSONResponse)
+    async def declared():
+        return TraverseResponse(start_id="0123abcd_sentinel", nodes=[])
+
+    default_router = APIRouter(route_class=WireRoute, default_response_class=_ProbeJSONResponse)
+
+    @default_router.get("/defaulted", response_model=TraverseResponse)
+    async def defaulted():
+        return TraverseResponse(start_id="0123abcd_sentinel", nodes=[])
+
+    app = FastAPI()
+    app.include_router(router)
+    app.include_router(default_router)
+
+    async with _client(app) as client:
+        for path in ("/declared", "/defaulted"):
+            response = await client.get(path)
+            assert response.headers["content-type"].startswith("application/vnd.probe+json"), path
+            # The class's own rendering ran, not a plain body under its media type.
+            assert response.text.endswith("\n"), path
+            assert response.json() == {"start_id": "0123abcd_sentinel", "nodes": []}
+            content = app.openapi()["paths"][path]["get"]["responses"]["200"]["content"]
+            assert set(content) == {"application/vnd.probe+json"}, path
 
 
 _UNIMPLEMENTED_OPTIONS: Final[list] = [

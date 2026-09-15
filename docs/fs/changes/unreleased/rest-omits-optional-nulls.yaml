@@ -8,9 +8,11 @@ summary: >-
   property whose value is null is omitted. FastAPI's response serialization kept every
   null, so the same model had two wire shapes, one per surface. The routers are built
   on a route class that validates the returned value against the declared response
-  model, dumps it as that type and applies the rule, keeping the route's status code,
-  a status or headers set on an injected response, and any response an endpoint
-  returns itself; the JSON ingest operation, which builds its own response to choose
+  model, dumps it as that type and applies the rule, keeping the route's status code
+  and JSON response class, a status, header or cookie the endpoint or any dependency
+  sets on the per-request response, and any response an endpoint returns itself, and
+  refusing when a route is built the body-shaping options it does not apply; the JSON
+  ingest operation, which builds its own response to choose
   its status, applies the rule directly. Operations that return a free-form object
   -- the stack configuration, the vault configuration and the default configuration
   scaffold -- are unchanged and still report unset fields as null. Streams and error

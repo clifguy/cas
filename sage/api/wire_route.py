@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import typing
 from collections.abc import Callable
 from typing import Any
 
@@ -85,9 +86,15 @@ _INJECTED_RESPONSE = "_wire_route_response"
 
 
 def _response_parameter(signature: inspect.Signature) -> str | None:
-    """The name of a parameter the endpoint declares to receive the response."""
+    """The name of a parameter the endpoint declares to receive the response.
+
+    ``Annotated`` is unwrapped first, as FastAPI unwraps it before recognising
+    the response parameter, so the two agree on which parameter that is.
+    """
     for parameter in signature.parameters.values():
         annotation = parameter.annotation
+        while typing.get_origin(annotation) is typing.Annotated:
+            annotation = typing.get_args(annotation)[0]
         if isinstance(annotation, type) and issubclass(annotation, Response):
             return parameter.name
     return None
@@ -165,10 +172,7 @@ class WireRoute(APIRoute):
             )
             if value != default
         ]
-        response_class = self.response_class
-        if isinstance(response_class, DefaultPlaceholder):
-            response_class = response_class.value
-        if not issubclass(response_class, JSONResponse):
+        if not issubclass(self._json_response_class(), JSONResponse):
             unapplied.append("response_class")
         if unapplied:
             raise ValueError(
@@ -176,12 +180,21 @@ class WireRoute(APIRoute):
                 f"apply {', '.join(unapplied)}; declare the route without them"
             )
 
-    def _wire_response(self, result: Any, injected: Response) -> JSONResponse:
+    def _json_response_class(self) -> type[Response]:
+        """The response class the route declares, its default placeholder resolved."""
+        response_class = self.response_class
+        if isinstance(response_class, DefaultPlaceholder):
+            response_class = response_class.value
+        return response_class
+
+    def _wire_response(self, result: Any, injected: Response) -> Response:
         # The per-request response carries any status, header or cookie the
         # endpoint or a dependency set on it, which FastAPI applies to the
         # response it builds; a response returned directly would drop them.
         status_code = injected.status_code or self.status_code or 200
-        response = JSONResponse(
+        # Built with the route's own JSON response class, whose media type the
+        # OpenAPI document advertises for the operation.
+        response = self._json_response_class()(
             render_response(self.response_model, result), status_code=status_code
         )
         response.headers.raw.extend(
