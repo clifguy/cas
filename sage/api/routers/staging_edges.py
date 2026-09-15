@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_staging_edges_service, get_vault_id
 from sage.api.response_docs import boundary_400
+from sage.api.wire_route import WireRoute
 from sage.models.schemas import (
     EdgeIdStr,
     ErrorResponse,
@@ -19,7 +20,7 @@ from sage.models.schemas import (
 )
 from sage.services.staging_edges import StagingEdgesService
 
-router = APIRouter(tags=["staging_edges"])
+router = APIRouter(route_class=WireRoute, tags=["staging_edges"])
 
 
 @router.get(

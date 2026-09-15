@@ -162,7 +162,7 @@ export default function Ingest() {
     abortRef.current = controller;
 
     const ingestFiles = selected
-      .filter(f => f.source_type !== null)
+      .filter(f => f.source_type != null)
       .map(f => ({
         file_path: f.file_path,
         source_type: f.source_type!,

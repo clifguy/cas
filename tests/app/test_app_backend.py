@@ -630,7 +630,8 @@ class TestScanEndpoint:
         # .txt file has no adapter
         txt_files = [f for f in files if f["file_path"].endswith(".txt")]
         assert len(txt_files) == 1
-        assert txt_files[0]["source_type"] is None
+        # Optional and null, so the key is omitted from the body.
+        assert "source_type" not in txt_files[0]
         assert txt_files[0]["sage_status"] == "no_adapter"
 
     async def test_be_019_respects_depth_limit(self, scan_client, tmp_path):

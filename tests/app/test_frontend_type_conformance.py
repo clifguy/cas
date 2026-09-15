@@ -44,19 +44,26 @@ means the frontend always sends it. F6 has no allowlist. A required property the
 interface marks optional type-permits a body the server refuses, which is never a
 settled divergence.
 
-Response interfaces are compared by name only: the REST transport sends every
-key, so a response schema's ``required`` list carries nothing the frontend
-relies on. Whether a property is nullable or correctly typed on the TypeScript
+A REST response renders through the same wire rule as a stream (``docs/fs/CLAUDE.md``,
+"Null fields on the wire"): a key is omitted when its property is optional and its
+value is null. So a response property the component leaves optional and declares
+nullable can be absent, and its member is optional on the interface (F11); typed
+``T | null`` without ``?``, it tells the frontend it will find a null that is not
+there, and a strict ``=== null`` test reads the absent key as a value. The other
+optional properties are never null and so always arrive, and a response
+interface may declare them required. F11 has no allowlist, for the reason F6 has
+none: a member the wire can omit, typed as always present, is never a settled
+divergence. Whether a property is otherwise correctly typed on the TypeScript
 side is not asserted for any kind.
 
 Stream events
 -------------
 
-A shape delivered over a server-sent event stream is not a REST response for
-this purpose. The stream renders each event through the wire rule in
-``docs/fs/CLAUDE.md`` ("Null fields on the wire"): a property the component
-requires carries its key on every event, and an optional one is omitted when it
-is null. On a stream the ``required`` list therefore decides which keys arrive,
+A shape delivered over a server-sent event stream is held to a stricter
+reading than a REST response. The stream renders each event through the wire
+rule in ``docs/fs/CLAUDE.md`` ("Null fields on the wire"): a property the
+component requires carries its key on every event, and an optional one is
+omitted when it is null. On a stream the ``required`` list therefore decides which keys arrive,
 and a member typed ``T | null`` where the key can be absent tells the frontend
 it will find a null that is not there. Stream interfaces are held to the list in
 both directions: a member is optional exactly when its component leaves it
@@ -145,6 +152,8 @@ F9  Every component with properties that an enrolled component references is
     enrolled under the same specification, or pinned with a reason.
 F10 Every exported interface in the source is enrolled or excluded with a reason,
     never both, and every exclusion names an interface the source still exports.
+F11 A response interface marks optional every member whose component leaves it
+    optional and declares it nullable.
 
 The reader
 ----------
@@ -386,6 +395,7 @@ MIN_STREAM_PROPERTIES_COMPARED: Final[dict[Spec, int]] = {"core": 55, "app": 40}
 MIN_REQUIRED_PROPERTIES_COMPARED: Final[dict[Spec, int]] = {"core": 12, "app": 2}
 MIN_REFERENCES_CHECKED: Final[dict[Spec, int]] = {"core": 36, "app": 6}
 MIN_EVENT_STREAM_ROOTS: Final[dict[Spec, int]] = {"core": 3, "app": 1}
+MIN_NULLABLE_OPTIONAL_RESPONSE_PROPERTIES: Final[dict[Spec, int]] = {"core": 40, "app": 3}
 
 
 # ---------------------------------------------------------------------------
@@ -1062,6 +1072,46 @@ def stream_optionality_findings(
     return findings
 
 
+def nullable_optional_properties(spec: dict, component: str) -> set[str]:
+    """Properties the component leaves optional and whose declaration admits null.
+
+    These are the keys the wire omits when their value is null. Nullability is read
+    as a 3.1 client reads it, by the same reader the serialized-shape gate uses.
+    """
+    from tests.sage.test_wire_shape_conformance import _spec_admits_null
+
+    required = component_required(spec, component)
+    properties = spec["components"]["schemas"][component]["properties"]
+    return {
+        prop
+        for prop, declaration in properties.items()
+        if prop not in required and _spec_admits_null(declaration, spec)
+    }
+
+
+def omissible_members_typed_present(members: dict[str, bool], omissible: set[str]) -> set[str]:
+    """Members the interface declares required though the wire can omit their key.
+
+    A property the interface does not declare at all is F1's to report.
+    """
+    return {prop for prop in omissible if prop in members and not members[prop]}
+
+
+def response_omission_findings(
+    source: str, specs: dict[Spec, dict], enrollment: Enrollment = ENROLLED
+) -> dict[tuple[Spec, str], set[str]]:
+    """F11's findings over ``source``: each response pair typing an omissible member present."""
+    findings: dict[tuple[Spec, str], set[str]] = {}
+    for spec, interface in pairs(enrollment):
+        present = omissible_members_typed_present(
+            read_interface(source, interface),
+            nullable_optional_properties(specs[spec], enrollment[spec][interface]),
+        )
+        if present:
+            findings[(spec, interface)] = present
+    return findings
+
+
 def unnamed_reference_findings(
     source: str, specs: dict[Spec, dict], enrollment: Enrollment = ALL_ENROLLED
 ) -> dict[tuple[Spec, str], set[str]]:
@@ -1218,6 +1268,28 @@ def test_stream_member_optionality_matches_the_required_list(
     )
 
 
+@pytest.mark.parametrize(("spec", "interface"), pairs(ENROLLED), ids=pair_ids(ENROLLED))
+def test_response_member_the_wire_can_omit_is_optional(
+    spec: Spec,
+    interface: str,
+    interface_members: dict[str, dict[str, bool]],
+    specs: dict[Spec, dict],
+) -> None:
+    """F11: a response member whose optional property admits null is optional on the interface."""
+    component = ENROLLED[spec][interface]
+    present = sorted(
+        omissible_members_typed_present(
+            interface_members[interface], nullable_optional_properties(specs[spec], component)
+        )
+    )
+    assert not present, (
+        f"{component} in {SPEC_PATHS[spec].name} leaves these properties optional and "
+        "nullable, so a REST body omits the key when the value is null. The TypeScript "
+        f"{interface} interface declares them always present: {present}. Mark them optional "
+        f"('?: T | null') in {TYPES_TS_PATH.name}, and read them with '!= null' or '??'."
+    )
+
+
 @pytest.mark.parametrize(("spec", "interface"), pairs(ALL_ENROLLED), ids=pair_ids(ALL_ENROLLED))
 def test_member_names_the_interface_of_each_enrolled_component_it_references(
     spec: Spec,
@@ -1297,12 +1369,13 @@ def test_stream_enrollment_matches_the_event_stream_contract(
         (test_interface_declares_no_property_absent_from_the_schema, ALL_ENROLLED),
         (test_required_request_properties_are_not_optional_on_the_interface, ENROLLED_REQUESTS),
         (test_stream_member_optionality_matches_the_required_list, ENROLLED_STREAMS),
+        (test_response_member_the_wire_can_omit_is_optional, ENROLLED),
         (
             test_member_names_the_interface_of_each_enrolled_component_it_references,
             ALL_ENROLLED,
         ),
     ],
-    ids=["F1", "F2", "F6", "F7", "F8"],
+    ids=["F1", "F2", "F6", "F7", "F11", "F8"],
 )
 def test_gates_are_parametrized_over_their_enrollment(gate: object, enrollment: Enrollment) -> None:
     """F4: each per-interface gate iterates the whole of the enrollment it enforces.
@@ -1347,6 +1420,14 @@ def test_enrollment_resolves_and_is_not_vacuous(types_source: str, specs: dict[S
         assert required >= MIN_REQUIRED_PROPERTIES_COMPARED[spec], (
             f"only {required} required request properties compared in {spec}; "
             f"floor is {MIN_REQUIRED_PROPERTIES_COMPARED[spec]}"
+        )
+        omissible = sum(
+            len(nullable_optional_properties(specs[spec], component))
+            for component in ENROLLED[spec].values()
+        )
+        assert omissible >= MIN_NULLABLE_OPTIONAL_RESPONSE_PROPERTIES[spec], (
+            f"only {omissible} optional nullable response properties compared in {spec}; "
+            f"floor is {MIN_NULLABLE_OPTIONAL_RESPONSE_PROPERTIES[spec]}"
         )
         interface_for = interface_for_component(ALL_ENROLLED[spec])
         references = sum(
@@ -1437,6 +1518,46 @@ def test_stream_optionality_check_fires_in_both_directions(
     assert stream_optionality_findings(relaxed, specs) == {
         ("core", "IngestPreview"): {"would_create"},
         ("app", "IngestPreview"): {"would_create"},
+    }
+
+
+def test_response_omission_check_fires_on_a_member_typed_present(
+    types_source: str, specs: dict[Spec, dict]
+) -> None:
+    """F5: F11 reports an omissible response member typed present, on that interface alone."""
+    assert response_omission_findings(types_source, specs) == {}
+    mutated = rewrite_member(types_source, "DiscoverHit", "relevance_score", "relevance_score:")
+    assert response_omission_findings(mutated, specs) == {
+        ("core", "DiscoverHit"): {"relevance_score"}
+    }
+
+
+def test_nullable_optional_properties_reads_both_conditions() -> None:
+    """F11: only a property that is both optional and nullable can be omitted."""
+    spec = {
+        "components": {
+            "schemas": {
+                "Shape": {
+                    "type": "object",
+                    "required": ["req_null"],
+                    "properties": {
+                        "req_null": {"type": ["string", "null"]},
+                        "opt_null": {"type": ["string", "null"]},
+                        "opt_ref_null": {
+                            "anyOf": [{"$ref": "#/components/schemas/Other"}, {"type": "null"}]
+                        },
+                        "opt_value": {"type": "string"},
+                        "opt_legacy": {"type": "string", "nullable": True},
+                    },
+                },
+                "Other": {"type": "object", "properties": {"x": {"type": "string"}}},
+            }
+        }
+    }
+    assert nullable_optional_properties(spec, "Shape") == {"opt_null", "opt_ref_null"}
+    members = {"opt_null": False, "opt_ref_null": True, "opt_value": False}
+    assert omissible_members_typed_present(members, {"opt_null", "opt_ref_null", "absent"}) == {
+        "opt_null"
     }
 
 

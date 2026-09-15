@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_lifecycle_service, get_vault_id
 from sage.api.response_docs import boundary_400
+from sage.api.wire_route import WireRoute
 from sage.models.schemas import (
     BulkLifecycleRequest,
     BulkLifecycleResponse,
@@ -14,7 +15,7 @@ from sage.models.schemas import (
 )
 from sage.services.lifecycle import LifecycleService
 
-router = APIRouter(tags=["Document Lifecycle"])
+router = APIRouter(route_class=WireRoute, tags=["Document Lifecycle"])
 
 
 @router.post(

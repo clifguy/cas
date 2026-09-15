@@ -211,11 +211,48 @@ class _Collector:
         self.findings.append(Finding(self.surface, pointer, kind, category))
 
 
+_WIDENING_COMPOSITIONS: Final[tuple[str, ...]] = ("anyOf", "oneOf")
+_COMPOSITIONS: Final[frozenset[str]] = frozenset({"anyOf", "oneOf", "allOf"})
+
+
+def _sole_composition(schema: dict[str, Any]) -> str | None:
+    """The widening composition a schema consists of, when it constrains nothing else."""
+    constraining = {key for key in schema if not _is_ignored(key)}
+    if len(constraining) == 1:
+        (key,) = constraining
+        if key in _WIDENING_COMPOSITIONS and isinstance(schema[key], list):
+            return key
+    return None
+
+
+def _lift_to_composition(
+    old: dict[str, Any], new: dict[str, Any]
+) -> tuple[str, list[Any], list[Any]] | None:
+    """Read a bare schema opposite a composition as the one-branch composition of itself.
+
+    Declaring a reference nullable moves it inside ``anyOf`` beside a null branch.
+    Compared as written, the reference leaves the top level and reads as
+    retargeted; compared as branches, the unchanged reference matches and the
+    null branch is the widening it is.
+    """
+    old_key, new_key = _sole_composition(old), _sole_composition(new)
+    if new_key and not old_key and not (_COMPOSITIONS & set(old)):
+        return new_key, [old], new[new_key]
+    if old_key and not new_key and not (_COMPOSITIONS & set(new)):
+        return old_key, old[old_key], [new]
+    return None
+
+
 def _diff_schema(old: Any, new: Any, pointer: str, out: _Collector) -> None:
     if _canon(old) == _canon(new):
         return
     if not isinstance(old, dict) or not isinstance(new, dict):
         out.add(pointer, "schema-changed", CALLER_ADAPTATION)
+        return
+    lifted = _lift_to_composition(old, new)
+    if lifted is not None:
+        key, old_branches, new_branches = lifted
+        _diff_branches(old_branches, new_branches, key, pointer, out)
         return
     if old.get("$ref") != new.get("$ref"):
         # A reference and the shape it names are the same contract: resolve each

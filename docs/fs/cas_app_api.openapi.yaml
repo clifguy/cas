@@ -588,7 +588,12 @@ components:
           type: string
           description: Source artifact format name to use for this file.
         parsed_metadata:
-          $ref: "#/components/schemas/ParsedMetadata"
+          anyOf:
+            - $ref: "#/components/schemas/ParsedMetadata"
+            - type: "null"
+          description: >-
+            Optional caller-supplied parsed metadata for this file; when
+            present, used as caller-authoritative input to ingest.
 
     ProgressEvent:
       type: object

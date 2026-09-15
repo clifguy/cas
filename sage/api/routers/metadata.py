@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_metadata_service, get_vault_id
 from sage.api.response_docs import boundary_400
+from sage.api.wire_route import WireRoute
 from sage.models.schemas import (
     BulkMetadataRequest,
     BulkMetadataResponse,
@@ -14,7 +15,7 @@ from sage.models.schemas import (
 )
 from sage.services.metadata import MetadataService
 
-router = APIRouter(tags=["Document Metadata"])
+router = APIRouter(route_class=WireRoute, tags=["Document Metadata"])
 
 
 @router.post(

@@ -20,6 +20,7 @@ from sage.api.dependencies import (
     get_vault_registry_service,
 )
 from sage.api.response_docs import boundary_400
+from sage.api.wire_route import WireRoute
 from sage.models.schemas import (
     DriftReport,
     ErrorResponse,
@@ -39,7 +40,7 @@ from sage.models.wire import to_wire
 from sage.services.maintenance import MaintenanceService, ReabstractEvent
 from sage.services.vault_registry import VaultRegistryService
 
-router = APIRouter(tags=["Maintenance"])
+router = APIRouter(route_class=WireRoute, tags=["Maintenance"])
 
 
 def _sse_event(event: BaseModel) -> str:

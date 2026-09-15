@@ -358,6 +358,35 @@ describe('Search view: existing search modes preserved', () => {
     // to an excerpt, and the tail each card shows is silently gone.
     expect(request.response_mode).toBe('full');
   });
+
+  it('shows no relevance line for a hit whose optional score key is absent', async () => {
+    // A REST body omits an optional property whose value is null, so an
+    // unscored hit arrives with no relevance_score, chunk_content or
+    // heading_path key at all rather than with those keys set to null.
+    const unscored = makeHit('doc-2', 'Unscored');
+    delete unscored.relevance_score;
+    delete unscored.chunk_content;
+    delete unscored.heading_path;
+    mockDiscover.mockResolvedValueOnce({
+      mode: 'semantic',
+      results: [makeHit('doc-1', 'Scored', { relevance_score: 0.92 }), unscored],
+      total_available: 2,
+    });
+
+    render(
+      <TestWrapper
+        vaultId="test_vault"
+        vault={mockVault}
+        initialEntries={['/search?q=architecture&mode=semantic']}
+      />,
+    );
+
+    await screen.findByText('Unscored');
+
+    expect(screen.getAllByText(/Relevance:/)).toHaveLength(1);
+    expect(screen.getByText(/Relevance: 92%/)).toBeInTheDocument();
+    expect(screen.queryByText(/NaN/)).toBeNull();
+  });
 });
 
 describe('Search view: sortable table in drill-down', () => {

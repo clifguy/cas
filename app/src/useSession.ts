@@ -40,7 +40,7 @@ export function useSession(): SessionState {
       .then((session) => {
         if (!active) return;
         if (session.authenticated) {
-          setUser(session.user);
+          setUser(session.user ?? null);
           setStatus('authenticated');
         } else {
           setUser(null);

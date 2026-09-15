@@ -17,6 +17,8 @@ from sage.adapters.stubs import (
 )
 from sage.app import _initialize_services, create_app
 from sage.config import SageCoreConfig, VaultConfig
+from sage.models.schemas import IngestResponse
+from sage.models.wire import to_wire
 
 
 @pytest.fixture
@@ -88,6 +90,11 @@ async def test_ingest_201(client):
     assert "document" in body
     assert body["pipeline_status"] == "abstraction_complete"
     assert body["document"]["source_path"] == "test/sample.md"
+    # The route builds its own response to choose between 201 and 200, so it
+    # renders the body itself and owes it the per-field null rule: a fresh
+    # document was never relocated, and that optional null is omitted.
+    assert "relocated_from" not in body["document"]
+    assert body == to_wire(IngestResponse.model_validate(body))
 
 
 async def test_ingest_duplicate_409(client):

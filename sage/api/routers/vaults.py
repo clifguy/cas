@@ -18,6 +18,7 @@ from sage.api.dependencies import (
     get_vault_registry_service,
 )
 from sage.api.response_docs import boundary_400
+from sage.api.wire_route import WireRoute
 from sage.models.schemas import (
     CreateVaultRequest,
     ErrorResponse,
@@ -33,7 +34,7 @@ from sage.services.stack_config import get_stack_config_report
 from sage.services.vault_config import VaultConfigService
 from sage.services.vault_registry import VaultRegistryService
 
-router = APIRouter(tags=["vaults"])
+router = APIRouter(route_class=WireRoute, tags=["vaults"])
 
 
 @router.get(

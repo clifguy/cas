@@ -4,10 +4,11 @@ from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_user_service, get_vault_id
 from sage.api.response_docs import boundary_400
+from sage.api.wire_route import WireRoute
 from sage.models.schemas import ErrorResponse, RegisterUserRequest, User, VaultIdStr
 from sage.services.user_service import UserService
 
-router = APIRouter(tags=["Access Control"])
+router = APIRouter(route_class=WireRoute, tags=["Access Control"])
 
 
 @router.post(

@@ -39,9 +39,13 @@ from app.backend.models import (
 from app.backend.scan_service import ScanService
 from sage.api.dependencies import refuse_undeclared_parameters
 from sage.api.response_docs import boundary_400
+from sage.api.wire_route import WireRoute
 
 router = APIRouter(
-    prefix="/app", tags=["app"], dependencies=[Depends(refuse_undeclared_parameters)]
+    route_class=WireRoute,
+    prefix="/app",
+    tags=["app"],
+    dependencies=[Depends(refuse_undeclared_parameters)],
 )
 
 

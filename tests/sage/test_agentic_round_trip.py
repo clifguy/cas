@@ -164,7 +164,7 @@ async def test_bh_116_get_document_without_include_content_omits_content(client,
     # but carries no content body.
     assert body["read_meta"]["success"] is True
     assert body["read_meta"]["body_present"] is False
-    assert body["read_meta"]["body_length"] is None
+    assert "body_length" not in body["read_meta"]
 
     # And explicit false matches the default.
     resp2 = await client.get(
@@ -295,11 +295,73 @@ async def test_bh_125_write_to_path_happy_path(client, tmp_vault_dir, tmp_path):
     # inline, so no body is present and body_length is null for write-to-path.
     assert payload["read_meta"]["success"] is True
     assert payload["read_meta"]["body_present"] is False
-    assert payload["read_meta"]["body_length"] is None
+    assert "body_length" not in payload["read_meta"]
 
     # File landed correctly.
     assert target.exists()
     assert target.read_bytes() == body.encode("utf-8")
+
+
+async def test_bh_125b_write_to_path_without_caller_filesystem_returns_a_recipe(
+    client, tmp_vault_dir, tmp_path, monkeypatch
+):
+    """Where the server cannot reach the caller's filesystem, the route returns a recipe.
+
+    The operation answers with a download recipe rather than a document in that
+    case, and the route must declare and serve both. A route declaring the
+    document alone fails response validation on the recipe, which is a server
+    error on exactly the profile the recipe exists for.
+
+    Anti-coincidental-pass: the body is validated against the operation's own
+    published 200 response, so a route that returned the recipe while the spec
+    still declared the document alone fails as surely as one that errored.
+    """
+    import jsonschema
+    import yaml
+
+    from tests.sage.test_wire_shape_conformance import (
+        SAGE_CORE_SPEC_PATH,
+        _absolute_refs,
+        _registry_for,
+    )
+
+    body = "# BH-125b\n\nDelivered by recipe.\n"
+    _seed_file(tmp_vault_dir, "bh125b.md", body)
+    doc = await _ingest_via_api(client, "bh125b.md")
+    from sage import mcp_init
+    from sage.config import StackTransferConfig
+    from sage.services.transfer import reset_transfer_store
+
+    stack = mcp_init.get_stack_config()
+    monkeypatch.setattr(
+        mcp_init,
+        "_stack_config",
+        stack.model_copy(
+            update={"transfer": StackTransferConfig(public_base_url="https://sage.example.org")}
+        ),
+    )
+    monkeypatch.setattr("sage.mcp_init.caller_local_filesystem_reachable", lambda: False)
+    reset_transfer_store()
+    target = tmp_path / "caller" / "bh125b_copy.md"
+
+    resp = await client.get(
+        f"/sage_vaults/test_vault/documents/{doc['id']}",
+        params={"write_to_path": str(target)},
+    )
+
+    assert resp.status_code == 200, resp.text
+    payload = resp.json()
+    assert payload["status"] == "download_required"
+    assert payload["content_hash"] == "sha256:" + hashlib.sha256(body.encode("utf-8")).hexdigest()
+    assert not target.exists(), "the server must not write a path it cannot see"
+
+    spec = yaml.safe_load(SAGE_CORE_SPEC_PATH.read_text())
+    operation = spec["paths"]["/sage_vaults/{vault_id}/documents/{document_id}"]["get"]
+    schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+    jsonschema.Draft202012Validator(_absolute_refs(schema), registry=_registry_for(spec)).validate(
+        payload
+    )
+    reset_transfer_store()
 
 
 # ---------------------------------------------------------------------------

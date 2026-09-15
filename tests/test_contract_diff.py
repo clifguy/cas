@@ -715,3 +715,54 @@ def test_diff_contracts_reports_each_surface_it_compares() -> None:
     findings, _ = diff_contracts(base, head)
 
     assert {f.surface for f in findings} == {"sage_core_api", "cas_app_api", "mcp"}
+
+
+def _response_schema(spec: dict[str, Any]) -> dict[str, Any]:
+    return _get(spec)["responses"]["200"]["content"]["application/json"]
+
+
+def test_a_reference_wrapped_beside_a_null_branch_is_a_widening() -> None:
+    """A bare reference is the one-branch composition of itself.
+
+    Declaring an existing reference nullable moves it inside ``anyOf`` beside a
+    null branch. The shape the reference names is unchanged and one branch is
+    added, so the change widens what the schema admits. A comparison that saw
+    only the reference leave the top level reported it as retargeted.
+    """
+
+    def wrap(spec: dict[str, Any]) -> None:
+        _response_schema(spec)["schema"] = {
+            "anyOf": [{"$ref": "#/components/schemas/Thing"}, {"type": "null"}],
+            "description": "The thing, or null.",
+        }
+
+    findings = diff_openapi(SPEC, _mutated(SPEC, wrap), surface="core")
+
+    assert [(f.kind, f.category) for f in findings] == [("branch-added", CAPABILITY)], findings
+    assert findings[0].pointer.endswith("schema/anyOf/1"), findings[0].pointer
+
+
+def test_a_reference_unwrapped_from_its_null_branch_is_an_adaptation() -> None:
+    """The reverse drops the null branch, which narrows what the schema admits."""
+
+    def wrap(spec: dict[str, Any]) -> None:
+        _response_schema(spec)["schema"] = {
+            "oneOf": [{"$ref": "#/components/schemas/Thing"}, {"type": "null"}]
+        }
+
+    findings = diff_openapi(_mutated(SPEC, wrap), SPEC, surface="core")
+
+    assert [(f.kind, f.category) for f in findings] == [("branch-removed", CALLER_ADAPTATION)]
+
+
+def test_wrapping_a_reference_does_not_hide_a_retarget() -> None:
+    """Moving a reference into a composition still compares the shape it names."""
+
+    def wrap_other(spec: dict[str, Any]) -> None:
+        _response_schema(spec)["schema"] = {
+            "anyOf": [{"$ref": "#/components/schemas/Other"}, {"type": "null"}]
+        }
+
+    kinds = sorted(f.kind for f in diff_openapi(SPEC, _mutated(SPEC, wrap_other), surface="core"))
+
+    assert kinds == ["branch-added", "ref-retargeted"]

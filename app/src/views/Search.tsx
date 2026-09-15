@@ -482,7 +482,7 @@ export default function Search() {
             </span>
           </div>
 
-          {hit.relevance_score !== null && (
+          {hit.relevance_score != null && (
             <div style={{ fontSize: 11, color: '#999', marginBottom: 4 }}>
               Relevance: {(hit.relevance_score * 100).toFixed(0)}%
               {hit.heading_path && <span> &middot; {hit.heading_path}</span>}

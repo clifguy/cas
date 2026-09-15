@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from sage.api.dependencies import get_ingestion_service, get_vault_id, get_vault_services
 from sage.api.errors import SAGEError
 from sage.api.response_docs import boundary_400
+from sage.api.wire_route import WireRoute
 from sage.mcp_init import SAGEServices
 from sage.models.schemas import (
     BatchIngestUploadMetadata,
@@ -21,10 +22,11 @@ from sage.models.schemas import (
     UploadRecipe,
     VaultIdStr,
 )
+from sage.models.wire import to_wire
 from sage.services.batch_ingest_stream import UploadedFile, stream_uploaded_batch_ingest
 from sage.services.ingestion import IngestionService
 
-router = APIRouter(tags=["Ingestion"])
+router = APIRouter(route_class=WireRoute, tags=["Ingestion"])
 
 
 @router.post(
@@ -257,18 +259,18 @@ async def ingest(
     result = await ingestion_service.ingest_from_request(request)
     if isinstance(result, UploadRecipe):
         # 200: nothing was created; the recipe says how to complete the call.
-        return JSONResponse(status_code=200, content=result.model_dump(mode="json"))
+        return JSONResponse(status_code=200, content=to_wire(result))
     if isinstance(result, IngestPreview):
         # 200 rather than 201: a preview reports on a creation it did not
         # make, so the status that means "created" would be a lie.
-        return JSONResponse(status_code=200, content=result.model_dump(mode="json"))
+        return JSONResponse(status_code=200, content=to_wire(result))
     response = IngestResponse(
         document=result.document,
         pipeline_status=result.document.pipeline_status,
     )
     return JSONResponse(
         status_code=201 if result.is_new else 200,
-        content=response.model_dump(mode="json"),
+        content=to_wire(response),
     )
 
 

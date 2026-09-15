@@ -6,6 +6,7 @@ from fastapi import APIRouter, Depends, Path
 
 from sage.api.dependencies import get_utilities_service, get_vault_id
 from sage.api.response_docs import boundary_400
+from sage.api.wire_route import WireRoute
 from sage.models.schemas import (
     DocumentIdStr,
     ErrorResponse,
@@ -20,7 +21,7 @@ from sage.models.schemas import (
 )
 from sage.services.utilities import UtilitiesService
 
-router = APIRouter(tags=["Utilities"])
+router = APIRouter(route_class=WireRoute, tags=["Utilities"])
 
 # ``Annotated[T, Path(...)]`` preserves the alias's ``AfterValidator``.
 # The bare ``T = Path(...)`` form silently strips it.

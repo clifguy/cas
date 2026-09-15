@@ -1,0 +1,28 @@
+classification: minor
+category:
+  - caller-adaptation
+summary: >-
+  The Core API and the CAS Application backend render every response model through
+  the per-field null rule the MCP surface already applied: a property the published
+  schema lists as required keeps its key when its value is null, and an optional
+  property whose value is null is omitted. FastAPI's response serialization kept every
+  null, so the same model had two wire shapes, one per surface. The routers are built
+  on a route class that validates the returned value against the declared response
+  model, dumps it as that type and applies the rule, keeping the route's status code,
+  a status or headers set on an injected response, and any response an endpoint
+  returns itself; the JSON ingest operation, which builds its own response to choose
+  its status, applies the rule directly. Operations that return a free-form object
+  -- the stack configuration, the vault configuration and the default configuration
+  scaffold -- are unchanged and still report unset fields as null. Streams and error
+  envelopes already applied the rule. No specification changes: every omitted
+  property was already optional. docs/fs/CLAUDE.md records that a model has one wire
+  shape on either surface, and a gate checks that every route both applications
+  serve is on the route class. The CAS Application frontend declares each response
+  member the wire can now omit as optional and reads the ones it tested with a strict
+  null comparison as absent-or-null; a frontend gate holds each response interface to
+  the component's optional nullable properties.
+for_callers: >-
+  Core API and CAS Application REST response bodies now omit an optional property
+  whose value is null, as the MCP surface already did, instead of sending the key with
+  a null value; required properties still always carry their key. A caller reading an
+  optional property must treat an absent key as null.

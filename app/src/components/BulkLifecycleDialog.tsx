@@ -81,8 +81,11 @@ export function BulkLifecycleDialog({ vaultId, selectedIds, onResolved, onClose 
       onClose();
       return;
     }
-    const succeeded = response.results.filter((r) => r.status === 'success').map((r) => r.document_id);
-    const failed = response.results.filter((r) => r.status === 'error').map((r) => r.document_id);
+    // An item whose id could not be resolved carries no document_id key.
+    const idsWith = (status: 'success' | 'error') =>
+      response.results.flatMap((r) => (r.status === status && r.document_id != null ? [r.document_id] : []));
+    const succeeded = idsWith('success');
+    const failed = idsWith('error');
     onResolved({ succeeded, failed });
     onClose();
   }
