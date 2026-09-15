@@ -17,6 +17,7 @@ U3  A response its declared model refuses answers 500 with ``code``
     ``internal_error``, and the body carries nothing of the refused value.
 U4  Both applications register the same handlers, so the backend-for-frontend
     answers an unserved path the same way.
+U5  Any other status the framework raises answers ``http_error``.
 
 Each body is validated against the published ``ErrorResponse`` component, so a
 handler that answered with the right status and a body of its own shape fails.
@@ -77,11 +78,16 @@ async def test_unaccepted_method_answers_in_the_envelope_and_names_the_allowed_o
     assert "GET" in allowed, response.headers["allow"]
 
 
-async def test_refused_response_answers_internal_error_without_its_value():
+async def test_refused_response_answers_internal_error_without_its_value(
+    caplog: pytest.LogCaptureFixture,
+):
     """U3 -- a response the declared model refuses is a server error in the envelope.
 
-    The refused value is the server's own data, so none of it reaches the body:
-    the sentinel below is checked absent from the raw text.
+    The refused value is the server's own data, so none of it reaches the body,
+    and none of it reaches the log either: a refused document would otherwise
+    write its whole content at error level. The log keeps where and why the value
+    was refused, which the positive check below holds, so a handler that stopped
+    logging does not pass as one that stopped logging the value.
     """
 
     class Declared(BaseModel):
@@ -97,12 +103,34 @@ async def test_refused_response_answers_internal_error_without_its_value():
     register_exception_handlers(app)
     app.include_router(router)
 
-    async with _client(app) as client:
-        response = await client.get("/broken")
+    with caplog.at_level("ERROR", logger="sage.api.errors"):
+        async with _client(app) as client:
+            response = await client.get("/broken")
 
     assert response.status_code == 500
     _assert_envelope(response.json(), "internal_error")
     assert "sentinel-7f3a" not in response.text
+    logged = "\n".join(record.getMessage() for record in caplog.records)
+    assert "count" in logged and "/broken" in logged, logged
+    assert "sentinel-7f3a" not in logged, logged
+
+
+async def test_other_framework_status_answers_the_generic_code():
+    """U5 -- a framework-raised status with no code of its own answers ``http_error``."""
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+
+    app = FastAPI()
+    register_exception_handlers(app)
+
+    @app.get("/teapot")
+    async def teapot():
+        raise StarletteHTTPException(status_code=418)
+
+    async with _client(app) as client:
+        response = await client.get("/teapot")
+
+    assert response.status_code == 418
+    _assert_envelope(response.json(), "http_error")
 
 
 async def test_backend_for_frontend_answers_an_unserved_path_in_the_envelope(tmp_path: Path):

@@ -96,7 +96,9 @@ info:
     `route_not_found` (404) for a path no operation serves,
     `method_not_allowed` (405, with an `Allow` header) for a method the path
     does not accept, and `internal_error` (500) for a response the server
-    built that its own contract does not admit.
+    built that its own contract does not admit. Any other status the framework
+    raises outside an operation answers `http_error`, with the status's reason
+    phrase as `message`.
 
 
     ## Invariants

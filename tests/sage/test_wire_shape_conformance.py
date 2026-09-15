@@ -1373,6 +1373,96 @@ async def test_rest_route_keeps_status_sync_endpoints_and_returned_responses():
     assert injected.json() == {"start_id": "0123abcd_sentinel", "nodes": []}
 
 
+def _stamp_response(response: Response) -> None:
+    """A dependency that sets status, a header and a cookie on the injected response."""
+    response.status_code = 203
+    response.headers["x-dependency-probe"] = "set-by-dependency"
+    response.set_cookie("probe", "1")
+
+
+async def test_rest_route_keeps_what_a_dependency_sets_on_the_response():
+    """W10 -- status, headers and cookies a dependency sets reach the caller.
+
+    FastAPI gives every dependency and the endpoint one per-request response
+    object and applies what was set on it to the response it builds. A route
+    class that looks for that object among the endpoint's own arguments finds it
+    only when the endpoint declares one, so a dependency's cookie is silently
+    lost on an endpoint that does not -- the standard cookie-setting shape.
+    """
+    from fastapi import Depends
+
+    def setup(router):
+        @router.get(
+            "/stamped", response_model=TraverseResponse, dependencies=[Depends(_stamp_response)]
+        )
+        async def stamped():
+            return TraverseResponse(start_id="0123abcd_sentinel", nodes=[])
+
+    async with _client(_wire_app(setup)) as client:
+        response = await client.get("/stamped")
+
+    assert response.status_code == 203
+    assert response.headers["x-dependency-probe"] == "set-by-dependency"
+    assert "probe=1" in response.headers["set-cookie"]
+    assert response.json() == {"start_id": "0123abcd_sentinel", "nodes": []}
+
+
+_UNIMPLEMENTED_OPTIONS: Final[list] = [
+    pytest.param({"response_model_include": {"start_id"}}, id="include"),
+    pytest.param({"response_model_exclude": {"nodes"}}, id="exclude"),
+    pytest.param({"response_model_exclude_unset": True}, id="exclude_unset"),
+    pytest.param({"response_model_exclude_defaults": True}, id="exclude_defaults"),
+    pytest.param({"response_model_exclude_none": True}, id="exclude_none"),
+    pytest.param({"response_model_by_alias": False}, id="by_alias_false"),
+]
+
+
+@pytest.mark.parametrize("option", _UNIMPLEMENTED_OPTIONS)
+def test_rest_route_refuses_serialization_options_it_does_not_apply(option: dict):
+    """W10 -- an option the route class would silently ignore is refused when declared.
+
+    The route class renders a model's body itself, so FastAPI's own options for
+    shaping that body never run. Accepting one would publish a route that
+    behaves as though it were not there, which is the failure this class exists
+    to remove; refusing it turns that into an error where the route is written.
+    """
+    from fastapi import APIRouter
+
+    from sage.api.wire_route import WireRoute
+
+    router = APIRouter(route_class=WireRoute)
+    with pytest.raises(ValueError, match="WireRoute"):
+        router.add_api_route(
+            "/refused",
+            lambda: None,
+            methods=["GET"],
+            response_model=TraverseResponse,
+            **option,
+        )
+
+
+def test_rest_route_refuses_a_response_class_it_does_not_render():
+    """W10 -- a non-JSON response class is refused, and the defaults are accepted."""
+    from fastapi import APIRouter
+    from fastapi.responses import PlainTextResponse
+
+    from sage.api.wire_route import WireRoute
+
+    router = APIRouter(route_class=WireRoute)
+    with pytest.raises(ValueError, match="WireRoute"):
+        router.add_api_route(
+            "/refused",
+            lambda: None,
+            methods=["GET"],
+            response_model=TraverseResponse,
+            response_class=PlainTextResponse,
+        )
+    router.add_api_route(
+        "/accepted", lambda: None, methods=["GET"], response_model=TraverseResponse
+    )
+    assert [route.path for route in router.routes] == ["/accepted"]
+
+
 async def test_rest_route_renders_the_declared_type_and_documents_it():
     """W10 -- the body is the declared model's, and the OpenAPI document is unchanged.
 
