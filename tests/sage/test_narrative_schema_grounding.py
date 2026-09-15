@@ -207,6 +207,7 @@ from typing import Any, Final
 
 import pytest
 
+from tests.helpers.vault_addressed import NOT_REGISTRY_RESOLVED
 from tests.sage.test_mcp_docstring_disclosure_parity import (
     _STRUCTURAL_HEADER,
     _prose_body,
@@ -865,7 +866,7 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
 # is pinned on each such pair here rather than spelled out per entry.
 for _pair in _mapped_tool_pairs():
     _tool = _surface_registry(_SURFACES_BY_NAME[_pair[0]])[_pair[1]]
-    if "vault_id" in inspect.signature(_tool).parameters:
+    if "vault_id" in inspect.signature(_tool).parameters and _pair[1] not in NOT_REGISTRY_RESOLVED:
         UNRESOLVED_IDENTIFIERS.setdefault(_pair, {})["available_vaults"] = ERROR_DETAIL_KEY
 
 

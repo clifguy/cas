@@ -32,6 +32,7 @@ from sage.adapters.stubs import StubContentStore
 from sage.api.errors import VaultNotFoundError
 from sage.config import VaultConfig
 from tests.helpers.docstring_blocks import error_modes_block
+from tests.helpers.vault_addressed import NOT_REGISTRY_RESOLVED
 
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 _SPECS: Final[dict[str, Path]] = {
@@ -170,12 +171,12 @@ async def test_unregistered_vault_is_refused_alike_on_both_surfaces(
 
 
 def _vault_addressed_tools() -> dict[str, Callable]:
-    """Every registered tool whose published input schema carries ``vault_id``."""
+    """Every registered tool that resolves the ``vault_id`` its input schema carries."""
     tools = mcp_server.mcp._tool_manager._tools  # noqa: SLF001 -- FastMCP exposes no public API
     return {
         name: tool.fn
         for name, tool in sorted(tools.items())
-        if "vault_id" in tool.parameters.get("properties", {})
+        if "vault_id" in tool.parameters.get("properties", {}) and name not in NOT_REGISTRY_RESOLVED
     }
 
 
@@ -189,6 +190,7 @@ _MINIMAL_ARGS: Final[dict[str, dict[str, Any]]] = {
     "chain": {"document_id": _DOCUMENT_ID, "edge_type": "supersedes"},
     "create_edges": {"items": []},
     "delete_edge": {"edge_id": _EDGE_ID},
+    "export_projection": {"document_id": _DOCUMENT_ID, "output_path": "exports/out.md"},
     "get_document": {"document_id": _DOCUMENT_ID},
     "get_filename_metadata": {"filename": "note.md", "source_type": "markdown"},
     "get_vault_config": {},
@@ -217,6 +219,7 @@ _MINIMAL_ARGS: Final[dict[str, dict[str, Any]]] = {
     "verify_hashes": {"hashes": []},
     "verify_preconditions": {"document_id": _DOCUMENT_ID},
     "verify_vault_drift": {},
+    "verify_vault_retrieval": {},
     "verify_vault_source_files": {},
 }
 
@@ -256,9 +259,13 @@ async def test_the_sweep_covers_every_vault_addressed_tool_on_the_mounts(shared_
             if "vault_id" in tool.inputSchema.get("properties", {}):
                 advertised.add(tool.name)
 
-    assert len(advertised) >= MIN_VAULT_ADDRESSED_TOOLS, advertised
-    assert set(_MINIMAL_ARGS) == advertised
-    assert set(_VAULT_ADDRESSED) == advertised
+    # Every exemption still names an advertised vault_id-carrying tool, so a
+    # removed or renamed tool cannot leave a stale entry behind.
+    assert set(NOT_REGISTRY_RESOLVED) <= advertised
+    resolving = advertised - set(NOT_REGISTRY_RESOLVED)
+    assert len(resolving) >= MIN_VAULT_ADDRESSED_TOOLS, resolving
+    assert set(_MINIMAL_ARGS) == resolving
+    assert set(_VAULT_ADDRESSED) == resolving
 
 
 # ---------------------------------------------------------------------------

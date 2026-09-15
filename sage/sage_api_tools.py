@@ -3769,7 +3769,8 @@ def register_sage_tools(
 
         Error modes:
         - ``invalid_vault_id`` (400): ``vault_id`` is not a well-formed vault id.
-        - ``unknown_vault`` (404): ``vault_id`` is not a registered vault.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``assertions_not_configured`` (400): the vault config has no
           ``retrieval_health.assertions_file`` entry.
         - ``assertions_file_invalid`` (400): the referenced YAML is malformed
@@ -3816,7 +3817,8 @@ def register_sage_tools(
           document id.
         - ``path_traversal_denied`` (400): ``output_path`` resolves outside the
           vault's ``storage_root``.
-        - ``unknown_vault`` (404): ``vault_id`` is not a registered vault.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``document_not_found`` (404): no document with that id.
         - ``no_projection`` (404): the document exists but has no stored
           projection (e.g. ingestion failed mid-pipeline).
