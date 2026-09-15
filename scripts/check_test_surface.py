@@ -180,6 +180,16 @@ KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
         "bare-name heritage; the forms it still refuses are pinned by "
         "test_reader_refuses_heritage_it_does_not_model"
     ),
+    **{
+        f"tests/app/test_bff_cloud_ingest.py::test_app_{old}_{rest}": (
+            f"renamed test_app_{new}_{rest}: its APP number duplicated one in "
+            "test_bff_standalone_app.py, which shares the APP-NNN sequence"
+        )
+        for old, new, rest in (
+            ("009", "025", "cloud_ingest_route_stays_co_located_only"),
+            ("010", "026", "cloud_batch_upload_via_proxy_requires_session"),
+        )
+    },
     "tests/sage/test_passage_replace_if_unchanged.py": (
         "the content-store compare-and-replace and per-document passage write lock it pinned "
         "are removed; migrate_vault now excludes pipeline work at the vault level"

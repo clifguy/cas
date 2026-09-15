@@ -62,9 +62,13 @@ export default function Ingest() {
 
   useEffect(() => {
     let cancelled = false;
-    detectIngestProfile(vaultId).then((p) => {
-      if (!cancelled) setProfile(p);
-    });
+    detectIngestProfile(vaultId)
+      .then((p) => {
+        if (!cancelled) setProfile(p);
+      })
+      // A probe refused for a lapsed session leaves the profile undetected;
+      // the refusal has already returned the app to sign-in.
+      .catch(() => {});
     return () => {
       cancelled = true;
     };

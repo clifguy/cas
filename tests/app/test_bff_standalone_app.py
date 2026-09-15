@@ -4,8 +4,9 @@ The hosted profile runs the backend as its own process: it serves the SPA,
 exposes a health probe, reverse-proxies the SPA's SAGE traffic with the user's
 delegated token, and boots with no SAGE in process. These tests pin that boot
 shape, the SPA serving (including deep-link client routing), the reverse proxy's
-token attachment and auth gating, and the profile boundary on the
-local-filesystem scan/ingest routes.
+token attachment and auth gating, the profile boundary on the local-filesystem
+scan/ingest routes, and the session requirement on every route that is not
+exempt from it.
 
 Test IDs follow APP-NNN (standalone APP).
 """
@@ -16,10 +17,12 @@ import json
 import time
 
 import httpx
-from fastapi import FastAPI
+import pytest
+from fastapi import Depends, FastAPI
 
 from app.backend.asgi import create_bff_app
 from app.backend.auth.config import BffAuthContext, BffAuthSettings
+from app.backend.auth.dependencies import require_session
 from app.backend.auth.sage_client import ObOSageClient
 from app.backend.auth.session_store import InMemorySessionStore, Session
 from app.backend.transport import HttpSageTransport, SageTransport
@@ -76,6 +79,26 @@ def _raising_sage(exc: httpx.RequestError) -> httpx.AsyncClient:
 
 def _client(app: FastAPI) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://bff.test")
+
+
+async def _auth_app(*, with_session: bool) -> FastAPI:
+    """A cloud-profile standalone app with sign-in configured over an in-memory
+    session store, holding the live session ``sid-1`` when ``with_session``."""
+    app = create_bff_app(stack_config=SageCoreConfig(profile="cloud"))
+    store = InMemorySessionStore()
+    if with_session:
+        await store.create_session(_session())
+    app.state.bff_auth = BffAuthContext(settings=_settings(), oidc=_StubOidc(), store=store)
+    return app
+
+
+def _sessioned_client(app: FastAPI, session_id: str = "sid-1") -> httpx.AsyncClient:
+    """A client presenting ``session_id`` as the session cookie."""
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://bff.test",
+        cookies={_settings().session_cookie_name: session_id},
+    )
 
 
 async def test_app_001_boots_without_sage_in_process():
@@ -227,11 +250,12 @@ async def test_app_008_scan_ingest_is_profile_bounded():
     route returns the typed `local_profile_only` error, not a 500 / AttributeError.
 
     Anti-coincidental-pass: the pre-change code read `app.state.vault_registry`
-    unguarded, raising `AttributeError` -> 500 here.
+    unguarded, raising `AttributeError` -> 500 here. The request carries a
+    signed-in session, so it reaches the route past the session requirement.
     """
-    app = create_bff_app(stack_config=SageCoreConfig(profile="cloud"))
+    app = await _auth_app(with_session=True)
 
-    async with _client(app) as client:
+    async with _sessioned_client(app) as client:
         response = await client.post("/app/scan", json={"vault_id": "cas", "directory": "/tmp"})
 
     assert response.status_code == 501
@@ -619,3 +643,247 @@ async def test_app_018_shutdown_closes_postgres_credential(monkeypatch):
         pass
 
     assert cred.calls == 1
+
+
+# ---------------------------------------------------------------------------
+# APP-019 -- APP-024: every non-exempt route requires a signed-in session
+# ---------------------------------------------------------------------------
+
+#: The fields each application-backend operation declares. An unsessioned
+#: refusal must name none of them: ``unknown_parameter`` would enumerate them.
+_DECLARED_FIELDS = {
+    "/app/scan": ("directory", "max_depth"),
+    "/app/ingest": ("files", "dry_run", "infer_edges"),
+}
+
+_SCAN_BODY = {"vault_id": "cas", "directory": "/tmp"}
+_INGEST_BODY = {
+    "vault_id": "cas",
+    "files": [{"file_path": "/tmp/x.md", "source_type": "markdown"}],
+}
+
+
+@pytest.mark.parametrize(
+    ("path", "body", "params"),
+    [
+        ("/app/scan", _SCAN_BODY, {}),
+        ("/app/scan", _SCAN_BODY, {"bogus_q": "1"}),
+        ("/app/scan", {**_SCAN_BODY, "bogus_field_x": 1}, {}),
+        ("/app/scan", {"directory": "/tmp"}, {}),
+        ("/app/ingest", _INGEST_BODY, {}),
+        ("/app/ingest", _INGEST_BODY, {"bogus_q": "1"}),
+        ("/app/ingest", {**_INGEST_BODY, "bogus_field_x": 1}, {}),
+        ("/app/ingest", {"files": []}, {}),
+    ],
+    ids=[
+        "scan_well_formed",
+        "scan_query_parameter",
+        "scan_body_field",
+        "scan_invalid_body",
+        "ingest_well_formed",
+        "ingest_query_parameter",
+        "ingest_body_field",
+        "ingest_invalid_body",
+    ],
+)
+async def test_app_019_scan_ingest_refuse_without_a_session(path, body, params):
+    """Without a session, scan and ingest answer `auth_required` 401 before the
+    request-name refusal, body validation, or the profile boundary run.
+
+    Anti-coincidental-pass: ungated, the well-formed rows answer the
+    `local_profile_only` 501, the undeclared-name rows the `unknown_parameter`
+    400, and the invalid-body rows a validation 400. A session requirement that
+    ran after the request-name refusal would still answer those rows with 400s
+    whose `valid_params` enumerates the declared fields, which the name check
+    below rejects.
+    """
+    app = await _auth_app(with_session=False)
+
+    async with _client(app) as client:
+        response = await client.post(path, params=params, json=body)
+
+    assert response.status_code == 401, response.text
+    assert response.json()["code"] == "auth_required"
+    assert "valid_params" not in response.text
+    for field in _DECLARED_FIELDS[path]:
+        assert field not in response.text, (field, response.text)
+
+
+@pytest.mark.parametrize("cookie", ["unknown-session", "sid-expired"])
+async def test_app_019b_unknown_or_expired_session_cookie_is_refused(cookie):
+    """A cookie naming no live session is refused like no cookie at all.
+
+    Anti-coincidental-pass: a requirement that checked only for the cookie's
+    presence would let both rows through to the 501.
+    """
+    app = await _auth_app(with_session=False)
+    expired = Session(
+        session_id="sid-expired",
+        subject="user-1",
+        claims={},
+        token_cache="cache-blob",
+        expires_at=time.time() - 1,
+    )
+    await app.state.bff_auth.store.create_session(expired)
+
+    async with _sessioned_client(app, cookie) as client:
+        response = await client.post("/app/scan", json=_SCAN_BODY)
+
+    assert response.status_code == 401
+    assert response.json()["code"] == "auth_required"
+
+
+async def test_app_020_scan_refusal_matches_the_proxy_refusal():
+    """The application-backend routes and the SAGE proxy refuse an unsessioned
+    request with the same envelope.
+
+    Anti-coincidental-pass: a refusal authored separately from the proxy's
+    would drift in its message and fail the equality.
+    """
+    app = await _auth_app(with_session=False)
+
+    async with _client(app) as client:
+        scan = await client.post("/app/scan", json=_SCAN_BODY)
+        proxied = await client.get("/sage_vaults/cas/stats")
+
+    assert scan.status_code == proxied.status_code == 401
+    assert scan.json() == proxied.json()
+
+
+async def test_app_021_scan_without_auth_configured_returns_503():
+    """With sign-in unconfigured, scan answers `auth_not_configured` 503, as the
+    proxy does, rather than reaching the profile boundary.
+
+    Anti-coincidental-pass: a requirement that passed the request through when
+    no auth context exists would answer the `local_profile_only` 501.
+    """
+    app = create_bff_app(stack_config=SageCoreConfig(profile="cloud"))
+
+    async with _client(app) as client:
+        response = await client.post("/app/scan", json=_SCAN_BODY)
+
+    assert response.status_code == 503
+    assert response.json()["code"] == "auth_not_configured"
+
+
+async def test_app_022_undecodable_body_names_no_declared_field():
+    """An unsessioned request whose body is not JSON never reaches the route, and
+    its answer names no declared field.
+
+    The framework decodes a JSON body before it resolves dependencies, so this
+    answer may precede the session requirement; the test holds only what that
+    answer may disclose, whichever check produces it.
+
+    Anti-coincidental-pass: an answer that reached the route would be the 501;
+    one that enumerated the operation's fields would carry their names.
+    """
+    app = await _auth_app(with_session=False)
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/app/scan", content=b"{", headers={"content-type": "application/json"}
+        )
+
+    assert 400 <= response.status_code < 500, response.text
+    assert response.status_code != 501
+    for field in _DECLARED_FIELDS["/app/scan"]:
+        assert field not in response.text, (field, response.text)
+
+
+#: Routes of the standalone app that answer without a signed-in session, each
+#: with the reason. Every other route must depend on ``require_session``.
+SESSION_EXEMPT_ROUTES: dict[str, str] = {
+    "/app/auth/login": "begins sign-in, so it cannot require a session",
+    "/app/auth/callback": "completes sign-in and opens the session",
+    "/app/auth/me": "reports whether a session exists",
+    "/app/auth/logout": "ends a session, and is harmless without one",
+    "/health": "container liveness probe, constant and store-free",
+    "/{spa_path:path}": "the SPA shell, which renders the sign-in surface",
+    "/assets": "the SPA's static bundle",
+    "/openapi.json": "the generated schema of the published operations",
+    "/docs": "interactive documentation of the published operations",
+    "/docs/oauth2-redirect": "interactive documentation of the published operations",
+    "/redoc": "interactive documentation of the published operations",
+}
+
+
+def _requires_session(route: object) -> bool:
+    """Whether a route's dependency tree includes ``require_session``."""
+    dependant = getattr(route, "dependant", None)
+    if dependant is None:
+        return False
+    pending = [dependant]
+    while pending:
+        current = pending.pop()
+        if current.call is require_session:
+            return True
+        pending.extend(current.dependencies)
+    return False
+
+
+def test_app_023_every_route_is_session_gated_or_exempt(tmp_path):
+    """Every route the standalone app serves either requires a signed-in session
+    or is on the exemption list, and every exemption names an ungated route the
+    app serves. A route later added to the application-backend router inherits
+    the requirement, and one added elsewhere fails here until it is gated or
+    exempted with a reason.
+
+    Anti-coincidental-pass: the SPA bundle and its assets directory are staged so
+    the catch-all and static mount exist; without them their exemptions would be
+    stale and fail the second check rather than be exercised.
+    """
+    (tmp_path / "index.html").write_text("<!doctype html>")
+    (tmp_path / "assets").mkdir()
+    app = create_bff_app(spa_dir=tmp_path, stack_config=SageCoreConfig(profile="cloud"))
+
+    served = {route.path: _requires_session(route) for route in app.routes}
+
+    ungated = sorted(
+        p for p, gated in served.items() if not gated and p not in SESSION_EXEMPT_ROUTES
+    )
+    assert not ungated, f"routes neither session-gated nor exempt: {ungated}"
+    stale = sorted(p for p in SESSION_EXEMPT_ROUTES if served.get(p, True))
+    assert not stale, f"exemptions naming a gated or absent route: {stale}"
+    assert served["/app/scan"] and served["/app/ingest"]
+
+
+def test_app_023b_gate_detector_has_teeth():
+    """The detector distinguishes a gated route from an ungated one, so the gate
+    above is not satisfied vacuously."""
+    probe = FastAPI()
+
+    @probe.get("/open")
+    async def _open() -> None:
+        return None
+
+    @probe.get("/gated", dependencies=[Depends(require_session)])
+    async def _gated() -> None:
+        return None
+
+    classified = {route.path: _requires_session(route) for route in probe.routes}
+    assert classified["/open"] is False
+    assert classified["/gated"] is True
+
+
+def test_app_024_co_located_router_is_not_session_gated(tmp_path):
+    """The co-located application includes the same router without the session
+    requirement, and the router itself does not carry it: the requirement is
+    attached where the standalone app includes the router.
+
+    Anti-coincidental-pass: attaching the requirement to the router, or to each
+    route, would also pass APP-019 and APP-023, but would gate the co-located
+    local profile, which has no identity to present.
+    """
+    from app.backend.router import router as app_backend_router
+    from sage.app import create_app
+    from sage.config import VaultConfig
+    from tests.app.test_app_backend import _make_vault_config_dict
+
+    assert all(d.dependency is not require_session for d in app_backend_router.dependencies)
+
+    config = VaultConfig.model_validate(_make_vault_config_dict(tmp_path, "example_vault", "Ex"))
+    co_located = create_app(config=config)
+    routes = {getattr(r, "path", None): r for r in co_located.routes}
+    for path in ("/app/scan", "/app/ingest"):
+        assert path in routes
+        assert not _requires_session(routes[path]), path

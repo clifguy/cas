@@ -230,4 +230,13 @@ describe('detectIngestProfile', () => {
     expect(await detectIngestProfile('v1')).toBe('co-located');
     expect(apiPostMock).not.toHaveBeenCalled();
   });
+
+  it('D5: an auth_required probe rethrows, resolving to neither profile', async () => {
+    // A lapsed session answers the probe with auth_required, which says
+    // nothing about the deployment profile; resolving it to co-located would
+    // render the directory scan on the hosted profile.
+    const refusal = new ApiError('auth_required', 'A signed-in session is required.');
+    apiPostMock.mockRejectedValue(refusal);
+    await expect(detectIngestProfile('v1')).rejects.toBe(refusal);
+  });
 });

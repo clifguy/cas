@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, Outlet } from 'react-router';
 import Ingest from '../Ingest';
 import * as ingestApi from '../../api/ingest';
+import { ApiError } from '../../api/client';
 import type { VaultContext } from '../../App';
 import type { VaultSummary, BatchIngestEvent } from '../../api/types';
 
@@ -78,6 +79,22 @@ describe('Ingest view — co-located profile', () => {
   it('shows vault not found for unknown vault', () => {
     render(<TestWrapper vaultId="nonexistent" vault={null} />);
     expect(screen.getByText('Vault not found.')).toBeInTheDocument();
+  });
+});
+
+describe('Ingest view — profile probe refused for a lapsed session', () => {
+  it('E4: renders neither affordance and leaves no unhandled rejection', async () => {
+    detectIngestProfileMock.mockRejectedValue(
+      new ApiError('auth_required', 'A signed-in session is required.'),
+    );
+    render(<TestWrapper vaultId="example_vault" vault={mockVault} />);
+
+    await waitFor(() => expect(detectIngestProfileMock).toHaveBeenCalled());
+    // Let the rejected probe settle before asserting the view held its state.
+    await act(async () => {});
+    expect(screen.getByText(/Detecting deployment profile/)).toBeInTheDocument();
+    expect(screen.queryByPlaceholderText('/path/to/source/directory')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('upload-file-input')).not.toBeInTheDocument();
   });
 });
 

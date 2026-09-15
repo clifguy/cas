@@ -38,9 +38,13 @@ info:
   description: >-
     HTTP API for the CAS Application backend. Provides workflow tools
     (directory scan, batch ingest with two-phase edge inference) that
-    wrap SAGE Core operations behind UI-oriented entry points. Mounted
-    at the /app prefix on the same FastAPI server that hosts the SAGE
-    Core API.
+    wrap SAGE Core operations behind UI-oriented entry points, mounted at
+    the /app prefix. In the local profile they are served by the same
+    FastAPI server that hosts the SAGE Core API, and walk that server's
+    filesystem. A hosted deployment serves them from a separate
+    backend-for-frontend that shares no filesystem with SAGE, where the
+    directory scan and path-based ingest answer 501 and file content is
+    uploaded to the SAGE Core API's batch-ingest endpoint instead.
   contact:
     name: CAS Project
   license:
@@ -58,13 +62,16 @@ servers:
   - url: http://localhost:8000
     description: Local profile (FastAPI).
 
-# No `securitySchemes` block, and no operation-level `security`: the `/app/*`
-# routes below are not gated at the application layer. Identity is enforced
-# ahead of the app, and the `cas_session` cookie opened by the OIDC callback
+# No `securitySchemes` block, and no operation-level `security`. A hosted
+# deployment requires the `cas_session` cookie opened by the OIDC callback on
+# `/app/scan` and `/app/ingest`, and refuses a request without a signed-in
+# session with `auth_required` 401 before the request is otherwise examined; the
+# local profile carries no identity and requires nothing. The cookie also
 # governs on-behalf-of access to the SAGE Core API through the proxy routes --
 # which are the SAGE Core API's own surface and are specified there, not here.
-# The asymmetry with the SAGE Core API spec (which does declare a bearer
-# scheme on every operation) is therefore accurate rather than an omission.
+# A session cookie is not a bearer scheme, which is why the asymmetry with the
+# SAGE Core API spec (which declares one on every operation) is accurate rather
+# than an omission.
 
 # Tag declarations for the groups the operations below reference. The server
 # that hosts these routes also hosts the SAGE Core API and publishes both as one
@@ -148,9 +155,26 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: >-
+            `auth_required`: a hosted deployment received the request without
+            a signed-in session. Sign in and retry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
             `vault_not_found`: no vault with that id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "501":
+          description: >-
+            `local_profile_only`: a hosted deployment received the request.
+            Its backend shares no filesystem with SAGE, so it cannot walk a
+            directory.
           content:
             application/json:
               schema:
@@ -248,9 +272,27 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: >-
+            `auth_required`: a hosted deployment received the request without
+            a signed-in session. Sign in and retry.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
             `vault_not_found`: no vault with that id.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "501":
+          description: >-
+            `local_profile_only`: a hosted deployment received the request.
+            Its backend shares no filesystem with SAGE, so it cannot read files
+            by path; upload their content to the SAGE Core API's batch-ingest
+            endpoint instead.
           content:
             application/json:
               schema:

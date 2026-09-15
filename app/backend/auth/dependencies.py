@@ -5,7 +5,9 @@ Auth is gated on configuration presence: when ``app.state.bff_auth`` is unset
 -- every auth dependency raises a structured ``auth_not_configured`` 503, so
 the auth routes exist but are inert and the rest of the application backend is
 unaffected. The ``get_*_service`` factories are the load-bearing entry points
-the router-conformance gate recognizes.
+the router-conformance gate recognizes. ``require_session`` is the session
+requirement the standalone backend-for-frontend places on every route that is
+not part of signing in.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from fastapi import Request
 
 from app.backend.auth.config import BffAuthContext, BffAuthSettings
 from app.backend.auth.oidc import OidcService
-from app.backend.auth.session_store import SessionService, SessionStore
+from app.backend.auth.session_store import Session, SessionService, SessionStore
 from sage.api.errors import SAGEError
 
 
@@ -49,3 +51,20 @@ def get_session_service(request: Request) -> SessionService:
     """Build the cookie-facing session service, or raise ``auth_not_configured``."""
     context = _context(request)
     return SessionService(store=context.store, settings=context.settings)
+
+
+async def require_session(request: Request) -> Session:
+    """Resolve the caller's signed-in session, or refuse the request.
+
+    Raises the structured ``auth_required`` 401 when the session cookie is
+    absent or names no live session, and ``auth_not_configured`` 503 when
+    sign-in is not configured. Attached as a dependency, it runs before the
+    route's own parameters are bound or refused, so an unsessioned caller
+    learns nothing about them.
+    """
+    context = _context(request)
+    sessions = SessionService(store=context.store, settings=context.settings)
+    session = await sessions.read(request.cookies.get(context.settings.session_cookie_name))
+    if session is None:
+        raise SAGEError("auth_required", "A signed-in session is required.", 401)
+    return session
