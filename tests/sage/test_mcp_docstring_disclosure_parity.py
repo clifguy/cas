@@ -100,6 +100,7 @@ from typing import Final, NamedTuple
 
 import pytest
 
+from tests.helpers.docstring_blocks import ERROR_MODES_HEADER
 from tests.sage.test_mcp_tool_conformance import (
     _SURFACES_BY_NAME,
     _all_registered_tools,
@@ -134,11 +135,12 @@ MIN_CLAIM_WORDS: Final[int] = 5
 # first of these onward is structural content the spec expresses in
 # other nodes, which their own gates compare. An error-mode list may carry a
 # qualifier -- "Per-item error modes (inside the response envelope):" -- that
-# scopes the list and can wrap lines; it is still the list, not narrative.
+# scopes the list and can wrap lines; it is still the list, not narrative. Its
+# grammar is the shared one the error-mode block reader uses.
 _STRUCTURAL_HEADER: Final[re.Pattern[str]] = re.compile(
-    r"^[ \t]*(Args:|Arguments:|Error modes:|Returns:|Raises:|Note:|Notes:|"
+    r"^[ \t]*(Args:|Arguments:|Returns:|Raises:|Note:|Notes:|"
     r"Worked example|Example[s]?:|Example$|"
-    r"(?:[A-Z][\w-]*[ \t]+)?[Ee]rror modes[ \t]*\([^)]*\):)",
+    rf"{ERROR_MODES_HEADER})",
     re.MULTILINE,
 )
 

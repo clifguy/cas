@@ -14,14 +14,20 @@ from collections.abc import Callable
 from typing import Final
 
 # A tool's error-mode list is introduced by a line-initial header naming
-# "error modes", optionally qualified -- "Error modes:", "Error modes (raised
-# synchronously ...):", "Batch-level error modes (...):". The qualifier scopes
-# the list rather than renaming it, and wraps across lines, so keying on the
-# bare spelling read three enumerations as absent and reported tools that
-# disclose correctly. The bound on the qualifier keeps a colon far below a
-# prose mention of the phrase from opening a block that was never declared.
+# "error modes", optionally led by one word and optionally qualified in
+# parentheses -- "Error modes:", "Error modes (raised synchronously ...):",
+# "Batch-level error modes (...):". The qualifier scopes the list rather than
+# renaming it and may wrap across lines, so keying on the bare spelling read
+# three enumerations as absent. The colon must follow the phrase or its
+# parenthesised qualifier directly: a sentence that mentions the phrase is
+# narrative, and reading it through to a later colon would open a block at an
+# ``Args:`` header and report argument prose as declared error modes.
+#
+# The fragment is shared, so every gate that decides where an error-mode list
+# begins reads the same grammar.
+ERROR_MODES_HEADER: Final[str] = r"(?:[A-Z][\w-]*[ \t]+)?[Ee]rror modes(?:[ \t]*\([^)]*\))?:"
 ERROR_MODES_HEADER_RE: Final[re.Pattern[str]] = re.compile(
-    r"^[^\n:]*[Ee]rror modes\b[^:]{0,240}?:", re.MULTILINE
+    rf"^[ \t]*{ERROR_MODES_HEADER}", re.MULTILINE
 )
 
 

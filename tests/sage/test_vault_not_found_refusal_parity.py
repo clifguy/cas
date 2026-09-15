@@ -41,13 +41,20 @@ _SPECS: Final[dict[str, Path]] = {
 GHOST: Final[str] = "ghost_vault"
 _DOCUMENT_ID: Final[str] = "deadbeef_absent_document"
 _EDGE_ID: Final[str] = "00000000-0000-4000-8000-000000000000"
+_ALIAS_VAULT: Final[str] = "aaa_alias_vault"
 
 
 @pytest.fixture
 async def shared_app(
     minimal_vault_config_dict: dict, tmp_vault_dir: Path
 ) -> AsyncIterator[tuple[FastAPI, str]]:
-    """One app with one registered vault, its MCP mounts and routes sharing the registry."""
+    """One app whose MCP mounts and routes share a registry holding two vault ids.
+
+    The second id is an alias of the first vault's services, registered after it
+    and sorting before it. A refusal that reports only one registered vault, or
+    reports them in registration order, then differs from the expected roster --
+    which a registry of one cannot show.
+    """
     config = VaultConfig.model_validate(minimal_vault_config_dict)
 
     from sage.app import _initialize_services, create_app
@@ -60,10 +67,12 @@ async def shared_app(
         config,
         content_store_factory=lambda _brain: StubContentStore(),
     )
+    registry[_ALIAS_VAULT] = registry[config.vault.id]
     try:
         yield app, config.vault.id
     finally:
         await asyncio.sleep(0.1)
+        registry.pop(_ALIAS_VAULT, None)
         for vault_id in set(registry) - before:
             services = registry.pop(vault_id)
             services.close_timing()
@@ -136,7 +145,7 @@ async def test_unregistered_vault_is_refused_alike_on_both_surfaces(
     """VN-1: same code, detail and message from the tool and the operation."""
     app, vault_id = shared_app
     registered = sorted(app.state.vault_registry)
-    assert vault_id in registered
+    assert registered == [_ALIAS_VAULT, vault_id]
 
     via_tool = tool_payload(
         await app.state.mcp_mounts[mount].call_tool(tool, {"vault_id": GHOST, **arguments})
