@@ -606,7 +606,8 @@ async def test_app_018_shutdown_closes_postgres_credential(monkeypatch):
 # APP-019 -- APP-024: every non-exempt route requires a signed-in session
 # ---------------------------------------------------------------------------
 
-#: The fields each application-backend operation declares. The unsessioned
+#: The fields each application-backend operation declares beyond ``vault_id``,
+#: which both share and no refusal envelope carries. The unsessioned
 #: refusal is the same for every request shape, so it names none of them, where
 #: ``unknown_parameter`` would. The names are published in the specification;
 #: the property held is that the refusal does not vary with the request.
@@ -809,7 +810,9 @@ def test_app_023_every_route_is_session_gated_or_exempt(tmp_path):
         if not any(path == p for path, _ in census) or any(path == p and g for path, g in census)
     )
     assert not stale, f"exemptions naming a gated or absent route: {stale}"
-    assert all(gated for path, gated in census if path in ("/app/scan", "/app/ingest"))
+    gated_app_routes = {p: g for p, g in census if p in ("/app/scan", "/app/ingest")}
+    assert set(gated_app_routes) == {"/app/scan", "/app/ingest"}, gated_app_routes
+    assert all(gated_app_routes.values()), gated_app_routes
 
 
 def test_app_023b_gate_detector_has_teeth():

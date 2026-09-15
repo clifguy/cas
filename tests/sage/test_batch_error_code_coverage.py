@@ -620,8 +620,9 @@ def test_batch_operations_declare_no_per_file_status():
     Declaring the store-refusal statuses, or any other per-file status, on a
     batch operation would name responses it cannot return. The application
     operation also declares 401, 501 and 503, each a refusal of the whole request
-    before any file is examined: a hosted deployment requires a signed-in
-    session and a configured sign-in, and does not offer path-based ingest.
+    before any file is examined: a hosted deployment's backend-for-frontend
+    requires a signed-in session and a configured sign-in, and does not offer
+    path-based ingest.
     """
     expected = {
         "sage_core": {"200", "400", "404"},

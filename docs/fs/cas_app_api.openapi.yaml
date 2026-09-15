@@ -39,12 +39,13 @@ info:
     HTTP API for the CAS Application backend. Provides workflow tools
     (directory scan, batch ingest with two-phase edge inference) that
     wrap SAGE Core operations behind UI-oriented entry points, mounted at
-    the /app prefix. In the local profile they are served by the same
-    FastAPI server that hosts the SAGE Core API, and walk that server's
-    filesystem. A hosted deployment serves them from a separate
-    backend-for-frontend that shares no filesystem with SAGE, where the
-    directory scan and path-based ingest answer 501 and file content is
-    uploaded to the SAGE Core API's batch-ingest endpoint instead.
+    the /app prefix. The server that hosts the SAGE Core API serves them,
+    walking its own filesystem, under every profile, authenticated as the
+    Core API is. A hosted deployment also serves them from the separate
+    backend-for-frontend its single-page app is reached through; that
+    process shares no filesystem with SAGE, so there the directory scan and
+    path-based ingest answer 501 and file content is uploaded to the SAGE
+    Core API's batch-ingest endpoint instead.
   contact:
     name: CAS Project
   license:
@@ -63,11 +64,12 @@ servers:
     description: Local profile (FastAPI).
 
 # No `securitySchemes` block, and no operation-level `security`. A hosted
-# deployment requires the `cas_session` cookie opened by the OIDC callback on
-# `/app/scan` and `/app/ingest`, and refuses a request without a signed-in
+# deployment's backend-for-frontend requires the `cas_session` cookie opened by
+# the OIDC callback on `/app/scan` and `/app/ingest`, and refuses a request without a signed-in
 # session with `auth_required` 401 before its parameters are bound or refused, so
-# the refusal is the same whatever the request carries; the local profile
-# carries no identity and requires nothing. The cookie also
+# the refusal is the same whatever the request carries; the server hosting the
+# SAGE Core API authenticates these routes as it does the Core API, and the local
+# profile carries no identity and requires nothing. The cookie also
 # governs on-behalf-of access to the SAGE Core API through the proxy routes --
 # which are the SAGE Core API's own surface and are specified there, not here.
 # The cookie is expressible as an `apiKey` scheme `in: cookie`; it is not
@@ -160,8 +162,8 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "401":
           description: >-
-            `auth_required`: a hosted deployment received the request without
-            a signed-in session. Sign in and retry.
+            `auth_required`: a hosted deployment's backend-for-frontend
+            received the request without a signed-in session. Sign in and retry.
           content:
             application/json:
               schema:
@@ -175,7 +177,8 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "501":
           description: >-
-            `local_profile_only`: a hosted deployment received the request.
+            `local_profile_only`: a hosted deployment's backend-for-frontend
+            received the request.
             Its backend shares no filesystem with SAGE, so it cannot walk a
             directory.
           content:
@@ -184,8 +187,9 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "503":
           description: >-
-            `auth_not_configured`: a hosted deployment received the request,
-            and interactive sign-in is not configured for it.
+            `auth_not_configured`: a hosted deployment's backend-for-frontend
+            received the request, and interactive sign-in is not configured for
+            it.
           content:
             application/json:
               schema:
@@ -285,8 +289,8 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "401":
           description: >-
-            `auth_required`: a hosted deployment received the request without
-            a signed-in session. Sign in and retry.
+            `auth_required`: a hosted deployment's backend-for-frontend
+            received the request without a signed-in session. Sign in and retry.
           content:
             application/json:
               schema:
@@ -300,7 +304,8 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "501":
           description: >-
-            `local_profile_only`: a hosted deployment received the request.
+            `local_profile_only`: a hosted deployment's backend-for-frontend
+            received the request.
             Its backend shares no filesystem with SAGE, so it cannot read files
             by path; upload their content to the SAGE Core API's batch-ingest
             endpoint instead.
@@ -310,8 +315,9 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "503":
           description: >-
-            `auth_not_configured`: a hosted deployment received the request,
-            and interactive sign-in is not configured for it.
+            `auth_not_configured`: a hosted deployment's backend-for-frontend
+            received the request, and interactive sign-in is not configured for
+            it.
           content:
             application/json:
               schema:
