@@ -478,12 +478,15 @@ def pair_divergence(
 ENROLLED_PAIRS: Final[frozenset[tuple[str, str]]] = frozenset(
     {
         ("sage_core", "chain"),
+        ("sage_core", "export_projection"),
+        ("sage_core", "get_default_vault_config"),
         ("sage_core", "get_stack_config"),
         ("sage_core", "list_headings"),
         ("sage_core", "list_staging_edges"),
         ("sage_core", "recompute_pipeline"),
         ("sage_core", "reload_vault"),
         ("sage_core", "verify_preconditions"),
+        ("sage_core", "verify_vault_retrieval"),
     }
 )
 

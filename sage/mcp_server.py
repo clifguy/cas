@@ -439,6 +439,9 @@ recompute_deferred_vault_abstracts = _sage_tools["recompute_deferred_vault_abstr
 optimize_vault_content_store = _sage_tools["optimize_vault_content_store"]
 reload_vault = _sage_tools["reload_vault"]
 get_stack_config = _sage_tools["get_stack_config"]
+get_default_vault_config = _sage_tools["get_default_vault_config"]
+verify_vault_retrieval = _sage_tools["verify_vault_retrieval"]
+export_projection = _sage_tools["export_projection"]
 
 list_directory = _app_tools["list_directory"]
 bulk_ingest_document = _app_tools["bulk_ingest_document"]

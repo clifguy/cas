@@ -811,6 +811,25 @@ async def test_export_nonexistent_document(utilities_service):
         await utilities_service.export_projection("nonexistent", "output.md")
 
 
+async def test_bh040a_export_refused_without_caller_filesystem_before_read(
+    utilities_service, monkeypatch
+):
+    """Without a caller-visible filesystem the export is refused before any read.
+
+    The document does not exist, so a refusal made after the read would
+    surface as ``DocumentNotFoundError`` instead.
+    """
+    from sage.api.errors import CallerFilesystemUnavailableError
+
+    monkeypatch.setattr("sage.mcp_init.caller_local_filesystem_reachable", lambda: False)
+
+    with pytest.raises(CallerFilesystemUnavailableError) as exc_info:
+        await utilities_service.export_projection("nonexistent", "output.md")
+
+    assert exc_info.value.status_code == 501
+    assert exc_info.value.detail["operation"] == "export_projection"
+
+
 # ---------------------------------------------------------------------------
 # Closure-pair tests for the three thin Document-field pulls in
 # sage/services/utilities.py. Each ``from_document`` factory consolidates a

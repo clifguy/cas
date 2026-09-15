@@ -223,22 +223,6 @@ REST_ONLY_OPERATIONS: Final[dict[tuple[str, str], Divergence]] = {
         "caller-delivered bulk ingest through bulk_ingest_document and the transfer "
         "channel.",
     ),
-    ("sage_core", "eval_retrieval"): Divergence(
-        _PR,
-        "No protocol reason is recorded for keeping retrieval evaluation off MCP. "
-        "Closes when a tool serves it or a category is established.",
-    ),
-    ("sage_core", "get_default_vault_config"): Divergence(
-        _PR,
-        "Justified as reachable in-process, which a remote MCP agent is not. Closes "
-        "when a tool serves the creation-time scaffold.",
-    ),
-    ("sage_core", "export_projection"): Divergence(
-        _PR,
-        "A storage-root-relative write has no MCP equivalent; read_projection writes "
-        "only to an absolute caller path. Closes when the two write forms are "
-        "reconciled.",
-    ),
     ("sage_core", "get_editors"): _EDITOR_MODEL,
     ("sage_core", "set_editors"): _EDITOR_MODEL,
     ("cas_app", "begin_login"): Divergence(

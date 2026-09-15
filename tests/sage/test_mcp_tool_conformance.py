@@ -694,7 +694,7 @@ def test_pending_remediation_lines_list_exactly_the_pending_entries():
 
     # Population pin: recategorizing or remediating an entry is a deliberate
     # edit here as well as in the register.
-    assert len(pending) == 14
+    assert len(pending) == 11
     assert len(lines) == len(pending)
     for name, key in pending:
         entry = dict(REGISTERS)[name][key]
@@ -1109,6 +1109,10 @@ EXPECTED_ANNOTATIONS: dict[str, tuple[bool, bool | None, bool]] = {
     "get_stack_config": (True, None, False),
     "verify_vault_drift": (True, None, False),
     "verify_vault_source_files": (True, None, False),
+    # Runs discover queries and reports a verdict; writes nothing.
+    "verify_vault_retrieval": (True, None, False),
+    # Builds a scaffold for a vault that need not exist; creates nothing.
+    "get_default_vault_config": (True, None, False),
     # -- Write, additive only ----------------------------------------
     # Idempotent on the natural key; inserts only.
     "create_edges": (False, False, False),
@@ -1154,6 +1158,9 @@ EXPECTED_ANNOTATIONS: dict[str, tuple[bool, bool | None, bool]] = {
     # the drifted one an operator asked to have repaired, but the bytes it
     # writes over are unrecoverable, so this is not additive.
     "restore_vault_source_file": (False, True, False),
+    # Writes into the vault's storage root and overwrites a file already at
+    # the target, whatever it held.
+    "export_projection": (False, True, False),
 }
 
 

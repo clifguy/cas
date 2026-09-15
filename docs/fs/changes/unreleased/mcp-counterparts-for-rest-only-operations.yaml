@@ -1,0 +1,37 @@
+classification: minor
+category:
+  - capability
+  - caller-adaptation
+summary: >-
+  The three capabilities the Core API offered alone gain maintenance-surface MCP tools,
+  each calling the same service entry point as its operation: get_default_vault_config
+  (GET /sage_vaults/default-config), verify_vault_retrieval
+  (POST /sage_vaults/{vault_id}/eval-retrieval) and export_projection
+  (POST /sage_vaults/{vault_id}/documents/{document_id}/export). The retrieval-health
+  operation's operationId changes from eval_retrieval to verify_vault_retrieval so the
+  operation and its tool share one name; its path is unchanged. The ROOT Harness policy
+  schema's permitted_operations enum names the operation by its new identifier, and the
+  vault configuration schema's retrieval_health description (with its Pydantic twin)
+  names the operation rather than the retired identifier. export_projection now
+  refuses under the cloud profile with caller_filesystem_unavailable (501) before any
+  read, declared on the operation and the tool alike, and its description states that
+  missing parent directories are created and an existing target is overwritten. An
+  output_path outside the storage root is now refused with path_traversal_denied before
+  the document is read, so a missing document no longer answers document_not_found
+  for a call whose argument is the problem. The
+  get_default_vault_config description drops its note about the CAS Application's
+  create-vault form and names create_vault as the consumer of the completed scaffold.
+  The MCP tool catalog adds the three tools to the sage_maint surface, and the
+  create_vault tool's description now points to the get_default_vault_config tool and
+  names its required and optional sections as the vault configuration schema declares
+  them, timing included, and the get_vault_stats tool's description no longer claims
+  retrieval-health checks the statistics never carried.
+for_callers: >-
+  An MCP caller on the maintenance surface can now fetch the creation-time vault
+  scaffold, run a vault's retrieval-health assertions, and export a document's
+  projection into the vault's storage root, with the same results and refusals as the
+  REST operations. A client generated from the OpenAPI document that calls the
+  retrieval-health operation by its operationId must use verify_vault_retrieval. An
+  export under the cloud profile, on either surface, is refused with
+  caller_filesystem_unavailable (501) rather than writing a file on the server that
+  the caller cannot reach; read_projection delivers the projection instead.

@@ -193,7 +193,7 @@
     },
     "retrieval_health": {
       "type": "object",
-      "description": "Configuration for retrieval health smoke tests (eval_retrieval endpoint).",
+      "description": "Configuration for retrieval health smoke tests (verify_vault_retrieval operation).",
       "additionalProperties": false,
       "properties": {
         "assertions_file": {
