@@ -150,7 +150,8 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
-            `vault_not_found`: no vault with that id.
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:
@@ -250,7 +251,8 @@ paths:
                 $ref: "#/components/schemas/ErrorResponse"
         "404":
           description: >-
-            `vault_not_found`: no vault with that id.
+            `vault_not_found`: no vault registered with that id;
+            `detail.available_vaults` lists the registered vaults.
           content:
             application/json:
               schema:

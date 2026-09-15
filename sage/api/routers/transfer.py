@@ -177,7 +177,7 @@ async def transfer_download(
         registry = request.app.state.vault_registry
         services = registry.get(entry.vault_id)
         if services is None:
-            raise VaultNotFoundError(entry.vault_id)
+            raise VaultNotFoundError(entry.vault_id, available_vaults=registry)
         from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
 
         source_store = resolve_stack_vault_source_store(get_stack_config())

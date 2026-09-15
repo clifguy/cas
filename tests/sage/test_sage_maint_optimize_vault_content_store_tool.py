@@ -71,10 +71,10 @@ async def test_optimize_vault_content_store_invalid_vault_id_shape_returns_error
 
 
 async def test_optimize_vault_content_store_unknown_vault_returns_error_envelope():
-    """An unregistered vault_id returns the unknown_vault envelope."""
+    """An unregistered vault_id returns the vault_not_found envelope."""
     result = await mcp_server.optimize_vault_content_store(vault_id="ghost")
 
     assert isinstance(result, dict)
-    assert result.get("error") == "unknown_vault", (
-        f"expected unknown_vault envelope, got {result!r}"
+    assert result.get("error") == "vault_not_found", (
+        f"expected vault_not_found envelope, got {result!r}"
     )

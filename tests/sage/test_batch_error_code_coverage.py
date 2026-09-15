@@ -92,7 +92,7 @@ UNREACHABLE_PER_FILE: dict[str, tuple[str, ...]] = {
 #: Codes the single-document ingest declares that a batch refuses once, for the
 #: whole call, before any file is attempted -- so they surface as the batch
 #: operation's own status and never as a per-file entry.
-BATCH_BOUNDARY: frozenset[str] = frozenset({"invalid_vault_id"})
+BATCH_BOUNDARY: frozenset[str] = frozenset({"invalid_vault_id", "vault_not_found"})
 
 #: Codes a request surface refuses at its boundary, before any operation runs,
 #: for a name the operation does not declare. A batch file carries no request of

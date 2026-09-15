@@ -119,10 +119,10 @@ router = APIRouter(tags=["Ingestion"])
         404: {
             "model": ErrorResponse,
             "description": (
-                "`source_file_not_found`: `source` does not resolve to a "
-                "readable file on disk; or vault not found.\n\n"
-                "`document_not_found`: `predecessor_id` names no document in "
-                "the vault."
+                "`source_file_not_found`: `source` does not resolve to a readable file on disk.\n\n"
+                "`document_not_found`: `predecessor_id` names no document in the vault.\n\n"
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
             ),
         },
         409: {
@@ -300,7 +300,10 @@ async def ingest(
         ),
         404: {
             "model": ErrorResponse,
-            "description": "`vault_not_found`: no vault registered with that id.",
+            "description": (
+                "`vault_not_found`: no vault registered with that id; "
+                "`detail.available_vaults` lists the registered vaults."
+            ),
         },
     },
 )

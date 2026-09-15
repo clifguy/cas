@@ -56,7 +56,7 @@ def _get_services(request: Request, vault_id: str) -> SAGEServices:
             501,
         )
     if vault_id not in registry:
-        raise VaultNotFoundError(vault_id)
+        raise VaultNotFoundError(vault_id, available_vaults=registry)
     return registry[vault_id]
 
 

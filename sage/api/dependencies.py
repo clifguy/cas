@@ -112,7 +112,7 @@ def _get_services(request: Request, vault_id: str) -> SAGEServices:
     """Look up SAGEServices for a vault_id that has already passed shape and registry checks."""
     registry: dict[str, SAGEServices] = request.app.state.vault_registry
     if vault_id not in registry:
-        raise VaultNotFoundError(vault_id)
+        raise VaultNotFoundError(vault_id, available_vaults=registry)
     return registry[vault_id]
 
 
@@ -142,7 +142,7 @@ async def get_vault_id(
     """
     registry: dict[str, SAGEServices] = request.app.state.vault_registry
     if vault_id not in registry:
-        raise VaultNotFoundError(vault_id)
+        raise VaultNotFoundError(vault_id, available_vaults=registry)
     return vault_id
 
 

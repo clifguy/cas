@@ -171,8 +171,8 @@ add to the config.
 **Category:** mcp_tool, sage_api
 
 **Decision:** `get_vault_config(vault_id)` returns
-`services.config.model_dump()`. Unknown `vault_id` returns an
-`unknown_vault` error.
+`services.config.model_dump()`. Unknown `vault_id` returns a
+`vault_not_found` error.
 
 **Precondition:** A vault `test_vault` is registered.
 
@@ -185,7 +185,7 @@ add to the config.
   (`vault`, `document_types`, `lifecycle`, `metadata_extraction`,
   `edge_inference`).
 - `result["vault"]["id"] == "test_vault"`.
-- Second call returns an error dict with `error == "unknown_vault"`.
+- Second call returns an error dict with `error == "vault_not_found"`.
 
 **Rationale:** Agents need to inspect current config before proposing
 an update.

@@ -375,7 +375,7 @@ class VaultRegistryService:
 
         old_services = self._registry.get(vault_id)
         if old_services is None:
-            raise VaultNotFoundError(vault_id)
+            raise VaultNotFoundError(vault_id, available_vaults=self._registry)
         config_path = old_services.config_path
         if config_path is not None:
             store = resolve_stack_vault_source_store(get_stack_config())

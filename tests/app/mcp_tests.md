@@ -134,8 +134,8 @@ Matches existing MCP error convention.
 
 **Expected:**
 - Returns valid JSON string
-- Parsed result has `"error": "unknown_vault"` field
-- Message lists available vaults
+- Parsed result has `"error": "vault_not_found"` field
+- Message and `detail.available_vaults` list the available vaults
 
 **Rationale:** MCP tools must never raise exceptions. Structured error responses
 let the caller present a meaningful message.
@@ -578,8 +578,8 @@ adapter registry and service instances.
 **Input:** Call `list_directory` with an unknown vault_id.
 
 **Expected:**
-- Returns structured error JSON with "unknown_vault" error
-- Message lists available vaults
+- Returns structured error JSON with "vault_not_found" error
+- Message and `detail.available_vaults` list the available vaults
 
 **Rationale:** App tools depend on vault services (adapter matching for scan,
 ingestion service for batch ingest). The `_get_vault()` pattern ensures

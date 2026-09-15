@@ -44,7 +44,11 @@ router = APIRouter(tags=["Document Metadata"])
         ),
         404: {
             "model": ErrorResponse,
-            "description": "Document, vault, or backing source file not found.",
+            "description": (
+                "Document or backing source file not found.\n\n"
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
+            ),
         },
         501: {
             "model": ErrorResponse,
@@ -75,9 +79,10 @@ async def open_document(
         404: {
             "model": ErrorResponse,
             "description": (
-                "`document_not_found` / `no_projection` / `vault_not_found`: the "
-                "document, its stored projection chunks, or the vault could not be "
-                "resolved."
+                "`document_not_found` / `no_projection`: the document or its stored "
+                "projection chunks could not be resolved.\n\n"
+                "`vault_not_found`: no vault registered with that id; "
+                "`detail.available_vaults` lists the registered vaults."
             ),
         },
         409: {
@@ -133,8 +138,9 @@ async def recompute_abstract(
         404: {
             "model": ErrorResponse,
             "description": (
-                "`document_not_found` / `vault_not_found`: the document or the "
-                "vault could not be resolved.\n\n"
+                "`document_not_found`: the document could not be resolved.\n\n"
+                "`vault_not_found`: no vault registered with that id; "
+                "`detail.available_vaults` lists the registered vaults.\n\n"
                 "`source_file_not_found`: the document's `source_path` no longer "
                 "resolves to a readable file."
             ),
@@ -197,7 +203,11 @@ async def recompute_pipeline(
         ),
         404: {
             "model": ErrorResponse,
-            "description": "Vault or document not found.",
+            "description": (
+                "Document not found.\n\n"
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
+            ),
         },
         501: {
             "model": ErrorResponse,
@@ -244,9 +254,10 @@ async def get_document_download_url(
         404: {
             "model": ErrorResponse,
             "description": (
-                "Vault or document not found. Also returned with "
-                "`content_file_missing` when the retained source file is "
-                "absent from the vault-source store."
+                "Document not found. Also returned with `content_file_missing` when the "
+                "retained source file is absent from the vault-source store.\n\n"
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
             ),
         },
         502: {
@@ -327,9 +338,11 @@ async def get_document_content(
         404: {
             "model": ErrorResponse,
             "description": (
-                "Vault or document not found. Also returned when "
-                "`include_content=true` or `write_to_path` is set and the "
-                "file at `storage_root/source_path` is absent from the vault."
+                "Document not found. Also returned when `include_content=true` or "
+                "`write_to_path` is set and the file at `storage_root/source_path` is absent "
+                "from the vault.\n\n"
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
             ),
         },
         409: {

@@ -132,10 +132,13 @@ MIN_CLAIM_WORDS: Final[int] = 5
 
 # Docstring section headers that end the prose body. Everything from the
 # first of these onward is structural content the spec expresses in
-# other nodes, which their own gates compare.
+# other nodes, which their own gates compare. An error-mode list may carry a
+# qualifier -- "Per-item error modes (inside the response envelope):" -- that
+# scopes the list and can wrap lines; it is still the list, not narrative.
 _STRUCTURAL_HEADER: Final[re.Pattern[str]] = re.compile(
     r"^[ \t]*(Args:|Arguments:|Error modes:|Returns:|Raises:|Note:|Notes:|"
-    r"Worked example|Example[s]?:|Example$)",
+    r"Worked example|Example[s]?:|Example$|"
+    r"(?:[A-Z][\w-]*[ \t]+)?[Ee]rror modes[ \t]*\([^)]*\):)",
     re.MULTILINE,
 )
 
@@ -519,7 +522,9 @@ class Pin(NamedTuple):
 
 
 UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
-    ("sage_core", "create_edges"): Pin(6, 16),
+    # doc_only fell from 16 once a qualified error-mode header ended the
+    # prose body: its per-item code list had been read as a claim.
+    ("sage_core", "create_edges"): Pin(6, 15),
     ("sage_core", "create_vault"): Pin(4, 17),
     ("sage_core", "delete_edge"): Pin(6, 3),
     ("sage_core", "get_document"): Pin(10, 2),
@@ -535,11 +540,15 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     ("sage_core", "ingest_document"): Pin(13, 12),
     ("sage_core", "list_pending_metadata"): Pin(7, 3),
     ("sage_core", "list_vaults"): Pin(4, 5),
-    ("sage_core", "migrate_vault"): Pin(7, 9),
+    # spec_only fell from 7 as the docstring gained the vault_not_found detail
+    # its operation already declares.
+    ("sage_core", "migrate_vault"): Pin(6, 9),
     ("sage_core", "optimize_vault_content_store"): Pin(2, 2),
     ("sage_core", "read_projection"): Pin(2, 10),
     ("sage_core", "read_section"): Pin(2, 1),
-    ("sage_core", "recompute_abstract"): Pin(3, 20),
+    # doc_only fell from 20 once a qualified error-mode header ended the prose
+    # body: its synchronous refusal list had been read as claims.
+    ("sage_core", "recompute_abstract"): Pin(3, 14),
     ("sage_core", "recompute_deferred_vault_abstracts"): Pin(5, 6),
     ("sage_core", "recompute_views"): Pin(4, 10),
     # doc_only fell from 10 as the operation gained the two-phase transfer
@@ -556,7 +565,10 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # document-id refusal its operation's 400 now declares: a claim the
     # docstring was making alone has a counterpart. A reconciliation, unlike
     # the verify_vault_drift entry below.
-    ("sage_core", "update_metadata"): Pin(8, 16),
+    # doc_only fell from 16 once a qualified error-mode header ended the
+    # prose body: its per-item and batch-level code lists had been read as
+    # claims.
+    ("sage_core", "update_metadata"): Pin(8, 13),
     ("sage_core", "update_vault_config"): Pin(7, 8),
     ("sage_core", "verify_hashes"): Pin(4, 5),
     # doc_only fell from 7 as the operation's 400 gained the boundary-refusal
@@ -866,6 +878,35 @@ def test_prose_body_excludes_structural_blocks():
     assert "The thing is idempotent across retries." in body
     assert "not_found" not in body
     assert "record_id" not in body
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "Error modes (raised synchronously in this call's response;\nnot for background work):",
+        "Per-item error modes (inside the response envelope):",
+        "Batch-level error modes (the tool's error envelope): ``legacy_form``,",
+    ],
+)
+def test_prose_body_stops_at_a_qualified_error_modes_header(header: str) -> None:
+    """A qualifier scopes the error-mode list rather than making it narrative.
+
+    Read as prose, each listed code becomes a claim the contract lacks, so a
+    pair's pin carries the tool's refusal list as divergence.
+    """
+    docstring = (
+        f"Do the thing to the record.\n\n{header}\n"
+        "- ``not_found`` (404): no such record anywhere.\n"
+    )
+    body = _prose_body(docstring)
+    assert "Do the thing to the record." in body
+    assert "not_found" not in body
+
+
+def test_prose_body_keeps_a_sentence_about_error_modes() -> None:
+    """Only a header ends the narrative, not a sentence that names the phrase."""
+    docstring = "Error modes are reported in the envelope, never raised.\n"
+    assert _prose_body(docstring) == docstring
 
 
 def test_claim_sentences_normalize_both_backtick_spellings():

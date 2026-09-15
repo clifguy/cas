@@ -2114,7 +2114,7 @@ async def test_reabstract_succeeds_again_after_prior_reabstract_failed(
 # IngestionService.recompute_pipeline -- operator-driven recovery for documents
 # stuck at pipeline_status=projection_complete with no chunks. Each call re-runs
 # Stage 1 (projection from source_path) + Stages 2-3 in the background; the
-# synchronous prefix surfaces unknown_document / unknown_vault /
+# synchronous prefix surfaces unknown_document / vault_not_found /
 # source_file_not_found / 409 in-flight errors.
 # ---------------------------------------------------------------------------
 

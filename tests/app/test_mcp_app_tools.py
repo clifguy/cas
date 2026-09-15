@@ -328,7 +328,7 @@ class TestSageVaultStats:
     async def test_mcp_005_unknown_vault_error(self, single_vault):
         """get_vault_stats for unknown vault returns error."""
         result = _parse(await get_vault_stats("nonexistent"))
-        assert result["error"] == "unknown_vault"
+        assert result["error"] == "vault_not_found"
 
     async def test_stats_omit_sqlite_size_bytes(self, single_vault):
         """The retired sqlite_size_bytes field is absent; the backend-neutral
@@ -551,8 +551,12 @@ class TestStagingEdgeActions:
         await self._setup_staging(services)
 
         result = _parse(await update_staging_edge("test_vault", _STG_TEST, "approve"))
-        assert "error" in result
-        assert "invalid_action" in result["message"]
+        # The declared code, not a mention of it inside an internal_error.
+        assert result["error"] == "invalid_action"
+        assert result["detail"] == {
+            "attempted_action": "approve",
+            "known_actions": ["confirm", "dismiss"],
+        }
 
         # Anti-coincidental-pass: the staging edge must still exist
         # (the dispatch must not silently fall through to one of the
@@ -1039,7 +1043,7 @@ class TestMCPConventions:
     async def test_mcp_024_unknown_vault_error(self, single_vault):
         """App tools with unknown vault_id return structured error."""
         result = _parse(await list_directory("nonexistent", "/tmp"))
-        assert result["error"] == "unknown_vault"
+        assert result["error"] == "vault_not_found"
 
     async def test_mcp_025_tool_naming_convention(self):
         """Tool naming follows the verb-convention naming rule (CAS-ADR-033).

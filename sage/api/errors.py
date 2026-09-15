@@ -4,6 +4,7 @@ Exception classes carry structured detail dicts matching the OpenAPI
 ErrorResponse schema. The exception handler converts them to JSON responses.
 """
 
+from collections.abc import Iterable
 from datetime import datetime
 from enum import StrEnum
 
@@ -154,9 +155,11 @@ class InvalidLifecycleTransitionError(SAGEError):
 
 
 class InvalidActionError(SAGEError):
-    """400: action value is not in any transition table.
+    """400: an action value the operation does not know.
 
-    ``known_actions`` is the vault's whole caller-invocable action
+    ``known_actions`` names every action the operation accepts. For a
+    staging-edge resolution that is ``confirm`` and ``dismiss``. For a
+    lifecycle transition it is the vault's whole caller-invocable action
     vocabulary, which is vault-config-defined rather than a fixed set.
     The pipeline's own landing transition is not in it, because a caller
     invoking that one would be refused whatever state the document is
@@ -1524,14 +1527,20 @@ class AssertionsNotConfiguredError(SAGEError):
 
 
 class VaultNotFoundError(SAGEError):
-    """404: vault_id does not match loaded config."""
+    """404: vault_id names no registered vault.
 
-    def __init__(self, vault_id: str) -> None:
+    The one refusal for an unregistered vault on every request surface
+    (CAS-ADR-052). It names the vaults that are registered, so a caller can
+    correct the id without a second call.
+    """
+
+    def __init__(self, vault_id: str, *, available_vaults: Iterable[str]) -> None:
+        available = sorted(available_vaults)
         super().__init__(
             "vault_not_found",
-            f"Vault '{vault_id}' not found",
+            f"Vault '{vault_id}' not found. Available vaults: {', '.join(available) or '(none)'}",
             404,
-            {"vault_id": vault_id},
+            {"vault_id": vault_id, "available_vaults": available},
         )
 
 

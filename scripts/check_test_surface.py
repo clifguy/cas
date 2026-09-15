@@ -167,6 +167,10 @@ KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
         )
         for surface in ("in_a_batch", "on_ingest_document")
     },
+    "tests/sage/test_mcp_server.py::test_error_response_vault_not_found_returns_unknown_vault": (
+        "renamed test_error_response_vault_not_found_carries_the_typed_envelope when an "
+        "unregistered vault became the vault_not_found refusal on both surfaces"
+    ),
     "tests/sage/test_graph_store_seam.py::test_stub_hash_lookup_signature_matches_port": (
         "single-method stub signature check absorbed by the stub arm of the graph-store "
         "signature gate, which covers every port method"
