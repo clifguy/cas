@@ -196,20 +196,37 @@ class UtilitiesService:
         Returns:
             ExportProjectionResponse with the absolute output path.
 
+        The destination is a path in the server's own vault tree, which a caller
+        can read back only when it shares that filesystem. Where it does not --
+        the cloud profile, whose vault roots are inert container paths the
+        vault-source store ignores -- the export is refused before any read,
+        rather than writing a file nobody can reach.
+
         Raises:
+            CallerFilesystemUnavailableError: The caller cannot see the server's
+                filesystem under the active profile.
             DocumentNotFoundError: Document does not exist.
             NoProjectionError: Document has no stored projection chunks.
             PathTraversalDeniedError: output_path resolves outside storage_root.
         """
-        doc, projection_text = await self._get_projection_text(document_id)
+        from sage.mcp_init import require_caller_local_filesystem
 
-        # Resolve and validate output path (BH-038, BH-039, BH-040)
+        require_caller_local_filesystem(
+            "export_projection",
+            "read the projection through read_projection, which delivers it to the caller",
+        )
+
+        # Resolve and validate output path (BH-038, BH-039, BH-040). A malformed
+        # argument is settled before the read, so the same call is not answered
+        # differently depending on whether the document happens to exist.
         storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
         target = (storage_root / output_path).resolve()
 
         # Path containment check
         if not str(target).startswith(str(storage_root) + "/") and target != storage_root:
             raise PathTraversalDeniedError(output_path)
+
+        doc, projection_text = await self._get_projection_text(document_id)
 
         # Write the file
         target.parent.mkdir(parents=True, exist_ok=True)
@@ -248,9 +265,9 @@ class UtilitiesService:
           ``write_to_path`` and is refused without one.
 
         The write-to-disk mode mirrors ``DocumentsService.get_document_with_content``
-        delivery and replaces the audit-removed
-        ``export_projection`` MCP tool, whose pre-existing storage_root-
-        relative semantics remain on the REST surface.
+        delivery: it writes to a path the caller names in its own environment.
+        Writing into the vault's storage root is a separate operation,
+        ``export_projection``.
 
         Args:
             document_id: Document to read.

@@ -74,7 +74,9 @@ _GENERAL_VERBS: Final[frozenset[str]] = frozenset(
 #: MCP Tool Surface* steering document, which holds the population of every
 #: partition CAS-ADR-033 establishes -- the same document the server
 #: registration map below transcribes.
-MAINT_ONLY_VERBS: Final[frozenset[str]] = frozenset({"reload", "migrate", "optimize", "restore"})
+MAINT_ONLY_VERBS: Final[frozenset[str]] = frozenset(
+    {"reload", "migrate", "optimize", "restore", "export"}
+)
 
 #: The whole verb taxonomy: the general categories plus the maintenance-only
 #: outliers, composed so each verb is stated exactly once and a verb cannot
@@ -181,6 +183,14 @@ SERVER_ASSIGNMENT: Final[dict[str, str]] = {
     "recompute_views": "sage_maint",
     "recompute_deferred_vault_abstracts": "sage_maint",
     "optimize_vault_content_store": "sage_maint",
+    "get_default_vault_config": "sage_maint",
+    "verify_vault_retrieval": "sage_maint",
+    # Placed here by recorded decision rather than by the scope rule, which
+    # reads one document as ordinary work: what the export changes is a file
+    # in the server's own vault tree, a destination only that server's
+    # operator can use. Ordinary callers deliver a projection to themselves
+    # through ``read_projection``.
+    "export_projection": "sage_maint",
 }
 
 

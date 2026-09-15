@@ -121,7 +121,7 @@ similarity rankings.
 **Rationale:** Semantic similarity is the foundation of the retrieval subsystem.
 If the embedding model fails to distinguish semantically related from unrelated
 texts, vector search produces meaningless results. This is a smoke test, not a
-comprehensive quality evaluation (that is the role of eval_retrieval).
+comprehensive quality evaluation (that is the role of verify_vault_retrieval).
 
 ### TEST-SAGE-AD-006: Empty input returns empty output
 

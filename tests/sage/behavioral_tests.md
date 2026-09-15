@@ -820,9 +820,31 @@ to arbitrary filesystem locations.
 **Rationale:** Absolute paths bypassing the vault boundary are rejected
 alongside relative traversal attacks.
 
+### TEST-SAGE-BH-040a: export_projection refused without a caller-visible filesystem
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (export_projection)
+**Category:** utilities, deployment_profiles
+**Decision:** The export writes into the server's own vault tree, which a caller
+can read back only when it shares that filesystem. Where it does not (the cloud
+profile), the export is refused before any read.
+
+**Precondition:** The active profile does not expose the server's filesystem to
+the caller. The named document does not exist.
+
+**Input:** `export_projection(document_id: "nonexistent", output_path: "output.md")`
+
+**Expected:**
+- HTTP 501
+- `code: "caller_filesystem_unavailable"`, `detail.operation: "export_projection"`
+- Not `document_not_found`: the refusal precedes the read
+
+**Rationale:** Under the cloud profile the vault roots are inert container paths
+the vault-source store ignores; an export there would write a file nobody can
+reach. Both request surfaces refuse on the same terms (CAS-ADR-052).
+
 ### TEST-SAGE-BH-041: Retrieval assertions loaded from separate YAML file
 
-**Artifact:** `sage/sage_core_api.openapi.yaml` (eval_retrieval)
+**Artifact:** `sage/sage_core_api.openapi.yaml` (verify_vault_retrieval)
 **Category:** utilities, configuration
 **Decision:** Retrieval health assertions are defined in a per-vault YAML file,
 referenced from vault config.
@@ -842,7 +864,7 @@ allows assertion maintenance independent of vault configuration.
 
 ### TEST-SAGE-BH-042: Missing assertions file returns error
 
-**Artifact:** `sage/sage_core_api.openapi.yaml` (eval_retrieval)
+**Artifact:** `sage/sage_core_api.openapi.yaml` (verify_vault_retrieval)
 **Category:** utilities, error_semantics
 **Decision:** Missing or malformed assertions file produces a clear error.
 

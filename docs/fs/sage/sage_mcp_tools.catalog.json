@@ -1735,7 +1735,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Create a new vault and register it with the running SAGE instance.\n\nPass a complete vault config dict. It is validated against the vault\nconfig schema, directories are created, ``vault_config.yaml`` is\nwritten under the vault root (default ``~/sage_vaults/<vault_id>/``),\nservices are initialized, and the vault is registered immediately\n(no restart). The full written config is echoed back so the caller\ncan follow up with ``update_vault_config`` without a separate\nread.\n\nConfig dict structure: the ``config`` parameter is opaque at the MCP\nboundary (typed ``dict``); its shape lives in\n``docs/fs/sage/vault_config.schema.json``. Five top-level sections\nare required (``vault``, ``document_types``, ``lifecycle``,\n``metadata_extraction``, ``edge_inference``) and four optional\n(``adapter_defaults``, ``abstraction``, ``access_control_defaults``,\n``retrieval_health``). A minimal default is served by the REST\noperation ``get_default_vault_config`` -- there is no tool of that\nname on this surface -- which returns the scaffold for a vault id\nwith ``vault.name`` and ``vault.owner`` left empty.\n\nThe new vault inherits the running process's stack-wide\nabstraction-provider singleton (built once at startup); the vault\nconfig's ``abstraction`` section governs only enable/disable and\nper-vault parameters, not provider identity. A different provider\nrequires a stack-config edit and process restart.\n\nCreation is not atomic: it runs five sequential steps (config\ndirectory, yaml write, service init, registry insertion, owner\nbootstrap) with no cross-step rollback. A mid-sequence failure can\nleave ``~/sage_vaults/{vault_id}/`` present with a partial yaml while\nthe registry has no entry; recovery is to remove the directory and\nre-call. The final step bootstraps the owner user (required for\nsubsequent access-controlled operations); the response carries only\nthe ``VaultSummary`` plus the echoed config, with no field signaling\nthe owner insert.\n\nA doc_type's ``metadata_schema`` is compiled into a JSON Schema\nvalidator at create time, not first ingest, so a malformed schema\n(non-Draft 2020-12, unresolvable ``$ref``) surfaces here as\n``vault_config_validation_error`` rather than on the first ingest\nthat would exercise it.\n\nError modes:\n- ``vault_already_exists`` (409): a vault with that ``vault_id`` is\n  already registered.\n- ``vault_config_validation_error`` (400): the config fails schema\n  validation — missing/malformed top-level sections, or a malformed\n  ``document_types.doc_types[].metadata_schema``.\n\nArgs:\n    config: Full vault config dict, validating against\n        ``docs/fs/sage/vault_config.schema.json`` (six required\n        top-level sections plus three optional).\n",
+        "description": "Create a new vault and register it with the running SAGE instance.\n\nPass a complete vault config dict. It is validated against the vault\nconfig schema, directories are created, ``vault_config.yaml`` is\nwritten under the vault root (default ``~/sage_vaults/<vault_id>/``),\nservices are initialized, and the vault is registered immediately\n(no restart). The full written config is echoed back so the caller\ncan follow up with ``update_vault_config`` without a separate\nread.\n\nConfig dict structure: the ``config`` parameter is opaque at the MCP\nboundary (typed ``dict``); its shape lives in\n``docs/fs/sage/vault_config.schema.json``. The top-level sections\n``vault``, ``document_types``, ``lifecycle``, ``metadata_extraction``\nand ``edge_inference`` are required, and ``adapter_defaults``,\n``abstraction``, ``access_control_defaults``, ``retrieval_health`` and\n``timing`` are optional. A minimal default is served by\n``get_default_vault_config``, which returns the scaffold for a vault\nid with ``vault.name`` and ``vault.owner`` left empty.\n\nThe new vault inherits the running process's stack-wide\nabstraction-provider singleton (built once at startup); the vault\nconfig's ``abstraction`` section governs only enable/disable and\nper-vault parameters, not provider identity. A different provider\nrequires a stack-config edit and process restart.\n\nCreation is not atomic: it runs five sequential steps (config\ndirectory, yaml write, service init, registry insertion, owner\nbootstrap) with no cross-step rollback. A mid-sequence failure can\nleave ``~/sage_vaults/{vault_id}/`` present with a partial yaml while\nthe registry has no entry; recovery is to remove the directory and\nre-call. The final step bootstraps the owner user (required for\nsubsequent access-controlled operations); the response carries only\nthe ``VaultSummary`` plus the echoed config, with no field signaling\nthe owner insert.\n\nA doc_type's ``metadata_schema`` is compiled into a JSON Schema\nvalidator at create time, not first ingest, so a malformed schema\n(non-Draft 2020-12, unresolvable ``$ref``) surfaces here as\n``vault_config_validation_error`` rather than on the first ingest\nthat would exercise it.\n\nError modes:\n- ``vault_already_exists`` (409): a vault with that ``vault_id`` is\n  already registered.\n- ``vault_config_validation_error`` (400): the config fails schema\n  validation — missing/malformed top-level sections, or a malformed\n  ``document_types.doc_types[].metadata_schema``.\n\nArgs:\n    config: Full vault config dict, validating against\n        ``docs/fs/sage/vault_config.schema.json``.\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -1752,6 +1752,65 @@
           "type": "object"
         },
         "name": "create_vault",
+        "outputSchema": null,
+        "title": null
+      },
+      {
+        "annotations": {
+          "destructiveHint": true,
+          "openWorldHint": false,
+          "readOnlyHint": false
+        },
+        "description": "Write stored projection to a Markdown file for inspection.\n\nExports the stored projection text for a document to a\nspecified file path inside the vault's ``storage_root``. Used for\ndebugging and manual inspection of the adapter's output. The\nprojection is the structured plain-text rendering produced by\nthe source adapter during ingestion.\n\n``output_path`` may be relative (resolved against ``storage_root``)\nor absolute, but it must resolve to a location inside the\nvault's ``storage_root``. Targets outside the vault tree are\nrefused with ``path_traversal_denied``. Missing parent directories\nare created, and a file already at the target is overwritten.\n\nThe destination is a path in the server's own vault tree, which a\ncaller can read back only when it shares that filesystem. Under the\ncloud profile the export is refused with\n``caller_filesystem_unavailable`` before any read; ``read_projection``\ndelivers the projection to the caller instead.\n\nError modes:\n- ``invalid_vault_id`` (400): ``vault_id`` is not a well-formed vault id.\n- ``invalid_document_id`` (400): ``document_id`` is not a well-formed\n  document id.\n- ``path_traversal_denied`` (400): ``output_path`` resolves outside the\n  vault's ``storage_root``.\n- ``unknown_vault`` (404): ``vault_id`` is not a registered vault.\n- ``document_not_found`` (404): no document with that id.\n- ``no_projection`` (404): the document exists but has no stored\n  projection (e.g. ingestion failed mid-pipeline).\n- ``caller_filesystem_unavailable`` (501): the export writes into the\n  server's own vault tree, which a caller cannot read back under the\n  cloud profile; the refusal comes before any read.\n\nArgs:\n    vault_id: Target vault identifier.\n    document_id: Document whose projection is exported.\n    output_path: Destination, relative to the vault's ``storage_root``\n        or absolute inside it.\n",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "document_id": {
+              "title": "Document Id",
+              "type": "string"
+            },
+            "output_path": {
+              "title": "Output Path",
+              "type": "string"
+            },
+            "vault_id": {
+              "title": "Vault Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "vault_id",
+            "document_id",
+            "output_path"
+          ],
+          "title": "export_projectionArguments",
+          "type": "object"
+        },
+        "name": "export_projection",
+        "outputSchema": null,
+        "title": null
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Return the default configuration a new vault would be created with.\n\nReturns the creation-time scaffold as a JSON object conforming to\n``docs/fs/sage/vault_config.schema.json``: two doc types, the three\nbase lifecycle states with their transition table, filename\nmetadata extraction, tier-1 supersedes inference, and abstraction\ndisabled.\n\nThe scaffold precedes the vault. No vault with the supplied id\nneed exist, none is created, and the response is not persisted.\nThe id is required because it shapes ``storage_root`` and\n``brain_root``, which the server derives rather than anything a\ncaller can compute. ``vault.name`` and ``vault.owner`` come back\nempty for the caller to fill before passing the completed object\nto ``create_vault``.\n\nError modes:\n- ``invalid_vault_id`` (400): ``vault_id`` is not a well-formed vault id.\n\nArgs:\n    vault_id: Identifier the new vault would carry. Shapes the storage\n        and brain roots in the returned scaffold.\n",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "vault_id": {
+              "title": "Vault Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "vault_id"
+          ],
+          "title": "get_default_vault_configArguments",
+          "type": "object"
+        },
+        "name": "get_default_vault_config",
         "outputSchema": null,
         "title": null
       },
@@ -1800,7 +1859,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Vault statistics and health indicators.\n\nReturns aggregate counts and health summaries for the vault,\nincluding total document count, counts per lifecycle state,\ncounts per doc_type, counts per pipeline_status, and any\nregistered retrieval-health checks (if\n``retrieval_health`` is configured in vault_config). Inexpensive;\nsafe to poll.\n\nThe doc-scoped health indicators are an operator worklist, so\nthey exclude documents in a terminal lifecycle state -- the\nstates the vault's own config marks ``is_terminal``, so a vault\nthat declares one of its own has it honoured. Such a document is\nexcluded because remediating it is not work an operator needs to\ntake up, not because nothing will touch it again: the automatic\nre-abstraction paths select on ``pipeline_status`` alone and may\nstill reach it. ``pending_edge_count`` is the one exception and\nis reported unfiltered: a staging edge is not doc-scoped and\ncarries no lifecycle state to exclude it by. The metadata-review\nqueue read by ``list_pending_metadata`` is likewise unfiltered\nand keeps surfacing every unconfirmed document, so it can differ\nfrom ``pending_metadata_count``.\n\nError modes:\n- ``invalid_vault_id`` (400): the supplied vault_id is not a\n  well-formed vault id.\n\nArgs:\n    vault_id: Target vault identifier.\n",
+        "description": "Vault statistics and health indicators.\n\nReturns aggregate counts and health summaries for the vault,\nincluding total document count, counts per lifecycle state,\ncounts per doc_type, and counts per pipeline_status. Inexpensive;\nsafe to poll.\n\nThe doc-scoped health indicators are an operator worklist, so\nthey exclude documents in a terminal lifecycle state -- the\nstates the vault's own config marks ``is_terminal``, so a vault\nthat declares one of its own has it honoured. Such a document is\nexcluded because remediating it is not work an operator needs to\ntake up, not because nothing will touch it again: the automatic\nre-abstraction paths select on ``pipeline_status`` alone and may\nstill reach it. ``pending_edge_count`` is the one exception and\nis reported unfiltered: a staging edge is not doc-scoped and\ncarries no lifecycle state to exclude it by. The metadata-review\nqueue read by ``list_pending_metadata`` is likewise unfiltered\nand keeps surfacing every unconfirmed document, so it can differ\nfrom ``pending_metadata_count``.\n\nError modes:\n- ``invalid_vault_id`` (400): the supplied vault_id is not a\n  well-formed vault id.\n\nArgs:\n    vault_id: Target vault identifier.\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -2188,6 +2247,30 @@
           "type": "object"
         },
         "name": "verify_vault_drift",
+        "outputSchema": null,
+        "title": null
+      },
+      {
+        "annotations": {
+          "openWorldHint": false,
+          "readOnlyHint": true
+        },
+        "description": "Run retrieval health assertions against the vault.\n\nLoads assertions from the YAML file referenced in\n``retrieval_health.assertions_file`` of the vault config, runs\neach as a semantic search, and returns a pass/fail report.\nEach assertion is a ``(query, expected_document_id, top_k)``\ntriple: the assertion passes when the expected document\nappears within the top-k results for the query. Failures\nreport the actual rank (out of ``top_k * 5``) when the expected\ndocument was found beyond top-k, or ``null`` when it was not\nfound at all. Used as a smoke test after bulk ingestion or\nconfiguration changes.\n\nThe assertions YAML file is resolved relative to the vault's\n``storage_root``. The file must have a top-level ``assertions:``\nkey whose value is a list of objects; each object must include\n``query`` and ``expected_document_id`` and may include ``top_k``\n(default 10).\n\nError modes:\n- ``invalid_vault_id`` (400): ``vault_id`` is not a well-formed vault id.\n- ``unknown_vault`` (404): ``vault_id`` is not a registered vault.\n- ``assertions_not_configured`` (400): the vault config has no\n  ``retrieval_health.assertions_file`` entry.\n- ``assertions_file_invalid`` (400): the referenced YAML is malformed\n  or has the wrong structure.\n- ``assertions_file_not_found`` (404): the configured assertions file\n  does not exist under the vault's ``storage_root``.\n\nArgs:\n    vault_id: Target vault identifier.\n",
+        "inputSchema": {
+          "additionalProperties": false,
+          "properties": {
+            "vault_id": {
+              "title": "Vault Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "vault_id"
+          ],
+          "title": "verify_vault_retrievalArguments",
+          "type": "object"
+        },
+        "name": "verify_vault_retrieval",
         "outputSchema": null,
         "title": null
       },
