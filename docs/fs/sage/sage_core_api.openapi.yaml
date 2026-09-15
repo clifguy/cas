@@ -87,11 +87,18 @@ info:
     `{"error": "invalid_token", "error_description": "..."}`.
 
 
-    Application errors (400, 404, 409, 413, 422) come from the API itself and
-    carry `{"code": ..., "message": ..., "detail": {...}}`. Branch on `code`,
-    never on `message`. `detail` is omitted when empty and its keys vary by
-    `code`. The per-operation response descriptions below name the `code` values
-    each operation can return.
+    Application errors (400, 404, 405, 409, 413, 422, 500) come from the API
+    itself and carry `{"code": ..., "message": ..., "detail": {...}}`. Branch on
+    `code`, never on `message`. `detail` is omitted when empty and its keys vary
+    by `code`. The per-operation response descriptions below name the `code`
+    values each operation can return. Three codes can answer any request,
+    because they are raised before or after an operation rather than by it:
+    `route_not_found` (404) for a path no operation serves,
+    `method_not_allowed` (405, with an `Allow` header) for a method the path
+    does not accept, and `internal_error` (500) for a response the server
+    built that its own contract does not admit. Any other status the framework
+    raises outside an operation answers `http_error`, with the status's reason
+    phrase as `message`.
 
 
     ## Invariants
@@ -1154,11 +1161,17 @@ paths:
         "200":
           description: >-
             Document record, optionally with inline file content or
-            delivery metadata for a file that was written to disk.
+            delivery metadata for a file that was written to disk. When
+            `write_to_path` names a caller-local target the server cannot
+            write, a `DownloadRecipe` (`status: download_required`) instead:
+            fetch the bytes from the recipe's URL with its token and verify
+            them against its size and digest.
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/DocumentWithContent"
+                anyOf:
+                  - $ref: "#/components/schemas/DocumentWithContent"
+                  - $ref: "#/components/schemas/DownloadRecipe"
         "400":
           description: >-
             Both `include_content` and `write_to_path` supplied
@@ -5137,7 +5150,7 @@ components:
         - deterministic: document_id and heading_path are required.
       properties:
         query:
-          type: string
+          type: [string, "null"]
           description: >-
             Search query text. Required for semantic and keyword modes, and
             refused by the other two: catalog enumerates by filter and
@@ -5160,14 +5173,18 @@ components:
             Retrieval scope that narrows the candidate set before
             relevance ranking. Default "all" applies no scope filter.
         filters:
-          $ref: "#/components/schemas/RetrievalFilters"
+          anyOf:
+            - $ref: "#/components/schemas/RetrievalFilters"
+            - type: "null"
+          description: >-
+            Metadata filters applied before retrieval.
         document_id:
-          type: string
+          type: [string, "null"]
           description: >-
             Target document for deterministic extraction.
             Required for deterministic mode.
         heading_path:
-          type: string
+          type: [string, "null"]
           description: >-
             Heading hierarchy path for deterministic extraction
             (e.g., "Section 3 > Definitions > Normalization").
@@ -5228,7 +5245,9 @@ components:
             limit is applied, so weak-match suppression may reduce the
             returned result count below the requested limit.
         sort_by:
-          $ref: "#/components/schemas/CatalogSortBy"
+          anyOf:
+            - $ref: "#/components/schemas/CatalogSortBy"
+            - type: "null"
           description: >-
             Sort key for catalog mode results. Optional. Default when
             omitted: active lifecycle first, then document_date descending.
@@ -5236,7 +5255,9 @@ components:
             id, so the order is total and paging a filtered set returns
             each document exactly once.
         sort_order:
-          $ref: "#/components/schemas/SortOrder"
+          anyOf:
+            - $ref: "#/components/schemas/SortOrder"
+            - type: "null"
           description: >-
             Sort direction for catalog mode results. Optional. Defaults
             to ascending when sort_by is specified. Ignored by other modes.
@@ -5305,16 +5326,16 @@ components:
         with other scopes.
       properties:
         doc_type:
-          type: string
+          type: [string, "null"]
           description: Filter by vault-configured document type.
         project:
-          type: string
+          type: [string, "null"]
           description: Filter by project identifier.
         lifecycle_status:
-          type: string
+          type: [string, "null"]
           description: Filter by lifecycle state.
         exclude_terminal_lifecycle:
-          type: boolean
+          type: [boolean, "null"]
           description: >-
             Exclude documents whose lifecycle state the vault declares
             terminal. The excluded set is resolved from the vault's own
@@ -5324,12 +5345,12 @@ components:
             no-op in a vault that declares no terminal state. Matches the
             population the doc-scoped health indicators count.
         tags:
-          type: array
+          type: [array, "null"]
           items:
             type: string
           description: Filter by tags (documents must have all specified tags).
         document_ids:
-          type: array
+          type: [array, "null"]
           items:
             type: string
           description: >-
@@ -5338,13 +5359,15 @@ components:
             invalid_document_id (400) rather than resolving to no
             match.
         pipeline_status:
-          type: string
+          type: [string, "null"]
           description: >-
             Filter by pipeline status (e.g., "failed",
             "abstraction_complete"). Overrides the default exclusion
             of failed-pipeline documents.
         source_type:
-          $ref: "#/components/schemas/SourceType"
+          anyOf:
+            - $ref: "#/components/schemas/SourceType"
+            - type: "null"
           description: >-
             Filter by the source artifact format the document was
             ingested from (e.g. "docx", "markdown"). Typed against the
@@ -5352,7 +5375,7 @@ components:
             rejected at validation time via invalid_filter_value rather
             than silently returning zero rows.
         tier3_metadata:
-          type: object
+          type: [object, "null"]
           additionalProperties: true
           description: >-
             Tier 3 (per-doc_type typed metadata) filter, applied in
@@ -5367,19 +5390,21 @@ components:
             dict. All pairs AND together; an empty dict is treated
             as no filter.
         source_id:
-          type: string
+          type: [string, "null"]
           description: >-
             Edge-only filter. Filter edges by source document
             id. Valid only when target="edges"; document-target requests
             that set this are rejected via mode_parameter_mismatch.
         target_id:
-          type: string
+          type: [string, "null"]
           description: >-
             Edge-only filter. Filter edges by target document
             id. Valid only when target="edges". Note: retracts-type edges
             have target_id=NULL and are not selected by this filter.
         edge_type:
-          $ref: "#/components/schemas/EdgeType"
+          anyOf:
+            - $ref: "#/components/schemas/EdgeType"
+            - type: "null"
           description: >-
             Edge-only filter. Filter edges by edge_type (e.g.,
             "references", "depends_on"). Valid only when target="edges".
@@ -5403,7 +5428,7 @@ components:
             defines `activate`; the action for `archived → active` is
             `reactivate`.
         successor_id:
-          type: string
+          type: [string, "null"]
           description: >-
             Document ID of the replacement version. Required when
             `action="supersede"`; forbidden for all other actions, which
@@ -5457,30 +5482,44 @@ components:
         for the concurrency-safety contract behind the ops-object form.
       properties:
         title:
-          type: string
+          type: [string, "null"]
           description: New human-readable title; omit to leave unchanged.
         version_label:
-          type: string
+          type: [string, "null"]
           description: New caller-supplied version label; omit to leave unchanged.
         project:
-          type: string
+          type: [string, "null"]
           description: New project scope for the document; omit to leave unchanged.
         tags:
-          $ref: "#/components/schemas/ListFieldPatch"
+          anyOf:
+            - $ref: "#/components/schemas/ListFieldPatch"
+            - type: "null"
+          description: >-
+            Patch operations on the tag set: {add?: list[str], remove?:
+            list[str]}. At least one key required. Strict-conflict on
+            add-present / remove-absent. See ListFieldPatch.
         doc_type:
-          type: string
+          type: [string, "null"]
           description: Must be a valid value in the vault's document_types configuration.
         authority_scope:
           type: [string, "null"]
           description: New authority scope (read-classification scope used by access-control filtering); omit to leave unchanged.
         document_date:
-          type: string
+          type: [string, "null"]
           format: date
           description: >-
             Document calendar date (YYYY-MM-DD). Editable to correct
             fallback-derived dates that misattributed across UTC midnight.
         tier3_metadata:
-          $ref: "#/components/schemas/Tier3Patch"
+          anyOf:
+            - $ref: "#/components/schemas/Tier3Patch"
+            - type: "null"
+          description: >-
+            Patch operations on tier3_metadata: {set?: dict, unset?:
+            list[str]}. At least one key required. `set` overwrites existing
+            keys (verb is literal); `unset` keys must currently be present
+            (else 400 tier3_unset_conflict). The merged result is validated
+            against the resolved doc_type's metadata_schema. See Tier3Patch.
         expected_version:
           type: [string, "null"]
           description: >-
@@ -5523,13 +5562,13 @@ components:
         implements (parallel adds of distinct values are commutative).
       properties:
         add:
-          type: array
+          type: [array, "null"]
           items:
             type: string
           minItems: 1
           description: Values to add. None may already be present on the field.
         remove:
-          type: array
+          type: [array, "null"]
           items:
             type: string
           minItems: 1
@@ -5558,12 +5597,12 @@ components:
         is stale.
       properties:
         set:
-          type: object
+          type: [object, "null"]
           minProperties: 1
           additionalProperties: true
           description: Key-value pairs to set. Overwrites existing keys.
         unset:
-          type: array
+          type: [array, "null"]
           items:
             type: string
           minItems: 1
@@ -5616,14 +5655,14 @@ components:
             omitted value whose extension no registered adapter claims is
             refused with `source_type_unresolved`.
         config:
-          type: object
+          type: [object, "null"]
           additionalProperties: true
           description: >-
             Adapter-specific configuration overrides. Structure depends
             on the adapter type; the markdown adapter, for example, takes
             the dialect to read the document in.
         created_by:
-          type: string
+          type: [string, "null"]
           description: >-
             User ID of the actor initiating ingestion. Used for
             provenance tracking. Phase 2+ implementations may derive
@@ -5945,7 +5984,9 @@ components:
           type: string
           description: Document ID to start traversal from.
         edge_type:
-          $ref: "#/components/schemas/EdgeType"
+          anyOf:
+            - $ref: "#/components/schemas/EdgeType"
+            - type: "null"
           description: >-
             Edge type to follow. If omitted, all edge types are traversed.
         direction:
@@ -6352,7 +6393,7 @@ components:
         document:
           $ref: "#/components/schemas/Document"
         warnings:
-          type: array
+          type: [array, "null"]
           items:
             type: string
           description: >-
@@ -6403,13 +6444,13 @@ components:
         via the URL path).
       properties:
         document_id:
-          type: string
+          type: [string, "null"]
           description: >-
             Target document id for this item. Accepts `doc_id` as a
             back-compatible alias; supply exactly one of `document_id` or
             `doc_id` per item.
         doc_id:
-          type: string
+          type: [string, "null"]
           description: >-
             Back-compatible alias for the per-item `document_id`; supply
             exactly one of `document_id` or `doc_id` per item.
@@ -6419,7 +6460,7 @@ components:
             Lifecycle transition action. Vault-config-defined; same
             shape as `SetLifecycleRequest.action`.
         successor_id:
-          type: string
+          type: [string, "null"]
           description: >-
             Document id of the replacement version. Required when
             `action="supersede"`; forbidden for all other actions, which
@@ -6811,39 +6852,50 @@ components:
         via the URL path).
       properties:
         document_id:
-          type: string
+          type: [string, "null"]
           description: >-
             Target document id for this item. Accepts `doc_id` as a
             back-compatible alias; supply exactly one of `document_id` or
             `doc_id` per item.
         doc_id:
-          type: string
+          type: [string, "null"]
           description: >-
             Back-compatible alias for the per-item `document_id`; supply
             exactly one of `document_id` or `doc_id` per item.
         title:
-          type: string
+          type: [string, "null"]
           description: New human-readable title; omit to leave unchanged.
         version_label:
-          type: string
+          type: [string, "null"]
           description: New caller-supplied version label; omit to leave unchanged.
         project:
-          type: string
+          type: [string, "null"]
           description: New project scope for the document; omit to leave unchanged.
         tags:
-          $ref: "#/components/schemas/ListFieldPatch"
+          anyOf:
+            - $ref: "#/components/schemas/ListFieldPatch"
+            - type: "null"
+          description: >-
+            Patch operations on the tag set: {add?: list[str], remove?:
+            list[str]}. Same semantics as `UpdateMetadataRequest.tags`.
         doc_type:
-          type: string
+          type: [string, "null"]
           description: Must be a valid value in the vault's document_types configuration.
         authority_scope:
           type: [string, "null"]
           description: New authority scope; omit to leave unchanged.
         document_date:
-          type: string
+          type: [string, "null"]
           format: date
           description: Document calendar date (YYYY-MM-DD).
         tier3_metadata:
-          $ref: "#/components/schemas/Tier3Patch"
+          anyOf:
+            - $ref: "#/components/schemas/Tier3Patch"
+            - type: "null"
+          description: >-
+            Patch operations on tier3_metadata: {set?: dict, unset?:
+            list[str]}. Same semantics as
+            `UpdateMetadataRequest.tier3_metadata`.
         expected_version:
           type: [string, "null"]
           description: >-
@@ -8726,7 +8778,7 @@ components:
             `hash_mismatch` rows. Adds a full file read per document;
             default false performs an existence check only.
         document_ids:
-          type: array
+          type: [array, "null"]
           minItems: 1
           items:
             type: string
@@ -9235,7 +9287,7 @@ components:
             registered adapter claims is reported for that file as
             `source_type_unresolved`.
         parsed_metadata:
-          type: object
+          type: [object, "null"]
           additionalProperties: true
           description: >-
             Optional caller-supplied parsed metadata for this file (keys:

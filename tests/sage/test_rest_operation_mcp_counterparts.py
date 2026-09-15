@@ -33,7 +33,7 @@ from sage.adapters.stubs import StubContentStore
 from sage.config import VaultConfig
 from sage.mcp_init import SAGEServices
 from sage.models.enums import SourceType
-from sage.models.schemas import EvalRetrievalResult, IngestRequest
+from sage.models.schemas import IngestRequest
 from sage.services.utilities import UtilitiesService
 from sage.services.vault_registry import VaultRegistryService
 from tests.helpers.pipeline_wait import await_pipeline_idle
@@ -255,11 +255,9 @@ async def test_verify_vault_retrieval_tool_and_route_agree(
 ):
     """VR-3: both arms reach the one service entry point and report alike.
 
-    The reports are compared as the response model reads them rather than as
-    raw bodies: the tool omits an optional field whose value is null (an
-    absent key reads as null under the published contract), and the route
-    carries the key. A report with a missed assertion has exactly such a
-    field, ``actual_rank``.
+    The reports are compared as bodies. A report with a missed assertion
+    carries an optional field whose value is null, ``actual_rank``, which both
+    surfaces omit under the one per-field null rule.
     """
     app, vault_id = retrieval_app
     calls = _spy(monkeypatch, "eval_retrieval")
@@ -274,9 +272,7 @@ async def test_verify_vault_retrieval_tool_and_route_agree(
     assert len(calls) == 2
     via_route = resp.json()
     assert via_route["failure_count"] == 1
-    assert EvalRetrievalResult.model_validate(via_tool) == EvalRetrievalResult.model_validate(
-        via_route
-    )
+    assert via_tool == via_route
 
 
 async def test_verify_vault_retrieval_refuses_an_unconfigured_vault_on_both_surfaces(

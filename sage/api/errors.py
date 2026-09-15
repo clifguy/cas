@@ -4,16 +4,18 @@ Exception classes carry structured detail dicts matching the OpenAPI
 ErrorResponse schema. The exception handler converts them to JSON responses.
 """
 
+import logging
 from collections.abc import Iterable
 from datetime import datetime
 from enum import StrEnum
 
 from fastapi import FastAPI, Request
 from fastapi.dependencies.utils import get_flat_dependant
-from fastapi.exceptions import RequestValidationError
+from fastapi.exceptions import RequestValidationError, ResponseValidationError
 from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ValidationError
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from sage.config import render_state_set
 from sage.models.enums import EdgeType, SourceType
@@ -2638,8 +2640,68 @@ def _declared_body_names(request: Request) -> list[str]:
     return names
 
 
+_logger = logging.getLogger(__name__)
+
+# Codes for the errors the framework raises before any operation runs. Every
+# other status reaching the handler keeps the generic code.
+_FRAMEWORK_ERROR_CODES: dict[int, str] = {
+    404: "route_not_found",
+    405: "method_not_allowed",
+}
+
+
 def register_exception_handlers(app: FastAPI) -> None:
-    """Register SAGE exception handlers on the FastAPI app."""
+    """Register SAGE exception handlers on the FastAPI app.
+
+    Every error a caller receives from the application carries the
+    ``ErrorResponse`` envelope, including the few the framework raises itself:
+    a path no operation serves, a method a path does not accept, and a response
+    the server built that its declared model refuses.
+    """
+
+    @app.exception_handler(StarletteHTTPException)
+    async def framework_http_error_handler(
+        request: Request, exc: StarletteHTTPException
+    ) -> JSONResponse:
+        """Render a routing failure in the envelope, keeping its headers.
+
+        A 405 carries ``Allow``, naming the methods the path does accept.
+        """
+        return JSONResponse(
+            status_code=exc.status_code,
+            content=to_wire(
+                ErrorResponse(
+                    code=_FRAMEWORK_ERROR_CODES.get(exc.status_code, "http_error"),
+                    message=str(exc.detail),
+                )
+            ),
+            headers=exc.headers,
+        )
+
+    @app.exception_handler(ResponseValidationError)
+    async def response_validation_handler(
+        request: Request, exc: ResponseValidationError
+    ) -> JSONResponse:
+        """Report a response its declared model refuses as a server error.
+
+        The refused value is the server's own data, so it is logged and never
+        sent: the caller learns only that the server failed.
+        """
+        _logger.error(
+            "response for %s %s failed its declared model: %s",
+            request.method,
+            request.url.path,
+            exc.errors(),
+        )
+        return JSONResponse(
+            status_code=500,
+            content=to_wire(
+                ErrorResponse(
+                    code="internal_error",
+                    message="The server built a response its published contract does not admit.",
+                )
+            ),
+        )
 
     @app.exception_handler(SAGEError)
     async def sage_error_handler(request: Request, exc: SAGEError) -> JSONResponse:

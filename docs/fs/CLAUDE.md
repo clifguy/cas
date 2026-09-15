@@ -32,20 +32,19 @@ down:
   reported verdict *no document holds these bytes*. A caller cannot read that
   verdict off a key that is not there, which is why the field is declared
   required and its key always ships.
-- **A model has one wire shape.** The same model reached directly, nested in a
-  batch result, or carried on an event stream renders identically. Code that
-  assembles a response body by hand renders its nested models through
-  `sage.models.wire` for that reason rather than dumping them itself.
-- **The REST transport sends every key**, which satisfies a required and an
-  optional declaration alike. That is only half of conformance, and the half
-  that is easy to mistake for all of it: sending the key says nothing about
-  whether the declaration admits the *value*. An optional property declared
-  non-nullable is a violation the moment REST sends its null, while the MCP
-  rendering of the same property is clean because it omits the key instead.
-  So a nullable field must be declared nullable even where no required-ness
-  question arises, and the gate renders every model both ways for that reason.
-  The transports then differ only within what the contract permits, and a
-  client generated from either spec parses both.
+- **A model has one wire shape, on either surface.** The same model reached
+  directly, nested in a batch result, carried on an event stream, or returned
+  by the MCP surface or the Core API renders identically. The MCP surface
+  renders through `sage.models.wire`; the Core API routes render through the
+  route class in `sage.api.wire_route`, which applies the same rule to the
+  declared response model. Code that assembles a response body by hand renders
+  its nested models through `sage.models.wire` for that reason rather than
+  dumping them itself.
+- **Omitting a null does not excuse declaring it.** No body carries an
+  optional null, so no body can show that its declaration refuses one. A field
+  whose model admits null is declared nullable in the spec all the same,
+  required or not, because the declaration is what a generated client is built
+  from.
 
 **An empty error `detail` is an absent one.** Its keys vary by error code, so an
 empty object tells a caller nothing the code has not, and the Core API contract
@@ -66,8 +65,24 @@ Express nullability the OpenAPI 3.1 way — `type: [string, "null"]`, or an
 non-nullable and the generated client rejects the null the server correctly
 sends.
 
-`tests/sage/test_wire_shape_conformance.py` enforces all of this by serializing
-a response and validating it against the component the spec declares for it.
+## Null fields in requests
+
+**A request property admits null in the published schema exactly when its
+model does.** For an optional request property, a null means the same as
+leaving the property out: the surface accepts either and treats them alike. So
+the schema declares the null arm wherever the model accepts one, and a client
+validating against the schema can send what the surface serves. The rule runs
+in both directions: a schema must not offer a null the model refuses.
+
+This is the same declaration the response rule above relies on, which is why
+one comparison holds both: every model field is compared with its spec
+property, request and response components alike.
+
+`tests/sage/test_wire_shape_conformance.py` enforces all of this. It serializes
+a response both ways the surfaces render it and validates the body against the
+component the spec declares for it, compares every model field's nullability
+with its property's, and checks that every route the applications serve renders
+through the wire route class.
 
 ## Validation
 

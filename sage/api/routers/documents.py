@@ -19,10 +19,12 @@ from sage.api.dependencies import (
     get_vault_id,
 )
 from sage.api.response_docs import boundary_400
+from sage.api.wire_route import WireRoute
 from sage.models.schemas import (
     DocumentDownloadUrlResponse,
     DocumentIdStr,
     DocumentWithContent,
+    DownloadRecipe,
     ErrorResponse,
     OpenDocumentResponse,
     ReabstractStartedResponse,
@@ -32,7 +34,7 @@ from sage.models.schemas import (
 from sage.services.documents import DocumentsService
 from sage.services.ingestion import IngestionService
 
-router = APIRouter(tags=["Document Metadata"])
+router = APIRouter(route_class=WireRoute, tags=["Document Metadata"])
 
 
 @router.post(
@@ -317,7 +319,7 @@ async def get_document_content(
 
 @router.get(
     "/documents/{document_id}",
-    response_model=DocumentWithContent,
+    response_model=DocumentWithContent | DownloadRecipe,
     responses={
         400: boundary_400(
             path=("invalid_document_id", "invalid_vault_id"),
@@ -387,5 +389,5 @@ async def get_document(
     write_to_path: str | None = Query(default=None),
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: DocumentsService = Depends(get_documents_service),
-) -> DocumentWithContent:
+) -> DocumentWithContent | DownloadRecipe:
     return await service.get_document_with_content(document_id, include_content, write_to_path)

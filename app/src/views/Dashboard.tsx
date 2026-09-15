@@ -107,7 +107,7 @@ export default function Dashboard() {
             liveRows={stats.content_store_row_count}
             freePages={stats.content_store_small_fragment_count}
           />
-          <LastOptimizeCard summary={stats.last_optimize} />
+          <LastOptimizeCard summary={stats.last_optimize ?? null} />
         </div>
       </Section>
 

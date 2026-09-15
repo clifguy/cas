@@ -112,8 +112,9 @@ async def test_rest_maintenance_path_replaces_admin_without_alias(suffix: str) -
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         response = await client.post(f"/sage_vaults/ghost/admin/{suffix}", json={})
     assert response.status_code == 404
-    # Routing absence, not a false pass from a still-live route's vault lookup.
-    assert response.json() == {"detail": "Not Found"}
+    # Routing absence, not a false pass from a still-live route's vault lookup,
+    # which would answer vault_not_found.
+    assert response.json()["code"] == "route_not_found"
     assert "location" not in response.headers
 
 

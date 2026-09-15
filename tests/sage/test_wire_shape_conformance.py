@@ -34,6 +34,13 @@ W7  The rule reaches through nested models and lists of models, on the tool
     path and the event-stream path alike.
 W7b The rule reaches a model held as a value in a mapping.
 W8  The dump and the rule are keyed alike, so an aliased field is reached.
+W9  A model field and its spec property agree on whether null is admitted,
+    request and response components alike, in both directions.
+W9a Each declaration form of null, spec and model side, is read correctly.
+W9b The nullability allowlist carries no stale entry.
+W10 A Core API route renders its model under the per-field rule, keeping its
+    status, its headers, a sync endpoint and a returned ``Response``.
+W11 Every route either built application serves is on that route class.
 
 W5 and W6 are the two halves of the per-field rule, and they fail under
 opposite mistakes. An implementation that keeps every key passes W5 and fails
@@ -51,20 +58,21 @@ nested optional key is *gone* and W7b covered the mapping. Checking only that
 required keys survive at depth is not enough, because a rule that does nothing at
 depth leaves them there too.
 
-W1 has its own rival, excluded by its second arm rather than by a depth test: a
-rule correct on the rendering that omits optional nulls, paired with a schema
-that declares those properties non-nullable. The MCP arm alone cannot see it --
-it never puts a null against an optional property's declared type -- so W1
-renders every model both ways the surface renders.
+W9 excludes a rival no rendering can: a surface that omits optional nulls
+paired with a schema declaring those properties non-nullable. Both transports
+omit an optional null, so no body ever puts one against its declaration, and
+only a comparison of the declarations themselves sees the disagreement. W11
+excludes the rival W10 cannot see: a router left off the route class, which
+keeps sending every optional null with every other test green.
 
 Read the pairings as the gate and this paragraph as a claim to re-audit. The
 inventory above has been accurate and incomplete twice.
 
-One test here is inert by construction: the divergence allowlist is empty, so
-its staleness check loops zero times and passes against any implementation. It
-is a guard for entries that do not exist yet, in the manner of the other empty
-allowlists in this suite, and it is named here rather than left to look like
-coverage.
+Two tests here are inert by construction: the divergence allowlists are empty,
+so their staleness checks loop zero times and pass against any implementation.
+Each is a guard for entries that do not exist yet, in the manner of the other
+empty allowlists in this suite, and they are named here rather than left to look
+like coverage.
 """
 
 from __future__ import annotations
@@ -83,10 +91,12 @@ import pytest
 import referencing
 import referencing.jsonschema
 import yaml
+from fastapi import Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from sage.mcp_server import _serialize
-from sage.models.schemas import BatchIngestFileError
+from sage.models.schemas import BatchIngestFileError, TraverseResponse
 from sage.models.wire import to_wire
 from sage.services.batch_ingest import IngestSummary
 
@@ -491,10 +501,16 @@ def _renderings(instance: BaseModel) -> tuple[tuple[str, dict], ...]:
     violation on either arm; W2 calls an exemption stale only when both are
     clean. Rendered separately, the two would disagree about what a violation
     is, and the allowlist would reject the entries it exists to hold.
+
+    The REST arm is the Core API route class's own rendering, declared as the
+    instance's model, so the arm tests what a route sends rather than a dump no
+    route performs.
     """
+    from sage.api.wire_route import render_response
+
     return (
         ("mcp", _serialize(instance)),
-        ("rest", instance.model_dump(mode="json", by_alias=True)),
+        ("rest", render_response(type(instance), instance)),
     )
 
 
@@ -514,16 +530,16 @@ def test_serialized_response_validates_against_declared_schema(
     dropped surfaces here as a missing property; a null a declaration does not
     admit surfaces as a type violation.
 
-    Both arms are needed and neither subsumes the other, which is not obvious:
+    The two arms send the same body under the same rule by different code: the
+    MCP serializer dumps the runtime model, the REST route class validates and
+    dumps as the declared type. Each can drop a required key or break a declared
+    type on its own, so each is validated.
 
-    - The **MCP** arm omits every optional null, so for an optional property
-      the declared type is never evaluated against a null at all. That arm
-      alone guards the handful of required-and-nullable fields and nothing
-      else -- it would pass with every optional property declared
-      non-nullable.
-    - The **REST** arm keeps every key, so it is the arm on which an
-      optional property's nullability is actually asserted. It is the reason a
-      3.1 client generated from these specs can parse what the surface sends.
+    Neither arm ever puts a null against an optional property's declared type,
+    because both omit it. That property's nullability is W9's to hold, by
+    comparing the model's declaration with the spec's directly; this test
+    guards required keys, required-and-nullable values, and every non-null
+    value's type and format.
 
     This is the check no sibling gate performs: every one of them compares a
     declaration to a declaration and cannot see the wire at all.
@@ -955,3 +971,660 @@ def test_rule_reaches_models_held_in_a_mapping():
     assert field["value"] == "A title", (
         "the mapping branch must prune the entry, not replace or empty it"
     )
+
+
+# ---------------------------------------------------------------------------
+# W9: the model and the spec agree on which properties admit null
+# ---------------------------------------------------------------------------
+
+# Properties whose nullability is allowed to differ between a model and its
+# component, each with the reason. Empty by intent, like the wire-shape
+# allowlist above: an entry is a property on which a client validating against
+# the published contract and the surface disagree about a null.
+KNOWN_NULLABILITY_DIVERGENCE: Final[dict[tuple[str, str, str], str]] = {}
+
+# Vacuity floor for W9. Several hundred properties are compared across both
+# specs today; a reflection helper returning nothing, or a flatten that stops
+# resolving composition, falls far below it.
+MIN_NULLABILITY_FIELDS_COMPARED: Final[int] = 600
+
+# Components W9 must have reached, from both sides of the rule. The floor
+# counts; this names. A comparison scoped to response-reachable components --
+# the scope every other test in this module uses -- would pass every request
+# divergence by never looking at one, and a count alone cannot tell.
+_NULLABILITY_REQUIRED_REACH: Final[frozenset[tuple[str, str]]] = frozenset(
+    {
+        ("sage_core", "IngestRequest"),
+        ("sage_core", "RetrievalFilters"),
+        ("sage_core", "UpdateMetadataRequest"),
+        ("sage_core", "BulkMetadataItem"),
+        ("sage_core", "IngestPreview"),
+        ("cas_app", "IngestFileItem"),
+    }
+)
+
+
+def _absolute_refs(node: Any) -> Any:
+    """A copy of a spec fragment with its local refs addressed through the spec URI.
+
+    A property lifted out of its component carries refs such as
+    ``#/components/schemas/Edge``, which resolve against whatever document the
+    validator is built on. Rewriting them to the registered spec URI lets a
+    fragment be validated on its own.
+    """
+    if isinstance(node, dict):
+        out = {}
+        for key, value in node.items():
+            if key == "$ref" and isinstance(value, str) and value.startswith("#/"):
+                out[key] = f"{_SPEC_BASE_URI}{value}"
+            else:
+                out[key] = _absolute_refs(value)
+        return out
+    if isinstance(node, list):
+        return [_absolute_refs(item) for item in node]
+    return node
+
+
+def _spec_admits_null(prop: dict, spec: dict) -> bool:
+    """Whether a 3.1 client validating against this declaration accepts null.
+
+    Asked of a JSON Schema validator rather than read off the keywords, so every
+    way a declaration can admit null counts and nothing else does: a type list,
+    an ``anyOf`` or ``oneOf`` arm, a ``$ref`` to a nullable component, or no type
+    constraint at all. The 3.0 ``nullable`` keyword is not part of 3.1 and the
+    validator ignores it, which is the reading a generated client gives it too.
+    """
+    validator = jsonschema.Draft202012Validator(_absolute_refs(prop), registry=_registry_for(spec))
+    return validator.is_valid(None)
+
+
+def _model_admits_null(field: Any) -> bool:
+    """Whether the model field accepts an explicit null from a caller.
+
+    Validated through the field's own annotation and metadata, so an
+    ``Annotated`` alias, ``Optional``, ``Any`` and a constrained type all answer
+    as the model would, rather than as a reading of the annotation's shape.
+    """
+    import pydantic
+
+    annotation = field.annotation
+    if field.metadata:
+        annotation = typing.Annotated[(annotation, *field.metadata)]
+    try:
+        pydantic.TypeAdapter(annotation).validate_python(None)
+    except pydantic.ValidationError:
+        return False
+    return True
+
+
+def _field_key(name: str, field: Any, props: dict) -> str | None:
+    """The spec property a model field corresponds to, if the component declares one."""
+    for key in (field.serialization_alias, field.validation_alias, field.alias, name):
+        if isinstance(key, str) and key in props:
+            return key
+    return None
+
+
+def _surface_classes() -> tuple[tuple[str, Path, Any], ...]:
+    return (
+        ("sage_core", SAGE_CORE_SPEC_PATH, _sage_classes),
+        ("cas_app", CAS_APP_SPEC_PATH, _cas_app_classes),
+    )
+
+
+def _nullability_divergences() -> tuple[dict[tuple[str, str, str], str], set[tuple[str, str]], int]:
+    """Every property on which a model and its component disagree about null.
+
+    Returns the divergences keyed ``(surface, component, property)`` with a
+    rendering of which side admits null, the components reached, and the
+    number of properties compared.
+    """
+    divergences: dict[tuple[str, str, str], str] = {}
+    reached: set[tuple[str, str]] = set()
+    compared = 0
+    for label, path, classes_for in _surface_classes():
+        spec = _load_spec(path)
+        if spec is None:
+            continue
+        classes = classes_for()
+        components = (spec.get("components") or {}).get("schemas") or {}
+        for name in sorted(components):
+            model = classes.get(name)
+            if not (isinstance(model, type) and issubclass(model, BaseModel)):
+                continue
+            props = _properties_for(spec, name)
+            for field_name, field in model.model_fields.items():
+                key = _field_key(field_name, field, props)
+                if key is None:
+                    continue
+                reached.add((label, name))
+                compared += 1
+                model_null = _model_admits_null(field)
+                spec_null = _spec_admits_null(props[key], spec)
+                if model_null != spec_null:
+                    side = "model" if model_null else "spec"
+                    divergences[(label, name, key)] = f"only the {side} admits null"
+    return divergences, reached, compared
+
+
+def test_model_and_spec_agree_on_nullability():
+    """W9 -- a property admits null in the contract exactly when the surface does.
+
+    Covers request and response components alike, which is the point: the
+    serialized-shape sweep above reaches only what the server sends, so a
+    request model accepting a null its published property refuses -- a body a
+    spec-validating client will not build, served by a surface that accepts it
+    -- was visible to no gate at all.
+
+    Both directions are asserted. A model wider than the spec is a contract
+    narrower than the surface; a spec wider than the model is a null a client
+    is told it may send and is refused for. For an optional request property a
+    null means the same as the property's absence, so the rule costs a caller
+    nothing and removes a disagreement a generated client meets immediately.
+
+    For a response property the same agreement is what keeps a nullable field
+    declared nullable now that no transport sends an optional null: the value
+    still reaches a caller on a required field, and a model is one declaration
+    whichever way the body travels.
+    """
+    divergences, reached, compared = _nullability_divergences()
+
+    assert compared >= MIN_NULLABILITY_FIELDS_COMPARED, (
+        f"only {compared} properties were compared for nullability; the "
+        "reflection helpers returned little or nothing, so this test passed "
+        "over an almost-empty loop rather than finding agreement"
+    )
+    missing = _NULLABILITY_REQUIRED_REACH - reached
+    assert not missing, (
+        "components the nullability comparison must reach, from both the "
+        f"request and the response side, were never compared: {sorted(missing)}"
+    )
+    unexplained = {k: v for k, v in divergences.items() if k not in KNOWN_NULLABILITY_DIVERGENCE}
+    assert not unexplained, (
+        "properties on which a model and its published component disagree "
+        "about null -- add a null arm to the spec where the model admits one, "
+        "or narrow whichever side is wrong:\n"
+        + "\n".join(f"  {s}: {c}.{p} -> {why}" for (s, c, p), why in sorted(unexplained.items()))
+    )
+
+
+def test_nullability_divergence_allowlist_has_no_stale_entries():
+    """W9b -- every allowlist entry names a property that still diverges.
+
+    Inert while the allowlist is empty, like W2: the loop runs zero times. It is
+    the guard for an entry that outlives the divergence it was admitted for.
+    """
+    divergences, _reached, _compared = _nullability_divergences()
+    stale = sorted(k for k in KNOWN_NULLABILITY_DIVERGENCE if k not in divergences)
+    assert not stale, f"stale KNOWN_NULLABILITY_DIVERGENCE entries: {stale}"
+
+
+_NULL_TEST_SPEC: Final[dict] = {
+    "components": {
+        "schemas": {
+            "Thing": {"type": "object", "properties": {"id": {"type": "string"}}},
+            "MaybeThing": {"anyOf": [{"$ref": "#/components/schemas/Thing"}, {"type": "null"}]},
+        }
+    }
+}
+
+
+@pytest.mark.parametrize(
+    ("declaration", "admits_null"),
+    [
+        ({"type": ["string", "null"]}, True),
+        ({"anyOf": [{"$ref": "#/components/schemas/Thing"}, {"type": "null"}]}, True),
+        ({"oneOf": [{"type": "integer"}, {"type": "null"}]}, True),
+        ({"description": "Any value, including null."}, True),
+        ({"$ref": "#/components/schemas/MaybeThing"}, True),
+        ({"type": "string"}, False),
+        ({"$ref": "#/components/schemas/Thing"}, False),
+        ({"type": "string", "nullable": True}, False),
+        ({"type": "array", "items": {"type": "string"}}, False),
+    ],
+    ids=[
+        "type-list",
+        "anyOf-ref-null",
+        "oneOf-null",
+        "untyped",
+        "ref-to-nullable",
+        "plain-type",
+        "ref-to-object",
+        "openapi-3.0-nullable-is-not-3.1",
+        "array",
+    ],
+)
+def test_spec_null_reader_classifies_each_form(declaration: dict, admits_null: bool):
+    """W9a (spec side) -- each way a declaration admits null, and the 3.0 keyword that does not."""
+    assert _spec_admits_null(declaration, _NULL_TEST_SPEC) is admits_null
+
+
+def test_model_null_reader_classifies_each_form():
+    """W9a (model side) -- each annotation shape answers as the model validates it."""
+    from pydantic import BeforeValidator
+
+    from sage.models.schemas import DocumentDateStr
+
+    class Shapes(BaseModel):
+        union: str | None = None
+        optional: typing.Optional[int] = None  # noqa: UP045 -- the spelling under test
+        aliased: DocumentDateStr = None
+        anything: Any = None
+        plain: str = "x"
+        listed: list[str] = []
+        literal: typing.Literal["a", "b"] = "a"
+        refuses: typing.Annotated[str | None, BeforeValidator(_refuse_null)] = None
+
+    expected = {
+        "union": True,
+        "optional": True,
+        "aliased": True,
+        "anything": True,
+        "plain": False,
+        "listed": False,
+        "literal": False,
+        "refuses": False,
+    }
+    actual = {name: _model_admits_null(field) for name, field in Shapes.model_fields.items()}
+    assert actual == expected
+
+
+def _refuse_null(value: Any) -> Any:
+    if value is None:
+        raise ValueError("null refused")
+    return value
+
+
+# ---------------------------------------------------------------------------
+# W10 / W11: the Core API sends the same wire shape the MCP surface does
+# ---------------------------------------------------------------------------
+
+
+def _wire_app(router_setup: typing.Callable[[Any], None]):
+    """An application over one router built on the Core API's route class."""
+    from fastapi import APIRouter, FastAPI
+
+    from sage.api.wire_route import WireRoute
+
+    router = APIRouter(route_class=WireRoute)
+    router_setup(router)
+    app = FastAPI()
+    app.include_router(router)
+    return app
+
+
+def _client(app):
+    import httpx
+
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test")
+
+
+async def test_rest_route_keeps_a_required_null_and_omits_an_optional_one():
+    """W10 -- a route renders its model under the per-field rule, at every depth.
+
+    The same three shapes the MCP tests above pin, sent through a real route:
+    a required-and-nullable key survives carrying null, an optional null is
+    omitted, and the omission reaches into each element of a list. Blanket
+    ``exclude_none`` passes the second and third and fails the first; FastAPI's
+    own serialization passes the first and fails the others; a prune that does
+    not descend passes the first two and fails the third.
+    """
+    from sage.models.schemas import IngestPreview, TraverseResponse
+
+    def setup(router):
+        @router.get("/preview", response_model=IngestPreview)
+        async def preview():
+            return _null_preview()
+
+        @router.get("/traverse", response_model=TraverseResponse)
+        async def traverse():
+            return TraverseResponse(start_id="0123abcd_sentinel", nodes=[])
+
+        @router.get("/errors", response_model=list[BatchIngestFileError])
+        async def errors():
+            return [
+                BatchIngestFileError(
+                    file_index=0, filename="bad.md", source_path="/in/bad.md", message="boom"
+                )
+            ]
+
+    async with _client(_wire_app(setup)) as client:
+        preview_body = (await client.get("/preview")).json()
+        traverse_body = (await client.get("/traverse")).json()
+        [error_body] = (await client.get("/errors")).json()
+
+    assert "duplicate_of" in preview_body and preview_body["duplicate_of"] is None, (
+        "a required-and-nullable key must reach the REST wire carrying null"
+    )
+    assert preview_body["requirements"]["permitted_source_types"] is None
+
+    assert "resolution_path" not in traverse_body, (
+        "an optional null must be omitted from a REST body as it is from MCP"
+    )
+    assert traverse_body["start_id"] == "0123abcd_sentinel"
+
+    assert "code" not in error_body and "detail" not in error_body, (
+        f"an optional null survived inside a list element: {sorted(error_body)}"
+    )
+    assert error_body["message"] == "boom"
+
+    # One model, one wire shape: the REST body is the MCP body.
+    assert preview_body == _serialize(_null_preview())
+
+
+async def test_rest_route_keeps_status_sync_endpoints_and_returned_responses():
+    """W10 -- rendering the body changes nothing else a route declares.
+
+    A route class that builds its own response is where a declared status code,
+    a status or header set on an injected ``Response``, a sync endpoint's
+    threadpool dispatch, a response model declared only by the return
+    annotation, or a handler's own ``Response`` is lost, and every shape
+    assertion above still passes when they are.
+    """
+    import threading
+
+    from fastapi.responses import PlainTextResponse
+
+    from sage.models.schemas import TraverseResponse
+
+    sync_threads: list[int] = []
+
+    def setup(router):
+        @router.post("/created", response_model=TraverseResponse, status_code=201)
+        def created():  # sync on purpose
+            sync_threads.append(threading.get_ident())
+            return TraverseResponse(start_id="0123abcd_sentinel", nodes=[])
+
+        @router.get("/inferred")
+        async def inferred() -> TraverseResponse:
+            return TraverseResponse(start_id="0123abcd_sentinel", nodes=[])
+
+        @router.get("/raw", response_model=TraverseResponse)
+        async def raw():
+            return PlainTextResponse("verbatim", status_code=202)
+
+        @router.get("/injected", response_model=TraverseResponse)
+        async def injected(response: Response):
+            response.status_code = 203
+            response.headers["x-wire-probe"] = "kept"
+            return TraverseResponse(start_id="0123abcd_sentinel", nodes=[])
+
+    async with _client(_wire_app(setup)) as client:
+        created = await client.post("/created")
+        raw = await client.get("/raw")
+        injected = await client.get("/injected")
+        inferred = await client.get("/inferred")
+
+    assert created.status_code == 201
+    assert created.json() == {"start_id": "0123abcd_sentinel", "nodes": []}
+    # A sync endpoint runs in the threadpool, not on the event loop serving
+    # every other request: a route class calling it inline returns the same body.
+    assert sync_threads and sync_threads[0] != threading.get_ident()
+
+    # A model declared only by the return annotation is the route's response
+    # model too; a route class reading the keyword alone would keep its nulls.
+    assert inferred.json() == {"start_id": "0123abcd_sentinel", "nodes": []}
+
+    assert raw.status_code == 202 and raw.text == "verbatim"
+
+    # A status and a header set on an injected response reach the caller, as
+    # FastAPI applies them to the response it builds itself.
+    assert injected.status_code == 203
+    assert injected.headers["x-wire-probe"] == "kept"
+    assert injected.json() == {"start_id": "0123abcd_sentinel", "nodes": []}
+
+
+def _stamp_response(response: Response) -> None:
+    """A dependency that sets status, a header and a cookie on the injected response."""
+    response.status_code = 203
+    response.headers["x-dependency-probe"] = "set-by-dependency"
+    response.set_cookie("probe", "1")
+
+
+async def test_rest_route_keeps_what_a_dependency_sets_on_the_response():
+    """W10 -- status, headers and cookies a dependency sets reach the caller.
+
+    FastAPI gives every dependency and the endpoint one per-request response
+    object and applies what was set on it to the response it builds. A route
+    class that looks for that object among the endpoint's own arguments finds it
+    only when the endpoint declares one, so a dependency's cookie is silently
+    lost on an endpoint that does not -- the standard cookie-setting shape.
+    """
+    from fastapi import Depends
+
+    def setup(router):
+        @router.get(
+            "/stamped", response_model=TraverseResponse, dependencies=[Depends(_stamp_response)]
+        )
+        async def stamped():
+            return TraverseResponse(start_id="0123abcd_sentinel", nodes=[])
+
+    async with _client(_wire_app(setup)) as client:
+        response = await client.get("/stamped")
+
+    assert response.status_code == 203
+    assert response.headers["x-dependency-probe"] == "set-by-dependency"
+    assert "probe=1" in response.headers["set-cookie"]
+    assert response.json() == {"start_id": "0123abcd_sentinel", "nodes": []}
+
+
+async def test_rest_route_reads_a_response_declared_through_annotated():
+    """W10 -- an endpoint declaring its response as ``Annotated[Response, ...]`` still receives it.
+
+    FastAPI unwraps ``Annotated`` before recognising the response parameter and
+    fills one such parameter per callable. A detector reading the raw annotation
+    misses it, declares a second one, and the endpoint's own is never supplied --
+    a server error on a route that runs on a plain ``APIRoute``.
+    """
+
+    def setup(router):
+        @router.get("/annotated", response_model=TraverseResponse)
+        async def annotated(response: typing.Annotated[Response, "marker"]):
+            response.headers["x-annotated-probe"] = "kept"
+            return TraverseResponse(start_id="0123abcd_sentinel", nodes=[])
+
+    async with _client(_wire_app(setup)) as client:
+        response = await client.get("/annotated")
+
+    assert response.status_code == 200, response.text
+    assert response.headers["x-annotated-probe"] == "kept"
+
+
+class _ProbeJSONResponse(JSONResponse):
+    """A JSON response class with a media type and a rendering of its own."""
+
+    media_type = "application/vnd.probe+json"
+
+    def render(self, content: Any) -> bytes:
+        return super().render(content) + b"\n"
+
+
+async def test_rest_route_renders_through_a_json_response_subclass():
+    """W10 -- a JSON response class the route admits is the class the body is sent with.
+
+    The route class accepts a ``JSONResponse`` subclass, and the OpenAPI document
+    advertises that class's media type for the operation. A body built with
+    ``JSONResponse`` itself would go out as ``application/json`` under a
+    contract naming another type. Declared on the route and as a router's
+    default alike, since the two reach the route by different paths.
+    """
+    from fastapi import APIRouter, FastAPI
+
+    from sage.api.wire_route import WireRoute
+
+    router = APIRouter(route_class=WireRoute)
+
+    @router.get("/declared", response_model=TraverseResponse, response_class=_ProbeJSONResponse)
+    async def declared():
+        return TraverseResponse(start_id="0123abcd_sentinel", nodes=[])
+
+    default_router = APIRouter(route_class=WireRoute, default_response_class=_ProbeJSONResponse)
+
+    @default_router.get("/defaulted", response_model=TraverseResponse)
+    async def defaulted():
+        return TraverseResponse(start_id="0123abcd_sentinel", nodes=[])
+
+    app = FastAPI()
+    app.include_router(router)
+    app.include_router(default_router)
+
+    async with _client(app) as client:
+        for path in ("/declared", "/defaulted"):
+            response = await client.get(path)
+            assert response.headers["content-type"].startswith("application/vnd.probe+json"), path
+            # The class's own rendering ran, not a plain body under its media type.
+            assert response.text.endswith("\n"), path
+            assert response.json() == {"start_id": "0123abcd_sentinel", "nodes": []}
+            content = app.openapi()["paths"][path]["get"]["responses"]["200"]["content"]
+            assert set(content) == {"application/vnd.probe+json"}, path
+
+
+_UNIMPLEMENTED_OPTIONS: Final[list] = [
+    pytest.param({"response_model_include": {"start_id"}}, id="include"),
+    pytest.param({"response_model_exclude": {"nodes"}}, id="exclude"),
+    pytest.param({"response_model_exclude_unset": True}, id="exclude_unset"),
+    pytest.param({"response_model_exclude_defaults": True}, id="exclude_defaults"),
+    pytest.param({"response_model_exclude_none": True}, id="exclude_none"),
+    pytest.param({"response_model_by_alias": False}, id="by_alias_false"),
+]
+
+
+@pytest.mark.parametrize("option", _UNIMPLEMENTED_OPTIONS)
+def test_rest_route_refuses_serialization_options_it_does_not_apply(option: dict):
+    """W10 -- an option the route class would silently ignore is refused when declared.
+
+    The route class renders a model's body itself, so FastAPI's own options for
+    shaping that body never run. Accepting one would publish a route that
+    behaves as though it were not there, which is the failure this class exists
+    to remove; refusing it turns that into an error where the route is written.
+    """
+    from fastapi import APIRouter
+
+    from sage.api.wire_route import WireRoute
+
+    router = APIRouter(route_class=WireRoute)
+    with pytest.raises(ValueError, match="WireRoute"):
+        router.add_api_route(
+            "/refused",
+            lambda: None,
+            methods=["GET"],
+            response_model=TraverseResponse,
+            **option,
+        )
+
+
+def test_rest_route_refuses_a_response_class_it_does_not_render():
+    """W10 -- a non-JSON response class is refused, and the defaults are accepted."""
+    from fastapi import APIRouter
+    from fastapi.responses import PlainTextResponse
+
+    from sage.api.wire_route import WireRoute
+
+    router = APIRouter(route_class=WireRoute)
+    with pytest.raises(ValueError, match="WireRoute"):
+        router.add_api_route(
+            "/refused",
+            lambda: None,
+            methods=["GET"],
+            response_model=TraverseResponse,
+            response_class=PlainTextResponse,
+        )
+    router.add_api_route(
+        "/accepted", lambda: None, methods=["GET"], response_model=TraverseResponse
+    )
+    assert [route.path for route in router.routes] == ["/accepted"]
+
+
+async def test_rest_route_renders_the_declared_type_and_documents_it():
+    """W10 -- the body is the declared model's, and the OpenAPI document is unchanged.
+
+    FastAPI serializes a returned value *as the declared response model*, so a
+    wider object never leaks fields the contract does not declare. A route class
+    that dumped the runtime object instead would publish them. And the declared
+    model must still reach the generated OpenAPI document, which every
+    spec-versus-app gate in the suite reads.
+    """
+    from pydantic import Field
+
+    class Declared(BaseModel):
+        name: str = Field(description="Declared.")
+        note: str | None = Field(default=None, description="Optional.")
+
+    class Wider(Declared):
+        internal: str = Field(default="leak", description="Undeclared on the wire.")
+
+    def setup(router):
+        @router.get("/declared", response_model=Declared)
+        async def declared():
+            return Wider(name="n")
+
+    app = _wire_app(setup)
+    async with _client(app) as client:
+        assert (await client.get("/declared")).json() == {"name": "n"}
+    response_schema = app.openapi()["paths"]["/declared"]["get"]["responses"]["200"]
+    ref = response_schema["content"]["application/json"]["schema"]["$ref"]
+    assert ref.endswith("/Declared")
+
+
+# Routes that do not render a model, each with the reason. Everything else a
+# built app exposes must be on the wire route class, so a router added or
+# edited without it is caught here rather than by a caller.
+NON_WIRE_ROUTES: Final[dict[tuple[str, str], str]] = {
+    ("sage_core", "/health"): "a constant liveness dict, outside the documented surface",
+    ("bff", "/health"): "a constant liveness dict, outside the documented surface",
+    ("bff", "/sage_vaults"): "relays the SAGE response bytes unchanged",
+    ("bff", "/sage_vaults/{path:path}"): "relays the SAGE response bytes unchanged",
+    ("bff", "/{spa_path:path}"): "serves the built single-page application's files",
+}
+
+
+def _built_app_routes(spa_dir: Path) -> dict[str, list]:
+    """Every API route each application serves, the SPA catch-all included.
+
+    The backend-for-frontend adds its SPA route only when a built bundle is
+    present, so the directory is supplied rather than left to whatever a local
+    build happened to leave behind.
+    """
+    from fastapi.routing import APIRoute
+
+    from app.backend.asgi import create_bff_app
+    from sage.app import create_app
+    from sage.config import SageCoreConfig
+
+    (spa_dir / "index.html").write_text("<!doctype html>")
+    apps = {
+        "sage_core": create_app(),
+        "bff": create_bff_app(spa_dir=spa_dir, stack_config=SageCoreConfig(profile="cloud")),
+    }
+    return {
+        label: [r for r in app.routes if isinstance(r, APIRoute)] for label, app in apps.items()
+    }
+
+
+def test_every_built_route_renders_through_the_wire_route(tmp_path: Path):
+    """W11 -- no route on either built app keeps FastAPI's null-keeping serialization.
+
+    W10 proves the route class; this proves it is where the routes are. The
+    route class is chosen per router, so a router that omits it sends every
+    optional null again with every other test green. This walk over the
+    applications as they are built is the only place that shows.
+    """
+    from sage.api.wire_route import WireRoute
+
+    routes = _built_app_routes(tmp_path)
+    assert routes["sage_core"] and routes["bff"], "an application exposed no routes"
+
+    offenders = sorted(
+        f"  {label}: {sorted(route.methods)} {route.path}"
+        for label, app_routes in routes.items()
+        for route in app_routes
+        if not isinstance(route, WireRoute) and (label, route.path) not in NON_WIRE_ROUTES
+    )
+    assert not offenders, (
+        "routes that serialize a response without the wire route class, so "
+        "their bodies keep every optional null:\n" + "\n".join(offenders)
+    )
+
+    present = {(label, route.path) for label, app_routes in routes.items() for route in app_routes}
+    stale = sorted(k for k in NON_WIRE_ROUTES if k not in present)
+    assert not stale, f"NON_WIRE_ROUTES entries naming no route: {stale}"

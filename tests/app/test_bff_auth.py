@@ -320,7 +320,7 @@ async def test_f1_me_reports_authenticated_after_login(auth_client):
 async def test_f2_me_reports_unauthenticated_without_cookie(auth_client):
     resp = await auth_client.get("/app/auth/me")
     assert resp.status_code == 200
-    assert resp.json() == {"authenticated": False, "user": None}
+    assert resp.json() == {"authenticated": False}
 
 
 async def test_f3_logout_clears_session_and_cookie(auth_client):

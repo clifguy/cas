@@ -532,7 +532,9 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     ("sage_core", "create_edges"): Pin(6, 15),
     ("sage_core", "create_vault"): Pin(4, 17),
     ("sage_core", "delete_edge"): Pin(6, 3),
-    ("sage_core", "get_document"): Pin(10, 2),
+    # doc_only fell from 2 as the 200 response declared the download recipe
+    # the docstring already described.
+    ("sage_core", "get_document"): Pin(10, 1),
     # spec_only fell from 7 as the docstring gained the boundary-refusal
     # bullet its operation already declares: one contract claim now has a
     # counterpart it did not have. Real coverage on this one claim, not a

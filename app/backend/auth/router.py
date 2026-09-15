@@ -41,8 +41,9 @@ from app.backend.auth.session_store import (
 from app.backend.auth.urls import callback_url
 from app.backend.models import LoginChallengeResponse, SessionInfoResponse, UserClaims
 from sage.api.errors import SAGEError
+from sage.api.wire_route import WireRoute
 
-router = APIRouter(prefix="/app/auth", tags=["auth"])
+router = APIRouter(route_class=WireRoute, prefix="/app/auth", tags=["auth"])
 
 # A pre-login flow record is short-lived: it bridges the authorization redirect
 # and the callback, nothing more.

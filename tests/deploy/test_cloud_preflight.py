@@ -3579,11 +3579,35 @@ def _deref(schema: dict) -> dict:
     return resolved
 
 
+# The branch of a composed 200 response that the preflight's own calls meet. The
+# document read answers with a download recipe only when the call names
+# write_to_path, which neither the sweep nor its stub does, so the document arm
+# is the response they are held to.
+_RESPONSE_BRANCH: dict[tuple[str, str], str] = {
+    ("get", "/sage_vaults/{vault_id}/documents/{document_id}"): "DocumentWithContent",
+}
+
+
 def _response_schema(method: str, path: str) -> dict:
-    """The 200 response schema of one operation, with a ``$ref`` followed once."""
+    """The 200 response schema of one operation, with a ``$ref`` followed once.
+
+    A response composed of alternatives is resolved to the branch
+    ``_RESPONSE_BRANCH`` names for the operation; one it names none for fails
+    here, since no single shape could stand for it.
+    """
     operation = _openapi_document()["paths"].get(path, {}).get(method)
     assert operation is not None, f"the document has no {method.upper()} {path}"
     schema = operation["responses"]["200"]["content"]["application/json"]["schema"]
+    for key in ("anyOf", "oneOf"):
+        if key in schema:
+            branch = _RESPONSE_BRANCH.get((method, path))
+            assert branch is not None, (
+                f"{method.upper()} {path} composes its 200 response; name the branch "
+                "the preflight meets in _RESPONSE_BRANCH"
+            )
+            matches = [m for m in schema[key] if m.get("$ref", "").endswith(f"/{branch}")]
+            assert len(matches) == 1, f"{method.upper()} {path} has no {branch} branch"
+            return _deref(matches[0])
     return _deref(schema)
 
 

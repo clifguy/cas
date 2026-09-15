@@ -5,7 +5,7 @@
 export interface VaultSummary {
   id: string;
   name: string;
-  description: string | null;
+  description?: string | null;
   document_count: number;
   doc_types: DocTypeEntry[];
   lifecycle_states: LifecycleState[];
@@ -46,7 +46,7 @@ export interface VaultStats {
   content_store_small_fragment_count: number;
   last_ingestion_at: string | null;
   health: HealthIndicators;
-  last_optimize: LastOptimizeSummary | null;
+  last_optimize?: LastOptimizeSummary | null;
 }
 
 export interface HealthIndicators {
@@ -86,29 +86,29 @@ export interface Document {
   source_type: string;
   source_path: string;
   lifecycle_status: string;
-  version_label: string | null;
-  project: string | null;
+  version_label?: string | null;
+  project?: string | null;
   tags: string[];
-  authority_scope: string | null;
-  doc_type: string | null;
+  authority_scope?: string | null;
+  doc_type?: string | null;
   source_content_hash: string;
-  stored_content_hash: string | null;
+  stored_content_hash?: string | null;
   adapter_version: string;
   created_by: string;
   created_at: string;
   last_modified_by: string;
   updated_at: string;
-  projected_at: string | null;
-  indexed_at: string | null;
-  source_modified_at: string | null;
-  document_date: string | null;
-  semantic_abstract: string | null;
+  projected_at?: string | null;
+  indexed_at?: string | null;
+  source_modified_at?: string | null;
+  document_date?: string | null;
+  semantic_abstract?: string | null;
   pipeline_status: string;
-  pipeline_error: string | null;
-  tier3_metadata: Record<string, unknown> | null;
+  pipeline_error?: string | null;
+  tier3_metadata?: Record<string, unknown> | null;
   metadata_confirmed?: boolean;
-  relocated_from: RelocationPointer | null;
-  relocated_to: RelocationPointer | null;
+  relocated_from?: RelocationPointer | null;
+  relocated_to?: RelocationPointer | null;
 }
 
 export interface DocumentSummary {
@@ -116,17 +116,17 @@ export interface DocumentSummary {
   title: string;
   lifecycle_status: string;
   source_type: string;
-  source_path: string | null;
-  version_label: string | null;
-  project: string | null;
-  doc_type: string | null;
+  source_path?: string | null;
+  version_label?: string | null;
+  project?: string | null;
+  doc_type?: string | null;
   tags: string[];
-  document_date: string | null;
-  source_modified_at: string | null;
-  semantic_abstract: string | null;
-  tier3_metadata: Record<string, unknown> | null;
-  relocated_from: RelocationPointer | null;
-  relocated_to: RelocationPointer | null;
+  document_date?: string | null;
+  source_modified_at?: string | null;
+  semantic_abstract?: string | null;
+  tier3_metadata?: Record<string, unknown> | null;
+  relocated_from?: RelocationPointer | null;
+  relocated_to?: RelocationPointer | null;
 }
 
 // --- Edge ---
@@ -184,20 +184,20 @@ export interface Edge {
   source_id: string;
   // Null on `retracts` edges, which target an edge instance via
   // retracted_edge_id rather than a document.
-  target_id: string | null;
+  target_id?: string | null;
   edge_type: EdgeType | string;
-  resolution_policy: ResolutionPolicy;
+  resolution_policy?: ResolutionPolicy;
   // Anchor fields governed by resolution_policy (CAS-ADR-017).
-  source_valid_from_version: string | null;
-  target_valid_from_version: string | null;
+  source_valid_from_version?: string | null;
+  target_valid_from_version?: string | null;
   // Set atomically by a merged_from termination on predecessor edges.
   // Resolution suppresses tombstoned edges downstream of this version.
-  valid_until_version: string | null;
+  valid_until_version?: string | null;
   // Set only on `retracts` edges; identifies the retracted edge instance.
-  retracted_edge_id: string | null;
+  retracted_edge_id?: string | null;
   created_at: string;
-  notes: string | null;
-  rationale: string | null;
+  notes?: string | null;
+  rationale?: string | null;
   rationale_kind?: RationaleKind;
   // The source-chain version and content hash this edge's content was
   // copied or derived from when it was asserted.
@@ -219,9 +219,9 @@ export interface StagingEdge {
 
 export interface DiscoverHit {
   document: DocumentSummary;
-  chunk_content: string | null;
-  heading_path: string | null;
-  relevance_score: number | null;
+  chunk_content?: string | null;
+  heading_path?: string | null;
+  relevance_score?: number | null;
   // Sections of the document that matched, in the scored modes.
   matched_chunk_count?: number | null;
 }
@@ -303,9 +303,9 @@ export interface TraversalNode {
 export interface ChainEntry {
   id: string;
   title: string;
-  version_label: string | null;
+  version_label?: string | null;
   lifecycle_status: string;
-  document_date: string | null;
+  document_date?: string | null;
   position: number;
 }
 
@@ -358,7 +358,7 @@ export interface LinkRequest extends BulkLinkItem {
 
 // One field's extracted value and where it came from.
 export interface ExtractedField {
-  value: string | null;
+  value?: string | null;
   source: string;
   alt_value?: string | null;
   alt_source?: string | null;
@@ -384,7 +384,7 @@ export interface ScanResultItem {
   file_path: string;
   file_hash: string;
   source_modified_at: string;
-  source_type: string | null;
+  source_type?: string | null;
   parsed_metadata: ParsedMetadataItem;
   sage_status: 'new' | 'modified' | 'unchanged' | 'no_adapter';
 }
@@ -464,14 +464,14 @@ export interface IngestSummaryEvent {
 /** Identity claims for the signed-in user. Mirrors UserClaims. */
 export interface UserClaims {
   subject: string;
-  name: string | null;
-  email: string | null;
+  name?: string | null;
+  email?: string | null;
 }
 
 /** The caller's session state. Mirrors SessionInfoResponse. */
 export interface SessionInfo {
   authenticated: boolean;
-  user: UserClaims | null;
+  user?: UserClaims | null;
 }
 
 /** The authorization URL to start interactive sign-in. Mirrors LoginChallengeResponse. */
@@ -756,7 +756,7 @@ export interface BulkLifecycleItem {
 }
 
 export interface BulkLifecycleItemResult {
-  document_id: string;
+  document_id?: string;
   status: 'success' | 'error';
   document?: Document | null;
   warnings?: string[] | null;
@@ -795,7 +795,7 @@ export interface BulkMetadataItem {
 }
 
 export interface BulkMetadataItemResult {
-  document_id: string;
+  document_id?: string;
   status: 'success' | 'error';
   document?: Document | null;
   warnings?: string[] | null;

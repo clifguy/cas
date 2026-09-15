@@ -26,6 +26,7 @@ from sage.api.errors import (
     VaultNotFoundError,
 )
 from sage.api.response_docs import boundary_400
+from sage.api.wire_route import WireRoute
 from sage.models.schemas import ErrorResponse, TransferUploadResult
 from sage.services.transfer import (
     PendingTransfer,
@@ -33,7 +34,7 @@ from sage.services.transfer import (
     max_transfer_bytes,
 )
 
-router = APIRouter(tags=["Transfer"])
+router = APIRouter(route_class=WireRoute, tags=["Transfer"])
 
 _SPOOL_CHUNK_BYTES = 65536
 
