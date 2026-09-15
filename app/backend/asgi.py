@@ -6,7 +6,10 @@ transport seam carrying the user's delegated identity -- the co-located profile
 keeps the backend mounted inside the SAGE app instead. It boots with no SAGE in
 process: there is no vault registry, so the directory-scan and bulk-ingest
 routes (a local-filesystem capability) report that they belong to the
-co-located profile rather than failing on the absent registry.
+co-located profile rather than failing on the absent registry. Every route but
+sign-in, the health probe, the SPA itself, and the generated schema and
+interactive documentation of the published operations requires a signed-in
+session, as the SAGE reverse proxy does.
 
 The SPA bundle is mounted last, as a catch-all serving ``index.html`` for
 unmatched client routes, so the earlier API and health routes still match
@@ -18,10 +21,11 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from app.backend.auth.dependencies import require_session
 from app.backend.auth.router import router as auth_router
 from app.backend.proxy import router as proxy_router
 from app.backend.router import router as app_backend_router
@@ -111,7 +115,16 @@ def create_bff_app(
 
     # Application backend (scan/ingest) and interactive sign-in routers, plus
     # the SAGE reverse proxy. These match before the SPA catch-all below.
-    app.include_router(app_backend_router)
+    #
+    # The application backend requires a signed-in session here, where this
+    # app includes it, rather than on the router: the co-located application
+    # includes the same router under a profile that carries no identity. An
+    # include-level dependency resolves ahead of the router's own, so the
+    # session is checked before undeclared request names are refused: an
+    # unsessioned caller gets the proxy's refusal whatever the request carries,
+    # and no work is done for it. A route added to the router inherits the
+    # requirement.
+    app.include_router(app_backend_router, dependencies=[Depends(require_session)])
     app.include_router(auth_router)
     app.include_router(proxy_router)
 

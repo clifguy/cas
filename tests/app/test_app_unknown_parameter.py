@@ -32,7 +32,6 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from app.backend.asgi import create_bff_app
 from sage.adapters.stubs import (
     StubAbstractionProvider,
     StubContentStore,
@@ -41,6 +40,7 @@ from sage.adapters.stubs import (
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from tests.app.test_app_backend import _make_vault_config_dict
+from tests.helpers.bff_session import auth_app, sessioned_client
 
 VAULT_ID = "example_vault"
 BOGUS_FIELD = "bogus_field_x"
@@ -360,11 +360,14 @@ async def test_standalone_app_refuses_undeclared_names(
     reported ahead of the profile boundary, and the declared request still
     reaches that boundary, which is the signal the single-page app detects the
     hosted profile by. The refusal names the published operation id here too,
-    though this application serves no specification-overlaid document.
+    though this application serves no specification-overlaid document. Both
+    requests carry a signed-in session: this application requires one ahead of
+    the refusal, and refuses an unsessioned caller the same way whatever names
+    its request carries.
     """
-    app = create_bff_app()
+    app = await auth_app(with_session=True)
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://bff.test") as c:
+    async with sessioned_client(app) as c:
         refused = await c.post(path, params=params, json={**body, **extra})
         control = await c.post(path, json=body)
 

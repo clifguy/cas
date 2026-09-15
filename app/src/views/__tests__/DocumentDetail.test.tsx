@@ -204,6 +204,36 @@ describe('DocumentDetail: Back to search', () => {
     expect(mockGetDownloadUrl).not.toHaveBeenCalled();
   });
 
+  it('does not call the OS opener when the profile probe hits auth_required', async () => {
+    mockGetDocument.mockResolvedValue(mockDoc);
+    mockTraverse.mockResolvedValue(emptyTraverse);
+    mockDiscover.mockResolvedValue(emptyDiscover);
+    mockDetectIngestProfile.mockRejectedValue(
+      new ApiError('auth_required', 'A signed-in session is required.'),
+    );
+    const openSpy = vi.spyOn(window, 'open').mockReturnValue(null);
+
+    const user = userEvent.setup();
+    render(
+      <TestAppWithHistory
+        initialEntries={['/documents/doc-42']}
+        initialIndex={0}
+        locationRef={{ current: '' }}
+      />,
+    );
+    await screen.findByRole('heading', { name: mockDoc.title });
+
+    await user.click(screen.getByRole('button', { name: /^open$/i }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/A signed-in session is required/)).toBeInTheDocument(),
+    );
+    expect(mockOpenDocument).not.toHaveBeenCalled();
+    expect(mockGetDownloadUrl).not.toHaveBeenCalled();
+    expect(openSpy).not.toHaveBeenCalled();
+    openSpy.mockRestore();
+  });
+
   it('delivers to the browser via a download URL under the hosted profile', async () => {
     mockGetDocument.mockResolvedValue(mockDoc);
     mockTraverse.mockResolvedValue(emptyTraverse);

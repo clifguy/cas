@@ -154,6 +154,10 @@ export const PROFILE_PROBE_PATH = '/__cas_ingest_profile_probe__';
  * /app/scan with a non-existent sentinel path and key on the local_profile_only
  * signal. The co-located profile keeps the directory-path scan; the hosted
  * profile shows the upload affordance.
+ *
+ * A probe refused with auth_required rejects with that error rather than
+ * resolving: a lapsed session says nothing about the deployment profile, and
+ * the refusal has already returned the app to sign-in.
  */
 export async function detectIngestProfile(vaultId: string): Promise<IngestProfile> {
   const override = new URLSearchParams(window.location.search).get('profile');
@@ -170,6 +174,9 @@ export async function detectIngestProfile(vaultId: string): Promise<IngestProfil
   } catch (err) {
     if (err instanceof ApiError && err.code === 'local_profile_only') {
       return 'hosted';
+    }
+    if (err instanceof ApiError && err.code === 'auth_required') {
+      throw err;
     }
     return 'co-located';
   }

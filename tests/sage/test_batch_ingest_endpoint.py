@@ -20,7 +20,6 @@ import json
 import os
 import re
 import tempfile
-import time
 from pathlib import Path
 
 import httpx
@@ -28,9 +27,9 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from app.backend.asgi import create_bff_app
-from app.backend.auth.config import BffAuthContext, BffAuthSettings
+from app.backend.auth.config import BffAuthContext
 from app.backend.auth.sage_client import ObOSageClient
-from app.backend.auth.session_store import InMemorySessionStore, Session
+from app.backend.auth.session_store import InMemorySessionStore
 from app.backend.transport import HttpSageTransport
 from sage import mcp_server
 from sage.adapters.stubs import StubContentStore
@@ -41,14 +40,8 @@ from sage.models.enums import SourceType
 from sage.services import batch_ingest_stream
 from sage.services.batch_ingest import BatchIngestService, FileDescriptor
 from sage.services.batch_ingest_stream import UploadedFile, stream_uploaded_batch_ingest
+from tests.helpers.bff_session import StubOidc, bff_settings, live_session, sessioned_client
 from tests.sage._dry_run_helpers import assert_state_unchanged, state_snapshot
-
-
-class _StubOidc:
-    """Minimal OIDC stub: mints a fixed delegated SAGE token from a session."""
-
-    def acquire_sage_token(self, token_cache: str) -> str:  # noqa: ARG002
-        return "delegated-token"  # noqa: S105 -- test fixture token, not a real secret
 
 
 def _parse_sse_events(text: str) -> list[dict]:
@@ -505,27 +498,12 @@ async def test_b8_cloud_proxy_forwards_upload_to_batch_endpoint(batch_app):
     sage_app, vault_id, _config = batch_app
     services: SAGEServices = sage_app.state.vault_registry[vault_id]
 
-    oidc = _StubOidc()
-    settings = BffAuthSettings(
-        tenant_id="t",
-        client_id="c",
-        client_secret="s",  # noqa: S106 -- test fixture, not a real secret
-        sage_app_id_uri="api://sage",
-        sage_base_url="http://sage.test",
-    )
+    oidc = StubOidc()
     store = InMemorySessionStore()
-    await store.create_session(
-        Session(
-            session_id="sid-1",
-            subject="user-1",
-            claims={"name": "Test User"},
-            token_cache="cache-blob",
-            expires_at=time.time() + 3600,
-        )
-    )
+    await store.create_session(live_session())
 
     bff = create_bff_app(stack_config=SageCoreConfig(profile="cloud"))
-    bff.state.bff_auth = BffAuthContext(settings=settings, oidc=oidc, store=store)
+    bff.state.bff_auth = BffAuthContext(settings=bff_settings(), oidc=oidc, store=store)
     sage_client = httpx.AsyncClient(
         transport=httpx.ASGITransport(app=sage_app), base_url="http://sage.test"
     )
@@ -534,11 +512,7 @@ async def test_b8_cloud_proxy_forwards_upload_to_batch_endpoint(batch_app):
     )
 
     try:
-        async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=bff),
-            base_url="http://bff.test",
-            cookies={settings.session_cookie_name: "sid-1"},
-        ) as client:
+        async with sessioned_client(bff) as client:
             resp = await client.post(
                 f"/sage_vaults/{vault_id}/documents:batch",
                 files=[_md_part("uploaded.md", b"# Uploaded\n\nThrough the cloud proxy.")],

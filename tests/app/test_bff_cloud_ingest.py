@@ -22,26 +22,12 @@ import httpx
 from fastapi import FastAPI
 
 from app.backend.asgi import create_bff_app
-from app.backend.auth.config import BffAuthContext, BffAuthSettings
+from app.backend.auth.config import BffAuthContext
 from app.backend.auth.sage_client import ObOSageClient
 from app.backend.auth.session_store import InMemorySessionStore
 from app.backend.transport import HttpSageTransport
 from sage.config import SageCoreConfig
-
-
-def _settings() -> BffAuthSettings:
-    return BffAuthSettings(
-        tenant_id="t",
-        client_id="c",
-        client_secret="s",  # noqa: S106 -- test fixture, not a real secret
-        sage_app_id_uri="api://sage",
-        sage_base_url="http://sage.test",
-    )
-
-
-class _StubOidc:
-    def acquire_sage_token(self, token_cache: str) -> str:  # noqa: ARG002
-        return "delegated-token"  # noqa: S105 -- test fixture token, not a real secret
+from tests.helpers.bff_session import StubOidc, auth_app, bff_settings, sessioned_client
 
 
 def _mock_sage(recorder: list[httpx.Request]) -> httpx.AsyncClient:
@@ -56,17 +42,19 @@ def _client(app: FastAPI) -> httpx.AsyncClient:
     return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://bff.test")
 
 
-async def test_app_009_cloud_ingest_route_stays_co_located_only():
+async def test_app_025_cloud_ingest_route_stays_co_located_only():
     """In the hosted profile the path-based ``/app/ingest`` route returns the
     typed ``local_profile_only`` 501 and points the caller at the upload path.
 
     Anti-coincidental-pass: a route that silently succeeded (or 500'd on the
     absent registry) would not carry the ``local_profile_only`` code; a
     message that lost the upload-path guidance would fail the substring check.
+    The request carries a signed-in session, so it reaches the route past the
+    session requirement.
     """
-    app = create_bff_app(stack_config=SageCoreConfig(profile="cloud"))
+    app = await auth_app(with_session=True)
 
-    async with _client(app) as client:
+    async with sessioned_client(app) as client:
         response = await client.post(
             "/app/ingest",
             json={
@@ -81,7 +69,7 @@ async def test_app_009_cloud_ingest_route_stays_co_located_only():
     assert "documents:batch" in body["message"], body["message"]
 
 
-async def test_app_010_cloud_batch_upload_via_proxy_requires_session():
+async def test_app_026_cloud_batch_upload_via_proxy_requires_session():
     """A cloud bulk-ingest upload to the SAGE batch endpoint -- reached through
     the BFF reverse proxy -- is refused without a signed-in session, and SAGE
     is never reached.
@@ -91,9 +79,9 @@ async def test_app_010_cloud_batch_upload_via_proxy_requires_session():
     """
     app = create_bff_app(stack_config=SageCoreConfig(profile="cloud"))
     recorder: list[httpx.Request] = []
-    oidc = _StubOidc()
+    oidc = StubOidc()
     store = InMemorySessionStore()
-    app.state.bff_auth = BffAuthContext(settings=_settings(), oidc=oidc, store=store)
+    app.state.bff_auth = BffAuthContext(settings=bff_settings(), oidc=oidc, store=store)
     app.state.sage_transport = HttpSageTransport(
         ObOSageClient("http://sage.test", oidc, client=_mock_sage(recorder))
     )

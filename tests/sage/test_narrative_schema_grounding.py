@@ -226,6 +226,9 @@ from tests.sage.test_mcp_tool_conformance import (
 
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 _SAGE_PACKAGE: Final[Path] = _REPO_ROOT / "sage"
+# Where error codes are raised: the SAGE package, and the application backend,
+# which raises the codes only the CAS Application API names.
+_ERROR_CODE_SOURCES: Final[tuple[Path, ...]] = (_SAGE_PACKAGE, _REPO_ROOT / "app" / "backend")
 _SUBSTRATE: Final[Path] = _REPO_ROOT / "docs" / "fs" / "sage"
 _VAULT_CONFIG_SCHEMA: Final[str] = "vault_config.schema.json"
 
@@ -346,9 +349,12 @@ def _error_codes() -> set[str]:
     and ``{field}_provenance_mismatch``, which
     ``RelocationProvenanceMismatchError`` assembles for whichever of the
     two relocation pointers was refused. All four run over every package
-    file. Scoping the envelope reader to a single module -- which it was,
-    and which cost it both codes ``sage/app_tools.py`` emits -- is the
-    failure mode a reader like this arrives carrying.
+    file of the SAGE package and of the application backend, whose codes
+    the CAS Application API names. Scoping the envelope reader to a single
+    module -- which it was, and which cost it both codes
+    ``sage/app_tools.py`` emits -- is the failure mode a reader like this
+    arrives carrying; scoping the whole scan to one package is the same
+    failure one level up.
 
     One family stays out of reach. ``ListFieldAddConflictError`` and its
     remove counterpart build ``{field}_add_conflict`` from a ``field=``
@@ -359,7 +365,7 @@ def _error_codes() -> set[str]:
     the honest record being *not swept*, rather than swept and clean.
     """
     codes: set[str] = set()
-    for path in _SAGE_PACKAGE.rglob("*.py"):
+    for path in (p for root in _ERROR_CODE_SOURCES for p in root.rglob("*.py")):
         try:
             tree = ast.parse(path.read_text())
         except SyntaxError, UnicodeDecodeError:  # pragma: no cover - defensive
@@ -1117,6 +1123,8 @@ def test_error_codes_reaches_every_construction_site() -> None:
     assert {"invalid_directory", "empty_file_list"} <= codes
     # Envelope codes inside it, which must not have been lost in the move.
     assert "internal_error" in codes
+    # Codes only the application backend raises, outside the SAGE package.
+    assert {"auth_required", "local_profile_only"} <= codes
     # The ``missing_{field}`` family, whose literal exists nowhere: the
     # code is assembled at the raise site from a call-site argument.
     assert {"missing_query", "missing_document_id", "missing_heading_path"} <= codes
