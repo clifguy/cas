@@ -121,7 +121,7 @@ similarity rankings.
 **Rationale:** Semantic similarity is the foundation of the retrieval subsystem.
 If the embedding model fails to distinguish semantically related from unrelated
 texts, vector search produces meaningless results. This is a smoke test, not a
-comprehensive quality evaluation (that is the role of eval_retrieval).
+comprehensive quality evaluation (that is the role of verify_vault_retrieval).
 
 ### TEST-SAGE-AD-006: Empty input returns empty output
 
@@ -3045,8 +3045,9 @@ no config does.
 
 **Artifact:** `PptxAdapter.project`, `DocxAdapter.project`
 **Category:** error-envelope
-**Expected:** A corrupt source with no config raises the adapter's existing
-`ValueError`, whose type is exactly `ValueError` and not `AdapterConfigError`.
+**Expected:** A corrupt source with no config raises `SourceReadError`, the
+`ValueError` subclass an adapter reports an unreadable source with, and not
+`AdapterConfigError`.
 
 ### TEST-SAGE-AD-181: ingest_document reports a refused config value as adapter_config_invalid
 
@@ -3082,13 +3083,13 @@ the vault's `"ten"` is re-projected under the vault default alone: the call retu
 `error: adapter_config_invalid` with the exact `detail`, and a second call returns
 the same error rather than reporting work in flight.
 
-### TEST-SAGE-AD-185: A malformed source keeps its reporting on the request surfaces
+### TEST-SAGE-AD-185: A malformed source is not reported as a config refusal
 
 **Artifact:** batch ingest per-file errors, MCP `ingest_document`
 **Category:** error-envelope
-**Expected:** A corrupt `.docx` with no config is reported as it was before the
-config refusal existed: a per-file error with no `code`, and an MCP envelope of
-`internal_error`.
+**Expected:** A corrupt `.docx` with no config is reported as the source's fault,
+not the config's: a per-file error and an MCP envelope carrying
+`source_unreadable`, never `adapter_config_invalid`.
 
 ### TEST-SAGE-AD-186: A refused config value retains nothing
 

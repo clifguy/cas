@@ -16,6 +16,7 @@ from pydantic import Field, TypeAdapter, ValidationError
 from sage._tool_annotations import READ_ONLY, WRITE_ADDITIVE, WRITE_DESTRUCTIVE
 from sage.api.errors import (
     AmbiguousDocumentIdentifierError,
+    InvalidActionError,
     LegacyFormError,
     MisplacedFilterError,
     MisplacedMetadataError,
@@ -368,6 +369,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``invalid_document_id`` (400): a document id the call names is not
           well-formed.
         - ``invalid_document_date`` (400): the supplied document_date is not a
@@ -379,6 +382,10 @@ def register_sage_tools(
           ``metadata``. Detail carries ``fields`` (every misplaced key, so a
           single retry fixes them all), ``recognized`` (the full key set),
           and ``example``. No document is created.
+        - ``source_type_unresolved`` (400): ``source_type`` was omitted and no
+          registered adapter claims the source's extension. Detail carries
+          ``extension`` (null when the source has none) and
+          ``registered_source_types``. No document is created.
         - ``adapter_not_found`` (400): no source adapter is registered for
           ``source_type``.
         - ``adapter_config_invalid`` (400): the source adapter refused a value
@@ -386,6 +393,10 @@ def register_sage_tools(
           with ``config``. Detail names the source type, the key and the
           value. Raised before the source is retained, and by a ``dry_run``
           call too. No document is created.
+        - ``source_unreadable`` (400): the source adapter could not read the
+          source -- malformed, truncated, encrypted, or not in the format its
+          source type names. Detail names the source type and the source as
+          supplied. No document is created.
         - ``source_file_not_found`` (404): ``source`` does not resolve to a
           readable file.
         - ``vault_source_path_refused`` (400): the vault-source store refused
@@ -550,8 +561,10 @@ def register_sage_tools(
                 registered adapters' declared extensions (``.md`` and
                 ``.markdown`` to markdown, ``.docx``/``.dotx`` to docx, and
                 so on). An explicit value is never overridden by inference,
-                and an extension no registered adapter claims leaves the
-                format unresolved rather than guessed.
+                and an extension no registered adapter claims is refused with
+                ``source_type_unresolved`` rather than guessed. For a
+                ``transfer_token`` completion the extension read is the
+                staged file's, which carries the caller's own basename.
             config: Adapter-specific configuration (optional). Not a
                 SAGE-wide shape; inspect ``adapter_defaults`` in
                 ``get_vault_config`` for the per-adapter shape, such as
@@ -667,25 +680,10 @@ def register_sage_tools(
                 document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
             v = get_vault(vault_id)
 
-            def effective_source_type(resolved_source: str) -> str | None:
-                """Caller's ``source_type`` when given, else inferred from the extension.
-
-                Inference is strictly a fallback: an explicit value is
-                passed through untouched even when it disagrees with the
-                extension, because the caller may legitimately know better
-                than the filename does. An unrecognized extension resolves
-                to None and the existing missing-source-type validation
-                error stands.
-                """
-                if source_type is not None:
-                    return source_type
-                inferred = v.ingestion_service.infer_source_type(resolved_source)
-                return inferred.value if inferred is not None else None
-
             def _build_request(resolved_source: str) -> IngestRequest:
                 return IngestRequest(
                     source=resolved_source,
-                    source_type=effective_source_type(resolved_source),
+                    source_type=source_type,
                     config=config,
                     created_by=created_by,
                     force=force,
@@ -701,9 +699,8 @@ def register_sage_tools(
 
             # The delivery gate runs beneath the tool, in the service, so this
             # surface and the HTTP one reach the caller-local transfer on the
-            # same terms. The request is built from the path the gate
-            # resolves, so a source_type inferred from the extension is read
-            # off the bytes actually being ingested.
+            # same terms. An omitted source_type is inferred beneath it too,
+            # from the path the gate resolves.
             #
             # Fire-and-forget pipeline keeps this RPC under the 60s MCP client
             # timeout (BH-130). Callers wait for a terminal pipeline_status on
@@ -746,6 +743,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``adapter_not_found`` (400): no source adapter is registered for
           ``source_type``.
 
@@ -793,6 +792,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``invalid_document_id`` (400): the supplied document_id is not a
           well-formed id; rejected at the boundary before any lookup.
         - ``document_not_found`` (404): no document with that id.
@@ -998,6 +999,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``invalid_document_id`` (400): a document id a per-item request
           names is not well-formed.
         - ``invalid_sha256`` (400): a content hash a per-item request supplies
@@ -1141,14 +1144,16 @@ def register_sage_tools(
         listed above.
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``invalid_sha256`` (400): a per-item ``synced_from_content_hash``
           is not a well-formed hash.
         - ``invalid_document_id`` (400): a per-item ``source_id``,
           ``target_id``, or anchor version is not a well-formed document id.
         - ``invalid_edge_id`` (400): a per-item ``retracted_edge_id`` is not a
           well-formed edge id.
-        - ``legacy_form`` / another malformed ``items`` shape,
-          ``unknown_vault``, or an invalid ``response_mode``.
+        - ``legacy_form`` / another malformed ``items`` shape, or an invalid
+          ``response_mode``.
 
         Args:
             vault_id: Target vault identifier.
@@ -1287,8 +1292,10 @@ def register_sage_tools(
         ``invalid_document_id`` (400, a per-item ``document_id`` is not a
         well-formed document id),
         ``invalid_document_date`` (400, a per-item ``document_date`` is not a
-        YYYY-MM-DD calendar date), ``unknown_vault``, and ``internal_error``
-        (a malformed ``items`` shape or invalid ``response_mode``).
+        YYYY-MM-DD calendar date), ``vault_not_found`` (404, no vault is
+        registered with that id), and ``internal_error`` (a malformed
+        ``items`` shape or invalid ``response_mode``).
+        ``detail.available_vaults`` lists the registered vaults.
 
         Args:
             vault_id: Target vault identifier.
@@ -1371,6 +1378,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
           validation at the boundary.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``invalid_edge_id`` (400): ``edge_id`` is not a well-formed UUID.
         - ``edge_not_found`` (404): no production edge with that id (raised
           on dry-run too).
@@ -1422,6 +1431,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
           validation at the boundary.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``invalid_document_id`` (400): ``document_id`` is not a well-formed
           document id.
         - ``document_not_found`` (404): no document with ``document_id``.
@@ -1477,6 +1488,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``invalid_document_id`` (400): a document id the call names is not
           well-formed.
 
@@ -1584,6 +1597,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``invalid_document_id`` (400): the supplied document_id is not a
           well-formed id; rejected at the boundary before any lookup.
         - ``document_not_found`` (404): no document with that id.
@@ -1959,6 +1974,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``misplaced_filters`` (400): a recognized ``filters`` key was
           passed as a top-level argument instead of nested under
           ``filters``. Detail carries ``fields`` (every misplaced key, so
@@ -2107,6 +2124,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``invalid_document_id`` (400): the supplied document_id is not a
           well-formed id; rejected at the boundary before any lookup.
         - ``document_not_found`` (404): no document with that id.
@@ -2207,6 +2226,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``invalid_document_id`` (400): a document id the call names is not
           well-formed.
 
@@ -2271,6 +2292,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``invalid_document_id`` (400): a document id the call names is not
           well-formed.
 
@@ -2334,8 +2357,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
           validation at the boundary.
-        - ``unknown_vault`` (404): ``vault_id`` is not a registered vault.
-          Detail enumerates the available vaults.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
 
         Args:
             vault_id: Target vault identifier.
@@ -2396,14 +2419,13 @@ def register_sage_tools(
 
         Config dict structure: the ``config`` parameter is opaque at the MCP
         boundary (typed ``dict``); its shape lives in
-        ``docs/fs/sage/vault_config.schema.json``. Five top-level sections
-        are required (``vault``, ``document_types``, ``lifecycle``,
-        ``metadata_extraction``, ``edge_inference``) and four optional
-        (``adapter_defaults``, ``abstraction``, ``access_control_defaults``,
-        ``retrieval_health``). A minimal default is served by the REST
-        operation ``get_default_vault_config`` -- there is no tool of that
-        name on this surface -- which returns the scaffold for a vault id
-        with ``vault.name`` and ``vault.owner`` left empty.
+        ``docs/fs/sage/vault_config.schema.json``. The top-level sections
+        ``vault``, ``document_types``, ``lifecycle``, ``metadata_extraction``
+        and ``edge_inference`` are required, and ``adapter_defaults``,
+        ``abstraction``, ``access_control_defaults``, ``retrieval_health`` and
+        ``timing`` are optional. A minimal default is served by
+        ``get_default_vault_config``, which returns the scaffold for a vault
+        id with ``vault.name`` and ``vault.owner`` left empty.
 
         The new vault inherits the running process's stack-wide
         abstraction-provider singleton (built once at startup); the vault
@@ -2436,8 +2458,7 @@ def register_sage_tools(
 
         Args:
             config: Full vault config dict, validating against
-                ``docs/fs/sage/vault_config.schema.json`` (six required
-                top-level sections plus three optional).
+                ``docs/fs/sage/vault_config.schema.json``.
         """
         try:
             summary = await get_vault_registry_service().create_vault(
@@ -2483,6 +2504,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
 
         Args:
             vault_id: Target vault identifier.
@@ -2536,6 +2559,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
           validation at the boundary.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``destructive_config_change`` (409): see above.
         - ``vault_config_validation_error`` (400): the merged config fails
           schema validation, or the request attempts to change ``vault.id``.
@@ -2590,9 +2615,7 @@ def register_sage_tools(
 
         Returns aggregate counts and health summaries for the vault,
         including total document count, counts per lifecycle state,
-        counts per doc_type, counts per pipeline_status, and any
-        registered retrieval-health checks (if
-        ``retrieval_health`` is configured in vault_config). Inexpensive;
+        counts per doc_type, and counts per pipeline_status. Inexpensive;
         safe to poll.
 
         The doc-scoped health indicators are an operator worklist, so
@@ -2612,6 +2635,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
 
         Args:
             vault_id: Target vault identifier.
@@ -2667,7 +2692,8 @@ def register_sage_tools(
           canonical form. The envelope names the offending value as the
           caller supplied it.
         - ``invalid_vault_id`` (400): malformed ``vault_id``.
-        - ``unknown_vault`` (404): no vault with that id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
 
         Args:
             vault_id: Target vault identifier.
@@ -2712,6 +2738,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
 
         Args:
             vault_id: Target vault identifier.
@@ -2767,12 +2795,14 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
           validation.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``invalid_edge_id`` (400): ``edge_id`` failed typed-alias
           validation.
         - ``staging_edge_not_found`` (404): the id is unknown (already
           confirmed, already dismissed, or never existed).
         - ``invalid_action`` (400): ``action`` is not ``"confirm"`` or
-          ``"dismiss"``.
+          ``"dismiss"``; ``detail.known_actions`` names both.
 
         Args:
             vault_id: Target vault identifier.
@@ -2785,9 +2815,7 @@ def register_sage_tools(
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             edge_id = _EDGE_ID_ADAPTER.validate_python(edge_id)
             if action not in ("confirm", "dismiss"):
-                raise ValueError(
-                    f"invalid_action: action must be 'confirm' or 'dismiss', got {action!r}"
-                )
+                raise InvalidActionError(action, ["confirm", "dismiss"])
             v = get_vault(vault_id)
             if action == "confirm":
                 return serialize(await v.staging_edges_service.confirm_staging_edge(edge_id))
@@ -2819,6 +2847,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
 
         Args:
             vault_id: Target vault identifier.
@@ -2906,6 +2936,8 @@ def register_sage_tools(
         observable via ``get_document``):
         - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
           validation at the boundary.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``invalid_document_id`` (400): ``document_id`` failed typed-alias
           validation at the boundary.
         - ``document_not_found`` (404): no document with that id.
@@ -2972,15 +3004,19 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``invalid_document_id`` (400): the supplied document_id is not a
           well-formed document id.
-        - ``unknown_vault``: ``vault_id`` is not a registered vault.
         - ``document_not_found`` (404): no document with that id.
         - ``adapter_not_found`` (400): no source adapter for the document's
           ``source_type``.
         - ``adapter_config_invalid`` (400): the source adapter refused a value
           it cannot use in the vault's ``adapter_defaults``. Detail names the
           source type, the key and the value.
+        - ``source_unreadable`` (400): the source adapter could not read the
+          document's retained source. Detail names the source type and the
+          document's ``source_path``.
         - ``source_file_not_found`` (404): the document's ``source_path`` no
           longer resolves to a readable file.
         - ``recompute_pipeline_already_in_flight`` (409): a recompute is
@@ -3118,7 +3154,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
-        - ``vault_not_found`` (404): no vault registered with that id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``pipeline_work_in_flight`` (409): an ingest, reabstract or recompute
           is queued or running on the vault. ``detail`` carries ``vault_id``.
           Retry once it has drained.
@@ -3173,7 +3210,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
-        - ``vault_not_found`` (404): no vault registered with that id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``chain_nonlinear`` (reported as ``DriftEntry`` rows, not an
           envelope error, per the bucket above, so one forked chain does not
           mask drift on other edges).
@@ -3258,9 +3296,10 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``invalid_document_id`` (400): an entry in ``document_ids`` is not
           a well-formed document id.
-        - ``vault_not_found`` (404): no vault registered with that id.
         - ``document_scope_unmatched`` (404): ``document_ids`` names an id with
           no document in the vault; ``detail.unmatched_ids`` lists every such id.
         - ``vault_source_store_refused`` (502): the store declined the operation
@@ -3375,9 +3414,10 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``invalid_document_id`` (400): the supplied document_id is not a
           well-formed document id.
-        - ``vault_not_found`` (404): no vault registered with that id.
         - ``restore_target_unresolved`` (404): no document, or more than one,
           claims the delivered bytes; ``detail.candidate_ids`` names them.
         - ``document_not_found`` (404): the supplied document_id names no document.
@@ -3509,7 +3549,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
-        - ``vault_not_found`` (404): no vault registered with that id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``reabstract_already_in_flight`` (409): a reabstract is already
           running on this vault.
         - ``vault_migration_in_flight`` (409): ``migrate_vault`` is running
@@ -3564,7 +3605,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
-        - ``vault_not_found`` (404): no vault registered with that id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``ValueError``: ``cleanup_older_than_days`` is negative.
 
         Args:
@@ -3625,8 +3667,8 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
           validation at the boundary.
-        - ``unknown_vault`` (404): ``vault_id`` is not a registered vault.
-          The message enumerates the available vaults.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
         - ``vault_config_validation_error`` (400): the vault's declaration on the
           store is not valid YAML, or does not validate as a vault configuration.
           ``detail.errors`` names each problem to correct.
@@ -3636,10 +3678,9 @@ def register_sage_tools(
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
-            # ``get_vault`` raises ``VaultNotFoundError`` (a ``ValueError``
-            # subclass) when ``vault_id`` is not registered; the
-            # ``except (SAGEError, ValueError)`` block below routes that
-            # through ``error_response`` as the ``unknown_vault`` envelope.
+            # ``get_vault`` raises ``VaultNotFoundError`` when ``vault_id`` is
+            # not registered; the ``except`` block below routes it through
+            # ``error_response`` as the ``vault_not_found`` envelope.
             get_vault(vault_id)
             # The registry service is resolved through its call-time getter;
             # see ``register_sage_tools``' docstring for the rationale.
@@ -3670,6 +3711,135 @@ def register_sage_tools(
         reloading a vault does not re-read it.
         """
         return get_stack_config_report()
+
+    @mcp.tool(name="get_default_vault_config", annotations=READ_ONLY)
+    async def get_default_vault_config(vault_id: str) -> dict:
+        """Return the default configuration a new vault would be created with.
+
+        Returns the creation-time scaffold as a JSON object conforming to
+        ``docs/fs/sage/vault_config.schema.json``: two doc types, the three
+        base lifecycle states with their transition table, filename
+        metadata extraction, tier-1 supersedes inference, and abstraction
+        disabled.
+
+        The scaffold precedes the vault. No vault with the supplied id
+        need exist, none is created, and the response is not persisted.
+        The id is required because it shapes ``storage_root`` and
+        ``brain_root``, which the server derives rather than anything a
+        caller can compute. ``vault.name`` and ``vault.owner`` come back
+        empty for the caller to fill before passing the completed object
+        to ``create_vault``.
+
+        Error modes:
+        - ``invalid_vault_id`` (400): ``vault_id`` is not a well-formed vault id.
+
+        Args:
+            vault_id: Identifier the new vault would carry. Shapes the storage
+                and brain roots in the returned scaffold.
+        """
+        try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            # The registry service is resolved through its call-time getter;
+            # see ``register_sage_tools``' docstring for the rationale. No
+            # vault is looked up: the scaffold precedes the vault it describes.
+            return get_vault_registry_service().get_default_config(vault_id)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
+    @mcp.tool(name="verify_vault_retrieval", annotations=READ_ONLY)
+    async def verify_vault_retrieval(vault_id: str) -> dict:
+        """Run retrieval health assertions against the vault.
+
+        Loads assertions from the YAML file referenced in
+        ``retrieval_health.assertions_file`` of the vault config, runs
+        each as a semantic search, and returns a pass/fail report.
+        Each assertion is a ``(query, expected_document_id, top_k)``
+        triple: the assertion passes when the expected document
+        appears within the top-k results for the query. Failures
+        report the actual rank (out of ``top_k * 5``) when the expected
+        document was found beyond top-k, or ``null`` when it was not
+        found at all. Used as a smoke test after bulk ingestion or
+        configuration changes.
+
+        The assertions YAML file is resolved relative to the vault's
+        ``storage_root``. The file must have a top-level ``assertions:``
+        key whose value is a list of objects; each object must include
+        ``query`` and ``expected_document_id`` and may include ``top_k``
+        (default 10).
+
+        Error modes:
+        - ``invalid_vault_id`` (400): ``vault_id`` is not a well-formed vault id.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
+        - ``assertions_not_configured`` (400): the vault config has no
+          ``retrieval_health.assertions_file`` entry.
+        - ``assertions_file_invalid`` (400): the referenced YAML is malformed
+          or has the wrong structure.
+        - ``assertions_file_not_found`` (404): the configured assertions file
+          does not exist under the vault's ``storage_root``.
+
+        Args:
+            vault_id: Target vault identifier.
+        """
+        try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            v = get_vault(vault_id)
+            report = await v.utilities_service.eval_retrieval()
+            return serialize(report)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
+
+    @mcp.tool(name="export_projection", annotations=WRITE_DESTRUCTIVE)
+    async def export_projection(vault_id: str, document_id: str, output_path: str) -> dict:
+        """Write stored projection to a Markdown file for inspection.
+
+        Exports the stored projection text for a document to a
+        specified file path inside the vault's ``storage_root``. Used for
+        debugging and manual inspection of the adapter's output. The
+        projection is the structured plain-text rendering produced by
+        the source adapter during ingestion.
+
+        ``output_path`` may be relative (resolved against ``storage_root``)
+        or absolute, but it must resolve to a location inside the
+        vault's ``storage_root``. Targets outside the vault tree are
+        refused with ``path_traversal_denied``. Missing parent directories
+        are created, and a file already at the target is overwritten.
+
+        The destination is a path in the server's own vault tree, which a
+        caller can read back only when it shares that filesystem. Under the
+        cloud profile the export is refused with
+        ``caller_filesystem_unavailable`` before any read; ``read_projection``
+        delivers the projection to the caller instead.
+
+        Error modes:
+        - ``invalid_vault_id`` (400): ``vault_id`` is not a well-formed vault id.
+        - ``invalid_document_id`` (400): ``document_id`` is not a well-formed
+          document id.
+        - ``path_traversal_denied`` (400): ``output_path`` resolves outside the
+          vault's ``storage_root``.
+        - ``vault_not_found`` (404): no vault is registered with that id.
+          ``detail.available_vaults`` lists the registered vaults.
+        - ``document_not_found`` (404): no document with that id.
+        - ``no_projection`` (404): the document exists but has no stored
+          projection (e.g. ingestion failed mid-pipeline).
+        - ``caller_filesystem_unavailable`` (501): the export writes into the
+          server's own vault tree, which a caller cannot read back under the
+          cloud profile; the refusal comes before any read.
+
+        Args:
+            vault_id: Target vault identifier.
+            document_id: Document whose projection is exported.
+            output_path: Destination, relative to the vault's ``storage_root``
+                or absolute inside it.
+        """
+        try:
+            vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
+            v = get_vault(vault_id)
+            response = await v.utilities_service.export_projection(document_id, output_path)
+            return serialize(response)
+        except (SAGEError, ValueError) as e:
+            return error_response(e)
 
     return {
         "ingest_document": ingest_document,
@@ -3706,4 +3876,7 @@ def register_sage_tools(
         "optimize_vault_content_store": optimize_vault_content_store,
         "reload_vault": reload_vault,
         "get_stack_config": get_stack_config,
+        "get_default_vault_config": get_default_vault_config,
+        "verify_vault_retrieval": verify_vault_retrieval,
+        "export_projection": export_projection,
     }

@@ -43,7 +43,10 @@ router = APIRouter(tags=["Document Lifecycle"])
         ),
         404: {
             "model": ErrorResponse,
-            "description": "`vault_not_found`: no vault registered with that id.",
+            "description": (
+                "`vault_not_found`: no vault registered with that id; "
+                "`detail.available_vaults` lists the registered vaults."
+            ),
         },
     },
 )

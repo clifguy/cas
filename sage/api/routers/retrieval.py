@@ -27,7 +27,9 @@ router = APIRouter(tags=["Retrieval"])
         404: {
             "model": ErrorResponse,
             "description": (
-                "Vault not found, or document not found (for specific/deterministic scope)."
+                "Document not found (for specific/deterministic scope).\n\n"
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
             ),
         },
     },

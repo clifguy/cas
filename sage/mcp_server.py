@@ -53,6 +53,7 @@ from sage._tool_naming import SERVER_ASSIGNMENT, SURFACE_MOUNT_PATHS, TOOL_ALIAS
 from sage.api.errors import (
     SAGEError,
     UnknownParameterError,
+    VaultNotFoundError,
     unknown_parameter_names,
     validation_error_envelope,
 )
@@ -88,21 +89,14 @@ def get_vault_registry_service() -> VaultRegistryService:
     return _vault_registry_service
 
 
-class VaultNotFoundError(ValueError):
-    """Raised when a tool is called with a vault_id that is not registered.
-
-    ValueError-derived so existing tool callsites that catch
-    `(SAGEError, ValueError)` continue to handle vault routing without
-    change; `_error_response` distinguishes this case from other
-    ValueErrors so the latter no longer surface as `unknown_vault`.
-    """
-
-
 def _get_vault(vault_id: str) -> SAGEServices:
-    """Look up services for a vault. Raises VaultNotFoundError if unknown."""
+    """Look up services for a vault.
+
+    Raises the ``vault_not_found`` refusal the REST surface raises for the same
+    request (CAS-ADR-052); every tool routes it through ``_error_response``.
+    """
     if vault_id not in _vaults:
-        available = ", ".join(sorted(_vaults.keys())) or "(none)"
-        raise VaultNotFoundError(f"Unknown vault_id: {vault_id}. Available vaults: {available}")
+        raise VaultNotFoundError(vault_id, available_vaults=_vaults)
     return _vaults[vault_id]
 
 
@@ -126,13 +120,11 @@ def _serialize(obj: object) -> dict:
 
 
 def _error_response(exc: SAGEError | ValueError) -> dict:
-    """Format a SAGE error, vault-routing error, or other ValueError for MCP."""
+    """Format a SAGE error, including a vault-routing refusal, or a ValueError for MCP."""
     if isinstance(exc, SAGEError):
         payload: dict = {"error": exc.code, "message": exc.message}
         if exc.detail is not None:
             payload["detail"] = exc.detail
-    elif isinstance(exc, VaultNotFoundError):
-        payload = {"error": "unknown_vault", "message": str(exc)}
     elif isinstance(exc, ValidationError):
         # Every validation failure carries a structured envelope: the most
         # specific code that applies -- a malformed typed-alias boundary
@@ -447,6 +439,9 @@ recompute_deferred_vault_abstracts = _sage_tools["recompute_deferred_vault_abstr
 optimize_vault_content_store = _sage_tools["optimize_vault_content_store"]
 reload_vault = _sage_tools["reload_vault"]
 get_stack_config = _sage_tools["get_stack_config"]
+get_default_vault_config = _sage_tools["get_default_vault_config"]
+verify_vault_retrieval = _sage_tools["verify_vault_retrieval"]
+export_projection = _sage_tools["export_projection"]
 
 list_directory = _app_tools["list_directory"]
 bulk_ingest_document = _app_tools["bulk_ingest_document"]

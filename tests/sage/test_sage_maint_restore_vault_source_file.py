@@ -101,12 +101,12 @@ async def test_restore_vault_source_file_invalid_document_id_shape_returns_error
 
 
 async def test_restore_vault_source_file_unknown_vault_returns_error_envelope(tmp_path):
-    """An unregistered vault_id returns the unknown_vault envelope."""
+    """An unregistered vault_id returns the vault_not_found envelope."""
     result = await mcp_server.restore_vault_source_file(
         vault_id="ghost", source=str(tmp_path / "absent.md")
     )
 
     assert isinstance(result, dict)
-    assert result.get("error") == "unknown_vault", (
-        f"expected unknown_vault envelope, got {result!r}"
+    assert result.get("error") == "vault_not_found", (
+        f"expected vault_not_found envelope, got {result!r}"
     )

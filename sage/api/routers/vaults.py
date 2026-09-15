@@ -93,7 +93,10 @@ async def get_stack_config() -> dict:
         400: boundary_400(path=("invalid_vault_id",), request=("unknown_parameter",)),
         404: {
             "model": ErrorResponse,
-            "description": "Vault not found.",
+            "description": (
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
+            ),
         },
     },
 )
@@ -114,7 +117,10 @@ async def vault_stats(
         ),
         404: {
             "model": ErrorResponse,
-            "description": "Vault not found.",
+            "description": (
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
+            ),
         },
     },
 )
@@ -133,7 +139,10 @@ async def hash_check(
         400: boundary_400(path=("invalid_vault_id",), request=("unknown_parameter",)),
         404: {
             "model": ErrorResponse,
-            "description": "Vault not found.",
+            "description": (
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
+            ),
         },
     },
 )
@@ -157,7 +166,10 @@ async def get_vault_config(
         ),
         404: {
             "model": ErrorResponse,
-            "description": "Vault not found.",
+            "description": (
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
+            ),
         },
         409: {
             "model": ErrorResponse,

@@ -64,6 +64,8 @@ from sage.api.errors import (
     RelocationSourceUndeliveredError,
     ReservedTransitionError,
     SourceFileNotFoundError,
+    SourceTypeUnresolvedError,
+    SourceUnreadableError,
     StaleChainHeadError,
     SupersedeTargetNotActiveError,
     Tier3SchemaViolationError,
@@ -109,7 +111,12 @@ from sage.services.passage_split import (
 from sage.services.passage_structure import indexed_structure
 from sage.services.transfer import DeliveryDeclaration, caller_local_delivery
 from sage.services.vault_source_errors import report_refusal_as
-from sage.source_adapters.base import AdapterConfigError, ProjectionResult, SourceAdapter
+from sage.source_adapters.base import (
+    AdapterConfigError,
+    ProjectionResult,
+    SourceAdapter,
+    SourceReadError,
+)
 from sage.storage.locks import DocumentLockManager
 from sage.storage.tier3_uniqueness import Tier3UniqueViolation
 
@@ -226,6 +233,23 @@ def _refuse_adapter_config(source_type: SourceType) -> Iterator[None]:
         yield
     except AdapterConfigError as exc:
         raise AdapterConfigInvalidError(source_type.value, exc.key, exc.value, str(exc)) from exc
+
+
+@contextlib.contextmanager
+def _refuse_unreadable_source(source_type: SourceType, reported_source: str) -> Iterator[None]:
+    """Report a source the adapter cannot read as the caller's error.
+
+    The adapter says a source is unreadable by raising ``SourceReadError``, its
+    own ``ValueError`` subclass, for the reason ``_refuse_adapter_config`` states.
+    Entered outside ``_translate_projection_failure``, so the message it carries
+    has already been respelled to the caller's own path. Any other failure passes
+    through untouched: what the adapter did not call a read failure is not the
+    caller's to fix.
+    """
+    try:
+        yield
+    except SourceReadError as exc:
+        raise SourceUnreadableError(source_type.value, reported_source, str(exc)) from exc
 
 
 @contextlib.contextmanager
@@ -848,6 +872,32 @@ class IngestionService:
                 return source_type
         return None
 
+    def _resolve_source_type(self, request: IngestRequest) -> IngestRequest:
+        """Return ``request`` with its source type settled: explicit, then extension.
+
+        Resolved here, beneath every request surface and both delivery shapes,
+        so an omitted type is inferred on the same terms wherever the ingest
+        came from (CAS-ADR-052). ``request.source`` is by now the path the
+        bytes are read from -- for a two-phase delivery the staged file, which
+        carries the caller's own basename -- so the extension read is that of
+        the content actually being ingested. An explicit value is returned
+        untouched even when it disagrees with the extension, because the caller
+        may know better than the filename does.
+
+        Raises:
+            SourceTypeUnresolvedError: the type was omitted and no registered
+                adapter claims the extension.
+        """
+        if request.source_type is not None:
+            return request
+        inferred = self.infer_source_type(request.source or "")
+        if inferred is None:
+            raise SourceTypeUnresolvedError(
+                Path(request.source or "").suffix.lower() or None,
+                sorted(source_type.value for source_type in self._adapters),
+            )
+        return request.model_copy(update={"source_type": inferred})
+
     def _merge_adapter_config(
         self, source_type: SourceType, request_config: dict | None
     ) -> dict | None:
@@ -1043,6 +1093,9 @@ class IngestionService:
                 names a document that does not carry the delivered content
                 hash, or no document at all. A pin may select any holder of
                 the hash, never a record holding other bytes.
+            SourceTypeUnresolvedError: ``request.source_type`` is omitted and
+                no registered adapter claims the source's extension; raised
+                before anything is read or retained, and by a dry run.
             AdapterNotFoundError: No adapter for requested source type.
             AdapterConfigInvalidError: the source adapter refused a value in
                 the merged config; raised before the source is retained, and by
@@ -1184,6 +1237,7 @@ class IngestionService:
         caller_source: str | None,
     ) -> IngestResult | IngestPreview:
         """The body of ``ingest``, run once the call is admitted."""
+        request = self._resolve_source_type(request)
         adapter = self._adapters.get(request.source_type)
         if adapter is None:
             raise AdapterNotFoundError(request.source_type)
@@ -1414,6 +1468,7 @@ class IngestionService:
         merged_config = self._merge_adapter_config(request.source_type, request.config)
         with self._project_source(vault_source_store, storage_root, vault_relative) as project_path:
             with (
+                _refuse_unreadable_source(request.source_type, reported_source),
                 _translate_projection_failure(project_path, reported_source),
                 _refuse_adapter_config(request.source_type),
             ):
@@ -2538,6 +2593,7 @@ class IngestionService:
                 # vault-relative source_path is the spelling it can relate to
                 # what it asked for.
                 with (
+                    _refuse_unreadable_source(doc.source_type, doc.source_path),
                     _translate_projection_failure(project_path, doc.source_path),
                     _refuse_adapter_config(doc.source_type),
                 ):

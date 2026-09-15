@@ -223,10 +223,10 @@ async def test_unpartitioned_server_roster_equals_pin():
 def test_maintenance_only_verbs_population():
     """``MAINT_ONLY_VERBS`` is exactly the recorded closed class.
 
-    Pinning the population means a fifth outlier verb needs its own
+    Pinning the population means a further outlier verb needs its own
     recorded decision and a deliberate edit here, not a one-line append.
     """
-    assert MAINT_ONLY_VERBS == frozenset({"reload", "migrate", "optimize", "restore"})
+    assert MAINT_ONLY_VERBS == frozenset({"reload", "migrate", "optimize", "restore", "export"})
 
 
 def test_table_invariants_reject_maintenance_verb_on_ordinary_surface():

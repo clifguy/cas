@@ -29,7 +29,10 @@ router = APIRouter(tags=["staging_edges"])
         400: boundary_400(path=("invalid_vault_id",), request=("unknown_parameter",)),
         404: {
             "model": ErrorResponse,
-            "description": "Vault not found.",
+            "description": (
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
+            ),
         },
     },
 )
@@ -51,9 +54,10 @@ async def list_staging_edges(
         404: {
             "model": ErrorResponse,
             "description": (
-                "`staging_edge_not_found`: the id is unknown (already "
-                "confirmed, already dismissed, or never existed); or vault "
-                "not found."
+                "`staging_edge_not_found`: the id is unknown (already confirmed, already "
+                "dismissed, or never existed).\n\n"
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
             ),
         },
     },
@@ -77,9 +81,10 @@ async def confirm_staging_edge(
         404: {
             "model": ErrorResponse,
             "description": (
-                "`staging_edge_not_found`: the id is unknown (already "
-                "confirmed, already dismissed, or never existed); or vault "
-                "not found."
+                "`staging_edge_not_found`: the id is unknown (already confirmed, already "
+                "dismissed, or never existed).\n\n"
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
             ),
         },
     },

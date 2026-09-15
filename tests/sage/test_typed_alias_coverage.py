@@ -85,7 +85,6 @@ from __future__ import annotations
 
 import ast
 import inspect
-import re
 import textwrap
 import typing
 from collections.abc import Callable
@@ -132,6 +131,7 @@ from sage.models.schemas import (
     UserIdStr,
     VaultIdStr,
 )
+from tests.helpers.docstring_blocks import error_modes_block as _error_modes_block
 
 # Modules whose ``BaseModel`` subclasses are governed by this gate.
 # Order is irrelevant; discovery dedupes by class identity.
@@ -1296,16 +1296,6 @@ def test_module_typeadapter_bindings_unwrap_only_declared_sequences(tmp_path) ->
 # ---------------------------------------------------------------------------
 
 
-# A tool's error-mode list is introduced by a line-initial header naming
-# "error modes", optionally qualified -- "Error modes:", "Error modes (raised
-# synchronously ...):", "Batch-level error modes (...):". The qualifier scopes
-# the list rather than renaming it, and wraps across lines, so keying on the
-# bare spelling read three enumerations as absent and reported tools that
-# disclose correctly. The bound on the qualifier keeps a colon far below a
-# prose mention of the phrase from opening a block that was never declared.
-_ERROR_MODES_HEADER_RE = re.compile(r"^[^\n:]*[Ee]rror modes\b[^:]{0,240}?:", re.MULTILINE)
-
-
 def _code_raised_by(alias: type) -> str | None:
     """The error code ``alias``'s validator raises, read by provoking it.
 
@@ -1330,33 +1320,6 @@ def _provoke(validator: Callable) -> str | None:
     except Exception:  # noqa: BLE001 - a validator failing another way names no code
         return None
     return None
-
-
-def _error_modes_block(fn: Callable) -> str:
-    """The tool docstring's ``Error modes:`` block, or the empty string.
-
-    Every such list, not the first: a tool that separates its call-level
-    refusals from its per-item ones declares two, and reading one of them
-    reports the other's codes as undisclosed. Each is bounded at the next
-    structural header or the next list, so a code named in ``Args:`` prose, or
-    in the narrative above, does not read as a declared error mode. Which block
-    names the code is the whole point: a caller looking for what a call can
-    return reads these.
-    """
-    doc = inspect.getdoc(fn) or ""
-    blocks: list[str] = []
-    for match in _ERROR_MODES_HEADER_RE.finditer(doc):
-        rest = doc[match.end() :]
-        end = len(rest)
-        for header in ("Args:", "Returns:", "Raises:", "Example:", "Examples:", "Note:"):
-            found = rest.find(f"\n{header}")
-            if found >= 0:
-                end = min(end, found)
-        next_list = _ERROR_MODES_HEADER_RE.search(rest)
-        if next_list is not None:
-            end = min(end, next_list.start())
-        blocks.append(rest[:end])
-    return "\n".join(blocks)
 
 
 def _models_validated_in(fn: Callable) -> list[type[BaseModel]]:

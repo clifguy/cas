@@ -207,6 +207,7 @@ from typing import Any, Final
 
 import pytest
 
+from tests.helpers.vault_addressed import NOT_REGISTRY_RESOLVED
 from tests.sage.test_mcp_docstring_disclosure_parity import (
     _STRUCTURAL_HEADER,
     _prose_body,
@@ -651,6 +652,9 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "sage_vaults": "on-disk vault directory, not a contract node",
         "vault_config": "the per-vault YAML file, not a contract node",
     },
+    ("sage_core", "get_default_vault_config"): {
+        "vault_config": "the vault configuration schema file the scaffold conforms to",
+    },
     ("sage_core", "get_document"): {
         "store_status": ERROR_DETAIL_KEY,
     },
@@ -670,9 +674,6 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
             "paths this narrative names; a URL segment, not a contract node"
         ),
     },
-    ("sage_core", "get_vault_stats"): {
-        "vault_config": "the per-vault YAML file, not a contract node",
-    },
     ("sage_core", "ingest_document"): {
         "cas": "example vault id in a worked example",
         "false": "prose: a literal boolean value",
@@ -681,6 +682,9 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "valid_types": ERROR_DETAIL_KEY,
         # Key of the ``vault_migration_in_flight`` detail.
         "start_time": ERROR_DETAIL_KEY,
+        # Keys of the ``source_type_unresolved`` detail.
+        "extension": ERROR_DETAIL_KEY,
+        "registered_source_types": ERROR_DETAIL_KEY,
         "sage_vaults": (
             "the vault-scoped route prefix, in the endpoint paths this "
             "narrative names; a URL segment, not a contract node"
@@ -853,11 +857,23 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         # contract, so naming it is disclosure, not leakage.
         "Sha256Str": "typed alias naming the published digest shape",
     },
+    ("sage_core", "verify_vault_retrieval"): {
+        "null": "prose: the JSON literal a failure reports for an unfound rank",
+        "top_k": "key of an assertion in the assertions YAML file, not a contract node",
+    },
     ("sage_core", "verify_vault_source_files"): {
         "store_status": ERROR_DETAIL_KEY,
         "unmatched_ids": ERROR_DETAIL_KEY,
     },
 }
+
+# Key of the ``vault_not_found`` detail. Every tool that resolves a
+# ``vault_id`` declares that refusal in its ``Error modes:`` block, so the key
+# is pinned on each such pair here rather than spelled out per entry.
+for _pair in _mapped_tool_pairs():
+    _tool = _surface_registry(_SURFACES_BY_NAME[_pair[0]])[_pair[1]]
+    if "vault_id" in inspect.signature(_tool).parameters and _pair[1] not in NOT_REGISTRY_RESOLVED:
+        UNRESOLVED_IDENTIFIERS.setdefault(_pair, {})["available_vaults"] = ERROR_DETAIL_KEY
 
 
 # Anti-vacuity floors. An extractor that silently returns the empty set,
@@ -1079,10 +1095,12 @@ def test_the_fabricated_error_code_is_reported() -> None:
     # change and which therefore proves nothing about the new surface.
     assert not _structural_tail(fabricated[len("Error modes:\n") :])
 
-    # And the corrected text, live, names nothing the contract lacks --
-    # which is what makes the assertion above a measurement.
+    # And the corrected text, live, names nothing the contract lacks beyond
+    # the detail keys pinned for the pair -- which is what makes the
+    # assertion above a measurement.
     docstring, _narrative, _whole = _surfaces_for("sage_core", "migrate_vault")
-    assert not named_identifiers(_structural_tail(docstring)) - known, (
+    pinned = set(UNRESOLVED_IDENTIFIERS.get(("sage_core", "migrate_vault"), {}))
+    assert not named_identifiers(_structural_tail(docstring)) - known - pinned, (
         "migrate_vault's live Error modes: block is not reported clean, so "
         "the first assertion proves nothing about the relation"
     )
@@ -1104,7 +1122,7 @@ def test_error_codes_reaches_every_construction_site() -> None:
     # widening the scan.
     assert {"invalid_directory", "empty_file_list"} <= codes
     # Envelope codes inside it, which must not have been lost in the move.
-    assert {"unknown_vault", "internal_error"} <= codes
+    assert "internal_error" in codes
     # Codes only the application backend raises, outside the SAGE package.
     assert {"auth_required", "local_profile_only"} <= codes
     # The ``missing_{field}`` family, whose literal exists nowhere: the
@@ -1119,6 +1137,9 @@ def test_error_codes_reaches_every_construction_site() -> None:
     } <= codes
     # An ordinary SAGEError subclass, pinning the original reader.
     assert "vault_not_found" in codes
+    # Retired: an unregistered vault is refused as vault_not_found on every
+    # surface, so no envelope may still build the MCP-only spelling.
+    assert "unknown_vault" not in codes
 
     # The control. A scan that swallowed every string it walked past
     # would satisfy every assertion above; this name is written in this

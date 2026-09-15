@@ -34,7 +34,10 @@ router = APIRouter(tags=["Utilities"])
         ),
         404: {
             "model": ErrorResponse,
-            "description": "Vault not found.",
+            "description": (
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
+            ),
         },
     },
 )

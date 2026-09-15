@@ -4,6 +4,7 @@ Exception classes carry structured detail dicts matching the OpenAPI
 ErrorResponse schema. The exception handler converts them to JSON responses.
 """
 
+from collections.abc import Iterable
 from datetime import datetime
 from enum import StrEnum
 
@@ -154,9 +155,11 @@ class InvalidLifecycleTransitionError(SAGEError):
 
 
 class InvalidActionError(SAGEError):
-    """400: action value is not in any transition table.
+    """400: an action value the operation does not know.
 
-    ``known_actions`` is the vault's whole caller-invocable action
+    ``known_actions`` names every action the operation accepts. For a
+    staging-edge resolution that is ``confirm`` and ``dismiss``. For a
+    lifecycle transition it is the vault's whole caller-invocable action
     vocabulary, which is vault-config-defined rather than a fixed set.
     The pipeline's own landing transition is not in it, because a caller
     invoking that one would be refused whatever state the document is
@@ -1172,6 +1175,32 @@ class AdapterNotFoundError(SAGEError):
         )
 
 
+class SourceTypeUnresolvedError(SAGEError):
+    """400: no source type was supplied and none could be inferred.
+
+    Inference reads the extension of the source being ingested against the
+    registered adapters' declared extensions, and refuses rather than guesses
+    when none claims it, because routing bytes to the wrong adapter is worse
+    than an explicit failure. The detail names only the extension -- never the
+    path, which for a two-phase delivery is a server-side staging location --
+    and the source types the caller may supply instead.
+    """
+
+    def __init__(self, extension: str | None, registered_source_types: list[str]) -> None:
+        subject = (
+            f"extension {extension!r} is not claimed by any registered adapter"
+            if extension
+            else "the source has no extension"
+        )
+        super().__init__(
+            "source_type_unresolved",
+            f"source_type was not supplied and could not be inferred: {subject}. "
+            f"Supply source_type as one of: {', '.join(registered_source_types)}.",
+            400,
+            {"extension": extension, "registered_source_types": registered_source_types},
+        )
+
+
 class AdapterConfigInvalidError(SAGEError):
     """400: the source adapter refused a config value it cannot use.
 
@@ -1192,6 +1221,26 @@ class AdapterConfigInvalidError(SAGEError):
             reason,
             400,
             {"source_type": source_type, "key": key, "value": value},
+        )
+
+
+class SourceUnreadableError(SAGEError):
+    """400: the source adapter could not read the source.
+
+    The file is malformed, truncated, encrypted, or not in the format its source
+    type names, which is the caller's to correct. The detail names the source type
+    and the source in the spelling the caller used, and the message carries the
+    adapter's own statement of what failed. A failure the adapter does not report
+    as a read failure is not this error, so a server fault is never presented as a
+    fault in the caller's file.
+    """
+
+    def __init__(self, source_type: str, source_path: str, reason: str) -> None:
+        super().__init__(
+            "source_unreadable",
+            reason,
+            400,
+            {"source_type": source_type, "source_path": source_path},
         )
 
 
@@ -1478,14 +1527,20 @@ class AssertionsNotConfiguredError(SAGEError):
 
 
 class VaultNotFoundError(SAGEError):
-    """404: vault_id does not match loaded config."""
+    """404: vault_id names no registered vault.
 
-    def __init__(self, vault_id: str) -> None:
+    The one refusal for an unregistered vault on every request surface
+    (CAS-ADR-052). It names the vaults that are registered, so a caller can
+    correct the id without a second call.
+    """
+
+    def __init__(self, vault_id: str, *, available_vaults: Iterable[str]) -> None:
+        available = sorted(available_vaults)
         super().__init__(
             "vault_not_found",
-            f"Vault '{vault_id}' not found",
+            f"Vault '{vault_id}' not found. Available vaults: {', '.join(available) or '(none)'}",
             404,
-            {"vault_id": vault_id},
+            {"vault_id": vault_id, "available_vaults": available},
         )
 
 

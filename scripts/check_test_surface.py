@@ -158,6 +158,19 @@ _CONFORMANCE_STREAMS: Final[str] = (
 )
 
 KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
+    **{
+        f"tests/sage/test_adapter_config_refusal.py::"
+        f"test_ad_185_a_malformed_source_keeps_its_reporting_{surface}": (
+            f"renamed test_ad_185_a_malformed_source_is_not_a_config_refusal_{surface} "
+            "when an unreadable source gained its own typed refusal, which the "
+            "retargeted assertion now pins"
+        )
+        for surface in ("in_a_batch", "on_ingest_document")
+    },
+    "tests/sage/test_mcp_server.py::test_error_response_vault_not_found_returns_unknown_vault": (
+        "renamed test_error_response_vault_not_found_carries_the_typed_envelope when an "
+        "unregistered vault became the vault_not_found refusal on both surfaces"
+    ),
     "tests/sage/test_graph_store_seam.py::test_stub_hash_lookup_signature_matches_port": (
         "single-method stub signature check absorbed by the stub arm of the graph-store "
         "signature gate, which covers every port method"

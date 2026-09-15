@@ -43,7 +43,7 @@
                 "set_editors",
                 "get_editors",
                 "export_projection",
-                "eval_retrieval",
+                "verify_vault_retrieval",
                 "refresh_views",
                 "update_metadata",
                 "set_lifecycle"

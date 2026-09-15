@@ -139,13 +139,13 @@ async def test_sage_maint_reabstract_deferred_vault_returns_structured_409(
 
 
 async def test_sage_maint_reabstract_deferred_vault_unknown_vault_returns_error_envelope():
-    """An unregistered vault id returns the unknown_vault envelope rather
+    """An unregistered vault id returns the vault_not_found envelope rather
     than raising; matches the existing migrate_vault contract."""
     result = await mcp_server.recompute_deferred_vault_abstracts(vault_id="ghost")
 
     assert isinstance(result, dict)
-    assert result.get("error") == "unknown_vault", (
-        f"expected unknown_vault envelope, got {result!r}"
+    assert result.get("error") == "vault_not_found", (
+        f"expected vault_not_found envelope, got {result!r}"
     )
 
 

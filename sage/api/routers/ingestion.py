@@ -66,6 +66,14 @@ router = APIRouter(tags=["Ingestion"])
             "cannot use in its config, the vault's `adapter_defaults` merged "
             "with the request's `config`. The detail names the source type, "
             "the key and the value.\n\n"
+            "`source_type_unresolved`: `source_type` was omitted and no "
+            "registered adapter claims the source's extension. The detail "
+            "carries `extension` (null when the source has none) and "
+            "`registered_source_types`.\n\n"
+            "`source_unreadable`: the source adapter could not read the source "
+            "-- malformed, truncated, encrypted, or not in the format its source "
+            "type names. The detail names the source type and the source as the "
+            "caller sent it.\n\n"
             "`ambiguous_ingest_source`: both `source` and `transfer_token` "
             "were supplied.\n\n"
             "`missing_ingest_source`: neither `source` nor `transfer_token` "
@@ -111,10 +119,10 @@ router = APIRouter(tags=["Ingestion"])
         404: {
             "model": ErrorResponse,
             "description": (
-                "`source_file_not_found`: `source` does not resolve to a "
-                "readable file on disk; or vault not found.\n\n"
-                "`document_not_found`: `predecessor_id` names no document in "
-                "the vault."
+                "`source_file_not_found`: `source` does not resolve to a readable file on disk.\n\n"
+                "`document_not_found`: `predecessor_id` names no document in the vault.\n\n"
+                "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
+                "lists the registered vaults."
             ),
         },
         409: {
@@ -292,7 +300,10 @@ async def ingest(
         ),
         404: {
             "model": ErrorResponse,
-            "description": "`vault_not_found`: no vault registered with that id.",
+            "description": (
+                "`vault_not_found`: no vault registered with that id; "
+                "`detail.available_vaults` lists the registered vaults."
+            ),
         },
     },
 )

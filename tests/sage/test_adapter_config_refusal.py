@@ -284,13 +284,14 @@ async def test_ad_187_a_dry_run_reports_a_refused_config_value(
     assert result["detail"] == {"source_type": "markdown", "key": "dialect", "value": "pandc"}
 
 
-async def test_ad_185_a_malformed_source_keeps_its_reporting_in_a_batch(
+async def test_ad_185_a_malformed_source_is_not_a_config_refusal_in_a_batch(
     minimal_vault_config_dict, monkeypatch
 ):
-    """AD-185: A malformed source keeps its reporting on the batch leg.
+    """AD-185: A malformed source is not reported as a config refusal on the batch leg.
 
-    Guards against translating every projection ``ValueError`` into the new
-    code: a corrupt package is the source's fault, not the config's.
+    Guards against translating every projection ``ValueError`` into
+    ``adapter_config_invalid``: a corrupt package is the source's fault, not the
+    config's, and is reported as ``source_unreadable``.
     """
     async with _http_app(minimal_vault_config_dict, monkeypatch) as app, _client(app) as client:
         resp = await client.post(
@@ -307,21 +308,21 @@ async def test_ad_185_a_malformed_source_keeps_its_reporting_in_a_batch(
     assert summary["documents_created"]["new"] == 1, summary
     (error,) = summary["errors"]
     assert error["file_index"] == 0, error
-    assert error.get("code") is None, error
-    assert error.get("detail") is None, error
+    assert error.get("code") == "source_unreadable", error
+    assert error.get("detail") == {"source_type": "docx", "source_path": "broken.docx"}, error
     assert not error["message"].startswith("adapter config"), error
 
 
-async def test_ad_185_a_malformed_source_keeps_its_reporting_on_ingest_document(
+async def test_ad_185_a_malformed_source_is_not_a_config_refusal_on_ingest_document(
     minimal_vault_config_dict, tmp_vault_dir
 ):
-    """AD-185: A malformed source keeps its reporting on ingest_document."""
+    """AD-185: A malformed source is not reported as a config refusal on ingest_document."""
     source = _write_source(tmp_vault_dir, "test/broken.docx", _CORRUPT_DOCX)
 
     async with _mcp_vault(minimal_vault_config_dict):
         result = _parse(await ingest_document(_VAULT, source, "docx"))
 
-    assert result["error"] == "internal_error", result
+    assert result["error"] == "source_unreadable", result
 
 
 @pytest.fixture(autouse=True)

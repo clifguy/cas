@@ -1646,7 +1646,9 @@ class VaultConfig(BaseModel):
     )
     retrieval_health: RetrievalHealthConfig | None = Field(
         default=None,
-        description=("Configuration for retrieval health smoke tests (eval_retrieval endpoint)."),
+        description=(
+            "Configuration for retrieval health smoke tests (verify_vault_retrieval operation)."
+        ),
     )
     timing: TimingConfig = Field(
         default_factory=TimingConfig,
