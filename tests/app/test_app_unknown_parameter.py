@@ -362,7 +362,8 @@ async def test_standalone_app_refuses_undeclared_names(
     hosted profile by. The refusal names the published operation id here too,
     though this application serves no specification-overlaid document. Both
     requests carry a signed-in session: this application requires one ahead of
-    the refusal, so an unsessioned caller never learns the declared names.
+    the refusal, and refuses an unsessioned caller the same way whatever names
+    its request carries.
     """
     app = await auth_app(with_session=True)
 

@@ -6,8 +6,8 @@ Auth is gated on configuration presence: when ``app.state.bff_auth`` is unset
 the auth routes exist but are inert and the rest of the application backend is
 unaffected. The ``get_*_service`` factories are the load-bearing entry points
 the router-conformance gate recognizes. ``require_session`` is the session
-requirement the standalone backend-for-frontend places on every route that is
-not part of signing in.
+requirement the standalone backend-for-frontend places on its application
+backend and SAGE proxy routes.
 """
 
 from __future__ import annotations

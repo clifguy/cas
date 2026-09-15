@@ -70,9 +70,11 @@ servers:
 # carries no identity and requires nothing. The cookie also
 # governs on-behalf-of access to the SAGE Core API through the proxy routes --
 # which are the SAGE Core API's own surface and are specified there, not here.
-# A session cookie is not a bearer scheme, which is why the asymmetry with the
-# SAGE Core API spec (which declares one on every operation) is accurate rather
-# than an omission.
+# The cookie is expressible as an `apiKey` scheme `in: cookie`; it is not
+# declared because this one document also specifies the local profile, which
+# requires it on no operation, so the asymmetry with the SAGE Core API spec
+# (which declares a bearer scheme on every operation) is accurate rather than an
+# omission.
 
 # Tag declarations for the groups the operations below reference. The server
 # that hosts these routes also hosts the SAGE Core API and publishes both as one
