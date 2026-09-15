@@ -9,7 +9,10 @@ summary: >-
   (POST /sage_vaults/{vault_id}/eval-retrieval) and export_projection
   (POST /sage_vaults/{vault_id}/documents/{document_id}/export). The retrieval-health
   operation's operationId changes from eval_retrieval to verify_vault_retrieval so the
-  operation and its tool share one name; its path is unchanged. export_projection now
+  operation and its tool share one name; its path is unchanged. The ROOT Harness policy
+  schema's permitted_operations enum names the operation by its new identifier, and the
+  vault configuration schema's retrieval_health description (with its Pydantic twin)
+  names the operation rather than the retired identifier. export_projection now
   refuses under the cloud profile with caller_filesystem_unavailable (501) before any
   read, declared on the operation and the tool alike, and its description states that
   missing parent directories are created and an existing target is overwritten. An
