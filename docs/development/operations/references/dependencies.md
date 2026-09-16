@@ -1,9 +1,10 @@
 # Specialized procedure dependency contract
 
-**INACTIVE source package.** Nothing here installs skills or activates policy.
+Selected candidate dependency contract. The required activation receipt gates
+operational use; distribution alone does not activate policy.
 
-Local procedure files and runtime references are enumerated in the proposed specialized
-package declaration. Resolve all repository paths from the intended project root.
+Local procedure files and runtime references are retained at canonical repository paths. The skill-folder composition is
+`docs/development/distribution/composition.json`. Resolve all repository paths from the intended project root.
 The separately verified eleven-skill shared core supplies project-policy, kickoff,
 commit, converge-review, review-pr, disposition, merge, ticket-management,
 open-ticket, close-ticket and transfer. Read each selected skill's runtime resources;
@@ -19,7 +20,7 @@ needed live authority from the correct SAGE deployment and follow supersession
 lineage and the target vault configuration. Unavailable or conflicting required
 authority blocks that operation. Documentation-only smoke selects the intended
 diff and validates documents without unrelated cloud, cohort, ticket or service
-reads. The inactive proposal is never an authority fallback.
+reads. Unactivated candidate source is never an authority fallback.
 
 Resolve Git, authenticated GitHub access, Azure CLI identity/scopes when relevant,
 current tenant/environment mapping, served endpoints/contracts, and actual runtime
@@ -33,5 +34,5 @@ Gate-status measurement is retired; no exposure counter, threshold, per-pass
 observation or scheduled retrospective is restored. The standing review gate and
 failure-record discipline remain. CPML-finalize is preserved outside this package.
 Batch's historical versions describe provenance only. Its new release version is
-unset pending owner choice. Installation, rollback and fresh installed discovery
+unset using the supported batch null-version exception. Installation, rollback and fresh installed discovery
 require a separately authorized coordinated authority cutover.

@@ -2,7 +2,10 @@
 
 import json
 import re
+import shutil
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PROPOSED = ROOT / "docs/development/proposed"
@@ -23,17 +26,16 @@ def test_staged_declaration_is_complete_and_inactive() -> None:
         assert mapping[entry["entrypoint"]] == f".agents/skills/{name}/SKILL.md"
         assert entry["procedure"] in mapping
         assert entry["target"] == mapping[entry["entrypoint"]]
-        assert not (ROOT / entry["target"]).exists()
         source = (ROOT / entry["entrypoint"]).read_text()
         assert entry["procedure"] in source
         assert entry["responsibility"] in source
         assert entry["operation"] in source
         assert "INACTIVE" in source
     assert declaration["external_dependencies"]
-    assert not (ROOT / ".development-skills/project.json").exists()
+    assert (ROOT / ".development-skills/project.json").is_file()
 
 
-def test_declared_local_references_survive_source_and_target_layouts() -> None:
+def test_canonical_repository_references_remain_resolvable() -> None:
     declaration = json.loads((PROPOSED / "specialized-package.json").read_text())
     mapping = {row["source"]: row["target"] for row in declaration["files"]}
     assert {
@@ -52,10 +54,12 @@ def test_declared_local_references_survive_source_and_target_layouts() -> None:
             reference_count += 1
             relative = href.split("#", 1)[0]
             referenced = (path.parent / relative).resolve().relative_to(ROOT).as_posix()
-            assert referenced in mapping, f"unpackaged reference: {source}: {href}"
-            actual_target = (ROOT / target).parent / relative
-            expected_target = ROOT / mapping[referenced]
-            assert actual_target.resolve() == expected_target.resolve()
+            # Canonical procedures ship with the repository, not the skill-folder installer.
+            assert (ROOT / referenced).is_file(), f"missing canonical reference: {source}: {href}"
+            if referenced in mapping:
+                actual_target = (ROOT / target).parent / relative
+                expected_target = ROOT / mapping[referenced]
+                assert actual_target.resolve() == expected_target.resolve()
     assert reference_count >= 8, "runtime links must be exercised, not an empty traversal"
 
 
@@ -75,3 +79,52 @@ def test_specialized_obligation_roster_covers_procedure_sections() -> None:
             assert migrated["binding_ids"] == ["cas-" + operation]
             assert migrated["operations"] == [operation]
             assert migrated["proposed_authority"] == f"docs/development/operations/{operation}.md"
+
+
+def test_installable_composition_uses_one_shared_smoke_and_unversioned_batch() -> None:
+    declaration = json.loads((ROOT / "docs/development/distribution/composition.json").read_text())
+    components = {row["name"]: row for row in declaration["components"]}
+    assert set(components) == {"next", "smoke-test", "deploy", "azure-deploy-review", "batch"}
+    assert components["smoke-test"]["root"] == "shared"
+    assert components["batch"]["version"] is None
+    assert components["batch"]["version_exception"] == "batch"
+    for name in ("deploy", "azure-deploy-review", "batch"):
+        component = components[name]
+        assert component["kind"] == "project-skill"
+        source = (ROOT / component["path"] / "SKILL.md").read_text()
+        assert "coordinated activation receipt" in source
+        assert "project-policy" in source
+        assert "docs/development/operations/" in source
+    assert not (ROOT / "docs/development/distribution/skills/smoke-test").exists()
+
+
+@pytest.mark.parametrize("receipt_present", [False, True])
+@pytest.mark.parametrize("targets_present", [False, True])
+def test_historical_declaration_conformance_is_independent_of_installation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    receipt_present: bool,
+    targets_present: bool,
+) -> None:
+    source_root = ROOT
+    shutil.copytree(source_root / "docs", tmp_path / "docs")
+    shutil.copytree(source_root / ".development-skills", tmp_path / ".development-skills")
+    receipt = tmp_path / ".development-skills/activation-receipt.md"
+    receipt.unlink(missing_ok=True)
+    if receipt_present:
+        receipt.write_text("Synthetic fixture only; no live authority evidence.\n")
+    if targets_present:
+        for name in EXPECTED:
+            # Representative target presence, not package-integrity acceptance.
+            target = tmp_path / f".agents/skills/{name}/SKILL.md"
+            target.parent.mkdir(parents=True)
+            target.write_text("Synthetic installed entry point.\n")
+    assert receipt.exists() is receipt_present
+    assert all(
+        (tmp_path / f".agents/skills/{name}/SKILL.md").exists() is targets_present
+        for name in EXPECTED
+    )
+    module = __import__(__name__, fromlist=["ROOT"])
+    monkeypatch.setattr(module, "ROOT", tmp_path)
+    monkeypatch.setattr(module, "PROPOSED", tmp_path / "docs/development/proposed")
+    test_staged_declaration_is_complete_and_inactive()

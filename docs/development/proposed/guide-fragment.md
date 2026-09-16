@@ -39,3 +39,7 @@ to `.development-skills/project.json` there only, and explicitly install this
 fragment's policy pointer into that fixture's guide. Run the shipped shared
 resolver with its verified complete bundle. Missing-authority and rename probes
 mutate the fixture only. Record this as fixture acceptance, not active adoption.
+
+## Historical proposal boundary
+
+The selected candidate now uses the repository guide and `.development-skills/project.json`. This historical fragment and the sibling overlay declaration are not the installable composition. See `docs/development/distribution/README.md`.

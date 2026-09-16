@@ -1,6 +1,6 @@
 # CAS read-only triage
 
-**INACTIVE proposal.** See [authority transition](../authority-transition.md).
+Selected candidate procedure. The required activation receipt blocks operational use until the coordinated cutover; see [authority transition](../authority-transition.md).
 
 Use a supported project-policy read route and the explicit CAS procedure binding;
 never pass an unsupported `next` operation. Read live inventory/configuration and

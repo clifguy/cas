@@ -1,7 +1,6 @@
 # Deploy
 
-**INACTIVE proposal.** This staged procedure does not govern current work or authorize execution.
-Resolve current project policy and caller authorization before adoption or use.
+Selected candidate procedure. The required activation receipt blocks operational use until the coordinated cutover; see [authority transition](../authority-transition.md).
 Read [Codex runtime](references/codex-runtime.md) and [dependencies](references/dependencies.md).
 
 Drive a CAS cloud-profile tenant deploy from "operator wants to ship" to "the CI deploy run

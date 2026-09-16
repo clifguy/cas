@@ -1,14 +1,10 @@
-# CAS project policy proposal
+# CAS project policy
 
-**INACTIVE proposal.** This file and the profile under `proposed/` are source
-artifacts, not governing instructions. Current work follows the unchanged
-`CLAUDE.md`, canonical code review and current live CAS authorities. Presence,
-successful validation, a source commit or a merged source PR cannot activate them.
-The [transition procedure](authority-transition.md) owns separate adoption.
+Selected candidate procedure. The required activation receipt blocks operational use until the coordinated cutover; see [authority transition](authority-transition.md).
 
 ## Responsibilities
 
-The proposed profile uses the shared v3 operation vocabulary without project-name
+The selected profile uses the shared v3 operation vocabulary without project-name
 dispatch. Each of kickoff, commit, review-pr, disposition, converge-review, merge,
 push and pull-request receives this required supplement. Resolve again in the
 intended worktree at each operation boundary; a prior checkout's receipt is not
@@ -50,18 +46,19 @@ that step, not unrelated local work. Keep the existing working transfer procedur
 until its separately verified replacement is adopted.
 
 Ticketing, Azure and specialized delivery remain sibling responsibilities; their
-interfaces are recorded in [the proposal guide](proposed/guide-fragment.md).
-The core integration does not deliver those siblings. In particular, a file naming
+interfaces are recorded in the selected repository guide and
+[distribution declaration](distribution/README.md). The complete candidate package
+delivers shared triage/smoke routers and CAS specialized entry points; external
+services and live authority still require current verification. In particular, a file naming
 an Azure review cannot count as running it. Conditional model and Azure gates use
 the exact candidate, including both rename endpoints and authorized new paths.
 
-## Unresolved owner decisions
+## Approved candidate decisions
 
-Expanded substantive-review coverage, the shared three-round stopping rule and
-the revised D4 review-surface wording remain proposed decisions. Current CAS review
-conventions retain their live stopping rule until coordinated adoption. This
-proposal cannot adjudicate itself. The obligation map labels those choices
-unresolved and the activation decision remains separate.
+The owner approved expanded substantive-review coverage, the shared three-round
+stopping rule and revised disposition-only D4. These rules take effect only with
+the coordinated authority transition and receipt. The pre-adoption live policy
+continues to govern review of this candidate until then.
 
 ## Evidence boundary
 
@@ -71,4 +68,5 @@ evidence, not resolver inputs or a substitute for observed agent decisions.
 Validate against the selected compatible shared source's coverage validator and
 actual resolver in disposable repositories. Record exact cross-repository
 revisions, command results, source hashes, limitations and restored mutations.
-Installed/live acceptance and rollback remain a later owner-authorized operation.
+Disposable installed acceptance and rollback do not establish live adoption.
+Primary installation and live activation remain a later owner-authorized operation.

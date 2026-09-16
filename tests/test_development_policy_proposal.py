@@ -1,9 +1,12 @@
-"""Check the inactive proposal's composition without installing it."""
+"""Check selected candidate composition without activating live authority."""
 
 import json
 import re
+import shutil
 from fnmatch import fnmatch
 from pathlib import Path
+
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 PROPOSED = ROOT / "docs/development/proposed"
@@ -20,8 +23,8 @@ CORE = {
 
 
 def profile() -> dict:
-    path = PROPOSED / "project.json"
-    assert path.is_file(), "inactive executable binding proposal is missing"
+    path = ROOT / ".development-skills/project.json"
+    assert path.is_file(), "selected executable binding candidate is missing"
     return json.loads(path.read_text())
 
 
@@ -33,7 +36,10 @@ def test_core_operations_have_required_project_policy() -> None:
     assert policy["source"]["path"] == "docs/development/project-policy.md"
     for binding in bindings:
         assert binding["required"] is True
-        assert (ROOT / binding["source"]["path"]).is_file()
+        if binding["id"] == "cas-activation-receipt":
+            assert binding["source"]["path"] == ".development-skills/activation-receipt.md"
+        else:
+            assert (ROOT / binding["source"]["path"]).is_file()
 
 
 def test_review_replaces_only_supported_review_operations() -> None:
@@ -49,7 +55,7 @@ def test_review_replaces_only_supported_review_operations() -> None:
 def test_ticketing_selects_ticket_procedure_without_enabling_triage_on_writes() -> None:
     bindings = profile()["bindings"]
     selected = [item for item in bindings if "ticketing" in item["operations"]]
-    assert {item["id"] for item in selected} == {"cas-ticketing"}
+    assert {item["id"] for item in selected} == {"cas-ticketing", "cas-activation-receipt"}
     assert selected[0]["composition"] == "supplement"
     assert selected[0]["source"]["path"] == "docs/development/ticket-procedures.md"
     assert not any("next" in item["operations"] for item in bindings)
@@ -94,12 +100,16 @@ def test_azure_scope_covers_existing_deployment_and_image_inputs() -> None:
     assert not any(fnmatch("docs/development/release.md", pattern) for pattern in azure["paths"])
 
 
-def test_proposal_does_not_install_governing_pointer() -> None:
-    assert not (ROOT / ".development-skills/project.json").exists()
-    for name in ("AGENTS.md", "CLAUDE.md"):
-        text = (ROOT / name).read_text()
-        assert "docs/development/project-policy.md" not in text
-        assert "docs/development/proposed/" not in text
+def test_candidate_selection_is_explicit_and_live_activation_fails_closed() -> None:
+    guide = (ROOT / "CLAUDE.md").read_text()
+    assert "docs/development/project-policy.md" in guide
+    assert ".development-skills/project.json" in guide
+    assert "cas-triage" in guide and "declared_in" in guide
+    bindings = profile()["bindings"]
+    receipt = next(row for row in bindings if row["id"] == "cas-activation-receipt")
+    assert receipt["required"] is True
+    assert set(receipt["operations"]) == {op for row in bindings for op in row["operations"]}
+    assert receipt["source"]["path"] == ".development-skills/activation-receipt.md"
 
 
 def test_azure_scope_covers_declared_python_execution_roots() -> None:
@@ -151,3 +161,24 @@ def test_specialized_operations_have_required_canonical_bindings() -> None:
     assert bindings["cas-azure-review"]["source"]["path"] == (
         "docs/development/operations/azure-review.md"
     )
+
+
+@pytest.mark.parametrize("receipt_present", [False, True])
+def test_policy_conformance_accepts_both_activation_states(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, receipt_present: bool
+) -> None:
+    source_root = ROOT
+    shutil.copytree(source_root / "docs", tmp_path / "docs")
+    shutil.copytree(source_root / ".development-skills", tmp_path / ".development-skills")
+    canonical = Path(".claude/skills/cas-code-review/SKILL.md")
+    (tmp_path / canonical).parent.mkdir(parents=True)
+    shutil.copyfile(source_root / canonical, tmp_path / canonical)
+    shutil.copyfile(source_root / "CLAUDE.md", tmp_path / "CLAUDE.md")
+    receipt = tmp_path / ".development-skills/activation-receipt.md"
+    receipt.unlink(missing_ok=True)
+    if receipt_present:
+        receipt.write_text("Synthetic fixture only; no live authority evidence.\n")
+    assert receipt.exists() is receipt_present
+    monkeypatch.setattr(__import__(__name__, fromlist=["ROOT"]), "ROOT", tmp_path)
+    test_core_operations_have_required_project_policy()
+    test_candidate_selection_is_explicit_and_live_activation_fails_closed()

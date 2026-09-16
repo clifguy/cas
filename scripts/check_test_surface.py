@@ -158,6 +158,17 @@ _CONFORMANCE_STREAMS: Final[str] = (
 )
 
 KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
+    "tests/test_development_policy_proposal.py::test_proposal_does_not_install_governing_pointer": (
+        "Activation candidate intentionally selects the guide/profile; replaced by "
+        "test_candidate_selection_is_explicit_and_live_activation_fails_closed and "
+        "test_policy_conformance_accepts_both_activation_states."
+    ),
+    "tests/test_specialized_source_package.py::"
+    "test_declared_local_references_survive_source_and_target_layouts": (
+        "Canonical repository procedures no longer ship through the historical overlay; "
+        "test_canonical_repository_references_remain_resolvable preserves source and "
+        "applicable target-link checks."
+    ),
     **{
         f"tests/sage/test_adapter_config_refusal.py::"
         f"test_ad_185_a_malformed_source_keeps_its_reporting_{surface}": (

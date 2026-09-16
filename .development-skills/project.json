@@ -1,0 +1,242 @@
+{
+  "schema_version": 3,
+  "project": "cas",
+  "commit": {
+    "protected_branches": [
+      "main"
+    ],
+    "remote": "origin",
+    "frontend_lint": "nearest-package-npm",
+    "pre_commit": "if-configured",
+    "pull_request": "github-draft"
+  },
+  "bindings": [
+    {
+      "id": "cas-context",
+      "operations": [
+        "kickoff",
+        "commit",
+        "review-pr",
+        "disposition",
+        "converge-review",
+        "merge",
+        "push",
+        "pull-request"
+      ],
+      "responsibility": "cas-project-policy",
+      "composition": "supplement",
+      "required": true,
+      "source": {
+        "kind": "file",
+        "path": "docs/development/project-policy.md"
+      }
+    },
+    {
+      "id": "cas-code-review",
+      "operations": [
+        "commit",
+        "review-pr"
+      ],
+      "responsibility": "review",
+      "composition": "replace",
+      "required": true,
+      "source": {
+        "kind": "file",
+        "path": ".claude/skills/cas-code-review/SKILL.md"
+      }
+    },
+    {
+      "id": "cas-checks",
+      "operations": [
+        "kickoff",
+        "commit",
+        "review-pr",
+        "disposition",
+        "converge-review",
+        "merge"
+      ],
+      "responsibility": "cas-checks",
+      "composition": "supplement",
+      "required": true,
+      "source": {
+        "kind": "file",
+        "path": "docs/development/checks.md"
+      }
+    },
+    {
+      "id": "cas-azure-review",
+      "operations": [
+        "commit",
+        "review-pr",
+        "disposition"
+      ],
+      "responsibility": "cas-azure-review",
+      "composition": "supplement",
+      "required": true,
+      "source": {
+        "kind": "file",
+        "path": "docs/development/operations/azure-review.md"
+      },
+      "paths": [
+        "infra/*",
+        "deploy/*",
+        ".github/workflows/*",
+        "*.bicep",
+        "*.bicepparam",
+        "Dockerfile*",
+        "pyproject.toml",
+        "uv.lock",
+        "requirements*.txt",
+        "scripts/bootstrap_postgres.py",
+        "sage/__main__.py",
+        "app/backend/__main__.py",
+        "sage/maintenance/*",
+        "sage/storage/postgres/*"
+      ]
+    },
+    {
+      "id": "cas-real-model",
+      "operations": [
+        "commit",
+        "disposition"
+      ],
+      "responsibility": "cas-real-model",
+      "composition": "supplement",
+      "required": true,
+      "source": {
+        "kind": "file",
+        "path": "docs/development/checks.md"
+      },
+      "paths": [
+        "sage/adapters/abstraction_qwen3.py",
+        "sage/adapters/embedding_nomic.py"
+      ]
+    },
+    {
+      "id": "cas-release",
+      "operations": [
+        "kickoff",
+        "commit",
+        "disposition",
+        "merge",
+        "pull-request"
+      ],
+      "responsibility": "cas-release",
+      "composition": "supplement",
+      "required": true,
+      "source": {
+        "kind": "file",
+        "path": "docs/development/release.md"
+      }
+    },
+    {
+      "id": "cas-review-records",
+      "operations": [
+        "review-pr",
+        "disposition",
+        "converge-review",
+        "merge",
+        "pull-request"
+      ],
+      "responsibility": "cas-review-records",
+      "composition": "supplement",
+      "required": true,
+      "source": {
+        "kind": "file",
+        "path": "docs/development/review-records.md"
+      }
+    },
+    {
+      "id": "cas-ticketing",
+      "operations": [
+        "kickoff",
+        "disposition",
+        "ticketing"
+      ],
+      "responsibility": "cas-ticketing",
+      "composition": "supplement",
+      "required": true,
+      "source": {
+        "kind": "file",
+        "path": "docs/development/ticket-procedures.md"
+      }
+    },
+    {
+      "id": "cas-publication",
+      "operations": [
+        "push",
+        "pull-request"
+      ],
+      "responsibility": "cas-publication",
+      "composition": "supplement",
+      "required": true,
+      "source": {
+        "kind": "file",
+        "path": "docs/development/publication.md"
+      }
+    },
+    {
+      "id": "cas-smoke-test",
+      "operations": [
+        "smoke-test"
+      ],
+      "responsibility": "smoke-test-procedure",
+      "composition": "supplement",
+      "required": true,
+      "source": {
+        "kind": "file",
+        "path": "docs/development/operations/smoke-test.md"
+      }
+    },
+    {
+      "id": "cas-deploy",
+      "operations": [
+        "deploy"
+      ],
+      "responsibility": "deploy-procedure",
+      "composition": "supplement",
+      "required": true,
+      "source": {
+        "kind": "file",
+        "path": "docs/development/operations/deploy.md"
+      }
+    },
+    {
+      "id": "cas-batch",
+      "operations": [
+        "batch"
+      ],
+      "responsibility": "batch-procedure",
+      "composition": "supplement",
+      "required": true,
+      "source": {
+        "kind": "file",
+        "path": "docs/development/operations/batch.md"
+      }
+    },
+    {
+      "id": "cas-activation-receipt",
+      "operations": [
+        "batch",
+        "commit",
+        "converge-review",
+        "deploy",
+        "disposition",
+        "kickoff",
+        "merge",
+        "pull-request",
+        "push",
+        "review-pr",
+        "smoke-test",
+        "ticketing"
+      ],
+      "responsibility": "cas-activation",
+      "composition": "supplement",
+      "required": true,
+      "source": {
+        "kind": "file",
+        "path": ".development-skills/activation-receipt.md"
+      }
+    }
+  ]
+}
