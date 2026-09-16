@@ -60,8 +60,18 @@ outcome or owner design decision requires authorization. The allowed conditions 
 - D3 — Verifiable only elsewhere: the necessary gate/deployment/environment is unavailable.
 
 Name a condition before asking about deferral. Batch deduplicated nonblocking decisions;
-interrupt promptly for a real blocker. Implementation follow-up tickets record
-`**Deferral:** D<N> — <condition and evidence>`. Disposition uses the review table's
+interrupt promptly for a real blocker. A ticket written at the implementation
+findings halt carries, as its first body line under the title, exactly one of:
+
+```text
+**Deferral:** D<N> — <condition and evidence, one line>
+**Deferral:** none — <why this ticket is not a deferred finding, one line>
+```
+
+Use D1–D3 for an actual deferred finding. The `none` arm covers a planned increment
+that defers no finding; do not disguise a deferral with it. This form does not
+extend to tickets written after the origin merged or between disposition and merge.
+Disposition uses the review table's
 Note column and its stage-specific D4. Preserve the live exception for unadjudicated
 PLAUSIBLE findings. Writing tickets still requires the operation's authorization.
 

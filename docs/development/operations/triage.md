@@ -14,11 +14,22 @@ required measurements. Corroborate claimed shipped work against current PR/CI an
 worktrees; failed remote lookups mean unknown, not absence. Never infer identity
 from slugs or rewrite graph anchors while triaging.
 
-Separate ready, blocked, deferred and unknown. Rank ready work by priority
+Classify a ticket with another worker's branch/worktree or open PR as claimed
+(in flight, or claimed idle when activity is not current), not ready to start again.
+Classify verified merged work as landed and open; merge evidence is not acceptance
+or permission to close. Keep both categories out of fresh-start recommendations.
+Only unclaimed, unlanded, on-horizon work with satisfied prerequisites is ready.
+Missing claim/landing evidence after a failed lookup is unknown, not unclaimed.
+
+Separate ready, claimed, landed, blocked, deferred and unknown. Rank ready work by priority
 (high before medium before low), then descending open-ticket unblocking fan-out,
 then audience (caller before internal), reach (fundamental before narrow), then
-oldest opening date. Missing impact values rank at the lower value and are reported
-as missing, not silently filled. Report ties without inventing an urgency distinction.
+ticket_id ascending (the existing age tie-break). Count fan-out as distinct active
+ticket identities that directly list the candidate as an unsatisfied effective
+blocker, not version rows, duplicate edges or transitive descendants. Resolve
+retractions and lineage before counting; incomplete evidence leaves the count unknown.
+Missing impact values rank at the lower value and are reported as missing, not
+silently filled. Do not replace the stable ID order with opening-date order.
 Keep deferred work off the active horizon without changing its priority.
 
 For concurrent candidates normalize scope and check parent/child paths, renames and
