@@ -179,7 +179,7 @@
       "source_id": "checks",
       "source_section": "CAS checks procedure",
       "disposition": "retained",
-      "current_authority": "Installed commit Azure gate; active installation unchanged",
+      "current_authority": "Installed Azure deploy-review v0.1.0, When to invoke; sha256:c2483e6b766e47627041c5ba87e57f8a3a91128836197b83d219ca409688cf2f. Current installation unchanged.",
       "proposed_authority": "docs/development/checks.md",
       "operations": [
         "commit",
@@ -189,8 +189,14 @@
       "applicable_paths": [
         "infra/*",
         "deploy/*",
-        ".github/workflows/infra.yml",
-        ".github/workflows/build-images.yml"
+        ".github/workflows/*",
+        "*.bicep",
+        "*.bicepparam",
+        "Dockerfile*",
+        "pyproject.toml",
+        "uv.lock",
+        "requirements*.txt",
+        "scripts/bootstrap_postgres.py"
       ],
       "acceptance_case": "conditional-checks-renames",
       "owner_decision": {

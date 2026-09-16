@@ -34,12 +34,23 @@ different-head run or unavailable forge query is not a pass.
 ## Conditional dependency gates
 
 Evaluate the complete candidate file set, including both sides of a rename and
-authorized new files. The Azure binding selects `infra/*`, `deploy/*`,
-`.github/workflows/infra.yml` and `.github/workflows/build-images.yml`. Resolve and
-execute the existing Azure deploy-review skill against that same candidate. If
+authorized new files. The Azure binding selects infrastructure and deployment
+trees, workflow candidates, Bicep files, Dockerfiles, Python dependency/image
+inputs and the database bootstrap script. Workflow selection is conservative:
+the Azure procedure determines whether each pipeline actually reaches an Azure
+deployment surface. Resolve and execute the existing Azure deploy-review skill
+against that same candidate. If
 the required skill is unavailable, report the matching operation blocked; the
 presence of this supplement is not an Azure review. An ordinary documentation
 candidate does not select that binding.
+
+A path inventory cannot detect a new runtime import or system-binary dependency
+inside an otherwise ordinary source file. Every invocation of this general checks
+procedure must also inspect the complete candidate diff for those content-dependent
+image-input changes. If one is present, run the required Azure review even when
+the conditional path binding was not selected. Record both the semantic trigger
+and the dependency's availability; missing capability blocks that dependent step.
+Do not claim path selection alone proves complete Azure applicability.
 
 The real-model binding selects `sage/adapters/abstraction_qwen3.py` and
 `sage/adapters/embedding_nomic.py`. Resolve the worktree's documented runtime and

@@ -80,8 +80,14 @@
       "paths": [
         "infra/*",
         "deploy/*",
-        ".github/workflows/infra.yml",
-        ".github/workflows/build-images.yml"
+        ".github/workflows/*",
+        "*.bicep",
+        "*.bicepparam",
+        "Dockerfile*",
+        "pyproject.toml",
+        "uv.lock",
+        "requirements*.txt",
+        "scripts/bootstrap_postgres.py"
       ]
     },
     {

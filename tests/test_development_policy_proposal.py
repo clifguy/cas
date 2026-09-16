@@ -1,6 +1,7 @@
 """Check the inactive proposal's composition without installing it."""
 
 import json
+from fnmatch import fnmatch
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -50,13 +51,31 @@ def test_conditional_gates_have_precise_candidate_paths() -> None:
         "sage/adapters/abstraction_qwen3.py",
         "sage/adapters/embedding_nomic.py",
     }
-    assert set(bindings["cas-azure-review"]["paths"]) == {
-        "infra/*",
-        "deploy/*",
-        ".github/workflows/infra.yml",
-        ".github/workflows/build-images.yml",
-    }
     assert bindings["cas-azure-review"]["composition"] == "supplement"
+
+
+def test_azure_scope_covers_existing_deployment_and_image_inputs() -> None:
+    azure = next(item for item in profile()["bindings"] if item["id"] == "cas-azure-review")
+    assert set(azure["operations"]) == {"commit", "review-pr", "disposition"}
+    witnesses = {
+        "infra/main.bicep",
+        "deploy/bootstrap/entra-app-registrations.sh",
+        ".github/workflows/build-images.yml",
+        ".github/workflows/postgres-migration.yml",
+        ".github/workflows/maintenance.yml",
+        ".github/workflows/sharepoint-validate.yml",
+        "Dockerfile",
+        "Dockerfile.bff",
+        "pyproject.toml",
+        "uv.lock",
+        "scripts/bootstrap_postgres.py",
+    }
+    assert all((ROOT / path).is_file() for path in witnesses)
+    missing = {
+        path for path in witnesses if not any(fnmatch(path, pattern) for pattern in azure["paths"])
+    }
+    assert not missing, f"deployment/image inputs omitted: {sorted(missing)}"
+    assert not any(fnmatch("docs/development/release.md", pattern) for pattern in azure["paths"])
 
 
 def test_proposal_does_not_install_governing_pointer() -> None:
