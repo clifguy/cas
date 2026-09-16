@@ -75,7 +75,7 @@
       "required": true,
       "source": {
         "kind": "file",
-        "path": "docs/development/checks.md"
+        "path": "docs/development/operations/azure-review.md"
       },
       "paths": [
         "infra/*",
@@ -172,6 +172,45 @@
       "source": {
         "kind": "file",
         "path": "docs/development/publication.md"
+      }
+    },
+    {
+      "id": "cas-smoke-test",
+      "operations": [
+        "smoke-test"
+      ],
+      "responsibility": "smoke-test-procedure",
+      "composition": "supplement",
+      "required": true,
+      "source": {
+        "kind": "file",
+        "path": "docs/development/operations/smoke-test.md"
+      }
+    },
+    {
+      "id": "cas-deploy",
+      "operations": [
+        "deploy"
+      ],
+      "responsibility": "deploy-procedure",
+      "composition": "supplement",
+      "required": true,
+      "source": {
+        "kind": "file",
+        "path": "docs/development/operations/deploy.md"
+      }
+    },
+    {
+      "id": "cas-batch",
+      "operations": [
+        "batch"
+      ],
+      "responsibility": "batch-procedure",
+      "composition": "supplement",
+      "required": true,
+      "source": {
+        "kind": "file",
+        "path": "docs/development/operations/batch.md"
       }
     }
   ]

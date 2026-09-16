@@ -1,0 +1,38 @@
+[
+  {
+    "mutation": "optional-smoke-binding",
+    "caught": "assertion"
+  },
+  {
+    "mutation": "wrong-deploy-responsibility",
+    "caught": "assertion"
+  },
+  {
+    "mutation": "released-inactive-package",
+    "caught": "assertion"
+  },
+  {
+    "mutation": "remove-capability-population",
+    "caught": "assertion"
+  },
+  {
+    "mutation": "remove-file-population",
+    "caught": "assertion"
+  },
+  {
+    "mutation": "omit-transitive-runtime",
+    "caught": "assertion"
+  },
+  {
+    "mutation": "move-transitive-runtime",
+    "caught": "assertion"
+  },
+  {
+    "mutation": "remove-specialized-roster-population",
+    "caught": "assertion"
+  },
+  {
+    "mutation": "unbind-smoke-obligation",
+    "caught": "assertion"
+  }
+]

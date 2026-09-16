@@ -57,6 +57,38 @@
       "revision": "b93f88eb69b19b679d58bb9e45a9b9ff0d7455d1",
       "sha256": "1b0ad95e14061710515deaf933a254d4baeb3d317c20f446184bc06a81deecca",
       "section": "Activation and rollback"
+    },
+    {
+      "id": "specialized-smoke-test",
+      "kind": "file",
+      "path": "docs/development/operations/smoke-test.md",
+      "revision": "working-tree",
+      "sha256": "ef1fc1590afddfe039adf90c0b35919a7e6b9fc6b173c9fd2ff3e86522050fe3",
+      "section": "CAS smoke-test procedure"
+    },
+    {
+      "id": "specialized-deploy",
+      "kind": "file",
+      "path": "docs/development/operations/deploy.md",
+      "revision": "working-tree",
+      "sha256": "878073837c95f04fba9ac06b0e77a15ebb5e17b6f83219ab180e134c18950bda",
+      "section": "Deploy"
+    },
+    {
+      "id": "specialized-batch",
+      "kind": "file",
+      "path": "docs/development/operations/batch.md",
+      "revision": "working-tree",
+      "sha256": "bbd6ce45ac9d8239d4f8993f30a5b7864a4cdf66a500edebf373875d2c557d17",
+      "section": "/batch"
+    },
+    {
+      "id": "specialized-azure-review",
+      "kind": "file",
+      "path": "docs/development/operations/azure-review.md",
+      "revision": "working-tree",
+      "sha256": "19ce6f6d5b7ceab1f105ff4f2f08d894239b81d6f013fc2852d98914cba2c9c6",
+      "section": "azure-deploy-review"
     }
   ],
   "required_obligations": [
@@ -239,6 +271,702 @@
         "merge",
         "push",
         "pull-request"
+      ]
+    },
+    {
+      "id": "cas-smoke-test-obligation-1",
+      "source_id": "specialized-smoke-test",
+      "source_section": "CAS smoke-test procedure",
+      "operations": [
+        "smoke-test"
+      ]
+    },
+    {
+      "id": "cas-smoke-test-obligation-2",
+      "source_id": "specialized-smoke-test",
+      "source_section": "Execution sequence and caller evidence",
+      "operations": [
+        "smoke-test"
+      ]
+    },
+    {
+      "id": "cas-smoke-test-obligation-3",
+      "source_id": "specialized-smoke-test",
+      "source_section": "Cloud evidence and safe fixture boundaries",
+      "operations": [
+        "smoke-test"
+      ]
+    },
+    {
+      "id": "cas-smoke-test-obligation-4",
+      "source_id": "specialized-smoke-test",
+      "source_section": "Report contract",
+      "operations": [
+        "smoke-test"
+      ]
+    },
+    {
+      "id": "cas-deploy-obligation-1",
+      "source_id": "specialized-deploy",
+      "source_section": "Deploy",
+      "operations": [
+        "deploy"
+      ]
+    },
+    {
+      "id": "cas-deploy-obligation-2",
+      "source_id": "specialized-deploy",
+      "source_section": "Inputs",
+      "operations": [
+        "deploy"
+      ]
+    },
+    {
+      "id": "cas-deploy-obligation-3",
+      "source_id": "specialized-deploy",
+      "source_section": "Domain \u2192 GitHub Environment map",
+      "operations": [
+        "deploy"
+      ]
+    },
+    {
+      "id": "cas-deploy-obligation-4",
+      "source_id": "specialized-deploy",
+      "source_section": "Preamble \u2014 anchor gh to the cas repo",
+      "operations": [
+        "deploy"
+      ]
+    },
+    {
+      "id": "cas-deploy-obligation-5",
+      "source_id": "specialized-deploy",
+      "source_section": "Workflow",
+      "operations": [
+        "deploy"
+      ]
+    },
+    {
+      "id": "cas-deploy-obligation-6",
+      "source_id": "specialized-deploy",
+      "source_section": "Step 0 \u2014 Resolve the tenant Environment",
+      "operations": [
+        "deploy"
+      ]
+    },
+    {
+      "id": "cas-deploy-obligation-7",
+      "source_id": "specialized-deploy",
+      "source_section": "Step 1 \u2014 Preconditions",
+      "operations": [
+        "deploy"
+      ]
+    },
+    {
+      "id": "cas-deploy-obligation-8",
+      "source_id": "specialized-deploy",
+      "source_section": "Step 2 \u2014 Dispatch (fire on invocation)",
+      "operations": [
+        "deploy"
+      ]
+    },
+    {
+      "id": "cas-deploy-obligation-9",
+      "source_id": "specialized-deploy",
+      "source_section": "Step 3 \u2014 Resolve the run id",
+      "operations": [
+        "deploy"
+      ]
+    },
+    {
+      "id": "cas-deploy-obligation-10",
+      "source_id": "specialized-deploy",
+      "source_section": "Step 4 \u2014 Monitor to completion",
+      "operations": [
+        "deploy"
+      ]
+    },
+    {
+      "id": "cas-deploy-obligation-11",
+      "source_id": "specialized-deploy",
+      "source_section": "Step 5 \u2014 Report",
+      "operations": [
+        "deploy"
+      ]
+    },
+    {
+      "id": "cas-deploy-obligation-12",
+      "source_id": "specialized-deploy",
+      "source_section": "Out of scope",
+      "operations": [
+        "deploy"
+      ]
+    },
+    {
+      "id": "cas-deploy-obligation-13",
+      "source_id": "specialized-deploy",
+      "source_section": "Notes",
+      "operations": [
+        "deploy"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-1",
+      "source_id": "specialized-batch",
+      "source_section": "/batch",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-2",
+      "source_id": "specialized-batch",
+      "source_section": "Landing model (v2.0.0)",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-3",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a71 When to invoke",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-4",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a72 Phase 1 \u2014 Cohort discovery",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-5",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a72.1 Read the governing methodology",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-6",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a72.2 Read the inventory (if one exists)",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-7",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a72.3 Read every ticket body in the cohort",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-8",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a72.4 Categorize design questions",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-9",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a73 Phase 2 \u2014 User decisions",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-10",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a74 Phase 3 \u2014 Decision sheet authoring",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-11",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a74.1 Required sections",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-12",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a74.2 What the decision sheet does *not* include",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-13",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a74.3 The disjoint-edit-window invariant (the primary conflict-prevention guarantee)",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-14",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a74.4 Foundation-ticket pattern",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-15",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a75 Phase 4 \u2014 Persist to vault",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-16",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a75.1 Stage outside the vault",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-17",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a75.2 Ingest",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-18",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a75.3 Wire edges",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-19",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a76 Phase 5 \u2014 Pilot validation *(critical \u2014 do not skip)*",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-20",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a76.1 Dispatch one ticket as a single subagent",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-21",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a76.2 Verify after the subagent returns",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-22",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a76.3 The branch-name linchpin (verify empirically; do not assume harness behavior)",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-23",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a77 The DISPATCH GATE (first structural turn boundary)",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-24",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a78 The dispatch loop (fan-out \u2192 draft PRs)",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-25",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a78.1 Dispatcher state contract",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-26",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a78.2 Per-ticket subagent prompt template",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-27",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a78.3 Per-iteration procedure",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-28",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a78.4 Continuous verification (during fan-out)",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-29",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a79 The MERGE GATE (second structural turn boundary)",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-30",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a710 The merge loop (land each PR via /merge)",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-31",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a710.1 Per-PR procedure",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-32",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a710.2 Continuous verification (during merge loop)",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-33",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a710.3 CI-flakiness discrimination (bounded rerun)",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-34",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a711 Rebase-conflict resolution (authorized mechanical policy)",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-35",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a711.1 First conflict: halt and surface",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-36",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a711.2 Recurring conflicts: propose a mechanical policy",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-37",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a711.3 Applying an authorized policy",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-38",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a711.4 When to retire the policy",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-39",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a712 Halt conditions",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-40",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a712.1 What halting looks like",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-41",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a712.2 What halting does NOT mean",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-42",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a712.3 Stalled-subagent recovery (recover before halting)",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-43",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a713 Final report",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-44",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a713.1 Per-ticket status table",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-45",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a713.2 Aggregated portfolio observations",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-46",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a713.3 Dispatcher-state observations",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-47",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a713.4 Merge state",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-48",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a713.5 Close-ticket handoff",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-49",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a713.6 Tone",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-50",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a714 Discipline checklist",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-51",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a715 Resume after halt and fallback execution",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-52",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a715.1 Conversational resume",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-53",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a715.2 Per-ticket fresh-session fallback",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-54",
+      "source_id": "specialized-batch",
+      "source_section": "\u00a716 Provenance",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-batch-obligation-55",
+      "source_id": "specialized-batch",
+      "source_section": "Codex dispatch and recovery constraints",
+      "operations": [
+        "batch"
+      ]
+    },
+    {
+      "id": "cas-azure-review-obligation-1",
+      "source_id": "specialized-azure-review",
+      "source_section": "azure-deploy-review",
+      "operations": [
+        "commit",
+        "review-pr",
+        "disposition"
+      ]
+    },
+    {
+      "id": "cas-azure-review-obligation-2",
+      "source_id": "specialized-azure-review",
+      "source_section": "When to invoke",
+      "operations": [
+        "commit",
+        "review-pr",
+        "disposition"
+      ]
+    },
+    {
+      "id": "cas-azure-review-obligation-3",
+      "source_id": "specialized-azure-review",
+      "source_section": "How to invoke",
+      "operations": [
+        "commit",
+        "review-pr",
+        "disposition"
+      ]
+    },
+    {
+      "id": "cas-azure-review-obligation-4",
+      "source_id": "specialized-azure-review",
+      "source_section": "The spine: on a deploy surface, green is not proof",
+      "operations": [
+        "commit",
+        "review-pr",
+        "disposition"
+      ]
+    },
+    {
+      "id": "cas-azure-review-obligation-5",
+      "source_id": "specialized-azure-review",
+      "source_section": "AD1 \u2014 Non-local verification (deploy-only-verifiable change)",
+      "operations": [
+        "commit",
+        "review-pr",
+        "disposition"
+      ]
+    },
+    {
+      "id": "cas-azure-review-obligation-6",
+      "source_id": "specialized-azure-review",
+      "source_section": "AD2 \u2014 False-green CI/deploy step",
+      "operations": [
+        "commit",
+        "review-pr",
+        "disposition"
+      ]
+    },
+    {
+      "id": "cas-azure-review-obligation-7",
+      "source_id": "specialized-azure-review",
+      "source_section": "AD3 \u2014 Misdiagnosis / non-fix recurrence",
+      "operations": [
+        "commit",
+        "review-pr",
+        "disposition"
+      ]
+    },
+    {
+      "id": "cas-azure-review-obligation-8",
+      "source_id": "specialized-azure-review",
+      "source_section": "AD4 \u2014 Managed-identity / role-grant gap",
+      "operations": [
+        "commit",
+        "review-pr",
+        "disposition"
+      ]
+    },
+    {
+      "id": "cas-azure-review-obligation-9",
+      "source_id": "specialized-azure-review",
+      "source_section": "AD5 \u2014 Azure platform-scoping gotcha catalog (living)",
+      "operations": [
+        "commit",
+        "review-pr",
+        "disposition"
+      ]
+    },
+    {
+      "id": "cas-azure-review-obligation-10",
+      "source_id": "specialized-azure-review",
+      "source_section": "This is early-warning, not a substitute for the deploy",
+      "operations": [
+        "commit",
+        "review-pr",
+        "disposition"
+      ]
+    },
+    {
+      "id": "cas-azure-review-obligation-11",
+      "source_id": "specialized-azure-review",
+      "source_section": "Growing the catalog",
+      "operations": [
+        "commit",
+        "review-pr",
+        "disposition"
+      ]
+    },
+    {
+      "id": "cas-azure-review-obligation-12",
+      "source_id": "specialized-azure-review",
+      "source_section": "Out of scope",
+      "operations": [
+        "commit",
+        "review-pr",
+        "disposition"
       ]
     }
   ]
