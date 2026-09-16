@@ -109,6 +109,10 @@ class MintedTransfer:
     transfer_id: str
     token: str
     expires_at: datetime
+    #: A digest whose meaning follows the direction. On a download, the hash of
+    #: the bytes redemption will serve, which the recipe promises. On an upload,
+    #: the digest the token was bound to at mint, or ``None`` for a token that
+    #: admits any bytes.
     content_hash: str | None = None
     content_size: int | None = None
 
