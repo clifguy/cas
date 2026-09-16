@@ -1,18 +1,16 @@
 """Canonical Postgres schema for the SAGE storage engine (CAS-ADR-042).
 
 The single source of DDL both deployment targets -- the on-box local runtime and
-the managed hosted endpoint -- provision from. The graph tables mirror the
-embedded SQLite store dialect-substituted for Postgres (jsonb for the JSON
-columns, native booleans, server-enforced foreign keys, ``->>`` expression
-indexes); the content ``chunks`` table carries the pgvector embedding column and
-a generated ``tsvector`` full-text column with a GIN index, the keyword-arm shape
-the relevance evaluation settled on.
+the managed hosted endpoint -- provision from. Postgres is the sole storage
+backend. The graph tables use jsonb columns, native booleans, server-enforced
+foreign keys, and ``->>`` expression indexes; the content ``chunks`` table carries
+the pgvector embedding column and a generated ``tsvector`` full-text column with
+a GIN index, the keyword-arm shape the relevance evaluation settled on.
 
 This module is dependency-light: it holds the DDL as plain strings and operates
 on a caller-supplied async connection, so it imports no database driver and stays
-importable without one. Two behavioral concerns the embedded graph store layers
-on top of the bare schema are deliberately out of scope here and belong to the
-graph-store implementation that owns that behavior: the chain-head maintenance
+importable without one. Two behavioral concerns are deliberately out of scope
+here and belong to the graph-store implementation: the chain-head maintenance
 trigger and the per-vault tier3 uniqueness indexes. The ``is_chain_head`` column
 ships; the trigger that maintains it does not.
 """
@@ -23,8 +21,7 @@ import re
 from collections.abc import Iterable
 
 # nomic-embed-text embedding width; the content store's vector column dimension.
-# Coupled to the embedding model, exactly as the embedded content store's fixed
-# vector field is.
+# The fixed vector dimension must agree with the embedding model's output.
 EMBEDDING_DIM = 768
 
 # Postgres text-search configuration backing the generated full-text column and
@@ -55,8 +52,7 @@ _IDENTIFIER_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 #
 # Schema and extension names are interpolated into DDL as identifiers (they
 # cannot be bind parameters), so each is validated against a strict lowercase
-# allowlist before it reaches the SQL -- the same discipline the embedded store
-# applies to its tier3 field paths.
+# allowlist before it reaches the SQL.
 # ---------------------------------------------------------------------------
 
 
@@ -95,7 +91,7 @@ def assert_disposable_target(schema: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Graph tables (dialect-substituted from the embedded SQLite store)
+# Graph tables
 # ---------------------------------------------------------------------------
 
 DOCUMENTS_TABLE = """\
@@ -187,8 +183,8 @@ CREATE TABLE IF NOT EXISTS document_tags (
 """
 
 # ---------------------------------------------------------------------------
-# Content table (mirrors the embedded content store's chunk schema, with the
-# pgvector embedding column and a generated tsvector full-text column)
+# Content table: chunks with a pgvector embedding column and a generated
+# tsvector full-text column
 # ---------------------------------------------------------------------------
 
 # CAS-ADR-049 Decision 3 separates a passage's *address* -- ``heading_path``,
@@ -288,9 +284,8 @@ GRAPH_INDEXES: tuple[str, ...] = (
     "ON edges(synced_from_content_hash);",
     "CREATE INDEX IF NOT EXISTS idx_staging_edges_source ON staging_edges(source_id);",
     "CREATE INDEX IF NOT EXISTS idx_staging_edges_target ON staging_edges(target_id);",
-    # Tier3 expression indexes. The embedded store indexes
-    # json_extract(tier3_metadata, '$.<field>'); the Postgres equivalent is a
-    # functional index on the jsonb ``->>`` text accessor.
+    # Tier3 expression indexes use the jsonb ``->>`` text accessor to index
+    # selected metadata fields without expanding them into separate columns.
     "CREATE INDEX IF NOT EXISTS idx_tier3_ticket_id ON documents((tier3_metadata->>'ticket_id'));",
     "CREATE INDEX IF NOT EXISTS idx_tier3_failure_id "
     "ON documents((tier3_metadata->>'failure_id'));",
@@ -300,9 +295,8 @@ GRAPH_INDEXES: tuple[str, ...] = (
 )
 
 # Natural-key uniqueness on production and staging edges. Postgres treats NULLs
-# as distinct in a unique index by default (the same semantics the embedded store
-# relies on), so multiple ``retracts`` edges with target_id NULL on one source
-# remain legal.
+# as distinct in a unique index by default, so multiple ``retracts`` edges with
+# target_id NULL on one source remain legal.
 UNIQUE_NATURAL_KEY_INDEXES: tuple[str, ...] = (
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_edges_uniq_natural_key "
     "ON edges(source_id, target_id, edge_type);",

@@ -1,13 +1,10 @@
 """PostgreSQL graph store for SAGE documents, edges, and users (CAS-ADR-042).
 
-A native async psycopg3 store over a connection pool: concurrency is served by
-Postgres, so there is no thread-local connection and no single-writer ceiling --
-the contrast with the embedded SQLite store, whose thread-pool + per-thread
-connection model serializes writes. The SQL is dialect-substituted from the
-embedded store -- ``%s`` placeholders, ``jsonb`` columns wrapped on write and
-read back as Python objects, the ``->>`` text accessor in place of
-``json_extract``, native booleans, ``ILIKE`` for case-insensitive match -- and
-behaves identically per the cross-backend parity suite.
+A native async psycopg3 store over a connection pool. Postgres is the sole
+storage backend; concurrent operations borrow pooled connections and Postgres
+coordinates concurrent writes. SQL uses ``%s`` placeholders, ``jsonb`` columns
+wrapped on write and read back as Python objects, the ``->>`` text accessor,
+native booleans, and ``ILIKE`` for case-insensitive matching.
 
 The bare schema (tables, indexes, natural-key UNIQUE indexes) is provisioned out
 of band by :mod:`sage.storage.postgres.schema`; this module owns the two
@@ -17,12 +14,11 @@ implementation: the chain-head maintenance trigger (created in
 indexes (created on demand by :meth:`ensure_tier3_unique_index`).
 
 Recursive-CTE note: Postgres permits at most one reference to a recursive CTE
-inside its own recursive term, where SQLite permits several. The bidirectional
+inside its own recursive term. The bidirectional
 walks (``traverse`` with ``direction="both"``, ``chain_walk``,
 ``head_with_hash_for_chain``) are therefore expressed with a single self-join
-whose ``ON`` matches either endpoint and whose ``CASE`` follows the other --
-equivalent to SQLite's two-branch ``UNION`` but legal under the one-reference
-rule.
+whose ``ON`` matches either endpoint and whose ``CASE`` follows the other,
+covering both directions while satisfying the one-reference rule.
 """
 
 from __future__ import annotations
@@ -100,8 +96,7 @@ def _pointer_to_jsonb(pointer: RelocationPointer | None) -> Jsonb | None:
     return Jsonb(pointer.model_dump(mode="json"))
 
 
-# Columns safe to use in ORDER BY (prevent SQL injection). Mirrors the embedded
-# store's allowlist.
+# Columns safe to interpolate into ORDER BY; the allowlist prevents SQL injection.
 _SORTABLE_COLUMNS: frozenset[str] = frozenset(
     {"title", "doc_type", "document_date", "lifecycle_status"}
 )
@@ -159,8 +154,7 @@ _BOOST_CUT_ORDER: Final[str] = (
 )
 
 # Chain-head maintenance trigger DDL (CAS-ADR-031 supersession-lineage rule).
-# Mirrors the embedded store's ``trg_tier3_chain_head_on_supersedes``: any
-# supersedes edge insertion flips the target's ``is_chain_head`` to false, so
+# A supersedes edge insertion flips the target's ``is_chain_head`` to false, so
 # the partial tier3 unique index never fires against a superseded predecessor.
 _CHAIN_HEAD_FN_DDL = """
 CREATE OR REPLACE FUNCTION trg_fn_chain_head_on_supersedes() RETURNS trigger
@@ -406,7 +400,7 @@ class PostgresGraphStore(GraphStore):
         """Raise ``Tier3UniqueViolation`` if ``exc`` is a tier3 partial-unique
         violation; otherwise return and let the caller re-raise.
 
-        Mirrors the embedded store: recover (doc_type, field) from the index
+        Recover (doc_type, field) from the index
         name reported in ``diag.constraint_name``, then look up the existing
         holder via the same predicate the partial index uses. When
         ``supersedes_id`` is supplied, a collision against the designated
@@ -484,11 +478,10 @@ class PostgresGraphStore(GraphStore):
         if "tags" in updates:
             updates["tags"] = Jsonb(updates["tags"])
         if "tier3_metadata" in updates:
-            # Wrap unconditionally -- the embedded store json.dumps()es every
-            # value on update (None -> "null", {} -> "{}"), so {} must round-trip
-            # as {} (not collapse to NULL the way the insert path does). ``None``
-            # and ``{}`` are stored as jsonb ``null`` / ``{}`` and read back as
-            # Python None / {} respectively, matching SQLite exactly.
+            # Wrap every update value so an empty dict round-trips as {},
+            # rather than collapsing to SQL NULL as it does on insert.
+            # ``None`` and ``{}`` are stored as jsonb ``null`` / ``{}`` and
+            # read back as Python None / {} respectively.
             updates["tier3_metadata"] = Jsonb(updates["tier3_metadata"])
         for pointer_field in ("relocated_from", "relocated_to"):
             if pointer_field in updates:
@@ -1935,9 +1928,10 @@ class PostgresGraphStore(GraphStore):
     # Row -> model conversions
     #
     # jsonb columns come back already parsed (tags as list, tier3_metadata as
-    # dict); booleans as native bool; the ISO-text timestamp columns parse the
-    # same as the embedded store. ``model_construct`` bypasses validation so a
-    # repair workflow can read legacy values the request-side validators reject.
+    # dict); booleans as native bool; ISO-text timestamps are parsed with
+    # ``datetime.fromisoformat``. Documents use ``model_construct`` to bypass
+    # validation so repair workflows can read legacy values that request-side
+    # validators reject.
     # ------------------------------------------------------------------
 
     @staticmethod
