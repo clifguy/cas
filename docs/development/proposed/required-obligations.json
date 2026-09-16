@@ -1,0 +1,245 @@
+{
+  "schema_version": 1,
+  "project": "cas",
+  "sources": [
+    {
+      "id": "guide",
+      "kind": "file",
+      "path": "CLAUDE.md",
+      "revision": "b93f88eb69b19b679d58bb9e45a9b9ff0d7455d1",
+      "sha256": "4e60e533e0acc3f746f3dc35dc4edc8315559c1b7ef897f88627ec232ed12dd7",
+      "section": "Standing architectural principles"
+    },
+    {
+      "id": "checks",
+      "kind": "file",
+      "path": "docs/development/checks.md",
+      "revision": "b93f88eb69b19b679d58bb9e45a9b9ff0d7455d1",
+      "sha256": "e37c332a9f5c917d3b15aeecbe341e4288f21eb47d9f252b16581ecdf6bc7618",
+      "section": "CAS checks procedure"
+    },
+    {
+      "id": "canonical-review",
+      "kind": "file",
+      "path": ".claude/skills/cas-code-review/SKILL.md",
+      "revision": "b93f88eb69b19b679d58bb9e45a9b9ff0d7455d1",
+      "sha256": "be0dd9a63c4f46f3a67107f05aa5fb76de95e5e94ab46f04890725af64a817e0",
+      "section": "cas-code-review"
+    },
+    {
+      "id": "review-records",
+      "kind": "file",
+      "path": "docs/development/review-records.md",
+      "revision": "b93f88eb69b19b679d58bb9e45a9b9ff0d7455d1",
+      "sha256": "0670d440287b462a9d7320b318421ef4632a053ac7c776ee428bd6d43daf0357",
+      "section": "Evidence and roles"
+    },
+    {
+      "id": "release",
+      "kind": "file",
+      "path": "docs/development/release.md",
+      "revision": "b93f88eb69b19b679d58bb9e45a9b9ff0d7455d1",
+      "sha256": "3b0e2289adb2f2e7ab37e527efc9766912441ca3108549eec8eb0e62b25aaa7d",
+      "section": "CAS release classification procedure"
+    },
+    {
+      "id": "tickets",
+      "kind": "file",
+      "path": "docs/development/ticket-procedures.md",
+      "revision": "b93f88eb69b19b679d58bb9e45a9b9ff0d7455d1",
+      "sha256": "e1aba156600e3e42a895ee610272fc6e8220d57cd47e5ebb16fe5359ee7fb780",
+      "section": "Deferral and closure"
+    },
+    {
+      "id": "transition",
+      "kind": "file",
+      "path": "docs/development/authority-transition.md",
+      "revision": "b93f88eb69b19b679d58bb9e45a9b9ff0d7455d1",
+      "sha256": "1b0ad95e14061710515deaf933a254d4baeb3d317c20f446184bc06a81deecca",
+      "section": "Activation and rollback"
+    }
+  ],
+  "required_obligations": [
+    {
+      "id": "cas-context",
+      "source_id": "guide",
+      "source_section": "Standing architectural principles",
+      "operations": [
+        "kickoff",
+        "commit",
+        "review-pr",
+        "disposition",
+        "converge-review",
+        "merge",
+        "push",
+        "pull-request"
+      ]
+    },
+    {
+      "id": "cas-invocation",
+      "source_id": "transition",
+      "source_section": "Activation and rollback",
+      "operations": [
+        "kickoff",
+        "commit",
+        "review-pr",
+        "disposition",
+        "converge-review",
+        "merge",
+        "push",
+        "pull-request"
+      ]
+    },
+    {
+      "id": "cas-checks",
+      "source_id": "checks",
+      "source_section": "CAS checks procedure",
+      "operations": [
+        "kickoff",
+        "commit",
+        "review-pr",
+        "disposition",
+        "converge-review",
+        "merge"
+      ]
+    },
+    {
+      "id": "cas-code-review",
+      "source_id": "canonical-review",
+      "source_section": "cas-code-review",
+      "operations": [
+        "commit",
+        "review-pr"
+      ]
+    },
+    {
+      "id": "cas-azure-review",
+      "source_id": "checks",
+      "source_section": "CAS checks procedure",
+      "operations": [
+        "commit",
+        "review-pr",
+        "disposition"
+      ]
+    },
+    {
+      "id": "cas-real-model",
+      "source_id": "checks",
+      "source_section": "CAS checks procedure",
+      "operations": [
+        "commit",
+        "disposition"
+      ]
+    },
+    {
+      "id": "cas-release",
+      "source_id": "release",
+      "source_section": "CAS release classification procedure",
+      "operations": [
+        "kickoff",
+        "commit",
+        "disposition",
+        "merge",
+        "pull-request"
+      ]
+    },
+    {
+      "id": "cas-review-roles",
+      "source_id": "review-records",
+      "source_section": "Evidence and roles",
+      "operations": [
+        "review-pr",
+        "disposition",
+        "converge-review",
+        "merge",
+        "pull-request"
+      ]
+    },
+    {
+      "id": "cas-review-forms",
+      "source_id": "review-records",
+      "source_section": "Review form",
+      "operations": [
+        "review-pr",
+        "disposition",
+        "converge-review",
+        "merge",
+        "pull-request"
+      ]
+    },
+    {
+      "id": "cas-review-stopping",
+      "source_id": "review-records",
+      "source_section": "Proposed coverage and stopping",
+      "operations": [
+        "review-pr",
+        "disposition",
+        "converge-review",
+        "merge"
+      ]
+    },
+    {
+      "id": "cas-deferral",
+      "source_id": "tickets",
+      "source_section": "Deferral and closure",
+      "operations": [
+        "disposition"
+      ]
+    },
+    {
+      "id": "cas-ticketing",
+      "source_id": "tickets",
+      "source_section": "Metadata and identity",
+      "operations": [
+        "kickoff",
+        "disposition"
+      ]
+    },
+    {
+      "id": "cas-push",
+      "source_id": "transition",
+      "source_section": "Activation and rollback",
+      "operations": [
+        "push"
+      ]
+    },
+    {
+      "id": "cas-pull-request",
+      "source_id": "review-records",
+      "source_section": "Merge consumer and retirement",
+      "operations": [
+        "pull-request"
+      ]
+    },
+    {
+      "id": "cas-specialized",
+      "source_id": "transition",
+      "source_section": "Activation and rollback",
+      "operations": [
+        "kickoff",
+        "commit",
+        "review-pr",
+        "disposition",
+        "converge-review",
+        "merge",
+        "push",
+        "pull-request"
+      ]
+    },
+    {
+      "id": "cas-activation",
+      "source_id": "transition",
+      "source_section": "Activation and rollback",
+      "operations": [
+        "kickoff",
+        "commit",
+        "review-pr",
+        "disposition",
+        "converge-review",
+        "merge",
+        "push",
+        "pull-request"
+      ]
+    }
+  ]
+}

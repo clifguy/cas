@@ -1,0 +1,499 @@
+{
+  "schema_version": 1,
+  "project": "cas",
+  "sources": [
+    {
+      "id": "guide",
+      "kind": "file",
+      "path": "CLAUDE.md",
+      "revision": "b93f88eb69b19b679d58bb9e45a9b9ff0d7455d1",
+      "sha256": "4e60e533e0acc3f746f3dc35dc4edc8315559c1b7ef897f88627ec232ed12dd7",
+      "section": "Standing architectural principles"
+    },
+    {
+      "id": "checks",
+      "kind": "file",
+      "path": "docs/development/checks.md",
+      "revision": "b93f88eb69b19b679d58bb9e45a9b9ff0d7455d1",
+      "sha256": "e37c332a9f5c917d3b15aeecbe341e4288f21eb47d9f252b16581ecdf6bc7618",
+      "section": "CAS checks procedure"
+    },
+    {
+      "id": "canonical-review",
+      "kind": "file",
+      "path": ".claude/skills/cas-code-review/SKILL.md",
+      "revision": "b93f88eb69b19b679d58bb9e45a9b9ff0d7455d1",
+      "sha256": "be0dd9a63c4f46f3a67107f05aa5fb76de95e5e94ab46f04890725af64a817e0",
+      "section": "cas-code-review"
+    },
+    {
+      "id": "review-records",
+      "kind": "file",
+      "path": "docs/development/review-records.md",
+      "revision": "b93f88eb69b19b679d58bb9e45a9b9ff0d7455d1",
+      "sha256": "0670d440287b462a9d7320b318421ef4632a053ac7c776ee428bd6d43daf0357",
+      "section": "Evidence and roles"
+    },
+    {
+      "id": "release",
+      "kind": "file",
+      "path": "docs/development/release.md",
+      "revision": "b93f88eb69b19b679d58bb9e45a9b9ff0d7455d1",
+      "sha256": "3b0e2289adb2f2e7ab37e527efc9766912441ca3108549eec8eb0e62b25aaa7d",
+      "section": "CAS release classification procedure"
+    },
+    {
+      "id": "tickets",
+      "kind": "file",
+      "path": "docs/development/ticket-procedures.md",
+      "revision": "b93f88eb69b19b679d58bb9e45a9b9ff0d7455d1",
+      "sha256": "e1aba156600e3e42a895ee610272fc6e8220d57cd47e5ebb16fe5359ee7fb780",
+      "section": "Deferral and closure"
+    },
+    {
+      "id": "transition",
+      "kind": "file",
+      "path": "docs/development/authority-transition.md",
+      "revision": "b93f88eb69b19b679d58bb9e45a9b9ff0d7455d1",
+      "sha256": "1b0ad95e14061710515deaf933a254d4baeb3d317c20f446184bc06a81deecca",
+      "section": "Activation and rollback"
+    }
+  ],
+  "status": "inactive-proposal",
+  "source_revision": "b93f88eb69b19b679d58bb9e45a9b9ff0d7455d1",
+  "obligations": [
+    {
+      "id": "cas-context",
+      "source_id": "guide",
+      "source_section": "Standing architectural principles",
+      "disposition": "retained",
+      "current_authority": "CLAUDE.md",
+      "proposed_authority": "docs/development/project-policy.md",
+      "operations": [
+        "kickoff",
+        "commit",
+        "review-pr",
+        "disposition",
+        "converge-review",
+        "merge",
+        "push",
+        "pull-request"
+      ],
+      "applicable_paths": [
+        "*"
+      ],
+      "acceptance_case": "authorization-context-boundary",
+      "owner_decision": {
+        "status": "retained",
+        "detail": "Preserve responsibility; no active-authority change."
+      },
+      "sibling_dependency": null,
+      "binding_ids": [
+        "cas-context"
+      ]
+    },
+    {
+      "id": "cas-invocation",
+      "source_id": "transition",
+      "source_section": "Activation and rollback",
+      "disposition": "retained",
+      "current_authority": "Live CAS Invocation Authority v1, head a499338f_cas_invocation_authority; refreshed 2026-09-16, no inbound supersedes successor.",
+      "proposed_authority": "docs/development/project-policy.md",
+      "operations": [
+        "kickoff",
+        "commit",
+        "review-pr",
+        "disposition",
+        "converge-review",
+        "merge",
+        "push",
+        "pull-request"
+      ],
+      "applicable_paths": [
+        "*"
+      ],
+      "acceptance_case": "authorization-context-boundary",
+      "owner_decision": {
+        "status": "retained",
+        "detail": "Preserve responsibility; no active-authority change."
+      },
+      "sibling_dependency": null,
+      "binding_ids": [
+        "cas-context"
+      ]
+    },
+    {
+      "id": "cas-checks",
+      "source_id": "checks",
+      "source_section": "CAS checks procedure",
+      "disposition": "retained",
+      "current_authority": "CLAUDE.md environment and current installed commit workflow",
+      "proposed_authority": "docs/development/checks.md",
+      "operations": [
+        "kickoff",
+        "commit",
+        "review-pr",
+        "disposition",
+        "converge-review",
+        "merge"
+      ],
+      "applicable_paths": [
+        "*"
+      ],
+      "acceptance_case": "core-integration",
+      "owner_decision": {
+        "status": "retained",
+        "detail": "Preserve responsibility; no active-authority change."
+      },
+      "sibling_dependency": null,
+      "binding_ids": [
+        "cas-checks"
+      ]
+    },
+    {
+      "id": "cas-code-review",
+      "source_id": "canonical-review",
+      "source_section": "cas-code-review",
+      "disposition": "retained",
+      "current_authority": ".claude/skills/cas-code-review/SKILL.md",
+      "proposed_authority": ".claude/skills/cas-code-review/SKILL.md",
+      "operations": [
+        "commit",
+        "review-pr"
+      ],
+      "applicable_paths": [
+        "*"
+      ],
+      "acceptance_case": "missing-conflicting-authority",
+      "owner_decision": {
+        "status": "retained",
+        "detail": "Preserve responsibility; no active-authority change."
+      },
+      "sibling_dependency": null,
+      "binding_ids": [
+        "cas-code-review"
+      ]
+    },
+    {
+      "id": "cas-azure-review",
+      "source_id": "checks",
+      "source_section": "CAS checks procedure",
+      "disposition": "retained",
+      "current_authority": "Installed Azure deploy-review v0.1.0, When to invoke; sha256:c2483e6b766e47627041c5ba87e57f8a3a91128836197b83d219ca409688cf2f. Current installation unchanged.",
+      "proposed_authority": "docs/development/checks.md",
+      "operations": [
+        "commit",
+        "review-pr",
+        "disposition"
+      ],
+      "applicable_paths": [
+        "infra/*",
+        "deploy/*",
+        ".github/workflows/*",
+        "*.bicep",
+        "*.bicepparam",
+        "Dockerfile*",
+        "pyproject.toml",
+        "uv.lock",
+        "requirements*.txt",
+        "scripts/bootstrap_postgres.py",
+        "sage/__main__.py",
+        "app/backend/__main__.py",
+        "sage/maintenance/*",
+        "sage/storage/postgres/*"
+      ],
+      "acceptance_case": "conditional-checks-renames",
+      "owner_decision": {
+        "status": "retained",
+        "detail": "Preserve responsibility; no active-authority change."
+      },
+      "sibling_dependency": "specialized-operations",
+      "binding_ids": [
+        "cas-azure-review"
+      ]
+    },
+    {
+      "id": "cas-real-model",
+      "source_id": "checks",
+      "source_section": "CAS checks procedure",
+      "disposition": "retained",
+      "current_authority": "CLAUDE.md and installed commit real-model gate",
+      "proposed_authority": "docs/development/checks.md",
+      "operations": [
+        "commit",
+        "disposition"
+      ],
+      "applicable_paths": [
+        "sage/adapters/abstraction_qwen3.py",
+        "sage/adapters/embedding_nomic.py"
+      ],
+      "acceptance_case": "conditional-checks-renames",
+      "owner_decision": {
+        "status": "retained",
+        "detail": "Preserve responsibility; no active-authority change."
+      },
+      "sibling_dependency": null,
+      "binding_ids": [
+        "cas-real-model"
+      ]
+    },
+    {
+      "id": "cas-release",
+      "source_id": "release",
+      "source_section": "CAS release classification procedure",
+      "disposition": "retained",
+      "current_authority": "Live CAS Release Classification v2, head 29251490_cas_release_classification; refreshed 2026-09-16, no inbound supersedes successor.",
+      "proposed_authority": "docs/development/release.md",
+      "operations": [
+        "kickoff",
+        "commit",
+        "disposition",
+        "merge",
+        "pull-request"
+      ],
+      "applicable_paths": [
+        "*"
+      ],
+      "acceptance_case": "review-release-integration",
+      "owner_decision": {
+        "status": "retained",
+        "detail": "Preserve responsibility; no active-authority change."
+      },
+      "sibling_dependency": null,
+      "binding_ids": [
+        "cas-release"
+      ]
+    },
+    {
+      "id": "cas-review-roles",
+      "source_id": "review-records",
+      "source_section": "Evidence and roles",
+      "disposition": "retained",
+      "current_authority": "Live CAS PR Review Conventions v18, head 2fc3d182_cas_pr_review_conventions; refreshed 2026-09-16, no inbound supersedes successor.",
+      "proposed_authority": "docs/development/review-records.md",
+      "operations": [
+        "review-pr",
+        "disposition",
+        "converge-review",
+        "merge",
+        "pull-request"
+      ],
+      "applicable_paths": [
+        "*"
+      ],
+      "acceptance_case": "stale-wrong-worktree",
+      "owner_decision": {
+        "status": "retained",
+        "detail": "Preserve responsibility; no active-authority change."
+      },
+      "sibling_dependency": null,
+      "binding_ids": [
+        "cas-review-records"
+      ]
+    },
+    {
+      "id": "cas-review-forms",
+      "source_id": "review-records",
+      "source_section": "Review form",
+      "disposition": "retained",
+      "current_authority": "Live CAS PR Review Conventions v18, head 2fc3d182_cas_pr_review_conventions; refreshed 2026-09-16, no inbound supersedes successor.",
+      "proposed_authority": "docs/development/review-records.md",
+      "operations": [
+        "review-pr",
+        "disposition",
+        "converge-review",
+        "merge",
+        "pull-request"
+      ],
+      "applicable_paths": [
+        "*"
+      ],
+      "acceptance_case": "review-release-integration",
+      "owner_decision": {
+        "status": "retained",
+        "detail": "Preserve responsibility; no active-authority change."
+      },
+      "sibling_dependency": null,
+      "binding_ids": [
+        "cas-review-records"
+      ]
+    },
+    {
+      "id": "cas-review-stopping",
+      "source_id": "review-records",
+      "source_section": "Proposed coverage and stopping",
+      "disposition": "proposed",
+      "current_authority": "Live CAS PR Review Conventions v18, head 2fc3d182_cas_pr_review_conventions; refreshed 2026-09-16, no inbound supersedes successor.",
+      "proposed_authority": "docs/development/review-records.md",
+      "operations": [
+        "review-pr",
+        "disposition",
+        "converge-review",
+        "merge"
+      ],
+      "applicable_paths": [
+        "*"
+      ],
+      "acceptance_case": "authorization-context-boundary",
+      "owner_decision": {
+        "status": "unresolved",
+        "detail": "Separate coordinated owner adoption required."
+      },
+      "sibling_dependency": null,
+      "binding_ids": [
+        "cas-review-records"
+      ]
+    },
+    {
+      "id": "cas-deferral",
+      "source_id": "tickets",
+      "source_section": "Deferral and closure",
+      "disposition": "proposed",
+      "current_authority": "Live CAS PR Review Conventions v18, head 2fc3d182_cas_pr_review_conventions; refreshed 2026-09-16, no inbound supersedes successor.",
+      "proposed_authority": "docs/development/review-records.md",
+      "operations": [
+        "disposition"
+      ],
+      "applicable_paths": [
+        "*"
+      ],
+      "acceptance_case": "authorization-context-boundary",
+      "owner_decision": {
+        "status": "unresolved",
+        "detail": "Separate coordinated owner adoption required."
+      },
+      "sibling_dependency": "ticketing",
+      "binding_ids": [
+        "cas-review-records"
+      ]
+    },
+    {
+      "id": "cas-ticketing",
+      "source_id": "tickets",
+      "source_section": "Metadata and identity",
+      "disposition": "retained",
+      "current_authority": "Live CAS Ticket Conventions and installed ticket-management; resolve before ticket operation",
+      "proposed_authority": "docs/development/ticket-procedures.md",
+      "operations": [
+        "kickoff",
+        "disposition"
+      ],
+      "applicable_paths": [
+        "*"
+      ],
+      "acceptance_case": "missing-conflicting-authority",
+      "owner_decision": {
+        "status": "retained",
+        "detail": "Preserve responsibility; no active-authority change."
+      },
+      "sibling_dependency": "ticketing",
+      "binding_ids": [
+        "cas-ticketing"
+      ]
+    },
+    {
+      "id": "cas-push",
+      "source_id": "transition",
+      "source_section": "Activation and rollback",
+      "disposition": "retained",
+      "current_authority": "Live CAS Invocation Authority v1, head a499338f_cas_invocation_authority; refreshed 2026-09-16, no inbound supersedes successor.",
+      "proposed_authority": "docs/development/publication.md",
+      "operations": [
+        "push"
+      ],
+      "applicable_paths": [
+        "*"
+      ],
+      "acceptance_case": "core-integration",
+      "owner_decision": {
+        "status": "retained",
+        "detail": "Preserve responsibility; no active-authority change."
+      },
+      "sibling_dependency": null,
+      "binding_ids": [
+        "cas-publication"
+      ]
+    },
+    {
+      "id": "cas-pull-request",
+      "source_id": "review-records",
+      "source_section": "Merge consumer and retirement",
+      "disposition": "retained",
+      "current_authority": "Live CAS PR Review Conventions v18, head 2fc3d182_cas_pr_review_conventions; refreshed 2026-09-16, no inbound supersedes successor.",
+      "proposed_authority": "docs/development/publication.md",
+      "operations": [
+        "pull-request"
+      ],
+      "applicable_paths": [
+        "*"
+      ],
+      "acceptance_case": "review-release-integration",
+      "owner_decision": {
+        "status": "retained",
+        "detail": "Preserve responsibility; no active-authority change."
+      },
+      "sibling_dependency": null,
+      "binding_ids": [
+        "cas-publication"
+      ]
+    },
+    {
+      "id": "cas-specialized",
+      "source_id": "transition",
+      "source_section": "Activation and rollback",
+      "disposition": "dependency",
+      "current_authority": "Current specialized and transfer installation retained",
+      "proposed_authority": null,
+      "operations": [
+        "kickoff",
+        "commit",
+        "review-pr",
+        "disposition",
+        "converge-review",
+        "merge",
+        "push",
+        "pull-request"
+      ],
+      "applicable_paths": [
+        "*"
+      ],
+      "acceptance_case": "missing-conflicting-authority",
+      "owner_decision": {
+        "status": "retained",
+        "detail": "Preserve responsibility; no active-authority change."
+      },
+      "sibling_dependency": "external-integration",
+      "binding_ids": []
+    },
+    {
+      "id": "cas-activation",
+      "source_id": "transition",
+      "source_section": "Activation and rollback",
+      "disposition": "proposed",
+      "current_authority": "Live CAS Invocation Authority v1, head a499338f_cas_invocation_authority; refreshed 2026-09-16, no inbound supersedes successor.",
+      "proposed_authority": "docs/development/project-policy.md",
+      "operations": [
+        "kickoff",
+        "commit",
+        "review-pr",
+        "disposition",
+        "converge-review",
+        "merge",
+        "push",
+        "pull-request"
+      ],
+      "applicable_paths": [
+        "*"
+      ],
+      "acceptance_case": "inactive-presence",
+      "owner_decision": {
+        "status": "unresolved",
+        "detail": "Separate coordinated owner adoption required."
+      },
+      "sibling_dependency": null,
+      "binding_ids": [
+        "cas-context"
+      ]
+    }
+  ]
+}

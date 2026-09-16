@@ -30,3 +30,42 @@ If hooks change the candidate, inspect the change, revalidate affected behavior 
 refresh candidate identity. Required forge checks must cover the exact final head;
 record CI merge-tree identity where the forge tests a synthesized merge. A green
 different-head run or unavailable forge query is not a pass.
+
+## Conditional dependency gates
+
+Evaluate the complete candidate file set, including both sides of a rename and
+authorized new files. The Azure binding selects infrastructure and deployment
+trees, workflow candidates, Bicep files, Dockerfiles, Python dependency/image
+inputs, container entry modules, maintenance job modules and PostgreSQL bootstrap
+helpers. Trace each Dockerfile entrypoint and infrastructure job command to the
+executable source, including helper modules, when revising this inventory. The
+source conformance test enumerates the current literal Python module commands;
+alternate command forms require explicit coverage rather than a silent skip.
+Workflow and bootstrap-helper selection is conservative: the Azure procedure
+determines whether the candidate actually reaches a deployment surface.
+Resolve and execute the existing Azure deploy-review skill
+against that same candidate. If
+the required skill is unavailable, report the matching operation blocked; the
+presence of this supplement is not an Azure review. An ordinary documentation
+candidate does not select that binding.
+
+A path inventory cannot detect every deployment-relevant change inside an
+otherwise ordinary source file. Every invocation of this general checks procedure
+must also inspect the complete candidate diff for startup, bootstrap, identity,
+database-grant/connection and image-input changes, including new runtime imports
+or system-binary dependencies. If one is present, run the required Azure review even when
+the conditional path binding was not selected. Record both the semantic trigger
+and the dependency's availability; missing capability blocks that dependent step.
+Do not claim path selection alone proves complete Azure applicability.
+
+The real-model binding selects `sage/adapters/abstraction_qwen3.py` and
+`sage/adapters/embedding_nomic.py`. Resolve the worktree's documented runtime and
+run its opt-in adapter tier serially with `SAGE_TEST_REAL_MODELS=1`; check no
+competing model run is active. A rename out of either path still selects the gate.
+Missing weights, runtime or required capability is blocked validation, never a
+successful skip. Fixture tests validate selection without loading real weights.
+
+CI's full pytest suite, substrate classification and active-test-surface comparison
+are separate obligations. Preserve `KNOWN_TEST_REMOVALS` and other unrelated
+exceptions. A focused conformance run does not replace the full required suite or
+the exact-head forge result.
