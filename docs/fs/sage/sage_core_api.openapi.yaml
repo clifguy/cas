@@ -2199,7 +2199,7 @@ paths:
         `docs/fs/sage/vault_config.schema.json`. Section structure
         follows the schema: `vault`, `document_types`, `lifecycle`,
         `metadata_extraction`, `edge_inference`, `adapter_defaults`,
-        `abstraction`, `access_control_defaults`, `retrieval_health`.
+        `abstraction`, `access_control_defaults`, `retrieval_health`, `timing`.
 
 
         **This is the authoritative source for vault-config-defined

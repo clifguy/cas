@@ -232,6 +232,27 @@ _ERROR_CODE_SOURCES: Final[tuple[Path, ...]] = (_SAGE_PACKAGE, _REPO_ROOT / "app
 _SUBSTRATE: Final[Path] = _REPO_ROOT / "docs" / "fs" / "sage"
 _VAULT_CONFIG_SCHEMA: Final[str] = "vault_config.schema.json"
 
+
+@pytest.mark.parametrize("surface", ["mcp", "openapi"])
+def test_vault_config_section_enumeration_matches_schema(surface: str) -> None:
+    """Each caller-facing section list matches the schema independently.
+
+    Only the explicit enumeration supplies names: mentions in surrounding
+    usage examples cannot hide an omitted section, and agreement between
+    the two prose surfaces cannot hide shared drift from the schema.
+    """
+    docstring, narrative, _whole = _surfaces_for("sage_core", "get_vault_config")
+    prose = docstring if surface == "mcp" else narrative
+    enumeration = re.search(r"Section structure\s+follows the schema:([^.]+)\.", prose)
+    assert enumeration is not None, f"{surface}: missing explicit section enumeration"
+    declared = set(json.loads((_SUBSTRATE / _VAULT_CONFIG_SCHEMA).read_text())["properties"])
+    listed = set(_BACKTICKED.findall(enumeration[1]))
+    missing, unexpected = declared - listed, listed - declared
+    assert not missing and not unexpected, (
+        f"{surface}: missing sections {sorted(missing)}; unexpected sections {sorted(unexpected)}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Extraction
 # ---------------------------------------------------------------------------
