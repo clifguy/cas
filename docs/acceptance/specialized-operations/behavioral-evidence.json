@@ -31,6 +31,21 @@
         "Missing canonical source blocks actual resolver.",
         "Review-only structural and semantic bindings resolve under review-pr without commit prerequisites; identical commit control selects neither."
       ]
+    },
+    "batch_review_remote_refinement": {
+      "fixture_actions": 13,
+      "recorded_decisions": 7,
+      "actual_git_commands": 47,
+      "unchanged_byte_replay": true,
+      "candidate_sha256": {
+        "docs/development/operations/batch.md": "4a210f287f4c9ea389756fa89d403618aa0a33c51af5741c18d1b2a8321f07be"
+      },
+      "observations": [
+        "Initially unreviewed triggered pilot and stale ordinary member return to author before merge.",
+        "Fixture-supplied exact settled receipts permit review-gate eligibility; missing grant blocks; no-trigger and scoped waiver preserved.",
+        "Actual disposable remote squash landings and fetched parent/tip identities accept two serial advances while primary local HEAD/status stay unchanged.",
+        "Unexpected remote advancement blocks without invalidating prior verified landings."
+      ]
     }
   },
   "observations": [
@@ -50,14 +65,17 @@
     "refinement-report.md": "cd7316369ea019402339104b6b25078fc74ef5940e2276bf32a4dab2404de77e",
     "actions.jsonl": "5e4ae2a23bdc5c346bb05b0e217f677d71d6f6f9915f7706976e1aa795e99604",
     "replay-git-provenance.json": "c94c333fabfec4cbd8c4255b15aecb444286b60124eda59d1bdd6030fb8174e6",
-    "semantic-routing-report.md": "781b5dcdfa1b785321e7b937a49d79b0452dac7a7678c25a4392f23a9e5d7ce4"
+    "semantic-routing-report.md": "781b5dcdfa1b785321e7b937a49d79b0452dac7a7678c25a4392f23a9e5d7ce4",
+    "batch-fix-report.md": "df6f4459588b664abfd3796d7db25cfbe32fade2af27f100af1c15f6349086d4",
+    "batch-fix-git-actions.json": "48984b1240335f50a75f279b72e6dff5ed580739bd8f8e58c80bce2f69d10b61"
   },
   "limitations": [
     "Service doubles record chosen actions; no live service, CI poll, production deploy or actual PR merge was executed.",
     "Instruction prompts and tool/effect receipts are external review evidence, not repository execution engines.",
     "Readiness ancestry and documentation-only selection used actual disposable Git objects.",
     "No installed discovery, browser workflow, worker recovery, cloud corruption or full live acceptance claimed.",
-    "Replay component hashes identify the earlier tested bytes; the separate semantic trial covers the subsequent Azure routing refinement."
+    "Replay component hashes identify the earlier tested bytes; the separate semantic trial covers the subsequent Azure routing refinement.",
+    "Batch review receipts are explicitly synthetic; the trial observes selected handoffs, not an actual reviewer/author cycle. Remote identity tests use a real disposable local Git remote, not hosted PR receipts."
   ],
   "replay_component_sha256": {
     "docs/development/operations/azure-review.md": "d919c6def3d71c7552163d37c32ad818e711a25034aff024f2a3069bfce006a7",

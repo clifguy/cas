@@ -148,6 +148,8 @@ The decision sheet is the cohort's working artifact. It must be self-contained e
 
 9. **Cross-references** — links to methodology, inventory, inaugural template ticket, originating cohort ticket.
 
+10. **Review authorization and ownership** — record the grant for independent review/disposition publication and routine in-scope repairs, separately from commit and merge grants. Name the authoring worker as disposition owner, the current convergence policy and its stopping boundary. Missing publication/repair authority parks the affected stage; it is not inferred from Auto-commit or a merge grant.
+
 ### §4.2 What the decision sheet does *not* include
 
 - Per-ticket implementation steps. Those live in the ticket body.
@@ -242,17 +244,19 @@ Optional: per-ticket `references` edges from the decision sheet to each cohort t
 
 ## §6 Phase 5 — Pilot validation *(critical — do not skip)*
 
-Dispatching a full cohort blind is the most expensive mistake in batch planning. The first ticket is the test — and under the v2.0.0 PR model the pilot validates the **entire** chain end-to-end: `/kickoff` provisions a named worktree → `/commit` pushes and opens a draft PR → `/merge` squash-merges it onto main.
+Dispatching a full cohort blind is the most expensive mistake in batch planning. The first ticket is the test — and under the v2.0.0 PR model the pilot validates the **entire** chain end-to-end: `/kickoff` provisions a named worktree → `/commit` pushes and opens a draft PR → the authoring worker establishes applicable independent review/disposition → `/merge` squash-merges it onto main.
 
 ### §6.1 Dispatch one ticket as a single subagent
+
+Before pilot dispatch, record the verified primary checkout path, local HEAD and complete status, plus the freshly fetched remote default ref/tip, as separate ledger fields. Require the existing clean-checkout prerequisite; preserve that local baseline throughout the cohort.
 
 Construct the per-ticket subagent prompt from the §8.2 template with the first dispatch-order ticket id substituted. Dispatch one fresh `collaboration.spawn_agent` with `fork_turns="none"`, passing the rendered prompt as `message`. Record its returned agent id and await its completion before another dispatch. Use the session model/effort by default; this is an implementation worker, not an independent review pass.
 
 ### §6.2 Verify after the subagent returns
 
 1. **Subagent succeeded?** The STATUS line should be `pr_open` (the subagent committed, pushed, and opened a draft PR). `blocked` → halt per §12.
-2. **Branch and PR resolve?** The subagent reports `BRANCH` and `PR`. Confirm the PR is open and draft: `gh pr view <BRANCH> --json state,number,isDraft`. The state should be `OPEN`, `isDraft` true.
-3. **Land the pilot via `/merge`.** First verify the caller explicitly authorized this named pilot merge; missing pilot permission parks it before landing. Invoke `/merge <BRANCH>` (thread the subagent-**reported** branch, not a reconstructed `codex/<descriptive-slug>` — see §6.3). `/merge` marks ready, enables squash auto-merge, waits, and reports any separately authorized cleanup. On `STATUS: ready_for_close` the full chain is validated. Record the pilot's `PR` and `MERGE_SHA` as the first ledger entry.
+2. **Branch, PR and review evidence resolve?** The subagent reports `BRANCH`, `PR`, `HEAD` and `REVIEW`. Confirm the exact repository/base/head, open draft state and current review evidence independently from Git/forge. Apply the review handoff below before any pilot landing. Missing or stale evidence returns to the recorded authoring worker; it does not pass to `/merge`.
+3. **Land the pilot via `/merge`.** First verify the caller explicitly authorized this named pilot merge; missing pilot permission parks it before landing. Invoke `/merge <BRANCH>` (thread the subagent-**reported** branch, not a reconstructed `codex/<descriptive-slug>` — see §6.3). `/merge` marks ready, enables squash auto-merge, waits, and reports any separately authorized cleanup. Consume the compatible merge capability's actual result: independently verify the exact PR is `MERGED`, read its merge SHA and fetch the actual default-branch ref. Verify the merge belongs to that ref before recording the pilot's `PR` and `MERGE_SHA`; batch then assigns its own `ready_for_close` ledger state. Do not require a legacy output spelling from the shared skill. Record the remote default tip separately from the unchanged primary checkout.
 
 If `/merge` halts on a conflict, a CI failure, a dequeue, or a timeout during the pilot, treat it as a §12 halt — the pilot exists to surface exactly these before fanning out.
 
@@ -346,11 +350,21 @@ Workflow:
    outside `domains/`, personal paths, SDLC-scaffolding terms). It is
    one fast file — preserve this gate when required by the current project policy. Run any additional mandatory local gates; do not treat this template as permission to bypass them. Use the configured interpreter/dependencies for the verified worktree. Long commands may return a session id: poll it and await the terminal exit status before continuing. Never infer success from dispatch or expect a completion notification after ending the task.
 
-3. If the decision sheet authorizes Auto-commit, invoke /commit. Otherwise return prepared-but-blocked before any commit, push or PR creation. /commit runs the pre-commit code-review gate (the
-   unattended substitute for human review), commits, pushes your
+3. If the decision sheet authorizes Auto-commit, invoke /commit. Otherwise return prepared-but-blocked before any commit, push or PR creation. /commit runs the pre-commit implementation review (not a substitute for independent PR review), commits, pushes your
    branch, and opens a draft PR. This is expected — do NOT suppress
    the push or the PR.
-4. STOP. Do NOT invoke /merge. Do NOT invoke /close-ticket. Landing
+4. Establish the initial independent-review handoff before returning pr_open.
+   Assess current review triggers against the cumulative PR diff and record the
+   exact base/head. If a current valid waiver applies, retain its authority and
+   scope; if no trigger applies, record the source-backed no-trigger assessment.
+   Otherwise invoke the compatible /converge-review workflow with the decision
+   sheet's scoped review/publication/repair grant. It creates a fresh independent
+   reviewer; you remain the authoring owner of fixes and /disposition. Pre-commit
+   review is not that independent pass. Honor current stopping rules and caller-owned
+   decisions. Missing authorization, capability, unsettled cycle or stale evidence
+   returns blocked with the open PR preserved. Fix commits are permitted by the
+   scoped repair grant even though the initial implementation is one commit.
+5. STOP. Do NOT invoke /merge. Do NOT invoke /close-ticket. Landing
    the PR on main is the dispatcher's job (it runs /merge behind a
    merge gate); closing the SAGE ticket is human-gated. The
    dispatcher will report your ticket as ready_for_close in the final
@@ -371,7 +385,7 @@ Escalate (return STATUS: blocked) rather than proceed when:
 (<canonical implementation file:line>). Read it once if you need the
 canonical template's body alongside the decision sheet's scaffolding.
 
-Auto-commit: <yes | no per cohort policy>. One commit for this ticket when Auto-commit: yes.
+Auto-commit: <yes | no per cohort policy>. One initial implementation commit when Auto-commit: yes; authorized review repairs may add fix commits.
 Only with Auto-commit: yes, push and open the draft PR (that is /commit's job). Do NOT merge. Do
 NOT run /close-ticket.
 
@@ -380,7 +394,9 @@ Return a report in exactly this shape (and nothing else after it):
 STATUS: pr_open | blocked
 TICKET: {ticket_id}
 BRANCH: <the branch /commit pushed, or null if blocked before commit>
-PR: <PR number or URL if pr_open, else null>
+PR: <PR number or URL if opened, else null>
+HEAD: <exact remote PR head SHA, or null>
+REVIEW: <settled exact-base/head review/disposition references | source-backed no-trigger assessment | current scoped waiver | blocked reason>
 NOTES: <one paragraph — what was done, anything unusual, any
        decision-sheet feedback>
 ```
@@ -389,7 +405,7 @@ NOTES: <one paragraph — what was done, anything unusual, any
 
 For each ticket in the post-pilot queue:
 
-1. **Pre-iteration sanity.** From the main checkout: `git status` clean; HEAD at the expected sha (the sha left by the pilot's merge — main does NOT advance during fan-out, because subagents land work on their own branches as PRs, not on main). If either fails, halt per §12.
+1. **Pre-iteration sanity.** Preserve the primary checkout at its recorded pre-pilot local HEAD/status; it need not equal the remote pilot merge SHA. Freshly fetch the verified remote default ref and compare it with the expected remote tip recorded after the pilot. Unexpected local changes or remote drift halt per §12; never reset or fast-forward unrelated local work to satisfy this check. Workers provision from the verified remote base through kickoff.
 
 2. **Dispatch one worker.** Use `collaboration.spawn_agent` with a descriptive task name, `fork_turns="none"`, and `message` containing §8.2's prompt plus exact repository/worktree scope and existing authorization. Omit model/effort overrides for implementation. Await this worker's terminal state with current collaboration tools before starting another. A timeout/interruption is not completion; retain the handle and determine whether it is still writing before any takeover.
 
@@ -400,6 +416,8 @@ For each ticket in the post-pilot queue:
    TICKET: <ticket-id>
    BRANCH: <branch or null>
    PR: <pr number/url or null>
+   HEAD: <exact remote PR head SHA or null>
+   REVIEW: <verified review state and evidence references>
    NOTES: <one paragraph>
    ```
 
@@ -418,8 +436,8 @@ For each ticket in the post-pilot queue:
 
 Between every dispatch iteration:
 
-- `git status` on the main checkout reports clean.
-- Main's HEAD is unchanged from the pilot landing (no PR has merged yet; main does not move during fan-out).
+- The primary checkout retains its recorded local HEAD/status; fetching does not promise checkout movement.
+- The freshly fetched remote default tip equals the recorded post-pilot remote tip; unexpected remote advancement is surfaced before another dispatch.
 - Each completed ticket has a `pr_open` ledger row with a non-null `BRANCH` and `PR`.
 
 If any of these checks fail mid-cohort, halt per §12.
@@ -467,12 +485,23 @@ Process the open PRs in dispatch order, one at a time, **serially**. Serial is l
 
 For each ticket in dispatch order with a `pr_open` ledger row:
 
-1. **Pre-iteration sanity.** Confirm the PR is still open and main is at the expected sha (the sha left by the previous iteration's squash-merge). `gh pr view <BRANCH> --json state,number` — state should be `OPEN`. If the PR is unexpectedly `CLOSED` or already `MERGED`, or main drifted, halt per §12.
+The dispatcher verifies the worker's review handoff against the current exact PR
+base/head and complete review/disposition records, including the current cycle
+state. A required review without a settled disposition blocks landing and returns
+to the recorded authoring worker via a focused continuation. That worker coordinates
+fresh independent review and owns repairs/disposition; the dispatcher cannot stand
+in as either role. Reuse current valid waiver/no-trigger evidence only within its
+verified scope. Refresh after each preceding landing or branch change; stale evidence
+requires the author to reassess under current policy before merge. This applies to
+the pilot as well as ordinary members. Missing author context or review grant is a
+blocked handoff, never a waiver.
+
+1. **Pre-iteration sanity.** Confirm the exact PR remains open with its expected head. Freshly fetch the actual remote default ref and require the expected remote tip recorded after the preceding verified landing. Track primary-checkout preservation separately; local HEAD need not advance. Unexpected PR state, remote drift or local changes halt per §12.
 
 2. **Invoke `/merge <BRANCH>`.** Thread the subagent-reported `BRANCH` (§6.3). `/merge` handles everything: PR resolution, the review-protocol preconditions, mark ready, squash auto-merge (which enqueues under a merge queue), the wait (its own silent background loop, reading both the check rollup and the queue entry), and separately authorized safe worktree/branch cleanup. It does not rebase and does not push.
 
 3. **Wait for `/merge`'s terminal state before advancing.** `/merge` reaches one of:
-   - `STATUS: ready_for_close` (PR squash-merged) → record `merge_sha` and `pr_number` in the ledger; update the row's status to `ready_for_close`. Advance to the next PR.
+   - **Verified merged result** → independently read exact PR `MERGED` state and merge SHA, fetch the remote default ref, and verify that identity and ancestry. Record `merge_sha`, `pr_number` and remote tip, then assign batch's own `ready_for_close` ledger status. A prose success or legacy status string alone is insufficient. Advance only after these checks.
    - **`CONFLICT` or `BEHIND` halt** → §11 (conflict resolution). The branch needs updating, which `/merge` will not do; the dispatcher does it in the worktree. Do not advance until resolved and the PR lands.
    - **`DEQUEUED` halt** → the queue ejected the entry and did not re-arm auto-merge. Treat as a CI failure: diagnose, fix, re-invoke.
    - **CI `FAILURE`** → apply §10.3 flaky-vs-real discrimination *before* halting. Flaky (same-SHA `SUCCESS` evidence or a known-flaky-list hit) → §10.3's single bounded rerun re-enters the wait. Real (no flaky evidence) → halt per §12; surface the failing check name(s) and URL(s).
@@ -486,7 +515,7 @@ For each ticket in dispatch order with a `pr_open` ledger row:
 
 Between every merge iteration:
 
-- Main's HEAD advanced by exactly one squash commit per landed PR.
+- The freshly fetched remote default tip contains the exact PR merge SHA. Under the planned serial squash path, the merge parent equals the preceding recorded remote tip and the new tip equals that merge SHA. Unexpected concurrent advancement halts for reconciliation; it is neither local-checkout failure nor automatic merge failure.
 - The just-landed ticket's ledger row carries a non-null `merge_sha`.
 - Verify the just-merged worktree's actual cleanup state; absence is required only when authorized cleanup was performed. Otherwise preserve it and record cleanup pending without denying a verified merge.
 
@@ -527,10 +556,10 @@ When the §4.3 disjoint-edit-window invariant holds, this section should never f
 **Single-commit guard (precondition for any mechanical rule).** Before applying a rule, assert the branch under merge carries exactly one commit:
 
 ```
-git -C "<repo_root>" rev-list --count main..HEAD   # must == 1
+git -C "<repo_root>" rev-list --count "<freshly-verified-remote-default-ref>..HEAD"   # must == 1
 ```
 
-A rebase replays a branch commit-by-commit, so a rule authored against the branch's *final* diff shape can misfire on an intermediate commit. Cohort subagents emit exactly one commit per ticket, so the guard is free and virtually always holds. If the count is `> 1`, do **not** apply a mechanical rule — fall back to manual halt (§12); the multi-commit-rebase hazard is out of scope.
+A rebase replays a branch commit-by-commit, so a rule authored against the branch's *final* diff shape can misfire on an intermediate commit. The initial implementation is normally one commit, but authorized review repairs may add commits; compute the count against the freshly fetched actual remote default ref, never a stale local main. If the count is `> 1`, do **not** apply a mechanical rule — fall back to manual halt (§12); the multi-commit-rebase hazard is out of scope.
 
 ### §11.1 First conflict: halt and surface
 
@@ -594,8 +623,8 @@ Halt the cohort (do not dispatch or merge further) when any of these occur:
 | `/merge` halts on a conflict whose shape doesn't fit an authorized §11 policy | The conflict regions, with diagnosis of why no rule applies. |
 | `/merge` reports a CI `FAILURE` with no flaky evidence (§10.3) — or the single bounded rerun also failed | The failing check name(s) and URL(s). |
 | `/merge` reports `TIMEOUT` (and the user does not want to wait/re-invoke) | CI still running; `/merge <BRANCH>` is re-invocable to resume. |
-| Single-commit guard fails (`rev-list --count main..HEAD > 1`) when a mechanical rule was about to apply | The commit count; fall back to manual resolution. |
-| Pre-iteration sanity fails (main dirty, HEAD moved unexpectedly, PR unexpectedly closed/merged) | The unexpected state. |
+| Single-commit guard fails (count against the freshly verified remote default ref is not one) when a mechanical rule was about to apply | The commit count; fall back to manual resolution. |
+| Pre-iteration sanity fails (primary checkout changed, remote default tip drifted, PR unexpectedly closed/merged) | The separate local/remote identities and unexpected state. |
 | `/merge`'s worktree teardown fails (e.g., still-locked agent worktree) | `/merge`'s error — a `/merge` concern; surface and let the user decide. |
 
 ### §12.1 What halting looks like
@@ -689,7 +718,7 @@ The skill does NOT invoke `/close-ticket` itself. This is the front-matter rule,
 - [ ] Decision sheet staged to `/tmp/`, not vault `imports/`
 - [ ] Decision sheet ingested as `doc_type=reference_document`
 - [ ] `references` edge from decision sheet → methodology steering doc
-- [ ] Pilot validation performed end-to-end on first dispatch-order ticket (plan → commit/push/PR → merge)
+- [ ] Pilot validation performed end-to-end on first dispatch-order ticket (plan → commit/push/PR → applicable independent review/disposition → merge)
 - [ ] Branch-name linchpin verified: pilot's reported `BRANCH` is `codex/<descriptive-slug>` (§6.3)
 
 **Dispatch gate (§7):**
@@ -704,20 +733,21 @@ The skill does NOT invoke `/close-ticket` itself. This is the front-matter rule,
 - [ ] On `STATUS: pr_open` → record branch + PR in ledger; no local landing
 - [ ] On `STATUS: blocked` → halt; no further dispatches
 - [ ] No worktree teardown during fan-out (worktrees accumulate; later safe cleanup requires its scoped grant)
-- [ ] Main's HEAD unchanged during fan-out (no PR merged yet)
+- [ ] Primary checkout HEAD/status preserved; freshly fetched remote default tip unchanged during fan-out
 
 **Merge gate (§9):**
 - [ ] MERGE GATE block emitted verbatim after fan-out completes
 - [ ] User authorization received before any `/merge` runs
 
 **Merge phase (§§10–11):**
+- [ ] Current review/disposition, valid waiver or source-backed no-trigger evidence verified for each exact candidate before `/merge`
 - [ ] `/merge` invoked per PR in dispatch order, serially (foundation-first)
 - [ ] Each `/merge` keyed off the subagent-reported `BRANCH`, not a reconstructed name
 - [ ] Wait for each `/merge`'s terminal state before the next (serial — the next PR's content depends on this one landing)
 - [ ] Rebase conflicts: halt-and-surface by default; mechanical policy applied only when explicitly authorized AND the single-commit guard holds
 - [ ] Mechanical resolution applied by `/batch` in the worktree (rebase --continue → verify → force-with-lease → re-invoke `/merge`); `/merge` itself never auto-resolves
 - [ ] No dispatcher-side worktree teardown (owned by `/merge`)
-- [ ] Main advances by exactly one squash commit per landed PR
+- [ ] Verified remote merge identity/parent/tip advances per serial landing; no local checkout movement assumed
 
 **Final report (§13):**
 - [ ] Per-ticket table + portfolio observations + merge state + close-ticket handoff
@@ -754,7 +784,7 @@ When the §4.3 disjoint-edit-window invariant cannot be established, the foundat
 
 - Abandon the batched dispatch pattern for this cohort.
 - The user runs each remaining cohort ticket in its own fresh Codex session.
-- Each fresh session starts with main at the latest cohort state; `/kickoff` forks the worktree from current `origin/main`, so the PR rebases cleanly.
+- Each fresh session fetches the latest verified remote default state; `/kickoff` forks the worktree from current `origin/main`, so the PR rebases cleanly.
 - The §8.2 per-ticket subagent prompt template is repurposed as the fresh session's opening prompt.
 
 Under the PR model, fork-staleness across tickets is absorbed by the merge queue (or, without one, by an explicit dispatcher-side update) — so the fallback is genuinely a last resort, reached only when edit windows overlap irreducibly. Wall time is longer than batched dispatch, but each ticket runs unattended within its session — the user only orchestrates session starts.

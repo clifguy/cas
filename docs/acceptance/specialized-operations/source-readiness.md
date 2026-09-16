@@ -29,7 +29,12 @@ overlapping edit windows, both structural gates and serial scoped landing.
 These trials provide bounded action-selection evidence. They do not prove live
 CI polling, browser behavior, tenant identity, cloud bindings, installation or
 all worker/recovery paths. A separate replay uses actual disposable Git objects
-for ancestry rather than trusting a fixture's precomputed classification.
+for ancestry rather than trusting a fixture's precomputed classification. A further
+trial starts with missing/stale review evidence and observes author handoffs, scoped
+waiver/no-trigger preservation and missing-grant blocking. Real local Git squash
+landings verify remote parent/tip identity while primary HEAD stays unchanged; an
+unexpected remote advance blocks. Synthetic review receipts prove no actual review
+completion.
 
 The eleven-skill shared core stays independent. The optional package declaration
 maps staged entry points to eventual targets and includes complete local runtime
