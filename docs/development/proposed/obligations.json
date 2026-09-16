@@ -376,7 +376,8 @@
       "proposed_authority": "docs/development/ticket-procedures.md",
       "operations": [
         "kickoff",
-        "disposition"
+        "disposition",
+        "ticketing"
       ],
       "applicable_paths": [
         "*"

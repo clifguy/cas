@@ -150,7 +150,8 @@
       "id": "cas-ticketing",
       "operations": [
         "kickoff",
-        "disposition"
+        "disposition",
+        "ticketing"
       ],
       "responsibility": "cas-ticketing",
       "composition": "supplement",

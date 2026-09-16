@@ -46,6 +46,19 @@ def test_review_replaces_only_supported_review_operations() -> None:
     assert review["source"]["path"] == ".claude/skills/cas-code-review/SKILL.md"
 
 
+def test_ticketing_selects_ticket_procedure_without_enabling_triage_on_writes() -> None:
+    bindings = profile()["bindings"]
+    selected = [item for item in bindings if "ticketing" in item["operations"]]
+    assert {item["id"] for item in selected} == {"cas-ticketing"}
+    assert selected[0]["composition"] == "supplement"
+    assert selected[0]["source"]["path"] == "docs/development/ticket-procedures.md"
+    assert not any("next" in item["operations"] for item in bindings)
+    # Read-only triage is selected by its explicit consumer, not all ticket writes.
+    assert not any(
+        item["source"]["path"] == "docs/development/operations/triage.md" for item in selected
+    )
+
+
 def test_conditional_gates_have_precise_candidate_paths() -> None:
     bindings = {item["id"]: item for item in profile()["bindings"]}
     assert set(bindings["cas-real-model"]["paths"]) == {
