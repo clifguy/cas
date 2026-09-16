@@ -192,7 +192,8 @@
       "source_section": "Metadata and identity",
       "operations": [
         "kickoff",
-        "disposition"
+        "disposition",
+        "ticketing"
       ]
     },
     {
