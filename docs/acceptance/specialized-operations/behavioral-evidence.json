@@ -1,0 +1,94 @@
+{
+  "status": "bounded-fixture-evidence",
+  "trials": {
+    "initial": {
+      "cases": 15,
+      "fixture_actions": 59,
+      "local_effect_receipts": 44,
+      "unchanged_byte_replay": false
+    },
+    "final_replay": {
+      "fixture_actions": 33,
+      "local_effect_receipts": 25,
+      "actual_git_commands": 15,
+      "unchanged_byte_replay": true
+    },
+    "discriminating_refinement": {
+      "fixture_actions": 9,
+      "local_effect_receipts": 5,
+      "actual_git_commands": 3,
+      "unchanged_byte_replay": true
+    },
+    "semantic_routing": {
+      "actual_resolver_calls": 7,
+      "source_restored_exactly": true,
+      "candidate_sha256": {
+        "docs/development/operations/azure-review.md": "19ce6f6d5b7ceab1f105ff4f2f08d894239b81d6f013fc2852d98914cba2c9c6",
+        "docs/development/proposed/specialized-skills/azure-deploy-review/SKILL.md": "7c4a0f34d5542457a8a68eb3e0d80f2f64614ae64c1360b79a8decff5ab20fc1"
+      },
+      "observations": [
+        "Actual source-backed semantic supplement selects canonical Azure procedure with actual source paths unchanged.",
+        "Missing canonical source blocks actual resolver.",
+        "Review-only structural and semantic bindings resolve under review-pr without commit prerequisites; identical commit control selects neither."
+      ]
+    },
+    "batch_review_remote_refinement": {
+      "fixture_actions": 13,
+      "recorded_decisions": 7,
+      "actual_git_commands": 47,
+      "unchanged_byte_replay": true,
+      "candidate_sha256": {
+        "docs/development/operations/batch.md": "4a210f287f4c9ea389756fa89d403618aa0a33c51af5741c18d1b2a8321f07be"
+      },
+      "observations": [
+        "Initially unreviewed triggered pilot and stale ordinary member return to author before merge.",
+        "Fixture-supplied exact settled receipts permit review-gate eligibility; missing grant blocks; no-trigger and scoped waiver preserved.",
+        "Actual disposable remote squash landings and fetched parent/tip identities accept two serial advances while primary local HEAD/status stay unchanged.",
+        "Unexpected remote advancement blocks without invalidating prior verified landings."
+      ]
+    }
+  },
+  "observations": [
+    "Explicit documentation-only selection verified against a real disposable Git diff; no service probe.",
+    "Independent SAGE/app readiness: actual ancestry success, absent ancestry and missing-object failure remain distinct.",
+    "Single authorized non-idempotent create followed by readback; no alternate-transport replay.",
+    "Ordinary and nearest-neighbor control failures reject blanket success.",
+    "Eligible fixture dispatch succeeds; wrong revision, newest pending attempt, changed main and unknown target do not dispatch.",
+    "Actual dispatched revision mismatch never becomes checked-revision success.",
+    "Structural, rename and runtime-import Azure triggers block dependent action without required review; ordinary documentation remains unaffected.",
+    "Overlapping edit windows halt; missing dispatch and merge grants retain both structural boundaries.",
+    "Named cohort landings are serial with verification between them; no unrelated landing, cleanup or closure."
+  ],
+  "external_receipt_sha256": {
+    "report.md": "94ef909e241d9cf6567f38257b96adac33689b093de695f5f54a9ad182b40cf1",
+    "replay-report.md": "88d52c237bda088854d038bc53dee5d70a63d8de07a9d86b463f72f1a3d15330",
+    "refinement-report.md": "cd7316369ea019402339104b6b25078fc74ef5940e2276bf32a4dab2404de77e",
+    "actions.jsonl": "5e4ae2a23bdc5c346bb05b0e217f677d71d6f6f9915f7706976e1aa795e99604",
+    "replay-git-provenance.json": "c94c333fabfec4cbd8c4255b15aecb444286b60124eda59d1bdd6030fb8174e6",
+    "semantic-routing-report.md": "781b5dcdfa1b785321e7b937a49d79b0452dac7a7678c25a4392f23a9e5d7ce4",
+    "batch-fix-report.md": "df6f4459588b664abfd3796d7db25cfbe32fade2af27f100af1c15f6349086d4",
+    "batch-fix-git-actions.json": "48984b1240335f50a75f279b72e6dff5ed580739bd8f8e58c80bce2f69d10b61"
+  },
+  "limitations": [
+    "Service doubles record chosen actions; no live service, CI poll, production deploy or actual PR merge was executed.",
+    "Instruction prompts and tool/effect receipts are external review evidence, not repository execution engines.",
+    "Readiness ancestry and documentation-only selection used actual disposable Git objects.",
+    "No installed discovery, browser workflow, worker recovery, cloud corruption or full live acceptance claimed.",
+    "Replay component hashes identify the earlier tested bytes; the separate semantic trial covers the subsequent Azure routing refinement.",
+    "Batch review receipts are explicitly synthetic; the trial observes selected handoffs, not an actual reviewer/author cycle. Remote identity tests use a real disposable local Git remote, not hosted PR receipts."
+  ],
+  "replay_component_sha256": {
+    "docs/development/operations/azure-review.md": "d919c6def3d71c7552163d37c32ad818e711a25034aff024f2a3069bfce006a7",
+    "docs/development/operations/batch.md": "bbd6ce45ac9d8239d4f8993f30a5b7864a4cdf66a500edebf373875d2c557d17",
+    "docs/development/operations/deploy.md": "878073837c95f04fba9ac06b0e77a15ebb5e17b6f83219ab180e134c18950bda",
+    "docs/development/operations/smoke-test.md": "ef1fc1590afddfe039adf90c0b35919a7e6b9fc6b173c9fd2ff3e86522050fe3",
+    "docs/development/operations/references/batch-history.md": "9459403522339d9ba17b476cb30aa211b8bf659f827506446e6b3664b54bb942",
+    "docs/development/operations/references/codex-runtime.md": "e74414a7467b207b0b46a2f5a2bac685e1c399b50f97b0d71bcb117b6b2b08dd",
+    "docs/development/operations/references/dependencies.md": "b720a7a9c8b1e3a58e0b66f17fe91d203b5c4c6585627a22e8eb73dfceadfe13",
+    "docs/development/proposed/specialized-skills/azure-deploy-review/SKILL.md": "d71810a033410b9dc36fc2e758eb8a9d9aa39ff513e990760db3c956b89d3099",
+    "docs/development/proposed/specialized-skills/batch/SKILL.md": "e2b8f1e9a0bd05a4d58cd1cd06243cb8a25340b65b72c7816e180cd8d743e46a",
+    "docs/development/proposed/specialized-skills/deploy/SKILL.md": "b6e1485e6ded0fe8aa60d3c5906693692691cad1a5d8d18a87526557f73fe287",
+    "docs/development/proposed/specialized-skills/smoke-test/SKILL.md": "e4a0313a02408666a3dc60a4764741489d087d3baadab9814b93b2d4cf93d7e2",
+    "docs/development/proposed/specialized-package.json": "9242dd4bdcdf7f81038a0649b71ed91b83c7f2f5e9f2405a6c3dc9c132a4552d"
+  }
+}

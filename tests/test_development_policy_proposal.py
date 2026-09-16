@@ -138,3 +138,16 @@ def test_azure_scope_covers_declared_python_execution_roots() -> None:
         if not any(fnmatch(path, pattern) for pattern in azure["paths"]):
             omitted.add(path)
     assert not omitted, f"declared execution roots omitted: {sorted(omitted)}"
+
+
+def test_specialized_operations_have_required_canonical_bindings() -> None:
+    bindings = {item["id"]: item for item in profile()["bindings"]}
+    for operation in ("smoke-test", "deploy", "batch"):
+        binding = bindings["cas-" + operation]
+        assert binding["operations"] == [operation]
+        assert binding["responsibility"] == operation + "-procedure"
+        assert binding["required"] is True
+        assert binding["source"]["path"] == f"docs/development/operations/{operation}.md"
+    assert bindings["cas-azure-review"]["source"]["path"] == (
+        "docs/development/operations/azure-review.md"
+    )

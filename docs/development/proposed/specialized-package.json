@@ -1,0 +1,111 @@
+{
+  "schema_version": 1,
+  "status": "inactive",
+  "release_version": null,
+  "skills": {
+    "smoke-test": {
+      "entrypoint": "docs/development/proposed/specialized-skills/smoke-test/SKILL.md",
+      "target": ".agents/skills/smoke-test/SKILL.md",
+      "operation": "smoke-test",
+      "responsibility": "smoke-test-procedure",
+      "procedure": "docs/development/operations/smoke-test.md"
+    },
+    "deploy": {
+      "entrypoint": "docs/development/proposed/specialized-skills/deploy/SKILL.md",
+      "target": ".agents/skills/deploy/SKILL.md",
+      "operation": "deploy",
+      "responsibility": "deploy-procedure",
+      "procedure": "docs/development/operations/deploy.md"
+    },
+    "azure-deploy-review": {
+      "entrypoint": "docs/development/proposed/specialized-skills/azure-deploy-review/SKILL.md",
+      "target": ".agents/skills/azure-deploy-review/SKILL.md",
+      "operation": "commit",
+      "responsibility": "cas-azure-review",
+      "procedure": "docs/development/operations/azure-review.md"
+    },
+    "batch": {
+      "entrypoint": "docs/development/proposed/specialized-skills/batch/SKILL.md",
+      "target": ".agents/skills/batch/SKILL.md",
+      "operation": "batch",
+      "responsibility": "batch-procedure",
+      "procedure": "docs/development/operations/batch.md"
+    }
+  },
+  "files": [
+    {
+      "source": "docs/development/proposed/specialized-skills/smoke-test/SKILL.md",
+      "target": ".agents/skills/smoke-test/SKILL.md"
+    },
+    {
+      "source": "docs/development/proposed/specialized-skills/deploy/SKILL.md",
+      "target": ".agents/skills/deploy/SKILL.md"
+    },
+    {
+      "source": "docs/development/proposed/specialized-skills/azure-deploy-review/SKILL.md",
+      "target": ".agents/skills/azure-deploy-review/SKILL.md"
+    },
+    {
+      "source": "docs/development/proposed/specialized-skills/batch/SKILL.md",
+      "target": ".agents/skills/batch/SKILL.md"
+    },
+    {
+      "source": "docs/development/operations/azure-review.md",
+      "target": "docs/development/operations/azure-review.md"
+    },
+    {
+      "source": "docs/development/operations/batch.md",
+      "target": "docs/development/operations/batch.md"
+    },
+    {
+      "source": "docs/development/operations/deploy.md",
+      "target": "docs/development/operations/deploy.md"
+    },
+    {
+      "source": "docs/development/operations/references/batch-history.md",
+      "target": "docs/development/operations/references/batch-history.md"
+    },
+    {
+      "source": "docs/development/operations/references/codex-runtime.md",
+      "target": "docs/development/operations/references/codex-runtime.md"
+    },
+    {
+      "source": "docs/development/operations/references/dependencies.md",
+      "target": "docs/development/operations/references/dependencies.md"
+    },
+    {
+      "source": "docs/development/operations/smoke-test.md",
+      "target": "docs/development/operations/smoke-test.md"
+    }
+  ],
+  "external_dependencies": [
+    "compatible complete eleven-skill development workflow core",
+    "selected SAGE operations capability and served deployment/vault contract",
+    "live CAS steering authorities and cohort methodology",
+    "authenticated GitHub and Azure CLI capabilities where applicable",
+    "current execution, collaboration and browser capabilities",
+    "project-provided tenant environments, endpoint configuration and runtime artifacts"
+  ],
+  "source_provenance": {
+    "smoke-test": {
+      "historical_version": "1.0.0",
+      "sha256": "a445156fc3e5856e42f4a6cb47f48369f37b105201580043cd415d47e162bf3b",
+      "authority": "historical extraction input only; current installed workflow and live policy remain effective"
+    },
+    "deploy": {
+      "historical_version": "0.3.0",
+      "sha256": "6490623a227f19f396465772181d9cf28b3c0a23ea1ca48c84dc142c6c9fdcc7",
+      "authority": "historical extraction input only; current installed workflow and live policy remain effective"
+    },
+    "azure-deploy-review": {
+      "historical_version": "0.1.0",
+      "sha256": "c2483e6b766e47627041c5ba87e57f8a3a91128836197b83d219ca409688cf2f",
+      "authority": "historical extraction input only; current installed workflow and live policy remain effective"
+    },
+    "batch": {
+      "historical_version": "2.4.1",
+      "sha256": "71c1a0368a37f37334d14ec809b9cbdf964883a83f873dff3ca91a48a46ac96d",
+      "authority": "historical extraction input only; current installed workflow and live policy remain effective"
+    }
+  }
+}
