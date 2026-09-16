@@ -16,17 +16,17 @@ The fragment does not govern the repository containing this proposal.
 The machine-readable map uses descriptive keys; these name delivery ownership,
 not completion or permission to substitute an interface.
 
-| Key | Delivery dependency | Required interface |
-|---|---|---|
-| ticketing | T-0005 | Project-routed ticket-management with live lineage, schema and authorization |
-| specialized-operations | T-0006 | Existing specialized operations, including conditional Azure review, with explicit policy resolution |
-| external-integration | T-0007 | Verified SAGE/transfer replacement; retain working transfer until accepted |
-| distribution | T-0008 | Complete compatible package and manifest; no partial install |
-| acceptance | T-0009 | Fresh runtime/installed discovery and observed agent acceptance |
-| CI | T-0010 | Automated package and conformance gates |
+| Key | Required interface |
+|---|---|
+| ticketing | Project-routed ticket-management with live lineage, schema and authorization |
+| specialized-operations | Existing specialized operations, including conditional Azure review, with explicit policy resolution |
+| external-integration | Verified SAGE/transfer replacement; retain working transfer until accepted |
+| distribution | Complete compatible package and manifest; no partial install |
+| acceptance | Fresh runtime/installed discovery and observed agent acceptance |
+| CI | Automated package and conformance gates |
 
 Coordinated authority activation, installation and rollback are separately named
-owner decisions; no sibling coding ticket substitutes for that approval.
+owner decisions; no dependency delivery substitutes for that approval.
 
 Core operations may read a local required procedure while a dependency remains
 undelivered. They must then report the dependent step blocked, never report the

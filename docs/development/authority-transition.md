@@ -16,10 +16,10 @@ Do not invent a `next` resolver operation.
 |---|---|
 | kickoff | checks.md; release.md; ticket-procedures.md |
 | commit | checks.md; release.md; existing canonical cas-code-review |
-| review-pr | review-records.md; existing canonical cas-code-review |
-| converge-review | review-records.md |
+| review-pr | checks.md; review-records.md; existing canonical cas-code-review |
+| converge-review | checks.md; review-records.md |
 | disposition | review-records.md; ticket-procedures.md; release.md; checks.md |
-| merge | review-records.md; release.md |
+| merge | checks.md; review-records.md; release.md |
 | push | publication.md; project-policy.md |
 | pull-request | publication.md; release.md; review-records.md; project-policy.md |
 | ticketing | ticket-procedures.md; operations/triage.md for the explicit read-only triage entry |

@@ -52,6 +52,8 @@ def test_conditional_gates_have_precise_candidate_paths() -> None:
         "sage/adapters/abstraction_qwen3.py",
         "sage/adapters/embedding_nomic.py",
     }
+    for path in bindings["cas-real-model"]["paths"]:
+        assert (ROOT / path).is_file(), f"real-model adapter missing: {path}"
     assert bindings["cas-azure-review"]["composition"] == "supplement"
 
 
@@ -101,7 +103,17 @@ def test_azure_scope_covers_declared_python_execution_roots() -> None:
             command = re.findall(r"[\"']([^\"']+)[\"']", array)
             if "-m" in command:
                 modules.add(command[command.index("-m") + 1])
-    assert {"sage", "app.backend", "sage.storage.postgres.cloud_bootstrap"} <= modules
+    expected_modules = {
+        "sage",
+        "app.backend",
+        "sage.storage.postgres.cloud_bootstrap",
+        "sage.maintenance.cloud_job",
+        "sage.maintenance.postgres_migration",
+        "sage.maintenance.postgres_restore_verify",
+    }
+    assert expected_modules <= modules, (
+        f"execution declaration population missing: {sorted(expected_modules - modules)}"
+    )
     azure = next(item for item in profile()["bindings"] if item["id"] == "cas-azure-review")
     omitted = set()
     for module in modules:

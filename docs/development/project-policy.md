@@ -50,7 +50,7 @@ that step, not unrelated local work. Keep the existing working transfer procedur
 until its separately verified replacement is adopted.
 
 Ticketing, Azure and specialized delivery remain sibling responsibilities; their
-interfaces and owner tickets are recorded in [the proposal guide](proposed/guide-fragment.md).
+interfaces are recorded in [the proposal guide](proposed/guide-fragment.md).
 The core integration does not deliver those siblings. In particular, a file naming
 an Azure review cannot count as running it. Conditional model and Azure gates use
 the exact candidate, including both rename endpoints and authorized new paths.
