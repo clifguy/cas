@@ -1,6 +1,6 @@
 # CAS checks procedure
 
-**INACTIVE proposal.** See [authority transition](authority-transition.md).
+Selected candidate procedure. The required activation receipt blocks operational use until the coordinated cutover; see [authority transition](authority-transition.md).
 
 Use the intended worktree's guide and locked environment, not imports from another
 checkout. Provision with `uv sync --locked --extra test --extra mlx --extra dev --extra ocr`;

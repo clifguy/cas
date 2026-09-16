@@ -1,0 +1,86 @@
+{
+  "schema_version": 1,
+  "components": [
+    {
+      "name": "next",
+      "kind": "shared-skill",
+      "root": "shared",
+      "path": "skills/next",
+      "version": "1.0.0",
+      "requires": [
+        "project-policy",
+        "ticket-management"
+      ],
+      "owner": "development-skills"
+    },
+    {
+      "name": "smoke-test",
+      "kind": "shared-skill",
+      "root": "shared",
+      "path": "skills/smoke-test",
+      "version": "1.0.0",
+      "requires": [
+        "project-policy"
+      ],
+      "owner": "development-skills"
+    },
+    {
+      "name": "deploy",
+      "kind": "project-skill",
+      "root": "cas",
+      "path": "docs/development/distribution/skills/deploy",
+      "version": "1.0.0",
+      "requires": [
+        "project-policy",
+        "kickoff",
+        "commit",
+        "converge-review",
+        "merge",
+        "ticket-management"
+      ],
+      "owner": "cas"
+    },
+    {
+      "name": "azure-deploy-review",
+      "kind": "project-skill",
+      "root": "cas",
+      "path": "docs/development/distribution/skills/azure-deploy-review",
+      "version": "1.0.0",
+      "requires": [
+        "project-policy"
+      ],
+      "owner": "cas"
+    },
+    {
+      "name": "batch",
+      "kind": "project-skill",
+      "root": "cas",
+      "path": "docs/development/distribution/skills/batch",
+      "version": null,
+      "requires": [
+        "project-policy",
+        "kickoff",
+        "commit",
+        "converge-review",
+        "merge",
+        "ticket-management"
+      ],
+      "owner": "cas",
+      "version_exception": "batch"
+    }
+  ],
+  "external_prerequisites": [
+    {
+      "name": "sage-operations",
+      "requirement": "Retain compatible installed sage-operations; resolve served deployment and vault contracts. External sage adoption is separate."
+    },
+    {
+      "name": "authenticated-sage",
+      "requirement": "Live CAS authority and ticket access where selected."
+    },
+    {
+      "name": "fresh-review-context",
+      "requirement": "Independent cumulative review with actual runtime provenance."
+    }
+  ]
+}

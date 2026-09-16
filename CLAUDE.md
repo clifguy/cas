@@ -49,3 +49,37 @@ SAGE's durable store lives outside the repository, in Postgres (connection detai
 - Keep subsystem imports cleanly separated.
 - Database files must never be stored inside cloud-synced directories or inside the Git repository.
 - API keys are environment variables, never committed. `.env` files are gitignored.
+
+## Development workflow selection
+
+The coordinated adoption candidate selects `docs/development/project-policy.md`
+and `.development-skills/project.json` (v3 bindings). Use the complete compatible
+repo-local `.agents/skills` shared bundle, including its `next` and `smoke-test`
+routers, and the project-owned deploy, Azure review and batch components. Do not
+fall back to a same-named global skill when a selected dependency is missing.
+The canonical `.claude/skills/cas-code-review/SKILL.md` and its existing pointer
+remain authoritative for code review.
+
+Operational use requires `.development-skills/activation-receipt.md`, a required
+binding intentionally absent from this candidate. It records the owner's exact
+activation decision, installed manifest identity, canonical source identity and
+fresh live authority heads/readbacks after the coordinated cutover. Missing or
+unverified receipt blocks use, not preparation or independent review under the
+still-effective pre-adoption policy. Source presence and package verification do
+not establish activation. See `docs/development/authority-transition.md`.
+
+The one-time publication and merge of this exact coordinated activation candidate
+may also use the retained pre-adoption workflow, when separately authorized by the
+owner. Refresh its still-effective live authorities and satisfy its review/check
+requirements for the exact candidate before acting. This exception publishes the
+transition source only; it does not authorize installation, SAGE supersession or
+normal work through the selected new workflow. Those routes still require the
+verified activation receipt. Publication and merge are not authorized by this text.
+
+For `/next` only, resolve `ticketing` and add the required source-backed supplement
+`cas-triage` with responsibility `triage-procedure`, composition `supplement`,
+source `docs/development/operations/triage.md`, and `declared_in` this guide.
+Read that authority and preserve its hash in discovery evidence. This explicit
+read-path binding does not select triage for ticket writes or invent a `next`
+resolver operation. The shared smoke-test router resolves the sole canonical
+`docs/development/operations/smoke-test.md` binding.

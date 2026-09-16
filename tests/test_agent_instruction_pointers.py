@@ -1,5 +1,7 @@
 """Check pointer structure and metadata, not an agent's compliance with prose."""
 
+import hashlib
+import json
 import re
 from pathlib import Path
 
@@ -21,7 +23,26 @@ def _frontmatter(path: Path) -> dict[str, object]:
 
 
 def _skill_pairs(root: Path) -> list[tuple[Path, Path]]:
-    pointers = sorted((root / ".agents").rglob("SKILL.md"))
+    skills = root / ".agents/skills"
+    pointers = sorted(skills.rglob("SKILL.md"))
+    manifest_path = skills / "manifest.json"
+    if manifest_path.exists():
+        manifest = json.loads(manifest_path.read_text())
+        assert manifest["schema_version"] == 2
+        # Generated bundle entries are governed by package verification, while
+        # tracked CAS pointers retain all structural and metadata checks below.
+        generated = []
+        for pointer in pointers:
+            relative = pointer.relative_to(skills).as_posix()
+            if pointer == root / REQUIRED_SKILL:
+                continue
+            if relative.split("/")[0] in manifest["components"]:
+                assert (
+                    manifest["sha256"].get(relative)
+                    == hashlib.sha256(pointer.read_bytes()).hexdigest()
+                ), f"Generated skill differs from manifest: {pointer}"
+                generated.append(pointer)
+        pointers = [pointer for pointer in pointers if pointer not in generated]
     assert pointers, "No agent skill pointers discovered"
     assert root / REQUIRED_SKILL in pointers, "Required review skill pointer is missing"
     return [(p, root / ".claude" / p.relative_to(root / ".agents")) for p in pointers]
@@ -189,3 +210,29 @@ def test_pointer_body_byte_limit(tmp_path: Path, body_bytes: int) -> None:
     else:
         with pytest.raises(AssertionError, match="Pointer body exceeds 600 bytes"):
             _check_instruction(pointer, canonical)
+
+
+@pytest.mark.parametrize("tamper", [False, True])
+def test_generated_skill_manifest_does_not_replace_pointer_checks(
+    tmp_path: Path, tamper: bool
+) -> None:
+    _write_skill_pair(tmp_path, "cas-code-review")
+    generated = tmp_path / ".agents/skills/commit/SKILL.md"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("Shared skill with complete procedure.\n")
+    manifest = {
+        "schema_version": 2,
+        "components": {"commit": {}, "cas-code-review": {}},
+        "sha256": {"commit/SKILL.md": hashlib.sha256(generated.read_bytes()).hexdigest()},
+    }
+    (generated.parent.parent / "manifest.json").write_text(json.dumps(manifest))
+    if tamper:
+        generated.write_text("Unverified content.\n")
+        with pytest.raises(AssertionError, match="Generated skill differs from manifest"):
+            _check_skill_tree(tmp_path)
+    else:
+        _check_skill_tree(tmp_path)
+        pointer = tmp_path / REQUIRED_SKILL
+        pointer.write_text(pointer.read_text().replace("Read and follow", "Do NOT read"))
+        with pytest.raises(AssertionError, match="Expected one canonical read-and-follow"):
+            _check_skill_tree(tmp_path)

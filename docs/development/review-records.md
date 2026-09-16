@@ -1,6 +1,6 @@
 # CAS review records
 
-**INACTIVE proposal.** See [authority transition](authority-transition.md).
+Selected candidate procedure. The required activation receipt blocks operational use until the coordinated cutover; see [authority transition](authority-transition.md).
 
 ## Evidence and roles
 
@@ -75,17 +75,19 @@ release classification after remediation. Revise a ticket whose intended end sta
 changes before close, preferably before merge. Have the reviewer assess a contested
 decline; a contest of the stated ground goes to the owner.
 
-## Proposed coverage and stopping
+## Coverage and stopping
 
 Substantive workflow, policy, tooling, tests and code require independent cumulative
 review. Existing contract/longstanding-defect/struggle triggers remain risk cues.
 An editorial exception or exact-scope owner waiver is recorded explicitly.
 
-Adopt the verified shared three-round stopping table: at round 1, no fix converges;
+Use the verified shared `project-policy/policies/review-cycle.md` as the
+complete stopping contract, including evidence, scope and self-introduced-defect
+disclosure. The following summary does not narrow that contract: at round 1, no fix converges;
 a fix with all-low findings converges; a fix plus above-low findings proceeds. At
-rounds 2 and 3, blocking recommendation, failure-record nomination or an in-scope
+round 2 and every later authorized round, blocking recommendation, failure-record nomination or an in-scope
 production-code finding means not settled; otherwise converge. Production excludes
-tests, test support, conformance gates, CI, Dockerfiles and schema descriptions.
+tests, test support, conformance gates, CI, Dockerfiles, schema descriptions and prose/records.
 Account for and test permitted fixes even when no further pass is required. Record
 reviewed and resulting revisions separately. Never impose re-review after every fix.
 Ask before round 4 and each later round. Resumes/handoffs/fixes do not reset the count.
@@ -93,7 +95,8 @@ Ask before round 4 and each later round. Resumes/handoffs/fixes do not reset the
 Every disposition ends with `**Cycle state:** <converged | not settled> — <signal>.`
 At not-settled round 2+, repeated CONFIRMED classes at a different site also carry
 `**Class:** <class> — the fix addressed <the instance | the class>.`
-These are proposed rules only: current work remains governed by live CAS policy.
+These approved candidate rules require the coordinated activation receipt; until
+cutover, current work remains governed by the pre-adoption live CAS policy.
 
 ## Merge consumer and retirement
 

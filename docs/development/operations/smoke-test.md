@@ -1,6 +1,6 @@
 # CAS smoke-test procedure
 
-**INACTIVE proposal.** Separate coordinated authority transition is required.
+Selected candidate procedure. The required activation receipt blocks operational use until the coordinated cutover; see [authority transition](../authority-transition.md).
 
 Resolve the intended PR/commit first from the explicit request or verified task
 context; read its cumulative change and acceptance behavior. Classify testability

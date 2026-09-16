@@ -1,6 +1,6 @@
 # CAS publication procedure
 
-**INACTIVE proposal.** See [authority transition](authority-transition.md).
+Selected candidate procedure. The required activation receipt blocks operational use until the coordinated cutover; see [authority transition](authority-transition.md).
 
 ## Push
 

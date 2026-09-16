@@ -1,7 +1,6 @@
 # azure-deploy-review
 
-**INACTIVE proposal.** This staged procedure does not govern current work or authorize execution.
-Resolve current project policy and caller authorization before adoption or use.
+Selected candidate procedure. The required activation receipt blocks operational use until the coordinated cutover; see [authority transition](../authority-transition.md).
 Read [Codex runtime](references/codex-runtime.md) and [dependencies](references/dependencies.md).
 
 A CAS-owned review pass for **Azure deployment surfaces**. It catches the class of failure that is expensive precisely because it is invisible to ordinary gates: a change that passes the linter, the unit tests, the IaC compile, and CI, yet is wrong — and is discovered only after a 15–40 minute build → deploy → converge → preflight cycle. The catalog below is distilled from real Azure-deploy failures; it is the judgment layer on top of whatever deterministic gates a repo already has.
