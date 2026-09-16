@@ -30,3 +30,25 @@ If hooks change the candidate, inspect the change, revalidate affected behavior 
 refresh candidate identity. Required forge checks must cover the exact final head;
 record CI merge-tree identity where the forge tests a synthesized merge. A green
 different-head run or unavailable forge query is not a pass.
+
+## Conditional dependency gates
+
+Evaluate the complete candidate file set, including both sides of a rename and
+authorized new files. The Azure binding selects `infra/*`, `deploy/*`,
+`.github/workflows/infra.yml` and `.github/workflows/build-images.yml`. Resolve and
+execute the existing Azure deploy-review skill against that same candidate. If
+the required skill is unavailable, report the matching operation blocked; the
+presence of this supplement is not an Azure review. An ordinary documentation
+candidate does not select that binding.
+
+The real-model binding selects `sage/adapters/abstraction_qwen3.py` and
+`sage/adapters/embedding_nomic.py`. Resolve the worktree's documented runtime and
+run its opt-in adapter tier serially with `SAGE_TEST_REAL_MODELS=1`; check no
+competing model run is active. A rename out of either path still selects the gate.
+Missing weights, runtime or required capability is blocked validation, never a
+successful skip. Fixture tests validate selection without loading real weights.
+
+CI's full pytest suite, substrate classification and active-test-surface comparison
+are separate obligations. Preserve `KNOWN_TEST_REMOVALS` and other unrelated
+exceptions. A focused conformance run does not replace the full required suite or
+the exact-head forge result.

@@ -6,8 +6,10 @@ effective. No guide pointer, installation or vault authority changes here.
 
 ## Proposed bindings
 
-This is a human-readable binding proposal, not resolver input. Activation must
-translate it into the supported project-policy schema and verify actual selection.
+This table is human-readable, not resolver input. The executable inactive v3
+profile is [proposed/project.json](proposed/project.json); its policy is
+[project-policy.md](project-policy.md). Activation must verify actual selection
+from a compatible complete bundle in a fresh context.
 Do not invent a `next` resolver operation.
 
 | Existing operation | Required supplementary CAS procedure |
@@ -18,8 +20,16 @@ Do not invent a `next` resolver operation.
 | converge-review | review-records.md |
 | disposition | review-records.md; ticket-procedures.md; release.md; checks.md |
 | merge | review-records.md; release.md |
+| push | publication.md; project-policy.md |
+| pull-request | publication.md; release.md; review-records.md; project-policy.md |
 | ticketing | ticket-procedures.md; operations/triage.md for the explicit read-only triage entry |
 | smoke-test | operations/smoke-test.md |
+
+Every core operation also receives project-policy.md. The canonical review is a
+replacement only for commit/review-pr; other entries supplement shared duties.
+Ticketing/smoke-test rows record sibling interfaces, not core delivery claims.
+[The obligation map](proposed/obligations.json) and independent
+[source roster](proposed/required-obligations.json) make source coverage auditable.
 
 The triage entry point resolves `ticketing` and explicitly selects the required
 `operations/triage.md` supplement for its read-only path. An unsupported route blocks that consumer until
