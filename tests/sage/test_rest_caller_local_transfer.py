@@ -30,6 +30,7 @@ from sage.adapters.stubs import (
     StubContentStore,
     StubEmbeddingProvider,
 )
+from sage.api.errors import SourceDigestMismatchError
 from sage.app import _initialize_services, create_app
 from sage.config import SageCoreConfig, VaultConfig
 from sage.mcp_server import ingest_document, restore_vault_source_file
@@ -245,6 +246,184 @@ async def test_rest_ingest_co_located_absolute_source_ingests_directly(client, t
     )
 
 
+# ---------------------------------------------------------------------------
+# Declared digest: the same verdict wherever the bytes are read
+# ---------------------------------------------------------------------------
+
+
+def _digest(body: bytes) -> str:
+    return "sha256:" + hashlib.sha256(body).hexdigest()
+
+
+async def test_colocated_ingest_refuses_digest_mismatch_before_retention(vault, client, tmp_path):
+    """Where the server reads the caller's path itself, a declared digest the
+    bytes do not have is refused before anything is retained -- with the code
+    the upload leg uses, and identically on both surfaces.
+
+    Anti-coincidental-pass: the retained-file assertion is paired with the
+    matching-digest control below, which asserts the same path *does* appear
+    on success, so it cannot pass merely because retention lands elsewhere. A
+    check placed after retention would produce the right code and fail on the
+    retained file. The surfaces are compared against each other, not against a
+    literal, so wording drift on one fails here.
+    """
+    _application, root = vault
+    body = b"# Declared digest mismatch\n"
+    src = _caller_file(tmp_path, "mismatch_note.md", body)
+    declared = _digest(b"not these bytes")
+
+    with _profile("local"):
+        rest = await client.post(
+            _INGEST, json={"source": str(src), "source_type": "markdown", "sha256": declared}
+        )
+        mcp = _parse(
+            await ingest_document(
+                _VAULT_ID, source=str(src), source_type="markdown", sha256=declared
+            )
+        )
+
+    assert rest.status_code == 400, rest.text
+    assert rest.json()["code"] == "source_digest_mismatch"
+    assert rest.json()["detail"]["declared_sha256"] == declared
+    assert rest.json()["detail"]["delivered_sha256"] == _digest(body)
+    assert mcp["error"] == rest.json()["code"]
+    assert mcp["message"] == rest.json()["message"]
+    assert not (root / "imports" / "mismatch_note.md").exists()
+
+
+async def test_colocated_ingest_with_matching_digest_ingests(vault, client, tmp_path):
+    """The positive control: the right digest, in bare spelling, ingests normally."""
+    _application, root = vault
+    body = b"# Declared digest match\n"
+    src = _caller_file(tmp_path, "match_note.md", body)
+
+    with _profile("local"):
+        resp = await client.post(
+            _INGEST,
+            json={
+                "source": str(src),
+                "source_type": "markdown",
+                "sha256": hashlib.sha256(body).hexdigest(),
+            },
+        )
+
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["document"]["source_content_hash"] == _digest(body)
+    assert (root / "imports" / "match_note.md").exists()
+
+
+async def test_dry_run_reaches_same_digest_verdict(client, tmp_path):
+    """A preview refuses the mismatch the real run would refuse.
+
+    Anti-coincidental-pass: the preview path hashes the source on its own
+    branch, so a check wired only into the real run returns a preview here.
+    """
+    body = b"# Previewed mismatch\n"
+    src = _caller_file(tmp_path, "preview_note.md", body)
+
+    with _profile("local"):
+        resp = await client.post(
+            _INGEST,
+            json={
+                "source": str(src),
+                "source_type": "markdown",
+                "sha256": _digest(b"other"),
+                "dry_run": True,
+            },
+        )
+
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["code"] == "source_digest_mismatch"
+
+
+async def test_redeemed_token_completion_rechecks_declared_digest(client, tmp_path):
+    """A completion call declaring a digest its staged bytes lack is refused,
+    and the token goes back unspent.
+
+    Anti-coincidental-pass: the bytes staged against the right binding, so the
+    upload leg's check has already passed; only a check on the completion arm
+    can refuse. The follow-up completion with the right digest must succeed on
+    the same token, so a refusal that spent it fails.
+    """
+    body = b"# Redeemed with a declared digest\n"
+    src = tmp_path / "caller_inbox" / "redeemed_note.md"
+
+    with _profile("cloud"):
+        minted = await client.post(
+            _INGEST,
+            json={"source": str(src), "source_type": "markdown", "sha256": _digest(body)},
+        )
+        item = _assert_recipe_for(minted.json(), str(src))
+        await _deliver(client, item, body)
+
+        refused = await client.post(
+            _INGEST,
+            json={
+                "transfer_token": item["token"],
+                "source_type": "markdown",
+                "sha256": _digest(b"a different file"),
+            },
+        )
+        done = await client.post(
+            _INGEST,
+            json={
+                "transfer_token": item["token"],
+                "source_type": "markdown",
+                "sha256": _digest(body),
+            },
+        )
+
+    assert refused.status_code == 400, refused.text
+    assert refused.json()["code"] == "source_digest_mismatch"
+    assert done.status_code == 201, done.text
+    assert done.json()["document"]["source_content_hash"] == _digest(body)
+
+
+@pytest.mark.parametrize("operation", ["ingest", "restore"])
+async def test_malformed_sha256_is_refused_before_anything_is_minted(client, tmp_path, operation):
+    """A digest that is not a well-formed sha256 is refused at the boundary on
+    both surfaces, with no recipe minted.
+
+    Anti-coincidental-pass: the call is otherwise one that mints a recipe --
+    an absolute source the cloud profile cannot reach -- so a boundary that
+    let the malformed digest through would answer ``upload_required`` rather
+    than refuse; and the store is checked empty, so a refusal raised after
+    minting fails too. The malformed value is hex-free, so a validator that
+    only canonicalized spelling without checking shape would pass it.
+    """
+    src = tmp_path / "caller_inbox" / "malformed_digest.md"
+    arguments = {"source": str(src), "sha256": "nothex"}
+
+    with _profile("cloud"):
+        if operation == "ingest":
+            rest = await client.post(_INGEST, json={**arguments, "source_type": "markdown"})
+            mcp = _parse(await ingest_document(_VAULT_ID, source_type="markdown", **arguments))
+        else:
+            rest = await client.post(_RESTORE, json=arguments)
+            mcp = _parse(await restore_vault_source_file(_VAULT_ID, **arguments))
+
+    assert rest.status_code == 400, rest.text
+    assert rest.json()["code"] == "invalid_sha256"
+    assert mcp["error"] == "invalid_sha256", mcp
+    assert get_transfer_store()._entries == {}
+
+
+async def test_rest_ingest_near_miss_offers_sha256(client, tmp_path):
+    """``sha256`` is a declared field: a near-miss spelling is refused naming it."""
+    payload = {
+        "source": str(tmp_path / "r5b.md"),
+        "source_type": "markdown",
+        "sha_256": "whatever",
+    }
+
+    resp = await client.post(_INGEST, json=payload)
+
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["code"] == "unknown_parameter"
+    assert resp.json()["detail"]["rejected_params"] == ["sha_256"]
+    assert "sha256" in resp.json()["detail"]["valid_params"]
+
+
 async def test_rest_ingest_mints_for_a_windows_absolute_source(client):
     """A path absolute on the caller's platform is the caller's, whatever this one's.
 
@@ -312,6 +491,85 @@ async def test_rest_restore_redeems_the_transfer_token(vault, client, tmp_path):
     assert not staging_dir.exists()
 
 
+async def test_restore_digest_bound_upload_refuses_other_bytes(vault, client, tmp_path):
+    """A restore's token binds to the declared digest exactly as an ingest's does.
+
+    Anti-coincidental-pass: the wrong bytes are refused on the upload leg with
+    the entry left retryable, and the *same* token then carries the right bytes
+    through to a completed repair -- so a refusal that spent the token, or a
+    restore mint that ignored the declaration, fails. The retained copy is read
+    back at the end, so a repair that wrote anything but the declared bytes
+    fails on content.
+    """
+    _app, root = vault
+    body = b"# R11\n\nThe declared original.\n"
+    src, retained = await _ingest_then_drift(client, root, tmp_path, "r11_note.md", body)
+
+    with _profile("cloud"):
+        minted = await client.post(_RESTORE, json={"source": str(src), "sha256": _digest(body)})
+        item = _assert_recipe_for(minted.json(), str(src))
+        assert item["sha256"] == _digest(body)
+
+        refused = await client.put(
+            "/upload", content=b"not the original", headers={"X-Upload-Token": item["token"]}
+        )
+        assert refused.status_code == 400, refused.text
+        assert refused.json()["code"] == "source_digest_mismatch"
+        assert get_transfer_store()._entries[item["transfer_id"]].state == "pending_bytes"
+
+        await _deliver(client, item, body)
+        done = await client.post(
+            _RESTORE, json={"transfer_token": item["token"], "sha256": _digest(body)}
+        )
+
+    assert done.status_code == 200, done.text
+    assert done.json()["status"] == "restored"
+    assert retained.read_bytes() == body
+
+
+async def test_colocated_restore_refuses_digest_mismatch_before_writing(vault, client, tmp_path):
+    """Where the server reads the caller's path, a declared digest the bytes lack
+    is refused before the retained copy is touched, identically on both surfaces.
+
+    Anti-coincidental-pass: the retained copy is drifted, so a restore that
+    ignored the declaration would repair it; the assertion that the drift is
+    still there is what fails. The matching-digest control below repairs the
+    same shape, so the drift surviving is owed to the refusal.
+    """
+    _app, root = vault
+    body = b"# R12\n"
+    src, retained = await _ingest_then_drift(client, root, tmp_path, "r12_note.md", body)
+    declared = _digest(b"some other file")
+
+    with _profile("local", transfer_base=None):
+        rest = await client.post(_RESTORE, json={"source": str(src), "sha256": declared})
+        mcp = _parse(await restore_vault_source_file(_VAULT_ID, source=str(src), sha256=declared))
+
+    assert rest.status_code == 400, rest.text
+    assert rest.json()["code"] == "source_digest_mismatch"
+    assert rest.json()["detail"]["declared_sha256"] == declared
+    assert rest.json()["detail"]["delivered_sha256"] == _digest(body)
+    assert mcp["error"] == rest.json()["code"]
+    assert mcp["message"] == rest.json()["message"]
+    assert retained.read_bytes() == b"something else wrote here"
+
+
+async def test_colocated_restore_with_matching_digest_repairs(vault, client, tmp_path):
+    """The control: the right digest, in bare spelling, repairs as before."""
+    _app, root = vault
+    body = b"# R13\n"
+    src, retained = await _ingest_then_drift(client, root, tmp_path, "r13_note.md", body)
+
+    with _profile("local", transfer_base=None):
+        resp = await client.post(
+            _RESTORE, json={"source": str(src), "sha256": hashlib.sha256(body).hexdigest()}
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "restored"
+    assert retained.read_bytes() == body
+
+
 @pytest.mark.parametrize(
     ("shape", "code", "message"),
     [
@@ -352,6 +610,30 @@ async def test_rest_restore_mints_for_a_windows_absolute_source(client):
 
     assert resp.status_code == 200, resp.text
     _assert_recipe_for(resp.json(), spelling)
+
+
+def test_declared_digest_with_no_digest_to_hold_it_to_is_refused(vault):
+    """A declaration that cannot be checked is refused rather than admitted.
+
+    Resident bytes no document records reach the guard with no digest. The
+    positive arm is the same guard on the same request with a digest that
+    matches, so the refusal is owed to the missing digest and not to the
+    declaration alone.
+    """
+    application, _root = vault
+    service = application.state.vault_registry[_VAULT_ID].ingestion_service
+    declared = _digest(b"resident bytes")
+    request = IngestRequest(source="resident.md", source_type="markdown", sha256=declared)
+
+    service._validate_declared_digest(request, declared, "resident.md")
+    with pytest.raises(SourceDigestMismatchError) as caught:
+        service._validate_declared_digest(request, None, "resident.md")
+
+    assert caught.value.detail == {
+        "source": "resident.md",
+        "declared_sha256": declared,
+        "delivered_sha256": None,
+    }
 
 
 async def test_resolved_path_ingest_refuses_an_undelivered_request(vault):

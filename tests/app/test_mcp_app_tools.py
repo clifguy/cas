@@ -1007,6 +1007,92 @@ class TestAppBatchIngest:
         assert result.get("error") != "invalid_parameter", result
         assert result.get("error") == "transfer_token_invalid", result
 
+    async def test_sha256_entry_is_not_an_undeclared_key(self, single_vault):
+        """``sha256`` is a declared entry name, so a well-formed one reaches ingest."""
+        _, config = single_vault
+        src = Path(config.vault.storage_root) / "declared_sha.md"
+        body = b"# Declared sha256\n"
+        src.write_bytes(body)
+
+        result = _parse(
+            await bulk_ingest_document(
+                "test_vault",
+                [
+                    {
+                        "file_path": str(src),
+                        "source_type": "markdown",
+                        "sha256": hashlib.sha256(body).hexdigest(),
+                    }
+                ],
+            )
+        )
+
+        assert result.get("error") is None, result
+        assert result["error_count"] == 0, result
+        assert result["documents_created"]["new"] == 1
+
+    async def test_bulk_colocated_digest_mismatch_is_per_file_error(self, single_vault):
+        """A declared digest one file's bytes lack is that file's error, not the batch's.
+
+        Anti-coincidental-pass: the mismatched entry is second, so the refusal
+        must be located at its own index; and the first entry must still be
+        created, so a whole-call refusal fails.
+        """
+        _, config = single_vault
+        sources = Path(config.vault.storage_root)
+        good, bad = sources / "digest_good.md", sources / "digest_bad.md"
+        good.write_bytes(b"# Good digest\n")
+        bad.write_bytes(b"# Bad digest\n")
+
+        result = _parse(
+            await bulk_ingest_document(
+                "test_vault",
+                [
+                    {
+                        "file_path": str(good),
+                        "source_type": "markdown",
+                    },
+                    {
+                        "file_path": str(bad),
+                        "source_type": "markdown",
+                        "sha256": hashlib.sha256(b"not the bad file").hexdigest(),
+                    },
+                ],
+            )
+        )
+
+        assert result.get("error") is None, result
+        assert result["error_count"] == 1, result
+        assert result["documents_created"]["new"] == 1
+        (entry,) = result["errors"]
+        assert entry["code"] == "source_digest_mismatch"
+        assert entry["file_index"] == 1
+
+    async def test_bulk_malformed_sha256_refuses_whole_call(self, single_vault):
+        """A malformed digest on any entry refuses the batch before anything is ingested.
+
+        The malformed value sits on the second entry, and the control ingests
+        the same first entry afterwards and must create it: had the refused
+        call ingested it, the control would find duplicate content.
+        """
+        _, config = single_vault
+        src = Path(config.vault.storage_root) / "before_malformed.md"
+        src.write_bytes(b"# Before malformed\n")
+        first = {"file_path": str(src), "source_type": "markdown"}
+        second = {
+            "file_path": str(src.with_name("second_malformed.md")),
+            "source_type": "markdown",
+            "sha256": "nothex",
+        }
+
+        refused = _parse(await bulk_ingest_document("test_vault", [first, second]))
+        control = _parse(await bulk_ingest_document("test_vault", [first]))
+
+        assert refused.get("error") == "invalid_sha256", refused
+        assert refused["detail"]["files.1.sha256"] == "nothex"
+        assert control["error_count"] == 0, control
+        assert control["documents_created"]["new"] == 1
+
 
 # ---------------------------------------------------------------------------
 # 9. Cross-Cutting Conventions (MCP-023, MCP-024, MCP-025)

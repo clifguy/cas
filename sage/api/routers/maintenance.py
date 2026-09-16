@@ -284,7 +284,7 @@ async def verify_vault_source_files(
         },
         400: boundary_400(
             path=("invalid_vault_id",),
-            request=("invalid_document_id", "unknown_parameter"),
+            request=("invalid_document_id", "invalid_sha256", "unknown_parameter"),
             extra="`ambiguous_ingest_source`: both `source` and `transfer_token` "
             "were supplied. "
             "`missing_ingest_source`: neither `source` nor `transfer_token` was "
@@ -293,7 +293,9 @@ async def verify_vault_source_files(
             "ingested from the delivered bytes. "
             "`restore_source_not_absolute`: the source path is not absolute. "
             "`vault_source_path_refused`: the document's source_path cannot be "
-            "written at the path it names.",
+            "written at the path it names. "
+            "`source_digest_mismatch`: `sha256` was supplied and the delivered "
+            "bytes have a different digest; nothing is written.",
         ),
         404: {
             "model": ErrorResponse,
@@ -356,5 +358,8 @@ async def restore_vault_source_file(
     service: MaintenanceService = Depends(get_maintenance_service),
 ) -> SourceFileRestoreReport | UploadRecipe:
     return await service.restore_vault_source_file(
-        source=body.source, document_id=body.document_id, transfer_token=body.transfer_token
+        source=body.source,
+        document_id=body.document_id,
+        transfer_token=body.transfer_token,
+        sha256=body.sha256,
     )

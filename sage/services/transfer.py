@@ -40,10 +40,12 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Callable, Literal
 
 from sage.api.errors import (
+    SourceDigestMismatchError,
     TransferAlreadyStagedError,
     TransferNotStagedError,
     TransferTokenInvalidError,
 )
+from sage.models.schemas import canonicalize_sha256
 from sage.services.caller_paths import caller_basename, caller_path_is_absolute
 
 if TYPE_CHECKING:
@@ -134,6 +136,10 @@ class PendingTransfer:
     #: not report a server-side location -- see ``IngestionService.ingest``'s
     #: ``caller_source``. Empty only on a download entry, which has no such path.
     declared_source: str = ""
+    #: The digest an upload token was bound to at mint, in canonical form, or
+    #: ``None`` for a token that admits any bytes. Held here rather than on
+    #: the token so the binding cannot be presented separately from it.
+    bound_sha256: str | None = None
     state: Literal["pending_bytes", "streaming", "bytes_staged"] = "pending_bytes"
     staged_size: int | None = None
     staged_sha256: str | None = None
@@ -176,8 +182,15 @@ class TransferStore:
 
     # -- minting ---------------------------------------------------------
 
-    def mint_upload(self, vault_id: str, source: str, ttl_seconds: int) -> MintedTransfer:
+    def mint_upload(
+        self, vault_id: str, source: str, ttl_seconds: int, sha256: str | None = None
+    ) -> MintedTransfer:
         """Mint an upload token bound to one vault and one caller-named source.
+
+        ``sha256``, when given, binds the token to the digest of the bytes it
+        will admit: the byte leg refuses anything else through
+        :meth:`check_bound_digest`. The binding is what leaves a disclosed
+        token worthless to a holder without the exact file.
 
         Takes the path the caller named and derives the staged basename from it,
         rather than accepting the two spellings separately. The entry needs both
@@ -203,6 +216,9 @@ class TransferStore:
             )
             entry.filename = caller_basename(source, "transfer_source")
             entry.declared_source = source
+            if sha256 is not None:
+                entry.bound_sha256 = canonicalize_sha256(sha256)
+        minted.content_hash = entry.bound_sha256
         return minted
 
     def mint_download_source(
@@ -279,6 +295,28 @@ class TransferStore:
                 raise TransferAlreadyStagedError(entry.transfer_id)
             entry.state = "streaming"
             return entry
+
+    def check_bound_digest(self, transfer_id: str, sha256: str) -> None:
+        """Refuse delivered bytes whose digest is not the one the token was bound to.
+
+        Called by the byte leg once the body has been read and before
+        :meth:`finish_upload` records it, so a refusal leaves the entry
+        streaming and the caller's rollback -- :meth:`fail_upload` -- returns
+        the token to retryable with nothing staged. An unbound entry admits
+        any digest.
+
+        Compared in constant time, as token redemption is. The refusal names
+        only the digest just presented: the bound one would tell the holder of
+        a leaked token which file to send.
+        """
+        delivered = canonicalize_sha256(sha256)
+        with self._lock:
+            entry = self._entries.get(transfer_id)
+            if entry is None or entry.bound_sha256 is None:
+                return
+            bound = entry.bound_sha256
+        if not hmac.compare_digest(bound, delivered):
+            raise SourceDigestMismatchError(delivered, transfer_id=transfer_id)
 
     def finish_upload(self, transfer_id: str, size: int, sha256: str) -> None:
         """Record a completed byte delivery; the entry now awaits consumption."""
@@ -469,16 +507,26 @@ def _transfer_coordinates() -> tuple[str, int]:
     return cfg.public_base_url.rstrip("/"), cfg.token_ttl_seconds
 
 
-def mint_upload_recipe(vault_id: str, sources: list[str]):
-    """Mint one upload leg per caller-local source and build the recipe."""
+def mint_upload_recipe(
+    vault_id: str, sources: list[str], digests: Sequence[str | None] | None = None
+):
+    """Mint one upload leg per caller-local source and build the recipe.
+
+    ``digests``, when given, is index-aligned with ``sources``: each leg's
+    token is bound to its digest, or left unbound where the entry is ``None``,
+    and the recipe echoes the binding so the caller can see what each leg
+    will admit.
+    """
     from sage.models.schemas import UploadRecipe, UploadRecipeItem
 
     base_url, ttl_seconds = _transfer_coordinates()
     store = get_transfer_store()
     items: list[UploadRecipeItem] = []
     leg_expiries: list[datetime] = []
-    for source in sources:
-        minted = store.mint_upload(vault_id, source, ttl_seconds)
+    for source, sha256 in zip(
+        sources, digests if digests is not None else [None] * len(sources), strict=True
+    ):
+        minted = store.mint_upload(vault_id, source, ttl_seconds, sha256=sha256)
         leg_expiries.append(minted.expires_at)
         items.append(
             UploadRecipeItem(
@@ -486,6 +534,7 @@ def mint_upload_recipe(vault_id: str, sources: list[str]):
                 transfer_id=minted.transfer_id,
                 token=minted.token,
                 url=f"{base_url}/upload",
+                sha256=minted.content_hash,
             )
         )
     return UploadRecipe(
@@ -589,15 +638,21 @@ def mint_download_recipe_for_projection(
 class DeliveryDeclaration:
     """One file's caller-declared delivery shape.
 
-    Exactly one field is populated: ``source`` names a path, and
-    ``transfer_token`` redeems bytes the caller's environment already
-    delivered to the upload endpoint. Supplying both is ambiguous and
-    supplying neither says nothing; the gate refuses both ways rather than
-    resolving to whichever it happens to inspect first.
+    Exactly one of ``source`` and ``transfer_token`` is populated: ``source``
+    names a path, and ``transfer_token`` redeems bytes the caller's
+    environment already delivered to the upload endpoint. Supplying both is
+    ambiguous and supplying neither says nothing; the gate refuses both ways
+    rather than resolving to whichever it happens to inspect first.
+
+    ``sha256`` is the digest the caller declares for the file, independent of
+    the shape. Where the gate mints for ``source``, the leg's token is bound
+    to it; the declaration's other reader is the ingest, which holds the bytes
+    it reads to the same digest on whichever arm they arrived by.
     """
 
     source: str | None = None
     transfer_token: str | None = None
+    sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -725,10 +780,14 @@ def caller_local_delivery(
 
     if not reachable:
         unreachable = [
-            d.source for d in declarations if d.source is not None and _is_caller_absolute(d.source)
+            d for d in declarations if d.source is not None and _is_caller_absolute(d.source)
         ]
         if unreachable:
-            yield DeliveryPlan(recipe=mint_upload_recipe(vault_id, unreachable))
+            yield DeliveryPlan(
+                recipe=mint_upload_recipe(
+                    vault_id, [d.source for d in unreachable], [d.sha256 for d in unreachable]
+                )
+            )
             return
 
     store = get_transfer_store()

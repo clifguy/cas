@@ -22,6 +22,7 @@ from starlette.requests import ClientDisconnect
 from sage.api.dependencies import get_transfer_service
 from sage.api.errors import (
     ContentFileMissingError,
+    SourceDigestMismatchError,
     TransferContentTooLargeError,
     VaultNotFoundError,
 )
@@ -43,7 +44,15 @@ _SPOOL_CHUNK_BYTES = 65536
     "/upload",
     status_code=201,
     responses={
-        400: boundary_400(request=("unknown_parameter",)),
+        400: boundary_400(
+            request=("unknown_parameter",),
+            extra=(
+                "`source_digest_mismatch`: the token was minted against a declared "
+                "`sha256` and the delivered bytes have a different digest. Nothing "
+                "is staged and the token stays retryable. The detail names the "
+                "transfer and the delivered digest, never the bound one."
+            ),
+        ),
         409: {
             "model": ErrorResponse,
             "description": (
@@ -79,7 +88,9 @@ async def transfer_upload(
     The raw request body streams straight to the transfer's staging file
     under an incremental byte ceiling -- no hop holds the whole file, the
     declared Content-Length is never trusted, and an oversize or interrupted
-    delivery rolls the transfer back to a retryable state. The receipt
+    delivery rolls the transfer back to a retryable state. A token minted
+    against a digest admits only bytes with that digest; any others are
+    refused the same way, staging nothing and spending nothing. The receipt
     carries the received size and digest so the sender can verify the
     delivery against the local file before issuing the completion call.
     """
@@ -95,7 +106,12 @@ async def transfer_upload(
                     raise TransferContentTooLargeError(ceiling)
                 digest.update(chunk)
                 staged.write(chunk)
-    except TransferContentTooLargeError, ClientDisconnect:
+        # Only once the whole body is in can its digest be known, so a bound
+        # token's refusal lands after the bytes reached staging -- inside this
+        # block, so the rollback below removes them before anything records
+        # the delivery.
+        store.check_bound_digest(entry.transfer_id, digest.hexdigest())
+    except TransferContentTooLargeError, SourceDigestMismatchError, ClientDisconnect:
         store.fail_upload(entry.transfer_id)
         raise
     except Exception:

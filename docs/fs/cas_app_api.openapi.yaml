@@ -669,12 +669,13 @@ components:
             Machine-readable error code, present only when the failure was a
             typed SAGE error. The same code the single-document ingest
             surface returns for that error. A batch builds each file's
-            request from its source, source type and parsed metadata alone,
+            request from its source, source type, parsed metadata and declared
+            digest alone,
             so the codes that can appear are the single-document codes that
             depend on none of a predecessor, a force re-ingest, a chain-head
             token or a relocation pointer: `adapter_config_invalid`,
             `adapter_not_found`, `duplicate_content`, `invalid_doc_type`, `invalid_document_date`,
-            `reserved_transition`, `source_file_not_found`,
+            `reserved_transition`, `source_digest_mismatch`, `source_file_not_found`,
             `source_type_unresolved`, `source_unreadable`, `tier3_schema_violation`, `tier3_unique_constraint_violation`,
             `vault_migration_in_flight`, `vault_source_path_refused`,
             `vault_source_store_refused` and `vault_source_store_unavailable`.

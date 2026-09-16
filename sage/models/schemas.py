@@ -1001,6 +1001,18 @@ class IngestRequest(BaseModel):
             "dry run the token is read but not spent."
         ),
     )
+    sha256: Sha256Str | None = Field(
+        default=None,
+        description=(
+            "SHA-256 digest of the file this call ingests, bare hex or "
+            "`sha256:`-prefixed. When supplied, the call refuses a source with "
+            "any other digest (`source_digest_mismatch`) before anything is "
+            "retained. On a call that returns an upload recipe, each token is "
+            "bound to this digest: the upload endpoint refuses any other bytes "
+            "without spending the token, so a token disclosed to anyone not "
+            "already holding the exact file admits nothing."
+        ),
+    )
     source_type: SourceType | None = Field(
         default=None,
         description=(
@@ -4913,6 +4925,17 @@ class SourceFileRestoreRequest(BaseModel):
             "delivered bytes)."
         ),
     )
+    sha256: Sha256Str | None = Field(
+        default=None,
+        description=(
+            "SHA-256 digest of the file being restored, bare hex or "
+            "`sha256:`-prefixed. When supplied, a restore whose delivered bytes "
+            "have any other digest is refused (`source_digest_mismatch`) before "
+            "the retained copy is touched. On a call that returns an upload "
+            "recipe, the token is bound to this digest: the upload endpoint "
+            "refuses any other bytes without spending the token."
+        ),
+    )
 
 
 class SourceFileRestoreReport(BaseModel):
@@ -5325,13 +5348,14 @@ class BatchIngestFileError(BaseModel):
             "Machine-readable error code, present only when the failure was a "
             "typed SAGE error. The same code the single-document ingest "
             "surface returns for that error. A batch builds each file's "
-            "request from its source, source type and parsed metadata alone, "
+            "request from its source, source type, parsed metadata and declared "
+            "digest alone, "
             "so the codes that can appear are the single-document codes that "
             "depend on none of a predecessor, a force re-ingest, a chain-head "
             "token or a relocation pointer: `adapter_config_invalid`, "
             "`adapter_not_found`, `duplicate_content`, `invalid_doc_type`, "
             "`invalid_document_date`, "
-            "`reserved_transition`, `source_file_not_found`, "
+            "`reserved_transition`, `source_digest_mismatch`, `source_file_not_found`, "
             "`source_type_unresolved`, `source_unreadable`, `tier3_schema_violation`, "
             "`tier3_unique_constraint_violation`, "
             "`vault_migration_in_flight`, `vault_source_path_refused`, "
@@ -5953,6 +5977,15 @@ class UploadRecipeItem(BaseModel):
         )
     )
     url: str = Field(description="Complete URL of the byte-delivery leg, used verbatim.")
+    sha256: Sha256Str | None = Field(
+        default=None,
+        description=(
+            "The digest this leg's token is bound to, echoed in canonical form "
+            "from the originating call's `sha256`. The upload endpoint admits "
+            "only bytes with this digest. Absent when the call declared none, "
+            "in which case the token admits any bytes."
+        ),
+    )
 
 
 class UploadRecipe(BaseModel):

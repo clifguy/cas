@@ -11,6 +11,7 @@ document at a time (BH-026, BH-068).
 
 import asyncio
 import contextlib
+import hmac
 import json
 import logging
 import re
@@ -63,6 +64,7 @@ from sage.api.errors import (
     RelocationProvenanceMismatchError,
     RelocationSourceUndeliveredError,
     ReservedTransitionError,
+    SourceDigestMismatchError,
     SourceFileNotFoundError,
     SourceTypeUnresolvedError,
     SourceUnreadableError,
@@ -1169,7 +1171,11 @@ class IngestionService:
             Every refusal :meth:`ingest` raises.
         """
         return await self.ingest_from_caller(
-            DeliveryDeclaration(source=request.source, transfer_token=request.transfer_token),
+            DeliveryDeclaration(
+                source=request.source,
+                transfer_token=request.transfer_token,
+                sha256=request.sha256,
+            ),
             lambda path: request.model_copy(update={"source": path, "transfer_token": None}),
             dry_run=request.dry_run,
             wait_for_pipeline=wait_for_pipeline,
@@ -1424,6 +1430,7 @@ class IngestionService:
                     raise SourceFileNotFoundError(reported_source)
 
             self._validate_relocation_provenance(request, delivered_hash, reported_source)
+            self._validate_declared_digest(request, delivered_hash, reported_source)
             # Above retention for the reason the relocation guard is: the pin
             # is judged against the digest of the caller's own bytes, and bytes
             # no document holds would otherwise be copied in and then refused,
@@ -1941,6 +1948,7 @@ class IngestionService:
         # back on, and a check written against the fallback would go quiet
         # on exactly the branch the real path refuses.
         self._validate_relocation_provenance(request, delivered_hash, reported_source)
+        self._validate_declared_digest(request, delivered_hash, reported_source)
 
         parsed = (
             self._parse_source_filename(source_path, request.source_type)
@@ -2970,6 +2978,36 @@ class IngestionService:
         claimed = request.relocated_from.source_content_hash
         if claimed != delivered:
             raise RelocationProvenanceMismatchError("relocated_from", claimed, delivered)
+
+    def _validate_declared_digest(
+        self,
+        request: IngestRequest,
+        delivered_hash: str | None,
+        reported_source: str,
+    ) -> None:
+        """Hold the source this call ingests to the digest the caller declared.
+
+        A caller that declares ``sha256`` states which file it means, and the
+        declaration means the same wherever the bytes were read: a token bound
+        to it at mint already refused other bytes on the upload leg, and this
+        holds the co-located read, a redeemed token and a resident source to
+        the same answer. Asked beside the relocation guard and from both the
+        real path and the preview, for that guard's reasons -- above
+        retention, so a refused call leaves no copy behind, and against the
+        delivered digest, so the preview and the run agree.
+
+        A ``delivered_hash`` of ``None`` -- resident bytes no document here
+        records -- is refused rather than admitted: there is no digest the
+        declaration can be held to, and passing it would make the declaration
+        mean nothing on exactly the branch it cannot be checked.
+        """
+        if request.sha256 is None:
+            return
+        delivered = canonicalize_sha256(delivered_hash) if delivered_hash is not None else None
+        if delivered is None or not hmac.compare_digest(request.sha256, delivered):
+            raise SourceDigestMismatchError(
+                delivered, source=reported_source, declared_sha256=request.sha256
+            )
 
     def _validate_tier3_payload(
         self,

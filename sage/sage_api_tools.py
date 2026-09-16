@@ -68,6 +68,7 @@ _VAULT_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(VaultIdStr)
 _DOCUMENT_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(DocumentIdStr)
 _EDGE_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(EdgeIdStr)
 _DOCUMENT_DATE_ADAPTER: TypeAdapter[str | None] = TypeAdapter(DocumentDateStr)
+_SHA256_ADAPTER: TypeAdapter[str] = TypeAdapter(Sha256Str)
 # Collection parameters carry the alias on the element type, so the adapter
 # wraps the sequence rather than the alias. Validation is whole-argument: one
 # unusable entry fails the call rather than being dropped from the batch.
@@ -265,6 +266,7 @@ def register_sage_tools(
         document_id: str | None = None,
         transfer_token: str | None = None,
         dry_run: bool = False,
+        sha256: str | None = None,
         # Tripwires, not functional arguments. These are the ``metadata``
         # keys; they are published here only so a wrong-level spelling
         # reaches the guard instead of being stripped client-side. See
@@ -525,6 +527,11 @@ def register_sage_tools(
           on this vault. ``detail`` carries ``vault_id`` and the migration's
           ISO 8601 ``start_time``. Raised before anything else, a ``dry_run``
           included; retry once the migration has returned.
+        - ``source_digest_mismatch`` (400): ``sha256`` was supplied and the
+          source this call ingests has a different digest. Detail carries
+          ``source``, ``declared_sha256`` and ``delivered_sha256`` (null for a
+          resident source no document here records). Refused before the
+          source is retained, a ``dry_run`` included.
 
         An ingest that fails after redeeming a ``transfer_token`` -- for any
         reason above, not only a store refusal -- leaves that token redeemable
@@ -657,6 +664,14 @@ def register_sage_tools(
                 carries and what it cannot evaluate. A ``transfer_token``
                 is read but not spent on a dry run, so the same token
                 completes the real ingest afterwards.
+            sha256: SHA-256 digest of the file to ingest, bare hex or
+                ``sha256:``-prefixed. The call refuses a source with any other
+                digest with ``source_digest_mismatch``. When the call returns
+                an upload recipe, each token is bound to this digest and the
+                upload endpoint refuses any other bytes without spending the
+                token -- so a token seen by anyone not already holding the
+                exact file admits nothing. Pass it again on the completion
+                call. Omit to admit any bytes.
         """
         try:
             # First, before any validation or vault work: a misplaced
@@ -678,6 +693,8 @@ def register_sage_tools(
                 predecessor_id = _DOCUMENT_ID_ADAPTER.validate_python(predecessor_id)
             if document_id is not None:
                 document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
+            if sha256 is not None:
+                sha256 = _SHA256_ADAPTER.validate_python(sha256)
             v = get_vault(vault_id)
 
             def _build_request(resolved_source: str) -> IngestRequest:
@@ -695,6 +712,7 @@ def register_sage_tools(
                     relocated_from=relocated_from,
                     document_id=document_id,
                     dry_run=dry_run,
+                    sha256=sha256,
                 )
 
             # The delivery gate runs beneath the tool, in the service, so this
@@ -706,7 +724,7 @@ def register_sage_tools(
             # timeout (BH-130). Callers wait for a terminal pipeline_status on
             # the document rather than requesting status per unit of work.
             result = await v.ingestion_service.ingest_from_caller(
-                DeliveryDeclaration(source=source, transfer_token=transfer_token),
+                DeliveryDeclaration(source=source, transfer_token=transfer_token, sha256=sha256),
                 _build_request,
                 dry_run=dry_run,
                 wait_for_pipeline=False,
@@ -3349,6 +3367,7 @@ def register_sage_tools(
         source: str | None = None,
         document_id: str | None = None,
         transfer_token: str | None = None,
+        sha256: str | None = None,
     ) -> dict:
         """Repair a document's retained source file by writing delivered bytes back over it.
 
@@ -3418,6 +3437,8 @@ def register_sage_tools(
           ``detail.available_vaults`` lists the registered vaults.
         - ``invalid_document_id`` (400): the supplied document_id is not a
           well-formed document id.
+        - ``invalid_sha256`` (400): the supplied sha256 is not a well-formed
+          sha256 digest.
         - ``restore_target_unresolved`` (404): no document, or more than one,
           claims the delivered bytes; ``detail.candidate_ids`` names them.
         - ``document_not_found`` (404): the supplied document_id names no document.
@@ -3425,6 +3446,9 @@ def register_sage_tools(
         - ``restore_provenance_mismatch`` (400): the pinned document was not
           ingested from the delivered bytes.
         - ``restore_source_not_absolute`` (400): ``source`` is not an absolute path.
+        - ``source_digest_mismatch`` (400): ``sha256`` was supplied and the
+          delivered bytes have a different digest. Detail carries ``source``,
+          ``declared_sha256`` and ``delivered_sha256``. Nothing is written.
         - ``ambiguous_ingest_source`` (400): both ``source`` and
           ``transfer_token`` were supplied.
         - ``missing_ingest_source`` (400): neither was supplied.
@@ -3474,11 +3498,21 @@ def register_sage_tools(
             document_id: Optional pin naming the document to restore.
             transfer_token: Completion handle from a prior ``upload_required``
                 recipe; supply instead of ``source``.
+            sha256: SHA-256 digest of the file being restored, bare hex or
+                ``sha256:``-prefixed. Bytes with any other digest are refused
+                with ``source_digest_mismatch`` before anything is written.
+                When the call returns an upload recipe, the token is bound to
+                this digest and the upload endpoint refuses any other bytes
+                without spending it -- so a token seen by anyone not already
+                holding the exact file admits nothing. Pass it again on the
+                completion call.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             if document_id is not None:
                 document_id = _DOCUMENT_ID_ADAPTER.validate_python(document_id)
+            if sha256 is not None:
+                sha256 = _SHA256_ADAPTER.validate_python(sha256)
             v = get_vault(vault_id)
             if v.maintenance_service is None:
                 raise RuntimeError(
@@ -3489,7 +3523,10 @@ def register_sage_tools(
             # path applies, so a caller generalizing that tool's completion
             # shape does not find this one narrower.
             result = await v.maintenance_service.restore_vault_source_file(
-                source=source, document_id=document_id, transfer_token=transfer_token
+                source=source,
+                document_id=document_id,
+                transfer_token=transfer_token,
+                sha256=sha256,
             )
             return serialize(result)
         except (SAGEError, ValueError) as e:

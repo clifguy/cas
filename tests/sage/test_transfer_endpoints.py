@@ -427,6 +427,192 @@ async def test_upload_ceiling_aborts_mid_stream(client, tmp_path, monkeypatch):
         assert retry.json()["size"] == len(small)
 
 
+# ---------------------------------------------------------------------------
+# Digest-bound upload tokens
+# ---------------------------------------------------------------------------
+
+
+def _sha256_hex(body: bytes) -> str:
+    return hashlib.sha256(body).hexdigest()
+
+
+async def _mint_bound_upload(tmp_path, name: str, sha256: str) -> dict:
+    """Mint a single-leg recipe whose token is bound to ``sha256``.
+
+    Under the cloud profile the mint never reads the caller's path, so none
+    is written: the digest is the only thing tying the token to a file.
+    """
+    src = tmp_path / "caller_inbox" / name
+    recipe = _parse(
+        await ingest_document(_VAULT_ID, source=str(src), source_type="markdown", sha256=sha256)
+    )
+    assert recipe.get("status") == "upload_required", recipe
+    return recipe["uploads"][0]
+
+
+async def test_digest_bound_upload_refuses_other_bytes(client, tmp_path):
+    """Bytes whose digest differs from the bound one are refused, not staged,
+    and the token is not spent.
+
+    Anti-coincidental-pass: the refusal is identified by its code rather than
+    its status alone, so an ``unknown_parameter`` 400 cannot stand in for it.
+    The rollback is proven three ways -- no staged file, the entry back at
+    ``pending_bytes`` with no recorded digest, and the *same* token then
+    accepting the right bytes and completing the ingest -- so a handler that
+    refused after staging, or that spent the token on refusal, fails. The
+    bound digest is searched for in the whole response body, so a refusal
+    that told the presenter which bytes would pass fails too.
+    """
+    right = b"# Bound\n\nThe exact caller file.\n"
+    wrong = b"# Bound\n\nSomebody else's bytes.\n"
+
+    with _profile("cloud"):
+        item = await _mint_bound_upload(tmp_path, "bound.md", _sha256_hex(right))
+
+        refused = await client.put(
+            "/upload", content=wrong, headers={"X-Upload-Token": item["token"]}
+        )
+        assert refused.status_code == 400, refused.text
+        assert refused.json()["code"] == "source_digest_mismatch"
+        assert _sha256_hex(right) not in refused.text
+
+        entry = get_transfer_store()._entries[item["transfer_id"]]
+        assert not entry.staged_path.exists()
+        assert entry.state == "pending_bytes"
+        assert entry.staged_sha256 is None
+
+        accepted = await client.put(
+            "/upload", content=right, headers={"X-Upload-Token": item["token"]}
+        )
+        assert accepted.status_code == 201, accepted.text
+
+        done = _parse(
+            await ingest_document(
+                _VAULT_ID,
+                source_type="markdown",
+                transfer_token=item["token"],
+                sha256=_sha256_hex(right),
+            )
+        )
+
+    assert "error" not in done, done
+    assert done["source_content_hash"] == "sha256:" + _sha256_hex(right)
+
+
+async def test_digest_bound_upload_accepts_matching_bytes(client, tmp_path):
+    """The right bytes stage on the first attempt, and the recipe echoes the
+    bound digest in canonical form.
+
+    Anti-coincidental-pass: the digest is supplied bare, so a recipe echoing
+    the caller's spelling verbatim fails the canonical-form equality.
+    """
+    body = b"# Matching\n"
+
+    with _profile("cloud"):
+        item = await _mint_bound_upload(tmp_path, "matching.md", _sha256_hex(body))
+        assert item["sha256"] == "sha256:" + _sha256_hex(body)
+
+        resp = await client.put("/upload", content=body, headers={"X-Upload-Token": item["token"]})
+        assert resp.status_code == 201, resp.text
+
+        done = _parse(
+            await ingest_document(_VAULT_ID, source_type="markdown", transfer_token=item["token"])
+        )
+
+    assert "error" not in done, done
+
+
+async def test_unbound_upload_accepts_any_bytes_and_recipe_omits_digest(client, tmp_path):
+    """The paired control: a token minted without a digest behaves as before.
+
+    Paired with the refusal above, so neither an always-on check (which reds
+    here) nor an always-off one (which reds there) passes both.
+    """
+    with _profile("cloud"):
+        item = await _mint_upload(tmp_path, "unbound.md", b"# minted against these bytes\n")
+        assert item.get("sha256") is None
+
+        resp = await client.put(
+            "/upload",
+            content=b"# but any bytes are admitted\n",
+            headers={"X-Upload-Token": item["token"]},
+        )
+
+    assert resp.status_code == 201, resp.text
+
+
+async def test_bulk_digest_refusal_is_per_leg(client, tmp_path):
+    """A refused leg of a bulk recipe leaves its siblings staged and completable.
+
+    Anti-coincidental-pass: leg B is delivered *after* leg A is refused and is
+    completed without A, so a refusal that failed or rolled back the whole
+    recipe fails on B. A is then delivered correctly on its original token and
+    completed, so a refusal that spent A's token fails there.
+    """
+    body_a = b"# Leg A\n"
+    body_b = b"# Leg B\n"
+    # Named, never written: the cloud-profile mint does not read the caller's path.
+    inbox = tmp_path / "caller_inbox"
+
+    with _profile("cloud"):
+        recipe = _parse(
+            await bulk_ingest_document(
+                _VAULT_ID,
+                [
+                    {
+                        "file_path": str(inbox / "leg_a.md"),
+                        "source_type": "markdown",
+                        "sha256": _sha256_hex(body_a),
+                    },
+                    {
+                        "file_path": str(inbox / "leg_b.md"),
+                        "source_type": "markdown",
+                        "sha256": _sha256_hex(body_b),
+                    },
+                ],
+            )
+        )
+        assert recipe.get("status") == "upload_required", recipe
+        leg_a, leg_b = recipe["uploads"]
+        assert leg_a["sha256"] == "sha256:" + _sha256_hex(body_a)
+        assert leg_b["sha256"] == "sha256:" + _sha256_hex(body_b)
+
+        refused = await client.put(
+            "/upload", content=body_b, headers={"X-Upload-Token": leg_a["token"]}
+        )
+        assert refused.status_code == 400, refused.text
+        assert refused.json()["code"] == "source_digest_mismatch"
+        assert get_transfer_store()._entries[leg_a["transfer_id"]].state == "pending_bytes"
+
+        staged_b = await client.put(
+            "/upload", content=body_b, headers={"X-Upload-Token": leg_b["token"]}
+        )
+        assert staged_b.status_code == 201, staged_b.text
+
+        summary_b = _parse(
+            await bulk_ingest_document(
+                _VAULT_ID,
+                [{"transfer_token": leg_b["token"], "source_type": "markdown"}],
+            )
+        )
+        assert summary_b.get("error_count") == 0, summary_b
+        assert summary_b["documents_created"]["new"] == 1
+
+        staged_a = await client.put(
+            "/upload", content=body_a, headers={"X-Upload-Token": leg_a["token"]}
+        )
+        assert staged_a.status_code == 201, staged_a.text
+        summary_a = _parse(
+            await bulk_ingest_document(
+                _VAULT_ID,
+                [{"transfer_token": leg_a["token"], "source_type": "markdown"}],
+            )
+        )
+
+    assert summary_a.get("error_count") == 0, summary_a
+    assert summary_a["documents_created"]["new"] == 1
+
+
 async def test_upload_token_failures(client, tmp_path):
     """Missing/wrong token -> 410; a second PUT after success -> 409."""
     with _profile("cloud"):

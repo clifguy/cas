@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hmac
 import json
 from collections.abc import AsyncGenerator, Sequence
 from dataclasses import dataclass
@@ -25,6 +26,7 @@ from sage.api.errors import (
     RestoreProvenanceMismatchError,
     RestoreSourceNotAbsoluteError,
     RestoreTargetUnresolvedError,
+    SourceDigestMismatchError,
     SourceFileNotFoundError,
     VaultSourcePathRefusedError,
 )
@@ -916,6 +918,7 @@ class MaintenanceService:
         source: str | None = None,
         document_id: str | None = None,
         transfer_token: str | None = None,
+        sha256: str | None = None,
     ) -> SourceFileRestoreReport | UploadRecipe:
         """Apply the caller-local delivery gate, then restore from what it resolves.
 
@@ -938,6 +941,10 @@ class MaintenanceService:
         again. The delivery shape is settled first, so supplying both shapes
         refuses as ambiguous rather than on the path.
 
+        ``sha256``, when given, is the digest the caller declares for the
+        bytes, already canonical. A minted token is bound to it, and the bytes
+        this call resolves are held to it before anything is written.
+
         Raises:
             AmbiguousIngestSourceError: both delivery shapes were supplied.
             MissingIngestSourceError: neither was supplied.
@@ -947,19 +954,32 @@ class MaintenanceService:
                 or scoped to another vault.
             TransferNotStagedError: the token's bytes have not been delivered.
             SourceFileNotFoundError: no readable file at the resolved path.
+            SourceDigestMismatchError: ``sha256`` was supplied and the
+                delivered bytes have another digest.
         """
         with caller_local_delivery(
-            self._vault_id, [DeliveryDeclaration(source=source, transfer_token=transfer_token)]
+            self._vault_id,
+            [DeliveryDeclaration(source=source, transfer_token=transfer_token, sha256=sha256)],
         ) as plan:
             if plan.recipe is not None:
                 return plan.recipe
             (delivery,) = plan.resolved
             if source is not None and not delivery.caller_absolute:
                 raise RestoreSourceNotAbsoluteError(source)
-            return await self._restore_delivered(delivery.path, document_id)
+            return await self._restore_delivered(
+                delivery.path,
+                document_id,
+                sha256=sha256,
+                reported_source=delivery.declared_source or source or delivery.path,
+            )
 
     async def _restore_delivered(
-        self, source: str, document_id: str | None
+        self,
+        source: str,
+        document_id: str | None,
+        *,
+        sha256: str | None = None,
+        reported_source: str | None = None,
     ) -> SourceFileRestoreReport:
         """Write delivered bytes back over a document's retained source file.
 
@@ -1016,6 +1036,17 @@ class MaintenanceService:
         # anything is written, and the write streams the file from its path
         # again, so at no point does the delivered file need to fit in memory.
         delivered_hash = hash_file(delivered)
+        # Held to the caller's declaration before the target is resolved or
+        # anything is read back or written, so a refused restore leaves the
+        # retained copy exactly as it found it.
+        if sha256 is not None:
+            delivered_digest = canonicalize_sha256(delivered_hash)
+            if not hmac.compare_digest(sha256, delivered_digest):
+                raise SourceDigestMismatchError(
+                    delivered_digest,
+                    source=reported_source or source,
+                    declared_sha256=sha256,
+                )
 
         doc, provenance_verified = await self._resolve_restore_target(delivered_hash, document_id)
         storage_root = self._storage_root()

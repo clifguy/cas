@@ -86,6 +86,9 @@ class FileDescriptor:
     #: name this spelling and never a resolved one. Left unset, ``file_path``
     #: stands, which is what every caller that names its own file wants.
     declared_source: str | None = None
+    #: The digest the caller declared for the file, canonicalized, or ``None``.
+    #: Carried onto the per-file request, where a mismatch is that file's error.
+    sha256: str | None = None
 
 
 @dataclass
@@ -332,6 +335,7 @@ class BatchIngestService:
                         # metadata-review queue (needs_review defaults True).
                         needs_review=needs_review,
                         dry_run=dry_run,
+                        sha256=fd.sha256,
                     )
                 except ValidationError as exc:
                     # The single-document surface validates this request at

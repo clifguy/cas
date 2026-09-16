@@ -1,0 +1,29 @@
+classification: minor
+category:
+  - capability
+summary: >-
+  An ingest or a source-file restore can declare the SHA-256 of the file it means.
+  IngestRequest, SourceFileRestoreRequest and the ingest_document and
+  restore_vault_source_file tools gain an optional sha256, and each bulk_ingest_document
+  file entry may carry one; a bare or sha256:-prefixed digest is accepted and
+  canonicalized. On a restore, bytes with another digest are refused with
+  source_digest_mismatch before the retained copy is touched. The
+  declaration is held wherever the bytes are first seen. Where the call returns an
+  upload recipe, each leg's token is bound to its entry's digest and UploadRecipeItem
+  echoes it as sha256; PUT /upload then refuses any other bytes with 400
+  source_digest_mismatch, staging nothing and leaving the token retryable, and the
+  refusal names the transfer and the delivered digest but never the bound one. On the
+  ingest itself -- a co-located read, a redeemed token, a resident source, and a dry run
+  alike -- a source with another digest is refused with the same code before anything
+  is retained, with detail carrying source, declared_sha256 and delivered_sha256 (null
+  for a resident source no document records). In a batch the mismatch is that file's
+  summary.errors[] entry, and a malformed entry digest refuses the whole call with
+  invalid_sha256 located at files.<n>.sha256. A token minted without a digest behaves
+  as before.
+for_callers: >-
+  Nothing changes for a call that omits sha256. To make a recipe's tokens worthless to
+  anyone not already holding the exact file, pass the file's sha256 on the originating
+  call and again on the completion call; deliver the bytes as before, and treat a 400
+  source_digest_mismatch from the upload leg as "wrong file", retrying the same token
+  with the right one. A client decoding UploadRecipeItem may now see a sha256 field, and
+  one branching on BatchIngestFileError.code may now see source_digest_mismatch.
