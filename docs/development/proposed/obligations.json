@@ -196,7 +196,11 @@
         "pyproject.toml",
         "uv.lock",
         "requirements*.txt",
-        "scripts/bootstrap_postgres.py"
+        "scripts/bootstrap_postgres.py",
+        "sage/__main__.py",
+        "app/backend/__main__.py",
+        "sage/maintenance/*",
+        "sage/storage/postgres/*"
       ],
       "acceptance_case": "conditional-checks-renames",
       "owner_decision": {

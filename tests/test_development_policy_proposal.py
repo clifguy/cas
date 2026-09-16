@@ -1,6 +1,7 @@
 """Check the inactive proposal's composition without installing it."""
 
 import json
+import re
 from fnmatch import fnmatch
 from pathlib import Path
 
@@ -84,3 +85,31 @@ def test_proposal_does_not_install_governing_pointer() -> None:
         text = (ROOT / name).read_text()
         assert "docs/development/project-policy.md" not in text
         assert "docs/development/proposed/" not in text
+
+
+def test_azure_scope_covers_declared_python_execution_roots() -> None:
+    modules = set()
+    declarations = [ROOT / "Dockerfile", ROOT / "Dockerfile.bff", *ROOT.glob("infra/**/*.bicep")]
+    for declaration in declarations:
+        content = declaration.read_text()
+        if declaration.suffix == ".bicep":
+            assert len(re.findall(r"\bcommand:", content)) == len(
+                re.findall(r"\bcommand:\s*\[", content)
+            ), "nonliteral job commands need explicit execution-root coverage"
+        arrays = re.findall(r"(?:ENTRYPOINT|command:)\s*(\[[^\]]+\])", content, re.S)
+        for array in arrays:
+            command = re.findall(r"[\"']([^\"']+)[\"']", array)
+            if "-m" in command:
+                modules.add(command[command.index("-m") + 1])
+    assert {"sage", "app.backend", "sage.storage.postgres.cloud_bootstrap"} <= modules
+    azure = next(item for item in profile()["bindings"] if item["id"] == "cas-azure-review")
+    omitted = set()
+    for module in modules:
+        relative = module.replace(".", "/")
+        path = relative + ".py"
+        if not (ROOT / path).is_file():
+            path = relative + "/__main__.py"
+        assert (ROOT / path).is_file(), f"declared execution root missing: {module}"
+        if not any(fnmatch(path, pattern) for pattern in azure["paths"]):
+            omitted.add(path)
+    assert not omitted, f"declared execution roots omitted: {sorted(omitted)}"
