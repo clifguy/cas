@@ -996,6 +996,52 @@ class TestAppBatchIngest:
         assert control["error_count"] == 0, control
         assert control["documents_created"]["new"] == 2
 
+    @pytest.mark.parametrize(
+        ("parsed", "parameter"),
+        [
+            pytest.param({"codes": "PV06"}, "files.1.parsed_metadata.codes", id="codes-string"),
+            pytest.param({"title": 5}, "files.1.parsed_metadata.title", id="title-int"),
+            pytest.param("PV06", "files.1.parsed_metadata", id="not-a-mapping"),
+            pytest.param(
+                {"codes": "PV06", "bogus_field_x": 1},
+                "files.1.parsed_metadata.bogus_field_x",
+                id="undeclared-key-wins",
+            ),
+        ],
+    )
+    async def test_wrong_typed_parsed_metadata_is_refused(self, single_vault, parsed, parameter):
+        """A parsed_metadata value of the wrong type refuses the call before any ingest.
+
+        Anti-coincidental-pass: a string ``codes`` used to split into one code
+        per character and a non-string ``title`` failed in edge planning with an
+        untranslated error, so the code and location assertions exclude both.
+        The defect sits on the second entry, and the control -- the same
+        entries with well-typed values -- must create both documents, which an
+        entry the refused call had ingested first would turn into duplicates.
+        """
+        _, config = single_vault
+        sources = Path(config.vault.storage_root)
+        first = {"file_path": str(sources / "sample.md"), "source_type": "markdown"}
+
+        def second(value: object) -> dict:
+            return {
+                "file_path": str(sources / "second.md"),
+                "source_type": "markdown",
+                "parsed_metadata": value,
+            }
+
+        refused = _parse(await bulk_ingest_document("test_vault", [first, second(parsed)]))
+        control = _parse(
+            await bulk_ingest_document(
+                "test_vault", [first, second({"codes": ["PV06"], "title": "Second"})]
+            )
+        )
+
+        assert refused["error"] == "invalid_parameter", refused
+        assert refused["detail"]["parameter"] == parameter, refused
+        assert control["error_count"] == 0, control
+        assert control["documents_created"]["new"] == 2
+
     async def test_transfer_token_entry_is_not_an_undeclared_key(self, single_vault):
         """``transfer_token`` is a declared delivery shape, so it reaches the transfer gate."""
         result = _parse(

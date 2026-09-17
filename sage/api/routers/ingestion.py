@@ -10,7 +10,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
 from sage.api.dependencies import get_ingestion_service, get_vault_id, get_vault_services
-from sage.api.errors import InvalidParameterError, SAGEError
+from sage.api.errors import InvalidParameterError, SAGEError, undeclared_entry_key_error
 from sage.api.response_docs import boundary_400
 from sage.api.wire_route import WireRoute
 from sage.mcp_init import SAGEServices
@@ -34,32 +34,21 @@ def _undeclared_file_entry_key(exc: ValidationError) -> InvalidParameterError | 
     """Return the refusal for an undeclared key in a batch file entry, if any.
 
     Only a key under ``files.<n>`` or ``files.<n>.parsed_metadata`` qualifies;
-    every other defect in the envelope stays ``invalid_batch_metadata``. With
-    several undeclared keys, the one reported is chosen as the MCP
-    ``bulk_ingest_document`` tool chooses it -- lowest file index, the entry's
-    own keys before its parsed metadata, then the first key in sorted order --
-    so the two surfaces refuse the same request at the same location.
+    every other defect in the envelope stays ``invalid_batch_metadata``. Which
+    key is reported, when there are several, is ``undeclared_entry_key_error``'s.
     """
     candidates = []
     for err in exc.errors():
         loc = tuple(err.get("loc") or ())
-        if err.get("type") != "extra_forbidden" or not loc or loc[0] != "files":
+        if err.get("type") != "extra_forbidden" or len(loc) < 3 or loc[0] != "files":
             continue
-        if len(loc) == 3 and isinstance(loc[1], int):
-            depth = 0
-        elif len(loc) == 4 and isinstance(loc[1], int) and loc[2] == "parsed_metadata":
-            depth = 1
-        else:
+        if not isinstance(loc[1], int):
             continue
-        candidates.append(((loc[1], depth, str(loc[-1])), loc, err.get("input")))
-    if not candidates:
-        return None
-    _, loc, value = min(candidates, key=lambda candidate: candidate[0])
-    return InvalidParameterError(
-        parameter=".".join(str(segment) for segment in loc),
-        value=value,
-        constraint="Extra inputs are not permitted",
-    )
+        if len(loc) == 3:
+            candidates.append((loc[1], 0, str(loc[2]), err.get("input")))
+        elif len(loc) == 4 and loc[2] == "parsed_metadata":
+            candidates.append((loc[1], 1, str(loc[3]), err.get("input")))
+    return undeclared_entry_key_error(candidates)
 
 
 @router.post(

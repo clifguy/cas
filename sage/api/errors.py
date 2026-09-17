@@ -2461,6 +2461,32 @@ def unknown_parameter_names(exc: ValidationError | RequestValidationError) -> li
     return sorted(names)
 
 
+def undeclared_entry_key_error(
+    candidates: Iterable[tuple[int, int, str, object]],
+) -> InvalidParameterError | None:
+    """Return the refusal for one of a batch's undeclared file-entry keys.
+
+    Each candidate is ``(file index, depth, key, value)``, where depth 0 is a
+    key on the file entry itself and depth 1 a key in the ``parsed_metadata`` it
+    carries. The key reported is the one at the lowest file index, then the
+    lowest depth, then first in sorted order, located as ``files.<n>.<key>`` or
+    ``files.<n>.parsed_metadata.<key>``. Every batch surface that refuses an
+    undeclared entry key reports it through this one rule, so the same request
+    is refused at the same location wherever it arrives. ``None`` when there is
+    no candidate.
+    """
+    chosen = min(candidates, key=lambda candidate: candidate[:3], default=None)
+    if chosen is None:
+        return None
+    index, depth, key, value = chosen
+    prefix = f"files.{index}" if depth == 0 else f"files.{index}.parsed_metadata"
+    return InvalidParameterError(
+        parameter=f"{prefix}.{key}",
+        value=value,
+        constraint="Extra inputs are not permitted",
+    )
+
+
 def translate_validation_error(
     exc: ValidationError | RequestValidationError,
 ) -> SAGEError | None:

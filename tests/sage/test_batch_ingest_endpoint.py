@@ -1593,7 +1593,7 @@ async def test_b29_other_envelope_defects_stay_invalid_batch_metadata(batch_app,
     assert resp.json()["code"] == "invalid_batch_metadata", resp.text
 
 
-async def test_b29_undeclared_key_wins_over_a_malformed_value(batch_app):
+async def test_b31_undeclared_key_wins_over_a_malformed_value(batch_app):
     """An entry carrying both an undeclared key and a malformed value is
     refused for the key, as the MCP tool refuses names before values."""
     app, vault_id, _config = batch_app
