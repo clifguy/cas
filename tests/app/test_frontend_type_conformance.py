@@ -250,6 +250,7 @@ ENROLLED: Final[Enrollment] = {
 ENROLLED_REQUESTS: Final[Enrollment] = {
     "core": {
         "BatchIngestFileMetadata": "BatchIngestFileMetadata",
+        "BatchIngestParsedMetadata": "BatchIngestParsedMetadata",
         "BatchIngestUploadMetadata": "BatchIngestUploadMetadata",
         "BulkLifecycleItem": "BulkLifecycleItem",
         "BulkLifecycleRequest": "BulkLifecycleRequest",

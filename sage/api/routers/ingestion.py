@@ -7,9 +7,10 @@ runs the three-phase batch pipeline server-side, streaming SSE progress.
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import ValidationError
 
 from sage.api.dependencies import get_ingestion_service, get_vault_id, get_vault_services
-from sage.api.errors import SAGEError
+from sage.api.errors import InvalidParameterError, SAGEError
 from sage.api.response_docs import boundary_400
 from sage.api.wire_route import WireRoute
 from sage.mcp_init import SAGEServices
@@ -27,6 +28,38 @@ from sage.services.batch_ingest_stream import UploadedFile, stream_uploaded_batc
 from sage.services.ingestion import IngestionService
 
 router = APIRouter(route_class=WireRoute, tags=["Ingestion"])
+
+
+def _undeclared_file_entry_key(exc: ValidationError) -> InvalidParameterError | None:
+    """Return the refusal for an undeclared key in a batch file entry, if any.
+
+    Only a key under ``files.<n>`` or ``files.<n>.parsed_metadata`` qualifies;
+    every other defect in the envelope stays ``invalid_batch_metadata``. With
+    several undeclared keys, the one reported is chosen as the MCP
+    ``bulk_ingest_document`` tool chooses it -- lowest file index, the entry's
+    own keys before its parsed metadata, then the first key in sorted order --
+    so the two surfaces refuse the same request at the same location.
+    """
+    candidates = []
+    for err in exc.errors():
+        loc = tuple(err.get("loc") or ())
+        if err.get("type") != "extra_forbidden" or not loc or loc[0] != "files":
+            continue
+        if len(loc) == 3 and isinstance(loc[1], int):
+            depth = 0
+        elif len(loc) == 4 and isinstance(loc[1], int) and loc[2] == "parsed_metadata":
+            depth = 1
+        else:
+            continue
+        candidates.append(((loc[1], depth, str(loc[-1])), loc, err.get("input")))
+    if not candidates:
+        return None
+    _, loc, value = min(candidates, key=lambda candidate: candidate[0])
+    return InvalidParameterError(
+        parameter=".".join(str(segment) for segment in loc),
+        value=value,
+        constraint="Extra inputs are not permitted",
+    )
 
 
 @router.post(
@@ -307,13 +340,24 @@ async def ingest(
             "`invalid_batch_metadata`: the `metadata` form field is not "
             "valid JSON for the BatchIngestUploadMetadata schema, or its "
             "`files` length does not match the number of uploaded file "
-            "parts.",
+            "parts. An undeclared key in a file entry is refused as "
+            "`invalid_parameter` instead.",
         ),
         404: {
             "model": ErrorResponse,
             "description": (
                 "`vault_not_found`: no vault registered with that id; "
                 "`detail.available_vaults` lists the registered vaults."
+            ),
+        },
+        422: {
+            "model": ErrorResponse,
+            "description": (
+                "`invalid_parameter`: an entry of `metadata.files`, or the "
+                "`parsed_metadata` it carries, names a key its schema does not "
+                "declare. `detail.parameter` locates the key as "
+                "`files.<n>.<key>` or `files.<n>.parsed_metadata.<key>`, and "
+                "`detail.value` carries its value. No file is staged or ingested."
             ),
         },
     },
@@ -361,6 +405,10 @@ async def batch_ingest_documents(
     try:
         envelope = BatchIngestUploadMetadata.model_validate_json(metadata)
     except ValueError as exc:
+        if isinstance(exc, ValidationError):
+            refusal = _undeclared_file_entry_key(exc)
+            if refusal is not None:
+                raise refusal from exc
         raise SAGEError(
             "invalid_batch_metadata",
             f"`metadata` is not valid BatchIngestUploadMetadata JSON: {exc}",
@@ -382,7 +430,11 @@ async def batch_ingest_documents(
             filename=upload.filename or f"upload_{index}",
             content=await upload.read(),
             source_type=meta.source_type,
-            parsed_metadata=meta.parsed_metadata,
+            parsed_metadata=(
+                None
+                if meta.parsed_metadata is None
+                else meta.parsed_metadata.model_dump(exclude_unset=True)
+            ),
         )
         for index, (upload, meta) in enumerate(zip(files, envelope.files))
     ]

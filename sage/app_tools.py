@@ -15,7 +15,7 @@ from pydantic import TypeAdapter, ValidationError
 from sage._tool_annotations import READ_ONLY, WRITE_DESTRUCTIVE
 from sage.api.errors import InvalidParameterError, InvalidTypedAliasError, SAGEError
 from sage.mcp_init import SAGEServices, require_caller_local_filesystem
-from sage.models.schemas import Sha256Str, VaultIdStr
+from sage.models.schemas import BatchIngestParsedMetadata, Sha256Str, VaultIdStr
 from sage.services.transfer import DeliveryDeclaration, caller_local_delivery
 
 # Module-scope TypeAdapter for Pattern 2 boundary validation. See the
@@ -26,11 +26,12 @@ _SHA256_ADAPTER: TypeAdapter[str] = TypeAdapter(Sha256Str)
 
 # The names a ``bulk_ingest_document`` file entry, and the parsed metadata it
 # may carry, declare. The request surface refuses any other name in the same
-# places (CAS-ADR-037, CAS-ADR-052).
+# places (CAS-ADR-037, CAS-ADR-052). The parsed-metadata names are those of the
+# Core API's batch upload model, so the two batch surfaces close on one set.
 _FILE_ENTRY_FIELDS = frozenset(
     {"file_path", "transfer_token", "sha256", "source_type", "parsed_metadata"}
 )
-_PARSED_METADATA_FIELDS = frozenset({"title", "date", "project", "codes", "version", "doc_type"})
+_PARSED_METADATA_FIELDS = frozenset(BatchIngestParsedMetadata.model_fields)
 
 
 def _refuse_undeclared_entry_fields(files: list[dict]) -> None:
@@ -421,7 +422,7 @@ def register_app_tools(
             from sage.services.batch_ingest import (
                 BatchIngestService,
                 FileDescriptor,
-                ParsedMetadataInput,
+                parsed_metadata_input,
             )
 
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -472,22 +473,15 @@ def register_app_tools(
 
                 descriptors: list[FileDescriptor] = []
                 for f, digest, delivery in zip(files, digests, plan.resolved, strict=True):
-                    pm = f.get("parsed_metadata")
-                    parsed = None
-                    if pm:
-                        parsed = ParsedMetadataInput(
-                            title=pm.get("title", Path(delivery.path).stem),
-                            date=pm.get("date"),
-                            project=pm.get("project"),
-                            codes=pm.get("codes", []),
-                            version=pm.get("version"),
-                            doc_type=pm.get("doc_type"),
-                        )
                     descriptors.append(
                         FileDescriptor(
                             file_path=delivery.path,
                             source_type=f.get("source_type"),
-                            parsed_metadata=parsed,
+                            # An empty mapping supplies nothing, so it counts
+                            # as no parsed metadata at all.
+                            parsed_metadata=parsed_metadata_input(
+                                f.get("parsed_metadata") or None, Path(delivery.path).stem
+                            ),
                             declared_source=delivery.declared_source,
                             sha256=digest,
                         )

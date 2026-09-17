@@ -5133,6 +5133,38 @@ class ReabstractSummaryEvent(BaseModel):
     )
 
 
+class BatchIngestParsedMetadata(BaseModel):
+    """Caller-supplied parsed metadata for one file of a bulk upload.
+
+    Every field is optional. A key outside this set is refused rather than
+    ignored.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(
+        default=None,
+        description="Document title. When omitted, the stem of the uploaded file's name seeds it.",
+    )
+    date: str | None = Field(
+        default=None,
+        description=(
+            "Document calendar date (YYYY-MM-DD). A value that is not a calendar "
+            "date is reported for that file as `invalid_document_date`."
+        ),
+    )
+    project: str | None = Field(default=None, description="Project identifier.")
+    codes: list[str] | None = Field(
+        default=None,
+        description='Code identifiers (e.g. "PV07", "CD-2"), in order.',
+    )
+    version: str | None = Field(
+        default=None,
+        description='Canonical version label (e.g. "v1.2.0", "v3.0").',
+    )
+    doc_type: str | None = Field(default=None, description="Document type.")
+
+
 class BatchIngestFileMetadata(BaseModel):
     """Per-file source type and optional parsed metadata for a bulk upload.
 
@@ -5153,7 +5185,7 @@ class BatchIngestFileMetadata(BaseModel):
             "`source_type_unresolved`."
         ),
     )
-    parsed_metadata: dict[str, Any] | None = Field(
+    parsed_metadata: BatchIngestParsedMetadata | None = Field(
         default=None,
         description=(
             "Optional caller-supplied parsed metadata for this file (keys: "
