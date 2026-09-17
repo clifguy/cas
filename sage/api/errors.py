@@ -2470,10 +2470,11 @@ def undeclared_entry_key_error(
     key on the file entry itself and depth 1 a key in the ``parsed_metadata`` it
     carries. The key reported is the one at the lowest file index, then the
     lowest depth, then first in sorted order, located as ``files.<n>.<key>`` or
-    ``files.<n>.parsed_metadata.<key>``. Every batch surface that refuses an
-    undeclared entry key reports it through this one rule, so the same request
-    is refused at the same location wherever it arrives. ``None`` when there is
-    no candidate.
+    ``files.<n>.parsed_metadata.<key>``. The Core API batch upload and the MCP
+    bulk ingest tool both report through this rule, so the same entries are
+    refused at the same location on either. A request body validated by the
+    framework reports the first undeclared key the validator lists instead.
+    ``None`` when there is no candidate.
     """
     chosen = min(candidates, key=lambda candidate: candidate[:3], default=None)
     if chosen is None:

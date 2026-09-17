@@ -1062,6 +1062,35 @@ class TestAppBatchIngest:
         assert control["documents_created"]["new"] == 2
         assert len(deliveries) == 1
 
+    async def test_undeclared_name_on_a_later_entry_wins_over_an_earlier_bad_value(
+        self, single_vault
+    ):
+        """Every entry's names are refused before any entry's values are checked.
+
+        Anti-coincidental-pass: entry 0 carries a wrong-typed value and entry 1
+        an undeclared key, so a check interleaving names and values per entry
+        would report entry 0's ``codes`` rather than entry 1's key.
+        """
+        _, config = single_vault
+        sources = Path(config.vault.storage_root)
+        entries = [
+            {
+                "file_path": str(sources / "sample.md"),
+                "source_type": "markdown",
+                "parsed_metadata": {"codes": "PV06"},
+            },
+            {
+                "file_path": str(sources / "second.md"),
+                "source_type": "markdown",
+                "parsed_metadata": {"bogus_field_x": 1},
+            },
+        ]
+
+        refused = _parse(await bulk_ingest_document("test_vault", entries))
+
+        assert refused["error"] == "invalid_parameter", refused
+        assert refused["detail"]["parameter"] == "files.1.parsed_metadata.bogus_field_x", refused
+
     async def test_transfer_token_entry_is_not_an_undeclared_key(self, single_vault):
         """``transfer_token`` is a declared delivery shape, so it reaches the transfer gate."""
         result = _parse(
