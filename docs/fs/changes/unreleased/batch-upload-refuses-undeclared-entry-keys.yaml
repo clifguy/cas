@@ -1,0 +1,32 @@
+classification: minor
+category:
+  - caller-adaptation
+summary: >-
+  The Core API batch upload (POST /sage_vaults/{vault_id}/documents:batch) no longer
+  discards an undeclared key in a file's parsed_metadata. BatchIngestFileMetadata.parsed_metadata
+  is now the closed BatchIngestParsedMetadata component (title, date, project, codes,
+  version, doc_type, each optional and nullable) rather than an open object, and an
+  undeclared key there, or on the file entry itself, is refused as 422 invalid_parameter
+  located at files.<n>.parsed_metadata.<key> or files.<n>.<key>, before anything is
+  staged or ingested. With several undeclared keys, the one reported is the one the MCP
+  bulk_ingest_document tool reports for the same entries, and that tool now takes its
+  parsed-metadata names from the same component and validates each entry's
+  parsed_metadata against it: a value that is not a mapping, or a field of the wrong type,
+  is refused as 422 invalid_parameter at files.<n>.parsed_metadata,
+  files.<n>.parsed_metadata.<field>, or files.<n>.parsed_metadata.<field>.<index> for one
+  item of a list field, before anything is delivered or ingested, where a
+  string codes previously ingested one code per character and a non-string title failed
+  the call with an internal error. An undeclared entry key was previously
+  refused as 400 invalid_batch_metadata; every other envelope defect, including a
+  parsed-metadata value of the wrong type, still is. A parsed-metadata value of the wrong
+  type was previously passed through to the ingest. A null title now seeds the title from
+  the file stem, as an omitted one does. The operation declares the 422 response.
+for_callers: >-
+  A batch upload whose parsed_metadata carries a key other than title, date, project,
+  codes, version or doc_type is now refused with 422 invalid_parameter instead of having
+  the key ignored; drop the key or move it to the field it was meant for. A client
+  branching on invalid_batch_metadata for an unknown file-entry key should branch on
+  invalid_parameter, reading detail.parameter for the location. A parsed_metadata value of
+  the wrong type (codes that is not a list of strings, a title that is not a string) is
+  refused as 400 invalid_batch_metadata on the upload, and as 422 invalid_parameter by the
+  bulk_ingest_document tool. A null title is treated as omitted.

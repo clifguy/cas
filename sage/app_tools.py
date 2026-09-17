@@ -13,9 +13,14 @@ from mcp.server.fastmcp import FastMCP
 from pydantic import TypeAdapter, ValidationError
 
 from sage._tool_annotations import READ_ONLY, WRITE_DESTRUCTIVE
-from sage.api.errors import InvalidParameterError, InvalidTypedAliasError, SAGEError
+from sage.api.errors import (
+    InvalidParameterError,
+    InvalidTypedAliasError,
+    SAGEError,
+    undeclared_entry_key_error,
+)
 from sage.mcp_init import SAGEServices, require_caller_local_filesystem
-from sage.models.schemas import Sha256Str, VaultIdStr
+from sage.models.schemas import BatchIngestParsedMetadata, Sha256Str, VaultIdStr
 from sage.services.transfer import DeliveryDeclaration, caller_local_delivery
 
 # Module-scope TypeAdapter for Pattern 2 boundary validation. See the
@@ -26,11 +31,12 @@ _SHA256_ADAPTER: TypeAdapter[str] = TypeAdapter(Sha256Str)
 
 # The names a ``bulk_ingest_document`` file entry, and the parsed metadata it
 # may carry, declare. The request surface refuses any other name in the same
-# places (CAS-ADR-037, CAS-ADR-052).
+# places (CAS-ADR-037, CAS-ADR-052). The parsed-metadata names are those of the
+# Core API's batch upload model, so the two batch surfaces close on one set.
 _FILE_ENTRY_FIELDS = frozenset(
     {"file_path", "transfer_token", "sha256", "source_type", "parsed_metadata"}
 )
-_PARSED_METADATA_FIELDS = frozenset({"title", "date", "project", "codes", "version", "doc_type"})
+_PARSED_METADATA_FIELDS = frozenset(BatchIngestParsedMetadata.model_fields)
 
 
 def _refuse_undeclared_entry_fields(files: list[dict]) -> None:
@@ -39,22 +45,56 @@ def _refuse_undeclared_entry_fields(files: list[dict]) -> None:
     The entries arrive as plain mappings, so a misspelled or misplaced name
     would otherwise be read past without a word. The refusal is the
     ``invalid_parameter`` envelope the request surface gives the same name,
-    located the same way, and it is raised before anything in the batch is
-    delivered or ingested.
+    located the same way and chosen among several by the same rule, and it is
+    raised before anything in the batch is delivered or ingested.
     """
+    candidates: list[tuple[int, int, str, object]] = []
     for index, entry in enumerate(files):
-        locations = [(f"files.{index}", entry, _FILE_ENTRY_FIELDS)]
+        locations = [(0, entry, _FILE_ENTRY_FIELDS)]
         parsed = entry.get("parsed_metadata")
         if isinstance(parsed, dict):
-            locations.append((f"files.{index}.parsed_metadata", parsed, _PARSED_METADATA_FIELDS))
-        for prefix, mapping, declared in locations:
-            undeclared = sorted(name for name in mapping if name not in declared)
-            if undeclared:
-                raise InvalidParameterError(
-                    parameter=f"{prefix}.{undeclared[0]}",
-                    value=mapping[undeclared[0]],
-                    constraint="Extra inputs are not permitted",
-                )
+            locations.append((1, parsed, _PARSED_METADATA_FIELDS))
+        for depth, mapping, declared in locations:
+            candidates.extend(
+                (index, depth, name, mapping[name]) for name in mapping if name not in declared
+            )
+    refusal = undeclared_entry_key_error(candidates)
+    if refusal is not None:
+        raise refusal
+
+
+def _parsed_metadata_of(files: list[dict]) -> list[BatchIngestParsedMetadata | None]:
+    """Validate each entry's parsed metadata and return it as the shared model.
+
+    Checked for the whole batch before anything is delivered or ingested, after
+    the undeclared-name refusal. A value that is not a mapping, or a field of
+    the wrong type, refuses the call as ``invalid_parameter`` located at
+    ``files.<n>.parsed_metadata``, ``files.<n>.parsed_metadata.<field>``, or,
+    for one item of a list field, ``files.<n>.parsed_metadata.<field>.<index>``.
+    An absent or empty mapping supplies nothing and is returned as ``None``.
+    """
+    validated: list[BatchIngestParsedMetadata | None] = []
+    for index, entry in enumerate(files):
+        raw = entry.get("parsed_metadata")
+        prefix = f"files.{index}.parsed_metadata"
+        if raw is None or raw == {}:
+            validated.append(None)
+            continue
+        if not isinstance(raw, dict):
+            raise InvalidParameterError(
+                parameter=prefix, value=raw, constraint="Input should be a valid dictionary"
+            )
+        try:
+            validated.append(BatchIngestParsedMetadata.model_validate(raw))
+        except ValidationError as exc:
+            err = exc.errors()[0]
+            loc = ".".join(str(segment) for segment in err.get("loc") or ())
+            raise InvalidParameterError(
+                parameter=f"{prefix}.{loc}" if loc else prefix,
+                value=err.get("input"),
+                constraint=str(err.get("msg", "Invalid value")),
+            ) from exc
+    return validated
 
 
 def _declared_digests(files: list[dict]) -> list[str | None]:
@@ -333,8 +373,12 @@ def register_app_tools(
           success.
         - ``invalid_parameter`` (422): a file entry, or the
           ``parsed_metadata`` it carries, names a key the tool does not
-          declare; ``detail.parameter`` locates it (``files.<n>.<key>`` or
-          ``files.<n>.parsed_metadata.<key>``). A batch-boundary refusal
+          declare, or its ``parsed_metadata`` is not a mapping or carries a
+          value of the wrong type; ``detail.parameter`` locates it
+          (``files.<n>.<key>``, ``files.<n>.parsed_metadata``,
+          ``files.<n>.parsed_metadata.<key>``, or
+          ``files.<n>.parsed_metadata.<key>.<index>`` for one item of a list
+          such as ``codes``). A batch-boundary refusal
           raised before any file is delivered or ingested.
         - ``invalid_sha256`` (400): a file entry's ``sha256`` is not a
           well-formed sha256 digest; the detail is keyed by its location,
@@ -421,7 +465,7 @@ def register_app_tools(
             from sage.services.batch_ingest import (
                 BatchIngestService,
                 FileDescriptor,
-                ParsedMetadataInput,
+                parsed_metadata_input,
             )
 
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -434,6 +478,7 @@ def register_app_tools(
                 }
 
             _refuse_undeclared_entry_fields(files)
+            parsed_metadata = _parsed_metadata_of(files)
             digests = _declared_digests(files)
 
             # Each entry arrives by exactly one delivery shape: a
@@ -471,23 +516,17 @@ def register_app_tools(
                     return serialize(plan.recipe)
 
                 descriptors: list[FileDescriptor] = []
-                for f, digest, delivery in zip(files, digests, plan.resolved, strict=True):
-                    pm = f.get("parsed_metadata")
-                    parsed = None
-                    if pm:
-                        parsed = ParsedMetadataInput(
-                            title=pm.get("title", Path(delivery.path).stem),
-                            date=pm.get("date"),
-                            project=pm.get("project"),
-                            codes=pm.get("codes", []),
-                            version=pm.get("version"),
-                            doc_type=pm.get("doc_type"),
-                        )
+                for f, parsed, digest, delivery in zip(
+                    files, parsed_metadata, digests, plan.resolved, strict=True
+                ):
                     descriptors.append(
                         FileDescriptor(
                             file_path=delivery.path,
                             source_type=f.get("source_type"),
-                            parsed_metadata=parsed,
+                            parsed_metadata=parsed_metadata_input(
+                                None if parsed is None else parsed.model_dump(exclude_unset=True),
+                                Path(delivery.path).stem,
+                            ),
                             declared_source=delivery.declared_source,
                             sha256=digest,
                         )

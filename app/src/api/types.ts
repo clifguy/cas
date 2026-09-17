@@ -484,8 +484,8 @@ export interface LoginChallenge {
 //
 // Hand-mirrored from the SAGE Core API components in
 // docs/fs/sage/sage_core_api.openapi.yaml: BatchIngestFileMetadata,
-// BatchIngestUploadMetadata, DocumentsCreated, ProgressEvent, SummaryEvent,
-// IngestPreview, DocTypeRequirements.
+// BatchIngestParsedMetadata, BatchIngestUploadMetadata, DocumentsCreated,
+// ProgressEvent, SummaryEvent, IngestPreview, DocTypeRequirements.
 // Sent/consumed directly against POST /sage_vaults/{vault_id}/documents:batch,
 // the hosted-profile bulk-ingest surface where the browser uploads file content
 // (the server shares no filesystem with the client). Kept distinct from the
@@ -493,9 +493,18 @@ export interface LoginChallenge {
 // docs/fs/cas_app_api.openapi.yaml: both endpoints deliver one wire shape today,
 // but each specification publishes its own, so each has its own mirror.
 
+export interface BatchIngestParsedMetadata {
+  title?: string | null;
+  date?: string | null;
+  project?: string | null;
+  codes?: string[] | null;
+  version?: string | null;
+  doc_type?: string | null;
+}
+
 export interface BatchIngestFileMetadata {
   source_type: string;
-  parsed_metadata?: Record<string, unknown> | null;
+  parsed_metadata?: BatchIngestParsedMetadata | null;
 }
 
 export interface BatchIngestUploadMetadata {

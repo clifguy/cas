@@ -381,12 +381,14 @@ async def test_standalone_app_refuses_undeclared_names(
 
 
 def test_mcp_file_entry_names_match_the_request_shapes():
-    """The MCP tool declares the names the application request models declare.
+    """The MCP tool declares the names the request models declare.
 
-    The tool reads plain mappings, so its declared names are listed by hand;
-    this holds each list to the model it restates. A field added to either
-    model and not to the tool would be accepted on one surface and refused on
-    the other. ``transfer_token`` and ``sha256`` are the entry names the tool
+    The tool reads plain mappings, so its entry names are listed by hand; this
+    holds that list to the model it restates, and holds the parsed-metadata
+    names, which the tool takes from the Core API's batch upload model, to the
+    application's model and the neutral input they are converted into. A field
+    added to one model and not another would be accepted on one surface and
+    refused on the other. ``transfer_token`` and ``sha256`` are the entry names the tool
     has beyond the model: the upload delivery shape, and the digest a minted
     upload token is bound to, neither of which the application API, reading
     paths on a shared filesystem, offers.
@@ -395,8 +397,10 @@ def test_mcp_file_entry_names_match_the_request_shapes():
 
     from app.backend.models import IngestFileItem, ParsedMetadata
     from sage.app_tools import _FILE_ENTRY_FIELDS, _PARSED_METADATA_FIELDS
+    from sage.models.schemas import BatchIngestParsedMetadata
     from sage.services.batch_ingest import ParsedMetadataInput
 
     assert _FILE_ENTRY_FIELDS == set(IngestFileItem.model_fields) | {"transfer_token", "sha256"}
+    assert _PARSED_METADATA_FIELDS == set(BatchIngestParsedMetadata.model_fields)
     assert _PARSED_METADATA_FIELDS == set(ParsedMetadata.model_fields)
     assert _PARSED_METADATA_FIELDS == {field.name for field in fields(ParsedMetadataInput)}
