@@ -2,13 +2,12 @@
 
 Two tiers. The concreteness check (C0) and the row-converter exhaustive-field
 closure tests (C1) are pure unit tests that need no server. The rest exercise
-behavior only Postgres provides -- the chain-head trigger, the partial tier3
-unique index shape, the close barrier, and concurrent multi-writer access that
-the embedded SQLite store's single-writer model cannot support -- against a real
-Postgres via the ``postgres_graph_store`` fixture, which skips without
-``SAGE_TEST_PG_DSN``. Cross-backend parity (CRUD, edges, traversal, lifecycle,
-uniqueness behaving identically to SQLite) is covered by the parametrized
-``graph_store`` fixture in the shared behavioral test modules.
+Postgres behavior, including the chain-head trigger, partial tier3 uniqueness,
+the close barrier, and concurrent multi-writer access, against a real Postgres
+via the ``postgres_graph_store`` fixture, which skips without
+``SAGE_TEST_PG_DSN``. Shared behavioral test modules cover CRUD, edges, traversal,
+lifecycle, and uniqueness through ``graph_store``, a synchronous dispatcher to
+that same Postgres fixture. Postgres is the sole storage backend.
 """
 
 import asyncio
@@ -419,15 +418,14 @@ async def test_close_barrier_and_injected_pool_not_closed(postgres_graph_store):
 
 
 # ---------------------------------------------------------------------------
-# C5: concurrent multi-writer access SQLite could not support
+# C5: concurrent multi-writer access through the Postgres connection pool
 # ---------------------------------------------------------------------------
 
 _N = 8
 
 
 async def test_c5a_concurrent_distinct_document_inserts(postgres_graph_store):
-    """N coroutines insert distinct documents concurrently; all land. The
-    embedded SQLite store serializes writers behind one thread."""
+    """N coroutines insert distinct documents concurrently; all land."""
     store = postgres_graph_store
     await asyncio.gather(*[store.insert_document(_doc(i)) for i in range(_N)])
     assert await store.get_total_document_count() == _N
