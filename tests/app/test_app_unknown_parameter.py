@@ -386,9 +386,10 @@ def test_mcp_file_entry_names_match_the_request_shapes():
     The tool reads plain mappings, so its declared names are listed by hand;
     this holds each list to the model it restates. A field added to either
     model and not to the tool would be accepted on one surface and refused on
-    the other. ``transfer_token`` is the one entry name the tool has beyond
-    the model: the upload delivery shape, which the application API, reading
-    paths on a shared filesystem, does not offer.
+    the other. ``transfer_token`` and ``sha256`` are the entry names the tool
+    has beyond the model: the upload delivery shape, and the digest a minted
+    upload token is bound to, neither of which the application API, reading
+    paths on a shared filesystem, offers.
     """
     from dataclasses import fields
 
@@ -396,6 +397,6 @@ def test_mcp_file_entry_names_match_the_request_shapes():
     from sage.app_tools import _FILE_ENTRY_FIELDS, _PARSED_METADATA_FIELDS
     from sage.services.batch_ingest import ParsedMetadataInput
 
-    assert _FILE_ENTRY_FIELDS == set(IngestFileItem.model_fields) | {"transfer_token"}
+    assert _FILE_ENTRY_FIELDS == set(IngestFileItem.model_fields) | {"transfer_token", "sha256"}
     assert _PARSED_METADATA_FIELDS == set(ParsedMetadata.model_fields)
     assert _PARSED_METADATA_FIELDS == {field.name for field in fields(ParsedMetadataInput)}

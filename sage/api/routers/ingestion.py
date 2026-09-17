@@ -116,7 +116,16 @@ router = APIRouter(route_class=WireRoute, tags=["Ingestion"])
             "There is no recorded digest to check the pointer against; "
             "deliver the document's source bytes instead. A resident "
             "source that does carry a record is checked against that "
-            "record's digest rather than refused.",
+            "record's digest rather than refused.\n\n"
+            "`source_digest_mismatch`: `sha256` was supplied and the source "
+            "this call ingests has a different digest -- the bytes it "
+            "delivered, or the record they are inherited from where a "
+            "resident source is re-projected. Detail carries `source`, "
+            "`declared_sha256` and `delivered_sha256`, which is null for a "
+            "resident source no document here records, since there is no "
+            "digest to hold the declaration to. Checked before the source is "
+            "retained, so a refused call leaves no copy behind, and a "
+            "redeemed `transfer_token` stays redeemable.",
         ),
         404: {
             "model": ErrorResponse,

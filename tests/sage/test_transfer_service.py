@@ -25,6 +25,7 @@ import sage.services.transfer as _transfer
 from sage.api.errors import (
     AmbiguousIngestSourceError,
     MissingIngestSourceError,
+    SourceDigestMismatchError,
     TransferAlreadyStagedError,
     TransferNotStagedError,
     TransferTokenInvalidError,
@@ -329,6 +330,72 @@ class TestUploadLifecycle:
         entry = store._entries[minted.transfer_id]
         for value in vars(entry).values():
             assert not (isinstance(value, str) and secret in value)
+
+
+class TestDigestBoundUpload:
+    """An upload token minted against a digest admits only bytes with that digest.
+
+    The binding is what makes a leaked token worthless to anyone not already
+    holding the exact file, so the refusal must neither stage nor spend, and
+    must not tell the presenter which digest would have been accepted.
+    """
+
+    _BODY = b"the exact caller file\n"
+
+    def test_mint_records_bound_digest_canonically(self, store):
+        """A bare upper-case spelling is recorded in canonical form.
+
+        Anti-coincidental-pass: the supplied spelling is neither prefixed nor
+        lower-case, so a store that recorded it verbatim fails on equality.
+        """
+        bare_upper = hashlib.sha256(self._BODY).hexdigest().upper()
+
+        minted = store.mint_upload(_VAULT, "/caller/a.md", ttl_seconds=300, sha256=bare_upper)
+
+        canonical = "sha256:" + hashlib.sha256(self._BODY).hexdigest()
+        assert store._entries[minted.transfer_id].bound_sha256 == canonical
+        assert minted.content_hash == canonical
+
+    def test_unbound_mint_records_no_digest(self, store):
+        """The control: with no digest supplied, any bytes stage as before."""
+        minted = store.mint_upload(_VAULT, "/caller/a.md", ttl_seconds=300)
+
+        assert store._entries[minted.transfer_id].bound_sha256 is None
+        store.check_bound_digest(minted.transfer_id, hashlib.sha256(b"anything").hexdigest())
+        _stage_bytes(store, minted, b"anything")
+        assert store._entries[minted.transfer_id].state == "bytes_staged"
+
+    def test_matching_digest_check_passes(self, store):
+        minted = store.mint_upload(
+            _VAULT, "/caller/a.md", ttl_seconds=300, sha256=hashlib.sha256(self._BODY).hexdigest()
+        )
+
+        store.check_bound_digest(minted.transfer_id, hashlib.sha256(self._BODY).hexdigest())
+
+    def test_mismatched_digest_check_raises_without_disclosing_bound_digest(self, store):
+        """The refusal is typed, and names only what the presenter already knows.
+
+        Anti-coincidental-pass: the bound and delivered digests differ, so a
+        check comparing the delivered digest against itself would not raise;
+        and the bound digest is searched for in both spellings, so disclosing
+        it in either form fails.
+        """
+        bound_hex = hashlib.sha256(self._BODY).hexdigest()
+        delivered_hex = hashlib.sha256(b"other bytes").hexdigest()
+        minted = store.mint_upload(_VAULT, "/caller/a.md", ttl_seconds=300, sha256=bound_hex)
+
+        with pytest.raises(SourceDigestMismatchError) as caught:
+            store.check_bound_digest(minted.transfer_id, delivered_hex)
+
+        error = caught.value
+        assert error.code == "source_digest_mismatch"
+        assert error.status_code == 400
+        assert error.detail == {
+            "transfer_id": minted.transfer_id,
+            "delivered_sha256": "sha256:" + delivered_hex,
+        }
+        assert bound_hex not in error.message
+        assert bound_hex not in repr(error.detail)
 
 
 class TestDownloadLifecycle:

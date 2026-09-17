@@ -720,6 +720,8 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "colliding_value": ERROR_DETAIL_KEY,
         "current_head_version": ERROR_DETAIL_KEY,
         "current_state": ERROR_DETAIL_KEY,
+        "declared_sha256": ERROR_DETAIL_KEY,
+        "delivered_sha256": ERROR_DETAIL_KEY,
         "document_content_hash": ERROR_DETAIL_KEY,
         "example": ERROR_DETAIL_KEY,
         "existing_document_id": ERROR_DETAIL_KEY,
@@ -741,6 +743,8 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
     },
     ("sage_core", "restore_vault_source_file"): {
         "candidate_ids": ERROR_DETAIL_KEY,
+        "declared_sha256": ERROR_DETAIL_KEY,
+        "delivered_sha256": ERROR_DETAIL_KEY,
         "store_status": ERROR_DETAIL_KEY,
     },
     ("sage_core", "search"): {

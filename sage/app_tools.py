@@ -10,23 +10,26 @@ from collections.abc import Callable
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import TypeAdapter
+from pydantic import TypeAdapter, ValidationError
 
 from sage._tool_annotations import READ_ONLY, WRITE_DESTRUCTIVE
-from sage.api.errors import InvalidParameterError, SAGEError
+from sage.api.errors import InvalidParameterError, InvalidTypedAliasError, SAGEError
 from sage.mcp_init import SAGEServices, require_caller_local_filesystem
-from sage.models.schemas import VaultIdStr
+from sage.models.schemas import Sha256Str, VaultIdStr
 from sage.services.transfer import DeliveryDeclaration, caller_local_delivery
 
 # Module-scope TypeAdapter for Pattern 2 boundary validation. See the
 # parallel adapter declarations and rationale in
 # ``sage/sage_api_tools.py``.
 _VAULT_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(VaultIdStr)
+_SHA256_ADAPTER: TypeAdapter[str] = TypeAdapter(Sha256Str)
 
 # The names a ``bulk_ingest_document`` file entry, and the parsed metadata it
 # may carry, declare. The request surface refuses any other name in the same
 # places (CAS-ADR-037, CAS-ADR-052).
-_FILE_ENTRY_FIELDS = frozenset({"file_path", "transfer_token", "source_type", "parsed_metadata"})
+_FILE_ENTRY_FIELDS = frozenset(
+    {"file_path", "transfer_token", "sha256", "source_type", "parsed_metadata"}
+)
 _PARSED_METADATA_FIELDS = frozenset({"title", "date", "project", "codes", "version", "doc_type"})
 
 
@@ -52,6 +55,33 @@ def _refuse_undeclared_entry_fields(files: list[dict]) -> None:
                     value=mapping[undeclared[0]],
                     constraint="Extra inputs are not permitted",
                 )
+
+
+def _declared_digests(files: list[dict]) -> list[str | None]:
+    """Validate each entry's declared ``sha256`` and return them canonicalized.
+
+    Checked for the whole batch before anything is minted, delivered or
+    ingested, as the undeclared-name refusal is, and located the same way: a
+    malformed digest is a defect in the call rather than in one file, so it
+    refuses the call rather than becoming one entry's error.
+    """
+    digests: list[str | None] = []
+    for index, entry in enumerate(files):
+        raw = entry.get("sha256")
+        if raw is None:
+            digests.append(None)
+            continue
+        try:
+            digests.append(_SHA256_ADAPTER.validate_python(raw))
+        except ValidationError as exc:
+            ctx = exc.errors()[0].get("ctx") or {}
+            raise InvalidTypedAliasError(
+                code="invalid_sha256",
+                argument=f"files.{index}.sha256",
+                value=raw,
+                expected=str(ctx.get("expected", "a sha256 digest")),
+            ) from exc
+    return digests
 
 
 def register_app_tools(
@@ -274,12 +304,13 @@ def register_app_tools(
         ``ingest_document`` precondition pipeline. Failures surface as
         ``summary.errors[]`` entries carrying the code ``ingest_document``
         returns for the same failure. Each file's request carries only its
-        source, source type and parsed metadata -- never a predecessor, a
-        force re-ingest, a chain-head token or a relocation pointer -- so the
-        codes an entry can carry are ``adapter_config_invalid``,
+        source, source type, parsed metadata and declared ``sha256`` -- never a
+        predecessor, a force re-ingest, a chain-head token or a relocation
+        pointer -- so the codes an entry can carry are ``adapter_config_invalid``,
         ``adapter_not_found``, ``duplicate_content``, ``invalid_doc_type``,
         ``invalid_document_date``, ``reserved_transition``,
-        ``source_file_not_found``, ``source_type_unresolved``, ``source_unreadable``,
+        ``source_digest_mismatch``, ``source_file_not_found``,
+        ``source_type_unresolved``, ``source_unreadable``,
         ``tier3_schema_violation``,
         ``tier3_unique_constraint_violation``, ``vault_migration_in_flight``,
         ``vault_source_path_refused``, ``vault_source_store_refused`` and
@@ -305,6 +336,10 @@ def register_app_tools(
           declare; ``detail.parameter`` locates it (``files.<n>.<key>`` or
           ``files.<n>.parsed_metadata.<key>``). A batch-boundary refusal
           raised before any file is delivered or ingested.
+        - ``invalid_sha256`` (400): a file entry's ``sha256`` is not a
+          well-formed sha256 digest; the detail is keyed by its location,
+          ``files.<n>.sha256``. A batch-boundary refusal raised before any
+          file is delivered or ingested.
         - ``ambiguous_ingest_source`` / ``missing_ingest_source`` (400): a
           file entry set both ``file_path`` and ``transfer_token``, or
           neither; each entry needs exactly one.
@@ -353,7 +388,14 @@ def register_app_tools(
                 filename is used as the title and the vault's
                 filename parsing still runs on the remaining fields (see
                 the divergence note above; ``get_filename_metadata`` to
-                preview).
+                preview). An entry may also carry ``sha256`` (str, bare hex
+                or ``sha256:``-prefixed), the digest of that file: a file
+                whose bytes have another digest is that file's
+                ``source_digest_mismatch`` error, and where the call returns
+                an upload recipe, that entry's token is bound to it, so the
+                upload endpoint refuses any other bytes for that leg without
+                spending its token or touching the other legs. Pass it again
+                on the completion entry.
             infer_edges: When True (default), run two-phase edge inference
                 across the batch after ingestion. When False, ingest
                 documents only with no edge creation or lifecycle
@@ -392,6 +434,7 @@ def register_app_tools(
                 }
 
             _refuse_undeclared_entry_fields(files)
+            digests = _declared_digests(files)
 
             # Each entry arrives by exactly one delivery shape: a
             # ``file_path``, or a ``transfer_token`` redeeming bytes the
@@ -411,9 +454,11 @@ def register_app_tools(
                 vault_id,
                 [
                     DeliveryDeclaration(
-                        source=f.get("file_path"), transfer_token=f.get("transfer_token")
+                        source=f.get("file_path"),
+                        transfer_token=f.get("transfer_token"),
+                        sha256=digest,
                     )
-                    for f in files
+                    for f, digest in zip(files, digests, strict=True)
                 ],
                 # A preview reads the staged bytes without spending the
                 # tokens, so the real batch it previews still has them.
@@ -426,7 +471,7 @@ def register_app_tools(
                     return serialize(plan.recipe)
 
                 descriptors: list[FileDescriptor] = []
-                for f, delivery in zip(files, plan.resolved, strict=True):
+                for f, digest, delivery in zip(files, digests, plan.resolved, strict=True):
                     pm = f.get("parsed_metadata")
                     parsed = None
                     if pm:
@@ -444,6 +489,7 @@ def register_app_tools(
                             source_type=f.get("source_type"),
                             parsed_metadata=parsed,
                             declared_source=delivery.declared_source,
+                            sha256=digest,
                         )
                     )
 

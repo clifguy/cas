@@ -779,6 +779,16 @@ paths:
             source that does carry a record is checked against that
             record's digest rather than refused.
 
+            `source_digest_mismatch`: `sha256` was supplied and the source
+            this call ingests has a different digest -- the bytes it
+            delivered, or the record they are inherited from where a
+            resident source is re-projected. Detail carries `source`,
+            `declared_sha256` and `delivered_sha256`, which is null for a
+            resident source no document here records, since there is no
+            digest to hold the declaration to. Checked before the source is
+            retained, so a refused call leaves no copy behind, and a
+            redeemed `transfer_token` stays redeemable.
+
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
 
             `invalid_document_id`: a document id in the request is not
@@ -3719,11 +3729,16 @@ paths:
             `restore_source_not_absolute`: the source path is not
             absolute. `vault_source_path_refused`: the document's
             source_path cannot be written at the path it names.
+            `source_digest_mismatch`: `sha256` was supplied and the delivered
+            bytes have a different digest; nothing is written.
 
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
 
             `invalid_document_id`: a document id in the request is not
             well-formed.
+
+            `invalid_sha256`: a content hash in the request is not a
+            well-formed sha256 digest.
 
             `unknown_parameter`: the request carries a body field or query
             parameter the operation does not declare.
@@ -4165,6 +4180,11 @@ paths:
                 $ref: "#/components/schemas/TransferUploadResult"
         "400":
           description: >-
+            `source_digest_mismatch`: the token was minted against a declared
+            `sha256` and the delivered bytes have a different digest. Nothing
+            is staged and the token stays retryable. The detail names the
+            transfer and the delivered digest, never the bound one.
+
             `unknown_parameter`: the request carries a body field or query
             parameter the operation does not declare.
           content:
@@ -5639,6 +5659,16 @@ components:
             `transfer_token` or `source`; every other field is sent again on
             this completion call exactly as on the originating call. On a
             dry run the token is read but not spent.
+        sha256:
+          type: [string, "null"]
+          description: >-
+            SHA-256 digest of the file this call ingests, bare hex or
+            `sha256:`-prefixed. When supplied, the call refuses a source with
+            any other digest (`source_digest_mismatch`) before anything is
+            retained. On a call that returns an upload recipe, each token is
+            bound to this digest: the upload endpoint refuses any other bytes
+            without spending the token, so a token disclosed to anyone not
+            already holding the exact file admits nothing.
         source_type:
           anyOf:
             - $ref: "#/components/schemas/SourceType"
@@ -8926,6 +8956,15 @@ components:
             before delivered and stored digests were recorded separately,
             whose provenance hash describes the stored copy rather than
             the delivered bytes).
+        sha256:
+          type: [string, "null"]
+          description: >-
+            SHA-256 digest of the file being restored, bare hex or
+            `sha256:`-prefixed. When supplied, a restore whose delivered bytes
+            have any other digest is refused (`source_digest_mismatch`) before
+            the retained copy is touched. On a call that returns an upload
+            recipe, the token is bound to this digest: the upload endpoint
+            refuses any other bytes without spending the token.
 
     SourceFileRestoreReport:
       type: object
@@ -9481,10 +9520,12 @@ components:
             depend on none of a predecessor, a force re-ingest, a chain-head
             token or a relocation pointer: `adapter_config_invalid`,
             `adapter_not_found`, `duplicate_content`, `invalid_doc_type`, `invalid_document_date`,
-            `reserved_transition`, `source_file_not_found`,
+            `reserved_transition`, `source_digest_mismatch`, `source_file_not_found`,
             `source_type_unresolved`, `source_unreadable`, `tier3_schema_violation`, `tier3_unique_constraint_violation`,
             `vault_migration_in_flight`, `vault_source_path_refused`,
             `vault_source_store_refused` and `vault_source_store_unavailable`.
+            `source_digest_mismatch` appears only on the MCP bulk tool, whose
+            entries may declare a digest; the multipart batch surfaces accept none.
             Of these, `vault_migration_in_flight` and
             `vault_source_store_unavailable` are the ones a later attempt at
             the same file may succeed past.
@@ -9690,6 +9731,14 @@ components:
         url:
           type: string
           description: Complete URL of the byte-delivery leg, used verbatim.
+        sha256:
+          type: [string, "null"]
+          pattern: "^sha256:[0-9a-f]{64}$"
+          description: >-
+            The digest this leg's token is bound to, echoed in canonical form
+            from the originating call's `sha256`. The upload endpoint admits
+            only bytes with this digest. Absent when the call declared none,
+            in which case the token admits any bytes.
 
     DownloadRecipe:
       type: object

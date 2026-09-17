@@ -2027,6 +2027,65 @@ class TransferContentTooLargeError(SAGEError):
         )
 
 
+class SourceDigestMismatchError(SAGEError):
+    """400: the bytes delivered are not the bytes the caller declared.
+
+    A caller may declare the ``sha256`` of the file it means to ingest. The
+    declaration is held wherever the bytes are first seen: on the upload leg,
+    against the digest an upload token was bound to at mint, and on the
+    ingest itself, against the digest of the source it reads. Both refuse
+    before anything is staged or retained, so the same call with the right
+    bytes succeeds, and on the upload leg the token stays unspent.
+
+    The two arms disclose differently. The upload leg is authenticated by the
+    token alone, so its refusal names only the transfer and the digest of the
+    bytes just presented -- never the bound digest, which would tell the
+    holder of a leaked token which file to send. The ingest arm is an
+    authenticated call reporting on the caller's own declaration, and names
+    the source and both digests.
+    """
+
+    def __init__(
+        self,
+        delivered_sha256: str | None,
+        *,
+        transfer_id: str | None = None,
+        source: str | None = None,
+        declared_sha256: str | None = None,
+    ) -> None:
+        detail: dict[str, str | None]
+        if transfer_id is not None:
+            message = (
+                f"The bytes delivered to transfer {transfer_id} ({delivered_sha256}) "
+                f"are not the file its token was minted for; nothing was staged. "
+                f"Deliver that file with the same token."
+            )
+            detail = {"transfer_id": transfer_id, "delivered_sha256": delivered_sha256}
+        elif delivered_sha256 is None:
+            message = (
+                f"{source} is resident in the vault's store with no recorded digest, so "
+                f"the declared sha256 {declared_sha256} cannot be checked; nothing was "
+                f"ingested. Deliver the file's bytes instead."
+            )
+            detail = {
+                "source": source,
+                "declared_sha256": declared_sha256,
+                "delivered_sha256": None,
+            }
+        else:
+            message = (
+                f"{source} has content hash {delivered_sha256}, not the declared "
+                f"sha256 {declared_sha256}; nothing was ingested. Declare the digest "
+                f"of the file being ingested, or ingest the file it names."
+            )
+            detail = {
+                "source": source,
+                "declared_sha256": declared_sha256,
+                "delivered_sha256": delivered_sha256,
+            }
+        super().__init__("source_digest_mismatch", message, 400, detail)
+
+
 class TransferEndpointNotConfiguredError(SAGEError):
     """500: this deployment cannot mint transfer recipes.
 
