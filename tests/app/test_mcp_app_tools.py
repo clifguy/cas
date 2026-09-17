@@ -1001,6 +1001,9 @@ class TestAppBatchIngest:
         [
             pytest.param({"codes": "PV06"}, "files.1.parsed_metadata.codes", id="codes-string"),
             pytest.param({"title": 5}, "files.1.parsed_metadata.title", id="title-int"),
+            pytest.param(
+                {"codes": ["PV06", 5]}, "files.1.parsed_metadata.codes.1", id="codes-item-int"
+            ),
             pytest.param("PV06", "files.1.parsed_metadata", id="not-a-mapping"),
             pytest.param(
                 {"codes": "PV06", "bogus_field_x": 1},
@@ -1009,8 +1012,10 @@ class TestAppBatchIngest:
             ),
         ],
     )
-    async def test_wrong_typed_parsed_metadata_is_refused(self, single_vault, parsed, parameter):
-        """A parsed_metadata value of the wrong type refuses the call before any ingest.
+    async def test_wrong_typed_parsed_metadata_is_refused(
+        self, single_vault, parsed, parameter, monkeypatch
+    ):
+        """A parsed_metadata value of the wrong type refuses the call before any delivery.
 
         Anti-coincidental-pass: a string ``codes`` used to split into one code
         per character and a non-string ``title`` failed in edge planning with an
@@ -1018,7 +1023,20 @@ class TestAppBatchIngest:
         The defect sits on the second entry, and the control -- the same
         entries with well-typed values -- must create both documents, which an
         entry the refused call had ingested first would turn into duplicates.
+        A spy on the delivery gate shows the refusal precedes it: a check placed
+        inside the delivery block, after tokens are redeemed, returns the same
+        refusal but enters the gate first.
         """
+        import sage.app_tools as app_tools
+
+        deliveries: list[object] = []
+        real_delivery = app_tools.caller_local_delivery
+
+        def delivery_spy(*args, **kwargs):
+            deliveries.append(args)
+            return real_delivery(*args, **kwargs)
+
+        monkeypatch.setattr(app_tools, "caller_local_delivery", delivery_spy)
         _, config = single_vault
         sources = Path(config.vault.storage_root)
         first = {"file_path": str(sources / "sample.md"), "source_type": "markdown"}
@@ -1031,6 +1049,7 @@ class TestAppBatchIngest:
             }
 
         refused = _parse(await bulk_ingest_document("test_vault", [first, second(parsed)]))
+        assert deliveries == []
         control = _parse(
             await bulk_ingest_document(
                 "test_vault", [first, second({"codes": ["PV06"], "title": "Second"})]
@@ -1041,6 +1060,7 @@ class TestAppBatchIngest:
         assert refused["detail"]["parameter"] == parameter, refused
         assert control["error_count"] == 0, control
         assert control["documents_created"]["new"] == 2
+        assert len(deliveries) == 1
 
     async def test_transfer_token_entry_is_not_an_undeclared_key(self, single_vault):
         """``transfer_token`` is a declared delivery shape, so it reaches the transfer gate."""

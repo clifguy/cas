@@ -69,7 +69,8 @@ def _parsed_metadata_of(files: list[dict]) -> list[BatchIngestParsedMetadata | N
     Checked for the whole batch before anything is delivered or ingested, after
     the undeclared-name refusal. A value that is not a mapping, or a field of
     the wrong type, refuses the call as ``invalid_parameter`` located at
-    ``files.<n>.parsed_metadata`` or ``files.<n>.parsed_metadata.<field>``.
+    ``files.<n>.parsed_metadata``, ``files.<n>.parsed_metadata.<field>``, or,
+    for one item of a list field, ``files.<n>.parsed_metadata.<field>.<index>``.
     An absent or empty mapping supplies nothing and is returned as ``None``.
     """
     validated: list[BatchIngestParsedMetadata | None] = []
@@ -374,8 +375,10 @@ def register_app_tools(
           ``parsed_metadata`` it carries, names a key the tool does not
           declare, or its ``parsed_metadata`` is not a mapping or carries a
           value of the wrong type; ``detail.parameter`` locates it
-          (``files.<n>.<key>``, ``files.<n>.parsed_metadata`` or
-          ``files.<n>.parsed_metadata.<key>``). A batch-boundary refusal
+          (``files.<n>.<key>``, ``files.<n>.parsed_metadata``,
+          ``files.<n>.parsed_metadata.<key>``, or
+          ``files.<n>.parsed_metadata.<key>.<index>`` for one item of a list
+          such as ``codes``). A batch-boundary refusal
           raised before any file is delivered or ingested.
         - ``invalid_sha256`` (400): a file entry's ``sha256`` is not a
           well-formed sha256 digest; the detail is keyed by its location,
