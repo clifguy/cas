@@ -540,7 +540,8 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # counterpart it did not have. Real coverage on this one claim, not a
     # reconciliation of the pair.
     ("sage_core", "get_filename_metadata"): Pin(6, 4),
-    ("sage_core", "get_vault_config"): Pin(6, 3),
+    # The complete section enumeration now has a counterpart in the docstring.
+    ("sage_core", "get_vault_config"): Pin(5, 3),
     ("sage_core", "get_vault_stats"): Pin(6, 1),
     # doc_only fell from 13 as the operation gained the source-type
     # precedence its tool docstring already stated.

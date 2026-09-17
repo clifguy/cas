@@ -2477,6 +2477,11 @@ def register_sage_tools(
     async def get_vault_config(vault_id: str) -> dict:
         """Return the full vault configuration as a dict.
 
+        Section structure follows the schema: ``vault``, ``document_types``,
+        ``lifecycle``, ``metadata_extraction``, ``edge_inference``,
+        ``adapter_defaults``, ``abstraction``, ``access_control_defaults``,
+        ``retrieval_health``, ``timing``.
+
         This is the authoritative source for vault-config-defined
         vocabulary that other tools depend on. Read this when you need:
 
