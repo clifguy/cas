@@ -11,7 +11,7 @@ from collections.abc import Callable
 from typing import Annotated, Literal
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import Field, TypeAdapter, ValidationError
+from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
 from sage._tool_annotations import READ_ONLY, WRITE_ADDITIVE, WRITE_DESTRUCTIVE
 from sage.api.errors import (
@@ -22,7 +22,9 @@ from sage.api.errors import (
     MisplacedMetadataError,
     MissingDocumentIdentifierError,
     SAGEError,
+    UndeclaredKeyError,
     translate_validation_error,
+    validation_error_envelope,
 )
 from sage.mcp_init import SAGEServices
 from sage.models.enums import RetrievalMode, SourceType
@@ -222,6 +224,38 @@ def _check_misplaced_filters(supplied: dict[str, object]) -> None:
         )
 
 
+def _validated_items(model: type[BaseModel], items: list) -> list:
+    """Validate each item of a batch against its model, naming what refused.
+
+    The whole batch is checked before the vault is opened, so a malformed item
+    refuses the call without any of it being committed. What this adds over a
+    bare comprehension is the refusal a caller reads: the item model is handed
+    to the envelope, so a key the item does not declare comes back with the
+    field set it could have used, and the location carries the item's position
+    the way the HTTP surface reports it. One mistake, one refusal, whichever
+    surface it was made on.
+
+    Other failures keep the envelope and the location they already had. Only
+    an undeclared key is relocated, because only it is built here rather than
+    by the item's own validator.
+    """
+    validated = []
+    for index, item in enumerate(items):
+        try:
+            validated.append(model.model_validate(item))
+        except ValidationError as exc:
+            envelope = validation_error_envelope(exc, root_model=model)
+            if isinstance(envelope, UndeclaredKeyError):
+                located = envelope.detail["parameter"]
+                raise UndeclaredKeyError(
+                    parameter=f"items.{index}" + (f".{located}" if located else ""),
+                    key=envelope.detail["key"],
+                    recognized=envelope.detail["recognized"],
+                ) from exc
+            raise
+    return validated
+
+
 def register_sage_tools(
     mcp: FastMCP,
     get_vault: Callable[[str], SAGEServices],
@@ -322,7 +356,12 @@ def register_sage_tools(
         ``metadata={"title": "...", "tags": ["..."]}``. Each is also accepted
         at the top level only to be refused there: passing one as a direct
         argument raises ``misplaced_metadata`` naming every misplaced field,
-        rather than applying part of the call and discarding the rest.
+        rather than applying part of the call and discarding the rest. The
+        converse is refused too: an argument this tool declares -- notably
+        ``tier3_metadata``, which ``search`` requires inside ``filters`` and
+        this tool requires at the top level -- spelled inside ``metadata``
+        raises ``misplaced_top_level_field`` rather than being stored under a
+        name nothing reads.
 
         Trio-field inheritance on supersede: when ``predecessor_id`` is set
         and the caller omits ``doc_type``, ``project``, or
@@ -384,6 +423,16 @@ def register_sage_tools(
           ``metadata``. Detail carries ``fields`` (every misplaced key, so a
           single retry fixes them all), ``recognized`` (the full key set),
           and ``example``. No document is created.
+        - ``misplaced_top_level_field`` (400): the converse -- an argument
+          this tool declares was spelled inside ``metadata``. Detail carries
+          ``fields``, ``recognized`` (every argument that belongs at the top
+          level), and ``example``. Refused on the key's presence rather than
+          its value, because a string value validates and is then dropped.
+          No document is created.
+        - ``undeclared_key`` (400): an object nested inside an argument --
+          ``relocated_from`` -- names a key its schema does not declare.
+          Detail carries ``parameter``, ``key``, ``recognized`` and
+          ``example``. No document is created.
         - ``source_type_unresolved`` (400): ``source_type`` was omitted and no
           registered adapter claims the source's extension. Detail carries
           ``extension`` (null when the source has none) and
@@ -1064,7 +1113,7 @@ def register_sage_tools(
             # envelope without committing any partial state. The
             # ``response_mode`` ValueError from Pydantic enum validation
             # rides this same up-front rejection path.
-            validated_items = [BulkLifecycleItem.model_validate(it) for it in items]
+            validated_items = _validated_items(BulkLifecycleItem, items)
             v = get_vault(vault_id)
             request = BulkLifecycleRequest(
                 items=validated_items,
@@ -1209,7 +1258,7 @@ def register_sage_tools(
             # envelope without committing any partial state. The
             # ``response_mode`` ValueError from Pydantic enum validation
             # rides this same up-front rejection path.
-            validated_items = [BulkLinkItem.model_validate(it) for it in items]
+            validated_items = _validated_items(BulkLinkItem, items)
             v = get_vault(vault_id)
             request = BulkLinkRequest(
                 items=validated_items,
@@ -1367,7 +1416,7 @@ def register_sage_tools(
             # envelope without committing any partial state. The
             # ``response_mode`` ValueError from Pydantic enum validation
             # rides this same up-front rejection path.
-            validated_items = [BulkMetadataItem.model_validate(it) for it in items]
+            validated_items = _validated_items(BulkMetadataItem, items)
             v = get_vault(vault_id)
             request = BulkMetadataRequest(
                 items=validated_items,

@@ -435,6 +435,11 @@ paths:
 
             `unknown_parameter`: the request carries a body field or query
             parameter the operation does not declare.
+
+            `undeclared_key`: an object nested inside the request carries a
+            key its schema does not declare. `detail.parameter` locates the
+            object, `detail.key` names the key, and `detail.recognized` lists
+            the names that object does accept.
           content:
             application/json:
               schema:
@@ -536,6 +541,11 @@ paths:
 
             `unknown_parameter`: the request carries a body field or query
             parameter the operation does not declare.
+
+            `undeclared_key`: an object nested inside the request carries a
+            key its schema does not declare. `detail.parameter` locates the
+            object, `detail.key` names the key, and `detail.recognized` lists
+            the names that object does accept.
           content:
             application/json:
               schema:
@@ -712,6 +722,11 @@ paths:
                 $ref: "#/components/schemas/IngestResponse"
         "400":
           description: >-
+            `misplaced_top_level_field`: `metadata` carries a name this
+            operation declares as an argument of its own. `detail.fields`
+            names them and `detail.recognized` lists every argument that
+            belongs at the top level.
+
             `adapter_not_found`: no source adapter is registered for
             `source_type`.
 
@@ -802,6 +817,11 @@ paths:
 
             `unknown_parameter`: the request carries a body field or query
             parameter the operation does not declare.
+
+            `undeclared_key`: an object nested inside the request carries a
+            key its schema does not declare. `detail.parameter` locates the
+            object, `detail.key` names the key, and `detail.recognized` lists
+            the names that object does accept.
           content:
             application/json:
               schema:
@@ -1080,23 +1100,19 @@ paths:
             valid JSON for the BatchIngestUploadMetadata schema, or its
             `files` length does not match the number of uploaded file
             parts. An undeclared key in a file entry is refused as
-            `invalid_parameter` instead.
+            `undeclared_key` instead, located at `files.<n>` or
+            `files.<n>.parsed_metadata`, before any file is staged or
+            ingested.
 
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
 
             `unknown_parameter`: the request carries a body field or query
             parameter the operation does not declare.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "422":
-          description: >-
-            `invalid_parameter`: an entry of `metadata.files`, or the
-            `parsed_metadata` it carries, names a key its schema does not
-            declare. `detail.parameter` locates the key as `files.<n>.<key>`
-            or `files.<n>.parsed_metadata.<key>`, and `detail.value` carries
-            its value. No file is staged or ingested.
+
+            `undeclared_key`: an object nested inside the request carries a
+            key its schema does not declare. `detail.parameter` locates the
+            object, `detail.key` names the key, and `detail.recognized` lists
+            the names that object does accept.
           content:
             application/json:
               schema:
@@ -1349,6 +1365,11 @@ paths:
 
             `unknown_parameter`: the request carries a body field or query
             parameter the operation does not declare.
+
+            `undeclared_key`: an object nested inside the request carries a
+            key its schema does not declare. `detail.parameter` locates the
+            object, `detail.key` names the key, and `detail.recognized` lists
+            the names that object does accept.
           content:
             application/json:
               schema:

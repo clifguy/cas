@@ -42,6 +42,7 @@ from sage.app import create_app
 from sage.config import VaultConfig
 from sage.mcp_server import _vaults as _mcp_vaults
 from sage.mcp_server import mcp
+from sage.models.schemas import BulkLifecycleItem
 from tests.sage.conftest import initialize_services_for_test
 
 VAULT_ID = "test_vault"
@@ -343,11 +344,19 @@ async def test_unknown_argument_named_like_a_transport_segment(vault_services, h
     assert http_body["detail"]["rejected_params"] == [name]
 
 
-async def test_unknown_item_field_parity_between_surfaces(vault_services, http_client):
+async def test_undeclared_item_field_parity_between_surfaces(vault_services, http_client):
     """A name nested inside a batch item is refused alike on both surfaces.
 
     Neither surface names it an unknown parameter -- it is not one of the
-    operation's parameters -- and neither lets it through.
+    operation's parameters -- and neither lets it through. Both answer with
+    the item model's own field set, which is the set the caller was refused
+    against, and both locate it at the same item.
+
+    The location is the part that has to be asserted rather than assumed. The
+    MCP surface validates each item against the item model, so the validator
+    reports the key one segment deep, while HTTP validates the whole body and
+    reports it three deep. Equal locations here are a property of the tool
+    restating the position, not of the two validators agreeing.
     """
     item = {"document_id": "00000000_absent_document", "action": "archive", "bogus": 1}
     mcp_envelope = _decode_envelope(
@@ -356,9 +365,12 @@ async def test_unknown_item_field_parity_between_surfaces(vault_services, http_c
     resp = await http_client.post(f"/sage_vaults/{VAULT_ID}/lifecycles", json={"items": [item]})
     http_body = resp.json()
 
-    assert mcp_envelope["error"] == http_body["code"] == "invalid_parameter"
-    assert mcp_envelope["detail"]["parameter"].endswith("bogus")
-    assert http_body["detail"]["parameter"].endswith("bogus")
+    assert mcp_envelope["error"] == http_body["code"] == "undeclared_key"
+    assert resp.status_code == 400, resp.text
+    assert mcp_envelope["detail"] == http_body["detail"]
+    assert http_body["detail"]["parameter"] == "items.0"
+    assert http_body["detail"]["key"] == "bogus"
+    assert http_body["detail"]["recognized"] == sorted(BulkLifecycleItem.model_fields)
 
 
 # ---------------------------------------------------------------------------
@@ -504,3 +516,29 @@ async def test_mode_parameter_mismatch_content_is_pinned_independently(vault_ser
         # The rejection is on the target axis, so a mode set would name a
         # change that does not lift it.
         assert "allowed_modes" not in envelope["detail"]
+
+
+async def test_top_level_field_inside_metadata_parity_between_surfaces(vault_services, http_client):
+    """A top-level argument nested under ``metadata`` is refused alike on both.
+
+    The guard sits on the request model, which both surfaces bind, so the
+    parity is structural rather than two checks kept in step. Asserting it
+    anyway is what catches a later move of the guard into one tool body,
+    which would pass every single-surface test and leave the HTTP caller with
+    the type complaint the guard exists to replace.
+    """
+    body = {"source": "test/sample.md", "source_type": "markdown"}
+    metadata = {"tier3_metadata": "T-1"}
+
+    mcp_envelope = _decode_envelope(
+        await mcp.call_tool("ingest_document", {"vault_id": VAULT_ID, **body, "metadata": metadata})
+    )
+    resp = await http_client.post(
+        f"/sage_vaults/{VAULT_ID}/documents", json={**body, "metadata": metadata}
+    )
+    http_body = resp.json()
+
+    assert mcp_envelope["error"] == http_body["code"] == "misplaced_top_level_field"
+    assert resp.status_code == 400, resp.text
+    assert mcp_envelope["detail"] == http_body["detail"]
+    assert http_body["detail"]["fields"] == ["tier3_metadata"]

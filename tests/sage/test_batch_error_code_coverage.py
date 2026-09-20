@@ -95,10 +95,16 @@ UNREACHABLE_PER_FILE: dict[str, tuple[str, ...]] = {
 BATCH_BOUNDARY: frozenset[str] = frozenset({"invalid_vault_id", "vault_not_found"})
 
 #: Codes a request surface refuses at its boundary, before any operation runs,
-#: for a name the operation does not declare. A batch file carries no request of
-#: its own to refuse, so they are never per-file; a batch operation refuses them
-#: for the call as a whole, before any file is attempted.
-REQUEST_BOUNDARY: frozenset[str] = frozenset({"unknown_parameter"})
+#: because of a name and where it was spelled -- one the operation does not
+#: declare at all, one nested in an object that does not declare it, one the
+#: operation declares as an argument and the caller nested under ``metadata``.
+#: A batch file carries no caller-authored request of its own, so none of them
+#: is ever per-file: the entry a caller does author is refused for the call as
+#: a whole before any file is attempted, and the per-file request the batch
+#: builds carries only names it chose itself, out of a closed model.
+REQUEST_BOUNDARY: frozenset[str] = frozenset(
+    {"unknown_parameter", "undeclared_key", "misplaced_top_level_field"}
+)
 
 #: Codes of the caller-local delivery gate, which settles how a call's bytes
 #: arrive before anything is ingested. The single-document ingest applies it to
@@ -619,15 +625,16 @@ def test_batch_operations_declare_no_per_file_status():
 
     Declaring the store-refusal statuses, or any other per-file status, on a
     batch operation would name responses it cannot return. The Core upload
-    operation also declares 422, the refusal of the whole request when a file
-    entry of its metadata envelope names an undeclared key, raised before any
-    file is staged. The application operation also declares 401, 501 and 503,
-    each a refusal of the whole request before any file is examined: a hosted
-    deployment's backend-for-frontend requires a signed-in session and a
-    configured sign-in, and does not offer path-based ingest.
+    operation declares no 422: the one refusal it carried there -- a file
+    entry of its metadata envelope naming an undeclared key -- is
+    ``undeclared_key`` at 400, with the rest of the "you named something that
+    does not exist" family. The application operation also declares 401, 501
+    and 503, each a refusal of the whole request before any file is examined:
+    a hosted deployment's backend-for-frontend requires a signed-in session
+    and a configured sign-in, and does not offer path-based ingest.
     """
     expected = {
-        "sage_core": {"200", "400", "404", "422"},
+        "sage_core": {"200", "400", "404"},
         "cas_app": {"200", "400", "401", "404", "501", "503"},
     }
     for spec_name, operation_id in _BATCH_OPERATIONS:

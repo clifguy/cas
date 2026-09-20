@@ -717,6 +717,9 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         # ``Error modes:`` block. See the category note above the table.
         "allowed_states": ERROR_DETAIL_KEY,
         "attempted_action": ERROR_DETAIL_KEY,
+        # Keys of the ``undeclared_key`` detail.
+        "key": ERROR_DETAIL_KEY,
+        "parameter": ERROR_DETAIL_KEY,
         "colliding_value": ERROR_DETAIL_KEY,
         "current_head_version": ERROR_DETAIL_KEY,
         "current_state": ERROR_DETAIL_KEY,

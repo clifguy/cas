@@ -310,16 +310,22 @@ async def test_unknown_item_field_is_not_an_unknown_parameter(client):
 
     The operation's parameters are the top-level names; an item's fields are
     not among them, so naming them as the valid parameter set would be false.
+    The item's own field set is what the caller needs, and the refusal carries
+    it under a code of its own so the two answers stay distinguishable.
     """
+    from sage.models.schemas import BulkLifecycleItem
+
     resp = await client.post(
         f"{VS}/lifecycles",
         json={"items": [{"document_id": DOC_ID, "action": "archive", BOGUS_FIELD: 1}]},
     )
 
-    assert resp.status_code == 422, resp.text
+    assert resp.status_code == 400, resp.text
     body = resp.json()
-    assert body["code"] == "invalid_parameter"
-    assert body["detail"]["parameter"].endswith(BOGUS_FIELD)
+    assert body["code"] == "undeclared_key"
+    assert body["detail"]["parameter"] == "items.0"
+    assert body["detail"]["key"] == BOGUS_FIELD
+    assert body["detail"]["recognized"] == sorted(BulkLifecycleItem.model_fields)
 
 
 async def test_open_mapping_fields_accept_any_key(client):

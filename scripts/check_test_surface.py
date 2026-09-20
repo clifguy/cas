@@ -158,6 +158,48 @@ _CONFORMANCE_STREAMS: Final[str] = (
 )
 
 KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
+    "tests/app/test_app_unknown_parameter.py::"
+    "test_undeclared_file_entry_field_is_a_nested_invalid_parameter": (
+        "renamed test_undeclared_file_entry_field_names_the_entry_models_fields when a "
+        "nested undeclared key became undeclared_key carrying the refusing model's "
+        "field set"
+    ),
+    "tests/app/test_app_unknown_parameter.py::"
+    "test_undeclared_parsed_metadata_key_is_a_nested_invalid_parameter": (
+        "renamed test_undeclared_parsed_metadata_key_names_the_metadata_models_fields "
+        "for the same reason"
+    ),
+    "tests/app/test_mcp_app_tools.py::TestAppBatchIngest::"
+    "test_undeclared_file_entry_key_is_refused": (
+        "renamed test_undeclared_file_entry_key_names_the_accepted_set when the refusal "
+        "gained the entry's field set"
+    ),
+    "tests/app/test_mcp_app_tools.py::TestAppBatchIngest::"
+    "test_undeclared_parsed_metadata_key_is_refused": (
+        "renamed test_undeclared_parsed_metadata_key_names_the_accepted_set for the same reason"
+    ),
+    "tests/app/test_mcp_app_tools.py::TestAppBatchIngest::"
+    "test_wrong_typed_parsed_metadata_is_refused[undeclared-key-wins]": (
+        "split out as test_an_undeclared_name_wins_over_a_bad_value_in_the_same_object "
+        "when the undeclared key stopped sharing a code with the wrong-typed values the "
+        "remaining arms cover"
+    ),
+    "tests/sage/test_batch_ingest_endpoint.py::"
+    "test_b26_undeclared_file_entry_key_is_invalid_parameter": (
+        "renamed test_b26_undeclared_file_entry_key_names_the_accepted_set when the "
+        "refusal moved to undeclared_key and gained the upload entry's field set"
+    ),
+    "tests/sage/test_openapi_conformance.py::"
+    "test_live_openapi_matches_yaml_error_envelope[POST /sage_vaults/{vault_id}/documents:batch"
+    " -> 422]": (
+        "the batch upload declares no 422: undeclared_key at 400 replaced the "
+        "undeclared-entry-key refusal that was its only occupant"
+    ),
+    "tests/sage/test_validation_envelope_parity.py::"
+    "test_unknown_item_field_parity_between_surfaces": (
+        "renamed test_undeclared_item_field_parity_between_surfaces when both surfaces "
+        "began answering with the item model's field set at the same location"
+    ),
     "tests/test_development_policy_proposal.py::test_proposal_does_not_install_governing_pointer": (
         "Activation candidate intentionally selects the guide/profile; replaced by "
         "test_candidate_selection_is_explicit_and_live_activation_fails_closed and "

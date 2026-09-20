@@ -939,16 +939,20 @@ class TestAppBatchIngest:
         assert "error" in result
         assert result["error"] == "empty_file_list"
 
-    async def test_undeclared_file_entry_key_is_refused(self, single_vault):
+    async def test_undeclared_file_entry_key_names_the_accepted_set(self, single_vault):
         """An undeclared key in any file entry is refused before anything is ingested.
 
         The undeclared key sits on the second entry, so the refusal has to walk
         the batch rather than inspect the first entry, and its parameter path
-        matches the one the application API gives. The control ingests the
-        same two entries without the key and must create both documents: an
-        entry the refused call had ingested first would come back as duplicate
-        content instead.
+        matches the one the application API gives. The refusal names what an
+        entry does accept, because naming only the offending key costs a round
+        trip and guessing is not a recovery. The control ingests the same two
+        entries without the key and must create both documents: an entry the
+        refused call had ingested first would come back as duplicate content
+        instead.
         """
+        from sage.app_tools import _FILE_ENTRY_FIELDS
+
         _, config = single_vault
         sources = Path(config.vault.storage_root)
         first = {"file_path": str(sources / "sample.md"), "source_type": "markdown"}
@@ -959,19 +963,25 @@ class TestAppBatchIngest:
         )
         control = _parse(await bulk_ingest_document("test_vault", [first, second]))
 
-        assert refused["error"] == "invalid_parameter", refused
-        assert refused["detail"]["parameter"] == "files.1.bogus_field_x"
+        assert refused["error"] == "undeclared_key", refused
+        assert refused["detail"]["parameter"] == "files.1"
+        assert refused["detail"]["key"] == "bogus_field_x"
+        assert refused["detail"]["recognized"] == sorted(_FILE_ENTRY_FIELDS)
+        assert refused["detail"]["example"]
         assert control["error_count"] == 0, control
         assert control["documents_created"]["new"] == 2
 
-    async def test_undeclared_parsed_metadata_key_is_refused(self, single_vault):
+    async def test_undeclared_parsed_metadata_key_names_the_accepted_set(self, single_vault):
         """An undeclared key in any entry's parsed_metadata is refused, not discarded.
 
         As above, the key sits on the second entry and the control must ingest
         both. The parsed_metadata omits ``title``, which this tool, unlike the
         application API, does not require; closing the keys must not start
-        requiring it.
+        requiring it. The accepted set is the shared model's, asserted against
+        the model rather than a written-out list.
         """
+        from sage.models.schemas import BatchIngestParsedMetadata
+
         _, config = single_vault
         sources = Path(config.vault.storage_root)
         metadata = {"codes": ["PV06"], "version": "v1"}
@@ -991,8 +1001,10 @@ class TestAppBatchIngest:
         )
         control = _parse(await bulk_ingest_document("test_vault", [first, second(metadata)]))
 
-        assert refused["error"] == "invalid_parameter", refused
-        assert refused["detail"]["parameter"] == "files.1.parsed_metadata.bogus_field_x"
+        assert refused["error"] == "undeclared_key", refused
+        assert refused["detail"]["parameter"] == "files.1.parsed_metadata"
+        assert refused["detail"]["key"] == "bogus_field_x"
+        assert refused["detail"]["recognized"] == sorted(BatchIngestParsedMetadata.model_fields)
         assert control["error_count"] == 0, control
         assert control["documents_created"]["new"] == 2
 
@@ -1005,11 +1017,6 @@ class TestAppBatchIngest:
                 {"codes": ["PV06", 5]}, "files.1.parsed_metadata.codes.1", id="codes-item-int"
             ),
             pytest.param("PV06", "files.1.parsed_metadata", id="not-a-mapping"),
-            pytest.param(
-                {"codes": "PV06", "bogus_field_x": 1},
-                "files.1.parsed_metadata.bogus_field_x",
-                id="undeclared-key-wins",
-            ),
         ],
     )
     async def test_wrong_typed_parsed_metadata_is_refused(
@@ -1062,6 +1069,56 @@ class TestAppBatchIngest:
         assert control["documents_created"]["new"] == 2
         assert len(deliveries) == 1
 
+    async def test_an_undeclared_name_wins_over_a_bad_value_in_the_same_object(self, single_vault):
+        """Within one ``parsed_metadata``, the undeclared name is the answer.
+
+        A malformed value and an undeclared key sit in the same object, and
+        the two are refused under different codes, so which one wins is
+        observable rather than a matter of wording. The name wins because a
+        caller who removed the key would still have to be told about the
+        value, while a caller told about the value first would fix it and be
+        refused again for the key.
+        """
+        from sage.models.schemas import BatchIngestParsedMetadata
+
+        _, config = single_vault
+        sources = Path(config.vault.storage_root)
+        entries = [
+            {"file_path": str(sources / "sample.md"), "source_type": "markdown"},
+            {
+                "file_path": str(sources / "second.md"),
+                "source_type": "markdown",
+                "parsed_metadata": {"codes": "PV06", "bogus_field_x": 1},
+            },
+        ]
+
+        refused = _parse(await bulk_ingest_document("test_vault", entries))
+
+        assert refused["error"] == "undeclared_key", refused
+        assert refused["detail"]["parameter"] == "files.1.parsed_metadata", refused
+        assert refused["detail"]["key"] == "bogus_field_x", refused
+        assert refused["detail"]["recognized"] == sorted(BatchIngestParsedMetadata.model_fields)
+
+    async def test_the_two_batch_surfaces_recognize_different_entry_field_sets(self):
+        """The entry-level accepted sets differ, and that is correct.
+
+        An upload's bytes arrive as file parts, so a Core API entry declares no
+        name for them; this tool's entries name a path or a transfer token.
+        Stated here so a later reading of "both surfaces refuse the same key at
+        the same place" does not grow into a parity assertion that is false --
+        the shared properties are the location, the code and the choice among
+        several, not the set a key is refused against.
+        """
+        from sage.app_tools import _FILE_ENTRY_FIELDS, _PARSED_METADATA_FIELDS
+        from sage.models.schemas import BatchIngestFileMetadata, BatchIngestParsedMetadata
+
+        upload_entry = set(BatchIngestFileMetadata.model_fields)
+
+        assert "file_path" in _FILE_ENTRY_FIELDS
+        assert "file_path" not in upload_entry
+        assert upload_entry < set(_FILE_ENTRY_FIELDS)
+        assert _PARSED_METADATA_FIELDS == set(BatchIngestParsedMetadata.model_fields)
+
     async def test_undeclared_name_on_a_later_entry_wins_over_an_earlier_bad_value(
         self, single_vault
     ):
@@ -1088,8 +1145,9 @@ class TestAppBatchIngest:
 
         refused = _parse(await bulk_ingest_document("test_vault", entries))
 
-        assert refused["error"] == "invalid_parameter", refused
-        assert refused["detail"]["parameter"] == "files.1.parsed_metadata.bogus_field_x", refused
+        assert refused["error"] == "undeclared_key", refused
+        assert refused["detail"]["parameter"] == "files.1.parsed_metadata", refused
+        assert refused["detail"]["key"] == "bogus_field_x", refused
 
     async def test_transfer_token_entry_is_not_an_undeclared_key(self, single_vault):
         """``transfer_token`` is a declared delivery shape, so it reaches the transfer gate."""

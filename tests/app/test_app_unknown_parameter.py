@@ -212,7 +212,9 @@ def _file_entry(path: Path, **extra: Any) -> dict:
     return {"file_path": str(path), "source_type": "markdown", **extra}
 
 
-async def test_undeclared_file_entry_field_is_a_nested_invalid_parameter(client, storage_root):
+async def test_undeclared_file_entry_field_names_the_entry_models_fields(client, storage_root):
+    from app.backend.models import IngestFileItem
+
     doc = storage_root / "nested_entry.md"
     doc.write_text("# Nested Entry\n\nContent.")
 
@@ -221,12 +223,19 @@ async def test_undeclared_file_entry_field_is_a_nested_invalid_parameter(client,
         "/app/ingest", json=_ingest_body(files=[_file_entry(doc, **{BOGUS_FIELD: 1})])
     )
 
-    _assert_code(refused, 422, "invalid_parameter")
-    assert refused.json()["detail"]["parameter"] == f"files.0.{BOGUS_FIELD}"
+    _assert_code(refused, 400, "undeclared_key")
+    detail = refused.json()["detail"]
+    assert detail["parameter"] == "files.0"
+    assert detail["key"] == BOGUS_FIELD
+    assert detail["recognized"] == sorted(IngestFileItem.model_fields)
     _assert_one_file_ingested(control)
 
 
-async def test_undeclared_parsed_metadata_key_is_a_nested_invalid_parameter(client, storage_root):
+async def test_undeclared_parsed_metadata_key_names_the_metadata_models_fields(
+    client, storage_root
+):
+    from app.backend.models import ParsedMetadata
+
     doc = storage_root / "nested_metadata.md"
     doc.write_text("# Nested Metadata\n\nContent.")
     metadata = {"title": "Nested Metadata"}
@@ -239,8 +248,11 @@ async def test_undeclared_parsed_metadata_key_is_a_nested_invalid_parameter(clie
         json=_ingest_body(files=[_file_entry(doc, parsed_metadata={**metadata, BOGUS_FIELD: 1})]),
     )
 
-    _assert_code(refused, 422, "invalid_parameter")
-    assert refused.json()["detail"]["parameter"] == f"files.0.parsed_metadata.{BOGUS_FIELD}"
+    _assert_code(refused, 400, "undeclared_key")
+    detail = refused.json()["detail"]
+    assert detail["parameter"] == "files.0.parsed_metadata"
+    assert detail["key"] == BOGUS_FIELD
+    assert detail["recognized"] == sorted(ParsedMetadata.model_fields)
     _assert_one_file_ingested(control)
 
 

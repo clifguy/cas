@@ -40,7 +40,12 @@ router = APIRouter(route_class=WireRoute, tags=["Document Metadata"])
     responses={
         400: boundary_400(
             path=("invalid_vault_id",),
-            request=("invalid_document_date", "invalid_document_id", "unknown_parameter"),
+            request=(
+                "invalid_document_date",
+                "invalid_document_id",
+                "unknown_parameter",
+                "undeclared_key",
+            ),
         ),
         404: {
             "model": ErrorResponse,

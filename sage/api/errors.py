@@ -5,6 +5,8 @@ ErrorResponse schema. The exception handler converts them to JSON responses.
 """
 
 import logging
+import types
+import typing
 from collections.abc import Iterable
 from datetime import datetime
 from enum import StrEnum
@@ -861,6 +863,34 @@ class MisplacedMetadataError(SAGEError):
         )
 
 
+class MisplacedTopLevelFieldError(SAGEError):
+    """400: a name the operation declares was nested inside ``metadata``.
+
+    The inverse of ``misplaced_metadata``, and a sibling rather than a
+    direction on it: that error's sentence, and the meaning of its
+    ``recognized``, both run the other way -- the keys that belong *inside*
+    ``metadata``. Here ``recognized`` names the arguments that belong at the
+    top level, which is the set the caller needs to place the one they got
+    wrong.
+
+    The confusion this answers is a real one rather than a typo:
+    ``tier3_metadata`` is a top-level argument on ingest and a nested one on
+    retrieval, so the same name has opposite rules on the two surfaces.
+    """
+
+    def __init__(self, fields: list[str], recognized: list[str], example: str) -> None:
+        joined = ", ".join(fields)
+        super().__init__(
+            "misplaced_top_level_field",
+            (
+                f"{joined} must be passed as a top-level argument, not nested "
+                f"under `metadata`. Use: {example}"
+            ),
+            400,
+            {"fields": fields, "recognized": sorted(recognized), "example": example},
+        )
+
+
 class MisplacedFilterError(SAGEError):
     """400: caller spelled nested filter keys as top-level search arguments.
 
@@ -974,6 +1004,61 @@ class UnknownFilterKeyError(SAGEError):
             (f"Unknown filter key {key!r}. Valid keys: {sorted(valid_keys)!r}. Example: {example}"),
             400,
             {"key": key, "valid_keys": sorted(valid_keys), "example": example},
+        )
+
+
+def _undeclared_key_example(parameter: str, recognized: list[str]) -> str:
+    """Render a corrected call fragment for an undeclared nested key.
+
+    The accepted names alone leave a caller to work out where the object they
+    belong to sits, which for a key several segments down is the part that was
+    unclear. The fragment carries both, and it is built from the model's own
+    declared names, so it cannot name a key the refusal does not accept.
+
+    Two names, not all of them: the whole set is already in ``recognized``, and
+    a fragment long enough to restate it stops reading as an example.
+    """
+    shown = ", ".join(f'"{name}": <value>' for name in recognized[:2])
+    obj = "{" + shown + (", ..." if len(recognized) > 2 else "") + "}"
+    return f"{parameter}={obj}" if parameter else obj
+
+
+class UndeclaredKeyError(SAGEError):
+    """400: a key nested inside a request parameter is not one the model declares.
+
+    The nested counterpart of ``unknown_parameter``, which answers for a name
+    at the top of a call. Both say the caller named something that does not
+    exist, which is why both are 400 rather than the 422 a malformed *value*
+    gets, and both carry the accepted set so the call is repairable on first
+    read: naming only the offending key costs a round trip, and the operating
+    rule forbids retrying a refused call with different phrasing, so guessing
+    is not a recovery.
+
+    They stay distinct because their details are. ``unknown_parameter`` names
+    the operation and the parameters it declares; a key nested inside one has
+    no operation-level analogue for either, and ``recognized`` belongs to the
+    model that refused. ``parameter`` locates that model -- empty when the
+    refusing model is the one the call was validated against, as it is where a
+    surface validates each item of a batch on its own.
+    """
+
+    def __init__(
+        self, parameter: str, key: str, recognized: list[str], example: str | None = None
+    ) -> None:
+        located = f"{parameter}.{key}" if parameter else key
+        accepted = sorted(recognized)
+        if example is None:
+            example = _undeclared_key_example(parameter, accepted)
+        super().__init__(
+            "undeclared_key",
+            (f"{located!r} is not a declared key. Accepted: {accepted!r}. Example: {example}"),
+            400,
+            {
+                "parameter": parameter,
+                "key": key,
+                "recognized": accepted,
+                "example": example,
+            },
         )
 
 
@@ -2442,6 +2527,54 @@ def _strip_transport_segment(loc: tuple, exc: ValidationError | RequestValidatio
     return loc
 
 
+def _model_for_loc(root_model: type[BaseModel], loc: tuple) -> type[BaseModel] | None:
+    """Return the model that refused a key at ``loc``, or ``None``.
+
+    ``loc`` is a validation-error location whose last segment is the key that
+    was refused; the segments before it name the path from ``root_model`` down
+    to the model carrying it. A location one segment long names a key on the
+    root itself, which is how a surface that validates each item of a batch
+    against the item model reports one.
+
+    Three shapes are followed, and they are the ones the request models have:
+    a model behind an ``Annotated`` wrapper, a model optional against
+    ``None``, and a model as the element of a sequence, whose position segment
+    is an integer and names no field. A union carrying more than one model is
+    not followed: the validator tried every arm, so the location alone does
+    not say which one refused, and naming a field set the caller was not
+    refused against is worse than naming none. ``None`` returns the caller to
+    the refusal it would have given anyway, so an unfollowable shape costs
+    nothing that is not already lost -- which is the whole reason this stays
+    narrow. What keeps it honest is the conformance walk over every nested
+    request model, which fails on a shape this cannot follow.
+    """
+
+    def unwrap(annotation: object) -> type[BaseModel] | None:
+        """The single model an annotation carries, or ``None`` if not exactly one."""
+        models: list[type[BaseModel]] = []
+        pending = [annotation]
+        while pending:
+            current = pending.pop()
+            if isinstance(current, type) and issubclass(current, BaseModel):
+                if current not in models:
+                    models.append(current)
+                continue
+            if isinstance(current, types.UnionType) or typing.get_origin(current) is not None:
+                pending.extend(arg for arg in typing.get_args(current) if arg is not type(None))
+        return models[0] if len(models) == 1 else None
+
+    model: type[BaseModel] | None = root_model
+    for segment in loc[:-1]:
+        if isinstance(segment, int):
+            # A position in a sequence, not a field name.
+            continue
+        if model is None:
+            return None
+        field = model.model_fields.get(str(segment))
+        model = None if field is None else unwrap(field.annotation)
+    return model
+
+
 def unknown_parameter_names(exc: ValidationError | RequestValidationError) -> list[str]:
     """Return the undeclared top-level names a validation error rejected.
 
@@ -2463,33 +2596,46 @@ def unknown_parameter_names(exc: ValidationError | RequestValidationError) -> li
 
 def undeclared_entry_key_error(
     candidates: Iterable[tuple[int, int, str, object]],
-) -> InvalidParameterError | None:
+    *,
+    recognized_by_depth: dict[int, Iterable[str]],
+) -> UndeclaredKeyError | None:
     """Return the refusal for one of a batch's undeclared file-entry keys.
 
     Each candidate is ``(file index, depth, key, value)``, where depth 0 is a
     key on the file entry itself and depth 1 a key in the ``parsed_metadata`` it
     carries. The key reported is the one at the lowest file index, then the
-    lowest depth, then first in sorted order, located as ``files.<n>.<key>`` or
-    ``files.<n>.parsed_metadata.<key>``. The Core API batch upload and the MCP
-    bulk ingest tool both report through this rule, so the same entries are
-    refused at the same location on either. A request body validated by the
-    framework reports the first undeclared key the validator lists instead.
-    ``None`` when there is no candidate.
+    lowest depth, then first in sorted order, located as ``files.<n>`` or
+    ``files.<n>.parsed_metadata``. ``None`` when there is no candidate.
+
+    The Core API batch upload and the MCP bulk ingest tool both report through
+    this rule, so the same entries are refused at the same location, under the
+    same code, with the same key chosen among several. What they do *not*
+    share is the accepted set at depth 0: an upload's bytes arrive as file
+    parts, so its entries declare no name for them, while the tool's entries
+    name a path or a transfer token. ``recognized_by_depth`` is therefore the
+    caller's to supply rather than derived here -- a shared answer would be
+    wrong for one of the two surfaces. The ``parsed_metadata`` set is one
+    model and is shared.
+
+    A request body validated by the framework reports the first undeclared key
+    the validator lists instead.
     """
     chosen = min(candidates, key=lambda candidate: candidate[:3], default=None)
     if chosen is None:
         return None
-    index, depth, key, value = chosen
+    index, depth, key, _value = chosen
     prefix = f"files.{index}" if depth == 0 else f"files.{index}.parsed_metadata"
-    return InvalidParameterError(
-        parameter=f"{prefix}.{key}",
-        value=value,
-        constraint="Extra inputs are not permitted",
+    return UndeclaredKeyError(
+        parameter=prefix,
+        key=key,
+        recognized=list(recognized_by_depth[depth]),
     )
 
 
 def translate_validation_error(
     exc: ValidationError | RequestValidationError,
+    *,
+    root_model: type[BaseModel] | None = None,
 ) -> SAGEError | None:
     """Map a Pydantic validation failure to a typed ADR-028 SAGEError.
 
@@ -2504,6 +2650,14 @@ def translate_validation_error(
     scoped to the discover request: they fire only on ``mode``- or
     ``filters``-rooted errors, so other models' built-in validation failures
     are left to the fallback.
+
+    ``root_model`` is the model the request was validated against, supplied by
+    a surface that knows it. It drives one rule: an undeclared key nested
+    inside a parameter is answered with the field set of the model that
+    refused it, which is knowable only by walking the error's location back
+    through that model. Omitted, the rule does not fire and the failure keeps
+    the envelope it had, so a surface that cannot name its root model loses
+    nothing it already has.
 
     Both ``pydantic.ValidationError`` and ``fastapi.exceptions.RequestValidationError``
     expose ``.errors()`` with the same dict shape, so one function serves
@@ -2555,6 +2709,18 @@ def translate_validation_error(
             return LegacyFormError(
                 field=str(ctx.get("field", "")),
                 received_type=str(ctx.get("received_type", "")),
+                example=str(ctx.get("example", "")),
+            )
+
+        # 0a-bis) Custom ``misplaced_top_level_field`` raised from the
+        # IngestRequest model_validator. Same leaf-layer-contract reasoning as
+        # ``legacy_form`` above. On the request model rather than at either
+        # tool body, because both surfaces bind the same model and the hole is
+        # the same on each.
+        if err_type == "misplaced_top_level_field":
+            return MisplacedTopLevelFieldError(
+                fields=list(ctx.get("fields", ())),
+                recognized=list(ctx.get("recognized", ())),
                 example=str(ctx.get("example", "")),
             )
 
@@ -2631,6 +2797,26 @@ def translate_validation_error(
                 received_type=received_type,
             )
 
+        # 4) A key a nested model does not declare. Last of the branches, and
+        # deliberately so: ``filters`` resolves through the walk like any
+        # other nested model, so this rule would answer for it too and retire
+        # ``unknown_filter_key`` without a word. Placement is the only thing
+        # that prevents it, which is why a test pins the order rather than
+        # trusting this comment.
+        #
+        # Keyed on the location resolving to a model, not on how deep it is: a
+        # surface that validates each item of a batch against the item model
+        # reports the key one segment deep, and the same rule has to answer
+        # there so the two surfaces do not diverge on the same mistake.
+        if err_type == "extra_forbidden" and root_model is not None:
+            refusing = _model_for_loc(root_model, loc)
+            if refusing is not None and loc:
+                return UndeclaredKeyError(
+                    parameter=".".join(str(segment) for segment in loc[:-1]),
+                    key=str(loc[-1]),
+                    recognized=list(refusing.model_fields),
+                )
+
     return None
 
 
@@ -2671,6 +2857,8 @@ def _generic_parameter_error(
 
 def validation_error_envelope(
     exc: ValidationError | RequestValidationError,
+    *,
+    root_model: type[BaseModel] | None = None,
 ) -> SAGEError:
     """Map any validation error to a structured envelope (CAS-ADR-028).
 
@@ -2684,7 +2872,7 @@ def validation_error_envelope(
     need to know whether a specific rule matched. Uniformity is a property
     of this wrapper: every failure reaches *an* envelope, not the same one.
     """
-    return translate_validation_error(exc) or _generic_parameter_error(exc)
+    return translate_validation_error(exc, root_model=root_model) or _generic_parameter_error(exc)
 
 
 def request_operation_name(request: Request) -> str:
@@ -2707,23 +2895,43 @@ def request_operation_name(request: Request) -> str:
     return request.url.path
 
 
+def _body_model(request: Request) -> type[BaseModel] | None:
+    """Return the model an operation validated a request's whole body against.
+
+    ``None`` unless the operation binds exactly one unembedded body parameter
+    whose annotation is a model -- the shape that makes the model the root of
+    every location the validator reports. A dependency that binds the same
+    body the handler does contributes it a second time under the same name,
+    and the framework treats the repeats as one body, so the decision is made
+    on the distinct names.
+    """
+    route = request.scope.get("route")
+    if not isinstance(route, APIRoute):
+        return None
+    body_params = get_flat_dependant(route.dependant).body_params
+    if len({param.alias for param in body_params}) != 1:
+        return None
+    if getattr(body_params[0].field_info, "embed", False):
+        return None
+    annotation = body_params[0].field_info.annotation
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return annotation
+    return None
+
+
 def _declared_body_names(request: Request) -> list[str]:
     """Return the top-level body names the operation a request reached declares.
 
-    A dependency that binds the same body the handler does contributes it a
-    second time under the same name, and the framework treats the repeats as
-    one body, so the decision is made on the distinct names.
+    The fields of the body model where there is one, and the bound parameter
+    names otherwise.
     """
     route = request.scope.get("route")
     if not isinstance(route, APIRoute):
         return []
-    body_params = get_flat_dependant(route.dependant).body_params
-    names = sorted({param.alias for param in body_params})
-    if len(names) == 1 and not getattr(body_params[0].field_info, "embed", False):
-        annotation = body_params[0].field_info.annotation
-        if isinstance(annotation, type) and issubclass(annotation, BaseModel):
-            return sorted(annotation.model_fields)
-    return names
+    model = _body_model(request)
+    if model is not None:
+        return sorted(model.model_fields)
+    return sorted({param.alias for param in get_flat_dependant(route.dependant).body_params})
 
 
 _logger = logging.getLogger(__name__)
@@ -2826,7 +3034,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                 request_operation_name(request), rejected, _declared_body_names(request)
             )
         else:
-            sage_err = validation_error_envelope(exc)
+            sage_err = validation_error_envelope(exc, root_model=_body_model(request))
         return JSONResponse(
             status_code=sage_err.status_code,
             content=to_wire(

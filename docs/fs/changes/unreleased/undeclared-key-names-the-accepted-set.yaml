@@ -1,0 +1,41 @@
+classification: minor
+category:
+  - caller-adaptation
+summary: >-
+  An undeclared key nested inside a request is now refused as 400 undeclared_key,
+  whose detail carries the field set of the object that refused. detail.parameter
+  locates that object, detail.key names the key, detail.recognized lists the names
+  the object accepts, and detail.example shows a corrected fragment carrying both
+  the position and two of the accepted names. It replaces the 422 invalid_parameter
+  whose detail named the offending key and nothing else, on POST /documents,
+  POST /documents:batch, POST /lifecycles, POST /metadata, POST /edges and
+  POST /app/ingest, and on the MCP tools that bind the same models -- bulk_ingest_document,
+  update_lifecycles, create_edges and update_metadata. The recognized set is taken from
+  the model that refused rather than written out, so it cannot name a key the refusal
+  would not accept; the two batch surfaces accordingly report different entry-level sets,
+  because an upload's bytes arrive as file parts and its entries declare no file_path
+  while the tool's entries do. POST /documents:batch no longer declares 422 at all: the
+  undeclared-entry-key refusal was its only occupant. detail.value, which that 422
+  carried, is not part of the new envelope. A key inside filters keeps unknown_filter_key,
+  whose detail says more. Separately, an argument POST /documents and ingest_document
+  declare -- tier3_metadata among them -- spelled inside metadata is now refused as 400
+  misplaced_top_level_field, carrying fields, recognized (every argument that belongs at
+  the top level) and example, where a mapping was refused as a complaint about the value's
+  type and a string was accepted, stored under a name nothing reads, and left the argument
+  it was meant for unset without a word. Separately again, a null value in metadata now
+  means the same as leaving the key out on the inheritance path too: a null doc_type,
+  project or authority_scope on a supersede no longer counts as caller-supplied, so the
+  predecessor's value fills the field instead of the field falling through to its derived
+  default.
+for_callers: >-
+  A client branching on invalid_parameter for a key nested inside a request body should
+  branch on undeclared_key and read detail.recognized to repair the call in one round-trip;
+  the status moves from 422 to 400 and detail.value is gone, so a client reading it should
+  read detail.key instead. A client that declared handling for 422 on
+  POST /sage_vaults/{vault_id}/documents:batch can drop it. An ingest that passed a
+  top-level argument inside metadata -- tier3_metadata, predecessor_id, force and the rest
+  -- is now refused rather than silently ignored; pass it as the argument it is. The keys
+  metadata does carry (title, version_label, project, doc_type, authority_scope,
+  document_date, date, codes, tags) are unaffected. A supersede that sent a null doc_type,
+  project or authority_scope inside metadata now inherits the predecessor's value where it
+  previously landed on the derived default; send the value explicitly to override it.

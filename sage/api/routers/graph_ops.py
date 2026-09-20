@@ -64,6 +64,7 @@ router = APIRouter(route_class=WireRoute, tags=["Graph Operations"])
                 "invalid_edge_id",
                 "invalid_sha256",
                 "unknown_parameter",
+                "undeclared_key",
             ),
         ),
         404: {

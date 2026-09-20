@@ -10,11 +10,13 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
 from sage.api.dependencies import get_ingestion_service, get_vault_id, get_vault_services
-from sage.api.errors import InvalidParameterError, SAGEError, undeclared_entry_key_error
+from sage.api.errors import SAGEError, UndeclaredKeyError, undeclared_entry_key_error
 from sage.api.response_docs import boundary_400
 from sage.api.wire_route import WireRoute
 from sage.mcp_init import SAGEServices
 from sage.models.schemas import (
+    BatchIngestFileMetadata,
+    BatchIngestParsedMetadata,
     BatchIngestUploadMetadata,
     ErrorResponse,
     IngestPreview,
@@ -30,12 +32,15 @@ from sage.services.ingestion import IngestionService
 router = APIRouter(route_class=WireRoute, tags=["Ingestion"])
 
 
-def _undeclared_file_entry_key(exc: ValidationError) -> InvalidParameterError | None:
+def _undeclared_file_entry_key(exc: ValidationError) -> UndeclaredKeyError | None:
     """Return the refusal for an undeclared key in a batch file entry, if any.
 
     Only a key under ``files.<n>`` or ``files.<n>.parsed_metadata`` qualifies;
     every other defect in the envelope stays ``invalid_batch_metadata``. Which
     key is reported, when there are several, is ``undeclared_entry_key_error``'s.
+    The accepted sets are the two models' own, so an entry here is refused
+    against what an upload declares -- no ``file_path``, because the bytes
+    arrive as file parts.
     """
     candidates = []
     for err in exc.errors():
@@ -48,7 +53,13 @@ def _undeclared_file_entry_key(exc: ValidationError) -> InvalidParameterError | 
             candidates.append((loc[1], 0, str(loc[2]), err.get("input")))
         elif len(loc) == 4 and loc[2] == "parsed_metadata":
             candidates.append((loc[1], 1, str(loc[3]), err.get("input")))
-    return undeclared_entry_key_error(candidates)
+    return undeclared_entry_key_error(
+        candidates,
+        recognized_by_depth={
+            0: BatchIngestFileMetadata.model_fields,
+            1: BatchIngestParsedMetadata.model_fields,
+        },
+    )
 
 
 @router.post(
@@ -83,8 +94,13 @@ def _undeclared_file_entry_key(exc: ValidationError) -> InvalidParameterError | 
                 "invalid_sha256",
                 "invalid_document_date",
                 "unknown_parameter",
+                "undeclared_key",
             ),
-            extra="`adapter_not_found`: no source adapter is registered for "
+            extra="`misplaced_top_level_field`: `metadata` carries a name this "
+            "operation declares as an argument of its own. `detail.fields` names "
+            "them and `detail.recognized` lists every argument that belongs at "
+            "the top level.\n\n"
+            "`adapter_not_found`: no source adapter is registered for "
             "`source_type`.\n\n"
             "`adapter_config_invalid`: the source adapter refused a value it "
             "cannot use in its config, the vault's `adapter_defaults` merged "
@@ -324,29 +340,21 @@ async def ingest(
         },
         400: boundary_400(
             path=("invalid_vault_id",),
-            request=("unknown_parameter",),
+            request=("unknown_parameter", "undeclared_key"),
             extra="`empty_file_list`: no files were uploaded.\n\n"
             "`invalid_batch_metadata`: the `metadata` form field is not "
             "valid JSON for the BatchIngestUploadMetadata schema, or its "
             "`files` length does not match the number of uploaded file "
             "parts. An undeclared key in a file entry is refused as "
-            "`invalid_parameter` instead.",
+            "`undeclared_key` instead, located at `files.<n>` or "
+            "`files.<n>.parsed_metadata`, before any file is staged or "
+            "ingested.",
         ),
         404: {
             "model": ErrorResponse,
             "description": (
                 "`vault_not_found`: no vault registered with that id; "
                 "`detail.available_vaults` lists the registered vaults."
-            ),
-        },
-        422: {
-            "model": ErrorResponse,
-            "description": (
-                "`invalid_parameter`: an entry of `metadata.files`, or the "
-                "`parsed_metadata` it carries, names a key its schema does not "
-                "declare. `detail.parameter` locates the key as "
-                "`files.<n>.<key>` or `files.<n>.parsed_metadata.<key>`, and "
-                "`detail.value` carries its value. No file is staged or ingested."
             ),
         },
     },

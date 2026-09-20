@@ -89,6 +89,7 @@ from sage.models.enums import (
     SourceType,
 )
 from sage.models.schemas import (
+    INGEST_METADATA_SPELLINGS,
     Document,
     IngestPreview,
     IngestRequest,
@@ -361,6 +362,13 @@ class _InflightClaim:
     kind: str
     start_time: datetime
     pending: int = 1
+
+
+#: The metadata spellings that map straight to a document field of the same
+#: name. The remainder of ``INGEST_METADATA_SPELLINGS`` -- ``date``, ``codes``
+#: and ``tags`` -- is read for a different column, so subtraction keeps the
+#: two halves from being restated and drifting apart.
+_DIRECT_METADATA_FIELDS: frozenset[str] = INGEST_METADATA_SPELLINGS - {"date", "codes", "tags"}
 
 
 class IngestionService:
@@ -3061,20 +3069,17 @@ class IngestionService:
 
         Known fields are mapped to document columns. Unknown fields are
         stored but have no schema-enforced semantics.
+
+        The vocabulary is ``INGEST_METADATA_SPELLINGS``, declared beside the
+        request model: the same set decides which spellings inside
+        ``metadata`` are a misplaced top-level argument, and a second copy is
+        how that guard comes to refuse a key this method reads.
         """
-        KNOWN_FIELDS = {
-            "title",
-            "version_label",
-            "project",
-            "doc_type",
-            "authority_scope",
-            "document_date",
-        }
         updates: dict = {}
         for key, value in metadata.items():
             if value is None:
                 continue
-            if key in KNOWN_FIELDS:
+            if key in _DIRECT_METADATA_FIELDS:
                 updates[key] = value
             elif key == "date":
                 # Filename-parsed date -> document_date (BH-062)
@@ -3240,7 +3245,13 @@ class IngestionService:
         caller_keys: set[str] = set()
         if caller_metadata:
             field_updates.update(self._build_metadata_updates(caller_metadata))
-            caller_keys = set(caller_metadata.keys())
+            # A null means the same as leaving the key out, which is the rule
+            # the published request schemas declare and the one
+            # ``_build_metadata_updates`` already applies: it sets nothing for
+            # a null value. The key set has to agree, or a null names a field
+            # as caller-supplied, blocks the predecessor's value from filling
+            # it, and leaves the head on the derived default instead.
+            caller_keys = {key for key, value in caller_metadata.items() if value is not None}
 
         if predecessor is not None:
             field_view = {**baseline, **field_updates}

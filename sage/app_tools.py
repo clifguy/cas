@@ -44,9 +44,12 @@ def _refuse_undeclared_entry_fields(files: list[dict]) -> None:
 
     The entries arrive as plain mappings, so a misspelled or misplaced name
     would otherwise be read past without a word. The refusal is the
-    ``invalid_parameter`` envelope the request surface gives the same name,
+    ``undeclared_key`` envelope the request surface gives the same name,
     located the same way and chosen among several by the same rule, and it is
-    raised before anything in the batch is delivered or ingested.
+    raised before anything in the batch is delivered or ingested. It carries
+    the names the entry does declare, so the call is repairable on first read;
+    that set is this tool's own at the entry level, where an upload's entries
+    name no path because their bytes arrive as file parts.
     """
     candidates: list[tuple[int, int, str, object]] = []
     for index, entry in enumerate(files):
@@ -58,7 +61,10 @@ def _refuse_undeclared_entry_fields(files: list[dict]) -> None:
             candidates.extend(
                 (index, depth, name, mapping[name]) for name in mapping if name not in declared
             )
-    refusal = undeclared_entry_key_error(candidates)
+    refusal = undeclared_entry_key_error(
+        candidates,
+        recognized_by_depth={0: _FILE_ENTRY_FIELDS, 1: _PARSED_METADATA_FIELDS},
+    )
     if refusal is not None:
         raise refusal
 
@@ -371,11 +377,18 @@ def register_app_tools(
           calendar date. The ingest of that one file fails and the call still
           returns its summary, so a caller checking only the envelope sees a
           success.
-        - ``invalid_parameter`` (422): a file entry, or the
-          ``parsed_metadata`` it carries, names a key the tool does not
-          declare, or its ``parsed_metadata`` is not a mapping or carries a
-          value of the wrong type; ``detail.parameter`` locates it
-          (``files.<n>.<key>``, ``files.<n>.parsed_metadata``,
+        - ``undeclared_key`` (400): a file entry, or the ``parsed_metadata``
+          it carries, names a key the tool does not declare.
+          ``detail.parameter`` locates the object (``files.<n>`` or
+          ``files.<n>.parsed_metadata``), ``detail.key`` names the key, and
+          ``detail.recognized`` lists the names that object accepts, so the
+          call is repairable on first read. With several, the one reported is
+          at the lowest file index, then the lowest depth, then first in
+          sorted order. A batch-boundary refusal raised before any file is
+          delivered or ingested.
+        - ``invalid_parameter`` (422): an entry's ``parsed_metadata`` is not a
+          mapping, or carries a value of the wrong type; ``detail.parameter``
+          locates it (``files.<n>.parsed_metadata``,
           ``files.<n>.parsed_metadata.<key>``, or
           ``files.<n>.parsed_metadata.<key>.<index>`` for one item of a list
           such as ``codes``). A batch-boundary refusal
