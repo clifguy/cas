@@ -54,6 +54,24 @@ class DivergenceCategory(enum.StrEnum):
 class Divergence(NamedTuple):
     category: DivergenceCategory
     basis: str
+    #: The tool or operation on the *other* surface that carries this
+    #: divergence's capability. Required of, and only of, the categories whose
+    #: definition asserts the capability is reachable there -- delivery form
+    #: and operation factoring. The other three assert no such thing: a
+    #: translation artifact compensates for one protocol's clients, a
+    #: single-audience operation has one caller class, and a pending
+    #: remediation is the admission that nothing carries it yet.
+    reached_by: tuple[str, ...] = ()
+    #: The component schema carrying the caller-settable options of a delivery
+    #: form that encodes them in a transport field the specification types
+    #: opaquely -- a JSON envelope in a multipart form field, say, which no
+    #: structural reader can follow to its component. Naming it lets the gate
+    #: compare those options against ``reached_by``'s arguments, which is the
+    #: whole of what "the capability is reachable there" asserts.
+    options_schema: str | None = None
+    #: Properties of ``options_schema`` that *are* the delivery form rather
+    #: than options it carries, and so have no counterpart argument.
+    carried_by_form: tuple[str, ...] = ()
 
 
 _TA = DivergenceCategory.TRANSLATION_ARTIFACT
@@ -159,6 +177,7 @@ MCP_ONLY_TOOLS: Final[dict[tuple[str, str], Divergence]] = {
         _OF,
         "One tool selecting by its action argument; REST offers the same capability "
         "as the discrete confirm_staging_edge and dismiss_staging_edge operations.",
+        reached_by=("confirm_staging_edge", "dismiss_staging_edge"),
     ),
 }
 
@@ -171,6 +190,7 @@ _STAGING_FACTORING = Divergence(
     _OF,
     "Discrete REST operation; MCP reaches the same capability through "
     "update_staging_edge(action=...).",
+    reached_by=("update_staging_edge",),
 )
 
 _EDITOR_MODEL = Divergence(
@@ -198,30 +218,36 @@ REST_ONLY_OPERATIONS: Final[dict[tuple[str, str], Divergence]] = {
         _DF,
         "Mints a short-lived URL a browser fetches directly from the backing store. "
         "MCP reaches source bytes through get_document and its download recipe.",
+        reached_by=("get_document",),
     ),
     ("sage_core", "get_document_content"): Divergence(
         _DF,
         "Streams retained source bytes as a raw download. A raw byte stream has no MCP "
         "tool-result form; MCP reaches the bytes through get_document and its download "
         "recipe.",
+        reached_by=("get_document",),
     ),
     ("sage_core", "transfer_upload"): Divergence(
         _DF,
         "Byte leg of the caller-local transfer channel: the raw PUT body delivered "
         "against a one-time upload token. The recipe and completion legs are on both "
         "surfaces; a raw byte stream has no MCP tool-result form.",
+        reached_by=("ingest_document", "bulk_ingest_document"),
     ),
     ("sage_core", "transfer_download"): Divergence(
         _DF,
         "Byte leg of the caller-local transfer channel: streams a pending transfer's "
         "bytes against a one-time download token. The recipe leg is on both surfaces; "
         "a raw byte stream has no MCP tool-result form.",
+        reached_by=("get_document",),
     ),
     ("sage_core", "batch_ingest_documents"): Divergence(
         _DF,
         "Multipart upload with an event-stream response (CAS-ADR-042). MCP reaches "
         "caller-delivered bulk ingest through bulk_ingest_document and the transfer "
         "channel.",
+        reached_by=("bulk_ingest_document",),
+        options_schema="BatchIngestUploadMetadata",
     ),
     ("sage_core", "get_editors"): _EDITOR_MODEL,
     ("sage_core", "set_editors"): _EDITOR_MODEL,

@@ -1125,6 +1125,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: >-
+            `invalid_parameter`: an entry of `metadata.files` supplies both
+            `codes` and `tags` in its `parsed_metadata`, which set the same
+            field. `detail.parameter` locates the entry as
+            `files.<n>.parsed_metadata.tags` and `detail.value` carries its
+            value. No file is staged or ingested. An undeclared key in an
+            entry is refused as `undeclared_key` (400) instead.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 
   /sage_vaults/{vault_id}/documents/{document_id}:
     get:
@@ -5778,7 +5790,9 @@ components:
             Values are strings except
             tags, which may be supplied as a list of strings or as a
             comma-separated string (parity with update_metadata's
-            list-typed tags field).
+            list-typed tags field). `codes` sets the same field as `tags`, so
+            metadata supplying both is refused at `metadata.tags` rather
+            than resolved by which key is walked last.
         predecessor_id:
           type: [string, "null"]
           description: >-
@@ -9367,9 +9381,20 @@ components:
             - type: "null"
           description: >-
             Optional caller-supplied parsed metadata for this file (keys:
-            title, date, project, codes, version, doc_type). When omitted, the
-            file stem seeds the title and the vault's configured filename parser
-            fills the remaining fields.
+            title, date, project, codes, version, doc_type, tags). When
+            omitted, the file stem seeds the title and the vault's configured
+            filename parser fills the remaining fields.
+        tier3_metadata:
+          type: [object, "null"]
+          description: >-
+            Optional Tier-3 metadata for this file, validated against the
+            `metadata_schema` the vault config declares for the file's
+            resolved doc_type (CAS-ADR-028). A payload the schema rejects, or
+            any payload for a doc_type declaring no schema, is reported for
+            that file as `tier3_schema_violation` and leaves the rest of the
+            batch to run. A sibling of `parsed_metadata`, not a key in it:
+            `parsed_metadata` carries the Tier-1 fields a filename parser can
+            supply, and Tier-3 metadata never comes from a filename.
 
     BatchIngestParsedMetadata:
       type: object
@@ -9403,6 +9428,15 @@ components:
         doc_type:
           type: [string, "null"]
           description: Document type.
+        tags:
+          type: [array, "null"]
+          items:
+            type: string
+          description: >-
+            Tags for the document, in order, each carried whole: a tag that
+            contains a comma stays one tag. `codes` sets the same field, so an
+            entry supplying both is refused at
+            `files.<n>.parsed_metadata.tags` before any file is ingested.
 
     BatchIngestUploadMetadata:
       type: object

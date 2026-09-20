@@ -189,12 +189,6 @@ KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
         "renamed test_b26_undeclared_file_entry_key_names_the_accepted_set when the "
         "refusal moved to undeclared_key and gained the upload entry's field set"
     ),
-    "tests/sage/test_openapi_conformance.py::"
-    "test_live_openapi_matches_yaml_error_envelope[POST /sage_vaults/{vault_id}/documents:batch"
-    " -> 422]": (
-        "the batch upload declares no 422: undeclared_key at 400 replaced the "
-        "undeclared-entry-key refusal that was its only occupant"
-    ),
     "tests/sage/test_validation_envelope_parity.py::"
     "test_unknown_item_field_parity_between_surfaces": (
         "renamed test_undeclared_item_field_parity_between_surfaces when both surfaces "

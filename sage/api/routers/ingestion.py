@@ -10,7 +10,13 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import ValidationError
 
 from sage.api.dependencies import get_ingestion_service, get_vault_id, get_vault_services
-from sage.api.errors import SAGEError, UndeclaredKeyError, undeclared_entry_key_error
+from sage.api.errors import (
+    InvalidParameterError,
+    SAGEError,
+    UndeclaredKeyError,
+    codes_and_tags_conflict_error,
+    undeclared_entry_key_error,
+)
 from sage.api.response_docs import boundary_400
 from sage.api.wire_route import WireRoute
 from sage.mcp_init import SAGEServices
@@ -59,6 +65,25 @@ def _undeclared_file_entry_key(exc: ValidationError) -> UndeclaredKeyError | Non
             0: BatchIngestFileMetadata.model_fields,
             1: BatchIngestParsedMetadata.model_fields,
         },
+    )
+
+
+def _codes_and_tags_conflict(
+    envelope: BatchIngestUploadMetadata,
+) -> InvalidParameterError | None:
+    """Return the refusal for an entry supplying both codes and tags, if any.
+
+    Runs once the envelope has validated, so every entry's names and types are
+    settled before this is asked. Which entry is reported, and where, is
+    ``codes_and_tags_conflict_error``'s -- the rule the MCP bulk ingest tool
+    reports through too.
+    """
+    return codes_and_tags_conflict_error(
+        (index, meta.parsed_metadata.tags)
+        for index, meta in enumerate(envelope.files)
+        if meta.parsed_metadata is not None
+        and meta.parsed_metadata.codes
+        and meta.parsed_metadata.tags
     )
 
 
@@ -357,6 +382,17 @@ async def ingest(
                 "`detail.available_vaults` lists the registered vaults."
             ),
         },
+        422: {
+            "model": ErrorResponse,
+            "description": (
+                "`invalid_parameter`: an entry of `metadata.files` supplies "
+                "both `codes` and `tags` in its `parsed_metadata`, which set "
+                "the same field. `detail.parameter` locates the entry as "
+                "`files.<n>.parsed_metadata.tags` and `detail.value` carries "
+                "its value. No file is staged or ingested. An undeclared key "
+                "in an entry is refused as `undeclared_key` (400) instead."
+            ),
+        },
     },
 )
 async def batch_ingest_documents(
@@ -412,6 +448,10 @@ async def batch_ingest_documents(
             400,
         ) from exc
 
+    conflict = _codes_and_tags_conflict(envelope)
+    if conflict is not None:
+        raise conflict
+
     if not files:
         raise SAGEError("empty_file_list", "No files selected for ingestion", 400)
     if len(envelope.files) != len(files):
@@ -432,6 +472,7 @@ async def batch_ingest_documents(
                 if meta.parsed_metadata is None
                 else meta.parsed_metadata.model_dump(exclude_unset=True)
             ),
+            tier3_metadata=meta.tier3_metadata,
         )
         for index, (upload, meta) in enumerate(zip(files, envelope.files))
     ]

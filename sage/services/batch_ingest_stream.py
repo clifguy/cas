@@ -52,6 +52,7 @@ class UploadedFile:
     content: bytes
     source_type: str | None
     parsed_metadata: dict[str, Any] | None = None
+    tier3_metadata: dict[str, Any] | None = None
 
 
 def _sse_event(event: BaseModel) -> str:
@@ -266,6 +267,7 @@ async def stream_uploaded_batch_ingest(
                     # The staged path is where the bytes are; the upload's
                     # own name is what a refusal names back at the caller.
                     declared_source=declared,
+                    tier3_metadata=upload.tier3_metadata,
                 )
             )
         async for chunk in batch_ingest_sse_stream(

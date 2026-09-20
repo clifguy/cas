@@ -50,7 +50,7 @@ BOGUS_QUERY = "bogus_q"
 PROFILE_PROBE_PATH = "/__cas_ingest_profile_probe__"
 
 SCAN_FIELDS = ["directory", "max_depth", "vault_id"]
-INGEST_FIELDS = ["dry_run", "files", "infer_edges", "vault_id"]
+INGEST_FIELDS = ["dry_run", "files", "infer_edges", "needs_review", "vault_id"]
 
 
 @pytest.fixture

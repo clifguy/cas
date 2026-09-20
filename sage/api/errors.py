@@ -10,6 +10,7 @@ import typing
 from collections.abc import Iterable
 from datetime import datetime
 from enum import StrEnum
+from typing import Final
 
 from fastapi import FastAPI, Request
 from fastapi.dependencies.utils import get_flat_dependant
@@ -2632,6 +2633,54 @@ def undeclared_entry_key_error(
     )
 
 
+#: Why an entry may not supply both. One sentence, shared by every surface that
+#: refuses the pair, so a caller meets the same explanation on each: the batch
+#: boundaries locate it at ``files.<n>.parsed_metadata.tags``, the
+#: single-document boundary at ``metadata.tags``.
+CODES_AND_TAGS_CONSTRAINT: Final[str] = (
+    "codes and tags both set the document's tags; supply one, not both"
+)
+
+
+def codes_and_tags_conflict_error(
+    candidates: Iterable[tuple[int, object]],
+) -> InvalidParameterError | None:
+    """Return the refusal for a batch entry carrying both ``codes`` and ``tags``.
+
+    Each candidate is ``(file index, tags value)`` for one entry whose parsed
+    metadata supplies both. The two write the same field -- a document's tags --
+    so an entry supplying both leaves which one stands to the order a mapping
+    happens to be walked in. That is a defect in the request's shape rather than
+    in one file's content, so it refuses the whole call before anything is
+    delivered, the way an undeclared key does, instead of becoming that file's
+    own error.
+
+    The entry at the lowest file index is reported, located at
+    ``files.<n>.parsed_metadata.tags``: the refusal names the key a caller adds
+    to an entry that already parses, not the one that was there first. The Core
+    API batch upload and the MCP bulk ingest tool both report through this rule.
+
+    They agree on the location for a batch whose *only* boundary defect is the
+    conflict. Where another entry also carries a malformed value, the two
+    surfaces differ on which defect is reported first: the Core API validates
+    the whole envelope before this is asked, so a sibling's wrong-typed value
+    refuses the call as ``invalid_batch_metadata`` with no location, while the
+    tool checks entry types after this and reports the conflict. That
+    precedence difference is the Core API's pre-existing envelope-first
+    ordering rather than anything this rule decides. ``None`` when there is no
+    candidate.
+    """
+    chosen = min(candidates, key=lambda candidate: candidate[0], default=None)
+    if chosen is None:
+        return None
+    index, value = chosen
+    return InvalidParameterError(
+        parameter=f"files.{index}.parsed_metadata.tags",
+        value=value,
+        constraint=CODES_AND_TAGS_CONSTRAINT,
+    )
+
+
 def translate_validation_error(
     exc: ValidationError | RequestValidationError,
     *,
@@ -2705,6 +2754,21 @@ def translate_validation_error(
         # embeds the envelope fields in ``ctx`` and we rebuild here. Drives
         # the structured ``legacy_form`` 400 envelope on the FastAPI surface
         # (CAS-ADR-028 ops-object patch grammar).
+        # 0b) Custom ``codes_and_tags_conflict`` raised from the IngestRequest
+        # model_validator via PydanticCustomError. Same leaf-layer-contract
+        # reasoning as the two rules above: the models layer cannot import
+        # this module, so the validator embeds the location in ``ctx`` and the
+        # envelope is rebuilt here. The batch boundaries refuse the same pair
+        # without reaching a request model, so they call
+        # ``codes_and_tags_conflict_error`` directly; both report the same
+        # code and the same constraint, located at their own spelling.
+        if err_type == "codes_and_tags_conflict":
+            return InvalidParameterError(
+                parameter=str(ctx.get("parameter", "metadata.tags")),
+                value=ctx.get("value"),
+                constraint=CODES_AND_TAGS_CONSTRAINT,
+            )
+
         if err_type == "legacy_form":
             return LegacyFormError(
                 field=str(ctx.get("field", "")),

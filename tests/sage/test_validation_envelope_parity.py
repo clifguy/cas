@@ -572,29 +572,92 @@ def _constructed_schema_name(node) -> str | None:
 def test_the_derivation_reads_both_construction_spellings():
     """A model validated rather than constructed is still derived.
 
-    Exercised on synthetic source rather than on the repo's own, because the
-    repo currently uses one of the two spellings at the sites that matter: a
-    test reading only real source would pass against a walk that handles only
-    that spelling, which is exactly the gap.
+    Exercised on synthetic source, because the repository uses one of the two
+    spellings at every site that matters: a test reading only real source
+    passes against a walk that handles only that spelling, which is the gap.
+
+    Run through ``_tools_in_source`` -- the walk the real derivation calls --
+    rather than through the name helper it uses. Asserting the helper leaves
+    the walk free to ignore what the helper returns, and a test that cannot
+    go red while the walk is wrong is the shape this gate exists to catch.
+    """
+    derived = _tools_in_source(
+        "@mcp.tool()\n"
+        "async def constructs():\n"
+        "    return IngestRequest(source='x')\n"
+        "\n"
+        "@mcp.tool()\n"
+        "async def validates():\n"
+        "    return IngestRequest.model_validate({})\n"
+    )
+
+    from sage.models import schemas
+
+    assert derived == {
+        "constructs": schemas.IngestRequest,
+        "validates": schemas.IngestRequest,
+    }, derived
+
+
+def _tools_in_source(source: str) -> dict[str, type]:
+    """The tools one module's source declares that build a nesting model.
+
+    Split out so the walk itself can be exercised on source written for the
+    purpose. Kept separate from the module list above for no other reason.
     """
     import ast
+    import types
+    import typing
 
-    module = ast.parse(
-        "class _X:\n"
-        "    @mcp.tool()\n"
-        "    async def a(self):\n"
-        "        return IngestRequest(source='x')\n"
-        "    @mcp.tool()\n"
-        "    async def b(self):\n"
-        "        return IngestRequest.model_validate({})\n"
-    )
-    names = [
-        _constructed_schema_name(node)
-        for node in ast.walk(module)
-        if _constructed_schema_name(node) is not None
-    ]
+    from pydantic import BaseModel
 
-    assert names.count("IngestRequest") == 2, names
+    from sage.models import schemas
+
+    def strict_nested(model: type[BaseModel]) -> set[type[BaseModel]]:
+        seen: set[type[BaseModel]] = set()
+        out: set[type[BaseModel]] = set()
+
+        def walk(current: type[BaseModel]) -> None:
+            for field in current.model_fields.values():
+                pending = [field.annotation]
+                while pending:
+                    item = pending.pop()
+                    if isinstance(item, type) and issubclass(item, BaseModel):
+                        if item in seen:
+                            continue
+                        seen.add(item)
+                        out.add(item)
+                        walk(item)
+                        continue
+                    if isinstance(item, types.UnionType) or typing.get_origin(item) is not None:
+                        pending.extend(typing.get_args(item))
+
+        walk(model)
+        return {
+            m
+            for m in out
+            if m.model_config.get("extra") == "forbid" and m is not schemas.RetrievalFilters
+        }
+
+    found: dict[str, type] = {}
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.AsyncFunctionDef):
+            continue
+        if not any(
+            isinstance(dec, ast.Call)
+            and isinstance(dec.func, ast.Attribute)
+            and dec.func.attr == "tool"
+            for dec in node.decorator_list
+        ):
+            continue
+        for inner in ast.walk(node):
+            name = _constructed_schema_name(inner)
+            if name is None:
+                continue
+            model = getattr(schemas, name, None)
+            if isinstance(model, type) and issubclass(model, BaseModel) and strict_nested(model):
+                found[node.name] = model
+    return found
 
 
 def _tools_building_a_nesting_model() -> dict[str, type]:
@@ -612,7 +675,6 @@ def _tools_building_a_nesting_model() -> dict[str, type]:
     reason its own code states: a key it refuses keeps ``unknown_filter_key``,
     whose detail says more.
     """
-    import ast
     import types
     import typing
     from pathlib import Path as _Path
@@ -650,28 +712,7 @@ def _tools_building_a_nesting_model() -> dict[str, type]:
     repo_root = _Path(__file__).resolve().parents[2]
     found: dict[str, type] = {}
     for module_path in ("sage/sage_api_tools.py", "sage/app_tools.py"):
-        tree = ast.parse((repo_root / module_path).read_text())
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.AsyncFunctionDef):
-                continue
-            if not any(
-                isinstance(dec, ast.Call)
-                and isinstance(dec.func, ast.Attribute)
-                and dec.func.attr == "tool"
-                for dec in node.decorator_list
-            ):
-                continue
-            for inner in ast.walk(node):
-                name = _constructed_schema_name(inner)
-                if name is None:
-                    continue
-                model = getattr(schemas, name, None)
-                if (
-                    isinstance(model, type)
-                    and issubclass(model, BaseModel)
-                    and strict_nested(model)
-                ):
-                    found[node.name] = model
+        found |= _tools_in_source((repo_root / module_path).read_text())
     return found
 
 

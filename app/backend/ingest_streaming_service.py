@@ -25,6 +25,7 @@ from fastapi.responses import StreamingResponse
 
 from app.backend.exceptions import EmptyFileListError
 from app.backend.models import IngestFileItem, IngestRequest
+from sage.api.errors import codes_and_tags_conflict_error
 from sage.services.batch_ingest import FileDescriptor, ParsedMetadataInput
 from sage.services.batch_ingest_stream import (
     _summary_event_from,  # noqa: F401 -- re-exported for the BFF import surface
@@ -48,11 +49,13 @@ def _to_file_descriptor(f: IngestFileItem) -> FileDescriptor:
             codes=pm.codes,
             version=pm.version,
             doc_type=pm.doc_type,
+            tags=pm.tags,
         )
     return FileDescriptor(
         file_path=f.file_path,
         source_type=f.source_type,
         parsed_metadata=parsed,
+        tier3_metadata=f.tier3_metadata,
     )
 
 
@@ -66,12 +69,24 @@ class IngestStreamingService:
     def stream(self, body: IngestRequest) -> StreamingResponse:
         if not body.files:
             raise EmptyFileListError()
+        # ``codes`` and ``tags`` set the same field, so an entry supplying
+        # both leaves the outcome to walk order. Which entry is reported, and
+        # where, is the rule the sibling batch surfaces report through, so the
+        # same entry is refused at the same location on each.
+        conflict = codes_and_tags_conflict_error(
+            (index, f.parsed_metadata.tags)
+            for index, f in enumerate(body.files)
+            if f.parsed_metadata is not None and f.parsed_metadata.codes and f.parsed_metadata.tags
+        )
+        if conflict is not None:
+            raise conflict
         descriptors = [_to_file_descriptor(f) for f in body.files]
         return StreamingResponse(
             batch_ingest_sse_stream(
                 descriptors,
                 self.vault_services,
                 infer_edges=body.infer_edges,
+                needs_review=body.needs_review,
                 dry_run=body.dry_run,
             ),
             media_type="text/event-stream",
