@@ -2124,6 +2124,10 @@ async def test_declared_digest_isolates_mismatch_before_retention(
     else:
         completed = [e for e in _parse_sse_events(response.text) if e.get("document_id")]
         assert len(completed) == 2
+        final_documents = await services.graph_store.list_all_documents()
+        assert {doc.id for doc in final_documents} == set(before.documents) | {
+            event["document_id"] for event in completed
+        }
         for event, expected in zip(completed, (hashes[0], hashes[2])):
             doc = await services.graph_store.get_document(event["document_id"])
             assert doc.source_content_hash == expected
