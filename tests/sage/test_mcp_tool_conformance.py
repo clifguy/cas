@@ -1336,6 +1336,16 @@ def _counterpart_names(register_name: str, surface_name: str) -> set[str]:
     return _all_operation_ids(_load_spec(_SURFACES_BY_NAME[surface_name].spec_path))
 
 
+def unreachable_options(options: set[str], arguments: set[str]) -> list[str]:
+    """The options a counterpart does not offer, sorted.
+
+    The whole of the reachability comparison, in one place so the gate below
+    and its positive control exercise the same code. A control that recomputed
+    this relation would test the data the gate reads rather than the gate.
+    """
+    return sorted(options - arguments)
+
+
 def _counterpart_arguments(tool_name: str) -> set[str]:
     """The argument names of a tool, wherever it is registered."""
     for surface in TOOL_SURFACES:
@@ -1443,8 +1453,7 @@ def test_delivery_form_options_reach_the_named_counterpart(
     )
 
     for counterpart in divergence.reached_by:
-        arguments = _counterpart_arguments(counterpart)
-        unreachable = sorted(options - arguments)
+        unreachable = unreachable_options(options, _counterpart_arguments(counterpart))
         assert not unreachable, (
             f"{operation_id} offers {unreachable}, which its named counterpart "
             f"{counterpart!r} does not, so the capability this row records as "
@@ -1456,19 +1465,23 @@ def test_delivery_form_options_reach_the_named_counterpart(
 def test_the_options_reachability_gate_fires_on_a_dropped_option():
     """Positive control: the gate above fails when an option stops reaching.
 
-    Without it a comparison over an empty option set, or over a tool whose
-    arguments were read as "everything", would look exactly like a clean pass.
-    The probe removes one real option from the counterpart's argument set and
-    asserts the same subset relation the gate asserts.
+    The probe drops one real option from the counterpart's argument set and
+    feeds it to ``unreachable_options`` -- the same function the gate calls,
+    not a second copy of its set arithmetic. That distinction is the point: a
+    control that recomputes the comparison itself is a control on the *data*
+    the gate reads, and stays green against an inverted subset, a
+    ``carried_by_form`` that excluded everything, or a ``reached_by`` loop that
+    never iterated. Reading the live pair through the gate's own function also
+    makes an empty option set, or arguments read as "everything", fail here.
     """
     spec = _load_spec(_SURFACES_BY_NAME["sage_core"].spec_path)
     options = set(spec["components"]["schemas"]["BatchIngestUploadMetadata"]["properties"])
     arguments = _counterpart_arguments("bulk_ingest_document")
-    assert options <= arguments, "precondition: the live pair is clean"
+    assert options, "precondition: the component contributes options to compare"
+    assert not unreachable_options(options, arguments), "precondition: the live pair is clean"
 
-    mutated = arguments - {"needs_review"}
-    assert sorted(options - mutated) == ["needs_review"], (
+    assert unreachable_options(options, arguments - {"needs_review"}) == ["needs_review"], (
         "dropping needs_review from the counterpart's arguments must surface it as "
-        "unreachable; if it does not, the option set and the argument set are not "
-        "being compared over the same names."
+        "unreachable; if it does not, the gate's own comparison is not separating "
+        "an option the counterpart offers from one it does not."
     )

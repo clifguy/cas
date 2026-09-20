@@ -2504,9 +2504,17 @@ def codes_and_tags_conflict_error(
     The entry at the lowest file index is reported, located at
     ``files.<n>.parsed_metadata.tags``: the refusal names the key a caller adds
     to an entry that already parses, not the one that was there first. The Core
-    API batch upload and the MCP bulk ingest tool both report through this rule,
-    so the same entry is refused at the same location on either. ``None`` when
-    there is no candidate.
+    API batch upload and the MCP bulk ingest tool both report through this rule.
+
+    They agree on the location for a batch whose *only* boundary defect is the
+    conflict. Where another entry also carries a malformed value, the two
+    surfaces differ on which defect is reported first: the Core API validates
+    the whole envelope before this is asked, so a sibling's wrong-typed value
+    refuses the call as ``invalid_batch_metadata`` with no location, while the
+    tool checks entry types after this and reports the conflict. That
+    precedence difference is the Core API's pre-existing envelope-first
+    ordering rather than anything this rule decides. ``None`` when there is no
+    candidate.
     """
     chosen = min(candidates, key=lambda candidate: candidate[0], default=None)
     if chosen is None:

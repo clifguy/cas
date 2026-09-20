@@ -253,6 +253,18 @@ async def tier3_vault(tmp_path):
     config_dict = _make_vault_config_dict(tmp_path, "tier3_vault", "Tier3 Vault")
     config_dict["document_types"]["doc_types"].append(
         {
+            "value": "strict_ticket",
+            "label": "Strict Ticket",
+            "metadata_schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["ticket_id"],
+                "properties": {"ticket_id": {"type": "string"}},
+            },
+        }
+    )
+    config_dict["document_types"]["doc_types"].append(
+        {
             "value": "ticket",
             "label": "Ticket",
             "metadata_schema": {
@@ -1259,9 +1271,9 @@ class TestAppBatchIngest:
     async def test_needs_review_false_commits_metadata_as_authoritative(self, single_vault):
         """``needs_review=False`` commits the caller's metadata and queues nothing.
 
-        The ticket's headline claim, asserted against a paired control: the
-        same call at the default must land every document in the queue. Without
-        that arm a vault that simply never queued would pass the False arm.
+        Asserted against a paired control: the same call at the default must
+        land every document in the queue. Without that arm a vault that simply
+        never queued would pass the False arm.
 
         Anti-coincidental-pass: a ``needs_review`` accepted at the signature and
         dropped before the service call -- the defect this closes, wearing a new
@@ -1506,6 +1518,58 @@ class TestAppBatchIngest:
         assert result.get("error") is None, result
         assert result["error_count"] == 0, result
         assert result["documents_created"]["new"] == 1
+
+    async def test_empty_tier3_payload_is_a_payload_not_an_absence(self, tier3_vault):
+        """``tier3_metadata: {}`` is validated; an omitted key is not.
+
+        At ingest a payload that is not ``None`` overrides whatever tier-3
+        metadata the adapter extracted and is then validated, so an explicit
+        empty mapping is refused by a schema declaring a required field while
+        an omitted key leaves validation with nothing to check. Folding ``{}``
+        to ``None`` at this boundary ingests the file instead, giving the same
+        entry a different outcome from the one the Core API batch route gives
+        it -- which
+        ``test_b37_an_explicit_empty_tier3_payload_is_a_payload_not_an_absence``
+        asserts from the other side.
+
+        Anti-coincidental-pass: the doc_type's ``required`` field is what makes
+        the two separable at all -- against a no-schema or all-optional
+        doc_type both arms succeed and this passes against the divergence it
+        exists to catch. The omitted-key arm is the paired control: it must
+        still ingest, or the test would also pass against a boundary that
+        refused every entry.
+        """
+        _, config = tier3_vault
+        sources = Path(config.vault.storage_root)
+        empty_src = sources / "strict_empty.md"
+        empty_src.write_text("# Strict empty\n\nBody.")
+        omitted_src = sources / "strict_omitted.md"
+        omitted_src.write_text("# Strict omitted\n\nOther body.")
+
+        async def ingest(path: Path, entry: dict) -> dict:
+            return _parse(
+                await bulk_ingest_document(
+                    "tier3_vault",
+                    [
+                        {
+                            "file_path": str(path),
+                            "source_type": "markdown",
+                            "parsed_metadata": {"doc_type": "strict_ticket"},
+                            **entry,
+                        }
+                    ],
+                    infer_edges=False,
+                    needs_review=False,
+                )
+            )
+
+        empty = await ingest(empty_src, {"tier3_metadata": {}})
+        omitted = await ingest(omitted_src, {})
+
+        assert empty["error_count"] == 1, empty
+        assert empty["errors"][0]["code"] == "tier3_schema_violation", empty
+        assert omitted["error_count"] == 0, omitted
+        assert omitted["documents_created"]["new"] == 1, omitted
 
     @pytest.mark.parametrize(
         "value", [pytest.param("T-0001", id="string"), pytest.param(["T-0001"], id="list")]

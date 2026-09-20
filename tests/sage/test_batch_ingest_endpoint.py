@@ -1680,6 +1680,16 @@ async def tier3_batch_app(minimal_vault_config_dict, monkeypatch):
         "doc_types": [
             *minimal_vault_config_dict["document_types"]["doc_types"],
             {
+                "value": "strict_ticket",
+                "label": "Strict Ticket",
+                "metadata_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["ticket_id"],
+                    "properties": {"ticket_id": {"type": "string"}},
+                },
+            },
+            {
                 "value": "ticket",
                 "label": "Ticket",
                 "metadata_schema": {
@@ -1833,9 +1843,17 @@ async def test_b34_tier3_schema_violation_is_a_per_file_error(tier3_batch_app):
 
     Anti-coincidental-pass: a refusal for the whole call reports the same
     violation, so the sibling document's creation and the error count are what
-    discriminate -- one file refused, the other ingested.
+    discriminate -- one file refused, the other ingested. Those three say
+    nothing about *when* the refusal happened, so the state fingerprint is
+    taken around the run and compared against the sibling's single insert: an
+    implementation that wrote the bad file's row and then raised would report
+    exactly the same summary, with an orphan row left behind. The service
+    docstring claims validation is strictly upstream of the insert on the real
+    run, and only the dry-run test checked it.
     """
     app, vault_id, _config = tier3_batch_app
+    services: SAGEServices = app.state.vault_registry[vault_id]
+    before = await state_snapshot(services.graph_store, services.content_store)
 
     async with _client(app) as client:
         resp = await client.post(
@@ -1872,6 +1890,17 @@ async def test_b34_tier3_schema_violation_is_a_per_file_error(tier3_batch_app):
     assert summary["error_count"] == 1, summary
     assert summary["errors"][0]["file_index"] == 1, summary
     assert summary["errors"][0]["code"] == "tier3_schema_violation", summary
+
+    # The refused file left nothing behind: the only new document is the
+    # sibling's, so validation ran before the insert rather than after it.
+    after = await state_snapshot(services.graph_store, services.content_store)
+    titles = {
+        (await services.graph_store.get_document(e["document_id"])).title
+        for e in _parse_sse_events(resp.text)
+        if e["event_type"] == "progress" and e["status"] == "completed"
+    }
+    assert len(after.documents) == len(before.documents) + 1, (before, after)
+    assert len(titles) == 1, titles
 
 
 async def test_b35_codes_and_tags_conflict_location_matches_the_mcp_tool(batch_app, monkeypatch):
@@ -1952,3 +1981,56 @@ async def test_b36_dry_run_reports_a_tier3_violation_without_persisting(tier3_ba
     assert summary["error_count"] == 1, summary
     assert summary["errors"][0]["code"] == "tier3_schema_violation", summary
     assert_state_unchanged(before, after)
+
+
+async def test_b37_an_explicit_empty_tier3_payload_is_a_payload_not_an_absence(tier3_batch_app):
+    """``tier3_metadata: {}`` is validated; an omitted key is not.
+
+    At ingest a payload that is not ``None`` overrides whatever tier-3 metadata
+    the adapter extracted and is then validated, so an explicit empty mapping
+    is refused by a schema declaring a required field while an omitted key
+    leaves validation with nothing to check. A surface folding ``{}`` to
+    ``None`` ingests the file instead, giving the same entry a different
+    outcome depending on which batch surface carried it. The MCP tool asserts
+    the same two outcomes in
+    ``TestAppBatchIngest.test_empty_tier3_payload_is_a_payload_not_an_absence``.
+
+    Anti-coincidental-pass: the doc_type's ``required`` field is what makes the
+    two separable at all -- against a no-schema or all-optional doc_type both
+    arms succeed and the test passes against the divergence it exists to catch.
+    The omitted-key arm is the paired control: it must still ingest, or the
+    test would also pass against a surface that refused every entry.
+    """
+    app, vault_id, _config = tier3_batch_app
+
+    async def _ingest(name: str, body: bytes, entry: dict) -> dict:
+        async with _client(app) as client:
+            resp = await client.post(
+                f"/sage_vaults/{vault_id}/documents:batch",
+                files=[_md_part(name, body)],
+                data={
+                    "metadata": json.dumps(
+                        {
+                            "infer_edges": False,
+                            "needs_review": False,
+                            "files": [
+                                {
+                                    "source_type": "markdown",
+                                    "parsed_metadata": {"doc_type": "strict_ticket"},
+                                    **entry,
+                                }
+                            ],
+                        }
+                    )
+                },
+            )
+        assert resp.status_code == 200, resp.text
+        return _summary_of(resp)
+
+    empty = await _ingest("strict_empty.md", b"# Strict empty\n\nBody.\n", {"tier3_metadata": {}})
+    omitted = await _ingest("strict_omitted.md", b"# Strict omitted\n\nOther.\n", {})
+
+    assert empty["error_count"] == 1, empty
+    assert empty["errors"][0]["code"] == "tier3_schema_violation", empty
+    assert omitted["error_count"] == 0, omitted
+    assert omitted["documents_created"]["new"] == 1, omitted

@@ -114,13 +114,23 @@ def _tier3_metadata_of(files: list[dict]) -> list[dict | None]:
     ``invalid_parameter`` located at ``files.<n>.tier3_metadata``. Whether the
     payload *satisfies* the doc_type's declared schema is a question about that
     file's content, answered per file during ingestion as
-    ``tier3_schema_violation``, not here. An absent or empty mapping supplies
-    nothing and is returned as ``None``.
+    ``tier3_schema_violation``, not here.
+
+    An absent key supplies nothing and is returned as ``None``. An explicit
+    empty mapping is **not** the same thing and is carried through as ``{}``,
+    because the ingest it reaches distinguishes them: a payload that is not
+    ``None`` overrides whatever tier-3 metadata the adapter extracted and is
+    then validated, so ``{}`` suppresses an adapter-supplied payload and is
+    refused by any schema declaring a required field. Folding it to ``None``
+    here would give one batch surface a different document, or a different
+    outcome, for an entry the sibling surfaces carry unchanged. The sibling
+    normalization in ``_parsed_metadata_of`` is not a precedent: there every
+    field defaults, so an empty mapping and an absent one genuinely coincide.
     """
     validated: list[dict | None] = []
     for index, entry in enumerate(files):
         raw = entry.get("tier3_metadata")
-        if raw is None or raw == {}:
+        if raw is None:
             validated.append(None)
             continue
         if not isinstance(raw, dict):
@@ -141,8 +151,10 @@ def _refuse_codes_and_tags_together(
     The two set the same field, so an entry supplying both leaves the outcome
     to walk order. Which entry is reported, and where, is
     ``codes_and_tags_conflict_error``'s -- the rule the Core API batch upload
-    reports through too. Raised before anything in the batch is delivered or
-    ingested, after each entry's own names and types have been settled.
+    reports through too, which states where the two surfaces agree on the
+    location and where their refusal precedence differs. Raised before anything
+    in the batch is delivered or ingested, after each entry's own names and
+    types have been settled.
     """
     refusal = codes_and_tags_conflict_error(
         (index, pm.tags)

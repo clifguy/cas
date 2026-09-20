@@ -112,7 +112,6 @@ _SPILL_DELIVERY = Divergence(
     "Spill-to-file delivery exists because of MCP tool-result size ceilings. A REST "
     "caller receives the whole projection in the response body, so there is nothing "
     "to spill.",
-    reached_by=("read_projection",),
 )
 
 MCP_ONLY_ARGUMENTS: Final[dict[tuple[str, str, str], Divergence]] = {
