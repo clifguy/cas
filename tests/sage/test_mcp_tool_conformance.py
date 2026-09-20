@@ -55,7 +55,7 @@ import re
 import types
 import typing
 from pathlib import Path
-from typing import Any, Callable, NamedTuple
+from typing import Any, Callable, Final, NamedTuple
 
 import pytest
 import yaml
@@ -1273,4 +1273,215 @@ def test_declared_annotations_match_expected_split(tool_name):
     assert ann.idempotentHint is None, (
         f"{tool_name!r} declares idempotentHint={ann.idempotentHint!r}; the "
         "SAGE surface leaves it unset on every tool."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Reachability: what a divergence's category actually claims
+# ---------------------------------------------------------------------------
+#
+# The category gate holds every entry to naming one of CAS-ADR-052's
+# admissible categories. That buys legibility: a wrong claim is visible in
+# review rather than persuasive in prose. It does not read the claim.
+#
+# Two of the categories make a claim a gate *can* read. Delivery form admits a
+# request or response form only one protocol can carry "where the capability it
+# delivers is reachable on the other surface"; operation factoring admits a
+# split "the whole capability reachable on both". Each asserts a counterpart
+# exists. Nothing checked that the named counterpart was real, and nothing
+# checked that it carried the options the diverging surface offers -- so a
+# capability gap could sit beneath a correctly-categorized row indefinitely,
+# which is how a caller-settable flag on the batch upload route went years
+# without one on the tool the row named as its counterpart. These gates read
+# the claim.
+
+#: Categories whose definition asserts the capability is reachable on the
+#: other surface, and which therefore must name where.
+_REACHABILITY_CLAIMING: Final[frozenset[DivergenceCategory]] = frozenset(
+    {DivergenceCategory.DELIVERY_FORM, DivergenceCategory.OPERATION_FACTORING}
+)
+
+#: The registers whose entries name a whole tool or operation. The argument
+#: registers are excluded: an argument's counterpart is the operation that
+#: carries it, which its own entry already names.
+_OPERATION_REGISTERS: Final[tuple[tuple[str, dict[tuple[str, str], Divergence]], ...]] = (
+    ("MCP_ONLY_TOOLS", MCP_ONLY_TOOLS),
+    ("REST_ONLY_OPERATIONS", REST_ONLY_OPERATIONS),
+)
+
+
+def _reachability_entries() -> list[tuple[str, tuple[str, str], Divergence]]:
+    return [
+        (register_name, key, divergence)
+        for register_name, register in _OPERATION_REGISTERS
+        for key, divergence in register.items()
+        if divergence.category in _REACHABILITY_CLAIMING
+    ]
+
+
+def _every_registered_tool_name() -> set[str]:
+    """Every MCP tool name across every surface that has a registry.
+
+    The reached_by name of a REST-only operation is a tool, and which surface
+    registers it is a table lookup rather than anything the name carries, so
+    the lookup spans them all.
+    """
+    return {name for surface in TOOL_SURFACES for name in _surface_registry(surface)}
+
+
+def _counterpart_names(register_name: str, surface_name: str) -> set[str]:
+    """Every name the other surface offers, for an entry in this register."""
+    if register_name == "REST_ONLY_OPERATIONS":
+        return _every_registered_tool_name()
+    return _all_operation_ids(_load_spec(_SURFACES_BY_NAME[surface_name].spec_path))
+
+
+def unreachable_options(options: set[str], arguments: set[str]) -> list[str]:
+    """The options a counterpart does not offer, sorted.
+
+    The whole of the reachability comparison, in one place so the gate below
+    and its positive control exercise the same code. A control that recomputed
+    this relation would test the data the gate reads rather than the gate.
+    """
+    return sorted(options - arguments)
+
+
+def _counterpart_arguments(tool_name: str) -> set[str]:
+    """The argument names of a tool, wherever it is registered."""
+    for surface in TOOL_SURFACES:
+        registry = _surface_registry(surface)
+        if tool_name in registry:
+            return set(_tool_arguments(surface.name, tool_name))
+    raise AssertionError(f"no surface registers a tool named {tool_name!r}")
+
+
+def test_reachability_claiming_divergences_name_a_counterpart():
+    """A category asserting the capability is reachable must say where.
+
+    The claim is the category's own: delivery form and operation factoring
+    both assert a counterpart exists. An entry making that claim and naming
+    nothing is unfalsifiable, which is the state every row was in.
+    """
+    silent = [
+        f"{register_name} {'/'.join(key)}: category {divergence.category!r} asserts the "
+        "capability is reachable on the other surface but names nothing that carries "
+        "it. Add reached_by, or recategorize."
+        for register_name, key, divergence in _reachability_entries()
+        if not divergence.reached_by
+    ]
+    assert not silent, "\n".join(silent)
+
+
+def test_only_reachability_claiming_divergences_name_a_counterpart():
+    """The other three categories assert no counterpart, so they name none.
+
+    Negative control for the gate above: without it, `reached_by` could be
+    added to every entry and the requirement would stop distinguishing the
+    categories that make the claim from the ones that do not.
+    """
+    overreaching = [
+        f"{register_name} {'/'.join(key)}: category {divergence.category!r} asserts no "
+        f"counterpart, but names {list(divergence.reached_by)}. A translation artifact, "
+        "a single-audience operation and a pending remediation each assert the "
+        "opposite of reachability."
+        for register_name, register in _OPERATION_REGISTERS
+        for key, divergence in register.items()
+        if divergence.category not in _REACHABILITY_CLAIMING and divergence.reached_by
+    ]
+    assert not overreaching, "\n".join(overreaching)
+
+
+@pytest.mark.parametrize(
+    ("register_name", "key"),
+    [(r, k) for r, k, _ in _reachability_entries()],
+    ids=[f"{r}-{'-'.join(k)}" for r, k, _ in _reachability_entries()],
+)
+def test_named_counterpart_exists_on_the_other_surface(register_name: str, key: tuple[str, str]):
+    """The counterpart a divergence names is really offered over there.
+
+    A name that resolves to nothing is the same unfalsifiable claim the gate
+    above rejects, one step later: it reads as a reachable capability and
+    carries none. Remediating a divergence by building its counterpart
+    elsewhere, or renaming that counterpart, leaves the row behind; this is
+    what notices.
+    """
+    surface_name = key[0]
+    divergence = dict(_OPERATION_REGISTERS)[register_name][key]
+    available = _counterpart_names(register_name, surface_name)
+
+    missing = sorted(set(divergence.reached_by) - available)
+    assert not missing, (
+        f"{register_name} {'/'.join(key)} names {missing} as carrying its capability "
+        "on the other surface, and the other surface offers no such tool or "
+        "operation. Either the name is stale or the counterpart was never built."
+    )
+
+
+@pytest.mark.parametrize(
+    ("register_name", "key"),
+    [(r, k) for r, k, d in _reachability_entries() if d.options_schema],
+    ids=[f"{r}-{'-'.join(k)}" for r, k, d in _reachability_entries() if d.options_schema],
+)
+def test_delivery_form_options_reach_the_named_counterpart(
+    register_name: str, key: tuple[str, str]
+):
+    """Every option the diverging surface offers is offered by its counterpart.
+
+    This is what "the capability is reachable on the other surface" asserts,
+    read rather than taken. A delivery form that encodes its options in a
+    transport field the specification types opaquely -- a JSON envelope in a
+    multipart form field -- puts them beyond every structural reader, which is
+    why the row names the component instead. Options the form itself carries
+    are declared in `carried_by_form` and excluded; there is no general
+    exemption list, and an option that stops reaching the counterpart fails
+    here rather than waiting for a caller to want it.
+    """
+    surface_name, operation_id = key
+    divergence = dict(_OPERATION_REGISTERS)[register_name][key]
+    spec = _load_spec(_SURFACES_BY_NAME[surface_name].spec_path)
+
+    component = spec["components"]["schemas"].get(divergence.options_schema)
+    assert component is not None, (
+        f"{register_name} {'/'.join(key)} names options_schema "
+        f"{divergence.options_schema!r}, which {surface_name} does not declare."
+    )
+    options = set(component.get("properties", {})) - set(divergence.carried_by_form)
+    assert options, (
+        f"{divergence.options_schema!r} contributes no options to compare, so this "
+        "gate would pass over nothing. Either the component is the wrong one or "
+        "carried_by_form excludes all of it."
+    )
+
+    for counterpart in divergence.reached_by:
+        unreachable = unreachable_options(options, _counterpart_arguments(counterpart))
+        assert not unreachable, (
+            f"{operation_id} offers {unreachable}, which its named counterpart "
+            f"{counterpart!r} does not, so the capability this row records as "
+            "merely differently *delivered* is not reachable there. Add the "
+            "argument to the tool, or recategorize the row as pending remediation."
+        )
+
+
+def test_the_options_reachability_gate_fires_on_a_dropped_option():
+    """Positive control: the gate above fails when an option stops reaching.
+
+    The probe drops one real option from the counterpart's argument set and
+    feeds it to ``unreachable_options`` -- the same function the gate calls,
+    not a second copy of its set arithmetic. That distinction is the point: a
+    control that recomputes the comparison itself is a control on the *data*
+    the gate reads, and stays green against an inverted subset, a
+    ``carried_by_form`` that excluded everything, or a ``reached_by`` loop that
+    never iterated. Reading the live pair through the gate's own function also
+    makes an empty option set, or arguments read as "everything", fail here.
+    """
+    spec = _load_spec(_SURFACES_BY_NAME["sage_core"].spec_path)
+    options = set(spec["components"]["schemas"]["BatchIngestUploadMetadata"]["properties"])
+    arguments = _counterpart_arguments("bulk_ingest_document")
+    assert options, "precondition: the component contributes options to compare"
+    assert not unreachable_options(options, arguments), "precondition: the live pair is clean"
+
+    assert unreachable_options(options, arguments - {"needs_review"}) == ["needs_review"], (
+        "dropping needs_review from the counterpart's arguments must surface it as "
+        "unreachable; if it does not, the gate's own comparison is not separating "
+        "an option the counterpart offers from one it does not."
     )

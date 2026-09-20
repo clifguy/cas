@@ -1659,3 +1659,381 @@ def test_parsed_metadata_input_treats_null_as_omitted():
         "doc_type": "note",
     }
     assert parsed_metadata_input(full, "stem") == ParsedMetadataInput(**full)
+
+
+# ---------------------------------------------------------------------------
+# B32 -- B36: caller-settable needs_review and per-file typed metadata
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def tier3_batch_app(minimal_vault_config_dict, monkeypatch):
+    """``batch_app`` over a vault whose ``ticket`` doc_type declares a schema.
+
+    ``minimal_vault_config_dict`` declares none, and a doc_type with no
+    ``metadata_schema`` refuses every Tier-3 payload, so a test that needs a
+    payload to land needs a vault that accepts one.
+    """
+    monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
+    config_dict = dict(minimal_vault_config_dict)
+    config_dict["document_types"] = {
+        "doc_types": [
+            *minimal_vault_config_dict["document_types"]["doc_types"],
+            {
+                "value": "strict_ticket",
+                "label": "Strict Ticket",
+                "metadata_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "required": ["ticket_id"],
+                    "properties": {"ticket_id": {"type": "string"}},
+                },
+            },
+            {
+                "value": "ticket",
+                "label": "Ticket",
+                "metadata_schema": {
+                    "type": "object",
+                    "additionalProperties": False,
+                    "properties": {
+                        "ticket_id": {"type": "string", "pattern": r"^T-\d{4}$"},
+                        "ticket_priority": {"type": "string", "enum": ["high", "medium", "low"]},
+                    },
+                },
+            },
+        ]
+    }
+    config = VaultConfig.model_validate(config_dict)
+    app = create_app(config=config)
+    await _initialize_services(
+        app,
+        config,
+        content_store_factory=lambda _brain: StubContentStore(),
+    )
+    vault_id = config.vault.id
+    yield app, vault_id, config
+
+    await asyncio.sleep(0.05)
+    registry: dict[str, SAGEServices] = app.state.vault_registry
+    if vault_id in registry:
+        registry[vault_id].close_timing()
+        await registry[vault_id].graph_store.close()
+    mcp_server._vaults.clear()
+
+
+async def test_b32_needs_review_false_commits_metadata_as_authoritative(batch_app):
+    """``needs_review=false`` commits the caller's metadata and queues nothing.
+
+    Anti-coincidental-pass: the paired control -- the same upload at the
+    default -- must land queued. Without it a path that never queued would
+    pass the false arm. The two arms upload distinct bytes, since identical
+    bytes are refused as duplicate content.
+    """
+    app, vault_id, _config = batch_app
+    services: SAGEServices = app.state.vault_registry[vault_id]
+
+    async def _ingest(name: str, body: bytes, **envelope) -> dict:
+        async with _client(app) as client:
+            resp = await client.post(
+                f"/sage_vaults/{vault_id}/documents:batch",
+                files=[_md_part(name, body)],
+                data={
+                    "metadata": json.dumps(
+                        {
+                            "infer_edges": False,
+                            "files": [{"source_type": "markdown"}],
+                            **envelope,
+                        }
+                    )
+                },
+            )
+        assert resp.status_code == 200, resp.text
+        completed = [
+            e
+            for e in _parse_sse_events(resp.text)
+            if e["event_type"] == "progress" and e["status"] == "completed"
+        ]
+        assert len(completed) == 1, resp.text
+        return {"summary": _summary_of(resp), "document_id": completed[0]["document_id"]}
+
+    committed = await _ingest(
+        "authoritative.md", b"# Authoritative\n\nCommitted as supplied.\n", needs_review=False
+    )
+    queued = await _ingest("queued.md", b"# Queued\n\nAwaiting confirmation.\n")
+
+    committed_doc = await services.graph_store.get_document(committed["document_id"])
+    queued_doc = await services.graph_store.get_document(queued["document_id"])
+
+    assert committed_doc.metadata_confirmed is True
+    assert committed["summary"]["metadata_pending"] == 0, committed["summary"]
+    assert queued_doc.metadata_confirmed is False
+    assert queued["summary"]["metadata_pending"] == 1, queued["summary"]
+
+
+async def test_b33_per_file_tier3_and_tags_land_on_each_document(tier3_batch_app):
+    """Each entry's Tier-3 payload and tags reach its own document, by value.
+
+    Anti-coincidental-pass: the two entries carry *different* payloads, so a
+    smear across the batch, or the last entry's winning, fails. One tag
+    contains a comma, which the ``codes`` join-and-resplit path would turn
+    into two tags. Only the first entry supplies tags and the second is
+    asserted to have none, so an implementation applying one entry's tags to
+    the whole batch fails too -- the comma probe alone would not separate it,
+    since it says nothing about which documents the tags reached.
+    """
+    app, vault_id, _config = tier3_batch_app
+    services: SAGEServices = app.state.vault_registry[vault_id]
+
+    entries = [
+        {
+            "source_type": "markdown",
+            "parsed_metadata": {
+                "title": "Ticket one",
+                "doc_type": "ticket",
+                "tags": ["alpha,beta", "gamma"],
+            },
+            "tier3_metadata": {"ticket_id": "T-0001", "ticket_priority": "high"},
+        },
+        {
+            "source_type": "markdown",
+            "parsed_metadata": {"title": "Ticket two", "doc_type": "ticket"},
+            "tier3_metadata": {"ticket_id": "T-0002", "ticket_priority": "low"},
+        },
+    ]
+
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[
+                _md_part("ticket_one.md", b"# Ticket one\n\nFirst body.\n"),
+                _md_part("ticket_two.md", b"# Ticket two\n\nSecond body.\n"),
+            ],
+            data={
+                "metadata": json.dumps(
+                    {"infer_edges": False, "needs_review": False, "files": entries}
+                )
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    summary = _summary_of(resp)
+    assert summary["error_count"] == 0, summary
+    completed = [
+        e
+        for e in _parse_sse_events(resp.text)
+        if e["event_type"] == "progress" and e["status"] == "completed"
+    ]
+    docs = [await services.graph_store.get_document(e["document_id"]) for e in completed]
+    by_title = {d.title: d for d in docs}
+
+    assert by_title["Ticket one"].tier3_metadata == {
+        "ticket_id": "T-0001",
+        "ticket_priority": "high",
+    }
+    assert by_title["Ticket two"].tier3_metadata == {
+        "ticket_id": "T-0002",
+        "ticket_priority": "low",
+    }
+    assert by_title["Ticket one"].tags == ["alpha,beta", "gamma"]
+    assert by_title["Ticket two"].tags == []
+
+
+async def test_b34_tier3_schema_violation_is_a_per_file_error(tier3_batch_app):
+    """A payload the doc_type's schema rejects is that file's error, not the batch's.
+
+    Anti-coincidental-pass: a refusal for the whole call reports the same
+    violation, so the sibling document's creation and the error count are what
+    discriminate -- one file refused, the other ingested. Those three say
+    nothing about *when* the refusal happened, so the state fingerprint is
+    taken around the run and compared against the sibling's single insert: an
+    implementation that wrote the bad file's row and then raised would report
+    exactly the same summary, with an orphan row left behind. The service
+    docstring claims validation is strictly upstream of the insert on the real
+    run, and only the dry-run test checked it.
+    """
+    app, vault_id, _config = tier3_batch_app
+    services: SAGEServices = app.state.vault_registry[vault_id]
+    before = await state_snapshot(services.graph_store, services.content_store)
+
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[
+                _md_part("ticket_good.md", b"# Ticket good\n\nValid payload.\n"),
+                _md_part("ticket_bad.md", b"# Ticket bad\n\nPayload the schema rejects.\n"),
+            ],
+            data={
+                "metadata": json.dumps(
+                    {
+                        "infer_edges": False,
+                        "needs_review": False,
+                        "files": [
+                            {
+                                "source_type": "markdown",
+                                "parsed_metadata": {"doc_type": "ticket"},
+                                "tier3_metadata": {"ticket_id": "T-0003"},
+                            },
+                            {
+                                "source_type": "markdown",
+                                "parsed_metadata": {"doc_type": "ticket"},
+                                "tier3_metadata": {"ticket_id": "not-a-ticket-id"},
+                            },
+                        ],
+                    }
+                )
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    summary = _summary_of(resp)
+    assert summary["documents_created"]["new"] == 1, summary
+    assert summary["error_count"] == 1, summary
+    assert summary["errors"][0]["file_index"] == 1, summary
+    assert summary["errors"][0]["code"] == "tier3_schema_violation", summary
+
+    # The refused file left nothing behind: the store grew by exactly the
+    # documents the stream reported completing, so validation ran before the
+    # insert rather than after it. The comparand is the completed set rather
+    # than a literal, so the block is load-bearing: were it deleted, or were a
+    # second document created, the count on the right would move with it.
+    after = await state_snapshot(services.graph_store, services.content_store)
+    titles = {
+        (await services.graph_store.get_document(e["document_id"])).title
+        for e in _parse_sse_events(resp.text)
+        if e["event_type"] == "progress" and e["status"] == "completed"
+    }
+    assert len(after.documents) == len(before.documents) + len(titles), (before, after)
+    assert titles == {"ticket_good"}, titles
+
+
+async def test_b35_codes_and_tags_conflict_location_matches_the_mcp_tool(batch_app, monkeypatch):
+    """An entry supplying both is refused where the MCP tool refuses it.
+
+    The expected refusal is computed by the tool's own check over the same
+    entries rather than written by hand, as B27 does for undeclared keys.
+    Anti-coincidental-pass: the conflict sits on the second entry and the
+    staging spy must stay empty, so a check placed inside the stream -- which
+    would return the same envelope -- fails.
+    """
+    from sage.api.errors import InvalidParameterError
+    from sage.app_tools import _parsed_metadata_of, _refuse_codes_and_tags_together
+
+    entries = [
+        {"source_type": "markdown"},
+        {"source_type": "markdown", "parsed_metadata": {"codes": ["PV06"], "tags": ["alpha"]}},
+    ]
+    with pytest.raises(InvalidParameterError) as expected:
+        _refuse_codes_and_tags_together(
+            _parsed_metadata_of([{"file_path": "x.md", **entry} for entry in entries])
+        )
+
+    staged = _spy_on_staging(monkeypatch)
+    app, vault_id, _config = batch_app
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=_two_parts(),
+            data={"metadata": json.dumps({"infer_edges": False, "files": entries})},
+        )
+
+    assert staged == [], staged
+    _assert_invalid_parameter(
+        resp, expected.value.detail["parameter"], expected.value.detail["value"]
+    )
+
+
+async def test_b36_dry_run_reports_a_tier3_violation_without_persisting(tier3_batch_app):
+    """A dry run refuses the same payload and writes nothing.
+
+    Anti-coincidental-pass: the state fingerprint is compared before and
+    after, so a preview path that skipped Tier-3 validation (reporting a
+    clean preview) or that persisted (reporting the refusal but writing)
+    each fail on a different assertion.
+    """
+    app, vault_id, _config = tier3_batch_app
+    services: SAGEServices = app.state.vault_registry[vault_id]
+    before = await state_snapshot(services.graph_store, services.content_store)
+
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[_md_part("ticket_bad.md", b"# Ticket bad\n\nRejected payload.\n")],
+            data={
+                "metadata": json.dumps(
+                    {
+                        "infer_edges": False,
+                        "dry_run": True,
+                        "files": [
+                            {
+                                "source_type": "markdown",
+                                "parsed_metadata": {"doc_type": "ticket"},
+                                "tier3_metadata": {"ticket_id": "not-a-ticket-id"},
+                            }
+                        ],
+                    }
+                )
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    summary = _summary_of(resp)
+    after = await state_snapshot(services.graph_store, services.content_store)
+
+    assert summary["dry_run"] is True, summary
+    assert summary["previews"] == [], summary
+    assert summary["error_count"] == 1, summary
+    assert summary["errors"][0]["code"] == "tier3_schema_violation", summary
+    assert_state_unchanged(before, after)
+
+
+async def test_b37_an_explicit_empty_tier3_payload_is_a_payload_not_an_absence(tier3_batch_app):
+    """``tier3_metadata: {}`` is validated; an omitted key is not.
+
+    At ingest a payload that is not ``None`` overrides whatever tier-3 metadata
+    the adapter extracted and is then validated, so an explicit empty mapping
+    is refused by a schema declaring a required field while an omitted key
+    leaves validation with nothing to check. A surface folding ``{}`` to
+    ``None`` ingests the file instead, giving the same entry a different
+    outcome depending on which batch surface carried it. The MCP tool asserts
+    the same two outcomes in
+    ``TestAppBatchIngest.test_empty_tier3_payload_is_a_payload_not_an_absence``.
+
+    Anti-coincidental-pass: the doc_type's ``required`` field is what makes the
+    two separable at all -- against a no-schema or all-optional doc_type both
+    arms succeed and the test passes against the divergence it exists to catch.
+    The omitted-key arm is the paired control: it must still ingest, or the
+    test would also pass against a surface that refused every entry.
+    """
+    app, vault_id, _config = tier3_batch_app
+
+    async def _ingest(name: str, body: bytes, entry: dict) -> dict:
+        async with _client(app) as client:
+            resp = await client.post(
+                f"/sage_vaults/{vault_id}/documents:batch",
+                files=[_md_part(name, body)],
+                data={
+                    "metadata": json.dumps(
+                        {
+                            "infer_edges": False,
+                            "needs_review": False,
+                            "files": [
+                                {
+                                    "source_type": "markdown",
+                                    "parsed_metadata": {"doc_type": "strict_ticket"},
+                                    **entry,
+                                }
+                            ],
+                        }
+                    )
+                },
+            )
+        assert resp.status_code == 200, resp.text
+        return _summary_of(resp)
+
+    empty = await _ingest("strict_empty.md", b"# Strict empty\n\nBody.\n", {"tier3_metadata": {}})
+    omitted = await _ingest("strict_omitted.md", b"# Strict omitted\n\nOther.\n", {})
+
+    assert empty["error_count"] == 1, empty
+    assert empty["errors"][0]["code"] == "tier3_schema_violation", empty
+    assert omitted["error_count"] == 0, omitted
+    assert omitted["documents_created"]["new"] == 1, omitted

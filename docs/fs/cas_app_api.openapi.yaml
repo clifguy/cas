@@ -241,6 +241,21 @@ paths:
           produced).
 
 
+        Divergence from `ingest_document`: `needs_review` defaults to
+        true here and false there, so a batch is a confirmation-queue feeder
+        unless the caller says otherwise. The value is the caller's on both and
+        only the default differs: the batch flow exists to surface inferred
+        values for review, so callers curate metadata up-front and a human or
+        follow-up agent confirms each record via `update_metadata`.
+        A caller holding metadata it already trusts passes `needs_review=false`
+        and the documents land at `metadata_confirmed=true` with no queue entry
+        and no second call. While `needs_review=true`, the vault's filename
+        parsing runs and may populate `date`, `project`, `codes`, `version`,
+        and `doc_type` from the filename when the caller omits them from
+        `parsed_metadata` (the exact fields are vault-config-defined under
+        `metadata_extraction.filename_extraction.segment_fields`).
+
+
         A failure of the batch itself, which can only surface after the 200
         is committed, ends the stream: it emits no further events -- there is
         no `error` event variant -- and closes the connection without a
@@ -534,6 +549,15 @@ components:
           description: >-
             Document type resolved by the vault's keyword_to_doc_type and
             code_to_doc_type rules. Null if no rule matches.
+        tags:
+          type: array
+          items:
+            type: string
+          description: >-
+            Tags for the document, in order, each carried whole: a tag that
+            contains a comma stays one tag. `codes` sets the same field, so an
+            entry supplying both is refused at
+            `files.<n>.parsed_metadata.tags` before any file is ingested.
 
     # -------------------------------------------------------------------------
     # Ingest
@@ -561,6 +585,14 @@ components:
             supersedes) and filename_code_match (Tier 2 covers) edge
             inference. When false, edges are not inferred; ingestion is
             otherwise unchanged.
+        needs_review:
+          type: boolean
+          default: true
+          description: >-
+            When true (default), every document in the batch lands with
+            metadata_confirmed=false in the metadata-review queue
+            (CAS-ADR-021). When false, caller-supplied metadata is committed
+            as authoritative.
         dry_run:
           type: boolean
           default: false
@@ -594,6 +626,17 @@ components:
           description: >-
             Optional caller-supplied parsed metadata for this file; when
             present, used as caller-authoritative input to ingest.
+        tier3_metadata:
+          type: [object, "null"]
+          description: >-
+            Optional Tier-3 metadata for this file, validated against the
+            `metadata_schema` the vault config declares for the file's
+            resolved doc_type (CAS-ADR-028). A payload the schema rejects, or
+            any payload for a doc_type declaring no schema, is reported for
+            that file as `tier3_schema_violation` and leaves the rest of the
+            batch to run. A sibling of `parsed_metadata`, not a key in it:
+            `parsed_metadata` carries the Tier-1 fields a filename parser can
+            supply, and Tier-3 metadata never comes from a filename.
 
     ProgressEvent:
       type: object

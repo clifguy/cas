@@ -1084,7 +1084,9 @@ class IngestRequest(BaseModel):
             "schema-enforced semantics. Values are strings except tags, "
             "which may be supplied as a list of strings or as a "
             "comma-separated string (parity with update_metadata's "
-            "list-typed tags field)."
+            "list-typed tags field). `codes` sets the same field as `tags`, so "
+            "metadata supplying both is refused at `metadata.tags` rather "
+            "than resolved by which key is walked last."
         ),
     )
     predecessor_id: DocumentIdStr | None = Field(
@@ -1193,6 +1195,30 @@ class IngestRequest(BaseModel):
             value = self.metadata.get(key)
             if isinstance(value, str):
                 _validate_document_date(value)
+        return self
+
+    @model_validator(mode="after")
+    def _refuse_codes_and_tags_together(self) -> "IngestRequest":
+        """Refuse metadata supplying both ``codes`` and ``tags``.
+
+        Both write the document's tags, so metadata carrying both leaves
+        which one stands to the order the mapping happens to be walked in.
+        The batch surfaces refuse the same pair at their own boundaries; this
+        is the single-document boundary's, so a caller meets one rule
+        wherever it supplies the pair rather than a refusal on one surface
+        and a coin toss on another.
+
+        Raised as a ``PydanticCustomError`` carrying the location in ``ctx``:
+        the models layer cannot import the error classes (leaf-layer
+        contract), so the request-boundary translator rebuilds the
+        ``invalid_parameter`` envelope from it on both transports.
+        """
+        if self.metadata and self.metadata.get("codes") and self.metadata.get("tags"):
+            raise PydanticCustomError(
+                "codes_and_tags_conflict",
+                "codes and tags both set the document's tags; supply one, not both",
+                {"parameter": "metadata.tags", "value": self.metadata.get("tags")},
+            )
         return self
 
 
@@ -5163,6 +5189,15 @@ class BatchIngestParsedMetadata(BaseModel):
         description='Canonical version label (e.g. "v1.2.0", "v3.0").',
     )
     doc_type: str | None = Field(default=None, description="Document type.")
+    tags: list[str] | None = Field(
+        default=None,
+        description=(
+            "Tags for the document, in order, each carried whole: a tag that "
+            "contains a comma stays one tag. `codes` sets the same field, so an "
+            "entry supplying both is refused at "
+            "`files.<n>.parsed_metadata.tags` before any file is ingested."
+        ),
+    )
 
 
 class BatchIngestFileMetadata(BaseModel):
@@ -5189,9 +5224,22 @@ class BatchIngestFileMetadata(BaseModel):
         default=None,
         description=(
             "Optional caller-supplied parsed metadata for this file (keys: "
-            "title, date, project, codes, version, doc_type). When omitted, "
-            "the file stem seeds the title and the vault's configured filename parser "
-            "fills the remaining fields."
+            "title, date, project, codes, version, doc_type, tags). When "
+            "omitted, the file stem seeds the title and the vault's configured "
+            "filename parser fills the remaining fields."
+        ),
+    )
+    tier3_metadata: dict | None = Field(
+        default=None,
+        description=(
+            "Optional Tier-3 metadata for this file, validated against the "
+            "`metadata_schema` the vault config declares for the file's "
+            "resolved doc_type (CAS-ADR-028). A payload the schema rejects, or "
+            "any payload for a doc_type declaring no schema, is reported for "
+            "that file as `tier3_schema_violation` and leaves the rest of the "
+            "batch to run. A sibling of `parsed_metadata`, not a key in it: "
+            "`parsed_metadata` carries the Tier-1 fields a filename parser can "
+            "supply, and Tier-3 metadata never comes from a filename."
         ),
     )
 

@@ -588,7 +588,13 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # on; the pair is no better reconciled than it was.
     ("sage_core", "verify_vault_drift"): Pin(5, 6),
     ("sage_core", "verify_vault_source_files"): Pin(3, 7),
-    ("cas_app", "bulk_ingest_document"): Pin(9, 36),
+    # doc_only fell from 36 as the operation gained the caller-settable
+    # needs_review its tool already had, and a paragraph disclosing it: claims
+    # the docstring had been making alone now have counterparts. A
+    # reconciliation, and the rule the added paragraph was written against is
+    # that parallel sentence structure is what the coverage floor reads, not
+    # parallel content -- the same claim split differently stays uncovered.
+    ("cas_app", "bulk_ingest_document"): Pin(9, 32),
     ("cas_app", "list_directory"): Pin(6, 9),
 }
 

@@ -120,6 +120,15 @@ class ParsedMetadata(BaseModel):
             "code_to_doc_type rules. Null if no rule matches."
         ),
     )
+    tags: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Tags for the document, in order, each carried whole: a tag that "
+            "contains a comma stays one tag. `codes` sets the same field, so "
+            "an entry supplying both is refused at "
+            "`files.<n>.parsed_metadata.tags` before any file is ingested."
+        ),
+    )
 
 
 class ScanResultResponse(BaseModel):
@@ -177,6 +186,20 @@ class IngestFileItem(BaseModel):
             "present, used as caller-authoritative input to ingest."
         ),
     )
+    tier3_metadata: dict | None = Field(
+        default=None,
+        description=(
+            "Optional Tier-3 metadata for this file, validated against the "
+            "`metadata_schema` the vault config declares for the file's "
+            "resolved doc_type (CAS-ADR-028). A payload the schema rejects, "
+            "or any payload for a doc_type declaring no schema, is reported "
+            "for that file as `tier3_schema_violation` and leaves the rest of "
+            "the batch to run. A sibling of `parsed_metadata`, not a key in "
+            "it: `parsed_metadata` carries the Tier-1 fields a filename "
+            "parser can supply, and Tier-3 metadata never comes from a "
+            "filename."
+        ),
+    )
 
 
 class IngestRequest(BaseModel):
@@ -191,6 +214,15 @@ class IngestRequest(BaseModel):
             "supersedes) and filename_code_match (Tier 2 covers) edge "
             "inference. When false, edges are not inferred; ingestion is "
             "otherwise unchanged."
+        ),
+    )
+    needs_review: bool = Field(
+        default=True,
+        description=(
+            "When true (default), every document in the batch lands with "
+            "metadata_confirmed=false in the metadata-review queue "
+            "(CAS-ADR-021). When false, caller-supplied metadata is committed "
+            "as authoritative."
         ),
     )
     dry_run: bool = Field(

@@ -17,6 +17,7 @@ from sage.api.errors import (
     InvalidParameterError,
     InvalidTypedAliasError,
     SAGEError,
+    codes_and_tags_conflict_error,
     undeclared_entry_key_error,
 )
 from sage.mcp_init import SAGEServices, require_caller_local_filesystem
@@ -34,7 +35,14 @@ _SHA256_ADAPTER: TypeAdapter[str] = TypeAdapter(Sha256Str)
 # places (CAS-ADR-037, CAS-ADR-052). The parsed-metadata names are those of the
 # Core API's batch upload model, so the two batch surfaces close on one set.
 _FILE_ENTRY_FIELDS = frozenset(
-    {"file_path", "transfer_token", "sha256", "source_type", "parsed_metadata"}
+    {
+        "file_path",
+        "transfer_token",
+        "sha256",
+        "source_type",
+        "parsed_metadata",
+        "tier3_metadata",
+    }
 )
 _PARSED_METADATA_FIELDS = frozenset(BatchIngestParsedMetadata.model_fields)
 
@@ -95,6 +103,66 @@ def _parsed_metadata_of(files: list[dict]) -> list[BatchIngestParsedMetadata | N
                 constraint=str(err.get("msg", "Invalid value")),
             ) from exc
     return validated
+
+
+def _tier3_metadata_of(files: list[dict]) -> list[dict | None]:
+    """Validate each entry's Tier-3 metadata and return it.
+
+    Checked for the whole batch before anything is delivered or ingested, after
+    the undeclared-name refusal. A value that is not a mapping is a defect in
+    the call rather than in one file, so it refuses the call as
+    ``invalid_parameter`` located at ``files.<n>.tier3_metadata``. Whether the
+    payload *satisfies* the doc_type's declared schema is a question about that
+    file's content, answered per file during ingestion as
+    ``tier3_schema_violation``, not here.
+
+    An absent key supplies nothing and is returned as ``None``. An explicit
+    empty mapping is **not** the same thing and is carried through as ``{}``,
+    because the ingest it reaches distinguishes them: a payload that is not
+    ``None`` overrides whatever tier-3 metadata the adapter extracted and is
+    then validated, so ``{}`` suppresses an adapter-supplied payload and is
+    refused by any schema declaring a required field. Folding it to ``None``
+    here would give one batch surface a different document, or a different
+    outcome, for an entry the sibling surfaces carry unchanged. The sibling
+    normalization in ``_parsed_metadata_of`` is not a precedent: there every
+    field defaults, so an empty mapping and an absent one genuinely coincide.
+    """
+    validated: list[dict | None] = []
+    for index, entry in enumerate(files):
+        raw = entry.get("tier3_metadata")
+        if raw is None:
+            validated.append(None)
+            continue
+        if not isinstance(raw, dict):
+            raise InvalidParameterError(
+                parameter=f"files.{index}.tier3_metadata",
+                value=raw,
+                constraint="Input should be a valid dictionary",
+            )
+        validated.append(raw)
+    return validated
+
+
+def _refuse_codes_and_tags_together(
+    parsed_metadata: list[BatchIngestParsedMetadata | None],
+) -> None:
+    """Refuse an entry whose parsed metadata supplies both codes and tags.
+
+    The two set the same field, so an entry supplying both leaves the outcome
+    to walk order. Which entry is reported, and where, is
+    ``codes_and_tags_conflict_error``'s -- the rule the Core API batch upload
+    reports through too, which states where the two surfaces agree on the
+    location and where their refusal precedence differs. Raised before anything
+    in the batch is delivered or ingested, after each entry's own names and
+    types have been settled.
+    """
+    refusal = codes_and_tags_conflict_error(
+        (index, pm.tags)
+        for index, pm in enumerate(parsed_metadata)
+        if pm is not None and pm.codes and pm.tags
+    )
+    if refusal is not None:
+        raise refusal
 
 
 def _declared_digests(files: list[dict]) -> list[str | None]:
@@ -240,6 +308,7 @@ def register_app_tools(
         vault_id: str,
         files: list[dict],
         infer_edges: bool = True,
+        needs_review: bool = True,
         dry_run: bool = False,
     ) -> dict:
         """Ingest multiple files with optional edge inference. Returns a
@@ -264,19 +333,23 @@ def register_app_tools(
         candidates are deposited in the staging-edge table for review via
         ``list_staging_edges``.
 
-        Divergence from ``ingest_document``: every document this tool ingests
-        lands with ``metadata_confirmed=False`` in the metadata-review queue
-        regardless of caller intent (``ingest_document``'s default is the
-        opposite). Because ``needs_review=True`` is hard-coded, the vault's
-        filename parsing always runs and may populate ``date``,
-        ``project``, ``codes``, ``version``, and ``doc_type`` from the
-        filename when the caller omits them from ``parsed_metadata`` (the
-        exact fields are vault-config-defined under
+        Divergence from ``ingest_document``: ``needs_review`` defaults to
+        ``True`` here and ``False`` there, so a batch is a confirmation-queue
+        feeder unless the caller says otherwise. The value is the caller's on
+        both, and only the default differs: the batch flow exists to surface
+        inferred values for review, so callers curate metadata up-front and a
+        human or follow-up agent confirms each record via ``update_metadata``.
+        A caller holding metadata it already trusts passes
+        ``needs_review=False`` and the documents land at
+        ``metadata_confirmed=True`` with no queue entry and no second call.
+
+        While ``needs_review=True``, the vault's filename parsing runs and may
+        populate ``date``, ``project``, ``codes``, ``version``, and
+        ``doc_type`` from the filename when the caller omits them from
+        ``parsed_metadata`` (the exact fields are vault-config-defined under
         ``metadata_extraction.filename_extraction.segment_fields``; see
-        ``get_vault_config``). The batch flow is a confirmation-queue
-        feeder by design: callers curate metadata up-front, then a human or
-        follow-up agent confirms each record via ``update_metadata``. Call
-        ``get_filename_metadata`` first to preview the parser's output.
+        ``get_vault_config``). Call ``get_filename_metadata`` first to preview
+        the parser's output.
 
         Per-file failure isolation: the batch is NOT atomic. Per-file
         exceptions are caught into ``summary.errors[]`` (with
@@ -373,13 +446,16 @@ def register_app_tools(
           success.
         - ``invalid_parameter`` (422): a file entry, or the
           ``parsed_metadata`` it carries, names a key the tool does not
-          declare, or its ``parsed_metadata`` is not a mapping or carries a
-          value of the wrong type; ``detail.parameter`` locates it
-          (``files.<n>.<key>``, ``files.<n>.parsed_metadata``,
-          ``files.<n>.parsed_metadata.<key>``, or
+          declare; its ``parsed_metadata`` or ``tier3_metadata`` is not a
+          mapping, or the ``parsed_metadata`` carries a value of the wrong
+          type; or one entry's ``parsed_metadata`` supplies both ``codes``
+          and ``tags``, which set the same field. ``detail.parameter``
+          locates it (``files.<n>.<key>``, ``files.<n>.parsed_metadata``,
+          ``files.<n>.parsed_metadata.<key>``,
           ``files.<n>.parsed_metadata.<key>.<index>`` for one item of a list
-          such as ``codes``). A batch-boundary refusal
-          raised before any file is delivered or ingested.
+          such as ``codes``, or ``files.<n>.tier3_metadata``). A
+          batch-boundary refusal raised before any file is delivered or
+          ingested.
         - ``invalid_sha256`` (400): a file entry's ``sha256`` is not a
           well-formed sha256 digest; the detail is keyed by its location,
           ``files.<n>.sha256``. A batch-boundary refusal raised before any
@@ -427,12 +503,25 @@ def register_app_tools(
                 adapter claims is reported for that file as
                 ``source_type_unresolved``),
                 and optional ``parsed_metadata`` (dict with ``title``,
-                ``date``, ``project``, ``codes``, ``version``, ``doc_type``).
+                ``date``, ``project``, ``codes``, ``version``, ``doc_type``,
+                ``tags``).
                 When ``parsed_metadata`` is omitted, the stem of the source
                 filename is used as the title and the vault's
                 filename parsing still runs on the remaining fields (see
                 the divergence note above; ``get_filename_metadata`` to
-                preview). An entry may also carry ``sha256`` (str, bare hex
+                preview). ``tags`` is a list carried whole, so a tag
+                containing a comma stays one tag; ``codes`` sets the same
+                field, so an entry supplying both is refused. An entry may
+                also carry ``tier3_metadata`` (dict), the Tier-3 payload for
+                that file, validated against the ``metadata_schema`` the
+                vault declares for the file's resolved doc_type on the same
+                terms ``ingest_document`` applies -- a payload that schema
+                rejects is that file's ``tier3_schema_violation`` and the
+                rest of the batch still runs. It sits beside
+                ``parsed_metadata`` rather than inside it, because
+                ``parsed_metadata`` carries the fields a filename parser can
+                supply and Tier-3 metadata never comes from a filename. An
+                entry may also carry ``sha256`` (str, bare hex
                 or ``sha256:``-prefixed), the digest of that file: a file
                 whose bytes have another digest is that file's
                 ``source_digest_mismatch`` error, and where the call returns
@@ -444,6 +533,14 @@ def register_app_tools(
                 across the batch after ingestion. When False, ingest
                 documents only with no edge creation or lifecycle
                 transitions.
+            needs_review: When True (default), every document in the batch
+                lands with ``metadata_confirmed=False`` in the
+                metadata-review queue (CAS-ADR-021), where
+                ``list_pending_metadata`` finds it and ``update_metadata``
+                confirms it. When False, the caller's metadata is committed
+                as authoritative and no queue entry is made. See the
+                divergence note above for why the default is the opposite of
+                ``ingest_document``'s.
             dry_run: Report what each file would do and persist nothing.
                 No source is read into the vault, no projection, indexing
                 or abstraction runs, no record is written, and edge
@@ -479,6 +576,8 @@ def register_app_tools(
 
             _refuse_undeclared_entry_fields(files)
             parsed_metadata = _parsed_metadata_of(files)
+            _refuse_codes_and_tags_together(parsed_metadata)
+            tier3_metadata = _tier3_metadata_of(files)
             digests = _declared_digests(files)
 
             # Each entry arrives by exactly one delivery shape: a
@@ -516,8 +615,8 @@ def register_app_tools(
                     return serialize(plan.recipe)
 
                 descriptors: list[FileDescriptor] = []
-                for f, parsed, digest, delivery in zip(
-                    files, parsed_metadata, digests, plan.resolved, strict=True
+                for f, parsed, tier3, digest, delivery in zip(
+                    files, parsed_metadata, tier3_metadata, digests, plan.resolved, strict=True
                 ):
                     descriptors.append(
                         FileDescriptor(
@@ -529,6 +628,7 @@ def register_app_tools(
                             ),
                             declared_source=delivery.declared_source,
                             sha256=digest,
+                            tier3_metadata=tier3,
                         )
                     )
 
@@ -537,6 +637,7 @@ def register_app_tools(
                     files=descriptors,
                     vault_services=v,
                     infer_edges=infer_edges,
+                    needs_review=needs_review,
                     dry_run=dry_run,
                 )
                 return result.to_dict()
