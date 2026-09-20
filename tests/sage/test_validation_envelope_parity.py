@@ -549,6 +549,54 @@ async def test_top_level_field_inside_metadata_parity_between_surfaces(vault_ser
 # ---------------------------------------------------------------------------
 
 
+def _constructed_schema_name(node) -> str | None:
+    """The schema name a call builds a model from, or ``None``.
+
+    Both spellings a tool body uses count: ``Model(...)`` and
+    ``Model.model_validate(...)``. Reading only the first was a way for the
+    walk to answer "nothing to check" about a tool that does validate a
+    model -- a silent pass under a docstring promising the opposite, which is
+    the shape this gate exists to catch rather than to have.
+    """
+    import ast
+
+    if not isinstance(node, ast.Call):
+        return None
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+        return node.func.value.id
+    return None
+
+
+def test_the_derivation_reads_both_construction_spellings():
+    """A model validated rather than constructed is still derived.
+
+    Exercised on synthetic source rather than on the repo's own, because the
+    repo currently uses one of the two spellings at the sites that matter: a
+    test reading only real source would pass against a walk that handles only
+    that spelling, which is exactly the gap.
+    """
+    import ast
+
+    module = ast.parse(
+        "class _X:\n"
+        "    @mcp.tool()\n"
+        "    async def a(self):\n"
+        "        return IngestRequest(source='x')\n"
+        "    @mcp.tool()\n"
+        "    async def b(self):\n"
+        "        return IngestRequest.model_validate({})\n"
+    )
+    names = [
+        _constructed_schema_name(node)
+        for node in ast.walk(module)
+        if _constructed_schema_name(node) is not None
+    ]
+
+    assert names.count("IngestRequest") == 2, names
+
+
 def _tools_building_a_nesting_model() -> dict[str, type]:
     """Each MCP tool whose body builds a request model nesting a strict model.
 
@@ -614,14 +662,16 @@ def _tools_building_a_nesting_model() -> dict[str, type]:
             ):
                 continue
             for inner in ast.walk(node):
-                if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name):
-                    model = getattr(schemas, inner.func.id, None)
-                    if (
-                        isinstance(model, type)
-                        and issubclass(model, BaseModel)
-                        and strict_nested(model)
-                    ):
-                        found[node.name] = model
+                name = _constructed_schema_name(inner)
+                if name is None:
+                    continue
+                model = getattr(schemas, name, None)
+                if (
+                    isinstance(model, type)
+                    and issubclass(model, BaseModel)
+                    and strict_nested(model)
+                ):
+                    found[node.name] = model
     return found
 
 

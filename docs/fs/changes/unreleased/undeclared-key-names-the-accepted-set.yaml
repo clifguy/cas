@@ -9,8 +9,8 @@ summary: >-
   the position and two of the accepted names. It replaces the 422 invalid_parameter
   whose detail named the offending key and nothing else, on POST /documents,
   POST /documents:batch, POST /lifecycles, POST /metadata, POST /edges and
-  POST /app/ingest, and on the MCP tools that bind the same models -- bulk_ingest_document,
-  update_lifecycles, create_edges and update_metadata. The recognized set is taken from
+  POST /app/ingest, and on the MCP tools that bind the same models -- ingest_document,
+  bulk_ingest_document, update_lifecycles, create_edges and update_metadata. The recognized set is taken from
   the model that refused rather than written out, so it cannot name a key the refusal
   would not accept; the two batch surfaces accordingly report different entry-level sets,
   because an upload's bytes arrive as file parts and its entries declare no file_path

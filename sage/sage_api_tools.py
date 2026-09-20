@@ -1077,6 +1077,11 @@ def register_sage_tools(
           well-formed vault id.
         - ``vault_not_found`` (404): no vault is registered with that id.
           ``detail.available_vaults`` lists the registered vaults.
+        - ``undeclared_key`` (400): an item, or an object nested inside one,
+          names a key its schema does not declare. ``detail.parameter``
+          locates the object, ``detail.key`` names the key, and
+          ``detail.recognized`` lists the names that object accepts. A
+          batch-boundary refusal raised before any per-item work.
         - ``invalid_document_id`` (400): a document id a per-item request
           names is not well-formed.
         - ``invalid_sha256`` (400): a content hash a per-item request supplies
@@ -1222,6 +1227,11 @@ def register_sage_tools(
           well-formed vault id.
         - ``vault_not_found`` (404): no vault is registered with that id.
           ``detail.available_vaults`` lists the registered vaults.
+        - ``undeclared_key`` (400): an item, or an object nested inside one,
+          names a key its schema does not declare. ``detail.parameter``
+          locates the object, ``detail.key`` names the key, and
+          ``detail.recognized`` lists the names that object accepts. A
+          batch-boundary refusal raised before any per-item work.
         - ``invalid_sha256`` (400): a per-item ``synced_from_content_hash``
           is not a well-formed hash.
         - ``invalid_document_id`` (400): a per-item ``source_id``,
@@ -1384,7 +1394,11 @@ def register_sage_tools(
                 ``document_id`` or ``doc_id`` per item; ``doc_id`` is a
                 back-compatible alias (neither or both is a per-item
                 error). Shape validation runs up front; one malformed item
-                rejects the whole batch before any per-item work.
+                rejects the whole batch before any per-item work. An item, or
+                an object nested inside one such as ``tags`` or
+                ``tier3_metadata``, that names a key its schema does not
+                declare is refused as ``undeclared_key`` (400), whose
+                ``detail.recognized`` lists the names that object accepts.
             response_mode: Per-item payload depth. ``"full"`` returns each
                 success item's complete ``document`` body (including the
                 potentially large ``semantic_abstract``); ``"light"`` strips
