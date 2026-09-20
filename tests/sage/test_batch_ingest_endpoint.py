@@ -1891,16 +1891,19 @@ async def test_b34_tier3_schema_violation_is_a_per_file_error(tier3_batch_app):
     assert summary["errors"][0]["file_index"] == 1, summary
     assert summary["errors"][0]["code"] == "tier3_schema_violation", summary
 
-    # The refused file left nothing behind: the only new document is the
-    # sibling's, so validation ran before the insert rather than after it.
+    # The refused file left nothing behind: the store grew by exactly the
+    # documents the stream reported completing, so validation ran before the
+    # insert rather than after it. The comparand is the completed set rather
+    # than a literal, so the block is load-bearing: were it deleted, or were a
+    # second document created, the count on the right would move with it.
     after = await state_snapshot(services.graph_store, services.content_store)
     titles = {
         (await services.graph_store.get_document(e["document_id"])).title
         for e in _parse_sse_events(resp.text)
         if e["event_type"] == "progress" and e["status"] == "completed"
     }
-    assert len(after.documents) == len(before.documents) + 1, (before, after)
-    assert len(titles) == 1, titles
+    assert len(after.documents) == len(before.documents) + len(titles), (before, after)
+    assert titles == {"ticket_good"}, titles
 
 
 async def test_b35_codes_and_tags_conflict_location_matches_the_mcp_tool(batch_app, monkeypatch):

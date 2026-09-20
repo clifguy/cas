@@ -8,6 +8,7 @@ import logging
 from collections.abc import Iterable
 from datetime import datetime
 from enum import StrEnum
+from typing import Final
 
 from fastapi import FastAPI, Request
 from fastapi.dependencies.utils import get_flat_dependant
@@ -2488,6 +2489,15 @@ def undeclared_entry_key_error(
     )
 
 
+#: Why an entry may not supply both. One sentence, shared by every surface that
+#: refuses the pair, so a caller meets the same explanation on each: the batch
+#: boundaries locate it at ``files.<n>.parsed_metadata.tags``, the
+#: single-document boundary at ``metadata.tags``.
+CODES_AND_TAGS_CONSTRAINT: Final[str] = (
+    "codes and tags both set the document's tags; supply one, not both"
+)
+
+
 def codes_and_tags_conflict_error(
     candidates: Iterable[tuple[int, object]],
 ) -> InvalidParameterError | None:
@@ -2523,7 +2533,7 @@ def codes_and_tags_conflict_error(
     return InvalidParameterError(
         parameter=f"files.{index}.parsed_metadata.tags",
         value=value,
-        constraint="codes and tags both set the document's tags; supply one, not both",
+        constraint=CODES_AND_TAGS_CONSTRAINT,
     )
 
 
@@ -2590,6 +2600,21 @@ def translate_validation_error(
         # embeds the envelope fields in ``ctx`` and we rebuild here. Drives
         # the structured ``legacy_form`` 400 envelope on the FastAPI surface
         # (CAS-ADR-028 ops-object patch grammar).
+        # 0b) Custom ``codes_and_tags_conflict`` raised from the IngestRequest
+        # model_validator via PydanticCustomError. Same leaf-layer-contract
+        # reasoning as the two rules above: the models layer cannot import
+        # this module, so the validator embeds the location in ``ctx`` and the
+        # envelope is rebuilt here. The batch boundaries refuse the same pair
+        # without reaching a request model, so they call
+        # ``codes_and_tags_conflict_error`` directly; both report the same
+        # code and the same constraint, located at their own spelling.
+        if err_type == "codes_and_tags_conflict":
+            return InvalidParameterError(
+                parameter=str(ctx.get("parameter", "metadata.tags")),
+                value=ctx.get("value"),
+                constraint=CODES_AND_TAGS_CONSTRAINT,
+            )
+
         if err_type == "legacy_form":
             return LegacyFormError(
                 field=str(ctx.get("field", "")),

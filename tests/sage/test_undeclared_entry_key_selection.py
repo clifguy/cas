@@ -10,6 +10,8 @@ with itself.
 
 from __future__ import annotations
 
+import pytest
+
 from sage.api.errors import (
     InvalidParameterError,
     codes_and_tags_conflict_error,
@@ -76,3 +78,50 @@ def test_lowest_file_index_wins_among_conflicting_entries():
 
 def test_no_conflict_reports_nothing():
     assert codes_and_tags_conflict_error([]) is None
+
+
+def test_the_single_document_boundary_refuses_the_same_pair():
+    """``IngestRequest`` refuses codes-and-tags with the batch surfaces' envelope.
+
+    The rationale the batch boundaries refuse on -- the two set the same field,
+    so supplying both leaves the outcome to walk order -- holds verbatim of the
+    single-document surface, which accepted the pair and let dict order decide.
+    It refuses through a different mechanism (a model validator, since there is
+    no per-entry boundary to check), so what is pinned here is that a caller
+    meets the same code and the same explanation on either, located at each
+    surface's own spelling.
+
+    Anti-coincidental-pass: the control asserts each key alone still passes, so
+    a validator refusing any ``tags`` at all -- or refusing every request --
+    fails. The constraint is compared against the shared constant rather than a
+    literal, so the two surfaces cannot drift into different wording while both
+    stay green.
+    """
+    from pydantic import ValidationError
+
+    from sage.api.errors import CODES_AND_TAGS_CONSTRAINT, translate_validation_error
+    from sage.models.schemas import IngestRequest
+
+    with pytest.raises(ValidationError) as raised:
+        IngestRequest(source="/x.md", metadata={"codes": ["PV06"], "tags": ["alpha"]})
+    error = translate_validation_error(raised.value)
+
+    assert isinstance(error, InvalidParameterError)
+    assert error.code == "invalid_parameter"
+    assert error.detail["parameter"] == "metadata.tags"
+    assert error.detail["constraint"] == CODES_AND_TAGS_CONSTRAINT
+    # The batch surfaces report the same code and constraint, located at their
+    # own spelling -- one rule, two boundaries.
+    batch = codes_and_tags_conflict_error([(0, ["alpha"])])
+    assert batch is not None
+    assert batch.code == error.code
+    assert batch.detail["constraint"] == error.detail["constraint"]
+    assert batch.detail["parameter"] == "files.0.parsed_metadata.tags"
+
+    # Control: either key alone is still accepted.
+    assert IngestRequest(source="/x.md", metadata={"tags": ["alpha"]}).metadata == {
+        "tags": ["alpha"]
+    }
+    assert IngestRequest(source="/x.md", metadata={"codes": ["PV06"]}).metadata == {
+        "codes": ["PV06"]
+    }

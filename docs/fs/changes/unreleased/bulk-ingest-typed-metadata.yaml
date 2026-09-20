@@ -12,12 +12,17 @@ summary: >-
   that file's `tier3_schema_violation` without failing the batch. `codes` and
   `tags` set the same field, so an entry supplying both is refused once for the
   whole call at `files.<n>.parsed_metadata.tags` through a rule the surfaces
-  share. Touches the MCP tool catalog, both OpenAPI specifications and the
-  frontend type mirror.
+  share. The single-document ingest refuses the same pair at `metadata.tags`,
+  where it had accepted both and let mapping walk order decide which one
+  landed; the refusal is a model validator, so no schema renders it and the
+  `metadata` description states it instead. Touches the MCP tool catalog, both
+  OpenAPI specifications and the frontend type mirror.
 for_callers: >-
   Bulk ingest now accepts `needs_review`, so a caller holding metadata it
   already trusts can commit it as authoritative instead of confirming every
   record afterwards; the default still routes a batch through the
   metadata-review queue. Each file entry may also carry `tier3_metadata` and,
   inside `parsed_metadata`, a `tags` list carried whole so a tag containing a
-  comma stays one tag. An entry supplying both `codes` and `tags` is refused.
+  comma stays one tag. Supplying both `codes` and `tags` is now refused
+  wherever it happens -- on the batch surfaces and on the single-document
+  ingest, which previously accepted the pair and resolved it by walk order.

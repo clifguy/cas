@@ -5754,7 +5754,9 @@ components:
             no schema-enforced semantics. Values are strings except
             tags, which may be supplied as a list of strings or as a
             comma-separated string (parity with update_metadata's
-            list-typed tags field).
+            list-typed tags field). `codes` sets the same field as `tags`, so
+            metadata supplying both is refused at `metadata.tags` rather
+            than resolved by which key is walked last.
         predecessor_id:
           type: [string, "null"]
           description: >-
