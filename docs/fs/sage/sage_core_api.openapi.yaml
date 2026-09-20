@@ -1079,12 +1079,24 @@ paths:
             `invalid_batch_metadata`: the `metadata` form field is not
             valid JSON for the BatchIngestUploadMetadata schema, or its
             `files` length does not match the number of uploaded file
-            parts.
+            parts. An undeclared key in a file entry is refused as
+            `invalid_parameter` instead.
 
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
 
             `unknown_parameter`: the request carries a body field or query
             parameter the operation does not declare.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: >-
+            `invalid_parameter`: an entry of `metadata.files`, or the
+            `parsed_metadata` it carries, names a key its schema does not
+            declare. `detail.parameter` locates the key as `files.<n>.<key>`
+            or `files.<n>.parsed_metadata.<key>`, and `detail.value` carries
+            its value. No file is staged or ingested.
           content:
             application/json:
               schema:
@@ -9326,13 +9338,47 @@ components:
             registered adapter claims is reported for that file as
             `source_type_unresolved`.
         parsed_metadata:
-          type: [object, "null"]
-          additionalProperties: true
+          anyOf:
+            - $ref: "#/components/schemas/BatchIngestParsedMetadata"
+            - type: "null"
           description: >-
             Optional caller-supplied parsed metadata for this file (keys:
             title, date, project, codes, version, doc_type). When omitted, the
             file stem seeds the title and the vault's configured filename parser
             fills the remaining fields.
+
+    BatchIngestParsedMetadata:
+      type: object
+      additionalProperties: false
+      description: >-
+        Caller-supplied parsed metadata for one file of a bulk upload. Every
+        field is optional. A key outside this set is refused rather than
+        ignored.
+      properties:
+        title:
+          type: [string, "null"]
+          description: >-
+            Document title. When omitted, the stem of the uploaded file's name
+            seeds it.
+        date:
+          type: [string, "null"]
+          description: >-
+            Document calendar date (YYYY-MM-DD). A value that is not a calendar
+            date is reported for that file as `invalid_document_date`.
+        project:
+          type: [string, "null"]
+          description: Project identifier.
+        codes:
+          type: [array, "null"]
+          items:
+            type: string
+          description: Code identifiers (e.g. "PV07", "CD-2"), in order.
+        version:
+          type: [string, "null"]
+          description: Canonical version label (e.g. "v1.2.0", "v3.0").
+        doc_type:
+          type: [string, "null"]
+          description: Document type.
 
     BatchIngestUploadMetadata:
       type: object

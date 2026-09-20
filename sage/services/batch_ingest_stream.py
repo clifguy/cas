@@ -32,7 +32,7 @@ from sage.services.batch_ingest import (
     BatchIngestService,
     FileDescriptor,
     IngestSummary,
-    ParsedMetadataInput,
+    parsed_metadata_input,
 )
 from sage.services.transfer import staging_name
 
@@ -52,27 +52,6 @@ class UploadedFile:
     content: bytes
     source_type: str | None
     parsed_metadata: dict[str, Any] | None = None
-
-
-def _parsed_metadata_input(
-    parsed: dict | None,
-    default_title: str,
-) -> ParsedMetadataInput | None:
-    """Build a ``ParsedMetadataInput`` from a caller-supplied dict.
-
-    Mirrors the dict-to-input conversion the MCP ``bulk_ingest_document``
-    tool performs: the file stem seeds the title when the caller omits it.
-    """
-    if parsed is None:
-        return None
-    return ParsedMetadataInput(
-        title=parsed.get("title", default_title),
-        date=parsed.get("date"),
-        project=parsed.get("project"),
-        codes=parsed.get("codes", []),
-        version=parsed.get("version"),
-        doc_type=parsed.get("doc_type"),
-    )
 
 
 def _sse_event(event: BaseModel) -> str:
@@ -283,7 +262,7 @@ async def stream_uploaded_batch_ingest(
                 FileDescriptor(
                     file_path=str(dest),
                     source_type=upload.source_type,
-                    parsed_metadata=_parsed_metadata_input(upload.parsed_metadata, dest.stem),
+                    parsed_metadata=parsed_metadata_input(upload.parsed_metadata, dest.stem),
                     # The staged path is where the bytes are; the upload's
                     # own name is what a refusal names back at the caller.
                     declared_source=declared,

@@ -1330,3 +1330,332 @@ async def test_b24_malformed_per_file_date_reports_its_typed_code(batch_app):
     (failed,) = [e for e in _parse_sse_events(resp.text) if e.get("status") == "failed"]
     assert failed["file_index"] == 0, failed
     assert failed["error"] == error["message"], failed
+
+
+# ---------------------------------------------------------------------------
+# B25-B30 -- undeclared names in the metadata envelope's file entries
+# ---------------------------------------------------------------------------
+
+
+def _two_file_metadata(second: dict) -> dict:
+    """A two-file envelope whose second entry is ``second``."""
+    return {"infer_edges": False, "files": [{"source_type": "markdown"}, second]}
+
+
+def _two_parts() -> list[tuple[str, tuple[str, bytes, str]]]:
+    return [
+        _md_part("first.md", b"# First\n\nFirst body.\n"),
+        _md_part("second.md", b"# Second\n\nSecond body.\n"),
+    ]
+
+
+def _spy_on_staging(monkeypatch) -> list[object]:
+    """Count calls into the staging-and-stream generator the route hands off to.
+
+    The spy delegates, so a request the route accepts still ingests; a refusal
+    raised before the hand-off leaves the list empty.
+    """
+    from sage.api.routers import ingestion as ingestion_router
+
+    calls: list[object] = []
+    real = ingestion_router.stream_uploaded_batch_ingest
+
+    def spy(*args, **kwargs):
+        calls.append(args)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ingestion_router, "stream_uploaded_batch_ingest", spy)
+    return calls
+
+
+def _assert_invalid_parameter(resp: httpx.Response, parameter: str, value: object) -> None:
+    assert resp.status_code == 422, resp.text
+    assert "application/json" in resp.headers.get("content-type", ""), resp.headers
+    body = resp.json()
+    assert body["code"] == "invalid_parameter", body
+    assert body["detail"]["parameter"] == parameter, body
+    assert body["detail"]["value"] == value, body
+
+
+async def test_b25_undeclared_parsed_metadata_key_is_refused_before_staging(batch_app, monkeypatch):
+    """An undeclared key in an entry's ``parsed_metadata`` refuses the call.
+
+    Anti-coincidental-pass: the key sits on the second entry, so a refusal
+    that inspected only the first would miss it; the staging spy and the
+    state fingerprint show nothing was staged or written, which a refusal
+    raised inside the stream would violate; and the control -- the same
+    request without the key -- must ingest both files, so the refusal is the
+    key's and not some other defect in the request.
+    """
+    app, vault_id, _config = batch_app
+    services: SAGEServices = app.state.vault_registry[vault_id]
+    calls = _spy_on_staging(monkeypatch)
+    parsed = {"codes": ["PV06"], "version": "v1"}
+
+    def metadata(extra: dict) -> str:
+        return json.dumps(
+            _two_file_metadata({"source_type": "markdown", "parsed_metadata": {**parsed, **extra}})
+        )
+
+    before = await state_snapshot(services.graph_store, services.content_store)
+    async with _client(app) as client:
+        refused = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=_two_parts(),
+            data={"metadata": metadata({"bogus_field_x": 1})},
+        )
+    after = await state_snapshot(services.graph_store, services.content_store)
+
+    _assert_invalid_parameter(refused, "files.1.parsed_metadata.bogus_field_x", 1)
+    assert calls == []
+    assert_state_unchanged(before, after)
+
+    async with _client(app) as client:
+        control = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=_two_parts(),
+            data={"metadata": metadata({})},
+        )
+    assert control.status_code == 200, control.text
+    summary = _summary_of(control)
+    assert summary["error_count"] == 0, summary
+    assert summary["documents_created"]["new"] == 2, summary
+
+
+async def test_b26_undeclared_file_entry_key_is_invalid_parameter(batch_app, monkeypatch):
+    """An undeclared key on a file entry itself is refused the same way.
+
+    Anti-coincidental-pass: the envelope's own validation already rejects
+    this key, so the assertion that matters is the code and location -- the
+    generic ``invalid_batch_metadata`` would fail them. The control proves
+    the rest of the request is sound.
+    """
+    app, vault_id, _config = batch_app
+    calls = _spy_on_staging(monkeypatch)
+
+    async with _client(app) as client:
+        refused = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=_two_parts(),
+            data={
+                "metadata": json.dumps(
+                    _two_file_metadata({"source_type": "markdown", "bogus_field_x": "x"})
+                )
+            },
+        )
+        _assert_invalid_parameter(refused, "files.1.bogus_field_x", "x")
+        assert calls == []
+
+        control = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=_two_parts(),
+            data={"metadata": json.dumps(_two_file_metadata({"source_type": "markdown"}))},
+        )
+    assert control.status_code == 200, control.text
+    assert _summary_of(control)["documents_created"]["new"] == 2, control.text
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        pytest.param(
+            [
+                {"source_type": "markdown"},
+                {"source_type": "markdown", "parsed_metadata": {"zeta_key": 1, "alpha_key": 2}},
+            ],
+            id="two-keys-in-one-parsed-metadata",
+        ),
+        pytest.param(
+            [
+                {"source_type": "markdown"},
+                {
+                    "source_type": "markdown",
+                    "parsed_metadata": {"alpha_key": 1},
+                    "zeta_key": 2,
+                },
+            ],
+            id="entry-level-key-after-parsed-metadata",
+        ),
+        pytest.param(
+            [
+                {"source_type": "markdown", "parsed_metadata": {"zeta_key": 1}},
+                {"source_type": "markdown", "alpha_key": 2},
+            ],
+            id="keys-on-both-entries",
+        ),
+    ],
+)
+async def test_b27_undeclared_key_location_matches_the_mcp_tool(batch_app, entries):
+    """With several undeclared keys, the route reports the one the MCP tool does.
+
+    The expected refusal is computed by the MCP tool's own check over the same
+    entries rather than written by hand. Anti-coincidental-pass: in the first
+    case the keys are written in reverse order, so reporting whichever error
+    validation lists first names the other key. Validation happens to list the
+    remaining two cases in the tool's order already; they pin the index and
+    entry-before-parsed-metadata ordering against a selector that sorted on the
+    key name alone.
+    """
+    from sage.api.errors import InvalidParameterError
+    from sage.app_tools import _refuse_undeclared_entry_fields
+
+    with pytest.raises(InvalidParameterError) as expected:
+        _refuse_undeclared_entry_fields([{"file_path": "x.md", **entry} for entry in entries])
+
+    app, vault_id, _config = batch_app
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=_two_parts(),
+            data={"metadata": json.dumps({"infer_edges": False, "files": entries})},
+        )
+
+    _assert_invalid_parameter(
+        resp, expected.value.detail["parameter"], expected.value.detail["value"]
+    )
+
+
+async def test_b28_title_omitted_or_null_is_seeded_from_the_stem(batch_app):
+    """Closing the keys does not make ``title`` required, and a null title
+    means the same as an omitted one: the file stem seeds it.
+
+    Anti-coincidental-pass: each body's heading differs from its stem, so a
+    title drawn from content rather than the stem fails.
+    """
+    app, vault_id, _config = batch_app
+    services: SAGEServices = app.state.vault_registry[vault_id]
+
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[
+                _md_part("alpha_stem.md", b"# Unrelated Heading\n\nAlpha body.\n"),
+                _md_part("beta_stem.md", b"# Unrelated Heading\n\nBeta body.\n"),
+            ],
+            data={
+                "metadata": json.dumps(
+                    {
+                        "infer_edges": False,
+                        "files": [
+                            {"source_type": "markdown", "parsed_metadata": {"version": "v1"}},
+                            {"source_type": "markdown", "parsed_metadata": {"title": None}},
+                        ],
+                    }
+                )
+            },
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert _summary_of(resp)["documents_created"]["new"] == 2, resp.text
+    completed = [
+        e
+        for e in _parse_sse_events(resp.text)
+        if e["event_type"] == "progress" and e["status"] == "completed"
+    ]
+    titles = [
+        (await services.graph_store.get_document(event["document_id"])).title for event in completed
+    ]
+    assert titles == ["alpha_stem", "beta_stem"]
+
+
+@pytest.mark.parametrize(
+    "envelope",
+    [
+        pytest.param(
+            {"files": [{"source_type": "markdown"}], "bogus_field_x": 1},
+            id="envelope-root-key",
+        ),
+        pytest.param(
+            {"files": [{"source_type": "markdown", "parsed_metadata": {"codes": "PV07"}}]},
+            id="codes-not-a-list",
+        ),
+        pytest.param(
+            {"files": [{"source_type": "markdown", "parsed_metadata": {"title": 5}}]},
+            id="title-not-a-string",
+        ),
+    ],
+)
+async def test_b29_other_envelope_defects_stay_invalid_batch_metadata(batch_app, envelope):
+    """Only an undeclared key in a file entry moves to ``invalid_parameter``.
+
+    Anti-coincidental-pass: an implementation that translated every envelope
+    validation failure would report these as ``invalid_parameter`` too.
+    """
+    app, vault_id, _config = batch_app
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[_md_part("a.md", b"# A\n\nbody")],
+            data={"metadata": json.dumps(envelope)},
+        )
+
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["code"] == "invalid_batch_metadata", resp.text
+
+
+async def test_b31_undeclared_key_wins_over_a_malformed_value(batch_app):
+    """An entry carrying both an undeclared key and a malformed value is
+    refused for the key, as the MCP tool refuses names before values."""
+    app, vault_id, _config = batch_app
+    envelope = {
+        "files": [
+            {"source_type": "markdown", "parsed_metadata": {"codes": "PV07", "bogus_field_x": 1}}
+        ]
+    }
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[_md_part("a.md", b"# A\n\nbody")],
+            data={"metadata": json.dumps(envelope)},
+        )
+
+    _assert_invalid_parameter(resp, "files.0.parsed_metadata.bogus_field_x", 1)
+
+
+async def test_b30_first_party_upload_envelope_is_accepted(batch_app):
+    """The envelope the application's upload client builds is not refused.
+
+    Mirrors ``uploadBatchIngest`` in ``app/src/api/ingest.ts``: the three
+    batch flags and one ``source_type``-only entry per file.
+    """
+    app, vault_id, _config = batch_app
+    envelope = {
+        "infer_edges": False,
+        "needs_review": True,
+        "dry_run": False,
+        "files": [{"source_type": "markdown"}],
+    }
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[_md_part("client.md", b"# Client\n\nbody")],
+            data={"metadata": json.dumps(envelope)},
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert _summary_of(resp)["documents_created"]["new"] == 1, resp.text
+
+
+def test_parsed_metadata_input_treats_null_as_omitted():
+    """The shared conversion seeds the title and codes whether a key is
+    absent or null, and passes supplied values through unchanged.
+
+    Anti-coincidental-pass: ``parsed.get("title", default)`` keeps an
+    explicit null, which the null row catches.
+    """
+    from sage.services.batch_ingest import ParsedMetadataInput, parsed_metadata_input
+
+    assert parsed_metadata_input(None, "stem") is None
+    assert parsed_metadata_input({}, "stem") == ParsedMetadataInput(title="stem")
+    assert parsed_metadata_input({"title": None, "codes": None}, "stem") == ParsedMetadataInput(
+        title="stem"
+    )
+    full = {
+        "title": "Given",
+        "date": "2026-01-02",
+        "project": "P",
+        "codes": ["PV06"],
+        "version": "v1",
+        "doc_type": "note",
+    }
+    assert parsed_metadata_input(full, "stem") == ParsedMetadataInput(**full)

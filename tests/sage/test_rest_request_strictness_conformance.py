@@ -155,7 +155,12 @@ def test_every_request_body_model_forbids_undeclared_fields():
     models = _body_models()
     names = {model.__name__ for model in models}
 
-    assert {"IngestRequest", "BulkLifecycleItem", "BatchIngestFileMetadata"} <= names
+    assert {
+        "IngestRequest",
+        "BulkLifecycleItem",
+        "BatchIngestFileMetadata",
+        "BatchIngestParsedMetadata",
+    } <= names
     tolerant = sorted(
         model.__name__ for model in models if model.model_config.get("extra") != "forbid"
     )

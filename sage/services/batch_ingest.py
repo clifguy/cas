@@ -23,10 +23,10 @@ metadata may pass ``needs_review=False``.
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
 
@@ -68,6 +68,30 @@ class ParsedMetadataInput:
     codes: list[str] = field(default_factory=list)
     version: str | None = None
     doc_type: str | None = None
+
+
+def parsed_metadata_input(
+    parsed: Mapping[str, Any] | None,
+    default_title: str,
+) -> ParsedMetadataInput | None:
+    """Build a ``ParsedMetadataInput`` from caller-supplied parsed metadata.
+
+    The one conversion every batch caller uses. A key that is absent and a key
+    that is null mean the same: the title falls back to ``default_title`` (the
+    file's stem) and the codes to none. Which keys may appear is decided at
+    each caller's boundary, before this is reached.
+    """
+    if parsed is None:
+        return None
+    title = parsed.get("title")
+    return ParsedMetadataInput(
+        title=default_title if title is None else title,
+        date=parsed.get("date"),
+        project=parsed.get("project"),
+        codes=list(parsed.get("codes") or []),
+        version=parsed.get("version"),
+        doc_type=parsed.get("doc_type"),
+    )
 
 
 @dataclass

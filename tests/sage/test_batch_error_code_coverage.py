@@ -618,14 +618,16 @@ def test_batch_operations_declare_no_per_file_status():
     """A per-file failure never becomes a batch status.
 
     Declaring the store-refusal statuses, or any other per-file status, on a
-    batch operation would name responses it cannot return. The application
-    operation also declares 401, 501 and 503, each a refusal of the whole request
-    before any file is examined: a hosted deployment's backend-for-frontend
-    requires a signed-in session and a configured sign-in, and does not offer
-    path-based ingest.
+    batch operation would name responses it cannot return. The Core upload
+    operation also declares 422, the refusal of the whole request when a file
+    entry of its metadata envelope names an undeclared key, raised before any
+    file is staged. The application operation also declares 401, 501 and 503,
+    each a refusal of the whole request before any file is examined: a hosted
+    deployment's backend-for-frontend requires a signed-in session and a
+    configured sign-in, and does not offer path-based ingest.
     """
     expected = {
-        "sage_core": {"200", "400", "404"},
+        "sage_core": {"200", "400", "404", "422"},
         "cas_app": {"200", "400", "401", "404", "501", "503"},
     }
     for spec_name, operation_id in _BATCH_OPERATIONS:
