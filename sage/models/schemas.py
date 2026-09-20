@@ -5163,6 +5163,15 @@ class BatchIngestParsedMetadata(BaseModel):
         description='Canonical version label (e.g. "v1.2.0", "v3.0").',
     )
     doc_type: str | None = Field(default=None, description="Document type.")
+    tags: list[str] | None = Field(
+        default=None,
+        description=(
+            "Tags for the document, in order, each carried whole: a tag that "
+            "contains a comma stays one tag. `codes` sets the same field, so an "
+            "entry supplying both is refused at "
+            "`files.<n>.parsed_metadata.tags` before any file is ingested."
+        ),
+    )
 
 
 class BatchIngestFileMetadata(BaseModel):
@@ -5189,9 +5198,22 @@ class BatchIngestFileMetadata(BaseModel):
         default=None,
         description=(
             "Optional caller-supplied parsed metadata for this file (keys: "
-            "title, date, project, codes, version, doc_type). When omitted, "
-            "the file stem seeds the title and the vault's configured filename parser "
-            "fills the remaining fields."
+            "title, date, project, codes, version, doc_type, tags). When "
+            "omitted, the file stem seeds the title and the vault's configured "
+            "filename parser fills the remaining fields."
+        ),
+    )
+    tier3_metadata: dict | None = Field(
+        default=None,
+        description=(
+            "Optional Tier-3 metadata for this file, validated against the "
+            "`metadata_schema` the vault config declares for the file's "
+            "resolved doc_type (CAS-ADR-028). A payload the schema rejects, or "
+            "any payload for a doc_type declaring no schema, is reported for "
+            "that file as `tier3_schema_violation` and leaves the rest of the "
+            "batch to run. A sibling of `parsed_metadata`, not a key in it: "
+            "`parsed_metadata` carries the Tier-1 fields a filename parser can "
+            "supply, and Tier-3 metadata never comes from a filename."
         ),
     )
 

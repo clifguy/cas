@@ -378,6 +378,7 @@ export interface ParsedMetadataItem {
   codes: string[];
   version: string | null;
   doc_type: string | null;
+  tags?: string[];
 }
 
 export interface ScanResultItem {
@@ -399,6 +400,7 @@ export interface IngestFileItem {
   file_path: string;
   source_type: string;
   parsed_metadata?: ParsedMetadataItem;
+  tier3_metadata?: Record<string, unknown> | null;
 }
 
 export interface IngestProgressEvent {
@@ -500,11 +502,19 @@ export interface BatchIngestParsedMetadata {
   codes?: string[] | null;
   version?: string | null;
   doc_type?: string | null;
+  // Carried whole, so a tag containing a comma stays one tag. `codes` sets the
+  // same field, so an entry supplying both is refused before any file lands.
+  tags?: string[] | null;
 }
 
 export interface BatchIngestFileMetadata {
   source_type: string;
   parsed_metadata?: BatchIngestParsedMetadata | null;
+  // Validated against the metadata_schema the vault declares for this file's
+  // resolved doc_type; a payload it rejects is that file's error, not the
+  // batch's. A sibling of parsed_metadata, which carries only the Tier-1
+  // fields a filename parser can supply.
+  tier3_metadata?: Record<string, unknown> | null;
 }
 
 export interface BatchIngestUploadMetadata {

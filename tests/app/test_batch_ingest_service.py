@@ -254,10 +254,12 @@ def _fd(
     codes: list[str] | None = None,
     version: str | None = None,
     doc_type: str | None = None,
+    tags: list[str] | None = None,
+    tier3_metadata: dict | None = None,
 ) -> FileDescriptor:
     """Shorthand FileDescriptor builder."""
     pm = None
-    if any(v is not None for v in (title, date, project, codes, version, doc_type)):
+    if any(v is not None for v in (title, date, project, codes, version, doc_type, tags)):
         pm = ParsedMetadataInput(
             title=title or Path(file_path).stem,
             date=date,
@@ -265,8 +267,14 @@ def _fd(
             codes=codes or [],
             version=version,
             doc_type=doc_type,
+            tags=tags or [],
         )
-    return FileDescriptor(file_path=file_path, source_type=source_type, parsed_metadata=pm)
+    return FileDescriptor(
+        file_path=file_path,
+        source_type=source_type,
+        parsed_metadata=pm,
+        tier3_metadata=tier3_metadata,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +356,76 @@ class TestFileDescriptorNormalization:
         assert request.metadata["codes"] == "PV06"
         assert request.metadata["version_label"] == "v7"
         assert request.metadata["doc_type"] == "design_spec"
+
+    @pytest.mark.asyncio
+    async def test_run_threads_tier3_metadata_onto_each_request(self):
+        """Each descriptor's Tier-3 payload reaches that file's own request.
+
+        Anti-coincidental-pass: the two descriptors carry different payloads
+        and the whole call list is read, so a plumbing defect that smeared one
+        across the batch, or let the last one win, fails. Checking only that
+        some request carried a payload would not.
+        """
+        services = _make_services()
+        svc = BatchIngestService()
+
+        await svc.run(
+            files=[
+                _fd("/tmp/one.md", tier3_metadata={"ticket_id": "T-0001"}),
+                _fd("/tmp/two.md", tier3_metadata={"ticket_id": "T-0002"}),
+            ],
+            vault_services=services,
+            infer_edges=False,
+        )
+
+        requests = [call[0][0] for call in services.ingestion_service.ingest.call_args_list]
+        assert [r.tier3_metadata for r in requests] == [
+            {"ticket_id": "T-0001"},
+            {"ticket_id": "T-0002"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_run_threads_needs_review_to_each_request(self):
+        """``needs_review`` reaches every per-file request, both ways.
+
+        Anti-coincidental-pass: the False arm alone would pass against a
+        service that hard-coded False, so the default arm is asserted beside
+        it. Nothing else in the suite exercises the False arm.
+        """
+        for needs_review, expected in ((False, False), (True, True)):
+            services = _make_services()
+            svc = BatchIngestService()
+            kwargs = {} if needs_review else {"needs_review": False}
+
+            await svc.run(
+                files=[_fd("/tmp/one.md"), _fd("/tmp/two.md")],
+                vault_services=services,
+                infer_edges=False,
+                **kwargs,
+            )
+
+            requests = [call[0][0] for call in services.ingestion_service.ingest.call_args_list]
+            assert [r.needs_review for r in requests] == [expected, expected]
+
+    @pytest.mark.asyncio
+    async def test_run_carries_tags_as_a_list_onto_the_request(self):
+        """``tags`` reaches the request as a list, unlike the joined ``codes``.
+
+        Anti-coincidental-pass: the probe tag contains a comma, which the
+        ``codes`` join-and-resplit path would turn into two tags.
+        """
+        services = _make_services()
+        svc = BatchIngestService()
+
+        await svc.run(
+            files=[_fd("/tmp/one.md", tags=["alpha,beta", "gamma"])],
+            vault_services=services,
+            infer_edges=False,
+        )
+
+        request = services.ingestion_service.ingest.call_args[0][0]
+        assert request.metadata["tags"] == ["alpha,beta", "gamma"]
+        assert "codes" not in request.metadata
 
     @pytest.mark.asyncio
     async def test_bis_004_file_without_metadata(self):

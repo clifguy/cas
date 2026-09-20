@@ -391,6 +391,139 @@ class TestDryRunReachesThePipeline:
         )
         assert seen.get("dry_run") is False
 
+    @pytest.mark.parametrize(
+        ("body_kwargs", "expected"),
+        [
+            pytest.param({"needs_review": False}, False, id="caller-authoritative"),
+            pytest.param({}, True, id="default-queued"),
+        ],
+    )
+    def test_stream_forwards_needs_review_to_the_sse_generator(
+        self, monkeypatch, body_kwargs, expected
+    ) -> None:
+        """Anti-coincidental-pass: the paired default case asserts True, so an
+        implementation hard-coding either value -- including the hard-code this
+        change removes -- fails one arm of the pair. Asserting only that the
+        parameter is present would pass against a hard-coded True.
+        """
+        seen: dict[str, object] = {}
+
+        def _capture(descriptors, vault_services, **kwargs):
+            seen.update(kwargs)
+            return iter(())
+
+        monkeypatch.setattr(
+            "app.backend.ingest_streaming_service.batch_ingest_sse_stream", _capture
+        )
+        service = IngestStreamingService(vault_services=_stub_services())
+        service.stream(
+            IngestRequest(
+                vault_id="example_vault",
+                files=[IngestFileItem(file_path="/tmp/probe.md", source_type="markdown")],
+                **body_kwargs,
+            )
+        )
+        assert seen.get("needs_review") is expected
+
+    def test_stream_carries_per_file_tier3_and_tags_onto_each_descriptor(self, monkeypatch) -> None:
+        """Each file item's Tier-3 payload and tags reach that file's descriptor.
+
+        Anti-coincidental-pass: the two items carry different payloads and both
+        descriptors are read, so a defect that smeared one across the batch, or
+        let the last one win, fails. The probe tag contains a comma, which the
+        ``codes`` join-and-resplit route would split into two.
+        """
+        seen: list = []
+
+        def _capture(descriptors, vault_services, **kwargs):
+            seen.extend(descriptors)
+            return iter(())
+
+        monkeypatch.setattr(
+            "app.backend.ingest_streaming_service.batch_ingest_sse_stream", _capture
+        )
+        service = IngestStreamingService(vault_services=_stub_services())
+        service.stream(
+            IngestRequest(
+                vault_id="example_vault",
+                files=[
+                    IngestFileItem(
+                        file_path="/tmp/one.md",
+                        source_type="markdown",
+                        parsed_metadata=ParsedMetadata(title="One", tags=["alpha,beta", "gamma"]),
+                        tier3_metadata={"ticket_id": "T-0001"},
+                    ),
+                    IngestFileItem(
+                        file_path="/tmp/two.md",
+                        source_type="markdown",
+                        parsed_metadata=ParsedMetadata(title="Two"),
+                        tier3_metadata={"ticket_id": "T-0002"},
+                    ),
+                ],
+            )
+        )
+
+        assert [d.tier3_metadata for d in seen] == [
+            {"ticket_id": "T-0001"},
+            {"ticket_id": "T-0002"},
+        ]
+        assert seen[0].parsed_metadata.tags == ["alpha,beta", "gamma"]
+        assert seen[1].parsed_metadata.tags == []
+
+    def test_stream_refuses_codes_and_tags_together_before_the_generator(self, monkeypatch) -> None:
+        """An item supplying both is refused where the sibling surfaces refuse it.
+
+        Anti-coincidental-pass: the conflict sits on the second item and the
+        capture list must stay empty, so a check placed inside the generator --
+        which would raise the same error -- fails. The expected location is
+        computed by the MCP tool's own check rather than written by hand.
+        """
+        from sage.api.errors import InvalidParameterError
+        from sage.app_tools import _parsed_metadata_of, _refuse_codes_and_tags_together
+
+        with pytest.raises(InvalidParameterError) as expected:
+            _refuse_codes_and_tags_together(
+                _parsed_metadata_of(
+                    [
+                        {"file_path": "/tmp/one.md"},
+                        {
+                            "file_path": "/tmp/two.md",
+                            "parsed_metadata": {"codes": ["PV06"], "tags": ["alpha"]},
+                        },
+                    ]
+                )
+            )
+
+        seen: list = []
+
+        def _capture(descriptors, vault_services, **kwargs):
+            seen.extend(descriptors)
+            return iter(())
+
+        monkeypatch.setattr(
+            "app.backend.ingest_streaming_service.batch_ingest_sse_stream", _capture
+        )
+        service = IngestStreamingService(vault_services=_stub_services())
+        with pytest.raises(InvalidParameterError) as actual:
+            service.stream(
+                IngestRequest(
+                    vault_id="example_vault",
+                    files=[
+                        IngestFileItem(file_path="/tmp/one.md", source_type="markdown"),
+                        IngestFileItem(
+                            file_path="/tmp/two.md",
+                            source_type="markdown",
+                            parsed_metadata=ParsedMetadata(
+                                title="Two", codes=["PV06"], tags=["alpha"]
+                            ),
+                        ),
+                    ],
+                )
+            )
+
+        assert seen == []
+        assert actual.value.detail == expected.value.detail
+
     def test_summary_event_carries_the_dry_run_echo_and_previews(self) -> None:
         """The wire event must report what the batch actually did.
 

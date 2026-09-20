@@ -68,6 +68,10 @@ class ParsedMetadataInput:
     codes: list[str] = field(default_factory=list)
     version: str | None = None
     doc_type: str | None = None
+    #: Tags for the document, carried whole. ``codes`` sets the same field, so
+    #: each caller's boundary refuses an entry supplying both before this is
+    #: reached; nothing here has to settle which of the two stands.
+    tags: list[str] = field(default_factory=list)
 
 
 def parsed_metadata_input(
@@ -78,8 +82,8 @@ def parsed_metadata_input(
 
     The one conversion every batch caller uses. A key that is absent and a key
     that is null mean the same: the title falls back to ``default_title`` (the
-    file's stem) and the codes to none. Which keys may appear is decided at
-    each caller's boundary, before this is reached.
+    file's stem) and the codes and tags to none. Which keys may appear is
+    decided at each caller's boundary, before this is reached.
     """
     if parsed is None:
         return None
@@ -91,6 +95,7 @@ def parsed_metadata_input(
         codes=list(parsed.get("codes") or []),
         version=parsed.get("version"),
         doc_type=parsed.get("doc_type"),
+        tags=list(parsed.get("tags") or []),
     )
 
 
@@ -113,6 +118,14 @@ class FileDescriptor:
     #: The digest the caller declared for the file, canonicalized, or ``None``.
     #: Carried onto the per-file request, where a mismatch is that file's error.
     sha256: str | None = None
+    #: Tier-3 metadata for this file, or ``None``. Carried onto the per-file
+    #: request, where ``IngestionService`` validates it against the resolved
+    #: doc_type's declared schema; a payload that schema rejects becomes that
+    #: file's ``tier3_schema_violation`` and leaves the rest of the batch to
+    #: run. A sibling of ``parsed_metadata`` rather than a key in it: that one
+    #: flattens into the request's Tier-1 metadata, which a nested payload
+    #: cannot travel through.
+    tier3_metadata: dict[str, Any] | None = None
 
 
 @dataclass
@@ -220,6 +233,19 @@ class BatchIngestService:
         confirmation. A caller that wants caller-authoritative metadata
         passes ``needs_review=False``. See the inline comment at the
         ``IngestRequest`` construction site.
+
+        Per-file Tier-3 metadata:
+        A descriptor's ``tier3_metadata`` reaches its own per-file
+        request, where ``IngestionService`` validates it against the
+        ``metadata_schema`` declared for that file's resolved doc_type
+        on the same terms the single-document surface applies. A
+        payload the schema rejects, or any payload for a doc_type
+        declaring no schema, becomes that file's
+        ``tier3_schema_violation`` entry and leaves the rest of the
+        batch to run — it is one file's content, not the batch's
+        shape. Validation is strictly upstream of the insert and runs
+        on the preview path too, so a dry run reports the same refusal
+        without writing.
 
         Filename parsing always runs when ``needs_review=True``:
         Because ``needs_review`` opts the document into the
@@ -360,6 +386,7 @@ class BatchIngestService:
                         needs_review=needs_review,
                         dry_run=dry_run,
                         sha256=fd.sha256,
+                        tier3_metadata=fd.tier3_metadata,
                     )
                 except ValidationError as exc:
                     # The single-document surface validates this request at
@@ -528,11 +555,20 @@ def _error_entry(
 
 def _metadata_dict_from_parsed(
     pm: ParsedMetadataInput | None,
-) -> dict[str, str] | None:
-    """Convert ParsedMetadataInput to flat string dict for IngestRequest.metadata."""
+) -> dict[str, str | list[str]] | None:
+    """Convert ParsedMetadataInput to the dict IngestRequest.metadata takes.
+
+    ``tags`` is carried as the list it arrived as, which the request's metadata
+    accepts, so a tag containing a comma stays one tag. ``codes`` keeps the
+    joined spelling it has always had: the request's metadata declares both
+    forms and the split downstream round-trips every value a code is defined
+    to carry, so the two spellings differ without either losing anything. They
+    set the same field, so they never travel together -- each caller's
+    boundary refuses an entry supplying both.
+    """
     if pm is None:
         return None
-    d: dict[str, str] = {}
+    d: dict[str, str | list[str]] = {}
     if pm.title:
         d["title"] = pm.title
     if pm.date:
@@ -545,4 +581,6 @@ def _metadata_dict_from_parsed(
         d["version_label"] = pm.version
     if pm.doc_type:
         d["doc_type"] = pm.doc_type
+    if pm.tags:
+        d["tags"] = list(pm.tags)
     return d or None

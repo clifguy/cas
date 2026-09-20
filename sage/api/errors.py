@@ -2488,6 +2488,37 @@ def undeclared_entry_key_error(
     )
 
 
+def codes_and_tags_conflict_error(
+    candidates: Iterable[tuple[int, object]],
+) -> InvalidParameterError | None:
+    """Return the refusal for a batch entry carrying both ``codes`` and ``tags``.
+
+    Each candidate is ``(file index, tags value)`` for one entry whose parsed
+    metadata supplies both. The two write the same field -- a document's tags --
+    so an entry supplying both leaves which one stands to the order a mapping
+    happens to be walked in. That is a defect in the request's shape rather than
+    in one file's content, so it refuses the whole call before anything is
+    delivered, the way an undeclared key does, instead of becoming that file's
+    own error.
+
+    The entry at the lowest file index is reported, located at
+    ``files.<n>.parsed_metadata.tags``: the refusal names the key a caller adds
+    to an entry that already parses, not the one that was there first. The Core
+    API batch upload and the MCP bulk ingest tool both report through this rule,
+    so the same entry is refused at the same location on either. ``None`` when
+    there is no candidate.
+    """
+    chosen = min(candidates, key=lambda candidate: candidate[0], default=None)
+    if chosen is None:
+        return None
+    index, value = chosen
+    return InvalidParameterError(
+        parameter=f"files.{index}.parsed_metadata.tags",
+        value=value,
+        constraint="codes and tags both set the document's tags; supply one, not both",
+    )
+
+
 def translate_validation_error(
     exc: ValidationError | RequestValidationError,
 ) -> SAGEError | None:

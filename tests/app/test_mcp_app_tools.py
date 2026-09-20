@@ -243,6 +243,43 @@ async def single_vault(tmp_path):
 
 
 @pytest.fixture
+async def tier3_vault(tmp_path):
+    """Register one vault whose ``ticket`` doc_type declares a metadata_schema.
+
+    ``single_vault``'s doc_types declare none, and a doc_type with no schema
+    refuses every Tier-3 payload, so the tests that need a payload to *land*
+    need a vault that accepts one.
+    """
+    config_dict = _make_vault_config_dict(tmp_path, "tier3_vault", "Tier3 Vault")
+    config_dict["document_types"]["doc_types"].append(
+        {
+            "value": "ticket",
+            "label": "Ticket",
+            "metadata_schema": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "ticket_id": {"type": "string", "pattern": "^T-\\d{4}$"},
+                    "ticket_priority": {"type": "string", "enum": ["high", "medium", "low"]},
+                },
+            },
+        }
+    )
+    config = VaultConfig.model_validate(config_dict)
+    async with initialize_services_for_test(
+        config,
+        embedding_provider=StubEmbeddingProvider(),
+        abstraction_provider=StubAbstractionProvider(),
+    ) as services:
+        _mcp._vaults["tier3_vault"] = services
+        try:
+            yield services, config
+        finally:
+            await asyncio.sleep(0.3)
+            _mcp._vaults.pop("tier3_vault", None)
+
+
+@pytest.fixture
 async def empty_registry():
     """Empty vault registry (saves/restores to avoid cross-module interference)."""
     saved = dict(_mcp._vaults)
@@ -1004,6 +1041,10 @@ class TestAppBatchIngest:
             pytest.param(
                 {"codes": ["PV06", 5]}, "files.1.parsed_metadata.codes.1", id="codes-item-int"
             ),
+            pytest.param({"tags": "alpha"}, "files.1.parsed_metadata.tags", id="tags-string"),
+            pytest.param(
+                {"tags": ["alpha", 5]}, "files.1.parsed_metadata.tags.1", id="tags-item-int"
+            ),
             pytest.param("PV06", "files.1.parsed_metadata", id="not-a-mapping"),
             pytest.param(
                 {"codes": "PV06", "bogus_field_x": 1},
@@ -1078,6 +1119,33 @@ class TestAppBatchIngest:
                 "file_path": str(sources / "sample.md"),
                 "source_type": "markdown",
                 "parsed_metadata": {"codes": "PV06"},
+            },
+            {
+                "file_path": str(sources / "second.md"),
+                "source_type": "markdown",
+                "parsed_metadata": {"bogus_field_x": 1},
+            },
+        ]
+
+        refused = _parse(await bulk_ingest_document("test_vault", entries))
+
+        assert refused["error"] == "invalid_parameter", refused
+        assert refused["detail"]["parameter"] == "files.1.parsed_metadata.bogus_field_x", refused
+
+    async def test_undeclared_name_wins_over_a_codes_and_tags_conflict(self, single_vault):
+        """Names are settled before the codes-and-tags conflict is asked about.
+
+        Anti-coincidental-pass: entry 0 carries the conflict and entry 1 an
+        undeclared key, so a conflict check placed before the name refusal
+        reports entry 0's ``tags`` rather than entry 1's key.
+        """
+        _, config = single_vault
+        sources = Path(config.vault.storage_root)
+        entries = [
+            {
+                "file_path": str(sources / "sample.md"),
+                "source_type": "markdown",
+                "parsed_metadata": {"codes": ["PV06"], "tags": ["alpha"]},
             },
             {
                 "file_path": str(sources / "second.md"),
@@ -1187,6 +1255,282 @@ class TestAppBatchIngest:
         assert refused["detail"]["files.1.sha256"] == "nothex"
         assert control["error_count"] == 0, control
         assert control["documents_created"]["new"] == 1
+
+    async def test_needs_review_false_commits_metadata_as_authoritative(self, single_vault):
+        """``needs_review=False`` commits the caller's metadata and queues nothing.
+
+        The ticket's headline claim, asserted against a paired control: the
+        same call at the default must land every document in the queue. Without
+        that arm a vault that simply never queued would pass the False arm.
+
+        Anti-coincidental-pass: a ``needs_review`` accepted at the signature and
+        dropped before the service call -- the defect this closes, wearing a new
+        argument -- leaves both arms queued, so the False arm fails on
+        ``metadata_confirmed`` and on the empty queue alike. The two arms carry
+        distinct bytes because identical bytes are refused as duplicate content.
+        """
+        _, config = single_vault
+        sources = Path(config.vault.storage_root)
+        authoritative = sources / "authoritative.md"
+        authoritative.write_text("# Authoritative\n\nCommitted as supplied.")
+        queued = sources / "queued.md"
+        queued.write_text("# Queued\n\nAwaiting confirmation.")
+
+        def entry(path: Path, title: str) -> dict:
+            return {
+                "file_path": str(path),
+                "source_type": "markdown",
+                "parsed_metadata": {"title": title, "doc_type": "note"},
+            }
+
+        committed = _parse(
+            await bulk_ingest_document(
+                "test_vault",
+                [entry(authoritative, "Authoritative")],
+                needs_review=False,
+            )
+        )
+        assert committed["error_count"] == 0, committed
+        assert committed["documents_created"]["new"] == 1
+        assert committed["metadata_pending"] == 0, committed
+        pending_after_commit = _parse(await list_pending_metadata("test_vault"))
+        assert pending_after_commit["items"] == [], pending_after_commit
+
+        reviewed = _parse(await bulk_ingest_document("test_vault", [entry(queued, "Queued")]))
+        assert reviewed["error_count"] == 0, reviewed
+        assert reviewed["metadata_pending"] == 1, reviewed
+        pending_after_review = _parse(await list_pending_metadata("test_vault"))
+
+        queued_titles = {i["document"]["title"] for i in pending_after_review["items"]}
+        assert queued_titles == {"Queued"}, pending_after_review
+
+    async def test_per_file_tier3_metadata_lands_on_each_document(self, tier3_vault):
+        """Each entry's Tier-3 payload reaches its own document, by value.
+
+        Anti-coincidental-pass: the two entries carry *different* payloads, so a
+        plumbing defect that smeared one across the batch, or let the last
+        entry's win, fails. Asserting only that a payload is present somewhere
+        would not -- containment says nothing about which document got which.
+        """
+        _, config = tier3_vault
+        sources = Path(config.vault.storage_root)
+        first = sources / "ticket_one.md"
+        first.write_text("# Ticket one\n\nFirst body.")
+        second = sources / "ticket_two.md"
+        second.write_text("# Ticket two\n\nSecond body.")
+
+        result = _parse(
+            await bulk_ingest_document(
+                "tier3_vault",
+                [
+                    {
+                        "file_path": str(first),
+                        "source_type": "markdown",
+                        "parsed_metadata": {"title": "Ticket one", "doc_type": "ticket"},
+                        "tier3_metadata": {"ticket_id": "T-0001", "ticket_priority": "high"},
+                    },
+                    {
+                        "file_path": str(second),
+                        "source_type": "markdown",
+                        "parsed_metadata": {"title": "Ticket two", "doc_type": "ticket"},
+                        "tier3_metadata": {"ticket_id": "T-0002", "ticket_priority": "low"},
+                    },
+                ],
+                needs_review=False,
+            )
+        )
+
+        assert result["error_count"] == 0, result
+        assert result["documents_created"]["new"] == 2
+        catalog = _parse(await search(vault_id="tier3_vault", mode="catalog"))
+        by_title = {
+            r["document"]["title"]: r["document"]["tier3_metadata"] for r in catalog["results"]
+        }
+        assert by_title == {
+            "Ticket one": {"ticket_id": "T-0001", "ticket_priority": "high"},
+            "Ticket two": {"ticket_id": "T-0002", "ticket_priority": "low"},
+        }
+
+    async def test_tier3_schema_violation_is_a_per_file_error(self, tier3_vault):
+        """A payload the doc_type's schema rejects is that file's error, not the batch's.
+
+        Anti-coincidental-pass: a refusal raised for the whole call would also
+        report the violation, so the sibling document's existence and the error
+        count are what discriminate -- one file refused, the other ingested.
+        """
+        _, config = tier3_vault
+        sources = Path(config.vault.storage_root)
+        good = sources / "ticket_good.md"
+        good.write_text("# Ticket good\n\nValid payload.")
+        bad = sources / "ticket_bad.md"
+        bad.write_text("# Ticket bad\n\nPayload the schema rejects.")
+
+        result = _parse(
+            await bulk_ingest_document(
+                "tier3_vault",
+                [
+                    {
+                        "file_path": str(good),
+                        "source_type": "markdown",
+                        "parsed_metadata": {"title": "Ticket good", "doc_type": "ticket"},
+                        "tier3_metadata": {"ticket_id": "T-0003"},
+                    },
+                    {
+                        "file_path": str(bad),
+                        "source_type": "markdown",
+                        "parsed_metadata": {"title": "Ticket bad", "doc_type": "ticket"},
+                        "tier3_metadata": {"ticket_id": "not-a-ticket-id"},
+                    },
+                ],
+                needs_review=False,
+            )
+        )
+
+        assert result.get("error") is None, result
+        assert result["error_count"] == 1, result
+        assert result["documents_created"]["new"] == 1, result
+        assert result["errors"][0]["file_index"] == 1, result
+        assert result["errors"][0]["code"] == "tier3_schema_violation", result
+
+    async def test_per_file_tags_land_whole_on_the_document(self, single_vault):
+        """``tags`` is carried as a list, so a tag containing a comma stays one tag.
+
+        Anti-coincidental-pass: ``codes`` reaches the same field through a
+        comma-join and a downstream re-split, so routing ``tags`` that way would
+        turn the probe tag into two. The probe is chosen to make that visible.
+        A second entry supplies no tags and is asserted to have none, so an
+        implementation applying one entry's tags across the batch fails too --
+        the comma probe alone says nothing about which documents they reached.
+        """
+        _, config = single_vault
+        sources = Path(config.vault.storage_root)
+        src = sources / "tagged.md"
+        src.write_text("# Tagged\n\nBody.")
+        untagged = sources / "untagged.md"
+        untagged.write_text("# Untagged\n\nDifferent body.")
+
+        result = _parse(
+            await bulk_ingest_document(
+                "test_vault",
+                [
+                    {
+                        "file_path": str(src),
+                        "source_type": "markdown",
+                        "parsed_metadata": {
+                            "title": "Tagged",
+                            "doc_type": "note",
+                            "tags": ["alpha,beta", "gamma"],
+                        },
+                    },
+                    {
+                        "file_path": str(untagged),
+                        "source_type": "markdown",
+                        "parsed_metadata": {"title": "Untagged", "doc_type": "note"},
+                    },
+                ],
+                needs_review=False,
+            )
+        )
+
+        assert result["error_count"] == 0, result
+        catalog = _parse(await search(vault_id="test_vault", mode="catalog"))
+        by_title = {r["document"]["title"]: r["document"] for r in catalog["results"]}
+        assert by_title["Tagged"]["tags"] == ["alpha,beta", "gamma"], by_title["Tagged"]
+        assert by_title["Untagged"]["tags"] == [], by_title["Untagged"]
+
+    async def test_codes_and_tags_together_are_refused(self, single_vault, monkeypatch):
+        """An entry supplying both is refused before any delivery, located at ``tags``.
+
+        Anti-coincidental-pass: an implementation detecting the conflict per
+        file, after the tokens are redeemed, returns the same envelope. The
+        delivery spy is what separates the two -- the refusal has to precede the
+        gate. The control, the same entries with one of the two, must ingest.
+        """
+        import sage.app_tools as app_tools
+
+        deliveries: list[object] = []
+        real_delivery = app_tools.caller_local_delivery
+
+        def delivery_spy(*args, **kwargs):
+            deliveries.append(args)
+            return real_delivery(*args, **kwargs)
+
+        monkeypatch.setattr(app_tools, "caller_local_delivery", delivery_spy)
+        _, config = single_vault
+        sources = Path(config.vault.storage_root)
+        first = {"file_path": str(sources / "sample.md"), "source_type": "markdown"}
+
+        def second(parsed: dict) -> dict:
+            return {
+                "file_path": str(sources / "second.md"),
+                "source_type": "markdown",
+                "parsed_metadata": parsed,
+            }
+
+        refused = _parse(
+            await bulk_ingest_document(
+                "test_vault", [first, second({"codes": ["PV06"], "tags": ["alpha"]})]
+            )
+        )
+        assert deliveries == []
+        control = _parse(
+            await bulk_ingest_document("test_vault", [first, second({"tags": ["alpha"]})])
+        )
+
+        assert refused["error"] == "invalid_parameter", refused
+        assert refused["detail"]["parameter"] == "files.1.parsed_metadata.tags", refused
+        assert control["error_count"] == 0, control
+        assert control["documents_created"]["new"] == 2
+        assert len(deliveries) == 1
+
+    async def test_tier3_metadata_entry_is_not_an_undeclared_key(self, tier3_vault):
+        """``tier3_metadata`` is a declared entry name, so a payload reaches ingest."""
+        _, config = tier3_vault
+        src = Path(config.vault.storage_root) / "declared_tier3.md"
+        src.write_text("# Declared tier3\n\nBody.")
+
+        result = _parse(
+            await bulk_ingest_document(
+                "tier3_vault",
+                [
+                    {
+                        "file_path": str(src),
+                        "source_type": "markdown",
+                        "parsed_metadata": {"title": "Declared tier3", "doc_type": "ticket"},
+                        "tier3_metadata": {"ticket_id": "T-0004"},
+                    }
+                ],
+            )
+        )
+
+        assert result.get("error") is None, result
+        assert result["error_count"] == 0, result
+        assert result["documents_created"]["new"] == 1
+
+    @pytest.mark.parametrize(
+        "value", [pytest.param("T-0001", id="string"), pytest.param(["T-0001"], id="list")]
+    )
+    async def test_non_mapping_tier3_metadata_is_refused(self, single_vault, value):
+        """A ``tier3_metadata`` that is not a mapping refuses the call, located at itself."""
+        _, config = single_vault
+        sources = Path(config.vault.storage_root)
+
+        refused = _parse(
+            await bulk_ingest_document(
+                "test_vault",
+                [
+                    {"file_path": str(sources / "sample.md"), "source_type": "markdown"},
+                    {
+                        "file_path": str(sources / "second.md"),
+                        "source_type": "markdown",
+                        "tier3_metadata": value,
+                    },
+                ],
+            )
+        )
+
+        assert refused["error"] == "invalid_parameter", refused
+        assert refused["detail"]["parameter"] == "files.1.tier3_metadata", refused
 
 
 # ---------------------------------------------------------------------------
