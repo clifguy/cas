@@ -747,22 +747,31 @@ def register_sage_tools(
             v = get_vault(vault_id)
 
             def _build_request(resolved_source: str) -> IngestRequest:
-                return IngestRequest(
-                    source=resolved_source,
-                    source_type=source_type,
-                    config=config,
-                    created_by=created_by,
-                    force=force,
-                    predecessor_id=predecessor_id,
-                    expected_head_version=expected_head_version,
-                    needs_review=needs_review,
-                    metadata=metadata,
-                    tier3_metadata=tier3_metadata,
-                    relocated_from=relocated_from,
-                    document_id=document_id,
-                    dry_run=dry_run,
-                    sha256=sha256,
-                )
+                # The model is named to the envelope, as the HTTP handler names
+                # it for the same request. Without it a key nested inside an
+                # argument -- ``relocated_from`` is the one that has any --
+                # comes back as a complaint about a missing field of the object
+                # the caller misspelled into, naming neither the key nor what
+                # the object accepts, while the same call over HTTP names both.
+                try:
+                    return IngestRequest(
+                        source=resolved_source,
+                        source_type=source_type,
+                        config=config,
+                        created_by=created_by,
+                        force=force,
+                        predecessor_id=predecessor_id,
+                        expected_head_version=expected_head_version,
+                        needs_review=needs_review,
+                        metadata=metadata,
+                        tier3_metadata=tier3_metadata,
+                        relocated_from=relocated_from,
+                        document_id=document_id,
+                        dry_run=dry_run,
+                        sha256=sha256,
+                    )
+                except ValidationError as exc:
+                    raise validation_error_envelope(exc, root_model=IngestRequest) from exc
 
             # The delivery gate runs beneath the tool, in the service, so this
             # surface and the HTTP one reach the caller-local transfer on the

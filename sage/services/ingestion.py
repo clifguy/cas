@@ -3245,13 +3245,7 @@ class IngestionService:
         caller_keys: set[str] = set()
         if caller_metadata:
             field_updates.update(self._build_metadata_updates(caller_metadata))
-            # A null means the same as leaving the key out, which is the rule
-            # the published request schemas declare and the one
-            # ``_build_metadata_updates`` already applies: it sets nothing for
-            # a null value. The key set has to agree, or a null names a field
-            # as caller-supplied, blocks the predecessor's value from filling
-            # it, and leaves the head on the derived default instead.
-            caller_keys = {key for key, value in caller_metadata.items() if value is not None}
+            caller_keys = set(caller_metadata.keys())
 
         if predecessor is not None:
             field_view = {**baseline, **field_updates}

@@ -542,3 +542,152 @@ async def test_top_level_field_inside_metadata_parity_between_surfaces(vault_ser
     assert resp.status_code == 400, resp.text
     assert mcp_envelope["detail"] == http_body["detail"]
     assert http_body["detail"]["fields"] == ["tier3_metadata"]
+
+
+# ---------------------------------------------------------------------------
+# Every tool that builds a nesting request model refuses its nested keys
+# ---------------------------------------------------------------------------
+
+
+def _tools_building_a_nesting_model() -> dict[str, type]:
+    """Each MCP tool whose body builds a request model nesting a strict model.
+
+    The argument boundary is held flat by its own gate, so a tool's arguments
+    never nest a model. The models do, and a tool builds one in its own body --
+    which is where the refusal has to be handed the model the request was
+    validated against. A tool that skips that step looks identical from outside
+    until a caller sends a nested key, and one of them shipped a docstring
+    promising the refusal it did not produce.
+
+    Derived by reading each tool module rather than listed, so a tool added
+    later arrives here on its own. ``RetrievalFilters`` is excluded for the
+    reason its own code states: a key it refuses keeps ``unknown_filter_key``,
+    whose detail says more.
+    """
+    import ast
+    import types
+    import typing
+    from pathlib import Path as _Path
+
+    from pydantic import BaseModel
+
+    from sage.models import schemas
+
+    def strict_nested(model: type[BaseModel]) -> set[type[BaseModel]]:
+        seen: set[type[BaseModel]] = set()
+        out: set[type[BaseModel]] = set()
+
+        def walk(current: type[BaseModel]) -> None:
+            for field in current.model_fields.values():
+                pending = [field.annotation]
+                while pending:
+                    item = pending.pop()
+                    if isinstance(item, type) and issubclass(item, BaseModel):
+                        if item in seen:
+                            continue
+                        seen.add(item)
+                        out.add(item)
+                        walk(item)
+                        continue
+                    if isinstance(item, types.UnionType) or typing.get_origin(item) is not None:
+                        pending.extend(typing.get_args(item))
+
+        walk(model)
+        return {
+            m
+            for m in out
+            if m.model_config.get("extra") == "forbid" and m is not schemas.RetrievalFilters
+        }
+
+    repo_root = _Path(__file__).resolve().parents[2]
+    found: dict[str, type] = {}
+    for module_path in ("sage/sage_api_tools.py", "sage/app_tools.py"):
+        tree = ast.parse((repo_root / module_path).read_text())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.AsyncFunctionDef):
+                continue
+            if not any(
+                isinstance(dec, ast.Call)
+                and isinstance(dec.func, ast.Attribute)
+                and dec.func.attr == "tool"
+                for dec in node.decorator_list
+            ):
+                continue
+            for inner in ast.walk(node):
+                if isinstance(inner, ast.Call) and isinstance(inner.func, ast.Name):
+                    model = getattr(schemas, inner.func.id, None)
+                    if (
+                        isinstance(model, type)
+                        and issubclass(model, BaseModel)
+                        and strict_nested(model)
+                    ):
+                        found[node.name] = model
+    return found
+
+
+#: One call per derived tool that plants an undeclared key at a nested model,
+#: with the model that must answer for it. Hand-written because each tool takes
+#: a different shape; the *set* is derived, and a tool with no entry fails the
+#: gate rather than being skipped.
+_NESTED_KEY_PROBES: dict[str, tuple[dict, str]] = {
+    "ingest_document": (
+        {
+            "source": "test/sample.md",
+            "source_type": "markdown",
+            "relocated_from": {"bogus_field_x": 1},
+        },
+        "RelocationPointer",
+    ),
+    "update_lifecycles": (
+        {
+            "items": [
+                {
+                    "document_id": "00000000_absent_document",
+                    "action": "relocate",
+                    "relocated_to": {"bogus_field_x": 1},
+                }
+            ]
+        },
+        "RelocationPointer",
+    ),
+    "create_edges": (
+        {"items": [{"source_id": "00000000_absent_document", "bogus_field_x": 1}]},
+        "BulkLinkItem",
+    ),
+    "update_metadata": (
+        {"items": [{"document_id": "00000000_absent_document", "tags": {"bogus_field_x": 1}}]},
+        "ListFieldPatch",
+    ),
+}
+
+
+async def test_every_tool_building_a_nesting_model_names_the_accepted_keys(vault_services):
+    """A key nested inside a tool's request model is refused with the field set.
+
+    End to end through each tool rather than against the envelope helper: the
+    helper was already right, and what was missing at the site this gate was
+    written for was the call into it. Asserting the helper would have stayed
+    green through that.
+
+    The derived set is asserted to be covered, so a tool that starts building a
+    nesting model arrives here as a failure naming itself rather than as a
+    silent pass.
+    """
+    from sage.models import schemas
+
+    derived = _tools_building_a_nesting_model()
+    assert derived, "no tool found building a nesting model; the walk checks nothing"
+    uncovered = sorted(set(derived) - set(_NESTED_KEY_PROBES))
+    assert uncovered == [], f"no nested-key probe defined for {uncovered}"
+
+    for tool_name in sorted(derived):
+        payload, expected_model = _NESTED_KEY_PROBES[tool_name]
+        envelope = _decode_envelope(
+            await mcp.call_tool(tool_name, {"vault_id": VAULT_ID, **payload})
+        )
+
+        assert envelope["error"] == "undeclared_key", (tool_name, envelope)
+        assert envelope["detail"]["key"] == "bogus_field_x", (tool_name, envelope)
+        assert envelope["detail"]["recognized"] == sorted(
+            getattr(schemas, expected_model).model_fields
+        ), (tool_name, envelope)

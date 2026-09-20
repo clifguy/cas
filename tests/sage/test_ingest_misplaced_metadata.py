@@ -579,8 +579,7 @@ async def test_omitted_source_type_succeeds_via_transport(vault_services):
 
 def _top_level_only_fields() -> list[str]:
     """The ``IngestRequest`` fields that never belong inside ``metadata``."""
-    from sage.models.schemas import IngestRequest
-    from sage.services.ingestion import INGEST_METADATA_SPELLINGS
+    from sage.models.schemas import INGEST_METADATA_SPELLINGS, IngestRequest
 
     return sorted(set(IngestRequest.model_fields) - set(INGEST_METADATA_SPELLINGS))
 

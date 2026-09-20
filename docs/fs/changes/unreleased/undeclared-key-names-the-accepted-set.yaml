@@ -22,11 +22,9 @@ summary: >-
   misplaced_top_level_field, carrying fields, recognized (every argument that belongs at
   the top level) and example, where a mapping was refused as a complaint about the value's
   type and a string was accepted, stored under a name nothing reads, and left the argument
-  it was meant for unset without a word. Separately again, a null value in metadata now
-  means the same as leaving the key out on the inheritance path too: a null doc_type,
-  project or authority_scope on a supersede no longer counts as caller-supplied, so the
-  predecessor's value fills the field instead of the field falling through to its derived
-  default.
+  it was meant for unset without a word. IngestRequest.metadata's description no longer
+  says a null value is ignored, which its type has never allowed: the values are a string
+  or a list of strings, so a null is refused at the boundary.
 for_callers: >-
   A client branching on invalid_parameter for a key nested inside a request body should
   branch on undeclared_key and read detail.recognized to repair the call in one round-trip;
@@ -36,6 +34,4 @@ for_callers: >-
   top-level argument inside metadata -- tier3_metadata, predecessor_id, force and the rest
   -- is now refused rather than silently ignored; pass it as the argument it is. The keys
   metadata does carry (title, version_label, project, doc_type, authority_scope,
-  document_date, date, codes, tags) are unaffected. A supersede that sent a null doc_type,
-  project or authority_scope inside metadata now inherits the predecessor's value where it
-  previously landed on the derived default; send the value explicitly to override it.
+  document_date, date, codes, tags) are unaffected.

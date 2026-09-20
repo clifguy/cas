@@ -589,67 +589,6 @@ def test_e1_chain_inheritance_respects_caller_keys():
     assert out == {"project": "CAS"}
 
 
-def test_e1b_a_null_metadata_value_does_not_block_inheritance():
-    """A null in ``metadata`` means the same as leaving the key out.
-
-    ``_build_metadata_updates`` already skips a null value, so the field is
-    not set either way. What differed was the key set handed to chain
-    inheritance: built from the raw keys, a null-valued ``doc_type`` counted
-    as caller-supplied and declined the predecessor's value, so the ingest
-    set nothing and inherited nothing. A client that serializes its absent
-    optional fields as null -- which the published request schemas admit --
-    lost the inheritance without a word.
-
-    Exercised through ``_compute_metadata_field_updates`` rather than
-    ``_compute_chain_inheritance``, because the defect is in how the key set
-    is built and the helper is correct given one. E1 pins the helper's side
-    of the contract and must keep passing.
-    """
-    service = IngestionService.__new__(IngestionService)
-    pred = _doc(doc_type="adr", project="CAS")
-
-    updates = IngestionService._compute_metadata_field_updates(
-        service,
-        baseline={},
-        parsed=None,
-        caller_metadata={"doc_type": None},
-        predecessor=pred,
-        adapter_tags=[],
-        adapter_tag_prefixes=[],
-        needs_review=False,
-        source_modified_at=None,
-        vault_timezone="UTC",
-    )
-
-    assert updates["doc_type"] == "adr"
-    assert updates["project"] == "CAS"
-
-
-def test_e1c_a_supplied_metadata_value_still_blocks_inheritance():
-    """The negative control: a real value still declines the predecessor's.
-
-    Without this, dropping the key set entirely would pass the test above.
-    """
-    service = IngestionService.__new__(IngestionService)
-    pred = _doc(doc_type="adr", project="CAS")
-
-    updates = IngestionService._compute_metadata_field_updates(
-        service,
-        baseline={},
-        parsed=None,
-        caller_metadata={"doc_type": "steering_document"},
-        predecessor=pred,
-        adapter_tags=[],
-        adapter_tag_prefixes=[],
-        needs_review=False,
-        source_modified_at=None,
-        vault_timezone="UTC",
-    )
-
-    assert updates["doc_type"] == "steering_document"
-    assert updates["project"] == "CAS"
-
-
 def test_e2_chain_inheritance_skips_predecessor_none_fields():
     """E2: predecessor None fields are not inherited."""
     pred = _doc(doc_type=None, project="CAS")
