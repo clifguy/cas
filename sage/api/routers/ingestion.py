@@ -14,6 +14,7 @@ from sage.api.errors import (
     InvalidParameterError,
     SAGEError,
     codes_and_tags_conflict_error,
+    translate_validation_error,
     undeclared_entry_key_error,
 )
 from sage.api.response_docs import boundary_400
@@ -354,7 +355,9 @@ async def ingest(
             "valid JSON for the BatchIngestUploadMetadata schema, or its "
             "`files` length does not match the number of uploaded file "
             "parts. An undeclared key in a file entry is refused as "
-            "`invalid_parameter` instead.",
+            "`invalid_parameter` instead. A malformed string digest refuses "
+            "the request as `invalid_sha256`, located at `files.<index>.sha256`, "
+            "before any file is staged or ingested.",
         ),
         404: {
             "model": ErrorResponse,
@@ -422,6 +425,9 @@ async def batch_ingest_documents(
             refusal = _undeclared_file_entry_key(exc)
             if refusal is not None:
                 raise refusal from exc
+            refusal = translate_validation_error(exc)
+            if refusal is not None and refusal.code == "invalid_sha256":
+                raise refusal from exc
         raise SAGEError(
             "invalid_batch_metadata",
             f"`metadata` is not valid BatchIngestUploadMetadata JSON: {exc}",
@@ -453,6 +459,7 @@ async def batch_ingest_documents(
                 else meta.parsed_metadata.model_dump(exclude_unset=True)
             ),
             tier3_metadata=meta.tier3_metadata,
+            sha256=meta.sha256,
         )
         for index, (upload, meta) in enumerate(zip(files, envelope.files))
     ]

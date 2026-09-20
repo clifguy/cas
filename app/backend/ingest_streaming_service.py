@@ -56,6 +56,7 @@ def _to_file_descriptor(f: IngestFileItem) -> FileDescriptor:
         source_type=f.source_type,
         parsed_metadata=parsed,
         tier3_metadata=f.tier3_metadata,
+        sha256=f.sha256,
     )
 
 

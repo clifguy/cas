@@ -53,6 +53,7 @@ class UploadedFile:
     source_type: str | None
     parsed_metadata: dict[str, Any] | None = None
     tier3_metadata: dict[str, Any] | None = None
+    sha256: str | None = None
 
 
 def _sse_event(event: BaseModel) -> str:
@@ -268,6 +269,7 @@ async def stream_uploaded_batch_ingest(
                     # own name is what a refusal names back at the caller.
                     declared_source=declared,
                     tier3_metadata=upload.tier3_metadata,
+                    sha256=upload.sha256,
                 )
             )
         async for chunk in batch_ingest_sse_stream(

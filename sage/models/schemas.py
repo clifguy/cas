@@ -5220,6 +5220,16 @@ class BatchIngestFileMetadata(BaseModel):
             "`source_type_unresolved`."
         ),
     )
+    sha256: Sha256Str | None = Field(
+        default=None,
+        description=(
+            "Optional SHA-256 of this file, as 64 hex characters in either case, bare or "
+            "`sha256:`-prefixed. Checked before retention, including dry runs. A mismatch "
+            "is a per-file `source_digest_mismatch`; a malformed string refuses the "
+            "request with 400 `invalid_sha256` at `files.<index>.sha256`. Omission or "
+            "null leaves the digest undeclared."
+        ),
+    )
     parsed_metadata: BatchIngestParsedMetadata | None = Field(
         default=None,
         description=(
@@ -5428,7 +5438,7 @@ class BatchIngestFileError(BaseModel):
             "Machine-readable error code, present only when the failure was a "
             "typed SAGE error. The same code the single-document ingest "
             "surface returns for that error. A batch builds each file's "
-            "request from its source, source type and parsed metadata alone, "
+            "request from its source, source type, declared digest and metadata, "
             "so the codes that can appear are the single-document codes that "
             "depend on none of a predecessor, a force re-ingest, a chain-head "
             "token or a relocation pointer: `adapter_config_invalid`, "
@@ -5439,8 +5449,8 @@ class BatchIngestFileError(BaseModel):
             "`tier3_unique_constraint_violation`, "
             "`vault_migration_in_flight`, `vault_source_path_refused`, "
             "`vault_source_store_refused` and `vault_source_store_unavailable`. "
-            "`source_digest_mismatch` appears only on the MCP bulk tool, whose "
-            "entries may declare a digest; the multipart batch surfaces accept none. "
+            "`source_digest_mismatch` reports a declared digest that does not match "
+            "the delivered bytes, before retention, including on dry runs. "
             "Of these, `vault_migration_in_flight` and "
             "`vault_source_store_unavailable` are the ones a later attempt at "
             "the same file may succeed past."
