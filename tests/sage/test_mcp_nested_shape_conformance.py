@@ -315,10 +315,17 @@ def test_published_shapes_carry_no_definition_prose(tool: str, argument: str):
 
 
 def _schema_class_names() -> set[str]:
+    """The model and enum classes a description could cite by name."""
+    from sage.models import enums
+
+    modules = (schemas, mcp_items, enums)
     return {
         name
-        for name, obj in [*vars(schemas).items(), *vars(mcp_items).items()]
-        if isinstance(obj, type) and issubclass(obj, BaseModel)
+        for module in modules
+        for name, obj in vars(module).items()
+        if isinstance(obj, type)
+        and issubclass(obj, (BaseModel, enum.Enum))
+        and obj.__module__ in {m.__name__ for m in modules}
     }
 
 

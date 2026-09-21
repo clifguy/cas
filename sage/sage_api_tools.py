@@ -1121,7 +1121,8 @@ def register_sage_tools(
             items: List of per-item transition requests, each conforming to
                 the ``BulkLifecycleItem`` shape: ``{document_id?: str,
                 doc_id?: str, action: str, successor_id: str | None,
-                relocated_to: RelocationPointer | None}``.
+                relocated_to: {vault_id, document_id, source_content_hash,
+                relocated_at, server_address?} | None}``.
                 Supply exactly one of ``document_id`` or ``doc_id`` per
                 item; ``doc_id`` is a back-compatible alias (neither or
                 both is a per-item error). Shape validation runs up front;
