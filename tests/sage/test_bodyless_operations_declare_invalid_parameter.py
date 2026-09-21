@@ -49,6 +49,7 @@ from pydantic.fields import FieldInfo
 
 from sage.api.response_docs import INVALID_PARAMETER_422_SENTENCE
 from sage.app import create_app
+from sage.models import schemas
 from sage.models.schemas import VaultIdStr
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -85,9 +86,19 @@ def _base_annotation(annotation: object) -> object:
     return annotation
 
 
-#: Validator wrappers a typed alias carries. Its refusal is a 400 with its own
-#: code, so a wrapper alone does not make a value fallible at 422.
 _VALIDATOR_WRAPPERS = (AfterValidator, BeforeValidator, PlainValidator, WrapValidator)
+
+#: The validator functions the typed aliases carry. An alias refuses a
+#: malformed value at 400 with its own code, so its validator does not make a
+#: value fallible at 422; any other validator's refusal falls to
+#: ``invalid_parameter`` and does.
+_TYPED_ALIAS_VALIDATORS = frozenset(
+    item.func
+    for alias in vars(schemas).values()
+    if typing.get_origin(alias) is typing.Annotated
+    for item in typing.get_args(alias)[1:]
+    if isinstance(item, _VALIDATOR_WRAPPERS)
+)
 
 
 def _constraints(field_info: FieldInfo) -> list[object]:
@@ -95,7 +106,7 @@ def _constraints(field_info: FieldInfo) -> list[object]:
 
     Collected from the field's metadata and from any ``Annotated`` arguments
     left on its annotation, including one under a single ``None`` arm, less the
-    validator wrappers typed aliases carry.
+    validators the typed aliases carry.
     """
     items = list(field_info.metadata)
     annotation = field_info.annotation
@@ -110,7 +121,11 @@ def _constraints(field_info: FieldInfo) -> list[object]:
             annotation = arms[0]
         else:
             break
-    return [item for item in items if not isinstance(item, _VALIDATOR_WRAPPERS)]
+    return [
+        item
+        for item in items
+        if not (isinstance(item, _VALIDATOR_WRAPPERS) and item.func in _TYPED_ALIAS_VALIDATORS)
+    ]
 
 
 def _fallible_parameters(route: APIRoute) -> list[str]:
@@ -192,6 +207,12 @@ def test_fallible_walk_reaches_known_operations(app):
     assert fallible == FALLIBLE_OPERATIONS
 
 
+def _lowercase_only(value: str) -> str:
+    if value != value.lower():
+        raise ValueError("must be lowercase")
+    return value
+
+
 def test_classifier_flags_a_synthetic_undeclared_route():
     synthetic = FastAPI()
 
@@ -239,6 +260,11 @@ def test_classifier_flags_a_synthetic_undeclared_route():
     async def optional(q: Annotated[str, StringConstraints(max_length=3)] | None = None) -> dict:
         return {}
 
+    # Any other validator's refusal is a 422, so it does make the value fallible.
+    @synthetic.get("/bespoke", operation_id="bespoke")
+    async def bespoke(q: Annotated[str, AfterValidator(_lowercase_only)] = "") -> dict:
+        return {}
+
     # A typed alias refuses a malformed value at 400, so its validator is not
     # a constraint that makes the value fallible.
     @synthetic.get("/alias", operation_id="alias")
@@ -246,6 +272,7 @@ def test_classifier_flags_a_synthetic_undeclared_route():
         return {}
 
     assert _undeclared_fallible(synthetic) == [
+        "bespoke",
         "constrained",
         "cookie",
         "flagged",
