@@ -54,6 +54,7 @@ from sage.models.schemas import (
     UploadRecipe,
     VaultIdStr,
 )
+from sage.services.metadata import PENDING_METADATA_DEFAULT_LIMIT
 from sage.services.stack_config import get_stack_config_report
 from sage.services.transfer import DeliveryDeclaration
 from sage.services.vault_registry import VaultRegistryService
@@ -405,7 +406,11 @@ def register_sage_tools(
         holds the content hash; it goes unchecked for a source resident in
         the store with no prior document record, which has no hash to judge
         the pin against. A clean preview is not a promise that the real run
-        commits.
+        commits. When ``source`` is an absolute path the server cannot read,
+        a dry run first runs every validator that reads no bytes and then
+        returns the upload recipe, whose leg's ``dry_run_validated`` names
+        the validators that ran; the checks that need the bytes wait for the
+        call repeated with the transfer token.
 
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
@@ -1673,7 +1678,7 @@ def register_sage_tools(
     @mcp.tool(annotations=READ_ONLY)
     async def chain(
         vault_id: str,
-        edge_type: str,
+        edge_type: str = "supersedes",
         document_id: str | None = None,
         doc_id: str | None = None,
         limit: int | None = None,
@@ -1725,6 +1730,7 @@ def register_sage_tools(
         Args:
             vault_id: Target vault identifier.
             edge_type: Edge type to follow (e.g. "supersedes", "references").
+                Defaults to ``supersedes``, the version history of the document.
             document_id: Document ID to start the chain walk from. Alias: ``doc_id``.
                 Supply exactly one of ``document_id`` or ``doc_id``. The result
                 is symmetric: any chain member returns the full ordered chain
@@ -2948,7 +2954,12 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool(annotations=READ_ONLY)
-    async def list_pending_metadata(vault_id: str) -> dict:
+    async def list_pending_metadata(
+        vault_id: str,
+        limit: int = PENDING_METADATA_DEFAULT_LIMIT,
+        offset: int = 0,
+        response_mode: str | None = None,
+    ) -> dict:
         """List documents with unconfirmed metadata.
 
         A document is "pending" when its ``metadata_confirmed`` flag is
@@ -2968,32 +2979,39 @@ def register_sage_tools(
         on ``get_vault_stats`` excludes documents in a terminal
         lifecycle state, so this list can be longer than that count.
 
+        The queue is paged in document-id order with ``limit`` and
+        ``offset``, and ``total_available`` counts the whole queue. Under
+        ``response_mode=light`` each row is a ``DocumentSummaryLight``
+        rather than a ``PendingMetadataItem``; when ``response_mode`` is
+        omitted, a page of more than five rows is light and a smaller
+        one is full.
+
         Error modes:
         - ``invalid_vault_id`` (400): the supplied vault_id is not a
           well-formed vault id.
         - ``vault_not_found`` (404): no vault is registered with that id.
           ``detail.available_vaults`` lists the registered vaults.
+        - ``invalid_parameter`` (422): ``limit`` is outside 0..100,
+          ``offset`` is negative, or ``response_mode`` is neither
+          ``light`` nor ``full``.
 
         Args:
             vault_id: Target vault identifier.
+            limit: Page size, 0..100. Default 10. ``0`` returns
+                ``total_available`` with no rows.
+            offset: Number of queue documents to skip before the page.
+            response_mode: ``light`` or ``full``. Omitted, a page of more
+                than five rows is light and a smaller one is full.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             v = get_vault(vault_id)
-            docs = await v.graph_store.list_pending_metadata_documents()
-            items = []
-            for doc in docs:
-                items.append(
-                    {
-                        "document": serialize(doc),
-                        "extracted_fields": {},
-                    }
-                )
+            page = await v.metadata_service.list_pending_metadata(limit, offset, response_mode)
             return {
-                "items": items,
-                "count": len(items),
+                **serialize(page),
+                "count": len(page.items),
                 "vault_id": vault_id,
-                "status": "pending_review" if items else "no_pending_metadata",
+                "status": "pending_review" if page.total_available else "no_pending_metadata",
             }
         except (SAGEError, ValueError) as e:
             return error_response(e)

@@ -931,7 +931,7 @@ class TestPendingMetadata:
 
         resp = await multi_client.get("/sage_vaults/example_vault/pending-metadata")
         assert resp.status_code == 200
-        body = resp.json()
+        body = resp.json()["items"]
         assert isinstance(body, list)
 
         # Only unconfirmed documents
@@ -977,7 +977,7 @@ class TestPendingMetadata:
 
         resp = await multi_client.get("/sage_vaults/example_vault/pending-metadata")
         assert resp.status_code == 200
-        doc_ids = [item["document"]["id"] for item in resp.json()]
+        doc_ids = [item["document"]["id"] for item in resp.json()["items"]]
         assert _id("queue-active") in doc_ids
         assert _id("queue-archived") in doc_ids
 
@@ -1017,7 +1017,7 @@ class TestPendingMetadata:
 
         resp = await multi_client.get("/sage_vaults/example_vault/pending-metadata")
         assert resp.status_code == 200
-        body = resp.json()
+        body = resp.json()["items"]
 
         # Filename-derived date
         item_fn = next(i for i in body if i["document"]["id"] == _id("doc-date-fn"))
@@ -1036,7 +1036,7 @@ class TestPendingMetadata:
     async def test_be_015_pending_metadata_empty_when_all_confirmed(
         self, multi_vault_app, multi_client
     ):
-        """Pending metadata returns empty array when none pending."""
+        """Pending metadata returns an empty page when none pending."""
         services = multi_vault_app.state.vault_registry["example_vault"]
         gs = services.graph_store
 
@@ -1045,7 +1045,135 @@ class TestPendingMetadata:
 
         resp = await multi_client.get("/sage_vaults/example_vault/pending-metadata")
         assert resp.status_code == 200
-        assert resp.json() == []
+        assert resp.json()["items"] == []
+        assert resp.json()["total_available"] == 0
+
+    # -- Paging and payload depth ------------------------------------------
+
+    @staticmethod
+    async def _seed_pending(gs, count: int, prefix: str = "page") -> list[str]:
+        """Insert ``count`` unconfirmed and two confirmed documents; return the
+        unconfirmed ids in id order. The ids are hash-prefixed, so insertion
+        order and id order differ and an unordered read cannot pass as an
+        ordered one."""
+        inserted = []
+        for n in range(count):
+            doc = _make_document(f"{prefix}-{n}", title=f"Pending {n}", metadata_confirmed=False)
+            await gs.insert_document(doc)
+            inserted.append(doc.id)
+        for n in range(2):
+            await gs.insert_document(
+                _make_document(f"{prefix}-confirmed-{n}", metadata_confirmed=True)
+            )
+        assert inserted != sorted(inserted), "fixture ids must not arrive in id order"
+        return sorted(inserted)
+
+    async def test_store_pages_pending_documents_in_id_order(self, multi_vault_app):
+        """The store pages the queue by id and counts it whole."""
+        gs = multi_vault_app.state.vault_registry["example_vault"].graph_store
+        ids = await self._seed_pending(gs, 7)
+
+        first = await gs.list_pending_metadata_documents(limit=3, offset=0)
+        second = await gs.list_pending_metadata_documents(limit=3, offset=3)
+
+        assert [d.id for d in first] == ids[0:3]
+        assert [d.id for d in second] == ids[3:6]
+        # Nine documents stand in the vault; the two confirmed ones are what
+        # the count must leave out.
+        assert len(await gs.list_all_documents()) == 9
+        assert await gs.count_pending_metadata_documents() == 7
+
+    async def test_pending_metadata_defaults_to_light_over_threshold(
+        self, multi_vault_app, multi_client
+    ):
+        """More than five rows on a page and no response_mode: light rows,
+        each exactly the catalog DocumentSummaryLight."""
+        gs = multi_vault_app.state.vault_registry["example_vault"].graph_store
+        ids = await self._seed_pending(gs, 7)
+
+        resp = await multi_client.get("/sage_vaults/example_vault/pending-metadata")
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["total_available"] == 7
+        assert body["response_mode"] == "light"
+        assert [i["id"] for i in body["items"]] == ids
+        # The wire omits an optional field whose value is null, so a row is
+        # the required identity columns plus whichever optional ones are set.
+        light_keys = {"id", "title", "lifecycle_status", "doc_type", "tier3_metadata"}
+        required = {"id", "title", "lifecycle_status"}
+        assert all(required <= set(i) <= light_keys for i in body["items"]), body["items"][0]
+
+    async def test_pending_metadata_defaults_to_full_at_or_under_threshold(
+        self, multi_vault_app, multi_client
+    ):
+        """Five rows or fewer and no response_mode: full rows with their
+        extracted-field annotations."""
+        gs = multi_vault_app.state.vault_registry["example_vault"].graph_store
+        await self._seed_pending(gs, 3)
+
+        body = (await multi_client.get("/sage_vaults/example_vault/pending-metadata")).json()
+        assert body["response_mode"] == "full"
+        assert body["total_available"] == 3
+        assert all(set(i) == {"document", "extracted_fields"} for i in body["items"])
+        assert all("title" in i["extracted_fields"] for i in body["items"])
+
+    async def test_pending_metadata_five_rows_is_still_full(self, multi_vault_app, multi_client):
+        """The rule is "more than five rows is light": five is the last full page."""
+        gs = multi_vault_app.state.vault_registry["example_vault"].graph_store
+        await self._seed_pending(gs, 5)
+
+        body = (await multi_client.get("/sage_vaults/example_vault/pending-metadata")).json()
+        assert len(body["items"]) == 5
+        assert body["response_mode"] == "full"
+
+    async def test_pending_metadata_explicit_mode_overrides_threshold(
+        self, multi_vault_app, multi_client
+    ):
+        gs = multi_vault_app.state.vault_registry["example_vault"].graph_store
+        await self._seed_pending(gs, 7)
+        url = "/sage_vaults/example_vault/pending-metadata"
+
+        full = (await multi_client.get(url, params={"response_mode": "full"})).json()
+        assert full["response_mode"] == "full"
+        assert len(full["items"]) == 7
+        assert all("document" in i for i in full["items"])
+
+        light = (await multi_client.get(url, params={"response_mode": "light", "limit": 2})).json()
+        assert light["response_mode"] == "light"
+        assert len(light["items"]) == 2
+        assert all("document" not in i and "id" in i for i in light["items"])
+
+    async def test_pending_metadata_pages_with_limit_and_offset(
+        self, multi_vault_app, multi_client
+    ):
+        gs = multi_vault_app.state.vault_registry["example_vault"].graph_store
+        ids = await self._seed_pending(gs, 7)
+        url = "/sage_vaults/example_vault/pending-metadata"
+
+        page = (await multi_client.get(url, params={"limit": 3, "offset": 3})).json()
+        assert page["total_available"] == 7
+        assert (page["limit"], page["offset"]) == (3, 3)
+        assert [i["document"]["id"] for i in page["items"]] == ids[3:6]
+
+        count_only = (await multi_client.get(url, params={"limit": 0})).json()
+        assert count_only["items"] == []
+        assert count_only["total_available"] == 7
+
+    @pytest.mark.parametrize(
+        "params,parameter",
+        [
+            ({"limit": 101}, "limit"),
+            ({"offset": -1}, "offset"),
+            ({"response_mode": "medium"}, "response_mode"),
+        ],
+    )
+    async def test_pending_metadata_refuses_out_of_range_paging(
+        self, multi_client, params, parameter
+    ):
+        resp = await multi_client.get("/sage_vaults/example_vault/pending-metadata", params=params)
+        assert resp.status_code == 422, resp.text
+        assert resp.json()["code"] == "invalid_parameter"
+        assert resp.json()["detail"]["parameter"] == parameter
 
 
 # ---------------------------------------------------------------------------

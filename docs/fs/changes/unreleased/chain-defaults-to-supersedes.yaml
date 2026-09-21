@@ -1,0 +1,12 @@
+classification: minor
+category:
+  - capability
+  - caller-adaptation
+summary: >-
+  POST /chain and the chain tool default edge_type to supersedes. ChainRequest no
+  longer lists edge_type as required; the schema property and the Pydantic field
+  carry the default and a reworded description, and the tool's signature and
+  Args entry state it. An explicit edge_type still selects the walk.
+for_callers: >-
+  chain(vault_id, document_id) now walks a document's version history without
+  naming edge_type. Calls that pass edge_type are unaffected.

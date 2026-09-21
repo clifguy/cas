@@ -3305,8 +3305,8 @@ def test_traverse_docstring_documents_alias():
 # alias on traverse (test_t0155_* above).
 
 # (tool_fn, extra-required-kwargs) for the document-id read tools.
-# ``read_section`` also needs ``heading_path`` and ``chain`` needs
-# ``edge_type``; the others take only the id.
+# ``read_section`` also needs ``heading_path``; ``chain`` names its
+# ``edge_type`` explicitly; the others take only the id.
 _DOC_ID_ALIAS_READ_TOOLS = [
     pytest.param(get_document, {}, id="get_document"),
     pytest.param(read_projection, {}, id="read_projection"),
@@ -3411,6 +3411,44 @@ async def test_chain_accepts_document_id_keyword(vault_services):
         await chain(vault_id="test_vault", document_id=doc["id"], edge_type="supersedes")
     )
     assert result["head_id"] == doc["id"]
+
+
+def test_chain_publishes_edge_type_as_optional_defaulting_to_supersedes():
+    """The published schema carries the default, so a client that fills
+    defaults from the schema sends ``supersedes`` rather than nothing."""
+    schema = _mcp.mcp._tool_manager.get_tool("chain").parameters
+    assert "edge_type" not in schema.get("required", [])
+    assert schema["properties"]["edge_type"].get("default") == "supersedes"
+
+
+async def test_chain_without_edge_type_walks_supersedes(vault_services, tmp_vault_dir):
+    """``chain(vault_id, document_id)`` follows supersedes; an explicit
+    ``edge_type`` still overrides. A walks to B by supersedes and to C by
+    references, so the default and the override answer with different
+    members -- a single-document chain would pass either way."""
+    (tmp_vault_dir / "sources" / "test" / "third.md").write_text("# Third\n\nOther content.")
+    a = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    b = _parse(
+        await ingest_document("test_vault", "test/second.md", "markdown", predecessor_id=a["id"])
+    )
+    c = _parse(await ingest_document("test_vault", "test/third.md", "markdown"))
+    await create_edge(
+        "test_vault",
+        a["id"],
+        c["id"],
+        "references",
+        source_valid_from_version=a["id"],
+        target_valid_from_version=c["id"],
+    )
+
+    default = _parse(await chain(vault_id="test_vault", document_id=a["id"]))
+    assert {e["id"] for e in default["chain"]} == {a["id"], b["id"]}
+    assert default["head_id"] == b["id"]
+
+    override = _parse(
+        await chain(vault_id="test_vault", document_id=a["id"], edge_type="references")
+    )
+    assert {e["id"] for e in override["chain"]} == {a["id"], c["id"]}
 
 
 @pytest.mark.parametrize(

@@ -369,6 +369,16 @@ export interface PendingMetadata {
   extracted_fields: Record<string, ExtractedField>;
 }
 
+// One page of the pending-metadata queue. The frontend asks for full rows,
+// so every item is a PendingMetadata rather than the light projection.
+export interface PendingMetadataPage {
+  items: PendingMetadata[];
+  total_available: number;
+  limit: number;
+  offset: number;
+  response_mode: 'light' | 'full';
+}
+
 // --- Ingest (app backend) ---
 
 export interface ParsedMetadataItem {

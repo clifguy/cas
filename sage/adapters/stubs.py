@@ -980,9 +980,18 @@ class StubGraphStore(GraphStore):
         return cleared
 
     async def list_pending_metadata_documents(
-        self, exclude_lifecycle_statuses: Sequence[str] = ()
+        self,
+        exclude_lifecycle_statuses: Sequence[str] = (),
+        *,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[Document]:
         raise self._unsupported("list_pending_metadata_documents")
+
+    async def count_pending_metadata_documents(
+        self, exclude_lifecycle_statuses: Sequence[str] = ()
+    ) -> int:
+        raise self._unsupported("count_pending_metadata_documents")
 
     async def measured_byte_size(self) -> int:
         return 0

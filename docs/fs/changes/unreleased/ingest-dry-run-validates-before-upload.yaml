@@ -1,0 +1,27 @@
+classification: minor
+category:
+  - capability
+summary: >-
+  An ingest dry run whose source is an absolute path the server cannot read now
+  runs the validators that read no bytes -- the request's own shape, source type
+  and adapter, expected_head_version, the predecessor and its supersede
+  transition, the caller's doc_type, the landing state, the adapter config and a
+  supplied tier3_metadata payload -- before answering with the upload recipe.
+  UploadRecipeItem gains two optional fields: dry_run_validated, naming the
+  validators a leg's file passed, and dry_run_error, a BatchIngestFileError
+  carrying the refusal it would get. ingest_document and POST /documents refuse
+  the call as a real ingest would when a check fails and otherwise set
+  dry_run_validated on their one leg; bulk_ingest_document reports each leg's
+  verdict, keeping the batch's per-file failure shape, with file_index the
+  entry's position in files. Both fields are absent outside a dry run. The
+  ingest_document and bulk_ingest_document docstrings, the operation's Dry run
+  paragraph and the IngestRequest.dry_run description say so. The batch's
+  per-entry request construction is shared between its ingest loop and this
+  check.
+for_callers: >-
+  ingest_document(dry_run=true), POST /documents with dry_run, and
+  bulk_ingest_document(dry_run=true) can now check metadata and Tier-3 payloads
+  without uploading the files. Each leg of the recipe such a call returns names
+  the checks its file passed in dry_run_validated, or, on a batch, the refusal it
+  would get in dry_run_error; the checks that need the bytes run when the call is
+  repeated with the transfer tokens.

@@ -223,6 +223,7 @@ ENROLLED: Final[Enrollment] = {
         "OpenDocumentResponse": "OpenDocumentResponse",
         "OptimizeContentStoreReport": "OptimizeContentStoreReport",
         "PendingMetadata": "PendingMetadataItem",
+        "PendingMetadataPage": "PendingMetadataPage",
         "ReabstractReport": "ReabstractReport",
         "ReabstractStartedResponse": "ReabstractStartedResponse",
         "ReadMeta": "ReadMeta",
@@ -381,6 +382,10 @@ UNGATED_REFERENCED_COMPONENTS: Final[dict[tuple[Spec, str, str, str], str]] = {
         "reads asks for full"
     ),
     ("core", "DiscoverResponse", "results", "EdgeHit"): _DOCUMENTS_TARGET_ONLY_REASON,
+    ("core", "PendingMetadataPage", "items", "DocumentSummaryLight"): (
+        "the light projection is returned only to a request that leaves response_mode "
+        "unset or asks for light, and the review queue asks for full"
+    ),
     ("core", "DiscoverResponse", "results", "FacetHit"): _DOCUMENTS_TARGET_ONLY_REASON,
 }
 

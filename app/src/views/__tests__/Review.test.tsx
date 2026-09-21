@@ -6,6 +6,7 @@ import type { VaultContext } from '../../App';
 import type {
   Document,
   PendingMetadata,
+  PendingMetadataPage,
   StagingEdge,
   UpdateMetadataRequest,
   VaultSummary,
@@ -108,6 +109,11 @@ beforeEach(() => {
   vi.mocked(updateMetadata).mockReset();
 });
 
+// A single page holding every row, as the view requests it.
+function page(items: PendingMetadata[], total_available = items.length): PendingMetadataPage {
+  return { items, total_available, limit: 100, offset: 0, response_mode: 'full' };
+}
+
 function makePendingWithFields(
   id: string,
   title: string,
@@ -122,13 +128,27 @@ function lastUpdateMetadataBody(): UpdateMetadataRequest {
   return calls[calls.length - 1][2];
 }
 
+describe('Review view: metadata queue total', () => {
+  it('labels the tab with the whole queue, not the rows on the page', async () => {
+    const rows = Array.from({ length: 3 }, (_, i) => makePending(`D${i}`, `Doc ${i}`));
+    vi.mocked(listPendingMetadata).mockResolvedValue(page(rows, 150));
+    vi.mocked(listStagingEdges).mockResolvedValue([]);
+
+    render(<TestWrapper />);
+
+    await waitFor(() => screen.getByTestId('bulk-row-checkbox-D0'));
+    expect(screen.getByRole('button', { name: /metadata review \(150\)/i })).toBeInTheDocument();
+    expect(screen.getByTestId('bulk-row-checkbox-D2')).toBeInTheDocument();
+  });
+});
+
 describe('Review view: metadata-tab selection model (T-0116)', () => {
   it('renders per-document checkboxes and a select-all header', async () => {
-    vi.mocked(listPendingMetadata).mockResolvedValue([
+    vi.mocked(listPendingMetadata).mockResolvedValue(page([
       makePending('D1', 'Doc 1'),
       makePending('D2', 'Doc 2'),
       makePending('D3', 'Doc 3'),
-    ]);
+    ]));
     vi.mocked(listStagingEdges).mockResolvedValue([]);
 
     render(<TestWrapper />);
@@ -144,10 +164,10 @@ describe('Review view: metadata-tab selection model (T-0116)', () => {
   });
 
   it('clears selection when the active tab changes', async () => {
-    vi.mocked(listPendingMetadata).mockResolvedValue([
+    vi.mocked(listPendingMetadata).mockResolvedValue(page([
       makePending('D1', 'Doc 1'),
       makePending('D2', 'Doc 2'),
-    ]);
+    ]));
     vi.mocked(listStagingEdges).mockResolvedValue([makeStagingEdge('E1')]);
 
     const user = userEvent.setup();
@@ -167,7 +187,7 @@ describe('Review view: metadata-tab selection model (T-0116)', () => {
   });
 
   it('does NOT render bulk controls on the edges tab; per-row Confirm/Dismiss survive', async () => {
-    vi.mocked(listPendingMetadata).mockResolvedValue([]);
+    vi.mocked(listPendingMetadata).mockResolvedValue(page([]));
     vi.mocked(listStagingEdges).mockResolvedValue([makeStagingEdge('E1')]);
 
     render(<TestWrapper initialEntries={['/review?tab=edges']} />);
@@ -184,11 +204,11 @@ describe('Review view: metadata-tab selection model (T-0116)', () => {
 
 describe('Review view: Confirm-One sends CAS-ADR-028 ops-object metadata (T-0127)', () => {
   it('T1: Confirm-One on a CSV tags string sends tags: { add: [...] } (not bare array)', async () => {
-    vi.mocked(listPendingMetadata).mockResolvedValue([
+    vi.mocked(listPendingMetadata).mockResolvedValue(page([
       makePendingWithFields('D1', 'Doc 1', {
         tags: { value: 'alpha, beta, gamma', source: 'content' },
       }),
-    ]);
+    ]));
     vi.mocked(listStagingEdges).mockResolvedValue([]);
     vi.mocked(updateMetadata).mockResolvedValue({} as Document);
 
@@ -210,12 +230,12 @@ describe('Review view: Confirm-One sends CAS-ADR-028 ops-object metadata (T-0127
   });
 
   it('T2: Confirm-One routes non-Tier-1 extracted fields into tier3_metadata.set', async () => {
-    vi.mocked(listPendingMetadata).mockResolvedValue([
+    vi.mocked(listPendingMetadata).mockResolvedValue(page([
       makePendingWithFields('D2', 'Doc Two', {
         title: { value: 'Doc One', source: 'filename' },
         author: { value: 'Roman', source: 'content' },
       }),
-    ]);
+    ]));
     vi.mocked(listStagingEdges).mockResolvedValue([]);
     vi.mocked(updateMetadata).mockResolvedValue({} as Document);
 
@@ -235,11 +255,11 @@ describe('Review view: Confirm-One sends CAS-ADR-028 ops-object metadata (T-0127
   });
 
   it('T3: Confirm-One omits tags and tier3_metadata when neither has content', async () => {
-    vi.mocked(listPendingMetadata).mockResolvedValue([
+    vi.mocked(listPendingMetadata).mockResolvedValue(page([
       makePendingWithFields('D3', 'Doc Three', {
         title: { value: 'Doc Two', source: 'filename' },
       }),
-    ]);
+    ]));
     vi.mocked(listStagingEdges).mockResolvedValue([]);
     vi.mocked(updateMetadata).mockResolvedValue({} as Document);
 
@@ -263,11 +283,11 @@ describe('Review view: Confirm-One sends CAS-ADR-028 ops-object metadata (T-0127
     // Baseline has an empty `tags` field so the row renders with an input
     // the user can type into. After the user types, the edits map overlays
     // the baseline and the partition logic must still produce ListFieldPatch.add.
-    vi.mocked(listPendingMetadata).mockResolvedValue([
+    vi.mocked(listPendingMetadata).mockResolvedValue(page([
       makePendingWithFields('D4', 'Doc Four', {
         tags: { value: '', source: 'content' },
       }),
-    ]);
+    ]));
     vi.mocked(listStagingEdges).mockResolvedValue([]);
     vi.mocked(updateMetadata).mockResolvedValue({} as Document);
 
@@ -364,7 +384,7 @@ describe('Review view: metadata-queue lifecycle disclosure', () => {
   // the fix is disclosure rather than alignment -- but nothing said so
   // on screen, which left the number and the list looking like a bug.
   it('discloses on the metadata tab why the queue can exceed the dashboard count', async () => {
-    vi.mocked(listPendingMetadata).mockResolvedValue([makePending('D1', 'Doc 1')]);
+    vi.mocked(listPendingMetadata).mockResolvedValue(page([makePending('D1', 'Doc 1')]));
     vi.mocked(listStagingEdges).mockResolvedValue([]);
 
     render(<TestWrapper />);
@@ -382,7 +402,7 @@ describe('Review view: metadata-queue lifecycle disclosure', () => {
     // -- a staging edge carries no lifecycle at all -- so this note
     // would be wrong there. A disclosure hoisted to the page header
     // rather than the tab body is how it ends up on both.
-    vi.mocked(listPendingMetadata).mockResolvedValue([makePending('D1', 'Doc 1')]);
+    vi.mocked(listPendingMetadata).mockResolvedValue(page([makePending('D1', 'Doc 1')]));
     vi.mocked(listStagingEdges).mockResolvedValue([makeStagingEdge('E1')]);
 
     render(<TestWrapper initialEntries={['/review?tab=edges']} />);

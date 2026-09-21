@@ -335,12 +335,20 @@ includes the document record and the extracted fields with source annotations.
 
 **Precondition:** Vault with documents pending metadata confirmation.
 
-**Input:** `GET /sage_vaults/example_vault/pending-metadata`
+**Input:** `GET /sage_vaults/example_vault/pending-metadata`, optionally with
+`limit` (0..100, default 10), `offset` and `response_mode` (`light` | `full`).
 
 **Expected:**
 - 200 response
-- Body is an array of pending metadata objects
-- Each object includes:
+- Body is a `PendingMetadataPage`: `items`, `total_available` (the whole
+  queue), `limit`, `offset` and the `response_mode` served
+- Rows are in document-id order, so successive pages neither repeat nor skip
+- `response_mode` omitted: a page of more than five rows is `light`, a smaller
+  one `full`; an explicit value wins over that rule
+- A light row is a `DocumentSummaryLight`
+- `limit` above 100, a negative `offset` or an unknown `response_mode` is
+  422 `invalid_parameter` naming the parameter
+- Each full row includes:
   - `document`: full document record
   - `extracted_fields`: object mapping field names to
     `{ value, source, alt_value?, alt_source? }`
@@ -350,12 +358,12 @@ includes the document record and the extracted fields with source annotations.
 extraction details (with source annotations) to render the review queue and
 support inline editing.
 
-### TEST-APP-BE-015: Pending metadata returns empty array when none pending
+### TEST-APP-BE-015: Pending metadata returns an empty page when none pending
 
 **Artifact:** App Spec v0.4, Section 7
 **Category:** sage_api
 
-**Decision:** When no documents have pending metadata, return an empty array.
+**Decision:** When no documents have pending metadata, return an empty page.
 
 **Precondition:** Vault with all metadata confirmed.
 
@@ -363,7 +371,7 @@ support inline editing.
 
 **Expected:**
 - 200 response
-- Body: `[]`
+- `items` is `[]` and `total_available` is 0
 
 **Rationale:** Empty is a valid state. Dashboard health indicator renders "0".
 

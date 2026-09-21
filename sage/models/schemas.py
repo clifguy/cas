@@ -22,6 +22,7 @@ from pydantic_core import PydanticCustomError
 
 from sage.models.enums import (
     CatalogSortBy,
+    DryRunValidator,
     EdgeType,
     FacetField,
     PipelineStatus,
@@ -775,7 +776,8 @@ class DocumentSummary(BaseModel):
 
 class DocumentSummaryLight(BaseModel):
     """Stripped DocumentSummary returned by ``search`` on a
-    ``target="documents", mode="catalog"`` request.
+    ``target="documents", mode="catalog"`` request, and by
+    ``list_pending_metadata`` under ``response_mode="light"``.
 
     Two routes reach it. The caller asks, with ``response_mode="light"``;
     or the caller leaves ``response_mode`` unset and the full shape would
@@ -1220,7 +1222,11 @@ class IngestRequest(BaseModel):
             "declared requirement set. Because a preview does not project, "
             "an adapter-extracted `tier3_metadata` payload cannot be "
             "evaluated; `tier3_validated` reports false when the caller "
-            "supplied none, and a real run may still refuse."
+            "supplied none, and a real run may still refuse. When the "
+            "source must first be uploaded, the response is the "
+            "`UploadRecipe` instead, returned only after the validators "
+            "that read no bytes have passed; its leg's "
+            "`dry_run_validated` names them."
         ),
     )
 
@@ -3091,10 +3097,12 @@ class ChainRequest(BaseModel):
         )
     )
     edge_type: EdgeType = Field(
+        default=EdgeType.SUPERSEDES,
         description=(
-            "Edge type to follow. Required (no default). The chain walk "
-            "follows only this edge type in both directions."
-        )
+            "Edge type to follow. Defaults to `supersedes`, the version "
+            "history of the document. The chain walk follows only this edge "
+            "type in both directions."
+        ),
     )
     limit: int | None = Field(
         default=None,
@@ -6096,6 +6104,30 @@ class PendingMetadataItem(BaseModel):
     )
 
 
+class PendingMetadataPage(BaseModel):
+    """One page of the pending-metadata queue, ordered by document id."""
+
+    items: list[PendingMetadataItem | DocumentSummaryLight] = Field(
+        description=(
+            "The documents on this page. Under `response_mode=full` each is a "
+            "`PendingMetadataItem`; under `light` each is a "
+            "`DocumentSummaryLight`, the row catalog search returns."
+        )
+    )
+    total_available: int = Field(
+        description="Number of documents in the whole queue, before paging."
+    )
+    limit: int = Field(description="The page size this page was read with.")
+    offset: int = Field(description="The number of queue documents skipped before this page.")
+    response_mode: ResponseMode = Field(
+        description=(
+            "The row shape this page carries. Echoes an explicit request; when "
+            "the request named none, `light` if the page holds more than five "
+            "rows and `full` otherwise."
+        )
+    )
+
+
 # ---------------------------------------------------------------------------
 # Error response
 # ---------------------------------------------------------------------------
@@ -6194,6 +6226,28 @@ class UploadRecipeItem(BaseModel):
             "from the originating call's `sha256`. The upload endpoint admits "
             "only bytes with this digest. Absent when the call declared none, "
             "in which case the token admits any bytes."
+        ),
+    )
+    dry_run_validated: list[DryRunValidator] | None = Field(
+        default=None,
+        description=(
+            "On a dry run, the validators that read no source bytes and that "
+            "this leg's file gave something to check, each of which passed "
+            "before the recipe was returned. The checks that need the bytes -- "
+            "the content hash, the duplicate verdict, the declared digest -- "
+            "run when the call is repeated with the transfer token. Absent "
+            "outside a dry run, and on a leg carrying `dry_run_error`."
+        ),
+    )
+    dry_run_error: BatchIngestFileError | None = Field(
+        default=None,
+        description=(
+            "On a batch dry run, the refusal this leg's file would get from a "
+            "validator that reads no bytes, in the shape the batch summary "
+            "reports a failed file. `file_index` is the entry's position in "
+            "the call's `files`. Absent when the file passed, outside a dry "
+            "run, and on the single-document ingest, which refuses the call "
+            "instead."
         ),
     )
 

@@ -2,9 +2,10 @@
 
 import re
 from datetime import datetime, timedelta, timezone
-from typing import Callable, NamedTuple
+from typing import Annotated, Callable, NamedTuple
 
 import jsonschema
+from pydantic import BaseModel, ConfigDict, Field
 
 from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.api.errors import (
@@ -25,10 +26,12 @@ from sage.models.schemas import (
     BulkMetadataRequest,
     BulkMetadataResponse,
     Document,
+    DocumentSummaryLight,
     ExtractedField,
     FieldChange,
     ListFieldPatch,
     PendingMetadataItem,
+    PendingMetadataPage,
     Tier3Patch,
     UpdateMetadataRequest,
     UpdateMetadataResponse,
@@ -109,6 +112,24 @@ def _compute_metadata_changes(pre_doc: Document, updates: dict) -> list[FieldCha
             changes.append(FieldChange(path=key, before=before, after=after))
     changes.sort(key=lambda c: c.path)
     return changes
+
+
+# Bounds of the pending-metadata page, shared by the HTTP route's query
+# parameters and the validation below, which is what the MCP tool reaches.
+PENDING_METADATA_DEFAULT_LIMIT = 10
+PENDING_METADATA_MAX_LIMIT = 100
+
+
+class _PendingMetadataPaging(BaseModel):
+    """Validated paging arguments for the pending-metadata queue. A failure
+    names the offending argument in its location, which the MCP surface
+    turns into an ``invalid_parameter`` envelope."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    limit: Annotated[int, Field(ge=0, le=PENDING_METADATA_MAX_LIMIT)]
+    offset: Annotated[int, Field(ge=0)]
+    response_mode: ResponseMode | None
 
 
 class ListFieldDescriptor(NamedTuple):
@@ -618,16 +639,49 @@ class MetadataService:
                 requirements=requirements,
             ) from exc
 
-    async def list_pending_metadata(self) -> list[PendingMetadataItem]:
-        """Documents whose extracted metadata has not been confirmed (BE-014, BE-015)."""
-        docs = await self._store.list_pending_metadata_documents()
-        return [
-            PendingMetadataItem(
-                document=doc,
-                extracted_fields=self._build_extracted_fields(doc),
+    async def list_pending_metadata(
+        self,
+        limit: int = PENDING_METADATA_DEFAULT_LIMIT,
+        offset: int = 0,
+        response_mode: ResponseMode | str | None = None,
+    ) -> PendingMetadataPage:
+        """One page of the documents whose extracted metadata has not been
+        confirmed (BE-014, BE-015), in document-id order.
+
+        ``response_mode`` left unset resolves on the page actually read: more
+        than ``LIGHT_DEFAULT_THRESHOLD`` rows is light, otherwise full.
+
+        Raises:
+            pydantic.ValidationError: ``limit`` is outside 0..100, ``offset``
+                is negative, or ``response_mode`` is not a ``ResponseMode``.
+        """
+        paging = _PendingMetadataPaging(limit=limit, offset=offset, response_mode=response_mode)
+        total = await self._store.count_pending_metadata_documents()
+        docs = (
+            await self._store.list_pending_metadata_documents(
+                limit=paging.limit, offset=paging.offset
+            )
+            if paging.limit
+            else []
+        )
+        mode = paging.response_mode or (
+            ResponseMode.LIGHT if len(docs) > LIGHT_DEFAULT_THRESHOLD else ResponseMode.FULL
+        )
+        items: list[PendingMetadataItem | DocumentSummaryLight] = [
+            DocumentSummaryLight.from_document(doc)
+            if mode == ResponseMode.LIGHT
+            else PendingMetadataItem(
+                document=doc, extracted_fields=self._build_extracted_fields(doc)
             )
             for doc in docs
         ]
+        return PendingMetadataPage(
+            items=items,
+            total_available=total,
+            limit=paging.limit,
+            offset=paging.offset,
+            response_mode=mode,
+        )
 
     @staticmethod
     def _build_extracted_fields(doc: Document) -> dict[str, ExtractedField]:

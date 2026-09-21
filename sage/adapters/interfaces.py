@@ -1271,9 +1271,13 @@ class GraphStore(ABC):
 
     @abstractmethod
     async def list_pending_metadata_documents(
-        self, exclude_lifecycle_statuses: Sequence[str] = ()
+        self,
+        exclude_lifecycle_statuses: Sequence[str] = (),
+        *,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[Document]:
-        """Return documents awaiting metadata confirmation.
+        """Return documents awaiting metadata confirmation, ordered by id.
 
         ``exclude_lifecycle_statuses`` drops documents whose
         ``lifecycle_status`` appears in the sequence, on the same terms
@@ -1283,7 +1287,18 @@ class GraphStore(ABC):
         metadata is legitimate, and the queue is the only surface that
         reaches it. A caller counting outstanding work passes the
         vault's terminal states instead.
+
+        ``limit`` and ``offset`` page the result; ``None`` returns every
+        row from ``offset`` on. The id order is total, so successive pages
+        neither repeat nor skip a document the queue held throughout.
         """
+
+    @abstractmethod
+    async def count_pending_metadata_documents(
+        self, exclude_lifecycle_statuses: Sequence[str] = ()
+    ) -> int:
+        """Count the documents ``list_pending_metadata_documents`` would
+        return under the same exclusion, without reading them."""
 
     @abstractmethod
     async def measured_byte_size(self) -> int:

@@ -153,6 +153,36 @@ async def test_rest_ingest_unreachable_absolute_source_mints_a_recipe(client, tm
     assert "document" not in body
 
 
+async def test_rest_dry_run_validates_before_the_recipe(client):
+    """A dry run over HTTP refuses a bad doc_type without a byte leg, and its
+    valid twin returns the recipe naming the validators that ran."""
+    source = "/caller/machine/inbox/r_dry.md"
+    with _profile("cloud"):
+        refused = await client.post(
+            _INGEST,
+            json={
+                "source": source,
+                "source_type": "markdown",
+                "dry_run": True,
+                "metadata": {"doc_type": "not_a_type"},
+            },
+        )
+        valid = await client.post(
+            _INGEST,
+            json={
+                "source": source,
+                "source_type": "markdown",
+                "dry_run": True,
+                "metadata": {"doc_type": "note"},
+            },
+        )
+
+    assert refused.json()["code"] == "invalid_doc_type", refused.text
+    body = valid.json()
+    item = _assert_recipe_for(body, source)
+    assert "doc_type" in item["dry_run_validated"]
+
+
 async def test_rest_ingest_redeems_the_transfer_token(client, tmp_path):
     """Mint, deliver over the upload leg, complete with the token alone.
 

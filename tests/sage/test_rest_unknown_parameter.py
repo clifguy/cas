@@ -239,7 +239,14 @@ QUERY_ROWS: list[tuple[str, str, str, dict[str, str], dict[str, Any] | None, lis
     ("delete_edge", "DELETE", f"{VS}/edges/{EDGE_ID}", {"dry_run": "true"}, None, ["dry_run"]),
     ("list_headings", "GET", f"{VS}/documents/{DOC_ID}/headings", {}, None, []),
     ("list_staging_edges", "GET", f"{VS}/staging-edges", {}, None, []),
-    ("list_pending_metadata", "GET", f"{VS}/pending-metadata", {}, None, []),
+    (
+        "list_pending_metadata",
+        "GET",
+        f"{VS}/pending-metadata",
+        {},
+        None,
+        ["limit", "offset", "response_mode"],
+    ),
     ("batch_ingest_documents", "POST", f"{VS}/documents:batch", {}, None, []),
     (
         "update_vault_config",

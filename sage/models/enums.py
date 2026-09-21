@@ -227,6 +227,23 @@ class FacetField(StrEnum):
     TAGS = "tags"
 
 
+class DryRunValidator(StrEnum):
+    """A check an ingest dry run completed before answering with an upload
+    recipe. Each names a validator that reads no source bytes; a dry run
+    whose source must first be uploaded reports which of them it ran, and
+    the rest wait for the bytes."""
+
+    REQUEST_SHAPE = "request_shape"
+    SOURCE_TYPE = "source_type"
+    ADAPTER = "adapter"
+    EXPECTED_HEAD_VERSION = "expected_head_version"
+    PREDECESSOR = "predecessor"
+    DOC_TYPE = "doc_type"
+    LANDING_STATE = "landing_state"
+    ADAPTER_CONFIG = "adapter_config"
+    TIER3_METADATA = "tier3_metadata"
+
+
 class ResponseMode(StrEnum):
     """Payload depth for ``search`` results.
 

@@ -103,10 +103,9 @@ class VaultConfigService:
         interrupted_count = await self._store.count_documents_by_pipeline_status(
             "abstraction_interrupted", exclude_lifecycle_statuses=terminal_states
         )
-        pending_metadata_docs = await self._store.list_pending_metadata_documents(
+        pending_metadata_count = await self._store.count_pending_metadata_documents(
             exclude_lifecycle_statuses=terminal_states
         )
-        pending_metadata_count = len(pending_metadata_docs)
 
         graph_store_size_bytes = await self._store.measured_byte_size()
         content_store_size_bytes = await self._content_store.measured_byte_size()

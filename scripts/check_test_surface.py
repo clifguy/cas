@@ -158,6 +158,11 @@ _CONFORMANCE_STREAMS: Final[str] = (
 )
 
 KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
+    "tests/deploy/test_cloud_preflight.py::test_sweep_marker_resolves_against_its_response_schema"
+    "[/pending-metadata-^[[:space:]]*\\\\[]": (
+        're-parametrized as [/pending-metadata-"total_available"] when the pending-metadata '
+        "response became an object and the sweep's marker became a field name"
+    ),
     "tests/app/test_app_unknown_parameter.py::"
     "test_undeclared_file_entry_field_is_a_nested_invalid_parameter": (
         "renamed test_undeclared_file_entry_field_names_the_entry_models_fields when a "

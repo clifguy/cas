@@ -1,0 +1,21 @@
+classification: minor
+category:
+  - capability
+  - caller-adaptation
+summary: >-
+  GET /pending-metadata and the list_pending_metadata tool page the queue in
+  document-id order and choose a row shape. Both take limit (0..100, default 10),
+  offset and response_mode (light or full; omitted, a page of more than five rows
+  is light) and return a PendingMetadataPage carrying items, total_available,
+  limit, offset and the response_mode served. Light rows are the catalog
+  DocumentSummaryLight. The HTTP response changes from a bare array of
+  PendingMetadataItem to that page. The tool keeps its count, vault_id and status
+  keys, count now being the rows on the page, and its full rows now carry the
+  extracted_fields annotations the HTTP surface serves rather than an empty map.
+  DocumentSummaryLight and ResponseMode descriptions name the new surface.
+for_callers: >-
+  A client reading GET /sage_vaults/{vault_id}/pending-metadata as a JSON array
+  should read the page's items and use total_available for the queue size. The
+  default page holds ten rows, so a client that needs the whole queue pages with
+  limit and offset. A tool caller that relied on every pending document arriving
+  in one full response passes limit and response_mode=full, or pages.
