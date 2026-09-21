@@ -1350,9 +1350,24 @@ class IngestionService:
         parse reads only the name the caller gave, which is the name the
         staged upload will carry. The request's own shape was validated when
         it was built, so it heads the list.
+
+        A force re-ingest resolves through the record it reuses, which the
+        run finds by the delivered bytes' hash. Before the bytes exist that
+        record is found through the ``document_id`` pin, else the declared
+        ``sha256``. With neither, and no caller or filename doc_type ranking
+        above it, the doc_type cannot be known here, so the Tier-3 check is
+        left to the call that delivers the bytes and is not named as run.
         """
         request, _adapter, predecessor, ran = await self._validate_without_bytes(request)
         ran.insert(0, DryRunValidator.REQUEST_SHAPE)
+        # A declared digest stands for the bytes, so a force pin is held to it
+        # here exactly as the run holds it to the delivered hash, and a pin
+        # naming no document or another document's bytes is refused before
+        # the upload. Without a digest the refusal waits for the bytes: it
+        # reports the hash the pin failed to match.
+        if request.force and request.sha256 is not None:
+            if await self._resolve_force_pin(request, request.sha256) is not None:
+                ran.append(DryRunValidator.FORCE_PIN)
         if request.tier3_metadata is not None:
             parsed = (
                 self._parse_source_filename(
@@ -1361,8 +1376,29 @@ class IngestionService:
                 if request.needs_review
                 else None
             )
-            resolved_doc_type = self._resolve_doc_type_for_tier3(
-                request=request, parsed=parsed, predecessor=predecessor
+            reused: Document | None = None
+            caller_doc_type = (request.metadata or {}).get("doc_type")
+            if request.force and not caller_doc_type and not (parsed and parsed.doc_type):
+                if request.document_id is not None:
+                    reused = await self._store.get_document(request.document_id)
+                    if reused is None:
+                        # Reached only without a digest, which the refusal
+                        # above needs; the run refuses this pin once the
+                        # bytes arrive, and there is nothing to resolve.
+                        return ran
+                elif request.sha256 is not None:
+                    matches = await self._store.find_documents_by_hashes(
+                        [request.sha256],
+                        prefer_lifecycle_statuses=(
+                            self._config.lifecycle.supersession_surviving_states()
+                        ),
+                    )
+                    if matches:
+                        reused = await self._store.get_document(next(iter(matches.values())))
+                else:
+                    return ran
+            resolved_doc_type = self._resolve_ingest_doc_type(
+                request=request, parsed=parsed, predecessor=predecessor, reused=reused
             )
             self._validate_tier3_payload(resolved_doc_type, request.tier3_metadata)
             ran.append(DryRunValidator.TIER3_METADATA)
@@ -1583,17 +1619,16 @@ class IngestionService:
 
         # Validate the resolved tier3_metadata against the resolved
         # doc_type's metadata_schema. Done before any side effects (the
-        # adapter projection runs above but is read-only on disk). Resolution
-        # mirrors the precedence chain applied below by update_document
-        # calls: caller > filename parse > predecessor inheritance > "misc".
-        # A None validator (doc_type has no metadata_schema declared) is a
-        # hard 400 per the strict no-loose-mode decision.
+        # adapter projection runs above but is read-only on disk). A None
+        # validator (doc_type has no metadata_schema declared) is a hard 400
+        # per the strict no-loose-mode decision.
         #
-        # The vocabulary gate runs whether or not a tier3 payload came
-        # with the call: a misspelled doc_type carrying no typed metadata
-        # is exactly the case that used to commit.
-        if final_tier3 is not None:
-            resolved_dt = self._resolve_doc_type_for_tier3(
+        # A force re-ingest waits until the record it reuses is known,
+        # below: that record's own doc_type is a rung of the chain, and
+        # validating without it would check the payload against a doc_type
+        # the write never carries.
+        if final_tier3 is not None and not request.force:
+            resolved_dt = self._resolve_ingest_doc_type(
                 request=request, parsed=parsed, predecessor=predecessor
             )
             self._validate_tier3_payload(resolved_dt, final_tier3)
@@ -1695,6 +1730,15 @@ class IngestionService:
                     incoming_source_path=vault_relative,
                     content_hash=provenance_hash,
                 )
+
+        # The force re-ingest's tier3 validation, deferred from above until
+        # the reused record is known. Nothing has been written to the store
+        # yet: only reads sit between here and the non-force check.
+        if final_tier3 is not None and request.force:
+            resolved_dt = self._resolve_ingest_doc_type(
+                request=request, parsed=parsed, predecessor=predecessor, reused=existing_doc
+            )
+            self._validate_tier3_payload(resolved_dt, final_tier3)
 
         # Compute the merged metadata in memory before any insert/update
         # touches the store. Closes the partial-metadata window
@@ -2038,15 +2082,20 @@ class IngestionService:
             else None
         )
 
-        resolved_doc_type = self._resolve_doc_type_for_tier3(
-            request=request, parsed=parsed, predecessor=predecessor
-        )
-        if request.tier3_metadata is not None:
-            self._validate_tier3_payload(resolved_doc_type, request.tier3_metadata)
+        # A force re-ingest validates once the record it reuses is known,
+        # below, in the position the real run validates it in.
+        if request.tier3_metadata is not None and not request.force:
+            self._validate_tier3_payload(
+                self._resolve_ingest_doc_type(
+                    request=request, parsed=parsed, predecessor=predecessor
+                ),
+                request.tier3_metadata,
+            )
 
         provenance_hash = canonicalize_sha256(delivered_hash) if delivered_hash else None
 
         duplicate_of: str | None = None
+        reused: Document | None = None
         if provenance_hash is not None:
             if predecessor is not None and predecessor.source_content_hash == provenance_hash:
                 raise IdenticalContentSupersedeError(predecessor.id, provenance_hash)
@@ -2064,20 +2113,17 @@ class IngestionService:
             pinned_id = await self._resolve_force_pin(request, provenance_hash)
             if duplicate_of is not None and request.force:
                 reused = await self._store.get_document(pinned_id or duplicate_of)
-                if reused is not None:
-                    # The doc_type the run would write onto the reused record:
-                    # the caller's, else the filename parse's, else the record's
-                    # own, and only for a record carrying none the predecessor's
-                    # or the new-document default, which `resolved_doc_type`
-                    # already holds once the caller and the parse are exhausted.
-                    caller_doc_type = (request.metadata or {}).get("doc_type")
-                    self._refuse_retype_out_of_scope(
-                        reused,
-                        caller_doc_type
-                        or (parsed.doc_type if parsed is not None else None)
-                        or reused.doc_type
-                        or resolved_doc_type,
-                    )
+
+        # One resolution serves the reported field, the tier3 check and the
+        # retype guard, so none of them can answer for a different doc_type
+        # than the run writes.
+        resolved_doc_type = self._resolve_ingest_doc_type(
+            request=request, parsed=parsed, predecessor=predecessor, reused=reused
+        )
+        if request.tier3_metadata is not None and request.force:
+            self._validate_tier3_payload(resolved_doc_type, request.tier3_metadata)
+        if reused is not None:
+            self._refuse_retype_out_of_scope(reused, resolved_doc_type)
 
         return IngestPreview(
             dry_run=True,
@@ -2917,17 +2963,22 @@ class IngestionService:
             shutil.rmtree(staging, ignore_errors=True)
 
     @staticmethod
-    def _resolve_doc_type_for_tier3(
+    def _resolve_ingest_doc_type(
         request: IngestRequest,
         parsed: ParsedMetadata | None,
         predecessor: Document | None,
+        reused: Document | None = None,
     ) -> str:
-        """Pre-resolve the final doc_type for tier3_metadata validation.
+        """Pre-resolve the doc_type an ingest will write.
 
-        Mirrors the precedence chain applied below by the post-insert
-        update_document calls: caller > filename parse > predecessor
-        inheritance > "misc". This keeps validation strictly upstream of
-        the insert so a tier3_schema_violation never commits a row.
+        The chain ``_compute_metadata_field_updates`` applies: caller >
+        filename parse > the reused record's own doc_type on a force
+        re-ingest > predecessor inheritance > "misc". The reused record
+        ranks above the predecessor because the merge starts from it, so
+        inheritance only fills a field it leaves empty. Resolved ahead of
+        the write so tier3 validation and the retype guard read the value
+        the write will carry, and a tier3_schema_violation never commits
+        a row.
         """
         caller_meta = request.metadata or {}
         caller_dt = caller_meta.get("doc_type")
@@ -2935,6 +2986,8 @@ class IngestionService:
             return caller_dt
         if parsed is not None and parsed.doc_type:
             return parsed.doc_type
+        if reused is not None and reused.doc_type:
+            return reused.doc_type
         if predecessor is not None and predecessor.doc_type:
             return predecessor.doc_type
         return "misc"

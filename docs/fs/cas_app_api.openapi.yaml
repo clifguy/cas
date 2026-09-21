@@ -928,7 +928,8 @@ components:
             Whether this doc_type appears in the vault's
             `document_types.doc_types` vocabulary at all. False means
             the value was resolved from caller metadata, a filename
-            parse, or predecessor inheritance without ever being
+            parse, the reused record's own doc_type on a force
+            re-ingest, or predecessor inheritance without ever being
             declared.
         has_metadata_schema:
           type: boolean
@@ -1017,7 +1018,9 @@ components:
           description: >-
             The doc_type a real run would apply, resolved through the
             same precedence chain: caller metadata > filename parse
-            (only when `needs_review` is true) > predecessor
+            (only when `needs_review` is true) > the reused record's own
+            doc_type (only on a force re-ingest that reuses a record,
+            the pinned one where `document_id` pins it) > predecessor
             inheritance > `misc`.
         resolved_source_type:
           type: string

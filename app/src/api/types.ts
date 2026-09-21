@@ -633,6 +633,9 @@ export interface LifecycleStateConfig {
   description?: string | null;
   is_terminal?: boolean;
   satisfies_dependency?: boolean | null;
+  // Per CAS-ADR-054: the doc_types the state applies to; absent or null
+  // applies it to every doc_type.
+  doc_types?: string[] | null;
 }
 
 export interface LifecycleTransitionConfig {
@@ -641,6 +644,9 @@ export interface LifecycleTransitionConfig {
   to_state: string;
   semantics?: string | null;
   creates_edge?: string | null;
+  // Per CAS-ADR-054: the doc_types the transition applies to; absent or null
+  // applies it to every doc_type.
+  doc_types?: string[] | null;
 }
 
 export interface LifecycleConfig {

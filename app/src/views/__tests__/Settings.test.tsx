@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, Outlet } from 'react-router';
 import { useState } from 'react';
@@ -17,6 +17,7 @@ import Settings, {
   AbstractionEditor,
 } from '../Settings';
 import { getVaultConfig, updateVaultConfig } from '../../api/vaults';
+import { ApiError } from '../../api/client';
 import type {
   VaultConfig,
   VaultIdentityConfig,
@@ -281,6 +282,131 @@ describe('Settings editors — draft resync when a fresh prop arrives', () => {
     expect(screen.getByDisplayValue('fresh_action')).toBeInTheDocument();
     expect(screen.queryByDisplayValue('stale_state')).not.toBeInTheDocument();
     expect(screen.queryByDisplayValue('stale_action')).not.toBeInTheDocument();
+  });
+
+  describe('LifecycleEditor doc_type scope', () => {
+    type Lifecycle = {
+      base_states_required: boolean;
+      states: LifecycleStateConfig[];
+      transitions: LifecycleTransitionConfig[];
+    };
+    const scoped: Lifecycle = {
+      base_states_required: true,
+      states: [
+        { value: 'active', label: 'Active' },
+        { value: 'blocked', label: 'Blocked', doc_types: ['ticket'] },
+      ],
+      transitions: [
+        { from_state: 'active', action: 'block', to_state: 'blocked', doc_types: ['ticket'] },
+        { from_state: 'blocked', action: 'unblock', to_state: 'active', doc_types: ['ticket'] },
+        { from_state: 'active', action: 'archive', to_state: 'active' },
+      ],
+    };
+
+    function Harness({ onSave, startEditing = false }: { onSave: (l: Lifecycle) => void; startEditing?: boolean }) {
+      const [editing, setEditing] = useState(startEditing);
+      return (
+        <LifecycleEditor
+          lifecycle={scoped}
+          editing={editing}
+          onEdit={() => setEditing(true)}
+          onCancel={() => setEditing(false)}
+          onSave={onSave}
+          saving={false}
+        />
+      );
+    }
+
+    // Body rows of the states (0) or transitions (1) table; row 0 is the header.
+    const bodyRow = (table: 0 | 1, idx: number) =>
+      within(screen.getAllByRole('table')[table]).getAllByRole('row')[idx + 1];
+
+    it("renders each state's and transition's scope", () => {
+      render(<Harness onSave={vi.fn()} />);
+      expect(within(bodyRow(0, 0)).getByText('all')).toBeInTheDocument();
+      expect(within(bodyRow(0, 1)).getByText('ticket')).toBeInTheDocument();
+      expect(within(bodyRow(1, 0)).getByText('ticket')).toBeInTheDocument();
+      expect(within(bodyRow(1, 2)).getByText('all')).toBeInTheDocument();
+    });
+
+    // The untouched `unblock` row must come back exactly as loaded: an editor
+    // rewriting every row's scope (null to [], say) would change what the
+    // vault means by it, and only this arm would notice.
+    it('round-trips an edited scope and leaves untouched entries alone', async () => {
+      const onSave = vi.fn();
+      const user = userEvent.setup();
+      render(<Harness onSave={onSave} startEditing />);
+
+      const activeScope = screen.getByLabelText('Doc types for state 1');
+      await user.type(activeScope, 'ticket, adr');
+      const blockScope = screen.getByLabelText('Doc types for transition 1');
+      await user.clear(blockScope);
+      await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+      expect(onSave).toHaveBeenCalledTimes(1);
+      const saved: Lifecycle = onSave.mock.calls[0][0];
+      expect(saved.states[0].doc_types).toEqual(['ticket', 'adr']);
+      expect(saved.states[1].doc_types).toEqual(['ticket']);
+      expect(saved.transitions[0].doc_types ?? null).toBeNull();
+      expect(saved.transitions[1]).toEqual(scoped.transitions[1]);
+      expect(saved.transitions[2]).toEqual(scoped.transitions[2]);
+    });
+
+    // A single change event (a paste, an autofill, one keystroke) on a row
+    // below the end of the scope-text array, then removing a row above it:
+    // the text must stay with its own row. Typing character by character
+    // would hide a sparse array, so the edit is one event.
+    it('keeps edited scope text on its own row when a row above is removed', () => {
+      const three: Lifecycle = {
+        base_states_required: true,
+        states: [
+          { value: 'a', label: 'A' },
+          { value: 'b', label: 'B', doc_types: ['adr'] },
+          { value: 'c', label: 'C' },
+        ],
+        transitions: [
+          { from_state: 'a', action: 'one', to_state: 'b' },
+          { from_state: 'b', action: 'two', to_state: 'c', doc_types: ['adr'] },
+          { from_state: 'c', action: 'three', to_state: 'a' },
+        ],
+      };
+      render(
+        <LifecycleEditor
+          lifecycle={three}
+          editing
+          onEdit={vi.fn()}
+          onCancel={vi.fn()}
+          onSave={vi.fn()}
+          saving={false}
+        />,
+      );
+
+      fireEvent.change(screen.getByLabelText('Doc types for state 3'), { target: { value: 'ticket' } });
+      fireEvent.change(screen.getByLabelText('Doc types for transition 3'), { target: { value: 'ticket' } });
+      const [statesTable, transitionsTable] = screen.getAllByRole('table');
+      fireEvent.click(within(statesTable).getAllByRole('button', { name: 'Remove' })[0]);
+      fireEvent.click(within(transitionsTable).getAllByRole('button', { name: 'Remove' })[0]);
+
+      expect(screen.getByLabelText('Doc types for state 1')).toHaveValue('adr');
+      expect(screen.getByLabelText('Doc types for state 2')).toHaveValue('ticket');
+      expect(screen.getByLabelText('Doc types for transition 1')).toHaveValue('adr');
+      expect(screen.getByLabelText('Doc types for transition 2')).toHaveValue('ticket');
+    });
+
+    it("surfaces the server's refusal message on a lifecycle save", async () => {
+      const message =
+        "the transition 'active -> block -> blocked' applies to doc_type(s) adr outside the scope of the state 'blocked' (ticket)";
+      vi.mocked(getVaultConfig).mockResolvedValue({ ...makeVaultConfig(), lifecycle: scoped });
+      vi.mocked(updateVaultConfig).mockRejectedValue(new ApiError('invalid_vault_config', message));
+      const { user } = renderSettings();
+      await waitFor(() => expect(screen.getByText('TestVault')).toBeInTheDocument());
+
+      await user.click(screen.getByRole('button', { name: /^lifecycle$/i }));
+      await user.click(screen.getByRole('button', { name: /^edit$/i }));
+      await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+      await waitFor(() => expect(screen.getByText(`Error: ${message}`)).toBeInTheDocument());
+    });
   });
 
   it('AbstractionEditor re-seeds the editable draft from a refetched config', async () => {

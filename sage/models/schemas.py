@@ -1114,7 +1114,9 @@ class IngestRequest(BaseModel):
             "record at ingestion time. Per CAS-ADR-021, callers are "
             "authoritative for metadata; SAGE applies values per-field with "
             "the precedence chain caller > filename parse (only when "
-            "needs_review=true) > chain inherit (predecessor's doc_type, "
+            "needs_review=true) > the reused record's own value (only on a "
+            "force re-ingest that reuses a record) > chain inherit "
+            "(predecessor's doc_type, "
             "project, authority_scope when predecessor_id is set "
             "and the caller omitted the field) > vault default (doc_type "
             "only, falls through to `misc`). A field whose value is null is "
@@ -2409,8 +2411,9 @@ class DocTypeRequirements(BaseModel):
         description=(
             "Whether this doc_type appears in the vault's "
             "`document_types.doc_types` vocabulary at all. False means the "
-            "value was resolved from caller metadata, a filename parse, or "
-            "predecessor inheritance without ever being declared."
+            "value was resolved from caller metadata, a filename parse, the "
+            "reused record's own doc_type on a force re-ingest, or predecessor "
+            "inheritance without ever being declared."
         )
     )
     has_metadata_schema: bool = Field(
@@ -2480,7 +2483,9 @@ class IngestPreview(BaseModel):
         description=(
             "The doc_type a real run would apply, resolved through the same "
             "precedence chain: caller metadata > filename parse (only when "
-            "`needs_review` is true) > predecessor inheritance > `misc`."
+            "`needs_review` is true) > the reused record's own doc_type (only "
+            "on a force re-ingest that reuses a record, the pinned one where "
+            "`document_id` pins it) > predecessor inheritance > `misc`."
         )
     )
     resolved_source_type: SourceType = Field(
@@ -6272,8 +6277,14 @@ class UploadRecipeItem(BaseModel):
             "this leg's file gave something to check, each of which passed "
             "before the recipe was returned. The checks that need the bytes -- "
             "the content hash, the duplicate verdict, the declared digest -- "
-            "run when the call is repeated with the transfer token. Absent "
-            "outside a dry run, and on a leg carrying `dry_run_error`."
+            "run when the call is repeated with the transfer token, as does "
+            "the `tier3_metadata` check of a force re-ingest that names no "
+            "doc_type and neither pins the record it reuses nor declares its "
+            "`sha256`. `force_pin` names the check of a force re-ingest's "
+            "`document_id` pin against the declared `sha256`, made only when "
+            "the call carries both; without the digest the pin waits for the "
+            "bytes. Absent outside a dry run, and on a leg carrying "
+            "`dry_run_error`."
         ),
     )
     dry_run_error: BatchIngestFileError | None = Field(
