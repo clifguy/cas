@@ -17,11 +17,11 @@ from __future__ import annotations
 
 import inspect
 import re
-from typing import Annotated, Any, get_args, get_origin
+from typing import Annotated, Any, Final, get_args, get_origin
 
 import pytest
 
-from sage.config import StackTransferConfig
+from sage.config import DEFAULT_DEPENDENCY_SATISFYING_STATES, StackTransferConfig
 from sage.mcp_server import (
     create_edges,
     get_filename_metadata,
@@ -1332,3 +1332,84 @@ def test_ingest_tools_expose_dry_run(tool_name):
         f"{tool_name}.dry_run default is {param.default!r}; expected "
         "``False`` to preserve real-run as the default behavior."
     )
+
+
+# ---------------------------------------------------------------------------
+# The dependency-satisfying default, where depends_on is created and checked
+# ---------------------------------------------------------------------------
+
+#: The tools a caller reaches when modelling a dependency: one creates the
+#: edge, the other evaluates it. Both must say what "satisfied" means by
+#: default, because the default admits a target that is still open.
+_DEPENDENCY_TOOLS: Final[tuple[str, ...]] = ("create_edges", "verify_preconditions")
+
+
+def _dependency_surfaces(tool_name: str) -> dict[str, str]:
+    """The docstring and the operation narrative, each whitespace-folded.
+
+    Returned separately rather than joined, so a rule stated on one surface
+    cannot satisfy an assertion about the other. The docstring's
+    reStructuredText double backticks are folded to the spec's single ones,
+    so one phrasing is asserted against both.
+    """
+    from tests.sage.test_mcp_docstring_disclosure_parity import _prose_body, _surfaces_for
+
+    docstring, spec_narrative, _ = _surfaces_for("sage_core", tool_name)
+    return {
+        "docstring": " ".join(_prose_body(docstring).replace("``", "`").split()),
+        "openapi": " ".join(_prose_body(spec_narrative).split()),
+    }
+
+
+def _sentences(text: str) -> list[str]:
+    """Split on sentence-ending periods only; a semicolon joins one rule."""
+    return [s for s in re.split(r"(?<=\.)\s+", text) if s]
+
+
+@pytest.mark.parametrize("tool_name", _DEPENDENCY_TOOLS)
+def test_dependency_tools_state_the_default_satisfying_set(tool_name: str):
+    """Both surfaces name every engine-default state and the field that moves it.
+
+    Derived from ``DEFAULT_DEPENDENCY_SATISFYING_STATES``: changing the
+    default reddens this until both surfaces are rewritten. The field name is
+    required alongside the states because the states alone already appear in
+    passing on both surfaces; without the field the test would pass against
+    prose that never says the set is configurable.
+    """
+    for surface, text in _dependency_surfaces(tool_name).items():
+        missing = sorted(s for s in DEFAULT_DEPENDENCY_SATISFYING_STATES if f"`{s}`" not in text)
+        assert not missing, f"{tool_name} {surface} does not name default state(s) {missing}"
+        assert "satisfies_dependency" in text, (
+            f"{tool_name} {surface} does not name satisfies_dependency, so a "
+            "caller cannot learn that the default set is configurable."
+        )
+
+
+@pytest.mark.parametrize("tool_name", _DEPENDENCY_TOOLS)
+def test_dependency_tools_state_opt_out_and_opt_in(tool_name: str):
+    """Both surfaces state how a base state opts out and a domain state opts in."""
+    for surface, text in _dependency_surfaces(tool_name).items():
+        sentences = _sentences(text)
+        assert any("satisfies_dependency: false" in s and "base state" in s for s in sentences), (
+            f"{tool_name} {surface} does not state the base-state opt-out"
+        )
+        assert any("satisfies_dependency: true" in s and "domain state" in s for s in sentences), (
+            f"{tool_name} {surface} does not state the domain-state opt-in"
+        )
+
+
+@pytest.mark.parametrize("tool_name", _DEPENDENCY_TOOLS)
+def test_dependency_tools_give_the_blocked_on_completion_example(tool_name: str):
+    """Both surfaces give the configuration for "blocked until the target completes".
+
+    The example must name ``active`` as the state opted out and ``completed``
+    as the state that still satisfies, in one sentence, so the configuration
+    is read as a whole rather than assembled from separate rules.
+    """
+    for surface, text in _dependency_surfaces(tool_name).items():
+        assert any(
+            "satisfies_dependency: false` on `active`" in s
+            and "`completed`" in s
+            and "complete" in s
+            for s in _sentences(text)
+        ), f"{tool_name} {surface} does not give the blocked-on-completion configuration"

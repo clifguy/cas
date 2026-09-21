@@ -1107,6 +1107,21 @@ def register_sage_tools(
         stitch a missing edge into a chain whose lifecycle states are
         already correct.
 
+        **A ``depends_on`` edge is evaluated later, not when it is
+        created.** Creating one does not check the target's state;
+        ``verify_preconditions`` evaluates it against the vault's
+        dependency-satisfying states. With no configuration the
+        dependency-satisfying set is the engine default, ``active`` and
+        ``completed``, so a target that is still open satisfies the
+        dependency: ``depends_on`` means the target exists and is live,
+        not that it is finished. A vault opts a base state out by
+        declaring ``satisfies_dependency: false`` on it in its lifecycle
+        configuration, and opts a domain state in with
+        ``satisfies_dependency: true``. To make ``depends_on`` mean blocked
+        until the target is complete, declare ``satisfies_dependency:
+        false`` on ``active``; ``completed`` then remains the only
+        satisfying base state.
+
         **Per-item anchor fields by edge_type policy bucket.** Each edge
         type has a registry-declared ``resolution_policy`` dictating which
         anchor fields the item must carry:
@@ -1436,6 +1451,17 @@ def register_sage_tools(
         per-edge breakdown of failing reasons (e.g. predecessor still
         in projection, target archived) so the caller can act on the
         gap rather than re-querying each dependency.
+
+        With no configuration the dependency-satisfying set is the engine
+        default, ``active`` and ``completed``, so a target that is still
+        open satisfies the dependency: ``depends_on`` means the target
+        exists and is live, not that it is finished. A vault opts a base
+        state out by declaring ``satisfies_dependency: false`` on it in its
+        lifecycle configuration, and opts a domain state in with
+        ``satisfies_dependency: true``. To make ``depends_on`` mean blocked
+        until the target is complete, declare ``satisfies_dependency:
+        false`` on ``active``; ``completed`` then remains the only
+        satisfying base state.
 
         This is not a mutation preview. A ``dry_run`` on a mutation
         answers what that one call would do to committed state; this
