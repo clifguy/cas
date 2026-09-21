@@ -3879,8 +3879,14 @@ def register_sage_tools(
         found at all. Used as a smoke test after bulk ingestion or
         configuration changes.
 
-        The assertions YAML file is resolved relative to the vault's
-        ``storage_root``. The file must have a top-level ``assertions:``
+        The assertions YAML file is named by a path relative to the
+        vault's ``storage_root`` and read through the vault-source store,
+        addressed as a document's ``source_path`` is: under the filesystem
+        binding (the local profile) it is read from ``storage_root`` on
+        the server's disk; under the document-store binding (the cloud
+        profile) it is read from the vault's folder in the document
+        store, at the same relative path. A path leaving the storage
+        root is refused. The file must have a top-level ``assertions:``
         key whose value is a list of objects; each object must include
         ``query`` and ``expected_document_id`` and may include ``top_k``
         (default 10).
@@ -3892,9 +3898,18 @@ def register_sage_tools(
         - ``assertions_not_configured`` (400): the vault config has no
           ``retrieval_health.assertions_file`` entry.
         - ``assertions_file_invalid`` (400): the referenced YAML is malformed
-          or has the wrong structure.
+          or has the wrong structure, or its path leaves the vault's
+          ``storage_root``.
         - ``assertions_file_not_found`` (404): the configured assertions file
-          does not exist under the vault's ``storage_root``.
+          does not exist at its path in the vault-source store -- under
+          ``storage_root`` on the filesystem binding, or in the vault's
+          document-store folder on the document-store binding.
+        - ``vault_source_store_refused`` (502): the vault-source store declined
+          the read on its merits; ``detail.store_status`` carries the status
+          it declined with.
+        - ``vault_source_store_unavailable`` (503): the vault-source store
+          declined to serve the read just now; the same call may succeed on
+          a later attempt.
 
         Args:
             vault_id: Target vault identifier.

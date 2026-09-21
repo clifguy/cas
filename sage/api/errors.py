@@ -1576,8 +1576,8 @@ class NoProjectionError(SAGEError):
 class AssertionsFileNotFoundError(SAGEError):
     """404: retrieval health assertions file not found (BH-042).
 
-    The vault config references an ``assertions_file`` that does not exist
-    under the vault's ``storage_root`` -- a missing resource, so 404, distinct
+    The vault config references an ``assertions_file`` that does not exist at
+    its path in the vault-source store -- a missing resource, so 404, distinct
     from ``AssertionsNotConfiguredError`` (no file configured at all, a 400
     precondition).
     """

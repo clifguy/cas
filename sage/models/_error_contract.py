@@ -2120,7 +2120,9 @@ SCHEMAS = json.loads(
         "invalid_parameter",
         "invalid_vault_id",
         "unknown_parameter",
-        "vault_not_found"
+        "vault_not_found",
+        "vault_source_store_refused",
+        "vault_source_store_unavailable"
       ],
       "verify_vault_source_files": [
         "document_scope_unmatched",

@@ -159,7 +159,7 @@ async def list_headings(
             path=("invalid_vault_id",),
             request=("unknown_parameter",),
             extra="`assertions_file_invalid`: the referenced YAML is malformed "
-            "or has the wrong structure.\n\n"
+            "or has the wrong structure, or its path leaves the vault's `storage_root`.\n\n"
             "`assertions_not_configured`: the vault config has no "
             "`retrieval_health.assertions_file` entry.",
         ),
@@ -167,9 +167,28 @@ async def list_headings(
             "model": ErrorResponse,
             "description": (
                 "`assertions_file_not_found`: the configured assertions file does not exist "
-                "under the vault's `storage_root`.\n\n"
+                "at its path in the vault-source store -- under `storage_root` on the "
+                "filesystem binding, or in the vault's document-store folder on the "
+                "document-store binding.\n\n"
                 "`vault_not_found`: no vault registered with that id; `detail.available_vaults` "
                 "lists the registered vaults."
+            ),
+        },
+        502: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_refused`: the vault-source store declined the "
+                "operation on its merits -- quota, a permission it withdrew, a reply "
+                "that could not be used. Resolve it at the store before retrying; "
+                "`detail.store_status` carries the status it declined with."
+            ),
+        },
+        503: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_source_store_unavailable`: the vault-source store declined to "
+                "serve the operation just now -- throttling, or a transient backend "
+                "signal. The same request may succeed on a later attempt."
             ),
         },
     },
