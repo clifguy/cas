@@ -7,7 +7,7 @@ validation into the argument model FastMCP builds, ahead of that refusal. So
 the argument keeps its ``list[dict]`` type and only its published JSON Schema
 is replaced, with one derived from the item model.
 
-Two things distinguish the published shape from the model's own schema:
+Three things distinguish the published shape from the model's own schema:
 
 * Every reference is resolved in place. The shape is embedded in a tool's
   input schema, where the model's ``$defs`` would not resolve, and a client
@@ -18,6 +18,9 @@ Two things distinguish the published shape from the model's own schema:
   the call leaves it, which would turn the server's refusal of a misspelled
   key into a silent omission. Left open, the key reaches the server and is
   refused there by name (CAS-ADR-037).
+* A definition's own title and description -- a model's or an enum's
+  docstring, written for a maintainer -- are left out; each field's
+  description is kept, since it is written for the caller.
 """
 
 from __future__ import annotations
@@ -25,6 +28,9 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 from pydantic import BaseModel, WithJsonSchema
+
+#: The keys a definition's docstring and class name populate.
+_DEFINITION_PROSE = frozenset({"title", "description"})
 
 
 def _inline(node: Any, definitions: dict[str, Any]) -> Any:
@@ -34,7 +40,8 @@ def _inline(node: Any, definitions: dict[str, Any]) -> Any:
     if not isinstance(node, dict):
         return node
     if "$ref" in node:
-        target = definitions[node["$ref"].rsplit("/", 1)[-1]]
+        definition = definitions[node["$ref"].rsplit("/", 1)[-1]]
+        target = {key: value for key, value in definition.items() if key not in _DEFINITION_PROSE}
         siblings = {key: value for key, value in node.items() if key != "$ref"}
         return _inline({**target, **siblings}, definitions)
     resolved = {key: _inline(value, definitions) for key, value in node.items()}
@@ -47,6 +54,8 @@ def item_shape(model: type[BaseModel]) -> dict[str, Any]:
     """The published JSON Schema of one item validated against ``model``."""
     schema = model.model_json_schema(by_alias=True)
     definitions = schema.pop("$defs", {})
+    for key in _DEFINITION_PROSE:
+        schema.pop(key, None)
     return _inline(schema, definitions)
 
 

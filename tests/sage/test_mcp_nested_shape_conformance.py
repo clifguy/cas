@@ -26,7 +26,9 @@ tool bodies validate against, and this module holds the two together:
 from __future__ import annotations
 
 import asyncio
+import enum
 import functools
+import inspect
 import json
 import types
 import typing
@@ -163,6 +165,59 @@ def _models_reached(model: type[BaseModel]) -> list[type[BaseModel]]:
     return reached
 
 
+def _definition_docstrings(model: type[BaseModel]) -> set[str]:
+    """The docstrings of every model and enum a published item shape reaches."""
+    classes: list[type] = list(_models_reached(model))
+    for current in list(classes):
+        pending = [field.annotation for field in current.model_fields.values()]
+        while pending:
+            annotation = pending.pop()
+            if isinstance(annotation, type) and issubclass(annotation, enum.Enum):
+                classes.append(annotation)
+            elif isinstance(annotation, types.UnionType) or typing.get_origin(annotation):
+                pending.extend(typing.get_args(annotation))
+    return {inspect.cleandoc(cls.__doc__) for cls in classes if cls.__doc__}
+
+
+def _descriptions(node: object) -> list[str]:
+    found: list[str] = []
+    if isinstance(node, dict):
+        if isinstance(node.get("description"), str):
+            found.append(node["description"])
+        for key, value in node.items():
+            if key != "description":
+                found.extend(_descriptions(value))
+    elif isinstance(node, list):
+        for value in node:
+            found.extend(_descriptions(value))
+    return found
+
+
+def _accepts_any_shape(prop: dict) -> bool:
+    """Whether an argument admits a string, an array, and an object alike.
+
+    Such an argument declares no shape by design: it exists to catch a key
+    supplied at the wrong level and refuse it by name, whatever its value.
+    """
+    kinds = {branch.get("type") for branch in _branches(prop)}
+    return {"string", "array", "object"} <= kinds
+
+
+def _undeclared_item(array: dict) -> bool:
+    """Whether an array schema publishes an item with no declared shape.
+
+    Absent or empty ``items`` declare nothing, and neither does an object
+    branch without properties, wherever it sits among the item's alternatives.
+    """
+    items = array.get("items")
+    if not isinstance(items, dict) or not items:
+        return True
+    return any(
+        branch == {} or (branch.get("type") == "object" and not branch.get("properties"))
+        for branch in _branches(items)
+    )
+
+
 def _object_nodes(node: object) -> list[dict]:
     found: list[dict] = []
     if isinstance(node, dict):
@@ -186,20 +241,53 @@ def test_every_array_argument_publishes_its_item_shape():
     open_items: list[str] = []
     for tool, schema in sorted(_published_tools().items()):
         for name, prop in schema.get("properties", {}).items():
+            if _accepts_any_shape(prop):
+                continue
             for branch in _branches(prop):
                 if branch.get("type") != "array":
                     continue
                 arrays += 1
-                items = branch.get("items")
-                if (
-                    isinstance(items, dict)
-                    and items.get("type") == "object"
-                    and not items.get("properties")
-                ):
+                if _undeclared_item(branch):
                     open_items.append(f"{tool}.{name}")
 
     assert arrays >= len(_NESTED_ITEM_MODELS), "the walk found too few arrays to check anything"
     assert open_items == [], "these arguments publish an item with no declared properties"
+
+
+@pytest.mark.parametrize(
+    ("array", "undeclared"),
+    [
+        ({"type": "array"}, True),
+        ({"type": "array", "items": {}}, True),
+        ({"type": "array", "items": {"type": "object"}}, True),
+        ({"type": "array", "items": {"anyOf": [{"type": "object"}, {"type": "null"}]}}, True),
+        ({"type": "array", "items": {"anyOf": [{}, {"type": "null"}]}}, True),
+        ({"type": "array", "items": {"type": "string"}}, False),
+        (
+            {"type": "array", "items": {"type": "object", "properties": {"a": {}}}},
+            False,
+        ),
+    ],
+)
+def test_undeclared_item_predicate(array: dict, undeclared: bool):
+    """The gate above reads every shape an undeclared item is published in."""
+    assert _undeclared_item(array) is undeclared
+
+
+@pytest.mark.parametrize(("tool", "argument"), sorted(_NESTED_ITEM_MODELS))
+def test_published_shapes_carry_no_definition_prose(tool: str, argument: str):
+    """A model's or enum's docstring is written for a maintainer, not a caller.
+
+    Field descriptions are published; the class-level prose the model schema
+    attaches to each definition is not, nor the root item's title.
+    """
+    published = _published_item(tool, argument)
+    docstrings = _definition_docstrings(_model(_NESTED_ITEM_MODELS[(tool, argument)]))
+
+    assert docstrings, "no docstring reached; the check compares nothing"
+    assert "title" not in published and "description" not in published
+    leaked = [text[:60] for text in _descriptions(published) if text in docstrings]
+    assert leaked == [], f"definition docstrings published: {leaked}"
 
 
 @pytest.mark.parametrize(("tool", "argument"), sorted(_NESTED_ITEM_MODELS))

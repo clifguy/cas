@@ -1120,7 +1120,8 @@ def register_sage_tools(
             vault_id: Target vault identifier.
             items: List of per-item transition requests, each conforming to
                 the ``BulkLifecycleItem`` shape: ``{document_id?: str,
-                doc_id?: str, action: str, successor_id: str | None}``.
+                doc_id?: str, action: str, successor_id: str | None,
+                relocated_to: RelocationPointer | None}``.
                 Supply exactly one of ``document_id`` or ``doc_id`` per
                 item; ``doc_id`` is a back-compatible alias (neither or
                 both is a per-item error). Shape validation runs up front;
@@ -1815,7 +1816,7 @@ def register_sage_tools(
         response_mode: str | None = None,
         sort_by: str | None = None,
         sort_order: str | None = None,
-        facet_fields: list | None = None,
+        facet_fields: list[str] | None = None,
         facet_value_limit: int | None = None,
         # Tripwires, not functional arguments. These are the ``filters``
         # keys; they are published here only so a wrong-level spelling
