@@ -18,7 +18,7 @@ from sage.api.dependencies import (
     get_ingestion_service,
     get_vault_id,
 )
-from sage.api.response_docs import boundary_400
+from sage.api.response_docs import boundary_400, invalid_parameter_422
 from sage.api.wire_route import WireRoute
 from sage.models.schemas import (
     DocumentDownloadUrlResponse,
@@ -364,6 +364,7 @@ async def get_document_content(
                 "filesystem-based workflow for files above the ceiling."
             ),
         },
+        422: invalid_parameter_422(),
         502: {
             "model": ErrorResponse,
             "description": (

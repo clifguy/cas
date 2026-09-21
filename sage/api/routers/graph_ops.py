@@ -100,6 +100,7 @@ async def create_edges(
                 "lists the registered vaults."
             ),
         },
+        422: invalid_parameter_422(),
     },
 )
 async def unlink(

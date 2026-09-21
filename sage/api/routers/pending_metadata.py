@@ -7,7 +7,7 @@ GET /sage_vaults/{vault_id}/pending-metadata -- documents awaiting metadata
 from fastapi import APIRouter, Depends, Query
 
 from sage.api.dependencies import get_metadata_service, get_vault_id
-from sage.api.response_docs import boundary_400
+from sage.api.response_docs import boundary_400, invalid_parameter_422
 from sage.api.wire_route import WireRoute
 from sage.models.enums import ResponseMode
 from sage.models.schemas import ErrorResponse, PendingMetadataPage, VaultIdStr
@@ -32,6 +32,7 @@ router = APIRouter(route_class=WireRoute, tags=["pending_metadata"])
                 "lists the registered vaults."
             ),
         },
+        422: invalid_parameter_422(),
     },
 )
 async def list_pending_metadata(
