@@ -866,6 +866,8 @@ class GraphOpsService:
                 checks.append(
                     PreconditionCheck(
                         target_id=edge.target_id,
+                        title=target.title,
+                        doc_type=target.doc_type,
                         required=required,
                         actual="failed (pipeline_incomplete)",
                         satisfied=False,
@@ -877,6 +879,8 @@ class GraphOpsService:
             checks.append(
                 PreconditionCheck(
                     target_id=edge.target_id,
+                    title=target.title,
+                    doc_type=target.doc_type,
                     required=required,
                     actual=target.lifecycle_status,
                     satisfied=satisfied,

@@ -1,0 +1,20 @@
+classification: patch
+summary: >-
+  The four Core API operations without a request body that take a value able to
+  fail validation now declare their 422 invalid_parameter in the Core API
+  specification and in the routers, with the shared sentence:
+  get_default_vault_config (the required vault_id), get_document
+  (include_content), delete_edge (dry_run) and list_pending_metadata (limit,
+  offset, response_mode). The served OpenAPI document no longer publishes
+  FastAPI's default 422 HTTPValidationError on any operation, and drops the
+  HTTPValidationError and ValidationError schemas. That default stood on 25
+  operations, 21 of which cannot answer 422 at all, and named a body the server
+  never sends. A gate classifies every body-less route by whether it binds a
+  value that can fail validation, and holds the live document and the
+  specification to the result.
+detector_override:
+  reason: >-
+    Declares a refusal the four operations already returned at 422
+    invalid_parameter; no call the server accepted before is refused, and no
+    status any call answered changes. The removed default appeared only in the
+    served document, never in the published specifications.

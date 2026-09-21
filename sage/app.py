@@ -481,6 +481,60 @@ def _overlay_prose(document: dict, prose: dict) -> dict:
     return enriched
 
 
+#: The schemas FastAPI generates for its own request-validation response.
+_FRAMEWORK_VALIDATION_SCHEMAS: tuple[str, ...] = ("HTTPValidationError", "ValidationError")
+
+
+def _drop_framework_422(document: dict) -> dict:
+    """Return ``document`` without the generator's default 422 responses.
+
+    The generator attaches ``422 -> HTTPValidationError`` to every operation
+    that binds a parameter and declares no 422 of its own. The server never
+    sends that body: every request-validation failure is translated into the
+    error envelope (CAS-ADR-040), and an operation that can answer 422 declares
+    it with that envelope. What remains is a response the operation cannot
+    give, so it is removed, together with the framework schemas once nothing
+    refers to them.
+
+    ``document`` is not mutated.
+    """
+    stripped = dict(document)
+    framework_refs = {f"#/components/schemas/{name}" for name in _FRAMEWORK_VALIDATION_SCHEMAS}
+
+    paths: dict = {}
+    for path, path_item in (stripped.get("paths") or {}).items():
+        new_item = dict(path_item or {})
+        for method, operation in (path_item or {}).items():
+            if not isinstance(operation, dict):
+                continue
+            responses = operation.get("responses") or {}
+            schema = (
+                (responses.get("422") or {})
+                .get("content", {})
+                .get("application/json", {})
+                .get("schema", {})
+            )
+            if schema.get("$ref") in framework_refs:
+                new_item[method] = {
+                    **operation,
+                    "responses": {k: v for k, v in responses.items() if k != "422"},
+                }
+        paths[path] = new_item
+    stripped["paths"] = paths
+
+    components = dict(stripped.get("components") or {})
+    schemas = dict(components.get("schemas") or {})
+    # Outermost first: HTTPValidationError is what refers to ValidationError.
+    for name in _FRAMEWORK_VALIDATION_SCHEMAS:
+        others = {key: value for key, value in schemas.items() if key != name}
+        if name in schemas and f"#/components/schemas/{name}" not in repr((paths, others)):
+            schemas = others
+    if "schemas" in components:
+        components["schemas"] = schemas
+        stripped["components"] = components
+    return stripped
+
+
 def _bearer_scheme_description(auth: StackAuthConfig) -> str:
     """Describe the credential this deployment accepts.
 
@@ -513,7 +567,9 @@ def _bearer_scheme_description(auth: StackAuthConfig) -> str:
 def build_openapi_document(base: dict, auth: StackAuthConfig | None) -> dict:
     """Return ``base`` with authored prose and this deployment's auth posture.
 
-    Two things the schema generator cannot supply are added here.
+    Two things the schema generator cannot supply are added here, and one
+    thing it supplies wrongly is removed: its default 422, which describes a
+    body the server never sends (see ``_drop_framework_422``).
 
     The prose (CAS-ADR-008). The generator names each operation after its
     handler and describes it with the handler's docstring, while the authored
@@ -532,7 +588,7 @@ def build_openapi_document(base: dict, auth: StackAuthConfig | None) -> dict:
 
     ``base`` is not mutated; the caller keeps a clean generated document.
     """
-    document = _overlay_prose(base, _load_published_prose())
+    document = _overlay_prose(_drop_framework_422(base), _load_published_prose())
 
     if auth is None or not auth.enabled:
         return document

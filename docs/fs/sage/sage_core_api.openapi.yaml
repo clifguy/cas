@@ -1361,6 +1361,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: >-
+            `invalid_parameter`: a value in the request failed validation -- a
+            wrong type, a bound, a malformed value -- and no more specific
+            code reports it. `detail.parameter` locates the value as a dotted
+            path from the top of the request, with a list position as its
+            index, `detail.value` carries it, and `detail.constraint` states
+            the rule it broke.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "502":
           description: >-
             `vault_source_store_refused`: the vault-source store declined the
@@ -1711,7 +1723,9 @@ paths:
         archived) so the caller can act on the gap rather than
         re-querying each dependency. A target the vault does not hold
         is reported unsatisfied with `actual` of "not found" rather
-        than raising.
+        than raising. Each row names its target by `title` and
+        `doc_type` as well as `target_id`, both null when the target
+        is not found.
 
 
         With no configuration the dependency-satisfying set is the
@@ -2360,6 +2374,18 @@ paths:
 
             `unknown_parameter`: the request carries a body field or query
             parameter the operation does not declare.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: >-
+            `invalid_parameter`: a value in the request failed validation -- a
+            wrong type, a bound, a malformed value -- and no more specific
+            code reports it. `detail.parameter` locates the value as a dotted
+            path from the top of the request, with a list position as its
+            index, `detail.value` carries it, and `detail.constraint` states
+            the rule it broke.
           content:
             application/json:
               schema:
@@ -3019,6 +3045,18 @@ paths:
           description: >-
             `vault_not_found`: no vault registered with that id;
             `detail.available_vaults` lists the registered vaults.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: >-
+            `invalid_parameter`: a value in the request failed validation -- a
+            wrong type, a bound, a malformed value -- and no more specific
+            code reports it. `detail.parameter` locates the value as a dotted
+            path from the top of the request, with a list position as its
+            index, `detail.value` carries it, and `detail.constraint` states
+            the rule it broke.
           content:
             application/json:
               schema:
@@ -3774,6 +3812,18 @@ paths:
 
             `vault_not_found`: no vault registered with that id;
             `detail.available_vaults` lists the registered vaults.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: >-
+            `invalid_parameter`: a value in the request failed validation -- a
+            wrong type, a bound, a malformed value -- and no more specific
+            code reports it. `detail.parameter` locates the value as a dotted
+            path from the top of the request, with a list position as its
+            index, `detail.value` carries it, and `detail.constraint` states
+            the rule it broke.
           content:
             application/json:
               schema:
@@ -8125,6 +8175,16 @@ components:
         target_id:
           type: string
           description: Document ID of the dependency target.
+        title:
+          type: [string, "null"]
+          description: >-
+            Title of the dependency target; null when the vault does not
+            hold it.
+        doc_type:
+          type: [string, "null"]
+          description: >-
+            doc_type of the dependency target; null when the vault does not
+            hold it or the target has none.
         required:
           type: string
           description: >-

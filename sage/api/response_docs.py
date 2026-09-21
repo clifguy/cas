@@ -91,10 +91,11 @@ def boundary_400(
     return {"model": ErrorResponse, "description": "\n\n".join(paragraphs)}
 
 
-#: The request-validation refusal every operation binding a body can return: a
-#: value that fails validation with no more specific code to report it. FastAPI
-#: would otherwise publish its own 422 schema, which names a body the server
-#: never sends.
+#: The request-validation refusal every operation binding a body, or a query,
+#: header or cookie value that can fail validation, can return: a value that
+#: fails validation with no more specific code to report it. FastAPI would
+#: otherwise publish its own 422 schema, which names a body the server never
+#: sends.
 INVALID_PARAMETER_422_SENTENCE: str = (
     "`invalid_parameter`: a value in the request failed validation -- a wrong "
     "type, a bound, a malformed value -- and no more specific code reports it. "
@@ -105,7 +106,7 @@ INVALID_PARAMETER_422_SENTENCE: str = (
 
 
 def invalid_parameter_422(extra: str | None = None) -> dict[str, object]:
-    """Build the 422 ``responses`` entry for an operation that binds a body.
+    """Build the 422 ``responses`` entry for an operation that can refuse a value.
 
     ``extra`` carries the operation's own 422 prose and is placed first, as in
     ``boundary_400``, so the refusal particular to this operation is read

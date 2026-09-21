@@ -9,9 +9,10 @@ live probes in ``test_validation_envelope_parity.py`` (Core API) and
 wire; this module makes "every" true, for the routes the app serves and for both
 published specifications, so an operation added later cannot omit it.
 
-Without a declared 422 FastAPI publishes its own ``HTTPValidationError`` 422,
-which names a body shape the server never sends. The walks below therefore
-assert the declared schema, not merely the status.
+FastAPI's own ``HTTPValidationError`` 422, which names a body shape the server
+never sends, is dropped from the served document, so an operation that omits
+the declaration publishes no 422 at all. The walks below assert the declared
+schema and sentence, not merely the status.
 """
 
 from __future__ import annotations

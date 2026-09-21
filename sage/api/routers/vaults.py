@@ -57,6 +57,7 @@ async def list_vaults(
     summary="Return the default configuration a new vault would be created with.",
     responses={
         400: boundary_400(request=("invalid_vault_id", "unknown_parameter")),
+        422: invalid_parameter_422(),
     },
 )
 async def get_default_vault_config(

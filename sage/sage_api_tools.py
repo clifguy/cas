@@ -1568,7 +1568,9 @@ def register_sage_tools(
         configuration declares dependency-satisfying and pipeline_status
         not ``failed`` — a target still mid-pipeline is not rejected. A
         target the vault does not hold is reported unsatisfied with
-        ``actual`` of "not found" rather than raising.
+        ``actual`` of "not found" rather than raising. Each row names its
+        target by ``title`` and ``doc_type`` as well as ``target_id``, both
+        null when the target is not found.
         Returns ``satisfied`` boolean plus a
         per-edge breakdown of failing reasons (e.g. predecessor still
         in projection, target archived) so the caller can act on the

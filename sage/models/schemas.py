@@ -3248,6 +3248,17 @@ class ChainResponse(BaseModel):
 
 class PreconditionCheck(BaseModel):
     target_id: DocumentIdStr = Field(description="Document ID of the dependency target.")
+    title: str | None = Field(
+        default=None,
+        description="Title of the dependency target; null when the vault does not hold it.",
+    )
+    doc_type: str | None = Field(
+        default=None,
+        description=(
+            "doc_type of the dependency target; null when the vault does not "
+            "hold it or the target has none."
+        ),
+    )
     required: str = Field(
         description=(
             "Required condition, derived from the vault's lifecycle "
