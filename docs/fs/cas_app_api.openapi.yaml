@@ -1017,7 +1017,9 @@ components:
           description: >-
             The doc_type a real run would apply, resolved through the
             same precedence chain: caller metadata > filename parse
-            (only when `needs_review` is true) > predecessor
+            (only when `needs_review` is true) > the reused record's own
+            doc_type (only on a force re-ingest that reuses a record,
+            the pinned one where `document_id` pins it) > predecessor
             inheritance > `misc`.
         resolved_source_type:
           type: string

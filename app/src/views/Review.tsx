@@ -6,6 +6,7 @@ import { listPendingMetadata, listStagingEdges, confirmStagingEdge, dismissStagi
 import { updateMetadata } from '../api/documents';
 import { BulkActionBar } from '../components/BulkActionBar';
 import { BulkLifecycleDialog } from '../components/BulkLifecycleDialog';
+import { selectedDocTypes } from '../utils/lifecycleScope';
 import { BulkMetadataDialog } from '../components/BulkMetadataDialog';
 
 export default function Review() {
@@ -150,6 +151,7 @@ export default function Review() {
         <BulkLifecycleDialog
           vaultId={vaultId}
           selectedIds={Array.from(selectedIds)}
+          selectedDocTypes={selectedDocTypes(selectedIds, pendingMeta.map((m) => m.document))}
           onResolved={handleBulkResolved}
           onClose={() => setLifecycleDialogOpen(false)}
         />

@@ -14,14 +14,20 @@ import { getVaultConfig } from '../../api/vaults';
 import { bulkSetLifecycle } from '../../api/bulk';
 import type { BulkLifecycleResponse, VaultConfig } from '../../api/types';
 
-function makeVaultConfig(actions: string[]): VaultConfig {
+type TransitionSpec = string | { action: string; doc_types: string[] };
+
+function makeVaultConfig(actions: TransitionSpec[]): VaultConfig {
   return {
     vault: { id: 'v', name: 'v', description: null, owner: 'system', storage_root: '', brain_root: '', visibility: 'private', members: null, timezone: 'UTC' },
     document_types: { doc_types: [] },
     lifecycle: {
       base_states_required: true,
       states: [],
-      transitions: actions.map((a) => ({ from_state: 'active', action: a, to_state: 'archived' })),
+      transitions: actions.map((a) =>
+        typeof a === 'string'
+          ? { from_state: 'active', action: a, to_state: 'archived' }
+          : { from_state: 'active', action: a.action, to_state: 'archived', doc_types: a.doc_types },
+      ),
     },
     metadata_extraction: {},
     edge_inference: {},
@@ -51,6 +57,7 @@ function renderDialog(props: Partial<Parameters<typeof BulkLifecycleDialog>[0]> 
   const defaults = {
     vaultId: 'test_vault',
     selectedIds: ['D1', 'D2', 'D3'],
+    selectedDocTypes: ['ticket'] as (string | null)[],
     onResolved: vi.fn(),
     onClose: vi.fn(),
   };
@@ -63,7 +70,55 @@ beforeEach(() => {
   vi.mocked(bulkSetLifecycle).mockReset();
 });
 
+async function offeredActions(): Promise<string[]> {
+  await waitFor(() => expect(screen.getByRole('combobox', { name: /action/i })).toBeEnabled());
+  const select = screen.getByRole('combobox', { name: /action/i }) as HTMLSelectElement;
+  return Array.from(select.options)
+    .map((o) => o.value)
+    .filter((v) => v !== '');
+}
+
 describe('BulkLifecycleDialog', () => {
+  // A scoped action offered to a document outside its scope fails per item
+  // with `invalid_action`. The paired in-scope arm keeps a dialog that offers
+  // nothing scoped at all from passing.
+  it('hides a scoped action for an out-of-scope selection', async () => {
+    const cfg = makeVaultConfig(['archive', { action: 'complete', doc_types: ['ticket'] }]);
+    vi.mocked(getVaultConfig).mockResolvedValue(cfg);
+    const outOfScope = renderDialog({ selectedDocTypes: ['adr'] });
+    expect(await offeredActions()).toEqual(['archive']);
+    outOfScope.unmount();
+
+    renderDialog({ selectedDocTypes: ['ticket'] });
+    expect(await offeredActions()).toEqual(['archive', 'complete']);
+  });
+
+  it('offers the intersection for a mixed selection and says how many are hidden', async () => {
+    vi.mocked(getVaultConfig).mockResolvedValue(
+      makeVaultConfig(['archive', { action: 'complete', doc_types: ['ticket'] }]),
+    );
+    renderDialog({ selectedDocTypes: ['ticket', 'adr'] });
+    expect(await offeredActions()).toEqual(['archive']);
+    expect(screen.getByTestId('bulk-lifecycle-hidden-hint')).toHaveTextContent(
+      /1 action not offered/i,
+    );
+  });
+
+  it('offers a document without a doc_type only unscoped actions', async () => {
+    vi.mocked(getVaultConfig).mockResolvedValue(
+      makeVaultConfig(['archive', { action: 'complete', doc_types: ['ticket'] }]),
+    );
+    renderDialog({ selectedDocTypes: [null] });
+    expect(await offeredActions()).toEqual(['archive']);
+  });
+
+  it('shows no hint when every action applies', async () => {
+    vi.mocked(getVaultConfig).mockResolvedValue(makeVaultConfig(['archive', 'complete']));
+    renderDialog({ selectedDocTypes: ['ticket', 'adr'] });
+    expect(await offeredActions()).toEqual(['archive', 'complete']);
+    expect(screen.queryByTestId('bulk-lifecycle-hidden-hint')).not.toBeInTheDocument();
+  });
+
   it('populates the action dropdown from transitions excluding supersede', async () => {
     vi.mocked(getVaultConfig).mockResolvedValue(makeVaultConfig(['archive', 'supersede', 'complete']));
     renderDialog();

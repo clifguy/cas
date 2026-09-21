@@ -35,7 +35,7 @@ from sage.api.errors import (
     Tier3SchemaViolationError,
 )
 from sage.config import VaultConfig
-from sage.models.enums import SourceType
+from sage.models.enums import DryRunValidator, SourceType
 from sage.models.schemas import (
     IngestPreview,
     IngestRequest,
@@ -855,6 +855,275 @@ async def test_dry_run_accepts_a_force_pin_on_a_non_representative_holder(
 
     assert preview.would_create is True
     assert preview.duplicate_of == held.id
+
+
+# A force re-ingest reuses a record, and the doc_type it writes is the
+# caller's, else the filename parse's, else the reused record's own, and only
+# then the predecessor's or ``misc``. Each test below pairs the preview with
+# the run it previews: a preview that reports the right doc_type while the run
+# validates against another would pass a preview-only assertion.
+
+
+async def _seed(service, tmp_vault_dir, name, doc_type, tier3=None):
+    source = _write(tmp_vault_dir, name, f"# {name}\n\nHeld once.")
+    seeded = await service.ingest(
+        IngestRequest(
+            source=str(source),
+            source_type=SourceType.MARKDOWN,
+            metadata={"doc_type": doc_type},
+            tier3_metadata=tier3,
+        )
+    )
+    return source, seeded.document
+
+
+async def test_force_reingest_preview_reports_the_reused_records_doc_type(
+    tmp_vault_dir, graph_store, dry_ingestion_service
+):
+    source, held = await _seed(dry_ingestion_service, tmp_vault_dir, "reused.md", "loose_record")
+    request = {"source": str(source), "source_type": SourceType.MARKDOWN, "force": True}
+
+    preview = await dry_ingestion_service.ingest(IngestRequest(**request, dry_run=True))
+    await dry_ingestion_service.ingest(IngestRequest(**request))
+
+    assert preview.resolved_doc_type == "loose_record"
+    assert preview.requirements.doc_type == "loose_record"
+    assert (await graph_store.get_document(held.id)).doc_type == "loose_record"
+
+
+async def test_force_reingest_tier3_validates_against_the_reused_records_doc_type(
+    tmp_vault_dir, graph_store, dry_ingestion_service
+):
+    """The payload is valid for ``loose_record`` and refused against ``misc``,
+    which declares no schema at all, so validating against the wrong doc_type
+    refuses on either half."""
+    source, held = await _seed(dry_ingestion_service, tmp_vault_dir, "reused_t3.md", "loose_record")
+    request = {
+        "source": str(source),
+        "source_type": SourceType.MARKDOWN,
+        "force": True,
+        "tier3_metadata": {"ticket_id": "fixture-reused"},
+    }
+
+    preview = await dry_ingestion_service.ingest(IngestRequest(**request, dry_run=True))
+    await dry_ingestion_service.ingest(IngestRequest(**request))
+
+    assert preview.tier3_validated is True
+    stored = await graph_store.get_document(held.id)
+    assert stored.tier3_metadata == {"ticket_id": "fixture-reused"}
+
+
+@pytest.mark.parametrize("dry_run", [True, False], ids=["preview", "run"])
+async def test_force_reingest_tier3_refusal_names_the_reused_records_doc_type(
+    tmp_vault_dir, dry_ingestion_service, dry_run
+):
+    source, _held = await _seed(
+        dry_ingestion_service, tmp_vault_dir, f"reused_bad_{dry_run}.md", "loose_record"
+    )
+
+    with pytest.raises(Tier3SchemaViolationError) as excinfo:
+        await dry_ingestion_service.ingest(
+            IngestRequest(
+                source=str(source),
+                source_type=SourceType.MARKDOWN,
+                force=True,
+                tier3_metadata={"bogus": 1},
+                dry_run=dry_run,
+            )
+        )
+
+    assert excinfo.value.detail["doc_type"] == "loose_record"
+
+
+async def test_force_reingest_preview_resolves_from_the_pinned_record(
+    tmp_vault_dir, graph_store, dry_ingestion_service
+):
+    """The representative and the pinned holder carry different doc_types, so
+    resolving from ``duplicate_of`` rather than the pin reports the wrong one."""
+    source, held = await _seed(
+        dry_ingestion_service, tmp_vault_dir, "pinned_type.md", "loose_record"
+    )
+    sibling = held.model_copy(
+        update={
+            "id": "ffffffff_pinned_type_sibling",
+            "source_path": "pinned_type_sibling.md",
+            "doc_type": "bare_record",
+        }
+    )
+    await graph_store.insert_document(sibling)
+
+    preview = await dry_ingestion_service.ingest(
+        IngestRequest(
+            source=str(source),
+            source_type=SourceType.MARKDOWN,
+            force=True,
+            document_id=sibling.id,
+            dry_run=True,
+        )
+    )
+
+    assert preview.duplicate_of == held.id
+    assert preview.resolved_doc_type == "bare_record"
+
+
+@pytest.mark.parametrize(
+    ("seeded_type", "name", "extra", "expected"),
+    [
+        (
+            "loose_record",
+            "caller_wins.md",
+            {"metadata": {"doc_type": "bare_record"}},
+            "bare_record",
+        ),
+        (
+            "bare_record",
+            "2026-09-21_CAS_LR_parse-wins.md",
+            {"needs_review": True},
+            "loose_record",
+        ),
+    ],
+    ids=["caller-over-reused", "parse-over-reused"],
+)
+async def test_force_reingest_preview_ranks_the_reused_record_below_caller_and_parse(
+    tmp_vault_dir, graph_store, dry_ingestion_service, seeded_type, name, extra, expected
+):
+    source, held = await _seed(dry_ingestion_service, tmp_vault_dir, name, seeded_type)
+    request = {"source": str(source), "source_type": SourceType.MARKDOWN, "force": True, **extra}
+
+    preview = await dry_ingestion_service.ingest(IngestRequest(**request, dry_run=True))
+    await dry_ingestion_service.ingest(IngestRequest(**request))
+
+    assert preview.resolved_doc_type == expected
+    assert (await graph_store.get_document(held.id)).doc_type == expected
+
+
+async def test_force_without_a_hash_match_resolves_as_a_new_document(
+    tmp_vault_dir, dry_ingestion_service
+):
+    """With no record holding the bytes a force re-ingest resolves through the
+    new-document chain, down to its predecessor rung. A regression guard for
+    that path rather than a discriminator: with nothing to reuse, no rival
+    that misplaces the reused rung can answer differently here."""
+    _pred_source, pred = await _seed(
+        dry_ingestion_service, tmp_vault_dir, "force_pred.md", "loose_record"
+    )
+    novel = _write(tmp_vault_dir, "force_novel.md", "# Novel\n\nNever ingested.")
+
+    bare = await dry_ingestion_service.ingest(
+        IngestRequest(source=str(novel), source_type=SourceType.MARKDOWN, force=True, dry_run=True)
+    )
+    inherited = await dry_ingestion_service.ingest(
+        IngestRequest(
+            source=str(novel),
+            source_type=SourceType.MARKDOWN,
+            force=True,
+            predecessor_id=pred.id,
+            dry_run=True,
+        )
+    )
+
+    assert bare.duplicate_of is None
+    assert bare.resolved_doc_type == "misc"
+    assert inherited.resolved_doc_type == "loose_record"
+
+
+# The upload-first dry run checks a request before its bytes exist, so it can
+# name the record a force re-ingest reuses only from what the request carries:
+# a ``document_id`` pin, or the declared ``sha256``. With neither, and nothing
+# above the reused rung naming a doc_type, the doc_type is unknowable there and
+# the tier3 check is left to the call that delivers the bytes.
+
+
+def _no_bytes_request(source: str, **fields) -> IngestRequest:
+    return IngestRequest(
+        source=source, source_type=SourceType.MARKDOWN, force=True, dry_run=True, **fields
+    )
+
+
+async def test_no_bytes_check_resolves_the_reused_record_from_the_declared_digest(
+    tmp_vault_dir, dry_ingestion_service
+):
+    source, held = await _seed(dry_ingestion_service, tmp_vault_dir, "nb_digest.md", "loose_record")
+    valid = _no_bytes_request(
+        source.name, sha256=held.source_content_hash, tier3_metadata={"ticket_id": "T-1"}
+    )
+    invalid = _no_bytes_request(
+        source.name, sha256=held.source_content_hash, tier3_metadata={"bogus": 1}
+    )
+
+    ran = await dry_ingestion_service.validate_without_bytes(valid)
+    with pytest.raises(Tier3SchemaViolationError) as excinfo:
+        await dry_ingestion_service.validate_without_bytes(invalid)
+
+    assert DryRunValidator.TIER3_METADATA in ran
+    assert excinfo.value.detail["doc_type"] == "loose_record"
+
+
+async def test_no_bytes_check_resolves_the_reused_record_from_the_pin(
+    tmp_vault_dir, dry_ingestion_service
+):
+    source, held = await _seed(dry_ingestion_service, tmp_vault_dir, "nb_pin.md", "loose_record")
+
+    with pytest.raises(Tier3SchemaViolationError) as excinfo:
+        await dry_ingestion_service.validate_without_bytes(
+            _no_bytes_request(source.name, document_id=held.id, tier3_metadata={"bogus": 1})
+        )
+
+    assert excinfo.value.detail["doc_type"] == "loose_record"
+
+
+async def test_no_bytes_check_leaves_an_unknowable_doc_type_to_the_byte_call(
+    tmp_vault_dir, dry_ingestion_service
+):
+    """With no pin, no digest and no named doc_type the payload is not checked
+    and the check is not claimed. The caller-named arm is checked as before,
+    so a path that stopped checking tier3 altogether fails there."""
+    source, _held = await _seed(
+        dry_ingestion_service, tmp_vault_dir, "nb_unknown.md", "loose_record"
+    )
+
+    ran = await dry_ingestion_service.validate_without_bytes(
+        _no_bytes_request(source.name, tier3_metadata={"bogus": 1})
+    )
+    with pytest.raises(Tier3SchemaViolationError):
+        await dry_ingestion_service.validate_without_bytes(
+            _no_bytes_request(
+                source.name, metadata={"doc_type": "loose_record"}, tier3_metadata={"bogus": 1}
+            )
+        )
+
+    assert DryRunValidator.TIER3_METADATA not in ran
+
+
+@pytest.mark.parametrize(
+    ("caller", "parsed", "reused", "predecessor", "expected"),
+    [
+        ("caller_t", "parsed_t", "reused_t", "pred_t", "caller_t"),
+        (None, "parsed_t", "reused_t", "pred_t", "parsed_t"),
+        (None, None, "reused_t", "pred_t", "reused_t"),
+        (None, None, None, "pred_t", "pred_t"),
+        (None, None, None, None, "misc"),
+    ],
+    ids=["caller", "parse", "reused", "predecessor", "fallback"],
+)
+def test_resolve_ingest_doc_type_rungs(caller, parsed, reused, predecessor, expected):
+    """Each arm removes the rung above it, so a rung placed out of order
+    answers for the wrong arm. A reused record or predecessor carrying no
+    doc_type falls through as though absent."""
+    request = IngestRequest(
+        source="x.md",
+        source_type=SourceType.MARKDOWN,
+        metadata={"doc_type": caller} if caller else None,
+    )
+
+    resolved = IngestionService._resolve_ingest_doc_type(
+        request=request,
+        parsed=SimpleNamespace(doc_type=parsed) if parsed else None,
+        predecessor=SimpleNamespace(doc_type=predecessor),
+        reused=SimpleNamespace(doc_type=reused),
+    )
+
+    assert resolved == expected
 
 
 # ---------------------------------------------------------------------------

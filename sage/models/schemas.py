@@ -2480,7 +2480,9 @@ class IngestPreview(BaseModel):
         description=(
             "The doc_type a real run would apply, resolved through the same "
             "precedence chain: caller metadata > filename parse (only when "
-            "`needs_review` is true) > predecessor inheritance > `misc`."
+            "`needs_review` is true) > the reused record's own doc_type (only "
+            "on a force re-ingest that reuses a record, the pinned one where "
+            "`document_id` pins it) > predecessor inheritance > `misc`."
         )
     )
     resolved_source_type: SourceType = Field(
@@ -6269,8 +6271,11 @@ class UploadRecipeItem(BaseModel):
             "this leg's file gave something to check, each of which passed "
             "before the recipe was returned. The checks that need the bytes -- "
             "the content hash, the duplicate verdict, the declared digest -- "
-            "run when the call is repeated with the transfer token. Absent "
-            "outside a dry run, and on a leg carrying `dry_run_error`."
+            "run when the call is repeated with the transfer token, as does "
+            "the `tier3_metadata` check of a force re-ingest that names no "
+            "doc_type and neither pins the record it reuses nor declares its "
+            "`sha256`. Absent outside a dry run, and on a leg carrying "
+            "`dry_run_error`."
         ),
     )
     dry_run_error: BatchIngestFileError | None = Field(

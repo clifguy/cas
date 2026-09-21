@@ -1,0 +1,18 @@
+classification: patch
+summary: >-
+  A force re-ingest that names no doc_type now resolves the doc_type it validates and
+  reports from the record it reuses, the one it already wrote. The ingest dry run reported
+  IngestPreview.resolved_doc_type as it would for a new document, falling through to the
+  predecessor or misc, and both the preview and the real run checked tier3_metadata against
+  that value, so a payload valid for the reused record's doc_type was refused as
+  tier3_schema_violation. Both paths now read one resolution -- caller, filename parse, the
+  reused record (the pinned one under a document_id pin), predecessor, misc -- which also
+  feeds the preview's retype guard. On a force re-ingest the tier3 check therefore runs once
+  the reused record is known, after the identical-content, pin and path checks rather than
+  before them. The upload-first dry run, which has no bytes to hash, finds the reused record
+  through the document_id pin or the declared sha256; with neither, and no doc_type named,
+  it leaves the tier3 check to the call that delivers the bytes and omits tier3_metadata from
+  the leg's dry_run_validated rather than checking against a doc_type the write would not
+  carry. The descriptions of IngestPreview.resolved_doc_type, in both specifications, and of
+  the upload leg's dry_run_validated name the added rung and the deferred check.
+for_callers: ""
