@@ -9,11 +9,12 @@ holds operations that bind a body to the declared refusal. This module covers
 the rest, which fall into two classes:
 
 * **Fallible.** A query, header or cookie value can fail validation -- it is
-  required, or it is typed as something other than a string -- so the
-  operation can answer ``invalid_parameter`` at 422 and must declare it.
+  required, it is typed as something other than a string, or it carries a
+  constraint such as a length, a pattern or a bound -- so the operation can
+  answer ``invalid_parameter`` at 422 and must declare it.
 * **Phantom.** Every bound value is a path segment, refused at 400 by its
-  typed alias, or a string with a default. No 422 is reachable, and the
-  published document must not claim one.
+  typed alias, or an unconstrained string with a default. No 422 is
+  reachable, and the published document must not claim one.
 
 The classifier below decides which class a route is in. Its reach is pinned
 both ways: against the live route set, and against a synthetic app it must
@@ -29,16 +30,26 @@ import types
 import typing
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Annotated
 
 import pytest
 import yaml
-from fastapi import Cookie, FastAPI, Header
+from fastapi import Cookie, FastAPI, Header, Query
 from fastapi.dependencies.utils import get_flat_dependant
 from fastapi.routing import APIRoute
 from httpx import ASGITransport, AsyncClient
+from pydantic import (
+    AfterValidator,
+    BeforeValidator,
+    PlainValidator,
+    StringConstraints,
+    WrapValidator,
+)
+from pydantic.fields import FieldInfo
 
 from sage.api.response_docs import INVALID_PARAMETER_422_SENTENCE
 from sage.app import create_app
+from sage.models.schemas import VaultIdStr
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CORE_SPEC = _REPO_ROOT / "docs" / "fs" / "sage" / "sage_core_api.openapi.yaml"
@@ -74,6 +85,34 @@ def _base_annotation(annotation: object) -> object:
     return annotation
 
 
+#: Validator wrappers a typed alias carries. Its refusal is a 400 with its own
+#: code, so a wrapper alone does not make a value fallible at 422.
+_VALIDATOR_WRAPPERS = (AfterValidator, BeforeValidator, PlainValidator, WrapValidator)
+
+
+def _constraints(field_info: FieldInfo) -> list[object]:
+    """The constraints on a value: a length, a pattern, a bound, and the like.
+
+    Collected from the field's metadata and from any ``Annotated`` arguments
+    left on its annotation, including one under a single ``None`` arm, less the
+    validator wrappers typed aliases carry.
+    """
+    items = list(field_info.metadata)
+    annotation = field_info.annotation
+    while True:
+        if typing.get_origin(annotation) is typing.Annotated:
+            annotation, *extra = typing.get_args(annotation)
+            items.extend(extra)
+        elif typing.get_origin(annotation) in (typing.Union, types.UnionType):
+            arms = [arm for arm in typing.get_args(annotation) if arm is not type(None)]
+            if len(arms) != 1:
+                break
+            annotation = arms[0]
+        else:
+            break
+    return [item for item in items if not isinstance(item, _VALIDATOR_WRAPPERS)]
+
+
 def _fallible_parameters(route: APIRoute) -> list[str]:
     """Names of the non-path values on ``route`` that can fail validation."""
     dependant = get_flat_dependant(route.dependant)
@@ -82,6 +121,7 @@ def _fallible_parameters(route: APIRoute) -> list[str]:
         for param in (dependant.query_params + dependant.header_params + dependant.cookie_params)
         if param.field_info.is_required()
         or _base_annotation(param.field_info.annotation) is not str
+        or _constraints(param.field_info)
     )
 
 
@@ -181,7 +221,40 @@ def test_classifier_flags_a_synthetic_undeclared_route():
     async def token(x_token: str = Header(default="")) -> dict:
         return {}
 
-    assert _undeclared_fallible(synthetic) == ["cookie", "flagged", "header", "required"]
+    # A defaulted string still fails validation when it carries a constraint,
+    # whether given as a Query keyword or as Annotated metadata.
+    @synthetic.get("/length", operation_id="length")
+    async def length(q: str = Query(default="", max_length=3)) -> dict:
+        return {}
+
+    @synthetic.get("/pattern", operation_id="pattern")
+    async def pattern(q: str = Query(default="", pattern=r"^[a-z]+$")) -> dict:
+        return {}
+
+    @synthetic.get("/constrained", operation_id="constrained")
+    async def constrained(q: Annotated[str, StringConstraints(max_length=3)] = "") -> dict:
+        return {}
+
+    @synthetic.get("/optional", operation_id="optional")
+    async def optional(q: Annotated[str, StringConstraints(max_length=3)] | None = None) -> dict:
+        return {}
+
+    # A typed alias refuses a malformed value at 400, so its validator is not
+    # a constraint that makes the value fallible.
+    @synthetic.get("/alias", operation_id="alias")
+    async def alias(vault_id: VaultIdStr | None = None) -> dict:
+        return {}
+
+    assert _undeclared_fallible(synthetic) == [
+        "constrained",
+        "cookie",
+        "flagged",
+        "header",
+        "length",
+        "optional",
+        "pattern",
+        "required",
+    ]
 
 
 def test_spec_declares_invalid_parameter_on_fallible_operations():
