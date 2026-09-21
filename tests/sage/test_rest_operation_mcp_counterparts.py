@@ -571,6 +571,9 @@ async def test_recompute_views_refused_under_the_cloud_profile_before_the_wipe(
     assert via_tool["error"] == via_route["code"] == "caller_filesystem_unavailable"
     assert via_tool["detail"] == via_route["detail"]
     assert via_route["detail"]["operation"] == "recompute_views"
+    assert via_route["message"].startswith(
+        "recompute_views requires a filesystem shared between the caller and the SAGE server"
+    )
     jsonschema.validate(via_tool, tool_error_schema("", "recompute_views"))
     assert sentinel.read_text(encoding="utf-8") == "kept"
     assert not (views / "by_lifecycle").exists()

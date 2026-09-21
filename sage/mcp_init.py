@@ -365,15 +365,17 @@ def caller_local_filesystem_reachable() -> bool:
 
 
 def require_caller_local_filesystem(operation: str, remedy: str) -> None:
-    """Refuse a caller-path operation the running server cannot honor.
+    """Refuse an operation that needs a filesystem the caller and server share.
 
     Under a profile where SAGE cannot see the calling client's filesystem (the
-    cloud profile: a remote container), a caller-supplied local path would
-    silently resolve against the server's own tree -- the usability gap and the
-    container-walk disclosure in one. Path-bearing tools call this before
-    touching such a path so the operation is refused with a structured error
-    naming the sanctioned in-request mechanism, instead of reading, writing, or
-    enumerating the container. A no-op under the local profile.
+    cloud profile: a remote container), neither side can see the other's tree.
+    A caller-supplied local path would silently resolve against the server's
+    own tree -- the usability gap and the container-walk disclosure in one --
+    and an output written into the server's vault tree would land where no
+    caller can reach it. Operations of either shape call this first, so they
+    are refused with a structured error naming the sanctioned in-request
+    mechanism instead of reading, writing, or enumerating the container. A
+    no-op under the local profile.
 
     ``operation`` names the refused affordance and ``remedy`` names the
     in-request mechanism to use instead; both land in the error envelope.
