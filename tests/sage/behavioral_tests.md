@@ -873,10 +873,53 @@ allows assertion maintenance independent of vault configuration.
 **Input:** `eval_retrieval()`
 
 **Expected:**
-- HTTP 400
-- `code: "assertions_file_not_found"` (or `"assertions_file_invalid"` for malformed)
+- HTTP 404 with `code: "assertions_file_not_found"` (HTTP 400 with
+  `"assertions_file_invalid"` for malformed)
 
 **Rationale:** Clear error for operational misconfiguration.
+
+### TEST-SAGE-BH-041a: Assertions file read through the vault-source store
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (verify_vault_retrieval)
+**Category:** utilities, deployment_profiles
+**Decision:** The assertions file is named by a storage-root-relative path and
+read through the active vault-source store, addressed as a document's
+`source_path` is (CAS-ADR-043). The same configuration reaches the file on the
+local tree under the filesystem binding and in the vault's document-store folder
+under the document-store binding, so both request surfaces behave alike under
+both profiles (CAS-ADR-052).
+
+**Precondition:** Vault config names `retrieval_assertions.yaml`; the file is
+held only where the selected binding keeps sources -- for the document-store
+binding, in the store and not on the local tree.
+
+**Input:** `eval_retrieval()`, and `verify_vault_retrieval` on both surfaces.
+
+**Expected:**
+- The report is produced from the store-held file under either binding.
+- The MCP tool and the REST route return equal reports.
+
+**Rationale:** Under the cloud profile the storage root is inert local disk; a
+local read could never find the file whatever the vault held.
+
+### TEST-SAGE-BH-042a: Store-read refusals are typed on either binding
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (verify_vault_retrieval)
+**Category:** utilities, error_semantics
+**Decision:** A store-read keeps the operation's refusals typed and identical
+across bindings.
+
+**Expected:**
+- A file absent from the store: HTTP 404 `assertions_file_not_found` on both
+  bindings and both surfaces, never a store refusal.
+- A path leaving the storage root: HTTP 400 `assertions_file_invalid`, refused
+  before the store is consulted.
+- Malformed YAML read from the store: HTTP 400 `assertions_file_invalid`.
+- The store declining the read: HTTP 502 `vault_source_store_refused` (or 503
+  `vault_source_store_unavailable` when transient), naming the read.
+
+**Rationale:** The caller's remedy differs for each; a missing file reported as
+a store refusal would send the operator to the store instead of the config.
 
 
 ### TEST-SAGE-BH-043: refresh_views generates by_doc_type and by_lifecycle directories

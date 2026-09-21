@@ -13,6 +13,7 @@ from sage.api.dependencies import get_ingestion_service, get_vault_id, get_vault
 from sage.api.errors import (
     InvalidParameterError,
     SAGEError,
+    UndeclaredKeyError,
     codes_and_tags_conflict_error,
     translate_validation_error,
     undeclared_entry_key_error,
@@ -21,6 +22,8 @@ from sage.api.response_docs import boundary_400
 from sage.api.wire_route import WireRoute
 from sage.mcp_init import SAGEServices
 from sage.models.schemas import (
+    BatchIngestFileMetadata,
+    BatchIngestParsedMetadata,
     BatchIngestUploadMetadata,
     ErrorResponse,
     IngestPreview,
@@ -36,12 +39,15 @@ from sage.services.ingestion import IngestionService
 router = APIRouter(route_class=WireRoute, tags=["Ingestion"])
 
 
-def _undeclared_file_entry_key(exc: ValidationError) -> InvalidParameterError | None:
+def _undeclared_file_entry_key(exc: ValidationError) -> UndeclaredKeyError | None:
     """Return the refusal for an undeclared key in a batch file entry, if any.
 
     Only a key under ``files.<n>`` or ``files.<n>.parsed_metadata`` qualifies;
     every other defect in the envelope stays ``invalid_batch_metadata``. Which
     key is reported, when there are several, is ``undeclared_entry_key_error``'s.
+    The accepted sets are the two models' own, so an entry here is refused
+    against what an upload declares -- no ``file_path``, because the bytes
+    arrive as file parts.
     """
     candidates = []
     for err in exc.errors():
@@ -54,7 +60,13 @@ def _undeclared_file_entry_key(exc: ValidationError) -> InvalidParameterError | 
             candidates.append((loc[1], 0, str(loc[2]), err.get("input")))
         elif len(loc) == 4 and loc[2] == "parsed_metadata":
             candidates.append((loc[1], 1, str(loc[3]), err.get("input")))
-    return undeclared_entry_key_error(candidates)
+    return undeclared_entry_key_error(
+        candidates,
+        recognized_by_depth={
+            0: BatchIngestFileMetadata.model_fields,
+            1: BatchIngestParsedMetadata.model_fields,
+        },
+    )
 
 
 def _codes_and_tags_conflict(
@@ -108,8 +120,13 @@ def _codes_and_tags_conflict(
                 "invalid_sha256",
                 "invalid_document_date",
                 "unknown_parameter",
+                "undeclared_key",
             ),
-            extra="`adapter_not_found`: no source adapter is registered for "
+            extra="`misplaced_top_level_field`: `metadata` carries a name this "
+            "operation declares as an argument of its own. `detail.fields` names "
+            "them and `detail.recognized` lists every argument that belongs at "
+            "the top level.\n\n"
+            "`adapter_not_found`: no source adapter is registered for "
             "`source_type`.\n\n"
             "`adapter_config_invalid`: the source adapter refused a value it "
             "cannot use in its config, the vault's `adapter_defaults` merged "
@@ -276,7 +293,11 @@ def _codes_and_tags_conflict(
             "model": ErrorResponse,
             "description": (
                 "Ingestion failure. The source adapter could not produce a "
-                "valid projection (unsupported format, corrupt content)."
+                "valid projection (unsupported format, corrupt content).\n\n"
+                "`invalid_parameter`: `metadata` supplies both `codes` and "
+                "`tags`, which set the same field. `detail.parameter` locates "
+                "it at `metadata.tags` and `detail.constraint` states the "
+                "rule. No document is created."
             ),
         },
         500: {
@@ -349,15 +370,16 @@ async def ingest(
         },
         400: boundary_400(
             path=("invalid_vault_id",),
-            request=("unknown_parameter",),
+            request=("unknown_parameter", "undeclared_key"),
             extra="`empty_file_list`: no files were uploaded.\n\n"
             "`invalid_batch_metadata`: the `metadata` form field is not "
             "valid JSON for the BatchIngestUploadMetadata schema, or its "
             "`files` length does not match the number of uploaded file "
             "parts. An undeclared key in a file entry is refused as "
-            "`invalid_parameter` instead. A malformed string digest refuses "
-            "the request as `invalid_sha256`, located at `files.<index>.sha256`, "
-            "before any file is staged or ingested.",
+            "`undeclared_key` instead, located at `files.<n>` or "
+            "`files.<n>.parsed_metadata`. A malformed string digest refuses "
+            "the request as `invalid_sha256`, located at `files.<index>.sha256`. "
+            "Both refuse before any file is staged or ingested.",
         ),
         404: {
             "model": ErrorResponse,
@@ -369,11 +391,12 @@ async def ingest(
         422: {
             "model": ErrorResponse,
             "description": (
-                "`invalid_parameter`: an entry of `metadata.files`, or the "
-                "`parsed_metadata` it carries, names a key its schema does not "
-                "declare. `detail.parameter` locates the key as "
-                "`files.<n>.<key>` or `files.<n>.parsed_metadata.<key>`, and "
-                "`detail.value` carries its value. No file is staged or ingested."
+                "`invalid_parameter`: an entry of `metadata.files` supplies "
+                "both `codes` and `tags` in its `parsed_metadata`, which set "
+                "the same field. `detail.parameter` locates the entry as "
+                "`files.<n>.parsed_metadata.tags` and `detail.value` carries "
+                "its value. No file is staged or ingested. An undeclared key "
+                "in an entry is refused as `undeclared_key` (400) instead."
             ),
         },
     },

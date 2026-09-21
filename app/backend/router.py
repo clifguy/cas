@@ -85,6 +85,7 @@ async def scan_endpoint(
                 "invalid_document_date",
                 "invalid_sha256",
                 "unknown_parameter",
+                "undeclared_key",
             ),
             extra=(
                 "`empty_file_list`: `files` was empty. Choose at least one file or skip the call."
@@ -95,6 +96,17 @@ async def scan_endpoint(
             "description": (
                 "`vault_not_found`: no vault registered with that id; "
                 "`detail.available_vaults` lists the registered vaults."
+            ),
+        },
+        422: {
+            "model": ErrorResponse,
+            "description": (
+                "`invalid_parameter`: an entry of `files` supplies both "
+                "`codes` and `tags` in its `parsed_metadata`, which set the "
+                "same field. `detail.parameter` locates the entry as "
+                "`files.<n>.parsed_metadata.tags` and `detail.value` carries "
+                "its value. No file is ingested. An undeclared key in an "
+                "entry is refused as `undeclared_key` (400) instead."
             ),
         },
     },

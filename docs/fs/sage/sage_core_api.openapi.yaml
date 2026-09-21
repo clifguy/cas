@@ -435,6 +435,11 @@ paths:
 
             `unknown_parameter`: the request carries a body field or query
             parameter the operation does not declare.
+
+            `undeclared_key`: an object nested inside the request carries a
+            key its schema does not declare. `detail.parameter` locates the
+            object, `detail.key` names the key, and `detail.recognized` lists
+            the names that object does accept.
           content:
             application/json:
               schema:
@@ -536,6 +541,11 @@ paths:
 
             `unknown_parameter`: the request carries a body field or query
             parameter the operation does not declare.
+
+            `undeclared_key`: an object nested inside the request carries a
+            key its schema does not declare. `detail.parameter` locates the
+            object, `detail.key` names the key, and `detail.recognized` lists
+            the names that object does accept.
           content:
             application/json:
               schema:
@@ -712,6 +722,11 @@ paths:
                 $ref: "#/components/schemas/IngestResponse"
         "400":
           description: >-
+            `misplaced_top_level_field`: `metadata` carries a name this
+            operation declares as an argument of its own. `detail.fields`
+            names them and `detail.recognized` lists every argument that
+            belongs at the top level.
+
             `adapter_not_found`: no source adapter is registered for
             `source_type`.
 
@@ -802,6 +817,11 @@ paths:
 
             `unknown_parameter`: the request carries a body field or query
             parameter the operation does not declare.
+
+            `undeclared_key`: an object nested inside the request carries a
+            key its schema does not declare. `detail.parameter` locates the
+            object, `detail.key` names the key, and `detail.recognized` lists
+            the names that object does accept.
           content:
             application/json:
               schema:
@@ -933,6 +953,11 @@ paths:
           description: >-
             Ingestion failure. The source adapter could not produce a
             valid projection (unsupported format, corrupt content).
+
+            `invalid_parameter`: `metadata` supplies both `codes` and `tags`,
+            which set the same field. `detail.parameter` locates it at
+            `metadata.tags` and `detail.constraint` states the rule. No
+            document is created.
           content:
             application/json:
               schema:
@@ -1080,25 +1105,20 @@ paths:
             valid JSON for the BatchIngestUploadMetadata schema, or its
             `files` length does not match the number of uploaded file
             parts. An undeclared key in a file entry is refused as
-            `invalid_parameter` instead. A malformed string digest refuses
-            the request as `invalid_sha256`, located at `files.<index>.sha256`,
-            before any file is staged or ingested.
+            `undeclared_key` instead, located at `files.<n>` or
+            `files.<n>.parsed_metadata`. A malformed string digest refuses
+            the request as `invalid_sha256`, located at `files.<index>.sha256`.
+            Both refuse before any file is staged or ingested.
 
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
 
             `unknown_parameter`: the request carries a body field or query
             parameter the operation does not declare.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "422":
-          description: >-
-            `invalid_parameter`: an entry of `metadata.files`, or the
-            `parsed_metadata` it carries, names a key its schema does not
-            declare. `detail.parameter` locates the key as `files.<n>.<key>`
-            or `files.<n>.parsed_metadata.<key>`, and `detail.value` carries
-            its value. No file is staged or ingested.
+
+            `undeclared_key`: an object nested inside the request carries a
+            key its schema does not declare. `detail.parameter` locates the
+            object, `detail.key` names the key, and `detail.recognized` lists
+            the names that object does accept.
           content:
             application/json:
               schema:
@@ -1107,6 +1127,18 @@ paths:
           description: >-
             `vault_not_found`: no vault registered with that id;
             `detail.available_vaults` lists the registered vaults.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: >-
+            `invalid_parameter`: an entry of `metadata.files` supplies both
+            `codes` and `tags` in its `parsed_metadata`, which set the same
+            field. `detail.parameter` locates the entry as
+            `files.<n>.parsed_metadata.tags` and `detail.value` carries its
+            value. No file is staged or ingested. An undeclared key in an
+            entry is refused as `undeclared_key` (400) instead.
           content:
             application/json:
               schema:
@@ -1367,6 +1399,11 @@ paths:
 
             `unknown_parameter`: the request carries a body field or query
             parameter the operation does not declare.
+
+            `undeclared_key`: an object nested inside the request carries a
+            key its schema does not declare. `detail.parameter` locates the
+            object, `detail.key` names the key, and `detail.recognized` lists
+            the names that object does accept.
           content:
             application/json:
               schema:
@@ -1890,8 +1927,14 @@ paths:
         configuration changes.
 
 
-        The assertions YAML file is resolved relative to the vault's
-        `storage_root`. The file must have a top-level `assertions:`
+        The assertions YAML file is named by a path relative to the
+        vault's `storage_root` and read through the vault-source store,
+        addressed as a document's `source_path` is: under the filesystem
+        binding (the local profile) it is read from `storage_root` on
+        the server's disk; under the document-store binding (the cloud
+        profile) it is read from the vault's folder in the document
+        store, at the same relative path. A path leaving the storage
+        root is refused. The file must have a top-level `assertions:`
         key whose value is a list of objects; each object must include
         `query` and `expected_document_id` and may include `top_k`
         (default 10).
@@ -1908,7 +1951,8 @@ paths:
         "400":
           description: >-
             `assertions_file_invalid`: the referenced YAML is malformed or
-            has the wrong structure.
+            has the wrong structure, or its path leaves the vault's
+            `storage_root`.
 
             `assertions_not_configured`: the vault config has no
             `retrieval_health.assertions_file` entry.
@@ -1924,11 +1968,32 @@ paths:
         "404":
           description: >-
             `assertions_file_not_found`: the configured assertions file does not
-            exist under the vault's `storage_root`.
+            exist at its path in the vault-source store -- under `storage_root`
+            on the filesystem binding, or in the vault's document-store folder
+            on the document-store binding.
 
 
             `vault_not_found`: no vault registered with that id;
             `detail.available_vaults` lists the registered vaults.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: >-
+            `vault_source_store_refused`: the vault-source store declined the
+            operation on its merits -- quota, a permission it withdrew, a reply
+            that could not be used. Resolve it at the store before retrying;
+            `detail.store_status` carries the status it declined with.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: >-
+            `vault_source_store_unavailable`: the vault-source store declined to
+            serve the operation just now -- throttling, or a transient backend
+            signal. The same request may succeed on a later attempt.
           content:
             application/json:
               schema:
@@ -5778,9 +5843,12 @@ components:
             when needs_review=true) > chain inherit (predecessor's
             doc_type, project, authority_scope when predecessor_id
             is set and the caller omitted the field) > vault default
-            (doc_type only, falls through to `misc`). Fields with null
-            values are ignored. Unknown field names are stored but have
-            no schema-enforced semantics. Values are strings except
+            (doc_type only, falls through to `misc`). A field's value
+            may not be null: this mapping's values are a string or a
+            list of strings, so a null is refused at the boundary
+            rather than ignored. Omit the field instead. Unknown field
+            names are stored but have no schema-enforced semantics.
+            Values are strings except
             tags, which may be supplied as a list of strings or as a
             comma-separated string (parity with update_metadata's
             list-typed tags field). `codes` sets the same field as `tags`, so
@@ -11639,6 +11707,92 @@ components:
           $ref: '#/components/schemas/MisplacedFiltersErrorDetail'
       additionalProperties: false
       description: The refusal envelope for this error code.
+    MisplacedTopLevelFieldErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - fields
+      - recognized
+      - example
+      properties:
+        fields:
+          type: array
+          items:
+            type: string
+          description: Fields.
+        recognized:
+          type: array
+          items:
+            type: string
+          description: Recognized.
+        example:
+          type: string
+          description: Example.
+      description: Additional context for this refusal.
+    MisplacedTopLevelFieldError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: misplaced_top_level_field
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/MisplacedTopLevelFieldErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    UndeclaredKeyErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - parameter
+      - key
+      - recognized
+      - example
+      properties:
+        parameter:
+          type: string
+          description: Parameter.
+        key:
+          type: string
+          description: Key.
+        recognized:
+          type: array
+          items:
+            type: string
+          description: Recognized.
+        example:
+          type: string
+          description: Example.
+      description: Additional context for this refusal.
+    UndeclaredKeyError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: undeclared_key
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/UndeclaredKeyErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
     MisplacedMetadataErrorDetail:
       type: object
       additionalProperties: false
@@ -14023,6 +14177,7 @@ components:
             - method_not_allowed
             - misplaced_filters
             - misplaced_metadata
+            - misplaced_top_level_field
             - missing_document_id
             - missing_document_identifier
             - missing_heading_path
@@ -14079,6 +14234,7 @@ components:
             - transfer_token_invalid
             - unexpected_relocated_to
             - unexpected_successor_id
+            - undeclared_key
             - unknown_filter_key
             - unknown_parameter
             - vault_already_exists
@@ -14154,6 +14310,7 @@ components:
         - transfer_endpoint_not_configured
         - transfer_not_staged
         - transfer_token_invalid
+        - undeclared_key
         - unexpected_relocated_to
         - unexpected_successor_id
         - unknown_parameter
@@ -14190,6 +14347,7 @@ components:
         - synced_from_inapplicable_edge_type
         - synced_from_version_not_in_source_chain
         - tbd_policy_edge
+        - undeclared_key
         - unknown_parameter
         - vault_not_found
         create_vault:
@@ -14288,6 +14446,7 @@ components:
         - legacy_form
         - merged_from_validation
         - misplaced_metadata
+        - misplaced_top_level_field
         - missing_ingest_source
         - missing_relocated_to
         - missing_successor_id
@@ -14311,6 +14470,7 @@ components:
         - transfer_endpoint_not_configured
         - transfer_not_staged
         - transfer_token_invalid
+        - undeclared_key
         - unexpected_relocated_to
         - unexpected_successor_id
         - unknown_parameter
@@ -14554,6 +14714,7 @@ components:
         - relocated_to_provenance_mismatch
         - reserved_transition
         - supersede_target_not_active
+        - undeclared_key
         - unexpected_relocated_to
         - unexpected_successor_id
         - unknown_parameter
@@ -14579,6 +14740,7 @@ components:
         - tier3_patch_overlap
         - tier3_schema_violation
         - tier3_unset_conflict
+        - undeclared_key
         - unknown_parameter
         - vault_not_found
         update_staging_edge:
@@ -14628,6 +14790,8 @@ components:
         - invalid_vault_id
         - unknown_parameter
         - vault_not_found
+        - vault_source_store_refused
+        - vault_source_store_unavailable
         verify_vault_source_files:
         - document_scope_unmatched
         - internal_error
@@ -14693,6 +14857,7 @@ components:
       - $ref: '#/components/schemas/MethodNotAllowedError'
       - $ref: '#/components/schemas/MisplacedFiltersError'
       - $ref: '#/components/schemas/MisplacedMetadataError'
+      - $ref: '#/components/schemas/MisplacedTopLevelFieldError'
       - $ref: '#/components/schemas/MissingDocumentIdError'
       - $ref: '#/components/schemas/MissingDocumentIdentifierError'
       - $ref: '#/components/schemas/MissingHeadingPathError'
@@ -14749,6 +14914,7 @@ components:
       - $ref: '#/components/schemas/TransferTokenInvalidError'
       - $ref: '#/components/schemas/UnexpectedRelocatedToError'
       - $ref: '#/components/schemas/UnexpectedSuccessorIdError'
+      - $ref: '#/components/schemas/UndeclaredKeyError'
       - $ref: '#/components/schemas/UnknownFilterKeyError'
       - $ref: '#/components/schemas/UnknownParameterError'
       - $ref: '#/components/schemas/VaultAlreadyExistsError'
@@ -14817,6 +14983,7 @@ components:
           method_not_allowed: '#/components/schemas/MethodNotAllowedError'
           misplaced_filters: '#/components/schemas/MisplacedFiltersError'
           misplaced_metadata: '#/components/schemas/MisplacedMetadataError'
+          misplaced_top_level_field: '#/components/schemas/MisplacedTopLevelFieldError'
           missing_document_id: '#/components/schemas/MissingDocumentIdError'
           missing_document_identifier: '#/components/schemas/MissingDocumentIdentifierError'
           missing_heading_path: '#/components/schemas/MissingHeadingPathError'
@@ -14873,6 +15040,7 @@ components:
           transfer_token_invalid: '#/components/schemas/TransferTokenInvalidError'
           unexpected_relocated_to: '#/components/schemas/UnexpectedRelocatedToError'
           unexpected_successor_id: '#/components/schemas/UnexpectedSuccessorIdError'
+          undeclared_key: '#/components/schemas/UndeclaredKeyError'
           unknown_filter_key: '#/components/schemas/UnknownFilterKeyError'
           unknown_parameter: '#/components/schemas/UnknownParameterError'
           vault_already_exists: '#/components/schemas/VaultAlreadyExistsError'

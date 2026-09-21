@@ -983,6 +983,31 @@ class User(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+#: The names an ingest honours inside ``metadata``. Six map straight to a
+#: document field; ``date`` is the filename parser's spelling of
+#: ``document_date``, and ``codes`` and ``tags`` both become tags. Anything
+#: else is stored with no schema-enforced semantics.
+#:
+#: Declared here rather than at the service that reads it because two other
+#: places need the same answer: the service maps these to document fields, and
+#: ``IngestRequest`` subtracts them from its own field names to decide which
+#: spellings inside ``metadata`` are a misplaced top-level argument. A second
+#: copy is how the guard comes to refuse a key the ingest actually reads.
+INGEST_METADATA_SPELLINGS: frozenset[str] = frozenset(
+    {
+        "title",
+        "version_label",
+        "project",
+        "doc_type",
+        "authority_scope",
+        "document_date",
+        "date",
+        "codes",
+        "tags",
+    }
+)
+
+
 class IngestRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -1089,8 +1114,10 @@ class IngestRequest(BaseModel):
             "needs_review=true) > chain inherit (predecessor's doc_type, "
             "project, authority_scope when predecessor_id is set "
             "and the caller omitted the field) > vault default (doc_type "
-            "only, falls through to `misc`). Fields with null values are "
-            "ignored. Unknown field names are stored but have no "
+            "only, falls through to `misc`). A field's value may not be "
+            "null: this mapping's values are a string or a list of strings, "
+            "so a null is refused at the boundary rather than ignored. Omit "
+            "the field instead. Unknown field names are stored but have no "
             "schema-enforced semantics. Values are strings except tags, "
             "which may be supplied as a list of strings or as a "
             "comma-separated string (parity with update_metadata's "
@@ -1196,6 +1223,57 @@ class IngestRequest(BaseModel):
             "supplied none, and a real run may still refuse."
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_top_level_fields_inside_metadata(cls, data: Any) -> Any:
+        """Refuse a name the request declares that was spelled inside ``metadata``.
+
+        ``metadata`` carries the document's own descriptive fields. A name the
+        request itself declares is not one of them, and the two are easy to
+        confuse: ``tier3_metadata`` is required at the top level here and
+        inside ``filters`` on retrieval, so a caller who has just written one
+        has every reason to try the other spelling.
+
+        Checked on the key's presence rather than its value, because the
+        damaging case is the one that validates. ``metadata`` is declared as
+        ``str | list[str]``, so a mapping already fails -- as a complaint
+        about the value's type, naming neither the right position nor the
+        right shape. A string passes, is stored under a name nothing reads,
+        and leaves the argument it was meant for unset, all without a word:
+        the caller sees a successful ingest whose typed field is absent.
+
+        ``mode="before"`` is load-bearing: the ``mode="after"`` validator
+        below never runs on the mapping case, which fails field validation
+        first. The ``PydanticCustomError`` indirection is the one the
+        ``legacy_form`` guard documents -- ``sage.models`` cannot import
+        ``sage.api.errors`` under the leaf-layer contract, so the envelope is
+        rebuilt from ``ctx`` in ``translate_validation_error``.
+        """
+        if not isinstance(data, dict):
+            return data
+        metadata = data.get("metadata")
+        if not isinstance(metadata, dict):
+            return data
+        top_level_only = [
+            name for name in cls.model_fields if name not in INGEST_METADATA_SPELLINGS
+        ]
+        misplaced = [name for name in top_level_only if name in metadata]
+        if misplaced:
+            raise PydanticCustomError(
+                "misplaced_top_level_field",
+                (
+                    "{joined} must be passed as a top-level argument, not nested "
+                    "under `metadata`. Use: {example}"
+                ),
+                {
+                    "joined": ", ".join(misplaced),
+                    "fields": misplaced,
+                    "recognized": top_level_only,
+                    "example": ", ".join(f"{name}=..." for name in misplaced),
+                },
+            )
+        return data
 
     @model_validator(mode="after")
     def _validate_metadata_dates(self) -> "IngestRequest":

@@ -290,6 +290,61 @@ async def test_verify_vault_retrieval_refuses_an_unconfigured_vault_on_both_surf
     assert via_tool["error"] == resp.json()["code"] == "assertions_not_configured"
 
 
+@pytest.fixture
+async def document_store_retrieval_app(
+    minimal_vault_config_dict: dict, tmp_vault_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> AsyncIterator[tuple[FastAPI, str, Any]]:
+    """An app on the document-store binding whose vault names an assertions file.
+
+    Nothing is written to the local tree: the file, when a test seeds one,
+    lives only in the faked store, as it does under the cloud profile.
+    """
+    from tests.helpers.vault_source_selection import select_vault_source_binding
+
+    fake = select_vault_source_binding(monkeypatch, "document_store")
+    config_dict = {
+        **minimal_vault_config_dict,
+        "retrieval_health": {"assertions_file": "retrieval_assertions.yaml"},
+    }
+    async for app, vault_id in _serve(config_dict, tmp_vault_dir):
+        yield app, vault_id, fake
+
+
+async def test_verify_vault_retrieval_reads_a_document_store_file_on_both_surfaces(
+    document_store_retrieval_app, fixed_ranking, tool_payload: Callable[[object], dict]
+):
+    """VR-5: a file held only in the document store yields one verdict on both arms."""
+    app, vault_id, fake = document_store_retrieval_app
+    fake.sources["retrieval_assertions.yaml"] = yaml.safe_dump(
+        {"assertions": [{"query": "found query", "expected_document_id": _HIT_ID}]}
+    ).encode()
+    maint = app.state.mcp_mounts["/mcp_maint"]
+
+    via_tool = tool_payload(await maint.call_tool("verify_vault_retrieval", {"vault_id": vault_id}))
+    async with _client(app) as client:
+        resp = await client.post(f"/sage_vaults/{vault_id}/eval-retrieval")
+
+    assert resp.status_code == 200, resp.text
+    assert via_tool["passed"] is True
+    assert via_tool["assertion_count"] == 1
+    assert via_tool == resp.json()
+
+
+async def test_verify_vault_retrieval_missing_store_file_is_the_same_refusal_on_both_surfaces(
+    document_store_retrieval_app, tool_payload: Callable[[object], dict]
+):
+    """VR-6: an assertions file absent from the store is one typed 404 on both arms."""
+    app, vault_id, _ = document_store_retrieval_app
+    maint = app.state.mcp_mounts["/mcp_maint"]
+
+    via_tool = tool_payload(await maint.call_tool("verify_vault_retrieval", {"vault_id": vault_id}))
+    async with _client(app) as client:
+        resp = await client.post(f"/sage_vaults/{vault_id}/eval-retrieval")
+
+    assert resp.status_code == 404, resp.text
+    assert via_tool["error"] == resp.json()["code"] == "assertions_file_not_found"
+
+
 # ---------------------------------------------------------------------------
 # export_projection
 # ---------------------------------------------------------------------------
