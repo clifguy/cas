@@ -2075,6 +2075,62 @@
                 ],
                 "type": "object"
               },
+              "UndeclaredKeyError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/UndeclaredKeyErrorDetail"
+                  },
+                  "error": {
+                    "const": "undeclared_key",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "UndeclaredKeyErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "example": {
+                    "description": "Example.",
+                    "type": "string"
+                  },
+                  "key": {
+                    "description": "Key.",
+                    "type": "string"
+                  },
+                  "parameter": {
+                    "description": "Parameter.",
+                    "type": "string"
+                  },
+                  "recognized": {
+                    "description": "Recognized.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "parameter",
+                  "key",
+                  "recognized",
+                  "example"
+                ],
+                "type": "object"
+              },
               "UnexpectedRelocatedToError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -2497,6 +2553,7 @@
                 "transfer_endpoint_not_configured": "#/$defs/TransferEndpointNotConfiguredError",
                 "transfer_not_staged": "#/$defs/TransferNotStagedError",
                 "transfer_token_invalid": "#/$defs/TransferTokenInvalidError",
+                "undeclared_key": "#/$defs/UndeclaredKeyError",
                 "unexpected_relocated_to": "#/$defs/UnexpectedRelocatedToError",
                 "unexpected_successor_id": "#/$defs/UnexpectedSuccessorIdError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
@@ -2649,6 +2706,9 @@
               },
               {
                 "$ref": "#/$defs/TransferTokenInvalidError"
+              },
+              {
+                "$ref": "#/$defs/UndeclaredKeyError"
               },
               {
                 "$ref": "#/$defs/UnexpectedRelocatedToError"
@@ -4021,6 +4081,62 @@
                 ],
                 "type": "object"
               },
+              "UndeclaredKeyError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/UndeclaredKeyErrorDetail"
+                  },
+                  "error": {
+                    "const": "undeclared_key",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "UndeclaredKeyErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "example": {
+                    "description": "Example.",
+                    "type": "string"
+                  },
+                  "key": {
+                    "description": "Key.",
+                    "type": "string"
+                  },
+                  "parameter": {
+                    "description": "Parameter.",
+                    "type": "string"
+                  },
+                  "recognized": {
+                    "description": "Recognized.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "parameter",
+                  "key",
+                  "recognized",
+                  "example"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -4142,6 +4258,7 @@
                 "synced_from_inapplicable_edge_type": "#/$defs/SyncedFromInapplicableEdgeTypeError",
                 "synced_from_version_not_in_source_chain": "#/$defs/SyncedFromVersionNotInSourceChainError",
                 "tbd_policy_edge": "#/$defs/TbdPolicyEdgeError",
+                "undeclared_key": "#/$defs/UndeclaredKeyError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
@@ -4198,6 +4315,9 @@
               },
               {
                 "$ref": "#/$defs/TbdPolicyEdgeError"
+              },
+              {
+                "$ref": "#/$defs/UndeclaredKeyError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -6949,6 +7069,60 @@
                 ],
                 "type": "object"
               },
+              "MisplacedTopLevelFieldError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/MisplacedTopLevelFieldErrorDetail"
+                  },
+                  "error": {
+                    "const": "misplaced_top_level_field",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "MisplacedTopLevelFieldErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "example": {
+                    "description": "Example.",
+                    "type": "string"
+                  },
+                  "fields": {
+                    "description": "Fields.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  },
+                  "recognized": {
+                    "description": "Recognized.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "fields",
+                  "recognized",
+                  "example"
+                ],
+                "type": "object"
+              },
               "MissingIngestSourceError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -7958,6 +8132,62 @@
                 ],
                 "type": "object"
               },
+              "UndeclaredKeyError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/UndeclaredKeyErrorDetail"
+                  },
+                  "error": {
+                    "const": "undeclared_key",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "UndeclaredKeyErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "example": {
+                    "description": "Example.",
+                    "type": "string"
+                  },
+                  "key": {
+                    "description": "Key.",
+                    "type": "string"
+                  },
+                  "parameter": {
+                    "description": "Parameter.",
+                    "type": "string"
+                  },
+                  "recognized": {
+                    "description": "Recognized.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "parameter",
+                  "key",
+                  "recognized",
+                  "example"
+                ],
+                "type": "object"
+              },
               "UnexpectedRelocatedToError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -8356,6 +8586,7 @@
                 "legacy_form": "#/$defs/LegacyFormError",
                 "merged_from_validation": "#/$defs/MergedFromValidationError",
                 "misplaced_metadata": "#/$defs/MisplacedMetadataError",
+                "misplaced_top_level_field": "#/$defs/MisplacedTopLevelFieldError",
                 "missing_ingest_source": "#/$defs/MissingIngestSourceError",
                 "missing_relocated_to": "#/$defs/MissingRelocatedToError",
                 "missing_successor_id": "#/$defs/MissingSuccessorIdError",
@@ -8379,6 +8610,7 @@
                 "transfer_endpoint_not_configured": "#/$defs/TransferEndpointNotConfiguredError",
                 "transfer_not_staged": "#/$defs/TransferNotStagedError",
                 "transfer_token_invalid": "#/$defs/TransferTokenInvalidError",
+                "undeclared_key": "#/$defs/UndeclaredKeyError",
                 "unexpected_relocated_to": "#/$defs/UnexpectedRelocatedToError",
                 "unexpected_successor_id": "#/$defs/UnexpectedSuccessorIdError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
@@ -8461,6 +8693,9 @@
                 "$ref": "#/$defs/MisplacedMetadataError"
               },
               {
+                "$ref": "#/$defs/MisplacedTopLevelFieldError"
+              },
+              {
                 "$ref": "#/$defs/MissingIngestSourceError"
               },
               {
@@ -8528,6 +8763,9 @@
               },
               {
                 "$ref": "#/$defs/TransferTokenInvalidError"
+              },
+              {
+                "$ref": "#/$defs/UndeclaredKeyError"
               },
               {
                 "$ref": "#/$defs/UnexpectedRelocatedToError"
@@ -17226,6 +17464,62 @@
                 ],
                 "type": "object"
               },
+              "UndeclaredKeyError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/UndeclaredKeyErrorDetail"
+                  },
+                  "error": {
+                    "const": "undeclared_key",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "UndeclaredKeyErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "example": {
+                    "description": "Example.",
+                    "type": "string"
+                  },
+                  "key": {
+                    "description": "Key.",
+                    "type": "string"
+                  },
+                  "parameter": {
+                    "description": "Parameter.",
+                    "type": "string"
+                  },
+                  "recognized": {
+                    "description": "Recognized.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "parameter",
+                  "key",
+                  "recognized",
+                  "example"
+                ],
+                "type": "object"
+              },
               "UnexpectedRelocatedToError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -17445,6 +17739,7 @@
                 "relocated_to_provenance_mismatch": "#/$defs/RelocatedToProvenanceMismatchError",
                 "reserved_transition": "#/$defs/ReservedTransitionError",
                 "supersede_target_not_active": "#/$defs/SupersedeTargetNotActiveError",
+                "undeclared_key": "#/$defs/UndeclaredKeyError",
                 "unexpected_relocated_to": "#/$defs/UnexpectedRelocatedToError",
                 "unexpected_successor_id": "#/$defs/UnexpectedSuccessorIdError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
@@ -17509,6 +17804,9 @@
               },
               {
                 "$ref": "#/$defs/SupersedeTargetNotActiveError"
+              },
+              {
+                "$ref": "#/$defs/UndeclaredKeyError"
               },
               {
                 "$ref": "#/$defs/UnexpectedRelocatedToError"
@@ -18547,6 +18845,62 @@
                 ],
                 "type": "object"
               },
+              "UndeclaredKeyError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/UndeclaredKeyErrorDetail"
+                  },
+                  "error": {
+                    "const": "undeclared_key",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "UndeclaredKeyErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "example": {
+                    "description": "Example.",
+                    "type": "string"
+                  },
+                  "key": {
+                    "description": "Key.",
+                    "type": "string"
+                  },
+                  "parameter": {
+                    "description": "Parameter.",
+                    "type": "string"
+                  },
+                  "recognized": {
+                    "description": "Recognized.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "parameter",
+                  "key",
+                  "recognized",
+                  "example"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -18671,6 +19025,7 @@
                 "tier3_patch_overlap": "#/$defs/Tier3PatchOverlapError",
                 "tier3_schema_violation": "#/$defs/Tier3SchemaViolationError",
                 "tier3_unset_conflict": "#/$defs/Tier3UnsetConflictError",
+                "undeclared_key": "#/$defs/UndeclaredKeyError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
@@ -18736,6 +19091,9 @@
               },
               {
                 "$ref": "#/$defs/Tier3UnsetConflictError"
+              },
+              {
+                "$ref": "#/$defs/UndeclaredKeyError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"

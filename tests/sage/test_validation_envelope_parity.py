@@ -781,7 +781,10 @@ async def test_every_tool_building_a_nesting_model_names_the_accepted_keys(vault
     nesting model arrives here as a failure naming itself rather than as a
     silent pass.
     """
+    import jsonschema
+
     from sage.models import schemas
+    from sage.models.error_contract import tool_error_schema
 
     derived = _tools_building_a_nesting_model()
     assert derived, "no tool found building a nesting model; the walk checks nothing"
@@ -801,6 +804,14 @@ async def test_every_tool_building_a_nesting_model_names_the_accepted_keys(vault
         assert envelope["detail"]["recognized"] == sorted(
             getattr(schemas, expected_model).model_fields
         ), (tool_name, expected_model, envelope)
+
+        # The tool publishes an error schema through ``tools/list``; a code it
+        # can raise has to be in that tool's family table or the schema it
+        # advertises rejects the envelope it just returned. Registering a code
+        # is a five-part act and the table is the part with no other reader,
+        # so this asserts it against a refusal the tool actually produced
+        # rather than against the table's own contents.
+        jsonschema.validate(envelope, tool_error_schema("", tool_name))
 
 
 #: One request body per (route, nested model) that plants an undeclared key at

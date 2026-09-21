@@ -5395,6 +5395,7 @@ components:
         - transfer_endpoint_not_configured
         - transfer_not_staged
         - transfer_token_invalid
+        - undeclared_key
         - unexpected_relocated_to
         - unexpected_successor_id
         - unknown_parameter
@@ -5431,6 +5432,7 @@ components:
         - synced_from_inapplicable_edge_type
         - synced_from_version_not_in_source_chain
         - tbd_policy_edge
+        - undeclared_key
         - unknown_parameter
         - vault_not_found
         create_vault:
@@ -5529,6 +5531,7 @@ components:
         - legacy_form
         - merged_from_validation
         - misplaced_metadata
+        - misplaced_top_level_field
         - missing_ingest_source
         - missing_relocated_to
         - missing_successor_id
@@ -5552,6 +5555,7 @@ components:
         - transfer_endpoint_not_configured
         - transfer_not_staged
         - transfer_token_invalid
+        - undeclared_key
         - unexpected_relocated_to
         - unexpected_successor_id
         - unknown_parameter
@@ -5795,6 +5799,7 @@ components:
         - relocated_to_provenance_mismatch
         - reserved_transition
         - supersede_target_not_active
+        - undeclared_key
         - unexpected_relocated_to
         - unexpected_successor_id
         - unknown_parameter
@@ -5820,6 +5825,7 @@ components:
         - tier3_patch_overlap
         - tier3_schema_violation
         - tier3_unset_conflict
+        - undeclared_key
         - unknown_parameter
         - vault_not_found
         update_staging_edge:
