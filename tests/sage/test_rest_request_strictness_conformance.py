@@ -186,6 +186,7 @@ def test_request_schemas_close_where_the_models_do():
         and isinstance(cls := getattr(schemas, name, None), type)
         and issubclass(cls, BaseModel)
         and cls.model_config.get("extra") != "forbid"
+        and not (getattr(cls, "__pydantic_root_model__", False) and _root_refuses_unknown_keys(cls))
     )
     assert tolerant_in_code == [], "spec closes these schemas but the models accept extras"
 
@@ -307,6 +308,7 @@ def test_app_request_schemas_close_where_the_models_do():
         and isinstance(cls := getattr(app_models, name, None), type)
         and issubclass(cls, BaseModel)
         and cls.model_config.get("extra") != "forbid"
+        and not (getattr(cls, "__pydantic_root_model__", False) and _root_refuses_unknown_keys(cls))
     )
     assert tolerant_in_code == [], "spec closes these schemas but the models accept extras"
 
@@ -325,3 +327,14 @@ def test_every_app_operation_declares_the_refusal():
                 undeclared.append(operation["operationId"])
 
     assert sorted(undeclared) == []
+
+
+def _root_refuses_unknown_keys(model: type[BaseModel]) -> bool:
+    """A mapping root must actually reject an undeclared key, not claim a config."""
+    from pydantic import ValidationError
+
+    try:
+        model.model_validate({"expected": "digest", "fabricated_key": 1})
+    except ValidationError:
+        return True
+    return False

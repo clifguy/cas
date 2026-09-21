@@ -1087,13 +1087,4406 @@ components:
     # Common
     # -------------------------------------------------------------------------
 
-    ErrorResponse:
+    AdapterConfigInvalidErrorDetail:
       type: object
-      required: [code, message]
-      description: >-
-        Common error envelope returned by every CAS Application API endpoint
-        for non-2xx responses. Mirrors the SAGE Core API ErrorResponse and
-        reuses the same Pydantic class (sage.models.schemas.ErrorResponse).
+      additionalProperties: false
+      required:
+      - source_type
+      - key
+      - value
+      properties:
+        source_type:
+          type: string
+          description: Source type.
+        key:
+          type: string
+          description: Key.
+        value:
+          description: The rejected JSON value, echoed without successful-input constraints.
+      description: Additional context for this refusal.
+    AdapterConfigInvalidError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: adapter_config_invalid
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/AdapterConfigInvalidErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    AdapterNotFoundError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: adapter_not_found
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    AmbiguousDocumentIdentifierErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - tool
+      - supplied
+      properties:
+        tool:
+          type: string
+          description: Tool.
+        supplied:
+          type: array
+          items:
+            type: string
+          description: Supplied.
+      description: Additional context for this refusal.
+    AmbiguousDocumentIdentifierError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: ambiguous_document_identifier
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/AmbiguousDocumentIdentifierErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    AmbiguousIngestSourceError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: ambiguous_ingest_source
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    AssertionsFileInvalidErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - assertions_file
+      - reason
+      properties:
+        assertions_file:
+          type: string
+          description: Assertions file.
+        reason:
+          type: string
+          description: Reason.
+      description: Additional context for this refusal.
+    AssertionsFileInvalidError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: assertions_file_invalid
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/AssertionsFileInvalidErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    AssertionsFileNotFoundErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - assertions_file
+      properties:
+        assertions_file:
+          type: string
+          description: Assertions file.
+      description: Additional context for this refusal.
+    AssertionsFileNotFoundError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: assertions_file_not_found
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/AssertionsFileNotFoundErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    AssertionsNotConfiguredError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: assertions_not_configured
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    AuthFailedError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: auth_failed
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    AuthNotConfiguredError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: auth_not_configured
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    AuthRequiredError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: auth_required
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    BinaryContentRefusedErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_id
+      - source_type
+      - use_instead
+      properties:
+        document_id:
+          type: string
+          description: Document id.
+        source_type:
+          type: string
+          description: Source type.
+        use_instead:
+          type: string
+          description: Use instead.
+      description: Additional context for this refusal.
+    BinaryContentRefusedError:
+      x-mcp-tools: [get_document]
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: binary_content_refused
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/BinaryContentRefusedErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    CallerFilesystemUnavailableErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - operation
+      - remedy
+      properties:
+        operation:
+          type: string
+          description: Operation.
+        remedy:
+          type: string
+          description: Remedy.
+      description: Additional context for this refusal.
+    CallerFilesystemUnavailableError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: caller_filesystem_unavailable
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/CallerFilesystemUnavailableErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    ContentDeliveryConflictError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: content_delivery_conflict
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    ContentFileMissingErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_id
+      - source_path
+      properties:
+        document_id:
+          type: string
+          description: Document id.
+        source_path:
+          type: string
+          description: Source path.
+      description: Additional context for this refusal.
+    ContentFileMissingError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: content_file_missing
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/ContentFileMissingErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    ContentTooLargeErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_id
+      - size_bytes
+      - max_bytes
+      properties:
+        document_id:
+          type: string
+          description: Document id.
+        size_bytes:
+          type: integer
+          description: Size bytes.
+        max_bytes:
+          type: integer
+          description: Max bytes.
+      description: Additional context for this refusal.
+    ContentTooLargeError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: content_too_large
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/ContentTooLargeErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    DeliveryConflictErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - delivery
+      - reason
+      properties:
+        delivery:
+          type: string
+          description: Delivery.
+        reason:
+          type: string
+          description: Reason.
+      description: Additional context for this refusal.
+    DeliveryConflictError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: delivery_conflict
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/DeliveryConflictErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    DestructiveConfigChangeErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - warnings
+      properties:
+        warnings:
+          type: array
+          items:
+            type: string
+          description: Warnings.
+      description: Additional context for this refusal.
+    DestructiveConfigChangeError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: destructive_config_change
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/DestructiveConfigChangeErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    DocumentNotFoundErrorDetail:
+      oneOf:
+      - type: object
+        additionalProperties: false
+        required:
+        - document_id
+        properties:
+          document_id:
+            type: string
+            description: Document id.
+      - type: object
+        additionalProperties: false
+        required:
+        - document_id
+        - id_well_formed
+        - ever_existed
+        - slug_matches_catalog
+        properties:
+          document_id:
+            type: string
+            description: Document id.
+          id_well_formed:
+            type: boolean
+            description: Id well formed.
+          ever_existed:
+            type: boolean
+            description: Ever existed.
+          slug_matches_catalog:
+            type: boolean
+            description: Slug matches catalog.
+      description: Additional context for this refusal.
+    DocumentNotFoundError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: document_not_found
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/DocumentNotFoundErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    DocumentScopeUnmatchedErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - unmatched_ids
+      properties:
+        unmatched_ids:
+          type: array
+          items:
+            type: string
+          description: Unmatched ids.
+      description: Additional context for this refusal.
+    DocumentScopeUnmatchedError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: document_scope_unmatched
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/DocumentScopeUnmatchedErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    DownloadUrlUnavailableErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_id
+      properties:
+        document_id:
+          type: string
+          description: Document id.
+      description: Additional context for this refusal.
+    DownloadUrlUnavailableError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: download_url_unavailable
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/DownloadUrlUnavailableErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    DuplicateContentErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - existing_document_id
+      - source_content_hash
+      properties:
+        existing_document_id:
+          type: string
+          description: Existing document id.
+        source_content_hash:
+          type: string
+          description: Source content hash.
+      description: Additional context for this refusal.
+    DuplicateContentError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: duplicate_content
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/DuplicateContentErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    EdgeAnchorPolicyViolationErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - edge_type
+      - resolution_policy
+      - violation
+      properties:
+        edge_type:
+          type: string
+          description: Edge type.
+        resolution_policy:
+          type: string
+          description: Resolution policy.
+        violation:
+          type: string
+          description: Violation.
+        offending_fields:
+          type: array
+          items:
+            type: string
+          description: Offending fields.
+      description: Additional context for this refusal.
+    EdgeAnchorPolicyViolationError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: edge_anchor_policy_violation
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/EdgeAnchorPolicyViolationErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    EdgeNotFoundErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - edge_id
+      properties:
+        edge_id:
+          type: string
+          description: Edge id.
+      description: Additional context for this refusal.
+    EdgeNotFoundError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: edge_not_found
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/EdgeNotFoundErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    EmptyFileListError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: empty_file_list
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    ExpectedHeadVersionRequiresPredecessorError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: expected_head_version_requires_predecessor
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    ForceReingestPathMismatchErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - existing_document_id
+      - existing_source_path
+      - new_source_path
+      - source_content_hash
+      properties:
+        existing_document_id:
+          type: string
+          description: Existing document id.
+        existing_source_path:
+          type: string
+          description: Existing source path.
+        new_source_path:
+          type: string
+          description: New source path.
+        source_content_hash:
+          type: string
+          description: Source content hash.
+      description: Additional context for this refusal.
+    ForceReingestPathMismatchError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: force_reingest_path_mismatch
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/ForceReingestPathMismatchErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    ForceReingestPinMismatchErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_id
+      - pinned_source_content_hash
+      - source_content_hash
+      - existing_document_id
+      properties:
+        document_id:
+          type: string
+          description: Document id.
+        pinned_source_content_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Pinned source content hash.
+        source_content_hash:
+          type: string
+          description: Source content hash.
+        existing_document_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Existing document id.
+      description: Additional context for this refusal.
+    ForceReingestPinMismatchError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: force_reingest_pin_mismatch
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/ForceReingestPinMismatchErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    HeadingNotFoundErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - heading_path
+      - document_id
+      properties:
+        heading_path:
+          type: string
+          description: Heading path.
+        document_id:
+          type: string
+          description: Document id.
+        candidate_matches:
+          type: array
+          items:
+            type: string
+          description: Candidate matches.
+        available_headings:
+          type: array
+          items:
+            type: string
+          description: Available headings.
+      description: Additional context for this refusal.
+    HeadingNotFoundError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: heading_not_found
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/HeadingNotFoundErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    HttpErrorError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: http_error
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    IdenticalContentSupersedeErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - predecessor_id
+      - source_content_hash
+      properties:
+        predecessor_id:
+          type: string
+          description: Predecessor id.
+        source_content_hash:
+          type: string
+          description: Source content hash.
+      description: Additional context for this refusal.
+    IdenticalContentSupersedeError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: identical_content_supersede
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/IdenticalContentSupersedeErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    InternalErrorError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: internal_error
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    InvalidActionErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - attempted_action
+      properties:
+        attempted_action:
+          type: string
+          description: Attempted action.
+        known_actions:
+          type: array
+          items:
+            type: string
+          description: Known actions.
+      description: Additional context for this refusal.
+    InvalidActionError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: invalid_action
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/InvalidActionErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    InvalidBatchMetadataError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: invalid_batch_metadata
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    InvalidDirectoryError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: invalid_directory
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          anyOf:
+          - type: object
+            required:
+            - directory
+            properties:
+              directory:
+                type: string
+                description: The directory the caller requested.
+            additionalProperties: false
+          - type: 'null'
+          description: The refused directory on the Application API; omitted by the MCP tool.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    InvalidDocTypeErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - doc_type
+      - valid_types
+      properties:
+        doc_type:
+          type: string
+          description: Doc type.
+        valid_types:
+          type: array
+          items:
+            type: string
+          description: Valid types.
+      description: Additional context for this refusal.
+    InvalidDocTypeError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: invalid_doc_type
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/InvalidDocTypeErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    InvalidDocumentDateErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_date
+      - expected
+      properties:
+        document_date:
+          description: Document date.
+        expected:
+          type: string
+          description: Expected.
+      description: Additional context for this refusal.
+    InvalidDocumentDateError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: invalid_document_date
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/InvalidDocumentDateErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    InvalidDocumentIdErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_id
+      properties:
+        document_id:
+          description: Document id.
+      description: Additional context for this refusal.
+    InvalidDocumentIdError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: invalid_document_id
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/InvalidDocumentIdErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    InvalidEdgeIdErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - edge_id
+      - expected
+      properties:
+        edge_id:
+          description: Edge id.
+        expected:
+          type: string
+          description: Expected.
+      description: Additional context for this refusal.
+    InvalidEdgeIdError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: invalid_edge_id
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/InvalidEdgeIdErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    InvalidFilterShapeErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - field
+      - expected_type
+      - received_type
+      properties:
+        field:
+          type: string
+          description: Field.
+        expected_type:
+          type: string
+          description: Expected type.
+        received_type:
+          type: string
+          description: Received type.
+      description: Additional context for this refusal.
+    InvalidFilterShapeError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: invalid_filter_shape
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/InvalidFilterShapeErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    InvalidFilterValueErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - field
+      - value
+      - valid_values
+      properties:
+        field:
+          type: string
+          description: Field.
+        value:
+          description: The rejected JSON value, echoed without successful-input constraints.
+        valid_values:
+          type: array
+          items:
+            type: string
+          description: Valid values.
+      description: Additional context for this refusal.
+    InvalidFilterValueError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: invalid_filter_value
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/InvalidFilterValueErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    InvalidLifecycleTransitionErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - current_state
+      - attempted_action
+      - valid_actions
+      properties:
+        current_state:
+          type: string
+          description: Current state.
+        attempted_action:
+          type: string
+          description: Attempted action.
+        valid_actions:
+          type: array
+          items:
+            type: string
+          description: Valid actions.
+        pipeline_status:
+          type: string
+          description: Pipeline status.
+      description: Additional context for this refusal.
+    InvalidLifecycleTransitionError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: invalid_lifecycle_transition
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/InvalidLifecycleTransitionErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    InvalidModeErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - mode
+      - valid_modes
+      properties:
+        mode:
+          type: string
+          description: Mode.
+        valid_modes:
+          type: array
+          items:
+            type: string
+          description: Valid modes.
+      description: Additional context for this refusal.
+    InvalidModeError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: invalid_mode
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/InvalidModeErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    InvalidParameterErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - parameter
+      - value
+      - constraint
+      properties:
+        parameter:
+          type: string
+          description: Parameter.
+        value:
+          description: The rejected JSON value, echoed without successful-input constraints.
+        constraint:
+          type: string
+          description: Constraint.
+        hint:
+          type: string
+          description: Hint.
+      description: Additional context for this refusal.
+    InvalidParameterError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: invalid_parameter
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/InvalidParameterErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    InvalidSha256ErrorDetail:
+      type: object
+      properties:
+        expected:
+          type: string
+          description: Expected.
+        sha256:
+          description: Sha256.
+      required:
+      - expected
+      patternProperties:
+        ^files\.[0-9]+\.sha256$: {}
+      additionalProperties: false
+      minProperties: 2
+      maxProperties: 2
+      description: Additional context for this refusal.
+    InvalidSha256Error:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: invalid_sha256
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/InvalidSha256ErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    InvalidStateError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: invalid_state
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    InvalidUserIdErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - user_id
+      - expected
+      properties:
+        user_id:
+          description: User id.
+        expected:
+          type: string
+          description: Expected.
+      description: Additional context for this refusal.
+    InvalidUserIdError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: invalid_user_id
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/InvalidUserIdErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    InvalidVaultIdErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - vault_id
+      - expected
+      properties:
+        vault_id:
+          description: Vault id.
+        expected:
+          type: string
+          description: Expected.
+      description: Additional context for this refusal.
+    InvalidVaultIdError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: invalid_vault_id
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/InvalidVaultIdErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    LegacyFormErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - field
+      - received_type
+      - example
+      properties:
+        field:
+          type: string
+          description: Field.
+        received_type:
+          type: string
+          description: Received type.
+        example:
+          type: string
+          description: Example.
+      description: Additional context for this refusal.
+    LegacyFormError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: legacy_form
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/LegacyFormErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    LocalOpenOnlyError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: local_open_only
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    MergedFromValidationErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - violation
+      properties:
+        violation:
+          type: string
+          description: Violation.
+        source_id:
+          type: string
+          description: Source id.
+        target_id:
+          type: string
+          description: Target id.
+      description: Additional context for this refusal.
+    MergedFromValidationError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: merged_from_validation
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/MergedFromValidationErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    MethodNotAllowedError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: method_not_allowed
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    MisplacedFiltersErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - fields
+      - recognized
+      - example
+      properties:
+        fields:
+          type: array
+          items:
+            type: string
+          description: Fields.
+        recognized:
+          type: array
+          items:
+            type: string
+          description: Recognized.
+        example:
+          type: string
+          description: Example.
+      description: Additional context for this refusal.
+    MisplacedFiltersError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: misplaced_filters
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/MisplacedFiltersErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    MisplacedMetadataErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - fields
+      - recognized
+      - example
+      properties:
+        fields:
+          type: array
+          items:
+            type: string
+          description: Fields.
+        recognized:
+          type: array
+          items:
+            type: string
+          description: Recognized.
+        example:
+          type: string
+          description: Example.
+      description: Additional context for this refusal.
+    MisplacedMetadataError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: misplaced_metadata
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/MisplacedMetadataErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    MissingDocumentIdError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: missing_document_id
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    MissingDocumentIdentifierErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - tool
+      - accepted
+      properties:
+        tool:
+          type: string
+          description: Tool.
+        accepted:
+          type: array
+          items:
+            type: string
+          description: Accepted.
+      description: Additional context for this refusal.
+    MissingDocumentIdentifierError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: missing_document_identifier
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/MissingDocumentIdentifierErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    MissingHeadingPathError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: missing_heading_path
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    MissingIngestSourceError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: missing_ingest_source
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    MissingQueryError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: missing_query
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    MissingRelocatedToError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: missing_relocated_to
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    MissingSuccessorIdError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: missing_successor_id
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    ModeParameterMismatchErrorDetail:
+      oneOf:
+      - type: object
+        additionalProperties: false
+        required:
+        - mode
+        - target
+        - forbidden_param
+        - allowed_modes
+        properties:
+          mode:
+            type: string
+            description: Mode.
+          target:
+            type: string
+            description: Target.
+          forbidden_param:
+            type: string
+            description: Forbidden param.
+          allowed_modes:
+            type: array
+            items:
+              type: string
+            description: Allowed modes.
+      - type: object
+        additionalProperties: false
+        required:
+        - mode
+        - target
+        - forbidden_param
+        - allowed_targets
+        properties:
+          mode:
+            type: string
+            description: Mode.
+          target:
+            type: string
+            description: Target.
+          forbidden_param:
+            type: string
+            description: Forbidden param.
+          allowed_targets:
+            type: array
+            items:
+              type: string
+            description: Allowed targets.
+      description: Additional context for this refusal.
+    ModeParameterMismatchError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: mode_parameter_mismatch
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/ModeParameterMismatchErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    NoProjectionErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_id
+      properties:
+        document_id:
+          type: string
+          description: Document id.
+      description: Additional context for this refusal.
+    NoProjectionError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: no_projection
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/NoProjectionErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    PatchEmptyErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - field
+      properties:
+        field:
+          type: string
+          description: Field.
+      description: Additional context for this refusal.
+    PatchEmptyError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: patch_empty
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/PatchEmptyErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    PathTraversalDeniedErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - output_path
+      properties:
+        output_path:
+          type: string
+          description: Output path.
+      description: Additional context for this refusal.
+    PathTraversalDeniedError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: path_traversal_denied
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/PathTraversalDeniedErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    PipelineIncompleteErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_id
+      properties:
+        document_id:
+          type: string
+          description: Document id.
+      description: Additional context for this refusal.
+    PipelineIncompleteError:
+      x-mcp-tools: [search]
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: pipeline_incomplete
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/PipelineIncompleteErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    PipelineWorkInFlightErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - vault_id
+      properties:
+        vault_id:
+          type: string
+          description: Vault id.
+      description: Additional context for this refusal.
+    PipelineWorkInFlightError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: pipeline_work_in_flight
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/PipelineWorkInFlightErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    ReabstractAlreadyInFlightErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - vault_id
+      - start_time
+      properties:
+        vault_id:
+          type: string
+          description: Vault id.
+        start_time:
+          type: string
+          description: Start time.
+      description: Additional context for this refusal.
+    ReabstractAlreadyInFlightError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: reabstract_already_in_flight
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/ReabstractAlreadyInFlightErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    ReabstractDocumentAlreadyInFlightErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_id
+      - start_time
+      properties:
+        document_id:
+          type: string
+          description: Document id.
+        start_time:
+          type: string
+          description: Start time.
+      description: Additional context for this refusal.
+    ReabstractDocumentAlreadyInFlightError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: reabstract_document_already_in_flight
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/ReabstractDocumentAlreadyInFlightErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    RecomputePipelineAlreadyInFlightErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_id
+      - start_time
+      properties:
+        document_id:
+          type: string
+          description: Document id.
+        start_time:
+          type: string
+          description: Start time.
+      description: Additional context for this refusal.
+    RecomputePipelineAlreadyInFlightError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: recompute_pipeline_already_in_flight
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/RecomputePipelineAlreadyInFlightErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    RelocatedFromProvenanceMismatchErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - field
+      - pointer_content_hash
+      - document_content_hash
+      properties:
+        field:
+          type: string
+          description: Field.
+        pointer_content_hash:
+          type: string
+          description: Pointer content hash.
+        document_content_hash:
+          type: string
+          description: Document content hash.
+        also_accounted_content_hash:
+          type: string
+          description: Also accounted content hash.
+      description: Additional context for this refusal.
+    RelocatedFromProvenanceMismatchError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: relocated_from_provenance_mismatch
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/RelocatedFromProvenanceMismatchErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    RelocatedToProvenanceMismatchErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - field
+      - pointer_content_hash
+      - document_content_hash
+      properties:
+        field:
+          type: string
+          description: Field.
+        pointer_content_hash:
+          type: string
+          description: Pointer content hash.
+        document_content_hash:
+          type: string
+          description: Document content hash.
+        also_accounted_content_hash:
+          type: string
+          description: Also accounted content hash.
+      description: Additional context for this refusal.
+    RelocatedToProvenanceMismatchError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: relocated_to_provenance_mismatch
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/RelocatedToProvenanceMismatchErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    RelocationSourceUndeliveredErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - source
+      properties:
+        source:
+          type: string
+          description: Source.
+      description: Additional context for this refusal.
+    RelocationSourceUndeliveredError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: relocation_source_undelivered
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/RelocationSourceUndeliveredErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    ReservedTransitionErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - from_state
+      - attempted_action
+      - to_state
+      - reason
+      properties:
+        from_state:
+          type: string
+          description: From state.
+        attempted_action:
+          type: string
+          description: Attempted action.
+        to_state:
+          type: string
+          description: To state.
+        reason:
+          type: string
+          description: Reason.
+      description: Additional context for this refusal.
+    ReservedTransitionError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: reserved_transition
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/ReservedTransitionErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    RestoreProvenanceMismatchErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_id
+      - delivered_content_hash
+      - recorded_content_hash
+      properties:
+        document_id:
+          type: string
+          description: Document id.
+        delivered_content_hash:
+          type: string
+          description: Delivered content hash.
+        recorded_content_hash:
+          type: string
+          description: Recorded content hash.
+      description: Additional context for this refusal.
+    RestoreProvenanceMismatchError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: restore_provenance_mismatch
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/RestoreProvenanceMismatchErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    RestoreSourceNotAbsoluteErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - source
+      properties:
+        source:
+          type: string
+          description: Source.
+      description: Additional context for this refusal.
+    RestoreSourceNotAbsoluteError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: restore_source_not_absolute
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/RestoreSourceNotAbsoluteErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    RestoreTargetUnresolvedErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - content_hash
+      - candidate_ids
+      properties:
+        content_hash:
+          type: string
+          description: Content hash.
+        candidate_ids:
+          type: array
+          items:
+            type: string
+          description: Candidate ids.
+      description: Additional context for this refusal.
+    RestoreTargetUnresolvedError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: restore_target_unresolved
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/RestoreTargetUnresolvedErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    RetractTargetNotEdgeErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - retracted_edge_id
+      properties:
+        retracted_edge_id:
+          type: string
+          description: Retracted edge id.
+      description: Additional context for this refusal.
+    RetractTargetNotEdgeError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: retract_target_not_edge
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/RetractTargetNotEdgeErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    RouteNotFoundError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: route_not_found
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    SageUpstreamTimeoutError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: sage_upstream_timeout
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    SageUpstreamUnavailableError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: sage_upstream_unavailable
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    LocalProfileOnlyError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: local_profile_only
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    SelfReferentialEdgeErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_id
+      properties:
+        document_id:
+          type: string
+          description: Document id.
+      description: Additional context for this refusal.
+    SelfReferentialEdgeError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: self_referential_edge
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/SelfReferentialEdgeErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    SourceDigestMismatchErrorDetail:
+      oneOf:
+      - type: object
+        additionalProperties: false
+        required:
+        - transfer_id
+        - delivered_sha256
+        properties:
+          transfer_id:
+            type: string
+            description: Transfer id.
+          delivered_sha256:
+            type:
+            - string
+            - 'null'
+            description: Delivered sha256.
+      - type: object
+        additionalProperties: false
+        required:
+        - source
+        - declared_sha256
+        - delivered_sha256
+        properties:
+          source:
+            type:
+            - string
+            - 'null'
+            description: Source.
+          declared_sha256:
+            type:
+            - string
+            - 'null'
+            description: Declared sha256.
+          delivered_sha256:
+            type:
+            - string
+            - 'null'
+            description: Delivered sha256.
+      description: Additional context for this refusal.
+    SourceDigestMismatchError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: source_digest_mismatch
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/SourceDigestMismatchErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    SourceFileNotFoundErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - source
+      properties:
+        source:
+          type: string
+          description: Source.
+      description: Additional context for this refusal.
+    SourceFileNotFoundError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: source_file_not_found
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/SourceFileNotFoundErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    SourceTypeUnresolvedErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - extension
+      - registered_source_types
+      properties:
+        extension:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Extension.
+        registered_source_types:
+          type: array
+          items:
+            type: string
+          description: Registered source types.
+      description: Additional context for this refusal.
+    SourceTypeUnresolvedError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: source_type_unresolved
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/SourceTypeUnresolvedErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    SourceUnreadableErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - source_type
+      - source_path
+      properties:
+        source_type:
+          type: string
+          description: Source type.
+        source_path:
+          type: string
+          description: Source path.
+      description: Additional context for this refusal.
+    SourceUnreadableError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: source_unreadable
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/SourceUnreadableErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    StagingEdgeNotFoundErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - edge_id
+      properties:
+        edge_id:
+          type: string
+          description: Edge id.
+      description: Additional context for this refusal.
+    StagingEdgeNotFoundError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: staging_edge_not_found
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/StagingEdgeNotFoundErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    StaleChainHeadErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - predecessor_id
+      - expected_head_version
+      - current_head_id
+      - current_head_version
+      properties:
+        predecessor_id:
+          type: string
+          description: Predecessor id.
+        expected_head_version:
+          type: string
+          description: Expected head version.
+        current_head_id:
+          type: string
+          description: Current head id.
+        current_head_version:
+          type: string
+          description: Current head version.
+      description: Additional context for this refusal.
+    StaleChainHeadError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: stale_chain_head
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/StaleChainHeadErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    StaleReadErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_id
+      - expected_version
+      - current_version
+      properties:
+        document_id:
+          type: string
+          description: Document id.
+        expected_version:
+          type: string
+          description: Expected version.
+        current_version:
+          type: string
+          description: Current version.
+      description: Additional context for this refusal.
+    StaleReadError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: stale_read
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/StaleReadErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    StorageQueryFailedErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - operation
+      properties:
+        operation:
+          type: string
+          description: Operation.
+      description: Additional context for this refusal.
+    StorageQueryFailedError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: storage_query_failed
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/StorageQueryFailedErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    SupersedeTargetNotActiveErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - predecessor_id
+      - current_state
+      - required_state
+      - allowed_states
+      properties:
+        predecessor_id:
+          type: string
+          description: Predecessor id.
+        current_state:
+          type: string
+          description: Current state.
+        required_state:
+          type: string
+          description: Required state.
+        allowed_states:
+          type: array
+          items:
+            type: string
+          description: Allowed states.
+      description: Additional context for this refusal.
+    SupersedeTargetNotActiveError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: supersede_target_not_active
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/SupersedeTargetNotActiveErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    SyncedFromInapplicableEdgeTypeErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - edge_type
+      - fields_set
+      properties:
+        edge_type:
+          type: string
+          description: Edge type.
+        fields_set:
+          type: array
+          items:
+            type: string
+          description: Fields set.
+      description: Additional context for this refusal.
+    SyncedFromInapplicableEdgeTypeError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: synced_from_inapplicable_edge_type
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/SyncedFromInapplicableEdgeTypeErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    SyncedFromVersionNotInSourceChainErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - target_id
+      - synced_from_version
+      properties:
+        target_id:
+          type: string
+          description: Target id.
+        synced_from_version:
+          type: string
+          description: Synced from version.
+      description: Additional context for this refusal.
+    SyncedFromVersionNotInSourceChainError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: synced_from_version_not_in_source_chain
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/SyncedFromVersionNotInSourceChainErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    TagPatchOverlapErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - violation
+      - tags
+      properties:
+        violation:
+          type: string
+          description: Violation.
+        tags:
+          type: array
+          items:
+            type: string
+          description: Tags.
+      description: Additional context for this refusal.
+    TagPatchOverlapError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: tag_patch_overlap
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/TagPatchOverlapErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    TagsAddConflictErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_id
+      - tags
+      - current_tags
+      properties:
+        document_id:
+          type: string
+          description: Document id.
+        tags:
+          type: array
+          items:
+            type: string
+          description: Tags.
+        current_tags:
+          type: array
+          items:
+            type: string
+          description: Current tags.
+      description: Additional context for this refusal.
+    TagsAddConflictError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: tags_add_conflict
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/TagsAddConflictErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    TagsRemoveConflictErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_id
+      - tags
+      - current_tags
+      properties:
+        document_id:
+          type: string
+          description: Document id.
+        tags:
+          type: array
+          items:
+            type: string
+          description: Tags.
+        current_tags:
+          type: array
+          items:
+            type: string
+          description: Current tags.
+      description: Additional context for this refusal.
+    TagsRemoveConflictError:
+      x-mcp-tools: [update_metadata]
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: tags_remove_conflict
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/TagsRemoveConflictErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    TbdPolicyEdgeErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - edge_type
+      properties:
+        edge_type:
+          type: string
+          description: Edge type.
+      description: Additional context for this refusal.
+    TbdPolicyEdgeError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: tbd_policy_edge
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/TbdPolicyEdgeErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    Tier3DocTypeChangeStaleKeysErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_id
+      - previous_doc_type
+      - new_doc_type
+      - stale_keys
+      - merged_tier3_keys
+      properties:
+        document_id:
+          type: string
+          description: Document id.
+        previous_doc_type:
+          type: string
+          description: Previous doc type.
+        new_doc_type:
+          type: string
+          description: New doc type.
+        stale_keys:
+          type: array
+          items:
+            type: string
+          description: Stale keys.
+        merged_tier3_keys:
+          type: array
+          items:
+            type: string
+          description: Merged tier3 keys.
+      description: Additional context for this refusal.
+    Tier3DocTypeChangeStaleKeysError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: tier3_doc_type_change_stale_keys
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/Tier3DocTypeChangeStaleKeysErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    Tier3PatchOverlapErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - keys
+      properties:
+        keys:
+          type: array
+          items:
+            type: string
+          description: Keys.
+      description: Additional context for this refusal.
+    Tier3PatchOverlapError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: tier3_patch_overlap
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/Tier3PatchOverlapErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    Tier3SchemaViolationErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - doc_type
+      - path
+      - message
+      properties:
+        doc_type:
+          type: string
+          description: Doc type.
+        path:
+          type: string
+          description: Path.
+        message:
+          type: string
+          description: Human-readable error description.
+        instance:
+          description: The rejected metadata value.
+        requirements:
+          type: object
+          additionalProperties: true
+          description: The vault-configured metadata requirements; keys and values follow that vault schema.
+      description: Additional context for this refusal.
+    Tier3SchemaViolationError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: tier3_schema_violation
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/Tier3SchemaViolationErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    Tier3UniqueConstraintViolationErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - doc_type
+      - field
+      - colliding_value
+      - existing_document_id
+      properties:
+        doc_type:
+          type: string
+          description: Doc type.
+        field:
+          type: string
+          description: Field.
+        colliding_value:
+          description: The conflicting metadata value.
+        existing_document_id:
+          type: string
+          description: Existing document id.
+      description: Additional context for this refusal.
+    Tier3UniqueConstraintViolationError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: tier3_unique_constraint_violation
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/Tier3UniqueConstraintViolationErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    Tier3UnsetConflictErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_id
+      - doc_type
+      - keys
+      - current_tier3_keys
+      properties:
+        document_id:
+          type: string
+          description: Document id.
+        doc_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Doc type.
+        keys:
+          type: array
+          items:
+            type: string
+          description: Keys.
+        current_tier3_keys:
+          type: array
+          items:
+            type: string
+          description: Current tier3 keys.
+      description: Additional context for this refusal.
+    Tier3UnsetConflictError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: tier3_unset_conflict
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/Tier3UnsetConflictErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    TransferContentTooLargeErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - max_bytes
+      properties:
+        max_bytes:
+          type: integer
+          description: Max bytes.
+      description: Additional context for this refusal.
+    TransferContentTooLargeError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: transfer_content_too_large
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/TransferContentTooLargeErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    TransferEndpointNotConfiguredError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: transfer_endpoint_not_configured
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    TransferNotStagedErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - transfer_id
+      properties:
+        transfer_id:
+          type: string
+          description: Transfer id.
+      description: Additional context for this refusal.
+    TransferNotStagedError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: transfer_not_staged
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/TransferNotStagedErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    TransferTokenAlreadyUsedErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - transfer_id
+      properties:
+        transfer_id:
+          type: string
+          description: Transfer id.
+      description: Additional context for this refusal.
+    TransferTokenAlreadyUsedError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: transfer_token_already_used
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/TransferTokenAlreadyUsedErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    TransferTokenInvalidError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: transfer_token_invalid
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    UnexpectedRelocatedToErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - field
+      - attempted_action
+      - required_action
+      properties:
+        field:
+          type: string
+          description: Field.
+        attempted_action:
+          type: string
+          description: Attempted action.
+        required_action:
+          type: string
+          description: Required action.
+      description: Additional context for this refusal.
+    UnexpectedRelocatedToError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: unexpected_relocated_to
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/UnexpectedRelocatedToErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    UnexpectedSuccessorIdErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - field
+      - attempted_action
+      - required_action
+      properties:
+        field:
+          type: string
+          description: Field.
+        attempted_action:
+          type: string
+          description: Attempted action.
+        required_action:
+          type: string
+          description: Required action.
+      description: Additional context for this refusal.
+    UnexpectedSuccessorIdError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: unexpected_successor_id
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/UnexpectedSuccessorIdErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    UnknownFilterKeyErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - key
+      - valid_keys
+      - example
+      properties:
+        key:
+          type: string
+          description: Key.
+        valid_keys:
+          type: array
+          items:
+            type: string
+          description: Valid keys.
+        example:
+          type: string
+          description: Example.
+      description: Additional context for this refusal.
+    UnknownFilterKeyError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: unknown_filter_key
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/UnknownFilterKeyErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    UnknownParameterErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - tool
+      - rejected_params
+      - valid_params
+      properties:
+        tool:
+          type: string
+          description: Tool.
+        rejected_params:
+          type: array
+          items:
+            type: string
+          description: Rejected params.
+        valid_params:
+          type: array
+          items:
+            type: string
+          description: Valid params.
+      description: Additional context for this refusal.
+    UnknownParameterError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: unknown_parameter
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/UnknownParameterErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    VaultAlreadyExistsErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - vault_id
+      properties:
+        vault_id:
+          type: string
+          description: Vault id.
+      description: Additional context for this refusal.
+    VaultAlreadyExistsError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: vault_already_exists
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/VaultAlreadyExistsErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    VaultConfigValidationErrorErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - errors
+      properties:
+        errors:
+          type: array
+          items:
+            type: string
+          description: Errors.
+      description: Additional context for this refusal.
+    VaultConfigValidationErrorError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: vault_config_validation_error
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/VaultConfigValidationErrorErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    VaultMigrationInFlightErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - vault_id
+      - start_time
+      properties:
+        vault_id:
+          type: string
+          description: Vault id.
+        start_time:
+          type: string
+          description: Start time.
+      description: Additional context for this refusal.
+    VaultMigrationInFlightError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: vault_migration_in_flight
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/VaultMigrationInFlightErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    VaultNotFoundErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - vault_id
+      - available_vaults
+      properties:
+        vault_id:
+          type: string
+          description: Vault id.
+        available_vaults:
+          type: array
+          items:
+            type: string
+          description: Available vaults.
+      description: Additional context for this refusal.
+    VaultNotFoundError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: vault_not_found
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/VaultNotFoundErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    VaultSourcePathRefusedErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - source_path
+      properties:
+        source_path:
+          type: string
+          description: Source path.
+      description: Additional context for this refusal.
+    VaultSourcePathRefusedError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: vault_source_path_refused
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/VaultSourcePathRefusedErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    VaultSourceStoreRefusedErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - source_path
+      - operation
+      properties:
+        source_path:
+          type: string
+          description: Source path.
+        operation:
+          type: string
+          description: Operation.
+        store_status:
+          type: integer
+          description: Store status.
+      description: Additional context for this refusal.
+    VaultSourceStoreRefusedError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: vault_source_store_refused
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/VaultSourceStoreRefusedErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    VaultSourceStoreUnavailableErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - source_path
+      - operation
+      properties:
+        source_path:
+          type: string
+          description: Source path.
+        operation:
+          type: string
+          description: Operation.
+        store_status:
+          type: integer
+          description: Store status.
+      description: Additional context for this refusal.
+    VaultSourceStoreUnavailableError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: vault_source_store_unavailable
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/VaultSourceStoreUnavailableErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    WritePathExistsErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - write_to_path
+      properties:
+        write_to_path:
+          type: string
+          description: Write to path.
+      description: Additional context for this refusal.
+    WritePathExistsError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: write_path_exists
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/WritePathExistsErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    WritePathInvalidErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - write_to_path
+      - reason
+      properties:
+        write_to_path:
+          type: string
+          description: Write to path.
+        reason:
+          type: string
+          description: Reason.
+      description: Additional context for this refusal.
+    WritePathInvalidError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: write_path_invalid
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/WritePathInvalidErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    ExtensionError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          not:
+            enum:
+            - adapter_config_invalid
+            - adapter_not_found
+            - ambiguous_document_identifier
+            - ambiguous_ingest_source
+            - assertions_file_invalid
+            - assertions_file_not_found
+            - assertions_not_configured
+            - auth_failed
+            - auth_not_configured
+            - auth_required
+            - binary_content_refused
+            - caller_filesystem_unavailable
+            - content_delivery_conflict
+            - content_file_missing
+            - content_too_large
+            - delivery_conflict
+            - destructive_config_change
+            - document_not_found
+            - document_scope_unmatched
+            - download_url_unavailable
+            - duplicate_content
+            - edge_anchor_policy_violation
+            - edge_not_found
+            - empty_file_list
+            - expected_head_version_requires_predecessor
+            - force_reingest_path_mismatch
+            - force_reingest_pin_mismatch
+            - heading_not_found
+            - http_error
+            - identical_content_supersede
+            - internal_error
+            - invalid_action
+            - invalid_batch_metadata
+            - invalid_directory
+            - invalid_doc_type
+            - invalid_document_date
+            - invalid_document_id
+            - invalid_edge_id
+            - invalid_filter_shape
+            - invalid_filter_value
+            - invalid_lifecycle_transition
+            - invalid_mode
+            - invalid_parameter
+            - invalid_sha256
+            - invalid_state
+            - invalid_user_id
+            - invalid_vault_id
+            - legacy_form
+            - local_open_only
+            - merged_from_validation
+            - method_not_allowed
+            - misplaced_filters
+            - misplaced_metadata
+            - missing_document_id
+            - missing_document_identifier
+            - missing_heading_path
+            - missing_ingest_source
+            - missing_query
+            - missing_relocated_to
+            - missing_successor_id
+            - mode_parameter_mismatch
+            - no_projection
+            - patch_empty
+            - path_traversal_denied
+            - pipeline_incomplete
+            - pipeline_work_in_flight
+            - reabstract_already_in_flight
+            - reabstract_document_already_in_flight
+            - recompute_pipeline_already_in_flight
+            - relocated_from_provenance_mismatch
+            - relocated_to_provenance_mismatch
+            - relocation_source_undelivered
+            - reserved_transition
+            - restore_provenance_mismatch
+            - restore_source_not_absolute
+            - restore_target_unresolved
+            - retract_target_not_edge
+            - route_not_found
+            - sage_upstream_timeout
+            - sage_upstream_unavailable
+            - local_profile_only
+            - self_referential_edge
+            - source_digest_mismatch
+            - source_file_not_found
+            - source_type_unresolved
+            - source_unreadable
+            - staging_edge_not_found
+            - stale_chain_head
+            - stale_read
+            - storage_query_failed
+            - supersede_target_not_active
+            - synced_from_inapplicable_edge_type
+            - synced_from_version_not_in_source_chain
+            - tag_patch_overlap
+            - tags_add_conflict
+            - tags_remove_conflict
+            - tbd_policy_edge
+            - tier3_doc_type_change_stale_keys
+            - tier3_patch_overlap
+            - tier3_schema_violation
+            - tier3_unique_constraint_violation
+            - tier3_unset_conflict
+            - transfer_content_too_large
+            - transfer_endpoint_not_configured
+            - transfer_not_staged
+            - transfer_token_already_used
+            - transfer_token_invalid
+            - unexpected_relocated_to
+            - unexpected_successor_id
+            - unknown_filter_key
+            - unknown_parameter
+            - vault_already_exists
+            - vault_config_validation_error
+            - vault_migration_in_flight
+            - vault_not_found
+            - vault_source_path_refused
+            - vault_source_store_refused
+            - vault_source_store_unavailable
+            - write_path_exists
+            - write_path_invalid
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        detail:
+          type:
+          - object
+          - 'null'
+          additionalProperties: true
+          description: No additional context is emitted for this error.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    ErrorResponse:
+      description: Error envelope selected by code. Known codes require their declared detail; rejected input values remain arbitrary JSON. Extension codes cannot bypass a known family.
+      oneOf:
+      - $ref: '#/components/schemas/AdapterConfigInvalidError'
+      - $ref: '#/components/schemas/AdapterNotFoundError'
+      - $ref: '#/components/schemas/AmbiguousDocumentIdentifierError'
+      - $ref: '#/components/schemas/AmbiguousIngestSourceError'
+      - $ref: '#/components/schemas/AssertionsFileInvalidError'
+      - $ref: '#/components/schemas/AssertionsFileNotFoundError'
+      - $ref: '#/components/schemas/AssertionsNotConfiguredError'
+      - $ref: '#/components/schemas/AuthFailedError'
+      - $ref: '#/components/schemas/AuthNotConfiguredError'
+      - $ref: '#/components/schemas/AuthRequiredError'
+      - $ref: '#/components/schemas/BinaryContentRefusedError'
+      - $ref: '#/components/schemas/CallerFilesystemUnavailableError'
+      - $ref: '#/components/schemas/ContentDeliveryConflictError'
+      - $ref: '#/components/schemas/ContentFileMissingError'
+      - $ref: '#/components/schemas/ContentTooLargeError'
+      - $ref: '#/components/schemas/DeliveryConflictError'
+      - $ref: '#/components/schemas/DestructiveConfigChangeError'
+      - $ref: '#/components/schemas/DocumentNotFoundError'
+      - $ref: '#/components/schemas/DocumentScopeUnmatchedError'
+      - $ref: '#/components/schemas/DownloadUrlUnavailableError'
+      - $ref: '#/components/schemas/DuplicateContentError'
+      - $ref: '#/components/schemas/EdgeAnchorPolicyViolationError'
+      - $ref: '#/components/schemas/EdgeNotFoundError'
+      - $ref: '#/components/schemas/EmptyFileListError'
+      - $ref: '#/components/schemas/ExpectedHeadVersionRequiresPredecessorError'
+      - $ref: '#/components/schemas/ForceReingestPathMismatchError'
+      - $ref: '#/components/schemas/ForceReingestPinMismatchError'
+      - $ref: '#/components/schemas/HeadingNotFoundError'
+      - $ref: '#/components/schemas/HttpErrorError'
+      - $ref: '#/components/schemas/IdenticalContentSupersedeError'
+      - $ref: '#/components/schemas/InternalErrorError'
+      - $ref: '#/components/schemas/InvalidActionError'
+      - $ref: '#/components/schemas/InvalidBatchMetadataError'
+      - $ref: '#/components/schemas/InvalidDirectoryError'
+      - $ref: '#/components/schemas/InvalidDocTypeError'
+      - $ref: '#/components/schemas/InvalidDocumentDateError'
+      - $ref: '#/components/schemas/InvalidDocumentIdError'
+      - $ref: '#/components/schemas/InvalidEdgeIdError'
+      - $ref: '#/components/schemas/InvalidFilterShapeError'
+      - $ref: '#/components/schemas/InvalidFilterValueError'
+      - $ref: '#/components/schemas/InvalidLifecycleTransitionError'
+      - $ref: '#/components/schemas/InvalidModeError'
+      - $ref: '#/components/schemas/InvalidParameterError'
+      - $ref: '#/components/schemas/InvalidSha256Error'
+      - $ref: '#/components/schemas/InvalidStateError'
+      - $ref: '#/components/schemas/InvalidUserIdError'
+      - $ref: '#/components/schemas/InvalidVaultIdError'
+      - $ref: '#/components/schemas/LegacyFormError'
+      - $ref: '#/components/schemas/LocalOpenOnlyError'
+      - $ref: '#/components/schemas/MergedFromValidationError'
+      - $ref: '#/components/schemas/MethodNotAllowedError'
+      - $ref: '#/components/schemas/MisplacedFiltersError'
+      - $ref: '#/components/schemas/MisplacedMetadataError'
+      - $ref: '#/components/schemas/MissingDocumentIdError'
+      - $ref: '#/components/schemas/MissingDocumentIdentifierError'
+      - $ref: '#/components/schemas/MissingHeadingPathError'
+      - $ref: '#/components/schemas/MissingIngestSourceError'
+      - $ref: '#/components/schemas/MissingQueryError'
+      - $ref: '#/components/schemas/MissingRelocatedToError'
+      - $ref: '#/components/schemas/MissingSuccessorIdError'
+      - $ref: '#/components/schemas/ModeParameterMismatchError'
+      - $ref: '#/components/schemas/NoProjectionError'
+      - $ref: '#/components/schemas/PatchEmptyError'
+      - $ref: '#/components/schemas/PathTraversalDeniedError'
+      - $ref: '#/components/schemas/PipelineIncompleteError'
+      - $ref: '#/components/schemas/PipelineWorkInFlightError'
+      - $ref: '#/components/schemas/ReabstractAlreadyInFlightError'
+      - $ref: '#/components/schemas/ReabstractDocumentAlreadyInFlightError'
+      - $ref: '#/components/schemas/RecomputePipelineAlreadyInFlightError'
+      - $ref: '#/components/schemas/RelocatedFromProvenanceMismatchError'
+      - $ref: '#/components/schemas/RelocatedToProvenanceMismatchError'
+      - $ref: '#/components/schemas/RelocationSourceUndeliveredError'
+      - $ref: '#/components/schemas/ReservedTransitionError'
+      - $ref: '#/components/schemas/RestoreProvenanceMismatchError'
+      - $ref: '#/components/schemas/RestoreSourceNotAbsoluteError'
+      - $ref: '#/components/schemas/RestoreTargetUnresolvedError'
+      - $ref: '#/components/schemas/RetractTargetNotEdgeError'
+      - $ref: '#/components/schemas/RouteNotFoundError'
+      - $ref: '#/components/schemas/SageUpstreamTimeoutError'
+      - $ref: '#/components/schemas/SageUpstreamUnavailableError'
+      - $ref: '#/components/schemas/LocalProfileOnlyError'
+      - $ref: '#/components/schemas/SelfReferentialEdgeError'
+      - $ref: '#/components/schemas/SourceDigestMismatchError'
+      - $ref: '#/components/schemas/SourceFileNotFoundError'
+      - $ref: '#/components/schemas/SourceTypeUnresolvedError'
+      - $ref: '#/components/schemas/SourceUnreadableError'
+      - $ref: '#/components/schemas/StagingEdgeNotFoundError'
+      - $ref: '#/components/schemas/StaleChainHeadError'
+      - $ref: '#/components/schemas/StaleReadError'
+      - $ref: '#/components/schemas/StorageQueryFailedError'
+      - $ref: '#/components/schemas/SupersedeTargetNotActiveError'
+      - $ref: '#/components/schemas/SyncedFromInapplicableEdgeTypeError'
+      - $ref: '#/components/schemas/SyncedFromVersionNotInSourceChainError'
+      - $ref: '#/components/schemas/TagPatchOverlapError'
+      - $ref: '#/components/schemas/TagsAddConflictError'
+      - $ref: '#/components/schemas/TagsRemoveConflictError'
+      - $ref: '#/components/schemas/TbdPolicyEdgeError'
+      - $ref: '#/components/schemas/Tier3DocTypeChangeStaleKeysError'
+      - $ref: '#/components/schemas/Tier3PatchOverlapError'
+      - $ref: '#/components/schemas/Tier3SchemaViolationError'
+      - $ref: '#/components/schemas/Tier3UniqueConstraintViolationError'
+      - $ref: '#/components/schemas/Tier3UnsetConflictError'
+      - $ref: '#/components/schemas/TransferContentTooLargeError'
+      - $ref: '#/components/schemas/TransferEndpointNotConfiguredError'
+      - $ref: '#/components/schemas/TransferNotStagedError'
+      - $ref: '#/components/schemas/TransferTokenAlreadyUsedError'
+      - $ref: '#/components/schemas/TransferTokenInvalidError'
+      - $ref: '#/components/schemas/UnexpectedRelocatedToError'
+      - $ref: '#/components/schemas/UnexpectedSuccessorIdError'
+      - $ref: '#/components/schemas/UnknownFilterKeyError'
+      - $ref: '#/components/schemas/UnknownParameterError'
+      - $ref: '#/components/schemas/VaultAlreadyExistsError'
+      - $ref: '#/components/schemas/VaultConfigValidationErrorError'
+      - $ref: '#/components/schemas/VaultMigrationInFlightError'
+      - $ref: '#/components/schemas/VaultNotFoundError'
+      - $ref: '#/components/schemas/VaultSourcePathRefusedError'
+      - $ref: '#/components/schemas/VaultSourceStoreRefusedError'
+      - $ref: '#/components/schemas/VaultSourceStoreUnavailableError'
+      - $ref: '#/components/schemas/WritePathExistsError'
+      - $ref: '#/components/schemas/WritePathInvalidError'
+      - $ref: '#/components/schemas/ExtensionError'
+      discriminator:
+        propertyName: code
+        mapping:
+          adapter_config_invalid: '#/components/schemas/AdapterConfigInvalidError'
+          adapter_not_found: '#/components/schemas/AdapterNotFoundError'
+          ambiguous_document_identifier: '#/components/schemas/AmbiguousDocumentIdentifierError'
+          ambiguous_ingest_source: '#/components/schemas/AmbiguousIngestSourceError'
+          assertions_file_invalid: '#/components/schemas/AssertionsFileInvalidError'
+          assertions_file_not_found: '#/components/schemas/AssertionsFileNotFoundError'
+          assertions_not_configured: '#/components/schemas/AssertionsNotConfiguredError'
+          auth_failed: '#/components/schemas/AuthFailedError'
+          auth_not_configured: '#/components/schemas/AuthNotConfiguredError'
+          auth_required: '#/components/schemas/AuthRequiredError'
+          binary_content_refused: '#/components/schemas/BinaryContentRefusedError'
+          caller_filesystem_unavailable: '#/components/schemas/CallerFilesystemUnavailableError'
+          content_delivery_conflict: '#/components/schemas/ContentDeliveryConflictError'
+          content_file_missing: '#/components/schemas/ContentFileMissingError'
+          content_too_large: '#/components/schemas/ContentTooLargeError'
+          delivery_conflict: '#/components/schemas/DeliveryConflictError'
+          destructive_config_change: '#/components/schemas/DestructiveConfigChangeError'
+          document_not_found: '#/components/schemas/DocumentNotFoundError'
+          document_scope_unmatched: '#/components/schemas/DocumentScopeUnmatchedError'
+          download_url_unavailable: '#/components/schemas/DownloadUrlUnavailableError'
+          duplicate_content: '#/components/schemas/DuplicateContentError'
+          edge_anchor_policy_violation: '#/components/schemas/EdgeAnchorPolicyViolationError'
+          edge_not_found: '#/components/schemas/EdgeNotFoundError'
+          empty_file_list: '#/components/schemas/EmptyFileListError'
+          expected_head_version_requires_predecessor: '#/components/schemas/ExpectedHeadVersionRequiresPredecessorError'
+          force_reingest_path_mismatch: '#/components/schemas/ForceReingestPathMismatchError'
+          force_reingest_pin_mismatch: '#/components/schemas/ForceReingestPinMismatchError'
+          heading_not_found: '#/components/schemas/HeadingNotFoundError'
+          http_error: '#/components/schemas/HttpErrorError'
+          identical_content_supersede: '#/components/schemas/IdenticalContentSupersedeError'
+          internal_error: '#/components/schemas/InternalErrorError'
+          invalid_action: '#/components/schemas/InvalidActionError'
+          invalid_batch_metadata: '#/components/schemas/InvalidBatchMetadataError'
+          invalid_directory: '#/components/schemas/InvalidDirectoryError'
+          invalid_doc_type: '#/components/schemas/InvalidDocTypeError'
+          invalid_document_date: '#/components/schemas/InvalidDocumentDateError'
+          invalid_document_id: '#/components/schemas/InvalidDocumentIdError'
+          invalid_edge_id: '#/components/schemas/InvalidEdgeIdError'
+          invalid_filter_shape: '#/components/schemas/InvalidFilterShapeError'
+          invalid_filter_value: '#/components/schemas/InvalidFilterValueError'
+          invalid_lifecycle_transition: '#/components/schemas/InvalidLifecycleTransitionError'
+          invalid_mode: '#/components/schemas/InvalidModeError'
+          invalid_parameter: '#/components/schemas/InvalidParameterError'
+          invalid_sha256: '#/components/schemas/InvalidSha256Error'
+          invalid_state: '#/components/schemas/InvalidStateError'
+          invalid_user_id: '#/components/schemas/InvalidUserIdError'
+          invalid_vault_id: '#/components/schemas/InvalidVaultIdError'
+          legacy_form: '#/components/schemas/LegacyFormError'
+          local_open_only: '#/components/schemas/LocalOpenOnlyError'
+          merged_from_validation: '#/components/schemas/MergedFromValidationError'
+          method_not_allowed: '#/components/schemas/MethodNotAllowedError'
+          misplaced_filters: '#/components/schemas/MisplacedFiltersError'
+          misplaced_metadata: '#/components/schemas/MisplacedMetadataError'
+          missing_document_id: '#/components/schemas/MissingDocumentIdError'
+          missing_document_identifier: '#/components/schemas/MissingDocumentIdentifierError'
+          missing_heading_path: '#/components/schemas/MissingHeadingPathError'
+          missing_ingest_source: '#/components/schemas/MissingIngestSourceError'
+          missing_query: '#/components/schemas/MissingQueryError'
+          missing_relocated_to: '#/components/schemas/MissingRelocatedToError'
+          missing_successor_id: '#/components/schemas/MissingSuccessorIdError'
+          mode_parameter_mismatch: '#/components/schemas/ModeParameterMismatchError'
+          no_projection: '#/components/schemas/NoProjectionError'
+          patch_empty: '#/components/schemas/PatchEmptyError'
+          path_traversal_denied: '#/components/schemas/PathTraversalDeniedError'
+          pipeline_incomplete: '#/components/schemas/PipelineIncompleteError'
+          pipeline_work_in_flight: '#/components/schemas/PipelineWorkInFlightError'
+          reabstract_already_in_flight: '#/components/schemas/ReabstractAlreadyInFlightError'
+          reabstract_document_already_in_flight: '#/components/schemas/ReabstractDocumentAlreadyInFlightError'
+          recompute_pipeline_already_in_flight: '#/components/schemas/RecomputePipelineAlreadyInFlightError'
+          relocated_from_provenance_mismatch: '#/components/schemas/RelocatedFromProvenanceMismatchError'
+          relocated_to_provenance_mismatch: '#/components/schemas/RelocatedToProvenanceMismatchError'
+          relocation_source_undelivered: '#/components/schemas/RelocationSourceUndeliveredError'
+          reserved_transition: '#/components/schemas/ReservedTransitionError'
+          restore_provenance_mismatch: '#/components/schemas/RestoreProvenanceMismatchError'
+          restore_source_not_absolute: '#/components/schemas/RestoreSourceNotAbsoluteError'
+          restore_target_unresolved: '#/components/schemas/RestoreTargetUnresolvedError'
+          retract_target_not_edge: '#/components/schemas/RetractTargetNotEdgeError'
+          route_not_found: '#/components/schemas/RouteNotFoundError'
+          sage_upstream_timeout: '#/components/schemas/SageUpstreamTimeoutError'
+          sage_upstream_unavailable: '#/components/schemas/SageUpstreamUnavailableError'
+          local_profile_only: '#/components/schemas/LocalProfileOnlyError'
+          self_referential_edge: '#/components/schemas/SelfReferentialEdgeError'
+          source_digest_mismatch: '#/components/schemas/SourceDigestMismatchError'
+          source_file_not_found: '#/components/schemas/SourceFileNotFoundError'
+          source_type_unresolved: '#/components/schemas/SourceTypeUnresolvedError'
+          source_unreadable: '#/components/schemas/SourceUnreadableError'
+          staging_edge_not_found: '#/components/schemas/StagingEdgeNotFoundError'
+          stale_chain_head: '#/components/schemas/StaleChainHeadError'
+          stale_read: '#/components/schemas/StaleReadError'
+          storage_query_failed: '#/components/schemas/StorageQueryFailedError'
+          supersede_target_not_active: '#/components/schemas/SupersedeTargetNotActiveError'
+          synced_from_inapplicable_edge_type: '#/components/schemas/SyncedFromInapplicableEdgeTypeError'
+          synced_from_version_not_in_source_chain: '#/components/schemas/SyncedFromVersionNotInSourceChainError'
+          tag_patch_overlap: '#/components/schemas/TagPatchOverlapError'
+          tags_add_conflict: '#/components/schemas/TagsAddConflictError'
+          tags_remove_conflict: '#/components/schemas/TagsRemoveConflictError'
+          tbd_policy_edge: '#/components/schemas/TbdPolicyEdgeError'
+          tier3_doc_type_change_stale_keys: '#/components/schemas/Tier3DocTypeChangeStaleKeysError'
+          tier3_patch_overlap: '#/components/schemas/Tier3PatchOverlapError'
+          tier3_schema_violation: '#/components/schemas/Tier3SchemaViolationError'
+          tier3_unique_constraint_violation: '#/components/schemas/Tier3UniqueConstraintViolationError'
+          tier3_unset_conflict: '#/components/schemas/Tier3UnsetConflictError'
+          transfer_content_too_large: '#/components/schemas/TransferContentTooLargeError'
+          transfer_endpoint_not_configured: '#/components/schemas/TransferEndpointNotConfiguredError'
+          transfer_not_staged: '#/components/schemas/TransferNotStagedError'
+          transfer_token_already_used: '#/components/schemas/TransferTokenAlreadyUsedError'
+          transfer_token_invalid: '#/components/schemas/TransferTokenInvalidError'
+          unexpected_relocated_to: '#/components/schemas/UnexpectedRelocatedToError'
+          unexpected_successor_id: '#/components/schemas/UnexpectedSuccessorIdError'
+          unknown_filter_key: '#/components/schemas/UnknownFilterKeyError'
+          unknown_parameter: '#/components/schemas/UnknownParameterError'
+          vault_already_exists: '#/components/schemas/VaultAlreadyExistsError'
+          vault_config_validation_error: '#/components/schemas/VaultConfigValidationErrorError'
+          vault_migration_in_flight: '#/components/schemas/VaultMigrationInFlightError'
+          vault_not_found: '#/components/schemas/VaultNotFoundError'
+          vault_source_path_refused: '#/components/schemas/VaultSourcePathRefusedError'
+          vault_source_store_refused: '#/components/schemas/VaultSourceStoreRefusedError'
+          vault_source_store_unavailable: '#/components/schemas/VaultSourceStoreUnavailableError'
+          write_path_exists: '#/components/schemas/WritePathExistsError'
+          write_path_invalid: '#/components/schemas/WritePathInvalidError'
       properties:
         code:
           type: string
@@ -1102,13 +5495,50 @@ components:
           type: string
           description: Human-readable error description.
         detail:
-          type: [object, "null"]
+          type:
+          - object
+          - 'null'
+          additionalProperties: true
           description: Additional context. Structure varies by error type (e.g., current_state and attempted_action for lifecycle transition errors).
         read_meta:
-          type: object
-          description: >-
-            Self-describing read markers (CAS-ADR-039). `success=False` on
-            the error envelope, parallel to the success-response marker.
+          $ref: '#/components/schemas/ReadMeta'
+      required:
+      - code
+      - message
+      type: object
+    ReadMeta:
+      type: object
+      description: Self-describing markers for a SAGE read response (CAS-ADR-039). Nested as `read_meta` on every read-path response model so a caller can tell a delivered success apart from a transport-truncated fragment, and a thin/empty body apart from a populated one. The same carrier rides the error envelope with `success=false`.
+      required:
+      - success
+      - body_present
+      properties:
+        success:
+          type: boolean
+          description: True on a delivered success response; the complete sub-object's presence distinguishes a real response from a transport-truncated fragment.
+        body_present:
+          type: boolean
+          description: Whether a content body is present.
+        body_length:
+          type:
+          - integer
+          - 'null'
+          minimum: 0
+          description: Body length when present; null for write-to-path delivery or no-body responses.
+        projection_status:
+          type:
+          - string
+          - 'null'
+          enum:
+          - current
+          - stale
+          - null
+          description: 'Freshness of the projection on a projection read: ''current'' when the stored projection is up to date with the source, ''stale'' when the source was modified after the projection last ran (an administrative deficit, not a thin document). Null where the response is not a projection read.'
+        projection_recovery:
+          type:
+          - string
+          - 'null'
+          description: Name of the tool that recomputes a stale projection (recompute_abstract). Populated only when projection_status is 'stale'; null otherwise. Gives a caller an actionable recovery pointer without a second probing round-trip.
 
     # -------------------------------------------------------------------------
     # Interactive sign-in (backend-for-frontend)
