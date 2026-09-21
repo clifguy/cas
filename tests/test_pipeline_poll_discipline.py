@@ -626,6 +626,15 @@ def _claim_bindings(stmt: ast.AST, aliases: set[str]) -> set[str]:
 def _header_claim_bindings(node: ast.AST, aliases: set[str]) -> set[str]:
     """Invalidate names bound by a compound header before entering its body."""
     result = aliases.copy()
+    # Only header fields: descending into statement suites here would discard
+    # bindings before their source-order assignments have actually happened.
+    for field, value in ast.iter_fields(node):
+        if field in {"body", "orelse", "finalbody", "handlers"}:
+            continue
+        children = value if isinstance(value, list) else [value]
+        for child in children:
+            if isinstance(child, ast.AST):
+                result = _claim_bindings(child, result)
     if isinstance(node, (ast.For, ast.AsyncFor)):
         result = _claim_bindings(node.target, result)
     elif isinstance(node, (ast.With, ast.AsyncWith)):
@@ -664,7 +673,9 @@ def _consults_claim(
                 aliases = aliases - {stmt.name}
                 continue
             if isinstance(stmt, ast.If):
-                aliases = locate(stmt.body, aliases.copy()) & locate(stmt.orelse, aliases.copy())
+                aliases = locate(stmt.body, body_aliases.copy()) & locate(
+                    stmt.orelse, body_aliases.copy()
+                )
             else:
                 for _, value in ast.iter_fields(stmt):
                     if isinstance(value, list) and value and isinstance(value[0], ast.stmt):
@@ -700,6 +711,7 @@ def _consults_claim(
                 decisions(stmt.orelse, bound.copy(), guarded, own_break)
                 bound = _claim_bindings(stmt, bound)
             elif isinstance(stmt, ast.If):
+                bound = _header_claim_bindings(stmt, bound)
                 claim = _claim_expression(stmt.test, bound)
                 bound = decisions(stmt.body, bound.copy(), guarded or claim, own_break) & decisions(
                     stmt.orelse, bound.copy(), guarded or claim, own_break
@@ -3087,3 +3099,51 @@ def test_helper_detector_checks_all_function_returns(nested: str, guarded: bool)
         + "        await asyncio.sleep(0.01)\n"
     )
     assert _status_only_poll_helpers(ast.parse(source)) == ([] if guarded else [(2, "wait")])
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "while (inflight := {}) is not None:",
+        "for item in (inflight := replacements):",
+        "async for item in (inflight := replacements):",
+        "if (inflight := {}) is not None:",
+        "with (inflight := replacement()):",
+        "async with (inflight := replacement()):",
+    ],
+)
+def test_helper_detector_invalidates_assignment_expression_headers(header: str) -> None:
+    """Header expression writes invalidate aliases before the poll decision."""
+    is_loop = header.startswith(("while", "for", "async for"))
+    body = f"    {header}\n"
+    indent = "        "
+    line = 3
+    if not is_loop:
+        body += "        for _ in range(10):\n"
+        indent += "    "
+        line = 4
+    source = (
+        "async def wait(service, doc_id):\n    inflight = service._inflight\n"
+        + body
+        + indent
+        + "if doc.pipeline_status in TERMINAL and doc_id not in inflight:\n"
+        + indent
+        + "    return doc\n"
+        + indent
+        + "await asyncio.sleep(0.01)\n"
+    )
+    assert _status_only_poll_helpers(ast.parse(source)) == [(line, "wait")]
+    assert _status_only_poll_helpers(ast.parse(source.replace("inflight :=", "other :="))) == []
+
+
+def test_helper_detector_invalidates_assignment_in_exit_predicate() -> None:
+    source = """async def wait(service, doc_id):
+    inflight = service._inflight
+    for _ in range(10):
+        if ((inflight := {}) is not None
+                and doc.pipeline_status in TERMINAL and doc_id not in inflight):
+            return doc
+        await asyncio.sleep(0.01)
+"""
+    assert _status_only_poll_helpers(ast.parse(source)) == [(3, "wait")]
+    assert _status_only_poll_helpers(ast.parse(source.replace("inflight :=", "other :="))) == []
