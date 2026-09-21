@@ -43,6 +43,7 @@ from sage.api.errors import (
     SourceDigestMismatchError,
     TransferAlreadyStagedError,
     TransferNotStagedError,
+    TransferRefusalLimitError,
     TransferTokenInvalidError,
 )
 from sage.config import StackTransferConfig
@@ -155,7 +156,7 @@ class PendingTransfer:
     #: How many refused deliveries an upload entry survives, fixed at mint so
     #: a configuration change never alters a live token's terms; and how many
     #: it has had. See :meth:`TransferStore.refuse_upload`.
-    max_refused_deliveries: int = 0
+    max_refused_deliveries: int = _DEFAULT_MAX_REFUSED_DELIVERIES
     refused_deliveries: int = 0
     state: Literal["pending_bytes", "streaming", "bytes_staged"] = "pending_bytes"
     staged_size: int | None = None
@@ -366,7 +367,7 @@ class TransferStore:
                 return
             self._roll_back_locked(entry)
 
-    def refuse_upload(self, transfer_id: str) -> bool:
+    def refuse_upload(self, transfer_id: str) -> None:
         """Roll a refused byte delivery back, and count it against the token.
 
         A refused delivery stages nothing and does not spend the token, so a
@@ -377,19 +378,22 @@ class TransferStore:
         -- the entry and its staging directory go, as the expiry sweep takes
         them -- and the token is thereafter unknown.
 
-        Returns whether this refusal exhausted the token.
+        Raises :class:`TransferRefusalLimitError` when this refusal exhausted
+        the token. Called while the refusal that prompted it is being
+        handled, so the underlying refusal travels as the raised error's
+        context.
         """
         with self._lock:
             entry = self._entries.get(transfer_id)
             if entry is None:
-                return False
+                return
             self._roll_back_locked(entry)
             entry.refused_deliveries += 1
             if entry.refused_deliveries < entry.max_refused_deliveries:
-                return False
+                return
             self._entries.pop(transfer_id)
         entry.cleanup()
-        return True
+        raise TransferRefusalLimitError(transfer_id, entry.max_refused_deliveries)
 
     def consume_upload(self, token: str, vault_id: str) -> PendingTransfer:
         """Redeem an upload token against its staged bytes and pop the entry.

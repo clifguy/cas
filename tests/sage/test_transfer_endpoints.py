@@ -818,29 +818,35 @@ async def test_client_disconnect_counts_toward_the_limit(app, client, tmp_path):
     assert after.json()["code"] == "transfer_token_invalid"
 
 
-async def test_server_fault_does_not_count_toward_the_limit(client, tmp_path, monkeypatch):
+async def test_server_fault_does_not_count_toward_the_limit(app, tmp_path, monkeypatch):
     """A delivery that fails on the server's side costs the token nothing.
 
     Anti-coincidental-pass: more faults than the limit are driven before the
     good delivery, so a handler that counted every failure would have
-    reclaimed the transfer and the final delivery would be refused.
+    reclaimed the transfer and the final delivery would be refused. Each
+    fault is asserted to reach the caller as a 500, through a transport that
+    reports application errors as responses rather than re-raising them, so
+    a fault that never happened -- the patch not taking -- fails too.
     """
 
     def _fault(self, transfer_id, sha256):
         raise RuntimeError("simulated staging fault")
 
-    with _profile("cloud"):
-        item = await _mint_upload(tmp_path, "faulty.md", b"placeholder")
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        with _profile("cloud"):
+            item = await _mint_upload(tmp_path, "faulty.md", b"placeholder")
 
-        with monkeypatch.context() as patched:
-            patched.setattr(TransferStore, "check_bound_digest", _fault)
-            for _ in range(_REFUSAL_LIMIT + 1):
-                with contextlib.suppress(RuntimeError):
-                    faulted = await _put(client, item["token"], b"# body\n")
-                    assert faulted.status_code == 500
+            with monkeypatch.context() as patched:
+                patched.setattr(TransferStore, "check_bound_digest", _fault)
+                faulted = [
+                    await _put(client, item["token"], b"# body\n")
+                    for _ in range(_REFUSAL_LIMIT + 1)
+                ]
 
-        accepted = await _put(client, item["token"], b"# body\n")
+            accepted = await _put(client, item["token"], b"# body\n")
 
+    assert [r.status_code for r in faulted] == [500] * (_REFUSAL_LIMIT + 1)
     assert accepted.status_code == 201, accepted.text
 
 

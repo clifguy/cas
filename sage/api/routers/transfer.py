@@ -24,7 +24,6 @@ from sage.api.errors import (
     ContentFileMissingError,
     SourceDigestMismatchError,
     TransferContentTooLargeError,
-    TransferRefusalLimitError,
     VaultNotFoundError,
 )
 from sage.api.response_docs import boundary_400
@@ -125,11 +124,8 @@ async def transfer_upload(
         # block, so the rollback below removes them before anything records
         # the delivery.
         store.check_bound_digest(entry.transfer_id, digest.hexdigest())
-    except (TransferContentTooLargeError, SourceDigestMismatchError, ClientDisconnect) as exc:
-        if store.refuse_upload(entry.transfer_id):
-            raise TransferRefusalLimitError(
-                entry.transfer_id, entry.max_refused_deliveries
-            ) from exc
+    except TransferContentTooLargeError, SourceDigestMismatchError, ClientDisconnect:
+        store.refuse_upload(entry.transfer_id)
         raise
     except Exception:
         store.fail_upload(entry.transfer_id)

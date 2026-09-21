@@ -28,12 +28,14 @@ from sage.api.errors import (
     SourceDigestMismatchError,
     TransferAlreadyStagedError,
     TransferNotStagedError,
+    TransferRefusalLimitError,
     TransferTokenInvalidError,
 )
 from sage.config import SageCoreConfig
 from sage.services.caller_paths import caller_basename
 from sage.services.transfer import (
     DeliveryDeclaration,
+    PendingTransfer,
     TransferStore,
     caller_local_delivery,
     get_transfer_store,
@@ -406,11 +408,11 @@ class TestRefusalLimit:
     limit is fixed on the entry at mint; reaching it reclaims the transfer.
     """
 
-    def _refuse(self, store, minted) -> bool:
+    def _refuse(self, store, minted) -> None:
         """Open a delivery, write a partial, and refuse it as the endpoint does."""
         entry = store.begin_upload(minted.token)
         entry.staged_path.write_bytes(b"partial")
-        return store.refuse_upload(minted.transfer_id)
+        store.refuse_upload(minted.transfer_id)
 
     def test_mint_fixes_the_refusal_limit_on_the_entry(self, store):
         """Anti-coincidental-pass: 4 is not the configured default, so a mint
@@ -424,9 +426,8 @@ class TestRefusalLimit:
         then stages and redeems the right bytes."""
         minted = store.mint_upload(_VAULT, "notes.md", ttl_seconds=300, max_refused_deliveries=3)
 
-        exhausted = self._refuse(store, minted)
+        self._refuse(store, minted)
 
-        assert exhausted is False
         entry = store._entries[minted.transfer_id]
         assert entry.state == "pending_bytes"
         assert entry.refused_deliveries == 1
@@ -437,25 +438,59 @@ class TestRefusalLimit:
         consumed.cleanup()
 
     def test_refusal_limit_reclaims_the_transfer(self, store):
-        """The refusal that reaches the limit pops the entry and removes its
-        staging directory.
+        """The refusal that reaches the limit raises the typed refusal, pops
+        the entry, and removes its staging directory.
 
-        Anti-coincidental-pass: the refusals before the last are asserted to
-        report the token still live, so a store that exhausted on the first
-        refusal fails; the staging directory is checked on disk, so a pop that
-        skipped cleanup and leaked the directory fails; and the token is
-        presented again, so a store that only flagged the entry fails.
+        Anti-coincidental-pass: the refusals before the last must not raise,
+        so a store that exhausted on the first refusal fails; the staging
+        directory is checked on disk, so a pop that skipped cleanup and leaked
+        the directory fails; and the token is presented again, so a store that
+        only flagged the entry fails.
         """
         minted = store.mint_upload(_VAULT, "notes.md", ttl_seconds=300, max_refused_deliveries=3)
         staging_dir = store._entries[minted.transfer_id].staging_dir
 
-        results = [self._refuse(store, minted) for _ in range(3)]
+        self._refuse(store, minted)
+        self._refuse(store, minted)
+        with pytest.raises(TransferRefusalLimitError) as caught:
+            self._refuse(store, minted)
 
-        assert results == [False, False, True]
+        assert caught.value.code == "transfer_refusal_limit_reached"
+        assert caught.value.detail == {
+            "transfer_id": minted.transfer_id,
+            "max_refused_deliveries": 3,
+        }
         assert minted.transfer_id not in store._entries
         assert not staging_dir.exists()
         with pytest.raises(TransferTokenInvalidError):
             store.begin_upload(minted.token)
+
+    def test_entry_default_limit_is_the_configured_default(self, tmp_path):
+        """An entry built without a limit carries the configured default, not
+        one that reclaims on the first refusal.
+
+        Anti-coincidental-pass: the entry is refused once and must survive,
+        so a default of 0 or 1 -- which reclaims at once -- fails, as does a
+        default that differs from the stack configuration's.
+        """
+        store = TransferStore(staging_root=tmp_path / "staging")
+        staging = tmp_path / "entry"
+        staging.mkdir()
+        entry = PendingTransfer(
+            transfer_id="t1",
+            token_digest="d",
+            direction="upload",
+            vault_id=_VAULT,
+            expires_at=datetime.now(timezone.utc) + timedelta(seconds=300),
+            staging_dir=staging,
+            filename="notes.md",
+        )
+        store._entries[entry.transfer_id] = entry
+
+        store.refuse_upload(entry.transfer_id)
+
+        assert entry.max_refused_deliveries == (SageCoreConfig().transfer.max_refused_deliveries)
+        assert store._entries["t1"].refused_deliveries == 1
 
     def test_server_fault_rollback_does_not_count(self, store):
         """A rollback for a fault on the server's side is not the presenter's
