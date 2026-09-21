@@ -68,6 +68,7 @@ DEPLOYMENT_DOC_PATH = _REPO_ROOT / "docs" / "process" / "azure-deployment.md"
 VALIDATE_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "sharepoint-validate.yml"
 RUNBOOK_PATH = _REPO_ROOT / "docs" / "process" / "sharepoint-vault-source.md"
 POSTGRES_BOOTSTRAP_DOC_PATH = _REPO_ROOT / "docs" / "process" / "postgres-entra-bootstrap.md"
+SMOKE_PROCEDURE_PATH = _REPO_ROOT / "docs" / "development" / "operations" / "smoke-test.md"
 CORE_CONFIG_SCHEMA_PATH = _REPO_ROOT / "docs" / "fs" / "sage" / "sage_core_config.schema.json"
 INFRA_DIR = _REPO_ROOT / "infra"
 MAIN_BICEP_PATH = INFRA_DIR / "main.bicep"
@@ -137,6 +138,8 @@ _MENTION_VAULT_RE = re.compile(r"`([^`\s]+)`\s+vault\b")
 _MENTION_INCLUDES_RE = re.compile(r"\bincludes\s+`([^`\s]+)`")
 _MENTION_CONFIRM_RE = re.compile(r"\bconfirm\s+`([^`\s]+)`")
 _MENTION_EXACTLY_RE = re.compile(r"\bexactly\s+`([^`\s]+)`")
+# The hosted deployment row names the grant target, independently of the local row.
+_SMOKE_HOSTED_VAULT_RE = re.compile(r"^\| Hosted SAGE[^|]*\| `([^`\s]+)` \|", re.MULTILINE)
 
 # The seed config's own replicas of its vault.id: the header comment that spells
 # the library path the file is seeded to, and the storage roots, which sit at
@@ -196,6 +199,7 @@ def _vault_id_anchors(root_default: str) -> dict[Path, tuple[tuple[re.Pattern[st
     """The forms each inventoried file names the vault id in, as (pattern,
     capture group), for the given resolved root default."""
     return {
+        SMOKE_PROCEDURE_PATH: ((_SMOKE_HOSTED_VAULT_RE, 1),),
         SEED_CONFIG_PATH: ((_SEED_ID_LINE_RE, 1), (_SEED_HEADER_PATH_RE, 1), (_SEED_ROOTS_RE, 1)),
         SEED_SCRIPT_PATH: ((_SEED_UPLOAD_FOLDER_RE, 1),),
         VALIDATE_DRIVER_PATH: ((_DRIVER_DEFAULT_VAULT_RE, 1), (_DRIVER_HELP_VAULT_RE, 1)),
