@@ -471,6 +471,43 @@ async def test_check_preconditions_200(client):
     assert body["checks"] == []
 
 
+async def test_check_preconditions_row_names_the_target_200(client, tmp_vault_dir):
+    """Each row carries the target's title and doc_type over HTTP."""
+    (tmp_vault_dir / "sources" / "test" / "second.md").write_text("# Second\n\nMore content.")
+    docs = []
+    for source in ("test/sample.md", "test/second.md"):
+        resp = await client.post(
+            "/sage_vaults/test_vault/documents",
+            json={"source": source, "source_type": "markdown"},
+        )
+        assert resp.status_code == 201, resp.text
+        docs.append(resp.json()["document"])
+    doc, dep = docs
+    linked = await client.post(
+        "/sage_vaults/test_vault/edges",
+        json={
+            "items": [
+                {
+                    "source_id": doc["id"],
+                    "target_id": dep["id"],
+                    "edge_type": "depends_on",
+                    "source_valid_from_version": doc["id"],
+                    "target_valid_from_version": dep["id"],
+                }
+            ]
+        },
+    )
+    assert linked.json()["success_count"] == 1, linked.text
+
+    resp = await client.get(f"/sage_vaults/test_vault/preconditions/{doc['id']}")
+    assert resp.status_code == 200, resp.text
+    (check,) = resp.json()["checks"]
+    assert check["target_id"] == dep["id"]
+    assert check["title"] == dep["title"]
+    assert check["title"] != doc["title"]
+    assert check["doc_type"] == dep["doc_type"]
+
+
 async def test_traverse_200(client):
     """POST /traverse returns traversal result."""
     resp1 = await client.post(

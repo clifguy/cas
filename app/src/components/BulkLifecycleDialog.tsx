@@ -2,21 +2,26 @@ import { useEffect, useState } from 'react';
 import { Dialog } from './Dialog';
 import { getVaultConfig } from '../api/vaults';
 import { bulkSetLifecycle } from '../api/bulk';
-import type { BulkLifecycleResponse, VaultConfig } from '../api/types';
+import { actionsForDocTypes } from '../utils/lifecycleScope';
+import type { BulkLifecycleResponse, LifecycleTransitionConfig, VaultConfig } from '../api/types';
 
 const BULK_CONFIRM_THRESHOLD = 10;
 
 interface Props {
   vaultId: string;
   selectedIds: string[];
+  // The distinct doc_types of the selected documents, which decide the
+  // actions offered: a transition scoped to other doc_types would fail on
+  // those documents with `invalid_action`.
+  selectedDocTypes: (string | null)[];
   onResolved: (result: { succeeded: string[]; failed: string[] }) => void;
   onClose: () => void;
 }
 
 type Phase = 'idle' | 'confirming' | 'submitting' | 'results' | 'error';
 
-export function BulkLifecycleDialog({ vaultId, selectedIds, onResolved, onClose }: Props) {
-  const [actions, setActions] = useState<string[] | null>(null);
+export function BulkLifecycleDialog({ vaultId, selectedIds, selectedDocTypes, onResolved, onClose }: Props) {
+  const [transitions, setTransitions] = useState<LifecycleTransitionConfig[] | null>(null);
   const [configError, setConfigError] = useState<string | null>(null);
   const [action, setAction] = useState<string>('');
   const [phase, setPhase] = useState<Phase>('idle');
@@ -28,18 +33,7 @@ export function BulkLifecycleDialog({ vaultId, selectedIds, onResolved, onClose 
     getVaultConfig(vaultId)
       .then((cfg: VaultConfig) => {
         if (cancelled) return;
-        // `supersede` and `relocate` are both excluded because each needs
-        // a second argument this dialog has no way to collect -- a
-        // successor id, and a relocation pointer at another vault. Offering
-        // either here would present an action that always fails.
-        const distinct = Array.from(
-          new Set(
-            cfg.lifecycle.transitions
-              .map((t) => t.action)
-              .filter((a) => a !== 'supersede' && a !== 'relocate'),
-          ),
-        );
-        setActions(distinct);
+        setTransitions(cfg.lifecycle.transitions);
       })
       .catch((err: Error) => {
         if (cancelled) return;
@@ -49,6 +43,10 @@ export function BulkLifecycleDialog({ vaultId, selectedIds, onResolved, onClose 
       cancelled = true;
     };
   }, [vaultId]);
+
+  const scoped = transitions ? actionsForDocTypes(transitions, selectedDocTypes) : null;
+  const actions = scoped?.offered ?? null;
+  const hiddenCount = scoped?.hidden.length ?? 0;
 
   async function submit() {
     setPhase('submitting');
@@ -123,6 +121,11 @@ export function BulkLifecycleDialog({ vaultId, selectedIds, onResolved, onClose 
               ))}
             </select>
           </label>
+          {hiddenCount > 0 && (
+            <p data-testid="bulk-lifecycle-hidden-hint" style={{ margin: '0 0 12px', fontSize: 12, color: '#666' }}>
+              {hiddenCount} action{hiddenCount === 1 ? '' : 's'} not offered: {hiddenCount === 1 ? "it doesn't" : "they don't"} apply to every selected document type.
+            </p>
+          )}
 
           {phase === 'confirming' && (
             <div data-testid="bulk-lifecycle-confirm" style={confirmPanelStyle}>

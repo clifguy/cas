@@ -11,6 +11,7 @@ import type {
   UpdateVaultConfigRequest,
 } from '../api/types';
 import { getVaultConfig, updateVaultConfig } from '../api/vaults';
+import { formatScope, parseScope } from '../utils/lifecycleScope';
 
 // ---------------------------------------------------------------------------
 // Tab definitions
@@ -378,6 +379,25 @@ export function DocTypesEditor({
 
 // --- Lifecycle ---
 
+// Sets one row's raw scope text. The copy is dense: assigning past the end of
+// a plain spread leaves holes, which `filter` skips when a row is removed, and
+// the text above the hole would then shift onto the wrong row.
+function withText(prev: (string | undefined)[], idx: number, text: string): (string | undefined)[] {
+  const next = Array.from({ length: Math.max(prev.length, idx + 1) }, (_, i) => prev[i]);
+  next[idx] = text;
+  return next;
+}
+
+// Replaces an entry's doc_type scope with the one a text field names. A blank
+// field drops the key, leaving the entry unscoped (CAS-ADR-054).
+function withScope<T extends { doc_types?: string[] | null }>(entry: T, text: string): T {
+  const next = { ...entry };
+  delete next.doc_types;
+  const scope = parseScope(text);
+  if (scope) next.doc_types = scope;
+  return next;
+}
+
 export function LifecycleEditor({
   lifecycle, editing, onEdit, onCancel, onSave, saving,
 }: EditorProps & {
@@ -386,25 +406,46 @@ export function LifecycleEditor({
 }) {
   const [states, setStates] = useState(lifecycle.states);
   const [transitions, setTransitions] = useState(lifecycle.transitions);
+  // The scope fields' raw text, index-aligned with the rows and undefined for
+  // a row whose scope has not been edited. Kept apart from the parsed scope so
+  // a separator typed mid-edit survives until the next name follows it.
+  const [stateScopeText, setStateScopeText] = useState<(string | undefined)[]>([]);
+  const [transitionScopeText, setTransitionScopeText] = useState<(string | undefined)[]>([]);
   // Re-seed the editable drafts when a fresh prop arrives (render-phase resync).
   const [syncedLifecycle, setSyncedLifecycle] = useState(lifecycle);
   if (lifecycle !== syncedLifecycle) {
     setSyncedLifecycle(lifecycle);
     setStates(lifecycle.states);
     setTransitions(lifecycle.transitions);
+    setStateScopeText([]);
+    setTransitionScopeText([]);
   }
 
   const updateState = (idx: number, field: string, value: string | boolean) => {
     setStates(prev => prev.map((s, i) => i === idx ? { ...s, [field]: value } : s));
   };
+  const updateStateScope = (idx: number, text: string) => {
+    setStateScopeText(prev => withText(prev, idx, text));
+    setStates(prev => prev.map((s, i) => i === idx ? withScope(s, text) : s));
+  };
   const addState = () => setStates(prev => [...prev, { value: '', label: '' }]);
-  const removeState = (idx: number) => setStates(prev => prev.filter((_, i) => i !== idx));
+  const removeState = (idx: number) => {
+    setStates(prev => prev.filter((_, i) => i !== idx));
+    setStateScopeText(prev => prev.filter((_, i) => i !== idx));
+  };
 
   const updateTransition = (idx: number, field: string, value: string) => {
     setTransitions(prev => prev.map((t, i) => i === idx ? { ...t, [field]: value } : t));
   };
+  const updateTransitionScope = (idx: number, text: string) => {
+    setTransitionScopeText(prev => withText(prev, idx, text));
+    setTransitions(prev => prev.map((t, i) => i === idx ? withScope(t, text) : t));
+  };
   const addTransition = () => setTransitions(prev => [...prev, { from_state: '', action: '', to_state: '' }]);
-  const removeTransition = (idx: number) => setTransitions(prev => prev.filter((_, i) => i !== idx));
+  const removeTransition = (idx: number) => {
+    setTransitions(prev => prev.filter((_, i) => i !== idx));
+    setTransitionScopeText(prev => prev.filter((_, i) => i !== idx));
+  };
 
   const handleSave = () => {
     onSave({ base_states_required: lifecycle.base_states_required, states, transitions });
@@ -424,6 +465,7 @@ export function LifecycleEditor({
             <th style={thStyle}>Value</th>
             <th style={thStyle}>Label</th>
             <th style={thStyle}>Terminal</th>
+            <th style={thStyle}>Doc types</th>
             {editing && <th style={thStyle}></th>}
           </tr>
         </thead>
@@ -435,6 +477,7 @@ export function LifecycleEditor({
                   <td style={tdStyle}><input style={inputStyle} value={s.value} onChange={e => updateState(i, 'value', e.target.value)} /></td>
                   <td style={tdStyle}><input style={inputStyle} value={s.label} onChange={e => updateState(i, 'label', e.target.value)} /></td>
                   <td style={tdStyle}><input type="checkbox" checked={s.is_terminal ?? false} onChange={e => updateState(i, 'is_terminal', e.target.checked)} /></td>
+                  <td style={tdStyle}><input style={inputStyle} aria-label={`Doc types for state ${i + 1}`} placeholder="all" value={stateScopeText[i] ?? formatScope(s.doc_types)} onChange={e => updateStateScope(i, e.target.value)} /></td>
                   <td style={tdStyle}><button onClick={() => removeState(i)} style={btnDangerStyle}>Remove</button></td>
                 </>
               ) : (
@@ -442,6 +485,7 @@ export function LifecycleEditor({
                   <td style={tdStyle}><code>{s.value}</code></td>
                   <td style={tdStyle}>{s.label}</td>
                   <td style={tdStyle}>{s.is_terminal ? 'Yes' : ''}</td>
+                  <td style={tdStyle}>{formatScope(s.doc_types) || 'all'}</td>
                 </>
               )}
             </tr>
@@ -460,6 +504,7 @@ export function LifecycleEditor({
             <th style={thStyle}>Action</th>
             <th style={thStyle}>To State</th>
             <th style={thStyle}>Creates Edge</th>
+            <th style={thStyle}>Doc types</th>
             {editing && <th style={thStyle}></th>}
           </tr>
         </thead>
@@ -472,6 +517,7 @@ export function LifecycleEditor({
                   <td style={tdStyle}><input style={inputStyle} value={t.action} onChange={e => updateTransition(i, 'action', e.target.value)} /></td>
                   <td style={tdStyle}><input style={inputStyle} value={t.to_state} onChange={e => updateTransition(i, 'to_state', e.target.value)} /></td>
                   <td style={tdStyle}><input style={inputStyle} value={t.creates_edge ?? ''} onChange={e => updateTransition(i, 'creates_edge', e.target.value)} /></td>
+                  <td style={tdStyle}><input style={inputStyle} aria-label={`Doc types for transition ${i + 1}`} placeholder="all" value={transitionScopeText[i] ?? formatScope(t.doc_types)} onChange={e => updateTransitionScope(i, e.target.value)} /></td>
                   <td style={tdStyle}><button onClick={() => removeTransition(i)} style={btnDangerStyle}>Remove</button></td>
                 </>
               ) : (
@@ -480,6 +526,7 @@ export function LifecycleEditor({
                   <td style={tdStyle}>{t.action}</td>
                   <td style={tdStyle}><code>{t.to_state}</code></td>
                   <td style={tdStyle}>{t.creates_edge ?? ''}</td>
+                  <td style={tdStyle}>{formatScope(t.doc_types) || 'all'}</td>
                 </>
               )}
             </tr>

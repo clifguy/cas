@@ -242,6 +242,7 @@ class DryRunValidator(StrEnum):
     LANDING_STATE = "landing_state"
     ADAPTER_CONFIG = "adapter_config"
     TIER3_METADATA = "tier3_metadata"
+    FORCE_PIN = "force_pin"
 
 
 class ResponseMode(StrEnum):

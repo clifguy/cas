@@ -331,6 +331,115 @@ async def test_bh_036_filed_does_not_satisfy(graph_store, extended_graph_ops_ser
 
 
 # ---------------------------------------------------------------------------
+# BH-036a: check_preconditions -- each row names its target
+# ---------------------------------------------------------------------------
+
+
+async def _depend(graph_store, source: str, target: str) -> None:
+    await graph_store.insert_edge(
+        Edge(
+            id=_eid(f"edge_{source}_{target}"),
+            source_id=_id(source),
+            target_id=_id(target),
+            edge_type=EdgeType.DEPENDS_ON,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+
+def _hide_and_count(monkeypatch, graph_store, hidden: set[str]) -> list[str]:
+    """Make the store report ``hidden`` ids as absent and record every read.
+
+    The edge table's foreign keys make an edge to a missing document
+    unconstructible, so a vanished target is simulated at the read the
+    check makes rather than in the stored graph.
+    """
+    reads: list[str] = []
+    real = graph_store.get_document
+
+    async def get_document(document_id, *args, **kwargs):
+        reads.append(document_id)
+        if document_id in hidden:
+            return None
+        return await real(document_id, *args, **kwargs)
+
+    monkeypatch.setattr(graph_store, "get_document", get_document)
+    return reads
+
+
+async def test_bh_036a_precondition_row_names_found_target(graph_store, graph_ops_service):
+    await graph_store.insert_document(_make_doc(_id("doc_function")))
+    target = _make_doc(_id("doc_dep"))
+    target.title = "Target Plan"
+    target.doc_type = "plan"
+    await graph_store.insert_document(target)
+    await _depend(graph_store, "doc_function", "doc_dep")
+
+    result = await graph_ops_service.check_preconditions(_id("doc_function"))
+
+    (check,) = result.checks
+    assert check.title == "Target Plan"
+    assert check.doc_type == "plan"
+    assert check.target_id == _id("doc_dep")
+    assert check.actual == "active"
+    assert check.satisfied is True
+
+
+async def test_bh_036a_precondition_row_for_missing_target_carries_nulls(
+    monkeypatch, graph_store, graph_ops_service
+):
+    await graph_store.insert_document(_make_doc(_id("doc_function")))
+    await graph_store.insert_document(_make_doc(_id("doc_dep")))
+    await _depend(graph_store, "doc_function", "doc_dep")
+    _hide_and_count(monkeypatch, graph_store, {_id("doc_dep")})
+
+    result = await graph_ops_service.check_preconditions(_id("doc_function"))
+
+    (check,) = result.checks
+    assert check.actual == "not found"
+    assert check.satisfied is False
+    assert check.title is None
+    assert check.doc_type is None
+
+
+async def test_bh_036a_precondition_row_names_failed_pipeline_target(
+    graph_store, graph_ops_service
+):
+    await graph_store.insert_document(_make_doc(_id("doc_function")))
+    target = _make_doc(_id("doc_dep"), pipeline_status=PipelineStatus.FAILED)
+    target.title = "Failed Target"
+    target.doc_type = "plan"
+    await graph_store.insert_document(target)
+    await _depend(graph_store, "doc_function", "doc_dep")
+
+    result = await graph_ops_service.check_preconditions(_id("doc_function"))
+
+    (check,) = result.checks
+    assert check.actual == "failed (pipeline_incomplete)"
+    assert check.title == "Failed Target"
+    assert check.doc_type == "plan"
+
+
+async def test_bh_036a_precondition_check_reads_each_target_once(
+    monkeypatch, graph_store, graph_ops_service
+):
+    await graph_store.insert_document(_make_doc(_id("doc_function")))
+    for name in ("dep_a", "dep_b", "dep_c"):
+        await graph_store.insert_document(_make_doc(_id(name)))
+        await _depend(graph_store, "doc_function", name)
+    reads = _hide_and_count(monkeypatch, graph_store, {_id("dep_c")})
+
+    result = await graph_ops_service.check_preconditions(_id("doc_function"))
+
+    assert sorted(reads) == sorted([_id("doc_function"), _id("dep_a"), _id("dep_b"), _id("dep_c")])
+    assert {c.target_id: c.title for c in result.checks} == {
+        _id("dep_a"): f"Test {_id('dep_a')}",
+        _id("dep_b"): f"Test {_id('dep_b')}",
+        _id("dep_c"): None,
+    }
+
+
+# ---------------------------------------------------------------------------
 # BH-037: Traversal collapses multi-path hits to one node per target
 # ---------------------------------------------------------------------------
 #

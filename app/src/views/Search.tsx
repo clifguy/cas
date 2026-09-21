@@ -5,6 +5,7 @@ import type { DiscoverHit, DiscoverRequest } from '../api/types';
 import { discover } from '../api/discover';
 import { BulkActionBar } from '../components/BulkActionBar';
 import { BulkLifecycleDialog } from '../components/BulkLifecycleDialog';
+import { selectedDocTypes } from '../utils/lifecycleScope';
 import { BulkMetadataDialog } from '../components/BulkMetadataDialog';
 import { formatDate } from '../utils/format';
 import { describeConstraints, type Constraint } from '../utils/searchConstraints';
@@ -218,6 +219,8 @@ export default function Search() {
     });
   }
 
+  const selectionDocTypes = selectedDocTypes(selectedIds, results.map((h) => h.document));
+
   function handleBulkResolved(result: { succeeded: string[]; failed: string[] }) {
     setSelectedIds((prev) => {
       const next = new Set(prev);
@@ -303,6 +306,7 @@ export default function Search() {
           <BulkLifecycleDialog
             vaultId={vaultId}
             selectedIds={Array.from(selectedIds)}
+            selectedDocTypes={selectionDocTypes}
             onResolved={handleBulkResolved}
             onClose={() => setLifecycleDialogOpen(false)}
           />
@@ -519,6 +523,7 @@ export default function Search() {
         <BulkLifecycleDialog
           vaultId={vaultId}
           selectedIds={Array.from(selectedIds)}
+          selectedDocTypes={selectionDocTypes}
           onResolved={handleBulkResolved}
           onClose={() => setLifecycleDialogOpen(false)}
         />

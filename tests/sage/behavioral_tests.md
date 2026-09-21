@@ -745,6 +745,30 @@ is `filed`.
 An orchestrator can read the `actual` field, see "filed", and decide in its own
 logic that this is acceptable.
 
+### TEST-SAGE-BH-036a: check_preconditions -- each row names its target
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (verify_preconditions, PreconditionCheck)
+**Category:** graph, response_contract
+**Decision:** Each check row carries the target's `title` and `doc_type` alongside
+`target_id`, taken from the read the check already makes of each target. Both are
+null when the vault does not hold the target.
+
+**Precondition:** doc_function depends_on doc_dep (title "Target Plan", doc_type
+`plan`). Paired control: a depends_on target the vault does not hold. A third case
+has a target whose pipeline failed.
+
+**Input:** `check_preconditions(document_id: doc_function.id)`
+
+**Expected:**
+- Found target: `title: "Target Plan"`, `doc_type: "plan"`, other fields unchanged
+- Missing target: `actual: "not found"`, `title: null`, `doc_type: null`, no error
+- Failed-pipeline target: `actual: "failed (pipeline_incomplete)"`, title and doc_type populated
+- One store read of the document plus one per target, no more
+
+**Rationale:** Record bodies refer to their dependencies by title, so a row that
+names only an id costs a caller one more read per target before it can report
+the result in the terms its readers use.
+
 ### TEST-SAGE-BH-037: Traversal deduplicates by document with edge_counts map
 
 **Artifact:** `sage/sage_core_api.openapi.yaml` (traverse endpoint)
