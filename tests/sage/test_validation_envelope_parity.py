@@ -671,9 +671,20 @@ def _tools_building_a_nesting_model() -> dict[str, type]:
     promising the refusal it did not produce.
 
     Derived by reading each tool module rather than listed, so a tool added
-    later arrives here on its own. ``RetrievalFilters`` is excluded for the
-    reason its own code states: a key it refuses keeps ``unknown_filter_key``,
-    whose detail says more.
+    later arrives here on its own. Models whose undeclared key another rule
+    answers first are excluded by ``_SHADOWED_NESTINGS``, which states the
+    rule that reaches the key instead.
+
+    Two limits of the reading, stated because a derivation that looks total
+    and is not is worse than a list. It matches a model constructed or
+    validated *inside* the tool body; a tool that delegates the construction
+    to a helper is not followed into it, and would be derived as building
+    nothing. And the multipart batch operation binds its envelope as a form
+    field rather than a body model, so it is reached through the conformance
+    module's own map rather than through this walk. Neither is a live gap --
+    every tool builds its model inline today, and the batch operation carries
+    its own endpoint tests -- and both would need a call-graph walk rather
+    than a syntactic one to close.
     """
     from pathlib import Path as _Path
 
@@ -684,40 +695,78 @@ def _tools_building_a_nesting_model() -> dict[str, type]:
     return found
 
 
-#: One call per derived tool that plants an undeclared key at a nested model,
-#: with the model that must answer for it. Hand-written because each tool takes
-#: a different shape; the *set* is derived, and a tool with no entry fails the
+#: Nested models whose undeclared key is answered by a more specific refusal,
+#: so ``undeclared_key`` is unreachable for them by construction. Not an
+#: allowlist: each is here because another rule reaches the key first and says
+#: more, and each would have to lose that rule to belong in the probes.
+#:
+#: ``RetrievalFilters`` -- a key it refuses keeps ``unknown_filter_key``, whose
+#: detail carries the valid key set and a worked example.
+#:
+#: ``Tier3Patch`` -- the retired bare-dict form is detected as *any* key
+#: outside ``{set, unset}`` (``sage/models/legacy_form.py``), so a patch object
+#: carrying an undeclared key alongside its ops is read as that form and
+#: refused as ``legacy_form`` before the model is reached. ``ListFieldPatch``
+#: is deliberately not here: its retired form is a bare *list*, so a mapping
+#: with an extra key does reach the model, and it is probed.
+_SHADOWED_NESTINGS: frozenset[str] = frozenset({"RetrievalFilters", "Tier3Patch"})
+
+
+#: One call per (tool, nested model) that plants an undeclared key at that
+#: nesting. Keyed by the pair rather than by the tool, because an operation
+#: nests several models and one probe per operation leaves the others
+#: unchecked -- a gate can then stay green while the rule is severed for
+#: exactly one of them. Hand-written because each call takes a different
+#: shape; the *pairs* are derived, and a derived pair with no entry fails the
 #: gate rather than being skipped.
-_NESTED_KEY_PROBES: dict[str, tuple[dict, str]] = {
-    "ingest_document": (
-        {
-            "source": "test/sample.md",
-            "source_type": "markdown",
-            "relocated_from": {"bogus_field_x": 1},
-        },
-        "RelocationPointer",
-    ),
-    "update_lifecycles": (
-        {
-            "items": [
-                {
-                    "document_id": "00000000_absent_document",
-                    "action": "relocate",
-                    "relocated_to": {"bogus_field_x": 1},
-                }
-            ]
-        },
-        "RelocationPointer",
-    ),
-    "create_edges": (
-        {"items": [{"source_id": "00000000_absent_document", "bogus_field_x": 1}]},
-        "BulkLinkItem",
-    ),
-    "update_metadata": (
-        {"items": [{"document_id": "00000000_absent_document", "tags": {"bogus_field_x": 1}}]},
-        "ListFieldPatch",
-    ),
+_NESTED_KEY_PROBES: dict[tuple[str, str], dict] = {
+    ("ingest_document", "RelocationPointer"): {
+        "source": "test/sample.md",
+        "source_type": "markdown",
+        "relocated_from": {"bogus_field_x": 1},
+    },
+    ("update_lifecycles", "BulkLifecycleItem"): {
+        "items": [{"document_id": "00000000_absent_document", "bogus_field_x": 1}]
+    },
+    ("update_lifecycles", "RelocationPointer"): {
+        "items": [
+            {
+                "document_id": "00000000_absent_document",
+                "action": "relocate",
+                "relocated_to": {"bogus_field_x": 1},
+            }
+        ]
+    },
+    ("create_edges", "BulkLinkItem"): {
+        "items": [{"source_id": "00000000_absent_document", "bogus_field_x": 1}]
+    },
+    ("update_metadata", "BulkMetadataItem"): {
+        "items": [{"document_id": "00000000_absent_document", "bogus_field_x": 1}]
+    },
+    ("update_metadata", "ListFieldPatch"): {
+        "items": [{"document_id": "00000000_absent_document", "tags": {"bogus_field_x": 1}}]
+    },
 }
+
+
+def _derived_nested_pairs(roots: dict[str, type]) -> set[tuple[str, str]]:
+    """Every (operation, nested model) the given roots reach.
+
+    The probe tables are checked against this rather than against the
+    operation list: an operation nests several models, and a gate that plants
+    one key per operation proves only the nesting it happened to pick.
+    """
+    from tests.sage.test_rest_request_strictness_conformance import _nested_model_paths
+
+    by_root: dict[type, set[str]] = {}
+    for root, _path, nested in _nested_model_paths():
+        by_root.setdefault(root, set()).add(nested.__name__)
+    return {
+        (operation, nested)
+        for operation, root in roots.items()
+        for nested in by_root.get(root, set())
+        if nested not in _SHADOWED_NESTINGS
+    }
 
 
 async def test_every_tool_building_a_nesting_model_names_the_accepted_keys(vault_services):
@@ -736,35 +785,38 @@ async def test_every_tool_building_a_nesting_model_names_the_accepted_keys(vault
 
     derived = _tools_building_a_nesting_model()
     assert derived, "no tool found building a nesting model; the walk checks nothing"
-    uncovered = sorted(set(derived) - set(_NESTED_KEY_PROBES))
+    pairs = _derived_nested_pairs(derived)
+    assert pairs, "no nesting derived; the walk checks nothing"
+    uncovered = sorted(pairs - set(_NESTED_KEY_PROBES))
     assert uncovered == [], f"no nested-key probe defined for {uncovered}"
 
-    for tool_name in sorted(derived):
-        payload, expected_model = _NESTED_KEY_PROBES[tool_name]
+    for tool_name, expected_model in sorted(pairs):
+        payload = _NESTED_KEY_PROBES[(tool_name, expected_model)]
         envelope = _decode_envelope(
             await mcp.call_tool(tool_name, {"vault_id": VAULT_ID, **payload})
         )
 
-        assert envelope["error"] == "undeclared_key", (tool_name, envelope)
+        assert envelope["error"] == "undeclared_key", (tool_name, expected_model, envelope)
         assert envelope["detail"]["key"] == "bogus_field_x", (tool_name, envelope)
         assert envelope["detail"]["recognized"] == sorted(
             getattr(schemas, expected_model).model_fields
-        ), (tool_name, envelope)
+        ), (tool_name, expected_model, envelope)
 
 
-#: One request body per Core API operation whose body graph nests a model that
-#: refuses extras, planting an undeclared key at that nesting, with the model
-#: that must answer for it. The *set* these cover is derived below; an
-#: operation with no entry fails rather than being skipped.
-#: Keyed by route name -- the handler's, which is what the derivation returns
-#: and is not always the published operation id.
-_HTTP_NESTED_KEY_PROBES: dict[str, tuple[str, dict, str]] = {
-    "ingest": (
+#: One request body per (route, nested model) that plants an undeclared key at
+#: that nesting, keyed by the pair for the reason the MCP table is. The route
+#: name is the handler's, which is what the derivation returns and is not
+#: always the published operation id.
+_HTTP_NESTED_KEY_PROBES: dict[tuple[str, str], tuple[str, dict]] = {
+    ("ingest", "RelocationPointer"): (
         "documents",
         {"source": "test/sample.md", "relocated_from": {"bogus_field_x": 1}},
-        "RelocationPointer",
     ),
-    "update_lifecycles": (
+    ("update_lifecycles", "BulkLifecycleItem"): (
+        "lifecycles",
+        {"items": [{"document_id": "00000000_absent_document", "bogus_field_x": 1}]},
+    ),
+    ("update_lifecycles", "RelocationPointer"): (
         "lifecycles",
         {
             "items": [
@@ -775,17 +827,18 @@ _HTTP_NESTED_KEY_PROBES: dict[str, tuple[str, dict, str]] = {
                 }
             ]
         },
-        "RelocationPointer",
     ),
-    "create_edges": (
+    ("create_edges", "BulkLinkItem"): (
         "edges",
         {"items": [{"source_id": "00000000_absent_document", "bogus_field_x": 1}]},
-        "BulkLinkItem",
     ),
-    "update_metadata": (
+    ("update_metadata", "BulkMetadataItem"): (
+        "metadata",
+        {"items": [{"document_id": "00000000_absent_document", "bogus_field_x": 1}]},
+    ),
+    ("update_metadata", "ListFieldPatch"): (
         "metadata",
         {"items": [{"document_id": "00000000_absent_document", "tags": {"bogus_field_x": 1}}]},
-        "ListFieldPatch",
     ),
 }
 
@@ -822,21 +875,32 @@ async def test_every_http_operation_with_a_nested_model_refuses_its_undeclared_k
     The multipart batch upload is covered by its own endpoint tests, which
     post real file parts; it is excluded here rather than given a fake body.
     """
+    from fastapi.dependencies.utils import get_flat_dependant
+    from fastapi.routing import APIRoute
+
+    from sage.app import create_app
     from sage.models import schemas
 
-    derived = _core_operations_with_a_nested_strict_model() - {"batch_ingest_documents"}
-    assert derived, "no operation derived; the walk checks nothing"
-    uncovered = sorted(derived - set(_HTTP_NESTED_KEY_PROBES))
+    roots = {
+        route.name: get_flat_dependant(route.dependant).body_params[0].field_info.annotation
+        for route in create_app().routes
+        if isinstance(route, APIRoute)
+        and route.name in _core_operations_with_a_nested_strict_model()
+        and get_flat_dependant(route.dependant).body_params
+    }
+    pairs = _derived_nested_pairs(roots)
+    assert pairs, "no nesting derived; the walk checks nothing"
+    uncovered = sorted(pairs - set(_HTTP_NESTED_KEY_PROBES))
     assert uncovered == [], f"no nested-key probe defined for {uncovered}"
 
-    for operation in sorted(derived):
-        path, body, expected_model = _HTTP_NESTED_KEY_PROBES[operation]
+    for operation, expected_model in sorted(pairs):
+        path, body = _HTTP_NESTED_KEY_PROBES[(operation, expected_model)]
         resp = await http_client.post(f"/sage_vaults/{VAULT_ID}/{path}", json=body)
         envelope = resp.json()
 
-        assert resp.status_code == 400, (operation, resp.text)
-        assert envelope["code"] == "undeclared_key", (operation, envelope)
+        assert resp.status_code == 400, (operation, expected_model, resp.text)
+        assert envelope["code"] == "undeclared_key", (operation, expected_model, envelope)
         assert envelope["detail"]["key"] == "bogus_field_x", (operation, envelope)
         assert envelope["detail"]["recognized"] == sorted(
             getattr(schemas, expected_model).model_fields
-        ), (operation, envelope)
+        ), (operation, expected_model, envelope)
