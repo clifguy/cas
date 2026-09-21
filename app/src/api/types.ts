@@ -397,6 +397,7 @@ export interface ScanResponse {
 }
 
 export interface IngestFileItem {
+  sha256?: string | null;
   file_path: string;
   source_type: string;
   parsed_metadata?: ParsedMetadataItem;
@@ -508,6 +509,7 @@ export interface BatchIngestParsedMetadata {
 }
 
 export interface BatchIngestFileMetadata {
+  sha256?: string | null;
   source_type: string;
   parsed_metadata?: BatchIngestParsedMetadata | null;
   // Validated against the metadata_schema the vault declares for this file's

@@ -179,6 +179,16 @@ class IngestFileItem(BaseModel):
 
     file_path: str = Field(description="Absolute file path on disk.")
     source_type: str = Field(description="Source artifact format name to use for this file.")
+    sha256: Sha256Str | None = Field(
+        default=None,
+        description=(
+            "Optional SHA-256 of this file, as 64 hex characters in either case, bare or "
+            "`sha256:`-prefixed. Checked before retention, including dry runs. A mismatch "
+            "is a per-file `source_digest_mismatch`; a malformed string refuses the "
+            "request with 400 `invalid_sha256` at `files.<index>.sha256`. Omission or "
+            "null leaves the digest undeclared."
+        ),
+    )
     parsed_metadata: ParsedMetadata | None = Field(
         default=None,
         description=(

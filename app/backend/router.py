@@ -80,7 +80,12 @@ async def scan_endpoint(
     operation_id="bulk_ingest_document",
     responses={
         400: boundary_400(
-            request=("invalid_vault_id", "invalid_document_date", "unknown_parameter"),
+            request=(
+                "invalid_vault_id",
+                "invalid_document_date",
+                "invalid_sha256",
+                "unknown_parameter",
+            ),
             extra=(
                 "`empty_file_list`: `files` was empty. Choose at least one file or skip the call."
             ),

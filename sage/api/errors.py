@@ -2644,7 +2644,15 @@ def translate_validation_error(
         if err_type in _TYPED_ALIAS_CODES:
             return InvalidTypedAliasError(
                 code=err_type,
-                argument=str(ctx.get("argument", "")),
+                argument=(
+                    ".".join(str(part) for part in loc)
+                    if err_type == "invalid_sha256"
+                    and len(loc) == 3
+                    and loc[0] == "files"
+                    and isinstance(loc[1], int)
+                    and loc[2] == "sha256"
+                    else str(ctx.get("argument", ""))
+                ),
                 value=ctx.get("value", input_value),
                 expected=str(ctx.get("expected", "")),
             )
