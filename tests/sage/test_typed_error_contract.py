@@ -122,6 +122,7 @@ def emitted_errors() -> Iterator[Any]:
             return set(values) if origin is set else values
         return {
             str: "value",
+            bool: True,
             int: 7,
             object: {"arbitrary": [None, True, 42]},
             dict: {"custom": 1},
@@ -181,6 +182,14 @@ def emitted_errors() -> Iterator[Any]:
         ),
         id="batch-digest-location",
     )
+    yield pytest.param(
+        errors.InvalidTypedAliasError("invalid_sha256", "sha256", "malformed", "sha256 digest"),
+        id="single-digest-location",
+    )
+    yield pytest.param(
+        errors.RelocationProvenanceMismatchError("relocated_from", "sha256:aa", "sha256:bb"),
+        id="relocation-destination-half",
+    )
 
 
 @pytest.mark.parametrize("error", list(emitted_errors()))
@@ -212,6 +221,54 @@ def test_every_emitted_family_round_trips_and_is_reachable(error: Any) -> None:
     if error.detail is not None:
         mcp_expected["detail"] = error.detail
     assert _error_response(error) == mcp_expected
+
+
+def _optional_detail_keys(code: str) -> set[str]:
+    """The detail keys a family declares without requiring them."""
+    from sage.models.error_contract import CODE_SCHEMAS, SCHEMAS
+
+    def resolve(node: dict) -> dict:
+        return SCHEMAS[node["$ref"].rsplit("/", 1)[-1]] if "$ref" in node else node
+
+    envelope = resolve({"$ref": CODE_SCHEMAS[code]})
+    detail = resolve(envelope.get("properties", {}).get("detail", {}))
+    optional: set[str] = set()
+    for arm in detail.get("anyOf", detail.get("oneOf", [detail])):
+        arm = resolve(arm)
+        optional |= set(arm.get("properties", {})) - set(arm.get("required", []))
+    return optional
+
+
+def test_every_declared_optional_detail_key_is_emitted() -> None:
+    """The reverse of the round-trip gate: a family declares no key nothing sets.
+
+    A key is optional because a constructor sets it only when given the
+    argument that carries it. ``emitted_errors`` builds every constructor a
+    second time with each defaulted argument supplied, so a conditional key is
+    covered by the constructor's own optional parameter rather than listed as
+    an exception. A key no constructor can set is a contract wider than the
+    behaviour, which a generated client would branch on for nothing.
+    """
+    from sage.models.error_contract import CODE_SCHEMAS
+
+    # The resolver reads optional keys at all: through a $ref, through an
+    # inline union, and not the required ones. A resolver answering empty
+    # would pass everything below.
+    assert "hint" in _optional_detail_keys("invalid_parameter")
+    assert "parameter" not in _optional_detail_keys("invalid_parameter")
+    assert "sha256" in _optional_detail_keys("invalid_sha256")
+
+    emitted: dict[str, set[str]] = {}
+    for param in emitted_errors():
+        (error,) = param.values
+        emitted.setdefault(error.code, set()).update(error.detail or {})
+    never_set = sorted(
+        (code, key)
+        for code in CODE_SCHEMAS
+        for key in _optional_detail_keys(code)
+        if key not in emitted.get(code, set())
+    )
+    assert never_set == [], f"declared optional detail keys no emission sets: {never_set}"
 
 
 def test_packaged_projection_and_application_mirror_match_authority() -> None:

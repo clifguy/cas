@@ -55,8 +55,10 @@ REQUEST_400_SENTENCES: dict[str, str] = {
     "undeclared_key": (
         "`undeclared_key`: an object nested inside the request carries a key its "
         "schema does not declare. `detail.parameter` locates the object, "
-        "`detail.key` names the key, and `detail.recognized` lists the names that "
-        "object does accept."
+        "`detail.keys` names every undeclared key in it, sorted, with `detail.key` "
+        "the first, and `detail.recognized` lists the names that object does "
+        "accept. Undeclared keys in another object are reported once this one "
+        "is repaired."
     ),
 }
 

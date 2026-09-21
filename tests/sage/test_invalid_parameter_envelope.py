@@ -514,3 +514,68 @@ def test_filter_scoped_code_still_wins_over_the_nested_rule():
 
     assert err.code == "unknown_filter_key"
     assert err.detail["valid_keys"]
+
+
+def test_a_single_undeclared_key_keeps_its_envelope():
+    """The paired control: one key reads exactly as it did, plus ``keys``.
+
+    The message is pinned literally, so a format built for several keys
+    cannot leak into the single-key path unnoticed.
+    """
+    err = validation_error_envelope(_ingest_nested_error(), root_model=IngestRequest)
+    recognized = sorted(RelocationPointer.model_fields)
+
+    assert (err.code, err.status_code) == ("undeclared_key", 400)
+    assert err.detail["parameter"] == "relocated_from"
+    assert err.detail["key"] == "bogus"
+    assert err.detail["keys"] == ["bogus"]
+    assert err.detail["recognized"] == recognized
+    assert err.message == (
+        f"'relocated_from.bogus' is not a declared key. Accepted: {recognized!r}. "
+        f"Example: {err.detail['example']}"
+    )
+
+
+def test_every_undeclared_key_in_one_object_is_named():
+    """Two undeclared keys under one object are refused once, both named, sorted.
+
+    Written in reverse sorted order, so a refusal echoing the validator's
+    order, or naming only the first it lists, fails.
+    """
+    with pytest.raises(ValidationError) as exc_info:
+        IngestRequest(source="/tmp/x.md", relocated_from={"zulu": 1, "bogus": 2})
+    err = validation_error_envelope(exc_info.value, root_model=IngestRequest)
+
+    assert err.code == "undeclared_key"
+    assert err.detail["parameter"] == "relocated_from"
+    assert err.detail["keys"] == ["bogus", "zulu"]
+    assert err.detail["key"] == "bogus"
+    assert err.message.startswith(
+        "'relocated_from.bogus', 'relocated_from.zulu' are not declared keys."
+    )
+    assert "other locations" not in err.message
+
+
+class _Leaf(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    name: str | None = None
+
+
+class _Pair(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    first: _Leaf | None = None
+    second: _Leaf | None = None
+
+
+def test_keys_at_another_location_are_left_to_a_later_refusal_and_said_so():
+    """One object per refusal; the message says others are checked after repair."""
+    with pytest.raises(ValidationError) as exc_info:
+        _Pair.model_validate({"first": {"zz": 1, "aa": 2}, "second": {"mm": 3}})
+    err = validation_error_envelope(exc_info.value, root_model=_Pair)
+
+    assert err.code == "undeclared_key"
+    assert err.detail["parameter"] == "first"
+    assert err.detail["keys"] == ["aa", "zz"]
+    assert err.message.endswith(
+        "Undeclared keys at other locations are reported once these are repaired."
+    )

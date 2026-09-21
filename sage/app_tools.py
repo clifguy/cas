@@ -21,6 +21,7 @@ from sage.api.errors import (
     SAGEError,
     codes_and_tags_conflict_error,
     undeclared_entry_key_error,
+    undeclared_entry_keys,
 )
 from sage.mcp_init import SAGEServices, require_caller_local_filesystem
 from sage.models.mcp_items import BulkIngestFileEntry
@@ -59,19 +60,9 @@ def _refuse_undeclared_entry_fields(files: list[dict]) -> None:
     that set is this tool's own at the entry level, where an upload's entries
     name no path because their bytes arrive as file parts.
     """
-    candidates: list[tuple[int, int, str, object]] = []
-    for index, entry in enumerate(files):
-        locations = [(0, entry, _FILE_ENTRY_FIELDS)]
-        parsed = entry.get("parsed_metadata")
-        if isinstance(parsed, dict):
-            locations.append((1, parsed, _PARSED_METADATA_FIELDS))
-        for depth, mapping, declared in locations:
-            candidates.extend(
-                (index, depth, name, mapping[name]) for name in mapping if name not in declared
-            )
+    declared = {0: _FILE_ENTRY_FIELDS, 1: _PARSED_METADATA_FIELDS}
     refusal = undeclared_entry_key_error(
-        candidates,
-        recognized_by_depth={0: _FILE_ENTRY_FIELDS, 1: _PARSED_METADATA_FIELDS},
+        undeclared_entry_keys(files, declared), recognized_by_depth=declared
     )
     if refusal is not None:
         raise refusal
@@ -483,12 +474,15 @@ def register_app_tools(
         - ``undeclared_key`` (400): a file entry, or the ``parsed_metadata``
           it carries, names a key the tool does not declare.
           ``detail.parameter`` locates the object (``files.<n>`` or
-          ``files.<n>.parsed_metadata``), ``detail.key`` names the key, and
+          ``files.<n>.parsed_metadata``), ``detail.keys`` names every
+          undeclared key in it, sorted (``detail.key`` is the first), and
           ``detail.recognized`` lists the names that object accepts, so the
-          call is repairable on first read. With several, the one reported is
-          at the lowest file index, then the lowest depth, then first in
-          sorted order. A batch-boundary refusal raised before any file is
-          delivered or ingested.
+          call is repairable on first read. With several objects, the one
+          reported is at the lowest file index, then the lowest depth, and the
+          message says the others follow once it is repaired. Names are
+          refused before any value is checked, so this wins over a malformed
+          value in the same call. A batch-boundary refusal raised before any
+          file is delivered or ingested.
         - ``invalid_parameter`` (422): an entry's ``parsed_metadata`` or
           ``tier3_metadata`` is not a mapping, or the ``parsed_metadata``
           carries a value of the wrong type; or one entry's

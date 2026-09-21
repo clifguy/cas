@@ -389,6 +389,29 @@ async def test_undeclared_item_field_parity_between_surfaces(vault_services, htt
     assert http_body["detail"]["recognized"] == sorted(BulkLifecycleItem.model_fields)
 
 
+async def test_every_undeclared_item_field_is_named_alike_on_both_surfaces(
+    vault_services, http_client
+):
+    """Two undeclared names in one item are refused once, both named, on both surfaces.
+
+    The tool rebuilds the refusal to restate the item's position, so a rebuild
+    that carried only ``key`` forward would pass the single-key case above and
+    fail here. Written in reverse sorted order, so echoing either validator's
+    order fails too.
+    """
+    item = {"document_id": "00000000_absent_document", "action": "archive", "zz": 1, "aa": 2}
+    mcp_envelope = _decode_envelope(
+        await mcp.call_tool("update_lifecycles", {"vault_id": VAULT_ID, "items": [item]})
+    )
+    resp = await http_client.post(f"/sage_vaults/{VAULT_ID}/lifecycles", json={"items": [item]})
+    http_body = resp.json()
+
+    assert mcp_envelope["error"] == http_body["code"] == "undeclared_key"
+    assert mcp_envelope["detail"] == http_body["detail"]
+    assert mcp_envelope["message"] == http_body["message"]
+    assert http_body["detail"]["keys"] == ["aa", "zz"]
+
+
 # ---------------------------------------------------------------------------
 # Negative control -- the filter-scoped codes keep their distinct payloads
 # ---------------------------------------------------------------------------

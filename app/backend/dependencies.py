@@ -11,6 +11,10 @@ up in the registry before constructing the service.
 The body-scoped pattern is slightly less elegant than SAGE's
 path-scoped chain (e.g. ``sage/api/routers/graph_ops.py:link``), but
 it satisfies the same one-line-handler invariant.
+
+``refuse_undeclared_entry_keys`` is the one dependency here that refuses
+rather than constructs: it runs ahead of ``/app/ingest``'s body validation so
+an undeclared entry name is reported before a malformed value.
 """
 
 from __future__ import annotations
@@ -20,12 +24,51 @@ from typing import TYPE_CHECKING
 from fastapi import Request
 
 from app.backend.ingest_streaming_service import IngestStreamingService
-from app.backend.models import IngestRequest, ScanRequest
+from app.backend.models import IngestFileItem, IngestRequest, ParsedMetadata, ScanRequest
 from app.backend.scan_service import ScanService
-from sage.api.errors import SAGEError, VaultNotFoundError
+from sage.api.errors import (
+    SAGEError,
+    VaultNotFoundError,
+    undeclared_entry_key_error,
+    undeclared_entry_keys,
+)
 
 if TYPE_CHECKING:
     from sage.mcp_init import SAGEServices
+
+_INGEST_FIELDS = frozenset(IngestRequest.model_fields)
+_ENTRY_FIELDS = {
+    0: frozenset(IngestFileItem.model_fields),
+    1: frozenset(ParsedMetadata.model_fields),
+}
+
+
+async def refuse_undeclared_entry_keys(request: Request) -> None:
+    """Refuse an undeclared name in an ingest entry before any value is checked.
+
+    The request model reports a malformed value ahead of an undeclared name
+    in the same entry, because the validator lists declared fields before
+    extra ones. The other batch ingest surfaces refuse names first -- a caller
+    cannot repair a value in a field it has not been told the entry lacks --
+    so this runs ahead of the body's own validation and applies their rule.
+
+    It answers for entry names only. A body whose shape it cannot walk, or
+    that names an undeclared top-level field, is left to the model's own
+    refusal, which reports those first.
+    """
+    try:
+        body = await request.json()
+    except ValueError:
+        return
+    if not isinstance(body, dict) or not isinstance(body.get("files"), list):
+        return
+    if set(body) - _INGEST_FIELDS:
+        return
+    refusal = undeclared_entry_key_error(
+        undeclared_entry_keys(body["files"], _ENTRY_FIELDS), recognized_by_depth=_ENTRY_FIELDS
+    )
+    if refusal is not None:
+        raise refusal
 
 
 def _get_services(request: Request, vault_id: str) -> SAGEServices:

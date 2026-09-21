@@ -12,8 +12,9 @@ operation itself ran, so the unknown name is what the refusal is about.
 Three boundaries are held alongside the refusal:
 
 * A name nested inside a declared field -- a file entry's field, a parsed
-  metadata key -- is a malformed value of that field and keeps
-  ``invalid_parameter``.
+  metadata key -- is refused as ``undeclared_key``, naming every such key in
+  the object and the names that object accepts, and ahead of any malformed
+  value in the same request.
 * What the single-page app sends is still accepted, including the parsed
   metadata a scan returns, which the app posts back into ingest unchanged.
 * The sign-in routes under ``/app/auth`` are untouched: an identity provider's
@@ -254,6 +255,103 @@ async def test_undeclared_parsed_metadata_key_names_the_metadata_models_fields(
     assert detail["key"] == BOGUS_FIELD
     assert detail["recognized"] == sorted(ParsedMetadata.model_fields)
     _assert_one_file_ingested(control)
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_every_undeclared_key_in_one_object_is_named_in_one_refusal(
+    client, storage_root, dry_run
+):
+    """Two undeclared keys, written in reverse sorted order, are refused once, sorted."""
+    doc = storage_root / "two_keys.md"
+    doc.write_text("# Two Keys\n\nContent.")
+    metadata = {"title": "Two Keys", "zulu_x": 1, "alpha_x": 2}
+
+    refused = await client.post(
+        "/app/ingest",
+        json=_ingest_body(files=[_file_entry(doc, parsed_metadata=metadata)], dry_run=dry_run),
+    )
+
+    _assert_code(refused, 400, "undeclared_key")
+    detail = refused.json()["detail"]
+    assert detail["parameter"] == "files.0.parsed_metadata"
+    assert detail["keys"] == ["alpha_x", "zulu_x"]
+    assert detail["key"] == "alpha_x"
+
+
+# ---------------------------------------------------------------------------
+# Names before values
+# ---------------------------------------------------------------------------
+
+
+async def test_undeclared_key_is_refused_before_a_malformed_digest(client, storage_root):
+    """The same entry carries both; the name is reported, as on the other batch surfaces.
+
+    The validator lists the digest first, so a refusal taking the validator's
+    order names the digest. The control is the same entry without the name.
+    """
+    doc = storage_root / "two_defects.md"
+    doc.write_text("# Two Defects\n\nContent.")
+    entry = _file_entry(doc, sha256="not-a-digest")
+
+    control = await client.post("/app/ingest", json=_ingest_body(files=[entry]))
+    refused = await client.post("/app/ingest", json=_ingest_body(files=[{**entry, BOGUS_FIELD: 1}]))
+
+    _assert_code(control, 400, "invalid_sha256")
+    _assert_code(refused, 400, "undeclared_key")
+    assert refused.json()["detail"]["parameter"] == "files.0"
+    assert refused.json()["detail"]["keys"] == [BOGUS_FIELD]
+
+
+async def test_undeclared_key_is_refused_before_a_malformed_date(client, storage_root):
+    """The application's parsed metadata types its date; the name still wins."""
+    doc = storage_root / "bad_date.md"
+    doc.write_text("# Bad Date\n\nContent.")
+    metadata = {"title": "Bad Date", "date": "not-a-date"}
+
+    control = await client.post(
+        "/app/ingest", json=_ingest_body(files=[_file_entry(doc, parsed_metadata=metadata)])
+    )
+    refused = await client.post(
+        "/app/ingest",
+        json=_ingest_body(files=[_file_entry(doc, parsed_metadata={**metadata, BOGUS_FIELD: 1})]),
+    )
+
+    _assert_code(control, 400, "invalid_document_date")
+    _assert_code(refused, 400, "undeclared_key")
+    assert refused.json()["detail"]["parameter"] == "files.0.parsed_metadata"
+
+
+async def test_an_undeclared_top_level_name_still_wins_over_a_nested_one(client, storage_root):
+    """The pre-check answers for entries only; a top-level name is still reported first."""
+    doc = storage_root / "top_level.md"
+    doc.write_text("# Top Level\n\nContent.")
+
+    resp = await client.post(
+        "/app/ingest",
+        json=_ingest_body(files=[_file_entry(doc, **{BOGUS_FIELD: 1})], **{BOGUS_FIELD: 1}),
+    )
+
+    _assert_unknown_parameter(
+        resp, tool="bulk_ingest_document", rejected=[BOGUS_FIELD], valid=INGEST_FIELDS
+    )
+
+
+@pytest.mark.parametrize(
+    ("body", "parameter"),
+    [
+        ([1, 2], "request"),
+        (_ingest_body(files="nope"), "files"),
+        (_ingest_body(files=5), "files"),
+        (_ingest_body(files=[1, "x"]), "files.0"),
+    ],
+    ids=["body-not-an-object", "files-a-string", "files-not-iterable", "entry-not-an-object"],
+)
+async def test_a_body_the_pre_check_cannot_walk_keeps_its_refusal(client, body, parameter):
+    """Shapes the entry walk does not recognise fall through to the model's own refusal."""
+    resp = await client.post("/app/ingest", json=body)
+
+    _assert_code(resp, 422, "invalid_parameter")
+    assert resp.json()["detail"]["parameter"] == parameter
 
 
 # ---------------------------------------------------------------------------

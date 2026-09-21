@@ -1313,6 +1313,41 @@ class TestAppBatchIngest:
         assert refused["detail"]["parameter"] == "files.1.parsed_metadata", refused
         assert refused["detail"]["key"] == "bogus_field_x", refused
 
+    async def test_undeclared_name_wins_over_a_malformed_digest(self, single_vault):
+        """One entry, an undeclared key and a malformed ``sha256``: the key is reported,
+        as the Core API upload and the application's ingest route report it."""
+        _, config = single_vault
+        entry = {
+            "file_path": str(Path(config.vault.storage_root) / "sample.md"),
+            "source_type": "markdown",
+            "sha256": "not-a-digest",
+        }
+
+        control = _parse(await bulk_ingest_document("test_vault", [entry]))
+        refused = _parse(await bulk_ingest_document("test_vault", [{**entry, "bogus_field_x": 1}]))
+
+        assert control["error"] == "invalid_sha256", control
+        assert refused["error"] == "undeclared_key", refused
+        assert refused["detail"]["parameter"] == "files.0", refused
+        assert refused["detail"]["keys"] == ["bogus_field_x"], refused
+
+    @pytest.mark.parametrize("dry_run", [False, True])
+    async def test_every_undeclared_key_in_one_object_is_named(self, single_vault, dry_run):
+        """Two undeclared keys, written in reverse sorted order, are named once, sorted."""
+        _, config = single_vault
+        entry = {
+            "file_path": str(Path(config.vault.storage_root) / "sample.md"),
+            "source_type": "markdown",
+            "parsed_metadata": {"zulu_x": 1, "alpha_x": 2},
+        }
+
+        refused = _parse(await bulk_ingest_document("test_vault", [entry], dry_run=dry_run))
+
+        assert refused["error"] == "undeclared_key", refused
+        assert refused["detail"]["parameter"] == "files.0.parsed_metadata", refused
+        assert refused["detail"]["keys"] == ["alpha_x", "zulu_x"], refused
+        assert refused["detail"]["key"] == "alpha_x", refused
+
     async def test_transfer_token_entry_is_not_an_undeclared_key(self, single_vault):
         """``transfer_token`` is a declared delivery shape, so it reaches the transfer gate."""
         result = _parse(
