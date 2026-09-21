@@ -42,6 +42,7 @@ from sage.api.errors import (
     DeliveryParameterConflictError,
     DocumentNotFoundError,
     NoProjectionError,
+    OutputPathInvalidError,
     PathTraversalDeniedError,
     WritePathExistsError,
     WritePathInvalidError,
@@ -218,7 +219,10 @@ class UtilitiesService:
                 filesystem under the active profile.
             DocumentNotFoundError: Document does not exist.
             NoProjectionError: Document has no stored projection chunks.
-            PathTraversalDeniedError: output_path resolves outside storage_root.
+            OutputPathInvalidError: output_path names an existing directory, or
+                a file sits where one of its parent directories is needed.
+            PathTraversalDeniedError: output_path resolves outside storage_root,
+                or to storage_root itself.
         """
         from sage.mcp_init import require_caller_local_filesystem
 
@@ -233,9 +237,19 @@ class UtilitiesService:
         storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
         target = (storage_root / output_path).resolve()
 
-        # Path containment check
-        if not str(target).startswith(str(storage_root) + "/") and target != storage_root:
+        # Path containment check: a strict descendant of the root. The root
+        # itself is a directory, never a file an export can write.
+        if not str(target).startswith(str(storage_root) + "/"):
             raise PathTraversalDeniedError(output_path)
+        if target.is_dir():
+            raise OutputPathInvalidError(output_path, "a directory sits at the target")
+        for ancestor in target.parents:
+            if ancestor == storage_root:
+                break
+            if ancestor.exists() and not ancestor.is_dir():
+                raise OutputPathInvalidError(
+                    output_path, "a file sits where a parent directory is needed"
+                )
 
         doc, projection_text = await self._get_projection_text(document_id)
 

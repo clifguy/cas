@@ -60,7 +60,12 @@ the working tree with its merge base on `origin/main`; pass `--base` and
 
 The check compares both OpenAPI specifications and the MCP catalog. If it finds
 an added operation, tool, parameter, accepted value, or response field, or a
-removal, rename, new requirement, or narrowed schema, a `patch` record fails. When
+removal, rename, new requirement, or narrowed schema, a `patch` record fails. An
+added response status is classified by what it answers: a success (2xx) is a
+capability, and any other status is a refusal a caller must now handle, so a
+caller adaptation. The same holds for an error code a tool's published error
+schema gains or loses, and for an arm added to a union only non-2xx responses
+reach. When
 the owner judges such a finding a patch anyway, for example because it declares
 behaviour the server already had, the record carries the owner's override:
 

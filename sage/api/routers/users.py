@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_user_service, get_vault_id
-from sage.api.response_docs import boundary_400
+from sage.api.response_docs import boundary_400, invalid_parameter_422
 from sage.api.wire_route import WireRoute
 from sage.models.schemas import ErrorResponse, RegisterUserRequest, User, VaultIdStr
 from sage.services.user_service import UserService
@@ -28,6 +28,7 @@ router = APIRouter(route_class=WireRoute, tags=["Access Control"])
                 "lists the registered vaults."
             ),
         },
+        422: invalid_parameter_422(),
     },
 )
 async def register_user(

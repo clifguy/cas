@@ -371,9 +371,23 @@ OPENAPI_POSITIVE: list[tuple[str, Callable[[dict[str, Any]], None], str, str, st
     (
         "response-added",
         lambda s: _get(s)["responses"].__setitem__("409", {"description": "Conflict."}),
-        CAPABILITY,
+        CALLER_ADAPTATION,
         "response-added",
         "responses/409",
+    ),
+    (
+        "response-added-success",
+        lambda s: _get(s)["responses"].__setitem__("201", {"description": "Created."}),
+        CAPABILITY,
+        "response-added",
+        "responses/201",
+    ),
+    (
+        "response-added-default",
+        lambda s: _get(s)["responses"].__setitem__("default", {"description": "Error."}),
+        CALLER_ADAPTATION,
+        "response-added",
+        "responses/default",
     ),
     (
         "response-removed",
@@ -529,6 +543,147 @@ def test_a_moved_tool_is_one_finding_not_a_removal_and_an_addition() -> None:
     kinds = sorted(f.kind for f in diff_mcp_catalog(CATALOG, moved))
 
     assert kinds == ["tool-moved"]
+
+
+# ---------------------------------------------------------------------------
+# Added refusals: an error shape a caller must now handle is an adaptation.
+# ---------------------------------------------------------------------------
+
+
+def _with_union(*where: str) -> dict[str, Any]:
+    """SPEC with a one-arm ``Problem`` union, reached from each place named."""
+
+    def mutate(spec: dict[str, Any]) -> None:
+        spec["components"]["schemas"]["Problem"] = {"oneOf": [{"type": "string"}]}
+        problem = {"$ref": "#/components/schemas/Problem"}
+        if "refusal" in where:
+            _get(spec)["responses"]["404"]["content"] = {"application/json": {"schema": problem}}
+        if "success" in where:
+            _thing(spec)["properties"]["problem"] = problem
+        if "request" in where:
+            _request(spec)["properties"]["problem"] = problem
+
+    return _mutated(SPEC, mutate)
+
+
+def _add_problem_arm(spec: dict[str, Any]) -> None:
+    spec["components"]["schemas"]["Problem"]["oneOf"].append({"type": "integer"})
+
+
+def test_arm_added_to_a_refusal_union_is_an_adaptation() -> None:
+    base = _with_union("refusal")
+
+    findings = diff_openapi(base, _mutated(base, _add_problem_arm), surface="core")
+
+    assert [(f.kind, f.category, f.pointer) for f in findings] == [
+        ("branch-added", CALLER_ADAPTATION, "components/schemas/Problem/oneOf/1")
+    ]
+
+
+@pytest.mark.parametrize(
+    "where",
+    [("request",), ("success",), ("refusal", "request"), ("refusal", "success")],
+    ids=["request", "success-response", "refusal-and-request", "refusal-and-success"],
+)
+def test_arm_added_to_a_union_not_only_refusals_reach_is_a_capability(
+    where: tuple[str, ...],
+) -> None:
+    base = _with_union(*where)
+
+    findings = diff_openapi(base, _mutated(base, _add_problem_arm), surface="core")
+
+    assert [(f.kind, f.category) for f in findings] == [("branch-added", CAPABILITY)]
+
+
+def test_arm_added_inline_in_a_refusal_response_is_an_adaptation() -> None:
+    base = _mutated(
+        SPEC,
+        lambda s: _get(s)["responses"]["404"].__setitem__(
+            "content", {"application/json": {"schema": {"oneOf": [{"type": "string"}]}}}
+        ),
+    )
+    new = _mutated(
+        base,
+        lambda s: _get(s)["responses"]["404"]["content"]["application/json"]["schema"][
+            "oneOf"
+        ].append({"type": "integer"}),
+    )
+
+    findings = diff_openapi(base, new, surface="core")
+
+    assert [(f.kind, f.category) for f in findings] == [("branch-added", CALLER_ADAPTATION)]
+    assert "responses/404" in findings[0].pointer
+
+
+def _error_schema(*codes: str) -> dict[str, Any]:
+    return {
+        "_meta": {
+            "org.sage/errorSchema": {
+                "$defs": {
+                    f"{code.title()}Error": {"description": "An envelope.", "type": "object"}
+                    for code in codes
+                },
+                "discriminator": {
+                    "propertyName": "error",
+                    "mapping": {code: f"#/$defs/{code.title()}Error" for code in codes},
+                },
+                "oneOf": [{"$ref": f"#/$defs/{code.title()}Error"} for code in codes],
+            }
+        }
+    }
+
+
+def _search_errors(*codes: str) -> dict[str, Any]:
+    return _mutated(CATALOG, lambda c: _search(c).update(_error_schema(*codes)))
+
+
+def test_mcp_error_code_added_is_an_adaptation() -> None:
+    findings = diff_mcp_catalog(_search_errors("alpha"), _search_errors("alpha", "beta"))
+
+    assert [(f.kind, f.category, f.pointer) for f in findings] == [
+        ("error-code-added", CALLER_ADAPTATION, "sage/search/errors/beta")
+    ]
+
+
+def test_mcp_error_code_removed_is_an_adaptation() -> None:
+    findings = diff_mcp_catalog(_search_errors("alpha", "beta"), _search_errors("alpha"))
+
+    assert [(f.kind, f.category, f.pointer) for f in findings] == [
+        ("error-code-removed", CALLER_ADAPTATION, "sage/search/errors/beta")
+    ]
+
+
+def test_mcp_error_schema_first_published_reports_each_code() -> None:
+    findings = diff_mcp_catalog(CATALOG, _search_errors("alpha", "beta"))
+
+    assert sorted((f.kind, f.pointer) for f in findings) == [
+        ("error-code-added", "sage/search/errors/alpha"),
+        ("error-code-added", "sage/search/errors/beta"),
+    ]
+
+
+def test_mcp_error_codes_reordered_or_redescribed_are_not_a_change() -> None:
+    base = _search_errors("alpha", "beta")
+
+    def reshuffle(c: dict[str, Any]) -> None:
+        schema = _search(c)["_meta"]["org.sage/errorSchema"]
+        schema["discriminator"]["mapping"] = dict(
+            reversed(list(schema["discriminator"]["mapping"].items()))
+        )
+        schema["$defs"]["AlphaError"]["description"] = "Reworded."
+
+    assert diff_mcp_catalog(base, _mutated(base, reshuffle)) == []
+
+
+def test_mcp_tool_added_with_errors_is_one_finding() -> None:
+    def add_tool(c: dict[str, Any]) -> None:
+        tool = copy.deepcopy(_search(c))
+        tool.update(name="find", **_error_schema("alpha"))
+        c["surfaces"]["sage"].append(tool)
+
+    kinds = [f.kind for f in diff_mcp_catalog(CATALOG, _mutated(CATALOG, add_tool))]
+
+    assert kinds == ["tool-added"]
 
 
 # ---------------------------------------------------------------------------

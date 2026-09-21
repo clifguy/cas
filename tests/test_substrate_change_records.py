@@ -333,6 +333,68 @@ def test_category_disagreement_warns_without_failing(repo: SubstrateRepo) -> Non
     assert any("caller-adaptation" in warning for warning in result.warnings), result.warnings
 
 
+def _add_response(status: str) -> Any:
+    def mutate(spec: dict[str, Any]) -> None:
+        spec["paths"]["/things"]["get"]["responses"][status] = {"description": "Added."}
+
+    return mutate
+
+
+MINOR_CALLER_ADAPTATION: dict[str, Any] = {
+    "classification": "minor",
+    "category": ["caller-adaptation"],
+    "summary": "Listing things requires a session.",
+    "for_callers": "Listing things now answers 401 without a session; sign in and retry.",
+}
+
+
+def test_added_refusal_classified_caller_adaptation_passes_without_warning(
+    repo: SubstrateRepo,
+) -> None:
+    """A newly declared refusal is a caller adaptation, and a record saying so is not warned."""
+    repo.edit_yaml(CORE_SPEC, _add_response("401"))
+    repo.add_record("things-require-a-session", **MINOR_CALLER_ADAPTATION)
+
+    result = _check(repo)
+
+    assert [(f.kind, f.category) for f in result.findings] == [
+        ("response-added", "caller-adaptation")
+    ]
+    assert result.errors == []
+    assert result.warnings == []
+
+
+def test_added_success_response_still_wants_capability(repo: SubstrateRepo) -> None:
+    repo.edit_yaml(CORE_SPEC, _add_response("201"))
+    repo.add_record("things-can-be-created", **MINOR_CALLER_ADAPTATION)
+
+    result = _check(repo)
+
+    assert result.errors == []
+    assert any("capability" in warning for warning in result.warnings), result.warnings
+
+
+def test_added_refusal_declared_as_patch_needs_override(repo: SubstrateRepo) -> None:
+    """Declaring a refusal the server already returned is a patch only by the owner's override."""
+    repo.edit_yaml(CORE_SPEC, _add_response("422"))
+    repo.add_record("declare-the-refusal", **PATCH)
+
+    refused = _check(repo)
+
+    assert any("patch" in error for error in refused.errors), refused.errors
+
+    repo.add_record(
+        "declare-the-refusal",
+        **PATCH,
+        detector_override={"reason": "The server already answered 422; this declares it."},
+    )
+
+    admitted = _check(repo)
+
+    assert admitted.errors == []
+    assert admitted.classification == "patch"
+
+
 # ---------------------------------------------------------------------------
 # The retired counters
 # ---------------------------------------------------------------------------

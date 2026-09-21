@@ -89,3 +89,28 @@ def boundary_400(
     paragraphs.extend(s for code, s in PATH_400_SENTENCES.items() if code in path)
     paragraphs.extend(s for code, s in REQUEST_400_SENTENCES.items() if code in request)
     return {"model": ErrorResponse, "description": "\n\n".join(paragraphs)}
+
+
+#: The request-validation refusal every operation binding a body can return: a
+#: value that fails validation with no more specific code to report it. FastAPI
+#: would otherwise publish its own 422 schema, which names a body the server
+#: never sends.
+INVALID_PARAMETER_422_SENTENCE: str = (
+    "`invalid_parameter`: a value in the request failed validation -- a wrong "
+    "type, a bound, a malformed value -- and no more specific code reports it. "
+    "`detail.parameter` locates the value as a dotted path from the top of the "
+    "request, with a list position as its index, `detail.value` carries it, and "
+    "`detail.constraint` states the rule it broke."
+)
+
+
+def invalid_parameter_422(extra: str | None = None) -> dict[str, object]:
+    """Build the 422 ``responses`` entry for an operation that binds a body.
+
+    ``extra`` carries the operation's own 422 prose and is placed first, as in
+    ``boundary_400``, so the refusal particular to this operation is read
+    before the one every body-taking sibling shares.
+    """
+    paragraphs = [] if extra is None else [extra]
+    paragraphs.append(INVALID_PARAMETER_422_SENTENCE)
+    return {"model": ErrorResponse, "description": "\n\n".join(paragraphs)}

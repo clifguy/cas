@@ -842,6 +842,52 @@ the caller. The named document does not exist.
 the vault-source store ignores; an export there would write a file nobody can
 reach. Both request surfaces refuse on the same terms (CAS-ADR-052).
 
+### TEST-SAGE-BH-040b: export_projection refuses the storage root as a target
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (export_projection)
+**Category:** utilities, security
+**Decision:** The target must be a strict descendant of `storage_root`; the root
+itself is a directory, never a file an export can write.
+
+**Precondition:** Vault with `storage_root: "/tmp/test_vault/sources"`.
+
+**Input:** `export_projection(output_path: ".")`
+
+**Expected:**
+- HTTP 400
+- `code: "path_traversal_denied"`, `detail.output_path: "."`
+- Nothing under the storage root is created or modified; a missing document
+  still answers this refusal, not `document_not_found`
+
+**Rationale:** The containment check admitted the root, and the write then
+failed on the directory with an unmapped server error on both surfaces.
+
+### TEST-SAGE-BH-040c: export_projection refuses a target that is not a file location
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (export_projection)
+**Category:** utilities
+**Decision:** An export writes one file, so a target naming an existing directory,
+or one whose path runs through an existing file, is refused before anything is
+read or written, with `detail.reason` saying which.
+
+**Precondition:** Vault with `storage_root: "/tmp/test_vault/sources"`, an
+existing directory `exports/` and an existing file `notes.md` under it.
+
+**Input:** `export_projection(output_path: "exports")`;
+`export_projection(output_path: "notes.md/doc.md")`
+
+**Expected:**
+- HTTP 400
+- `code: "output_path_invalid"`, `detail.output_path` the path as given, and
+  `detail.reason` `"a directory sits at the target"` or
+  `"a file sits where a parent directory is needed"`
+- Nothing under the storage root is created or modified; a missing document
+  still answers this refusal, not `document_not_found`
+- `export_projection(output_path: "exports/doc.md")` still writes the file
+
+**Rationale:** The write, or the creation of its parent directories, otherwise
+failed with an unmapped server error on both surfaces.
+
 ### TEST-SAGE-BH-041: Retrieval assertions loaded from separate YAML file
 
 **Artifact:** `sage/sage_core_api.openapi.yaml` (verify_vault_retrieval)

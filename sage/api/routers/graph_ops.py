@@ -9,7 +9,7 @@
 from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_graph_ops_service, get_vault_id
-from sage.api.response_docs import boundary_400
+from sage.api.response_docs import boundary_400, invalid_parameter_422
 from sage.api.wire_route import WireRoute
 from sage.models.schemas import (
     BulkLinkRequest,
@@ -74,6 +74,7 @@ router = APIRouter(route_class=WireRoute, tags=["Graph Operations"])
                 "`detail.available_vaults` lists the registered vaults."
             ),
         },
+        422: invalid_parameter_422(),
     },
 )
 async def create_edges(
@@ -156,6 +157,7 @@ async def check_preconditions(
                 "lists the registered vaults."
             ),
         },
+        422: invalid_parameter_422(),
     },
 )
 async def traverse(
@@ -183,6 +185,7 @@ async def traverse(
                 "lists the registered vaults."
             ),
         },
+        422: invalid_parameter_422(),
     },
 )
 async def chain(

@@ -5,7 +5,7 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Path
 
 from sage.api.dependencies import get_utilities_service, get_vault_id
-from sage.api.response_docs import boundary_400
+from sage.api.response_docs import boundary_400, invalid_parameter_422
 from sage.api.wire_route import WireRoute
 from sage.models.schemas import (
     DocumentIdStr,
@@ -36,7 +36,10 @@ _DocumentIdPath = Annotated[DocumentIdStr, Path(description="Document identifier
             path=("invalid_document_id", "invalid_vault_id"),
             request=("unknown_parameter",),
             extra="`path_traversal_denied`: `output_path` resolves outside the "
-            "vault's `storage_root`.",
+            "vault's `storage_root`, or to the root itself.\n\n"
+            "`output_path_invalid`: `output_path` is not a file location -- "
+            "a directory sits at the target, or a file sits where a parent "
+            "directory is needed; `detail.reason` says which.",
         ),
         404: {
             "model": ErrorResponse,
@@ -56,6 +59,7 @@ _DocumentIdPath = Annotated[DocumentIdStr, Path(description="Document identifier
                 "the cloud profile; the refusal comes before any read."
             ),
         },
+        422: invalid_parameter_422(),
     },
 )
 async def export_projection(

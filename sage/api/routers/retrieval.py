@@ -3,7 +3,7 @@
 from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_retrieval_service, get_vault_id
-from sage.api.response_docs import boundary_400
+from sage.api.response_docs import boundary_400, invalid_parameter_422
 from sage.api.wire_route import WireRoute
 from sage.models.schemas import DiscoverRequest, DiscoverResponse, ErrorResponse, VaultIdStr
 from sage.services.retrieval import RetrievalService
@@ -33,6 +33,7 @@ router = APIRouter(route_class=WireRoute, tags=["Retrieval"])
                 "lists the registered vaults."
             ),
         },
+        422: invalid_parameter_422(),
     },
 )
 async def discover(

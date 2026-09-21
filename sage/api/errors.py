@@ -1617,6 +1617,24 @@ class PathTraversalDeniedError(SAGEError):
         )
 
 
+class OutputPathInvalidError(SAGEError):
+    """400: output_path lies inside the storage root but is not a file location.
+
+    An export writes one file, so a directory already at the target, or a file
+    where one of its parent directories is needed, makes the path unusable.
+    The path is refused before anything is read or written, as a path outside
+    the root is, and ``reason`` says which.
+    """
+
+    def __init__(self, output_path: str, reason: str) -> None:
+        super().__init__(
+            "output_path_invalid",
+            f"Cannot export to {output_path}: {reason}",
+            400,
+            {"output_path": output_path, "reason": reason},
+        )
+
+
 class NoProjectionError(SAGEError):
     """404: document has no stored projection."""
 
