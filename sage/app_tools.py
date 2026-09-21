@@ -7,7 +7,8 @@ this module only adapts the dict-shaped MCP arguments to those services.
 """
 
 from collections.abc import Callable
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import TypeAdapter, ValidationError
@@ -21,13 +22,12 @@ from sage.api.errors import (
     undeclared_entry_key_error,
 )
 from sage.mcp_init import SAGEServices, require_caller_local_filesystem
-from sage.models.schemas import (
-    BatchIngestParsedMetadata,
-    Sha256Str,
-    UploadRecipe,
-    VaultIdStr,
-)
+from sage.models.schemas import BatchIngestParsedMetadata, Sha256Str, VaultIdStr
+from sage.services.caller_paths import caller_basename
 from sage.services.transfer import DeliveryDeclaration, caller_local_delivery
+
+if TYPE_CHECKING:
+    from sage.services.batch_ingest import FileDescriptor
 
 # Module-scope TypeAdapter for Pattern 2 boundary validation. See the
 # parallel adapter declarations and rationale in
@@ -80,6 +80,36 @@ def _refuse_undeclared_entry_fields(files: list[dict]) -> None:
     )
     if refusal is not None:
         raise refusal
+
+
+def _file_descriptor(
+    entry: dict,
+    parsed: BatchIngestParsedMetadata | None,
+    tier3: dict | None,
+    digest: str | None,
+    path: str,
+    declared_source: str | None,
+) -> "FileDescriptor":
+    """The batch descriptor for one entry, read from ``path``.
+
+    Shared by the ingest and by the dry run answered with a recipe, which
+    names the file by the caller's own path rather than a staged one. The
+    fallback title is the path's basename under the caller's separator, which
+    is the name a staged upload carries.
+    """
+    from sage.services.batch_ingest import FileDescriptor, parsed_metadata_input
+
+    return FileDescriptor(
+        file_path=path,
+        source_type=entry.get("source_type"),
+        parsed_metadata=parsed_metadata_input(
+            None if parsed is None else parsed.model_dump(exclude_unset=True),
+            Path(caller_basename(path, "upload")).stem,
+        ),
+        declared_source=declared_source,
+        sha256=digest,
+        tier3_metadata=tier3,
+    )
 
 
 def _parsed_metadata_of(files: list[dict]) -> list[BatchIngestParsedMetadata | None]:
@@ -584,11 +614,7 @@ def register_app_tools(
                 the second. A ``transfer_token`` is read but not spent.
         """
         try:
-            from sage.services.batch_ingest import (
-                BatchIngestService,
-                FileDescriptor,
-                parsed_metadata_input,
-            )
+            from sage.services.batch_ingest import BatchIngestService
 
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             v = get_vault(vault_id)
@@ -636,38 +662,30 @@ def register_app_tools(
                 # entry's refusal names that rather than ``source``.
                 source_parameter="file_path",
             ) as plan:
+                entries = list(zip(files, parsed_metadata, tier3_metadata, digests, strict=True))
                 if plan.recipe is not None:
-                    if dry_run:
-                        return serialize(
-                            await _validate_recipe_legs(
-                                v,
-                                plan.recipe,
-                                files,
-                                parsed_metadata,
-                                tier3_metadata,
-                                digests,
-                                needs_review=needs_review,
-                            )
+                    if not dry_run:
+                        return serialize(plan.recipe)
+                    # Legs are minted in the order of the entries that need
+                    # them, so each is matched to its entry by walking both in
+                    # order; the leg's source is the entry's path verbatim.
+                    remaining = iter(enumerate(entries))
+                    legs: list[tuple[int, FileDescriptor]] = []
+                    for leg in plan.recipe.uploads:
+                        index, entry = next(
+                            (i, e) for i, e in remaining if e[0].get("file_path") == leg.source
                         )
-                    return serialize(plan.recipe)
-
-                descriptors: list[FileDescriptor] = []
-                for f, parsed, tier3, digest, delivery in zip(
-                    files, parsed_metadata, tier3_metadata, digests, plan.resolved, strict=True
-                ):
-                    descriptors.append(
-                        FileDescriptor(
-                            file_path=delivery.path,
-                            source_type=f.get("source_type"),
-                            parsed_metadata=parsed_metadata_input(
-                                None if parsed is None else parsed.model_dump(exclude_unset=True),
-                                Path(delivery.path).stem,
-                            ),
-                            declared_source=delivery.declared_source,
-                            sha256=digest,
-                            tier3_metadata=tier3,
+                        legs.append((index, _file_descriptor(*entry, leg.source, leg.source)))
+                    return serialize(
+                        await BatchIngestService().validate_recipe_legs(
+                            plan.recipe, legs, vault_services=v, needs_review=needs_review
                         )
                     )
+
+                descriptors = [
+                    _file_descriptor(*entry, delivery.path, delivery.declared_source)
+                    for entry, delivery in zip(entries, plan.resolved, strict=True)
+                ]
 
                 svc = BatchIngestService()
                 result = await svc.run(
@@ -680,59 +698,6 @@ def register_app_tools(
                 return result.to_dict()
         except (SAGEError, ValueError) as e:
             return error_response(e)
-
-    async def _validate_recipe_legs(
-        v: SAGEServices,
-        recipe: UploadRecipe,
-        files: list[dict],
-        parsed_metadata: list[BatchIngestParsedMetadata | None],
-        tier3_metadata: list[dict | None],
-        digests: list[str | None],
-        *,
-        needs_review: bool,
-    ) -> UploadRecipe:
-        """Answer a batch dry run whose sources must be uploaded first.
-
-        Each leg's file is checked by the validators that read no bytes, as
-        the batch would build its request, and the leg carries either the
-        checks it passed or the refusal it would get. Legs are minted in the
-        order of the entries that need them, so they are matched to entries
-        by walking both in order.
-        """
-        from sage.services.batch_ingest import (
-            FileDescriptor,
-            dry_run_error_entry,
-            file_ingest_request,
-            parsed_metadata_input,
-        )
-
-        legs = []
-        entries = iter(enumerate(zip(files, parsed_metadata, tier3_metadata, digests, strict=True)))
-        for leg in recipe.uploads:
-            index, (f, parsed, tier3, digest) = next(
-                e for e in entries if e[1][0].get("file_path") == leg.source
-            )
-            fd = FileDescriptor(
-                file_path=leg.source,
-                source_type=f.get("source_type"),
-                parsed_metadata=parsed_metadata_input(
-                    None if parsed is None else parsed.model_dump(exclude_unset=True),
-                    Path(PureWindowsPath(leg.source).name).stem,
-                ),
-                declared_source=leg.source,
-                sha256=digest,
-                tier3_metadata=tier3,
-            )
-            try:
-                ran = await v.ingestion_service.validate_without_bytes(
-                    file_ingest_request(fd, needs_review=needs_review, dry_run=True)
-                )
-                legs.append(leg.model_copy(update={"dry_run_validated": ran}))
-            except SAGEError as exc:
-                legs.append(
-                    leg.model_copy(update={"dry_run_error": dry_run_error_entry(index, fd, exc)})
-                )
-        return recipe.model_copy(update={"uploads": legs})
 
     return {
         "list_directory": list_directory,

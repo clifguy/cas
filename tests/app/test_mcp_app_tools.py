@@ -830,6 +830,14 @@ class TestSagePendingMetadata:
             assert item["extracted_fields"]["title"]["value"] == item["document"]["title"]
             assert item["extracted_fields"]["document_date"]["value"].startswith("2026-04-1")
 
+    async def test_five_rows_is_still_full(self, single_vault):
+        services, _ = single_vault
+        await self._seed_pending(services, 5)
+
+        result = _parse(await list_pending_metadata("test_vault"))
+        assert result["count"] == 5
+        assert result["response_mode"] == "full"
+
     async def test_pages_and_defaults_to_light_over_threshold(self, single_vault):
         services, _ = single_vault
         ids = await self._seed_pending(services, 7)

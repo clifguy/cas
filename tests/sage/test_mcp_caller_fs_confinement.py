@@ -1711,3 +1711,22 @@ async def test_bdry_bulk_real_run_carries_no_dry_run_verdicts(confined_vault):
     (leg,) = result["uploads"]
     assert "dry_run_error" not in leg
     assert "dry_run_validated" not in leg
+
+
+async def test_bdry_bulk_error_names_a_windows_callers_file_by_its_basename(confined_vault):
+    """A dry-run error entry names the file as the real run's entry would: by
+    the caller path's basename under the caller's own separator, not by the
+    whole Windows path a POSIX reading leaves intact."""
+    files = [
+        {
+            "file_path": "C:\\inbox\\bad.md",
+            "source_type": "markdown",
+            "parsed_metadata": {"title": "Bad", "doc_type": "not_a_type"},
+        }
+    ]
+    with _profile("cloud", transfer_base=_BASE):
+        result = _parse(await bulk_ingest_document(_VAULT_ID, files, dry_run=True))
+
+    (leg,) = result["uploads"]
+    assert leg["dry_run_error"]["filename"] == "bad.md"
+    assert leg["dry_run_error"]["source_path"] == "C:\\inbox\\bad.md"

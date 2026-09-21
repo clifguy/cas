@@ -1117,6 +1117,15 @@ class TestPendingMetadata:
         assert all(set(i) == {"document", "extracted_fields"} for i in body["items"])
         assert all("title" in i["extracted_fields"] for i in body["items"])
 
+    async def test_pending_metadata_five_rows_is_still_full(self, multi_vault_app, multi_client):
+        """The rule is "more than five rows is light": five is the last full page."""
+        gs = multi_vault_app.state.vault_registry["example_vault"].graph_store
+        await self._seed_pending(gs, 5)
+
+        body = (await multi_client.get("/sage_vaults/example_vault/pending-metadata")).json()
+        assert len(body["items"]) == 5
+        assert body["response_mode"] == "full"
+
     async def test_pending_metadata_explicit_mode_overrides_threshold(
         self, multi_vault_app, multi_client
     ):

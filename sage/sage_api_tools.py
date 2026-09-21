@@ -54,6 +54,7 @@ from sage.models.schemas import (
     UploadRecipe,
     VaultIdStr,
 )
+from sage.services.metadata import PENDING_METADATA_DEFAULT_LIMIT
 from sage.services.stack_config import get_stack_config_report
 from sage.services.transfer import DeliveryDeclaration
 from sage.services.vault_registry import VaultRegistryService
@@ -2930,7 +2931,7 @@ def register_sage_tools(
     @mcp.tool(annotations=READ_ONLY)
     async def list_pending_metadata(
         vault_id: str,
-        limit: int = 10,
+        limit: int = PENDING_METADATA_DEFAULT_LIMIT,
         offset: int = 0,
         response_mode: str | None = None,
     ) -> dict:

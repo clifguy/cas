@@ -45,10 +45,12 @@ from sage.services.batch_inference import (
     plan_batch_edges,
     resolve_and_execute,
 )
+from sage.services.caller_paths import caller_basename
 from sage.services.filename_parser import ParsedMetadata
 
 if TYPE_CHECKING:
     from sage.mcp_init import SAGEServices
+    from sage.models.schemas import UploadRecipe
 
 logger = logging.getLogger(__name__)
 
@@ -196,6 +198,35 @@ OnFileError = Callable[[int, int, str, str], Awaitable[None]]
 
 class BatchIngestService:
     """Shared three-phase batch ingestion pipeline."""
+
+    async def validate_recipe_legs(
+        self,
+        recipe: UploadRecipe,
+        legs: list[tuple[int, FileDescriptor]],
+        *,
+        vault_services: SAGEServices,
+        needs_review: bool,
+    ) -> UploadRecipe:
+        """Answer a batch dry run whose sources must be uploaded first.
+
+        ``legs`` pairs each of the recipe's upload legs, in order, with the
+        entry's position in the batch and its descriptor read from the
+        caller's own path. Each file is checked by the validators that read
+        no bytes, on the request the batch would build for it, and its leg
+        carries either the checks it passed or the refusal it would get, in
+        the summary's per-file error shape.
+        """
+        answered = []
+        for leg, (index, fd) in zip(recipe.uploads, legs, strict=True):
+            try:
+                ran = await vault_services.ingestion_service.validate_without_bytes(
+                    file_ingest_request(fd, needs_review=needs_review, dry_run=True)
+                )
+                answered.append(leg.model_copy(update={"dry_run_validated": ran}))
+            except SAGEError as exc:
+                entry = _error_entry(index, caller_basename(fd.file_path, fd.file_path), fd, exc)
+                answered.append(leg.model_copy(update={"dry_run_error": entry}))
+        return recipe.model_copy(update={"uploads": answered})
 
     async def run(
         self,
@@ -523,12 +554,6 @@ def file_ingest_request(fd: FileDescriptor, *, needs_review: bool, dry_run: bool
             raise
         raise translated from exc
     return request
-
-
-def dry_run_error_entry(index: int, fd: FileDescriptor, exc: Exception) -> BatchIngestFileError:
-    """The per-file error a batch dry run reports for an entry it could not
-    deliver, in the summary's own shape."""
-    return _error_entry(index, Path(fd.file_path).name, fd, exc)
 
 
 def _error_entry(

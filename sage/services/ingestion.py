@@ -21,7 +21,7 @@ import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path, PureWindowsPath
+from pathlib import Path
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -100,6 +100,7 @@ from sage.models.schemas import (
     canonicalize_sha256,
 )
 from sage.services._dry_run import doc_type_requirements
+from sage.services.caller_paths import caller_basename
 from sage.services.document_surface import compose_document_surface, embedding_text
 from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.services.identifier_mention_inference import infer_identifier_mentions_for_document
@@ -1351,7 +1352,7 @@ class IngestionService:
         if request.tier3_metadata is not None:
             parsed = (
                 self._parse_source_filename(
-                    Path(PureWindowsPath(request.source or "").name), request.source_type
+                    Path(caller_basename(request.source, "upload")), request.source_type
                 )
                 if request.needs_review
                 else None
