@@ -1659,17 +1659,20 @@ class BulkLifecycleItem(BaseModel):
     )
     action: str = Field(
         description=(
-            "Lifecycle transition action. Vault-config-defined; same "
-            "shape as `SetLifecycleRequest.action`."
+            "Lifecycle transition action. The action vocabulary is "
+            "vault-config-defined; see `lifecycle.transitions` in the vault config for"
+            " the authoritative list."
         )
     )
     successor_id: DocumentIdStr | None = Field(
         default=None,
         description=(
             "Document id of the replacement version. Required when "
-            '`action="supersede"`; forbidden for all other actions, which '
-            "refuse with 400 `unexpected_successor_id`. Same shape and "
-            "semantics as `SetLifecycleRequest.successor_id`."
+            '`action="supersede"`; forbidden for all other actions, which refuse with '
+            "400 `unexpected_successor_id`. SAGE creates a `supersedes` edge from the "
+            "new version to this document atomically with the lifecycle transition. "
+            "The successor document must already exist and be active; this operation "
+            "does not create it."
         ),
     )
     relocated_to: RelocationPointer | None = Field(
@@ -2105,7 +2108,8 @@ class BulkMetadataItem(BaseModel):
         default=None,
         description=(
             "Patch operations on the tag set: {add?: list[str], remove?: list[str]}. "
-            "Same semantics as `UpdateMetadataRequest.tags`."
+            "At least one key required. Strict-conflict on add-present / "
+            "remove-absent."
         ),
     )
     doc_type: str | None = Field(
@@ -2123,20 +2127,22 @@ class BulkMetadataItem(BaseModel):
     tier3_metadata: Tier3Patch | None = Field(
         default=None,
         description=(
-            "Patch operations on tier3_metadata: {set?: dict, unset?: list[str]}. "
-            "Same semantics as `UpdateMetadataRequest.tier3_metadata`."
+            "Patch operations on tier3_metadata: {set?: dict, unset?: list[str]}. At "
+            "least one key required. `set` overwrites existing keys (verb is literal);"
+            " `unset` keys must currently be present (else 400 tier3_unset_conflict). "
+            "The merged result is validated against the resolved doc_type's "
+            "metadata_schema."
         ),
     )
     expected_version: str | None = Field(
         default=None,
         description=(
-            "Optimistic-concurrency token (CAS-ADR-038 Primitive B). Same "
-            "semantics as `UpdateMetadataRequest.expected_version`: when "
-            "supplied, verified against the per-item document's current "
-            "version inside its per-document lock; mismatch surfaces a "
-            "structured `stale_read` per-item error envelope without "
-            "aborting the batch (CAS-ADR-029 partial-success semantics). "
-            "When omitted, the per-item write is last-writer-wins."
+            "Optimistic-concurrency token (CAS-ADR-038 Primitive B), the document's "
+            "`updated_at` value as observed on a prior read. When supplied, verified "
+            "against the per-item document's current version inside its per-document "
+            "lock; mismatch surfaces a structured `stale_read` per-item error envelope"
+            " without aborting the batch (CAS-ADR-029 partial-success semantics). When"
+            " omitted, the per-item write is last-writer-wins."
         ),
     )
 
@@ -2737,13 +2743,20 @@ class BulkLinkItem(BaseModel):
     source_valid_from_version: DocumentIdStr | None = Field(
         default=None,
         description=(
-            "Source-chain anchor (same semantics as `LinkRequest.source_valid_from_version`)."
+            "Document ID on the source chain where this edge becomes applicable. "
+            "Required for policies `transitive_source` and `transitive_both`; also "
+            "required (one-sided) for `retracts`. Must be null for policy `none` on "
+            "non-retracts edges. Must lie in the supersedes lineage of source_id (or "
+            "of the retracting chain head for `retracts`)."
         ),
     )
     target_valid_from_version: DocumentIdStr | None = Field(
         default=None,
         description=(
-            "Target-chain anchor (same semantics as `LinkRequest.target_valid_from_version`)."
+            "Document ID on the target chain where this edge becomes applicable. "
+            "Required for policy `transitive_both`; must be null for policies "
+            "`transitive_source`, `none`, and for `retracts` edges. Must lie in the "
+            "supersedes lineage of target_id when supplied."
         ),
     )
     retracted_edge_id: EdgeIdStr | None = Field(
@@ -2758,17 +2771,33 @@ class BulkLinkItem(BaseModel):
     rationale_kind: RationaleKind | None = Field(
         default=None,
         description=(
-            "Optional explicit discriminator (CAS-ADR-019). Same "
-            "semantics as `LinkRequest.rationale_kind`."
+            "Optional explicit discriminator (CAS-ADR-019). When omitted or null, the "
+            "service derives the value from the rationale text prefix and falls back "
+            "to `manual` for unrecognized or absent rationale. Callers should pass "
+            "this only when they have stronger provenance information than the "
+            "prefix-derivation rule."
         ),
     )
     synced_from_version: DocumentIdStr | None = Field(
         default=None,
-        description=("Provenance field. Same semantics as `LinkRequest.synced_from_version`."),
+        description=(
+            "The source-chain version (document id) the content was copied or derived "
+            "from at the moment this edge was asserted. Meaningful on `sync_target` "
+            "and `derived_from` edges. Distinct from `source_valid_from_version`, "
+            "which records chain-scoped edge visibility; the two must not be "
+            "conflated. Unset = explicit null; never inferred from chain anchors."
+        ),
     )
     synced_from_content_hash: Sha256Str | None = Field(
         default=None,
-        description=("Provenance field. Same semantics as `LinkRequest.synced_from_content_hash`."),
+        description=(
+            "The source document's `source_content_hash` captured at the moment this "
+            "edge was asserted. Optional companion to `synced_from_version`; "
+            "recommended on derivations because version labels are reused and can "
+            "drift from content. Accepted as `sha256:<hex>` or bare hex, digest in "
+            "either case; normalized to `sha256:` + 64 lowercase hex on the way in; "
+            "unset = explicit null."
+        ),
     )
 
 

@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from mcp.server.fastmcp import FastMCP
 from pydantic import TypeAdapter, ValidationError
 
+from sage._mcp_item_schema import published_item_list
 from sage._tool_annotations import READ_ONLY, WRITE_DESTRUCTIVE
 from sage.api.errors import (
     InvalidParameterError,
@@ -22,6 +23,7 @@ from sage.api.errors import (
     undeclared_entry_key_error,
 )
 from sage.mcp_init import SAGEServices, require_caller_local_filesystem
+from sage.models.mcp_items import BulkIngestFileEntry
 from sage.models.schemas import BatchIngestParsedMetadata, Sha256Str, VaultIdStr
 from sage.services.caller_paths import caller_basename
 from sage.services.transfer import DeliveryDeclaration, caller_local_delivery
@@ -37,18 +39,11 @@ _SHA256_ADAPTER: TypeAdapter[str] = TypeAdapter(Sha256Str)
 
 # The names a ``bulk_ingest_document`` file entry, and the parsed metadata it
 # may carry, declare. The request surface refuses any other name in the same
-# places (CAS-ADR-037, CAS-ADR-052). The parsed-metadata names are those of the
-# Core API's batch upload model, so the two batch surfaces close on one set.
-_FILE_ENTRY_FIELDS = frozenset(
-    {
-        "file_path",
-        "transfer_token",
-        "sha256",
-        "source_type",
-        "parsed_metadata",
-        "tier3_metadata",
-    }
-)
+# places (CAS-ADR-037, CAS-ADR-052). Both sets are read from the models the
+# tool publishes as the entry's shape, and the parsed-metadata names are those
+# of the Core API's batch upload model, so the two batch surfaces close on one set.
+_FILE_ENTRY_FIELDS = frozenset(BulkIngestFileEntry.model_fields)
+_FILE_ENTRIES = published_item_list(BulkIngestFileEntry)
 _PARSED_METADATA_FIELDS = frozenset(BatchIngestParsedMetadata.model_fields)
 
 
@@ -347,7 +342,7 @@ def register_app_tools(
     @mcp.tool(annotations=WRITE_DESTRUCTIVE)
     async def bulk_ingest_document(
         vault_id: str,
-        files: list[dict],
+        files: _FILE_ENTRIES,
         infer_edges: bool = True,
         needs_review: bool = True,
         dry_run: bool = False,

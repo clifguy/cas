@@ -13,6 +13,7 @@ from typing import Annotated, Literal
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
 
+from sage._mcp_item_schema import published_item_list
 from sage._tool_annotations import READ_ONLY, WRITE_ADDITIVE, WRITE_DESTRUCTIVE
 from sage.api.errors import (
     AmbiguousDocumentIdentifierError,
@@ -27,7 +28,7 @@ from sage.api.errors import (
     validation_error_envelope,
 )
 from sage.mcp_init import SAGEServices
-from sage.models.enums import RetrievalMode, SourceType
+from sage.models.enums import FacetField, RetrievalMode, SourceType
 from sage.models.legacy_form import detect_legacy_form
 from sage.models.schemas import (
     BulkLifecycleItem,
@@ -72,6 +73,12 @@ _DOCUMENT_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(DocumentIdStr)
 _EDGE_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(EdgeIdStr)
 _DOCUMENT_DATE_ADAPTER: TypeAdapter[str | None] = TypeAdapter(DocumentDateStr)
 _SHA256_ADAPTER: TypeAdapter[str] = TypeAdapter(Sha256Str)
+
+# Each batch argument publishes the shape its tool body validates an item
+# against, while still arriving as plain mappings (see ``sage._mcp_item_schema``).
+_LIFECYCLE_ITEMS = published_item_list(BulkLifecycleItem)
+_LINK_ITEMS = published_item_list(BulkLinkItem)
+_METADATA_ITEMS = published_item_list(BulkMetadataItem)
 # Collection parameters carry the alias on the element type, so the adapter
 # wraps the sequence rather than the alias. Validation is whole-argument: one
 # unusable entry fails the call rather than being dropped from the batch.
@@ -977,7 +984,7 @@ def register_sage_tools(
     @mcp.tool(annotations=WRITE_DESTRUCTIVE)
     async def update_lifecycles(
         vault_id: str,
-        items: list[dict],
+        items: _LIFECYCLE_ITEMS,
         response_mode: str | None = None,
         dry_run: bool = False,
     ) -> dict:
@@ -1113,7 +1120,9 @@ def register_sage_tools(
             vault_id: Target vault identifier.
             items: List of per-item transition requests, each conforming to
                 the ``BulkLifecycleItem`` shape: ``{document_id?: str,
-                doc_id?: str, action: str, successor_id: str | None}``.
+                doc_id?: str, action: str, successor_id: str | None,
+                relocated_to: {vault_id, document_id, source_content_hash,
+                relocated_at, server_address?} | None}``.
                 Supply exactly one of ``document_id`` or ``doc_id`` per
                 item; ``doc_id`` is a back-compatible alias (neither or
                 both is a per-item error). Shape validation runs up front;
@@ -1164,7 +1173,7 @@ def register_sage_tools(
     @mcp.tool(annotations=WRITE_ADDITIVE)
     async def create_edges(
         vault_id: str,
-        items: list[dict],
+        items: _LINK_ITEMS,
         response_mode: str | None = None,
         dry_run: bool = False,
     ) -> dict:
@@ -1329,7 +1338,7 @@ def register_sage_tools(
     @mcp.tool(annotations=WRITE_DESTRUCTIVE)
     async def update_metadata(
         vault_id: str,
-        items: list[dict],
+        items: _METADATA_ITEMS,
         response_mode: str | None = None,
         dry_run: bool = False,
     ) -> dict:
@@ -1808,7 +1817,7 @@ def register_sage_tools(
         response_mode: str | None = None,
         sort_by: str | None = None,
         sort_order: str | None = None,
-        facet_fields: list | None = None,
+        facet_fields: list[FacetField] | None = None,
         facet_value_limit: int | None = None,
         # Tripwires, not functional arguments. These are the ``filters``
         # keys; they are published here only so a wrong-level spelling

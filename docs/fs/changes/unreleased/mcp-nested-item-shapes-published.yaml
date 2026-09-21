@@ -1,0 +1,28 @@
+classification: patch
+summary: >-
+  The MCP catalog now publishes the item shape of every batch argument instead of an
+  open object with no properties: the files entries of bulk_ingest_document (with the
+  parsed_metadata each may carry), and the items of create_edges, update_lifecycles and
+  update_metadata. Each shape is generated from the item model the tool body already
+  validates against -- BulkIngestFileEntry (new, the upload's BatchIngestFileMetadata plus
+  file_path and transfer_token, and now the source of the entry names the tool accepts),
+  BulkLinkItem, BulkLifecycleItem and BulkMetadataItem -- with every reference resolved in
+  place, so each declares its properties, types and required keys. Each field's description
+  is published; a definition's own title and description -- a model's or an enum's
+  docstring, written for maintainers -- are not. Every published object
+  stays open (additionalProperties true) although the models forbid undeclared fields: a
+  client that coerces arguments to the published schema would otherwise drop a misspelled
+  key before sending it, where today the server refuses it by name as undeclared_key. The
+  arguments still arrive as plain mappings, so validation, refusals and their locations are
+  unchanged. A client that validates against the published schema now checks item types
+  and required keys itself; every such call was already refused by the server.
+  search's facet_fields now publishes its closed vocabulary (the FacetField enum) as its
+  item type rather than untyped items; the names it accepts are unchanged, and a refusal
+  of any other element still names them. Ten field descriptions of BulkLinkItem,
+  BulkLifecycleItem and BulkMetadataItem, shared with the Core API specification, now
+  state their semantics in place instead of pointing at LinkRequest, SetLifecycleRequest
+  or UpdateMetadataRequest, which a tool caller cannot resolve.
+detector_override:
+  reason: >-
+    Declares nested item shapes the server already enforced; no call the server accepted
+    before is refused.
