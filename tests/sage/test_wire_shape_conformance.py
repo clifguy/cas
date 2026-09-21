@@ -342,6 +342,10 @@ def _build_sentinel(
     and a validator-satisfying value for every typed alias would be a second
     fixture surface to keep current for no gain.
     """
+    from sage.models.error_contract import SCHEMAS
+
+    if model.__name__ in SCHEMAS and spec is not None:
+        return model.model_validate(_error_schema_sentinel(SCHEMAS[model.__name__], SCHEMAS))
     properties = properties or {}
     values: dict[str, Any] = {}
     for name, field in model.model_fields.items():
@@ -1628,3 +1632,30 @@ def test_every_built_route_renders_through_the_wire_route(tmp_path: Path):
     present = {(label, route.path) for label, app_routes in routes.items() for route in app_routes}
     stale = sorted(k for k in NON_WIRE_ROUTES if k not in present)
     assert not stale, f"NON_WIRE_ROUTES entries naming no route: {stale}"
+
+
+def _error_schema_sentinel(schema: dict, definitions: dict) -> Any:
+    """Build an admitted typed-error value, retaining required nullable fields."""
+    if "$ref" in schema:
+        return _error_schema_sentinel(definitions[schema["$ref"].rsplit("/", 1)[-1]], definitions)
+    if "const" in schema:
+        return schema["const"]
+    for keyword in ("oneOf", "anyOf"):
+        if keyword in schema:
+            choices = schema[keyword]
+            branch = next((s for s in choices if s.get("type") == "null"), choices[0])
+            return _error_schema_sentinel(branch, definitions)
+    kind = schema.get("type")
+    if isinstance(kind, list):
+        kind = "null" if "null" in kind else kind[0]
+    if kind == "object":
+        value = {
+            key: _error_schema_sentinel(schema["properties"][key], definitions)
+            for key in schema.get("required", [])
+        }
+        if "patternProperties" in schema:
+            value["sha256"] = None
+        return value
+    return {"string": "sentinel", "integer": 0, "boolean": False, "array": [], "null": None}.get(
+        kind
+    )

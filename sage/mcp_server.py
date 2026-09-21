@@ -37,7 +37,7 @@ for _hf_logger in ("httpx", "sentence_transformers"):
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import ContentBlock, TextContent
+from mcp.types import ContentBlock, TextContent, Tool
 from pydantic import BaseModel, ValidationError
 
 # Side-effect import: monkey-patches ArgModelBase.model_config to add
@@ -325,6 +325,17 @@ class _LoggingFastMCP(FastMCP):
         # standalone full-surface mount.
         kwargs.setdefault("transport_security", _MCP_TRANSPORT_SECURITY)
         super().__init__(*args, **kwargs)
+
+    async def list_tools(self) -> list[Tool]:
+        from sage.models.error_contract import META_KEY, tool_error_schema
+
+        tools = await super().list_tools()
+        for tool in tools:
+            tool.meta = {
+                **(tool.meta or {}),
+                META_KEY: tool_error_schema(tool.description or "", tool.name),
+            }
+        return tools
 
     async def call_tool(
         self, name: str, arguments: dict[str, Any]

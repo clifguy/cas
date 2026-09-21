@@ -1,0 +1,12 @@
+classification: minor
+category: [capability, caller-adaptation]
+summary: >-
+  Publish code-discriminated error envelopes and typed detail families in both
+  REST specifications and namespaced MCP tool metadata. Derive packaged runtime
+  models from the authoritative schemas and ground error-detail vocabulary.
+for_callers: >-
+  REST error codes now select machine-readable detail schemas. MCP tools publish
+  their documented error families and shared boundary errors under
+  _meta["org.sage/errorSchema"], with locally resolvable references and the existing
+  error discriminator. Error payloads, statuses, read markers and null handling
+  are unchanged; success output schemas continue to describe successes only.

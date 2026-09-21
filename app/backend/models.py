@@ -30,6 +30,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from sage.models.schemas import (
+    _ERROR_MODELS,
     BatchIngestFileError,
     DocTypeRequirements,
     DocumentDateStr,
@@ -304,3 +305,8 @@ class SessionInfoResponse(BaseModel):
             "when no live session is present."
         ),
     )
+
+
+# Shared schema-derived error variants are part of both public specifications.
+
+globals().update(_ERROR_MODELS)

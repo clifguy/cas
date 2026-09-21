@@ -40,7 +40,9 @@ CATALOG_DESCRIPTION: Final[str] = (
     "the servers and held to them by a test gate. The ordinary surface is mounted "
     "at /mcp and the maintenance surface at /mcp_maint. A tool's name, input "
     "schema, output schema, and surface are contract; its description, title, and "
-    "annotations are published documentation."
+    'annotations are published documentation. Namespaced _meta["org.sage/errorSchema"] '
+    "describes JSON error envelopes carried in text content, selected by error, "
+    "with references local to that schema; outputSchema remains the success contract."
 )
 
 
@@ -55,6 +57,7 @@ def _tool_entry(tool: Any) -> dict[str, Any]:
         "inputSchema": tool.inputSchema,
         "outputSchema": tool.outputSchema,
         "annotations": annotations,
+        "_meta": tool.meta,
     }
 
 

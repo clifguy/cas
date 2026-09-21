@@ -186,6 +186,7 @@ def test_request_schemas_close_where_the_models_do():
         and isinstance(cls := getattr(schemas, name, None), type)
         and issubclass(cls, BaseModel)
         and cls.model_config.get("extra") != "forbid"
+        and not (getattr(cls, "__pydantic_root_model__", False) and _root_refuses_unknown_keys(cls))
     )
     assert tolerant_in_code == [], "spec closes these schemas but the models accept extras"
 
@@ -307,6 +308,7 @@ def test_app_request_schemas_close_where_the_models_do():
         and isinstance(cls := getattr(app_models, name, None), type)
         and issubclass(cls, BaseModel)
         and cls.model_config.get("extra") != "forbid"
+        and not (getattr(cls, "__pydantic_root_model__", False) and _root_refuses_unknown_keys(cls))
     )
     assert tolerant_in_code == [], "spec closes these schemas but the models accept extras"
 
@@ -325,3 +327,38 @@ def test_every_app_operation_declares_the_refusal():
                 undeclared.append(operation["operationId"])
 
     assert sorted(undeclared) == []
+
+
+def _root_refuses_unknown_keys(model: type[BaseModel]) -> bool:
+    """Reject extras only after accepting each branch's otherwise identical input."""
+    from pydantic import ValidationError
+
+    from tests.sage.test_wire_shape_conformance import _error_schema_sentinel
+
+    schema = model.model_json_schema()
+    definitions = schema.get("$defs", {})
+
+    def branches(node: dict) -> list[dict]:
+        if "$ref" in node:
+            return branches(definitions[node["$ref"].rsplit("/", 1)[-1]])
+        for keyword in ("oneOf", "anyOf"):
+            if keyword in node:
+                return [branch for child in node[keyword] for branch in branches(child)]
+        return [node]
+
+    specimens = [_error_schema_sentinel(branch, definitions) for branch in branches(schema)]
+    if not specimens:
+        return False
+    for specimen in specimens:
+        if not isinstance(specimen, dict):
+            return False
+        try:
+            model.model_validate(specimen)
+        except ValidationError:
+            return False  # Invalid setup is not evidence of unknown-key refusal.
+        try:
+            model.model_validate({**specimen, "fabricated_key": 1})
+        except ValidationError:
+            continue
+        return False
+    return True
