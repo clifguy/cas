@@ -39,7 +39,7 @@ import yaml
 from sage import mcp_init, vault_management
 from sage.adapters.stubs import StubContentStore, StubGraphStore
 from sage.config import SageCoreConfig, VaultConfig
-from sage.models.schemas import CreateVaultRequest, Document, UpdateVaultConfigRequest
+from sage.models.schemas import CreateVaultRequest, UpdateVaultConfigRequest
 from sage.services.maintenance import MaintenanceService
 from sage.services.maintenance_log import MAINTENANCE_LOG_FILENAME
 from sage.services.vault_config import VaultConfigService
@@ -322,10 +322,10 @@ class _EmptyStatsGraphStore(StubGraphStore):
     ) -> int:
         return 0
 
-    async def list_pending_metadata_documents(
+    async def count_pending_metadata_documents(
         self, exclude_lifecycle_statuses: Sequence[str] = ()
-    ) -> list[Document]:
-        return []
+    ) -> int:
+        return 0
 
 
 def _maintenance_without_vault_dir(config: VaultConfig) -> MaintenanceService:

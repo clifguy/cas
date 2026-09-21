@@ -1227,6 +1227,39 @@ async def test_bh_096_chain_with_references(graph_store, graph_ops_service):
 
 
 # ---------------------------------------------------------------------------
+# BH-148: chain defaults edge_type to supersedes
+# ---------------------------------------------------------------------------
+
+
+def test_bh_148_chain_request_defaults_edge_type_to_supersedes():
+    request = ChainRequest(document_id=_id("doc_a"))
+
+    assert request.edge_type == EdgeType.SUPERSEDES
+
+
+async def test_bh_148_chain_without_edge_type_walks_supersedes(graph_store, graph_ops_service):
+    await _create_linear_chain(graph_store, 3)
+    await graph_store.insert_document(_make_doc(_id("outside")))
+    # A competing edge from a chain member: a walk that followed anything
+    # but supersedes would admit the outside document.
+    await graph_store.insert_edge(
+        Edge(
+            id=_eid("edge_ref_out"),
+            source_id=_id("v2"),
+            target_id=_id("outside"),
+            edge_type=EdgeType.REFERENCES,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+
+    result = await graph_ops_service.chain(ChainRequest(document_id=_id("v2")))
+
+    assert result.total_length == 3
+    assert result.head_id == _id("v3")
+    assert [e.id for e in result.chain] == [_id("v1"), _id("v2"), _id("v3")]
+
+
+# ---------------------------------------------------------------------------
 # BH-097: edge_counts map with mixed edge types
 # ---------------------------------------------------------------------------
 

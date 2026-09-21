@@ -14,6 +14,7 @@ export default function Review() {
   const activeTab = searchParams.get('tab') === 'edges' ? 'edges' : 'metadata';
 
   const [pendingMeta, setPendingMeta] = useState<PendingMetadata[]>([]);
+  const [pendingTotal, setPendingTotal] = useState(0);
   const [stagingEdges, setStagingEdges] = useState<StagingEdge[]>([]);
   const [loading, setLoading] = useState(true);
   const [fetchError, setFetchError] = useState('');
@@ -39,7 +40,8 @@ export default function Review() {
         listPendingMetadata(vaultId),
         listStagingEdges(vaultId),
       ]);
-      setPendingMeta(meta);
+      setPendingMeta(meta.items);
+      setPendingTotal(meta.total_available);
       setStagingEdges(edges);
     } catch (err) {
       const msg = err instanceof Error ? err.message : 'Failed to load review data';
@@ -96,7 +98,7 @@ export default function Review() {
 
       <div style={{ display: 'flex', gap: 0, borderBottom: '2px solid #ddd', marginBottom: 20 }}>
         <TabButton
-          label={`Metadata Review (${pendingMeta.length})`}
+          label={`Metadata Review (${pendingTotal})`}
           active={activeTab === 'metadata'}
           onClick={() => setSearchParams({ tab: 'metadata' })}
         />

@@ -371,34 +371,7 @@ class BatchIngestService:
                 await on_file_start(i, total, filename)
 
             try:
-                metadata_dict = _metadata_dict_from_parsed(fd.parsed_metadata)
-                source_type = SourceType(fd.source_type) if fd.source_type is not None else None
-                try:
-                    request = IngestRequest(
-                        source=fd.file_path,
-                        source_type=source_type,
-                        metadata=metadata_dict,
-                        # CAS-ADR-021: SAGE's default is to commit caller-
-                        # supplied metadata as authoritative. The CAS bulk-
-                        # ingest workflow surfaces inferred values for human
-                        # confirmation, so it opts the document into the
-                        # metadata-review queue (needs_review defaults True).
-                        needs_review=needs_review,
-                        dry_run=dry_run,
-                        sha256=fd.sha256,
-                        tier3_metadata=fd.tier3_metadata,
-                    )
-                except ValidationError as exc:
-                    # The single-document surface validates this request at
-                    # its boundary and returns the typed refusal; here the
-                    # request is built inside the loop, so the same
-                    # translation is applied where it is built. Without it the
-                    # entry carries no code and a message rendering the whole
-                    # request, staged location included.
-                    translated = translate_validation_error(exc)
-                    if translated is None:
-                        raise
-                    raise translated from exc
+                request = file_ingest_request(fd, needs_review=needs_review, dry_run=dry_run)
                 ingest_result = await vault_services.ingestion_service.ingest(
                     request,
                     # The staged path is where the bytes are; the caller's
@@ -513,6 +486,49 @@ class BatchIngestService:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def file_ingest_request(fd: FileDescriptor, *, needs_review: bool, dry_run: bool) -> IngestRequest:
+    """The single-document request one batch entry ingests as.
+
+    Raises:
+        SAGEError: the entry's fields do not form a valid request, translated
+            from the model's validation failure as the single-document
+            surface translates it at its boundary.
+    """
+    metadata_dict = _metadata_dict_from_parsed(fd.parsed_metadata)
+    source_type = SourceType(fd.source_type) if fd.source_type is not None else None
+    try:
+        request = IngestRequest(
+            source=fd.file_path,
+            source_type=source_type,
+            metadata=metadata_dict,
+            # CAS-ADR-021: SAGE's default is to commit caller-supplied
+            # metadata as authoritative. The CAS bulk-ingest workflow surfaces
+            # inferred values for human confirmation, so it opts the document
+            # into the metadata-review queue (needs_review defaults True).
+            needs_review=needs_review,
+            dry_run=dry_run,
+            sha256=fd.sha256,
+            tier3_metadata=fd.tier3_metadata,
+        )
+    except ValidationError as exc:
+        # The single-document surface validates this request at its boundary
+        # and returns the typed refusal; here the request is built per entry,
+        # so the same translation is applied where it is built. Without it the
+        # entry carries no code and a message rendering the whole request,
+        # staged location included.
+        translated = translate_validation_error(exc)
+        if translated is None:
+            raise
+        raise translated from exc
+    return request
+
+
+def dry_run_error_entry(index: int, fd: FileDescriptor, exc: Exception) -> BatchIngestFileError:
+    """The per-file error a batch dry run reports for an entry it could not
+    deliver, in the summary's own shape."""
+    return _error_entry(index, Path(fd.file_path).name, fd, exc)
 
 
 def _error_entry(

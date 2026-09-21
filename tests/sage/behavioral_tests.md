@@ -3659,3 +3659,25 @@ after each write.
 
 **Rationale:** A read that returned the first passage of a divided section would
 pass against an undivided one.
+
+### TEST-SAGE-BH-148: chain defaults edge_type to supersedes
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (chain endpoint)
+**Category:** graph, chain
+
+**Decision:** A chain request that names no `edge_type` walks `supersedes`, the
+document's version history. An explicit `edge_type` still selects the walk.
+
+**Precondition:** A three-document supersedes chain whose middle member also
+carries a `references` edge to a document outside it.
+
+**Input:** `chain(document_id: middle.id)` with no `edge_type`.
+
+**Expected:**
+- `ChainRequest(document_id=...)` resolves `edge_type` to `supersedes`.
+- The chain holds exactly the three versions, oldest first, with the newest
+  as `head_id`.
+
+**Rationale:** The outside document is reachable only by `references`, so a
+default that walked any other type would admit it, and a one-document chain
+would pass whatever the default was.

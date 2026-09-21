@@ -21,7 +21,7 @@ import time
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import TYPE_CHECKING
 from zoneinfo import ZoneInfo
 
@@ -85,6 +85,7 @@ from sage.config import (
 from sage.models.enums import (
     SUCCESSFUL_TERMINAL_PIPELINE_STATUSES,
     TERMINAL_PIPELINE_STATUS_VALUES,
+    DryRunValidator,
     PipelineStatus,
     SourceType,
 )
@@ -1214,7 +1215,11 @@ class IngestionService:
         messages through :meth:`ingest`'s ``caller_source``.
 
         A dry run reads redeemed bytes without spending the token, so the real
-        ingest it previews can still redeem it. A failure after redemption
+        ingest it previews can still redeem it. A dry run the gate answers with
+        a recipe first runs every validator that reads no bytes, so a caller
+        can check a request before paying for the byte leg; the recipe names
+        the validators that ran. Outside a dry run the recipe comes first,
+        since the ingest it defers will run them all. A failure after redemption
         returns the token with its staged bytes, so a retry repeats the ingest
         rather than the upload.
 
@@ -1236,6 +1241,12 @@ class IngestionService:
             self._config.vault.id, [declaration], consume=not dry_run
         ) as plan:
             if plan.recipe is not None:
+                if dry_run:
+                    ran = await self.validate_without_bytes(build_request(declaration.source))
+                    (leg,) = plan.recipe.uploads
+                    return plan.recipe.model_copy(
+                        update={"uploads": [leg.model_copy(update={"dry_run_validated": ran})]}
+                    )
                 return plan.recipe
             (delivery,) = plan.resolved
             return await self.ingest(
@@ -1244,24 +1255,33 @@ class IngestionService:
                 caller_source=delivery.declared_source,
             )
 
-    async def _ingest(
-        self,
-        request: IngestRequest,
-        wait_for_pipeline: bool,
-        caller_source: str | None,
-    ) -> IngestResult | IngestPreview:
-        """The body of ``ingest``, run once the call is admitted."""
+    async def _validate_without_bytes(
+        self, request: IngestRequest
+    ) -> tuple[IngestRequest, SourceAdapter, Document | None, list[DryRunValidator]]:
+        """Run the ingest validators that read no source bytes, in order.
+
+        Returns the request with its source type settled, the adapter that
+        will read it, the supersede predecessor if one was named, and the
+        validators that had something to check. Each raises the refusal a
+        real ingest would, so a caller hears it before any byte is retained
+        -- or, on a dry run the delivery gate answers with a recipe, before
+        any byte is sent.
+        """
+        ran = [DryRunValidator.SOURCE_TYPE]
         request = self._resolve_source_type(request)
         adapter = self._adapters.get(request.source_type)
         if adapter is None:
             raise AdapterNotFoundError(request.source_type)
+        ran.append(DryRunValidator.ADAPTER)
 
         # CAS-ADR-038 Primitive C: expected_head_version is bound to the
         # chain head identified by predecessor_id. Without a predecessor
         # the token has no defined meaning; reject the caller bug loudly
         # rather than silently dropping the parameter.
-        if request.expected_head_version is not None and request.predecessor_id is None:
-            raise ExpectedHeadVersionRequiresPredecessorError()
+        if request.expected_head_version is not None:
+            if request.predecessor_id is None:
+                raise ExpectedHeadVersionRequiresPredecessorError()
+            ran.append(DryRunValidator.EXPECTED_HEAD_VERSION)
 
         # Pre-validate the supersede predecessor BEFORE running projection
         # (BH-121, BH-122, BH-124). Fail-fast keeps pipeline work behind
@@ -1291,6 +1311,7 @@ class IngestionService:
                     predecessor.lifecycle_status,
                     self._transition_table.states_allowing("supersede"),
                 )
+            ran.append(DryRunValidator.PREDECESSOR)
 
         # The doc_type vocabulary gate reads only the caller's metadata and
         # the vault configuration, so it belongs above the first
@@ -1299,7 +1320,10 @@ class IngestionService:
         # bytes into the import area and then refused, leaving a retained
         # file with no row, which no audit walks.
         self._validate_caller_doc_type(request)
+        if (request.metadata or {}).get("doc_type"):
+            ran.append(DryRunValidator.DOC_TYPE)
         self._validate_ingest_landing_state()
+        ran.append(DryRunValidator.LANDING_STATE)
         # A config value the adapter cannot use is refused here, among the checks
         # that read and write nothing, for the reason the relocation guard sits
         # above retention: refused below it, a novel external file would be
@@ -1307,6 +1331,46 @@ class IngestionService:
         # no row. Here too a preview reports the refusal the ingest would raise.
         with _refuse_adapter_config(request.source_type):
             adapter.check_config(self._merge_adapter_config(request.source_type, request.config))
+        ran.append(DryRunValidator.ADAPTER_CONFIG)
+        return request, adapter, predecessor, ran
+
+    async def validate_without_bytes(self, request: IngestRequest) -> list[DryRunValidator]:
+        """Check a request whose source has not been delivered, and name the
+        checks that ran.
+
+        For a dry run whose source must be uploaded first. Runs every
+        validator that reads no bytes against the request as the caller named
+        it, raising the refusal a real ingest would. The Tier-3 payload is
+        checked against the doc_type the ingest would resolve; a filename
+        parse reads only the name the caller gave, which is the name the
+        staged upload will carry. The request's own shape was validated when
+        it was built, so it heads the list.
+        """
+        request, _adapter, predecessor, ran = await self._validate_without_bytes(request)
+        ran.insert(0, DryRunValidator.REQUEST_SHAPE)
+        if request.tier3_metadata is not None:
+            parsed = (
+                self._parse_source_filename(
+                    Path(PureWindowsPath(request.source or "").name), request.source_type
+                )
+                if request.needs_review
+                else None
+            )
+            resolved_doc_type = self._resolve_doc_type_for_tier3(
+                request=request, parsed=parsed, predecessor=predecessor
+            )
+            self._validate_tier3_payload(resolved_doc_type, request.tier3_metadata)
+            ran.append(DryRunValidator.TIER3_METADATA)
+        return ran
+
+    async def _ingest(
+        self,
+        request: IngestRequest,
+        wait_for_pipeline: bool,
+        caller_source: str | None,
+    ) -> IngestResult | IngestPreview:
+        """The body of ``ingest``, run once the call is admitted."""
+        request, adapter, predecessor, _ran = await self._validate_without_bytes(request)
 
         # A preview stops here, before the source is read into the vault.
         # Everything above is a validator that reads nothing and writes

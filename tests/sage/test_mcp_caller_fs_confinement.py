@@ -1541,3 +1541,173 @@ async def test_b1f_ingest_failure_after_redemption_leaves_the_token_redeemable(
 
     assert "error" not in ingested, ingested
     assert handle.retained_bytes(_config.vault.storage_root, ingested["source_path"]) == body
+
+
+# ---------------------------------------------------------------------------
+# B-dry: a dry run validates what it can before answering with the byte leg
+# ---------------------------------------------------------------------------
+#
+# The caller's file never needs to exist: an absolute path the server cannot
+# reach is answered with a recipe whether or not it names anything, so each
+# refusal below is one the validators raised ahead of that answer. The valid
+# twin of every refusal returns the recipe, which is what shows the cloud gate
+# was live for the refusing call too.
+
+_UNREACHABLE = "/caller/machine/inbox/dry_run_note.md"
+
+
+async def _dry_run(**kwargs) -> dict:
+    with _profile("cloud", transfer_base=_BASE):
+        # Co-located, the path would reach the ingest's own validators and
+        # refuse the same way without the gate ever answering.
+        assert not _mcp_init.caller_local_filesystem_reachable()
+        return _parse(
+            await ingest_document(_VAULT_ID, _UNREACHABLE, "markdown", dry_run=True, **kwargs)
+        )
+
+
+async def test_bdry_valid_dry_run_returns_the_recipe_naming_what_ran(confined_vault):
+    result = await _dry_run(metadata={"doc_type": "note"}, tier3_metadata={})
+
+    assert result["status"] == "upload_required", result
+    (leg,) = result["uploads"]
+    assert leg["source"] == _UNREACHABLE
+    assert "dry_run_validated" not in result
+    assert "dry_run_error" not in leg
+    ran = leg["dry_run_validated"]
+    assert {
+        "request_shape",
+        "source_type",
+        "adapter",
+        "doc_type",
+        "landing_state",
+        "adapter_config",
+        "tier3_metadata",
+    } <= set(ran)
+    # Only what the call gave a validator to check is reported as checked.
+    assert "predecessor" not in ran
+    assert "expected_head_version" not in ran
+
+
+async def test_bdry_validated_list_follows_the_call(confined_vault):
+    result = await _dry_run()
+
+    assert result["status"] == "upload_required", result
+    ran = set(result["uploads"][0]["dry_run_validated"])
+    assert "tier3_metadata" not in ran
+    assert "doc_type" not in ran
+    assert {"request_shape", "source_type", "adapter", "landing_state"} <= ran
+
+
+@pytest.mark.parametrize(
+    "kwargs,code",
+    [
+        pytest.param({"metadata": {"doc_type": "not_a_type"}}, "invalid_doc_type", id="doc_type"),
+        pytest.param(
+            {"metadata": {"doc_type": "note"}, "tier3_metadata": {"ticket_id": "T-1"}},
+            "tier3_schema_violation",
+            id="tier3",
+        ),
+        pytest.param(
+            {"predecessor_id": "0badf00d_absent_predecessor"},
+            "document_not_found",
+            id="predecessor",
+        ),
+        pytest.param(
+            {"expected_head_version": "2026-09-01T00:00:00Z"},
+            "expected_head_version_requires_predecessor",
+            id="expected_head_version",
+        ),
+        pytest.param(
+            {"metadata": {"document_date": "2026-13-45"}},
+            "invalid_document_date",
+            id="request_shape",
+        ),
+    ],
+)
+async def test_bdry_dry_run_refuses_in_place_of_the_recipe(confined_vault, kwargs, code):
+    result = await _dry_run(**kwargs)
+
+    assert result.get("error") == code, result
+    assert "uploads" not in result
+
+
+async def test_bdry_real_run_still_answers_with_the_recipe_first(confined_vault):
+    """Outside a dry run the gate still answers first: the bytes are what the
+    real ingest needs, and its validators run once they arrive."""
+    with _profile("cloud", transfer_base=_BASE):
+        result = _parse(
+            await ingest_document(
+                _VAULT_ID, _UNREACHABLE, "markdown", metadata={"doc_type": "not_a_type"}
+            )
+        )
+
+    assert result["status"] == "upload_required", result
+    assert "dry_run_validated" not in result["uploads"][0]
+
+
+async def test_bdry_bulk_dry_run_reports_each_leg(confined_vault):
+    """A batch dry run answered with a recipe reports, per leg, the checks that
+    file passed or the refusal it would get -- the batch's own per-file
+    failure shape, not a call-level refusal -- so one bad entry does not hide
+    the verdict on the rest."""
+    files = [
+        {
+            "file_path": "/caller/machine/inbox/bad.md",
+            "source_type": "markdown",
+            "parsed_metadata": {"title": "Bad", "doc_type": "not_a_type"},
+        },
+        {
+            "file_path": "/caller/machine/inbox/good.md",
+            "source_type": "markdown",
+            "parsed_metadata": {"title": "Good", "doc_type": "note"},
+            "tier3_metadata": {},
+        },
+    ]
+    with _profile("cloud", transfer_base=_BASE):
+        assert not _mcp_init.caller_local_filesystem_reachable()
+        result = _parse(await bulk_ingest_document(_VAULT_ID, files, dry_run=True))
+
+    assert result.get("status") == "upload_required", result
+    bad, good = result["uploads"]
+    assert bad["source"] == files[0]["file_path"]
+    assert bad["dry_run_error"]["code"] == "invalid_doc_type"
+    assert bad["dry_run_error"]["file_index"] == 0
+    assert bad["dry_run_error"]["source_path"] == files[0]["file_path"]
+    assert "dry_run_validated" not in bad
+    assert "dry_run_error" not in good
+    assert {"request_shape", "doc_type", "tier3_metadata"} <= set(good["dry_run_validated"])
+
+
+async def test_bdry_bulk_leg_indexes_skip_entries_the_recipe_does_not_cover(confined_vault):
+    """``file_index`` is the entry's position in ``files``, not in ``uploads``:
+    a relative path is a vault-store reference the recipe never mints for."""
+    files = [
+        {"file_path": "relative/in_store.md", "source_type": "markdown"},
+        {
+            "file_path": "/caller/machine/inbox/bad.md",
+            "source_type": "markdown",
+            "parsed_metadata": {"title": "Bad", "doc_type": "not_a_type"},
+        },
+    ]
+    with _profile("cloud", transfer_base=_BASE):
+        result = _parse(await bulk_ingest_document(_VAULT_ID, files, dry_run=True))
+
+    (leg,) = result["uploads"]
+    assert leg["dry_run_error"]["file_index"] == 1
+
+
+async def test_bdry_bulk_real_run_carries_no_dry_run_verdicts(confined_vault):
+    files = [
+        {
+            "file_path": "/caller/machine/inbox/bad.md",
+            "source_type": "markdown",
+            "parsed_metadata": {"title": "Bad", "doc_type": "not_a_type"},
+        }
+    ]
+    with _profile("cloud", transfer_base=_BASE):
+        result = _parse(await bulk_ingest_document(_VAULT_ID, files))
+
+    (leg,) = result["uploads"]
+    assert "dry_run_error" not in leg
+    assert "dry_run_validated" not in leg

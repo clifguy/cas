@@ -1601,21 +1601,42 @@ class PostgresGraphStore(GraphStore):
                 (list(statuses),),
             )
 
+    @staticmethod
+    def _pending_metadata_where(
+        exclude_lifecycle_statuses: Sequence[str],
+    ) -> tuple[str, list[object]]:
+        if not exclude_lifecycle_statuses:
+            return "metadata_confirmed = false", []
+        return (
+            "metadata_confirmed = false AND lifecycle_status <> ALL(%s)",
+            [list(exclude_lifecycle_statuses)],
+        )
+
     async def list_pending_metadata_documents(
-        self, exclude_lifecycle_statuses: Sequence[str] = ()
+        self,
+        exclude_lifecycle_statuses: Sequence[str] = (),
+        *,
+        limit: int | None = None,
+        offset: int = 0,
     ) -> list[Document]:
+        where_sql, params = self._pending_metadata_where(exclude_lifecycle_statuses)
         with self._query_timer.measure("list_pending_metadata_documents"):
-            if not exclude_lifecycle_statuses:
-                rows = await self._fetch_rows(
-                    "SELECT * FROM documents WHERE metadata_confirmed = false"
-                )
-            else:
-                rows = await self._fetch_rows(
-                    "SELECT * FROM documents "
-                    "WHERE metadata_confirmed = false AND lifecycle_status <> ALL(%s)",
-                    (list(exclude_lifecycle_statuses),),
-                )
+            rows = await self._fetch_rows(
+                f"SELECT * FROM documents WHERE {where_sql} ORDER BY id ASC "  # noqa: S608 -- fixed predicate; values are %s
+                "LIMIT %s OFFSET %s",
+                [*params, limit, offset],
+            )
             return [self._row_to_document(r) for r in rows]
+
+    async def count_pending_metadata_documents(
+        self, exclude_lifecycle_statuses: Sequence[str] = ()
+    ) -> int:
+        where_sql, params = self._pending_metadata_where(exclude_lifecycle_statuses)
+        with self._query_timer.measure("count_pending_metadata_documents"):
+            return await self._fetch_scalar(
+                f"SELECT COUNT(*) FROM documents WHERE {where_sql}",  # noqa: S608 -- fixed predicate; values are %s
+                params,
+            )
 
     async def measured_byte_size(self) -> int:
         """Live total relation size of the graph tables (heap + indexes + toast).

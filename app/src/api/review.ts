@@ -1,13 +1,17 @@
 import { apiGet, apiPost } from './client';
 import type {
-  PendingMetadata,
+  PendingMetadataPage,
   StagingEdge,
   StagingEdgeConfirmResponse,
   StagingEdgeDismissResponse,
 } from './types';
 
-export async function listPendingMetadata(vaultId: string): Promise<PendingMetadata[]> {
-  return apiGet<PendingMetadata[]>(`/sage_vaults/${vaultId}/pending-metadata`);
+// The largest page the queue serves, as full rows: the review table needs each
+// document's extracted-field annotations, which the light projection omits.
+export async function listPendingMetadata(vaultId: string): Promise<PendingMetadataPage> {
+  return apiGet<PendingMetadataPage>(
+    `/sage_vaults/${vaultId}/pending-metadata?limit=100&response_mode=full`,
+  );
 }
 
 export async function listStagingEdges(vaultId: string): Promise<StagingEdge[]> {

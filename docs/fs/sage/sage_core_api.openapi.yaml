@@ -681,7 +681,11 @@ paths:
         holds the content hash; it goes unchecked for a source resident in
         the store with no prior document record, which has no hash to judge
         the pin against. A clean preview is not a promise that the real run
-        commits.
+        commits. When `source` is an absolute path the server cannot read,
+        a dry run first runs every validator that reads no bytes and then
+        returns the upload recipe, whose leg's `dry_run_validated` names
+        the validators that ran; the checks that need the bytes wait for the
+        call repeated with the transfer token.
       tags: [Ingestion]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -2718,18 +2722,52 @@ paths:
         is the only surface that reaches it. `pending_metadata_count`
         on `get_vault_stats` excludes documents in a terminal
         lifecycle state, so this list can be longer than that count.
+
+
+        The queue is paged in document-id order with `limit` and
+        `offset`, and `total_available` counts the whole queue. Under
+        `response_mode=light` each row is a `DocumentSummaryLight`
+        rather than a `PendingMetadataItem`; when `response_mode` is
+        omitted, a page of more than five rows is light and a smaller
+        one is full.
       tags: [Pending Metadata]
       parameters:
         - $ref: "#/components/parameters/VaultId"
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            maximum: 100
+            default: 10
+          description: >-
+            Page size. `0` returns `total_available` with no rows.
+        - name: offset
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+          description: Number of queue documents to skip before the page.
+        - name: response_mode
+          in: query
+          required: false
+          schema:
+            anyOf:
+              - $ref: "#/components/schemas/ResponseMode"
+              - type: "null"
+          description: >-
+            Row shape. Omitted, a page of more than five rows is light
+            and a smaller one is full.
       responses:
         "200":
-          description: Documents awaiting metadata confirmation.
+          description: One page of the documents awaiting metadata confirmation.
           content:
             application/json:
               schema:
-                type: array
-                items:
-                  $ref: "#/components/schemas/PendingMetadataItem"
+                $ref: "#/components/schemas/PendingMetadataPage"
         "400":
           description: >-
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
@@ -4633,12 +4671,14 @@ components:
         "light" omits large per-item fields and returns only
         identity/status; "full" returns the complete envelope. When
         unset, surfaces that honor this parameter apply their own
-        default-resolution rule (search edges and the bulk
-        mutation tools both default to "light" when their result/batch
-        size exceeds five, otherwise "full"). Per-
+        default-resolution rule (search edges, the bulk
+        mutation tools, and the pending-metadata queue all default to
+        "light" when their result/batch/page size exceeds five,
+        otherwise "full"). Per-
         surface light-mode shape varies: search(target="edges")
         keeps edge identity columns; the bulk mutation tools drop the
-        per-item document body entirely. Failure entries always carry
+        per-item document body entirely; the pending-metadata queue
+        returns DocumentSummaryLight rows. Failure entries always carry
         the full structured error envelope regardless of mode.
 
     CatalogSortBy:
@@ -5048,7 +5088,8 @@ components:
       type: object
       description: >-
         Stripped DocumentSummary returned by `search` with
-        `target="documents", mode="catalog", response_mode="light"`.
+        `target="documents", mode="catalog", response_mode="light"`,
+        and by `list_pending_metadata` under `response_mode="light"`.
         Carries only the identity columns plus the two fields
         most callers need for triage (doc_type and tier3_metadata).
         Other DocumentSummary fields (source_type, source_path,
@@ -5918,7 +5959,11 @@ components:
             requirement set. Because a preview does not project, an
             adapter-extracted `tier3_metadata` payload cannot be
             evaluated; `tier3_validated` reports false when the caller
-            supplied none, and a real run may still refuse.
+            supplied none, and a real run may still refuse. When the
+            source must first be uploaded, the response is the
+            `UploadRecipe` instead, returned only after the validators
+            that read no bytes have passed; its leg's
+            `dry_run_validated` names them.
 
     ParseFilenameRequest:
       type: object
@@ -6126,7 +6171,7 @@ components:
     ChainRequest:
       type: object
       additionalProperties: false
-      required: [document_id, edge_type]
+      required: [document_id]
       description: >-
         Request body for the chain walk endpoint. Walks an edge chain in
         both directions from the named document, returning an ordered
@@ -6139,9 +6184,11 @@ components:
             in both directions from this document.
         edge_type:
           $ref: "#/components/schemas/EdgeType"
+          default: supersedes
           description: >-
-            Edge type to follow. Required (no default). The chain walk
-            follows only this edge type in both directions.
+            Edge type to follow. Defaults to `supersedes`, the version
+            history of the document. The chain walk follows only this edge
+            type in both directions.
         limit:
           type: [integer, "null"]
           minimum: 1
@@ -8330,6 +8377,37 @@ components:
             "project", "tags", "document_date" depending on which
             fields were extracted.
 
+    PendingMetadataPage:
+      type: object
+      required: [items, total_available, limit, offset, response_mode]
+      description: One page of the pending-metadata queue, ordered by document id.
+      properties:
+        items:
+          type: array
+          items:
+            anyOf:
+              - $ref: "#/components/schemas/PendingMetadataItem"
+              - $ref: "#/components/schemas/DocumentSummaryLight"
+          description: >-
+            The documents on this page. Under `response_mode=full` each is a
+            `PendingMetadataItem`; under `light` each is a
+            `DocumentSummaryLight`, the row catalog search returns.
+        total_available:
+          type: integer
+          description: Number of documents in the whole queue, before paging.
+        limit:
+          type: integer
+          description: The page size this page was read with.
+        offset:
+          type: integer
+          description: The number of queue documents skipped before this page.
+        response_mode:
+          $ref: "#/components/schemas/ResponseMode"
+          description: >-
+            The row shape this page carries. Echoes an explicit request; when
+            the request named none, `light` if the page holds more than five
+            rows and `full` otherwise.
+
     # -------------------------------------------------------------------------
     # Document Read and OS Open
     # -------------------------------------------------------------------------
@@ -9886,6 +9964,38 @@ components:
             from the originating call's `sha256`. The upload endpoint admits
             only bytes with this digest. Absent when the call declared none,
             in which case the token admits any bytes.
+        dry_run_validated:
+          type: [array, "null"]
+          items:
+            type: string
+            enum:
+              - request_shape
+              - source_type
+              - adapter
+              - expected_head_version
+              - predecessor
+              - doc_type
+              - landing_state
+              - adapter_config
+              - tier3_metadata
+          description: >-
+            On a dry run, the validators that read no source bytes and that
+            this leg's file gave something to check, each of which passed
+            before the recipe was returned. The checks that need the bytes --
+            the content hash, the duplicate verdict, the declared digest --
+            run when the call is repeated with the transfer token. Absent
+            outside a dry run, and on a leg carrying `dry_run_error`.
+        dry_run_error:
+          anyOf:
+            - $ref: "#/components/schemas/BatchIngestFileError"
+            - type: "null"
+          description: >-
+            On a batch dry run, the refusal this leg's file would get from a
+            validator that reads no bytes, in the shape the batch summary
+            reports a failed file. `file_index` is the entry's position in
+            the call's `files`. Absent when the file passed, outside a dry
+            run, and on the single-document ingest, which refuses the call
+            instead.
 
     DownloadRecipe:
       type: object

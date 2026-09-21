@@ -311,30 +311,34 @@ source annotations.
 
 **Precondition:** Vault with documents pending metadata confirmation.
 
-**Input:** Call `list_pending_metadata("test_vault")`.
+**Input:** Call `list_pending_metadata("test_vault")`, optionally with
+`limit`, `offset` and `response_mode`.
 
 **Expected:**
-- Returns valid JSON string
-- Parsed result is an array of pending metadata objects
-- Each object includes `document` and `extracted_fields`
-- `extracted_fields` maps field names to `{ value, source }` objects
+- The page TEST-APP-BE-014 describes, plus `count` (rows on the page),
+  `vault_id` and `status`
+- Each full row includes `document` and `extracted_fields`
+- `extracted_fields` maps field names to `{ value, source }` objects, the
+  same annotations the HTTP surface serves
+- Out-of-range paging returns the `invalid_parameter` envelope
 
 **Rationale:** MCP clients can review and confirm metadata conversationally,
 complementing the web UI's Metadata Review tab.
 
-### TEST-APP-MCP-014: list_pending_metadata returns empty array when none pending
+### TEST-APP-MCP-014: list_pending_metadata returns an empty page when none pending
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-015
 **Category:** mcp_tool, sage_api
 
-**Decision:** No pending metadata returns an empty array.
+**Decision:** No pending metadata returns an empty page.
 
 **Precondition:** Vault with all metadata confirmed.
 
 **Input:** Call `list_pending_metadata("test_vault")`.
 
 **Expected:**
-- Returns `"[]"` (valid JSON empty array)
+- `items` is `[]`, `count` and `total_available` are 0, `status` is
+  `no_pending_metadata`
 
 **Rationale:** Standard empty-result convention.
 

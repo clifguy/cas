@@ -7,7 +7,7 @@ this module only adapts the dict-shaped MCP arguments to those services.
 """
 
 from collections.abc import Callable
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import TypeAdapter, ValidationError
@@ -21,7 +21,12 @@ from sage.api.errors import (
     undeclared_entry_key_error,
 )
 from sage.mcp_init import SAGEServices, require_caller_local_filesystem
-from sage.models.schemas import BatchIngestParsedMetadata, Sha256Str, VaultIdStr
+from sage.models.schemas import (
+    BatchIngestParsedMetadata,
+    Sha256Str,
+    UploadRecipe,
+    VaultIdStr,
+)
 from sage.services.transfer import DeliveryDeclaration, caller_local_delivery
 
 # Module-scope TypeAdapter for Pattern 2 boundary validation. See the
@@ -491,7 +496,13 @@ def register_app_tools(
         (``status: upload_required``) covering those entries instead of
         ingesting: deliver each file to its own URL with its own token, then
         repeat the call with each such entry carrying ``transfer_token``
-        instead of ``file_path``.
+        instead of ``file_path``. On a dry run, each leg's file is first
+        checked by the validators that read no bytes: the leg carries
+        ``dry_run_validated`` naming the checks it passed, or
+        ``dry_run_error`` carrying the refusal it would get, in the shape of
+        a ``summary.errors[]`` entry whose ``file_index`` is the entry's
+        position in ``files``. The checks that need the bytes run when the
+        call is repeated with the tokens.
 
         Args:
             vault_id: Target vault identifier.
@@ -626,6 +637,18 @@ def register_app_tools(
                 source_parameter="file_path",
             ) as plan:
                 if plan.recipe is not None:
+                    if dry_run:
+                        return serialize(
+                            await _validate_recipe_legs(
+                                v,
+                                plan.recipe,
+                                files,
+                                parsed_metadata,
+                                tier3_metadata,
+                                digests,
+                                needs_review=needs_review,
+                            )
+                        )
                     return serialize(plan.recipe)
 
                 descriptors: list[FileDescriptor] = []
@@ -657,6 +680,59 @@ def register_app_tools(
                 return result.to_dict()
         except (SAGEError, ValueError) as e:
             return error_response(e)
+
+    async def _validate_recipe_legs(
+        v: SAGEServices,
+        recipe: UploadRecipe,
+        files: list[dict],
+        parsed_metadata: list[BatchIngestParsedMetadata | None],
+        tier3_metadata: list[dict | None],
+        digests: list[str | None],
+        *,
+        needs_review: bool,
+    ) -> UploadRecipe:
+        """Answer a batch dry run whose sources must be uploaded first.
+
+        Each leg's file is checked by the validators that read no bytes, as
+        the batch would build its request, and the leg carries either the
+        checks it passed or the refusal it would get. Legs are minted in the
+        order of the entries that need them, so they are matched to entries
+        by walking both in order.
+        """
+        from sage.services.batch_ingest import (
+            FileDescriptor,
+            dry_run_error_entry,
+            file_ingest_request,
+            parsed_metadata_input,
+        )
+
+        legs = []
+        entries = iter(enumerate(zip(files, parsed_metadata, tier3_metadata, digests, strict=True)))
+        for leg in recipe.uploads:
+            index, (f, parsed, tier3, digest) = next(
+                e for e in entries if e[1][0].get("file_path") == leg.source
+            )
+            fd = FileDescriptor(
+                file_path=leg.source,
+                source_type=f.get("source_type"),
+                parsed_metadata=parsed_metadata_input(
+                    None if parsed is None else parsed.model_dump(exclude_unset=True),
+                    Path(PureWindowsPath(leg.source).name).stem,
+                ),
+                declared_source=leg.source,
+                sha256=digest,
+                tier3_metadata=tier3,
+            )
+            try:
+                ran = await v.ingestion_service.validate_without_bytes(
+                    file_ingest_request(fd, needs_review=needs_review, dry_run=True)
+                )
+                legs.append(leg.model_copy(update={"dry_run_validated": ran}))
+            except SAGEError as exc:
+                legs.append(
+                    leg.model_copy(update={"dry_run_error": dry_run_error_entry(index, fd, exc)})
+                )
+        return recipe.model_copy(update={"uploads": legs})
 
     return {
         "list_directory": list_directory,

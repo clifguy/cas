@@ -614,6 +614,9 @@ _CONFIG_BODY = (
     '{"vault":{"id":"cas"},"document_types":[],"lifecycle":{},'
     '"metadata_extraction":{},"edge_inference":{"tier_assignments":[]}}'
 )
+_PENDING_METADATA_BODY = (
+    '{"items":[],"total_available":0,"limit":10,"offset":0,"response_mode":"full"}'
+)
 #: A DocumentWithContent carrying every property the schema requires -- the
 #: shape the binding gate above resolves this stub against.
 _DOCUMENT_BODY = (
@@ -669,7 +672,7 @@ def _core_api_green(p: str, body: bytes) -> tuple[int, str, dict[str, str]] | No
     if rest == "/config":
         return 200, _CONFIG_BODY, {}
     if rest == "/pending-metadata":
-        return 200, "[]", {}
+        return 200, _PENDING_METADATA_BODY, {}
     if rest == "/staging-edges":
         return 200, "[]", {}
     if rest == "/parse-filename":
@@ -3542,6 +3545,7 @@ _SCHEMA_BACKED_LABELS: Final[frozenset[str]] = frozenset({"/config"})
 _STUB_BODY_AUTHORITY: Final[dict[str, tuple[str, str]]] = {
     "_STATS_BODY": ("get", "/sage_vaults/{vault_id}/stats"),
     "_CONFIG_BODY": ("get", "/sage_vaults/{vault_id}/config"),
+    "_PENDING_METADATA_BODY": ("get", "/sage_vaults/{vault_id}/pending-metadata"),
     "_DOCUMENT_BODY": ("get", "/sage_vaults/{vault_id}/documents/{document_id}"),
     "_HEADINGS_BODY": ("get", "/sage_vaults/{vault_id}/documents/{document_id}/headings"),
     "_TRAVERSE_BODY": ("post", "/sage_vaults/{vault_id}/traverse"),
@@ -3921,6 +3925,22 @@ def test_core_api_vault_reads_fails_on_endpoint_404(endpoint: str) -> None:
     assert _verdicts(proc.stdout).get("core_api_vault_reads") == "FAIL", proc.stdout
     assert endpoint in detail, f"detail does not name the endpoint: {detail}"
     assert "404" in detail, f"detail does not name the observed code: {detail}"
+
+
+@_NEEDS_RUNTIME
+def test_core_api_vault_reads_fails_on_a_bare_pending_metadata_array() -> None:
+    """The queue answers with a page, so the bare array it once returned is a
+    deployment still serving the previous contract, and the sweep says so."""
+
+    def bare_array(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0].endswith("/pending-metadata"):
+            return 200, "[]", {}
+        return _green(method, path, body)
+
+    with serve(bare_array) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="core_api_vault_reads"))
+    assert _verdicts(proc.stdout).get("core_api_vault_reads") == "FAIL", proc.stdout
+    assert "/pending-metadata" in _detail(proc.stdout, "core_api_vault_reads")
 
 
 @_NEEDS_RUNTIME

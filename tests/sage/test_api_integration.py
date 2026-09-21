@@ -489,6 +489,51 @@ async def test_traverse_200(client):
     assert isinstance(body["nodes"], list)
 
 
+async def test_chain_defaults_edge_type_to_supersedes_200(app, client):
+    """POST /chain without ``edge_type`` walks supersedes; an explicit
+    ``edge_type`` overrides. The two walks from A reach different documents."""
+    storage_root = Path(app.state.config.vault.storage_root).expanduser()
+    (storage_root / "test" / "sample2.md").write_text("# Second\n\nDifferent content.")
+    (storage_root / "test" / "sample3.md").write_text("# Third\n\nOther content.")
+
+    async def _ingest(source: str, **extra: str) -> str:
+        resp = await client.post(
+            "/sage_vaults/test_vault/documents",
+            json={"source": source, "source_type": "markdown", **extra},
+        )
+        assert resp.status_code == 201, resp.text
+        return resp.json()["document"]["id"]
+
+    a = await _ingest("test/sample.md")
+    b = await _ingest("test/sample2.md", predecessor_id=a)
+    c = await _ingest("test/sample3.md")
+    resp = await client.post(
+        "/sage_vaults/test_vault/edges",
+        json={
+            "items": [
+                {
+                    "source_id": a,
+                    "target_id": c,
+                    "edge_type": "references",
+                    "source_valid_from_version": a,
+                    "target_valid_from_version": c,
+                },
+            ],
+        },
+    )
+    assert resp.json()["success_count"] == 1, resp.text
+
+    default = await client.post("/sage_vaults/test_vault/chain", json={"document_id": a})
+    assert default.status_code == 200, default.text
+    assert {e["id"] for e in default.json()["chain"]} == {a, b}
+
+    override = await client.post(
+        "/sage_vaults/test_vault/chain", json={"document_id": a, "edge_type": "references"}
+    )
+    assert override.status_code == 200, override.text
+    assert {e["id"] for e in override.json()["chain"]} == {a, c}
+
+
 # ---------------------------------------------------------------------------
 # Retrieval (Slice 3)
 # ---------------------------------------------------------------------------

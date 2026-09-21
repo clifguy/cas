@@ -785,6 +785,81 @@ class TestSagePendingMetadata:
         assert result["count"] == 0
         assert result["vault_id"] == "test_vault"
         assert result["status"] == "no_pending_metadata"
+        assert result["total_available"] == 0
+
+    @staticmethod
+    async def _seed_pending(services, count: int) -> list[str]:
+        """Insert ``count`` unconfirmed documents whose paths carry a parsed
+        date, and return their ids in id order."""
+        now = datetime.now(timezone.utc)
+        ids = []
+        for n in range(count):
+            doc = Document(
+                id=_id(f"mcp-pending-{n}"),
+                title=f"Pending {n}",
+                source_type=SourceType.MARKDOWN,
+                source_path=f"2026-04-1{n}_pending_{n}.md",
+                document_date=f"2026-04-1{n}",
+                lifecycle_status="active",
+                source_content_hash=_sha(f"mcp-pending-{n}"),
+                adapter_version="1.0",
+                created_by="testuser",
+                created_at=now,
+                last_modified_by="testuser",
+                updated_at=now,
+                projected_at=now,
+                pipeline_status=PipelineStatus.ABSTRACTION_COMPLETE,
+                metadata_confirmed=False,
+            )
+            await services.graph_store.insert_document(doc)
+            ids.append(doc.id)
+        return sorted(ids)
+
+    async def test_full_rows_carry_extracted_fields(self, single_vault):
+        """At or under the threshold the rows are full and carry the same
+        extracted-field annotations the HTTP surface serves -- not an empty
+        map standing in for them."""
+        services, _ = single_vault
+        await self._seed_pending(services, 2)
+
+        result = _parse(await list_pending_metadata("test_vault"))
+
+        assert result["response_mode"] == "full"
+        assert result["total_available"] == 2
+        for item in result["items"]:
+            assert item["extracted_fields"]["title"]["value"] == item["document"]["title"]
+            assert item["extracted_fields"]["document_date"]["value"].startswith("2026-04-1")
+
+    async def test_pages_and_defaults_to_light_over_threshold(self, single_vault):
+        services, _ = single_vault
+        ids = await self._seed_pending(services, 7)
+
+        default = _parse(await list_pending_metadata("test_vault"))
+        assert default["response_mode"] == "light"
+        assert default["total_available"] == 7
+        assert default["count"] == 7
+        assert [i["id"] for i in default["items"]] == ids
+        assert "document" not in default["items"][0]
+
+        page = _parse(
+            await list_pending_metadata("test_vault", limit=3, offset=3, response_mode="full")
+        )
+        assert page["response_mode"] == "full"
+        assert (page["limit"], page["offset"], page["count"]) == (3, 3, 3)
+        assert [i["document"]["id"] for i in page["items"]] == ids[3:6]
+
+    @pytest.mark.parametrize(
+        "kwargs,parameter",
+        [
+            ({"limit": 101}, "limit"),
+            ({"offset": -1}, "offset"),
+            ({"response_mode": "medium"}, "response_mode"),
+        ],
+    )
+    async def test_refuses_out_of_range_paging(self, single_vault, kwargs, parameter):
+        result = _parse(await list_pending_metadata("test_vault", **kwargs))
+        assert result["error"] == "invalid_parameter", result
+        assert result["detail"]["parameter"] == parameter
 
 
 # ---------------------------------------------------------------------------
