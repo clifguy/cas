@@ -83,6 +83,7 @@ async def scan_endpoint(
             request=(
                 "invalid_vault_id",
                 "invalid_document_date",
+                "invalid_sha256",
                 "unknown_parameter",
                 "undeclared_key",
             ),

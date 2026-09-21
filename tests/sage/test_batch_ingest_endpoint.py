@@ -21,9 +21,11 @@ import os
 import re
 import tempfile
 from pathlib import Path
+from typing import Any
 
 import httpx
 import pytest
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from app.backend.asgi import create_bff_app
@@ -2081,3 +2083,204 @@ async def test_b37_an_explicit_empty_tier3_payload_is_a_payload_not_an_absence(t
     assert empty["errors"][0]["code"] == "tier3_schema_violation", empty
     assert omitted["error_count"] == 0, omitted
     assert omitted["documents_created"]["new"] == 1, omitted
+
+
+async def _post_declared_digests(
+    app: FastAPI,
+    vault_id: str,
+    surface: str,
+    paths: list[Path],
+    entries: list[dict[str, Any]],
+    *,
+    dry_run: bool = False,
+) -> httpx.Response:
+    payload = {"files": entries, "dry_run": dry_run, "infer_edges": False}
+    async with _client(app) as client:
+        if surface == "upload":
+            return await client.post(
+                f"/sage_vaults/{vault_id}/documents:batch",
+                files=[_md_part(p.name, p.read_bytes()) for p in paths],
+                data={"metadata": json.dumps(payload)},
+            )
+        payload["vault_id"] = vault_id
+        payload["files"] = [
+            {**entry, "file_path": str(path)} for entry, path in zip(entries, paths)
+        ]
+        return await client.post("/app/ingest", json=payload)
+
+
+@pytest.mark.parametrize("surface", ["upload", "app"])
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_declared_digest_isolates_mismatch_before_retention(
+    batch_app: tuple[FastAPI, str, VaultConfig],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    surface: str,
+    dry_run: bool,
+) -> None:
+    app, vault_id, config = batch_app
+    services = app.state.vault_registry[vault_id]
+    paths = [tmp_path / name for name in ("first.md", "wrong.md", "last.md")]
+    for index, path in enumerate(paths):
+        path.write_bytes(f"# Distinct {index}\n\nDigest content {index}.\n".encode())
+    hashes = ["sha256:" + hashlib.sha256(p.read_bytes()).hexdigest() for p in paths]
+    entries = [
+        {"source_type": "markdown", "sha256": hashes[0][7:].upper()},
+        {"source_type": "markdown", "sha256": hashes[0]},
+        {"source_type": "markdown", "sha256": "sha256:" + hashes[2][7:].upper()},
+    ]
+    staged = []
+    real_mkdtemp = batch_ingest_stream.tempfile.mkdtemp
+
+    def record_staging(*args: Any, **kwargs: Any) -> str:
+        result = real_mkdtemp(*args, **kwargs)
+        if kwargs.get("prefix") == "sage-batch-ingest-":
+            staged.append(Path(result))
+        return result
+
+    monkeypatch.setattr(batch_ingest_stream.tempfile, "mkdtemp", record_staging)
+    before = await state_snapshot(services.graph_store, services.content_store)
+    tree_before = _tree(Path(config.vault.storage_root))
+    response = await _post_declared_digests(app, vault_id, surface, paths, entries, dry_run=dry_run)
+    assert response.status_code == 200, response.text
+    summary = _summary_of(response)
+    assert summary["error_count"] == 1, summary
+    (error,) = summary["errors"]
+    source = paths[1].name if surface == "upload" else str(paths[1])
+    assert error["file_index"] == 1
+    assert error["filename"] == paths[1].name
+    assert error["source_path"] == source
+    assert error["code"] == "source_digest_mismatch"
+    assert error["detail"] == {
+        "source": source,
+        "declared_sha256": hashes[0],
+        "delivered_sha256": hashes[1],
+    }
+    assert summary["dry_run"] is dry_run
+    assert summary["documents_created"] == {"new": 0 if dry_run else 2, "new_version": 0}
+    if dry_run:
+        assert len(summary["previews"]) == 2
+        assert all(p["would_create"] for p in summary["previews"])
+        assert_state_unchanged(
+            before, await state_snapshot(services.graph_store, services.content_store)
+        )
+        assert _tree(Path(config.vault.storage_root)) == tree_before
+    else:
+        completed = [e for e in _parse_sse_events(response.text) if e.get("document_id")]
+        assert len(completed) == 2
+        final_documents = await services.graph_store.list_all_documents()
+        assert {doc.id for doc in final_documents} == set(before.documents) | {
+            event["document_id"] for event in completed
+        }
+        for event, expected in zip(completed, (hashes[0], hashes[2])):
+            doc = await services.graph_store.get_document(event["document_id"])
+            assert doc.source_content_hash == expected
+        retained = [p.read_bytes() for p in Path(config.vault.storage_root).rglob("*.md")]
+        assert paths[0].read_bytes() in retained
+        assert paths[2].read_bytes() in retained
+        assert paths[1].read_bytes() not in retained
+    assert len(staged) == (1 if surface == "upload" else 0)
+    assert all(not p.exists() for p in staged)
+
+
+@pytest.mark.parametrize("surface", ["upload", "app"])
+@pytest.mark.parametrize("bad", ["abc", "g" * 64, " " + "a" * 64, "SHA256:" + "a" * 64])
+async def test_malformed_later_digest_refuses_before_any_ingestion(
+    batch_app: tuple[FastAPI, str, VaultConfig],
+    tmp_path: Path,
+    surface: str,
+    bad: str,
+) -> None:
+    app, vault_id, config = batch_app
+    services = app.state.vault_registry[vault_id]
+    paths = [tmp_path / "valid.md", tmp_path / "bad.md"]
+    for index, path in enumerate(paths):
+        path.write_text(f"# Prestream {index}\n")
+    entries = [{"source_type": "markdown"}, {"source_type": "markdown", "sha256": bad}]
+    before = await state_snapshot(services.graph_store, services.content_store)
+    tree_before = _tree(Path(config.vault.storage_root))
+    response = await _post_declared_digests(app, vault_id, surface, paths, entries)
+    assert response.status_code == 400, response.text
+    assert response.headers["content-type"].startswith("application/json")
+    body = response.json()
+    assert body["code"] == "invalid_sha256", body
+    assert body["detail"] == {
+        "files.1.sha256": bad,
+        "expected": "'sha256:' followed by 64 lowercase hex characters",
+    }
+    assert_state_unchanged(
+        before, await state_snapshot(services.graph_store, services.content_store)
+    )
+    assert _tree(Path(config.vault.storage_root)) == tree_before
+
+
+@pytest.mark.parametrize("surface", ["upload", "app"])
+@pytest.mark.parametrize("declaration", [{}, {"sha256": None}])
+async def test_digest_omission_and_null_preserve_ingestion(
+    batch_app: tuple[FastAPI, str, VaultConfig],
+    tmp_path: Path,
+    surface: str,
+    declaration: dict[str, Any],
+) -> None:
+    app, vault_id, _ = batch_app
+    path = tmp_path / "optional.md"
+    path.write_text("# Optional digest\n")
+    response = await _post_declared_digests(
+        app, vault_id, surface, [path], [{"source_type": "markdown", **declaration}]
+    )
+    assert response.status_code == 200, response.text
+    assert _summary_of(response)["documents_created"]["new"] == 1
+    assert _summary_of(response)["error_count"] == 0
+
+
+@pytest.mark.parametrize("surface", ["upload", "app"])
+@pytest.mark.parametrize("bad", [7, True, [], {}])
+async def test_nonstring_digest_keeps_typed_request_error(
+    batch_app: tuple[FastAPI, str, VaultConfig],
+    tmp_path: Path,
+    surface: str,
+    bad: Any,
+) -> None:
+    app, vault_id, _ = batch_app
+    path = tmp_path / "typed.md"
+    path.write_text("# Wrong digest type\n")
+    response = await _post_declared_digests(
+        app, vault_id, surface, [path], [{"source_type": "markdown", "sha256": bad}]
+    )
+    assert response.status_code == (400 if surface == "upload" else 422), response.text
+    assert response.json()["code"] == (
+        "invalid_batch_metadata" if surface == "upload" else "invalid_parameter"
+    )
+
+
+@pytest.mark.parametrize("surface", ["upload", "app"])
+async def test_unknown_entry_key_precedes_malformed_digest(
+    batch_app: tuple[FastAPI, str, VaultConfig],
+    tmp_path: Path,
+    surface: str,
+) -> None:
+    app, vault_id, _ = batch_app
+    path = tmp_path / "unknown.md"
+    path.write_text("# Unknown entry\n")
+    if surface == "upload":
+        response = await _post_declared_digests(
+            app,
+            vault_id,
+            surface,
+            [path],
+            [{"source_type": "markdown", "sha256": "bad", "unknown": True}],
+        )
+        _assert_undeclared_key(response, "files.0", "unknown", BatchIngestFileMetadata.model_fields)
+    else:
+        async with _client(app) as client:
+            response = await client.post(
+                "/app/ingest",
+                json={
+                    "vault_id": vault_id,
+                    "unknown": True,
+                    "files": [{"file_path": str(path), "source_type": "markdown", "sha256": "bad"}],
+                },
+            )
+        assert response.status_code == 400
+        assert response.json()["code"] == "unknown_parameter"
+        assert response.json()["detail"]["rejected_params"] == ["unknown"]

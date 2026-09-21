@@ -1106,8 +1106,9 @@ paths:
             `files` length does not match the number of uploaded file
             parts. An undeclared key in a file entry is refused as
             `undeclared_key` instead, located at `files.<n>` or
-            `files.<n>.parsed_metadata`, before any file is staged or
-            ingested.
+            `files.<n>.parsed_metadata`. A malformed string digest refuses
+            the request as `invalid_sha256`, located at `files.<index>.sha256`.
+            Both refuse before any file is staged or ingested.
 
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
 
@@ -9380,6 +9381,15 @@ components:
             inferred from the uploaded file's extension, and an extension no
             registered adapter claims is reported for that file as
             `source_type_unresolved`.
+        sha256:
+          type: [string, "null"]
+          description: >-
+            Optional SHA-256 of this file, as 64 hex characters in
+            either case, bare or `sha256:`-prefixed. Checked before
+            retention, including dry runs. A mismatch is a per-file
+            `source_digest_mismatch`; a malformed string refuses the
+            request with 400 `invalid_sha256` at `files.<index>.sha256`.
+            Omission or null leaves the digest undeclared.
         parsed_metadata:
           anyOf:
             - $ref: "#/components/schemas/BatchIngestParsedMetadata"
@@ -9624,7 +9634,7 @@ components:
             Machine-readable error code, present only when the failure was a
             typed SAGE error. The same code the single-document ingest
             surface returns for that error. A batch builds each file's
-            request from its source, source type and parsed metadata alone,
+            request from its source, source type, declared digest and metadata,
             so the codes that can appear are the single-document codes that
             depend on none of a predecessor, a force re-ingest, a chain-head
             token or a relocation pointer: `adapter_config_invalid`,
@@ -9633,8 +9643,8 @@ components:
             `source_type_unresolved`, `source_unreadable`, `tier3_schema_violation`, `tier3_unique_constraint_violation`,
             `vault_migration_in_flight`, `vault_source_path_refused`,
             `vault_source_store_refused` and `vault_source_store_unavailable`.
-            `source_digest_mismatch` appears only on the MCP bulk tool, whose
-            entries may declare a digest; the multipart batch surfaces accept none.
+            `source_digest_mismatch` reports a declared digest that does not match
+            the delivered bytes, before retention, including on dry runs.
             Of these, `vault_migration_in_flight` and
             `vault_source_store_unavailable` are the ones a later attempt at
             the same file may succeed past.
