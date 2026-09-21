@@ -109,11 +109,51 @@ def test_migration_client_covers_both_declared_majors() -> None:
         ("true", "serving:g17", "g17", "", 0, True),
         ("true", "verified:other", "g17", "", 0, False),
         ("true", "", "", "", 1, False),
+        ("true", "", "", "psql-prod-old-g17", 0, False),
+        ("true", "", "", "psql-prod-old", 0, True),
     ],
 )
 def test_deployment_guard(
     tmp_path: Path, exists: str, state: str, generation: str, serving: str, code: int, allowed: bool
 ) -> None:
+    result = _run_deploy_guard(tmp_path, exists, state, generation, serving, code)
+    assert (result.returncode == 0) is allowed, result.stderr
+    if serving.endswith("-g17") and not generation:
+        # Refused by the generation check itself, not by an unexpected az call.
+        assert "empty generation would create a new server" in result.stderr
+
+
+@pytest.mark.parametrize(
+    "serving,allowed", [("psql-cor-prod-old", True), ("psql-cor-prod-old-g17", False)]
+)
+def test_empty_generation_guard_reads_past_a_hyphenated_environment(
+    tmp_path: Path, serving: str, allowed: bool
+) -> None:
+    # Counting hyphens in the server name would pass the fixed-environment table
+    # above and misjudge both of these; only stripping the environment prefix
+    # separates the original name from a generation-suffixed one.
+    result = _run_deploy_guard(tmp_path, "true", "", "", serving, 0, environment="cor-prod")
+    assert (result.returncode == 0) is allowed, result.stderr
+
+
+def test_empty_generation_guard_fails_closed_when_deployments_cannot_be_read(
+    tmp_path: Path,
+) -> None:
+    # An unreadable deployment history is not evidence of a first deploy.
+    result = _run_deploy_guard(tmp_path, "true", "", "", "psql-prod-old", 0, list_code=1)
+    assert result.returncode != 0
+
+
+def _run_deploy_guard(
+    tmp_path: Path,
+    exists: str,
+    state: str,
+    generation: str,
+    serving: str,
+    code: int,
+    environment: str = "prod",
+    list_code: int = 0,
+) -> subprocess.CompletedProcess[str]:
     az = tmp_path / "az"
     az.write_text("""#!/bin/sh
 [ "$CODE" = 0 ] || exit "$CODE"
@@ -122,11 +162,12 @@ case "$*" in
   "group exists "*) printf '%s' "$EXISTS" ;;
   "group show "*) [ "$EXISTS" = true ] || exit 1; printf '%s' "$STATE" ;;
   "deployment sub show "*) printf '%s' "$SERVING" ;;
+  "deployment sub list "*) [ "$LIST_CODE" = 0 ] || exit "$LIST_CODE"; printf '%s' "$SERVING" ;;
   *) exit 99 ;;
 esac
 """)
     az.chmod(0o755)
-    result = subprocess.run(
+    return subprocess.run(
         ["bash", str(ROOT / "deploy/postgres-migration-guard.sh"), "deploy", "group", generation],
         env={
             **os.environ,
@@ -135,12 +176,12 @@ esac
             "STATE": state,
             "SERVING": serving,
             "CODE": str(code),
-            "ENVIRONMENT_NAME": "prod",
+            "ENVIRONMENT_NAME": environment,
+            "LIST_CODE": str(list_code),
         },
         capture_output=True,
         text=True,
     )
-    assert (result.returncode == 0) is allowed, result.stderr
 
 
 def test_cutover_fence_survives_resource_group_redeployment() -> None:

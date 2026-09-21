@@ -34,6 +34,16 @@ case "$purpose" in
     elif [ -n "$generation" ]; then
       selected="$(az deployment sub show --name "${ENVIRONMENT_NAME:?}" --query properties.outputs.postgresServerName.value -o tsv)"
       [[ "$selected" == psql-*-"$generation" ]] || { echo 'replacement has not been verified' >&2; exit 1; }
+    else
+      # The fence tag is mutable. Without it, an empty generation selects the
+      # original server name: once that server is retired, deployment would create
+      # a new empty server there and switch every consumer to it. Refuse whenever
+      # the last deployment served a generation. Listing rather than showing keeps
+      # an absent deployment (a first deploy) empty while an Azure error still fails.
+      selected="$(az deployment sub list --query "[?name=='${ENVIRONMENT_NAME:?}'].properties.outputs.postgresServerName.value | [0]" -o tsv)"
+      case "${selected#psql-"$ENVIRONMENT_NAME"-}" in
+        *-*) echo 'serving generation is selected; an empty generation would create a new server' >&2; exit 1 ;;
+      esac
     fi ;;
   migration)
     [[ "$generation" =~ ^[a-z][a-z0-9-]{0,11}$ ]] || { echo 'invalid generation' >&2; exit 2; }

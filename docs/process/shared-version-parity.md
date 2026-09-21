@@ -74,7 +74,8 @@ Changing `dev_major` alone must never change the major of a serving generation.
 fixed 16-to-17 migration contract. The accepted nonempty serving generation uses
 that target major, while new empty-generation deployments use `deploy_major`.
 Persistent generation selection and the `serving:<generation>` fence prevent an
-ordinary deployment from returning to the retained incumbent. Neither baseline
+ordinary deployment from returning to the original server name, and the deploy
+guard independently refuses an empty generation once one has served. Neither baseline
 convergence nor a development-major bump permits clearing that fence.
 
 The replacement template, migration job and driver read the fixed migration
