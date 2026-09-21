@@ -28,12 +28,41 @@ capability. For app behavior preserve UI observations, matching network requests
 responses, and console evidence. Exercise the changed path, an ordinary valid path
 and neighboring controls that distinguish a targeted fix from blanket failure.
 
-Every write requires current authorization for the exact target and operation.
-Verify that target before every mutation. Use disposable fixtures where authorized;
-record created objects and replay safety. Non-idempotent probes execute once unless
-another execution is explicitly authorized and safe. Cleanup is a separate scoped
-action. This procedure grants no production write, restart, registration refresh,
-deployment, permission change or out-of-band database/filesystem modification.
+## Standing authorization for validation vaults
+
+For an owner-initiated smoke test, the owner grants standing authorization for
+smoke-test document writes, including retained fixtures and batches, and
+vault-configuration changes in these exact deployment/vault pairs:
+
+| Deployment | Literal vault ID | Authorized smoke-test effects |
+|---|---|---|
+| Local SAGE | `test` | Document writes and vault-configuration changes |
+| Hosted SAGE at `https://sage.cor.org` | `cloud_validation` | Document writes and vault-configuration changes |
+
+This current standing grant satisfies write authorization without a new approval
+per run, fixture, batch, configuration change or necessary in-scope repeat probe.
+Smoke-test initiation still follows CAS Invocation Authority. A narrower current
+caller instruction limits this grant, including a read-only instruction.
+
+Before every mutation, resolve the actual deployment and literal vault identity
+from current configuration, live inventory and the connection being used; a name
+match alone is insufficient. Do not transfer the grant to the same name on another
+deployment or to another vault. Read the served contract and live target config
+before configuration-sensitive work, and use supported operations. Record created
+objects, configuration changes and retained state.
+
+Necessary distinct probes and repeat probes within this grant may proceed. Reconcile
+an ambiguous prior write through supported readback before replay; if its outcome
+cannot be established, stop the dependent retry and report uncertainty. A confirmed
+successful write followed by stale client behavior calls for readback, not another
+mutation through a second transport.
+
+Cleanup remains a separate scoped action. This grant does not cover other vaults,
+unrelated effects, restarts, registration refresh, deployment, permission changes
+or out-of-band database/filesystem edits. Vault-configuration authorization does
+not extend to identity/access-control or Azure control-plane permission changes.
+Other writes require an applicable current owner/project grant for their exact
+deployment, target and effect.
 
 Report intended revision and each surface's observed running provenance, client
 freshness evidence, actual probe/control observations and expected outcomes. Classify
@@ -79,11 +108,12 @@ before any service or infrastructure probe.
 
 ## Cloud evidence and safe fixture boundaries
 
-Cloud verification remains read-only unless an exact current grant covers the
-selected fixture and effect. Historical local test and cloud validation vault names
-are routing hints, never grants. Verify the literal target before every write.
-Read the applicable current grant in full: a local exemption must not be transferred
-to a cloud vault, and a cloud document grant never implies Azure control-plane access.
+Cloud writes covered by the standing authorization above may proceed without
+per-run confirmation. Other cloud verification remains read-only unless an applicable
+current grant covers the selected deployment, target and effect. Read that grant in
+full and verify identity before every write; local permission does not transfer to
+cloud, and a cloud document or vault-configuration grant never implies Azure
+control-plane access.
 Any permitted retained-source corruption must target only a disposable document
 created during that trial and the exact authorized store location, announce the
 write first, and never touch graph/content storage, another vault, configuration
@@ -115,7 +145,9 @@ control rows with actual status, verbatim caller-visible messages and relevant
 payload keys; label expected/observed agreement on every row. Preserve rows that
 could not run and name the blocker. Report passed, failed assertion, pending or
 inaccessible/unknown independently. Name surfaces not exercised and the diff-based
-reason. Keep incidental unrelated observations separate. Distinguish intended
+reason. Include the applicable authorization source, created-fixture ledger,
+configuration changes and their final retained values, and any separately authorized
+cleanup outcome. Keep incidental unrelated observations separate. Distinguish intended
 behavior from what the controls prove about unaffected neighbors. Report defects;
 source fixes, ticket writes, service restarts, reconnects and deployments require
 separate scope. A test-suite run is not a live smoke test.
