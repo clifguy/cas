@@ -1,12 +1,13 @@
-"""MCP counterparts of the default-config, retrieval-health and export operations.
+"""MCP counterparts of the default-config, retrieval-health, export and view operations.
 
 CAS-ADR-052 realizes each caller capability beneath both request surfaces.
-These tests hold three maintenance tools to that rule against the REST
+These tests hold four maintenance tools to that rule against the REST
 operations they mirror:
 
 - ``get_default_vault_config`` -- ``GET /sage_vaults/default-config``
 - ``verify_vault_retrieval`` -- ``POST /sage_vaults/{vault_id}/eval-retrieval``
 - ``export_projection`` -- ``POST /sage_vaults/{vault_id}/documents/{document_id}/export``
+- ``recompute_views`` -- ``POST /sage_vaults/{vault_id}/refresh-views``
 
 Each tool has a success case and its principal refusal, and a paired-arm case
 drives the tool and the route against one app, whose mounts share the process
@@ -513,3 +514,66 @@ async def test_export_projection_lives_on_the_maintenance_surface_only(yaml_app)
 
     tools = {tool.name: tool for tool in await ordinary.list_tools()}
     assert "output_path" not in tools["read_projection"].inputSchema["properties"]
+
+
+# ---------------------------------------------------------------------------
+# recompute_views
+# ---------------------------------------------------------------------------
+
+
+async def test_recompute_views_answers_alike_on_both_surfaces_under_the_local_profile(
+    yaml_app, tmp_vault_dir, tool_payload: Callable[[object], dict]
+):
+    """RV-1: with a caller-visible filesystem both arms regenerate the views."""
+    app, vault_id = yaml_app
+    await _ingest(app.state.vault_registry[vault_id], tmp_vault_dir, "rv_local")
+    maint = app.state.mcp_mounts["/mcp_maint"]
+    views = tmp_vault_dir / "sources" / "views"
+
+    via_tool = tool_payload(await maint.call_tool("recompute_views", {"vault_id": vault_id}))
+    async with _client(app) as client:
+        resp = await client.post(f"/sage_vaults/{vault_id}/refresh-views")
+
+    assert resp.status_code == 200, resp.text
+    assert via_tool == resp.json() == {"vault_id": vault_id, "views_generated": 2}
+    assert (views / "by_lifecycle" / "active" / "rv_local.md").is_symlink()
+
+
+async def test_recompute_views_refused_under_the_cloud_profile_before_the_wipe(
+    yaml_app, tmp_vault_dir, monkeypatch, tool_payload: Callable[[object], dict]
+):
+    """RV-2: without a caller-visible filesystem both arms refuse, before the wipe.
+
+    A sentinel under an existing ``views/`` separates a refusal made before the
+    wipe from one made after it, which would still answer 501 but leave the
+    views gone; the absent ``by_lifecycle/`` rules out a refusal after the
+    rebuild.
+    """
+    import jsonschema
+
+    from sage.models.error_contract import tool_error_schema
+
+    app, vault_id = yaml_app
+    await _ingest(app.state.vault_registry[vault_id], tmp_vault_dir, "rv_cloud")
+    views = tmp_vault_dir / "sources" / "views"
+    sentinel = views / "by_doc_type" / "sentinel" / "keep.txt"
+    sentinel.parent.mkdir(parents=True)
+    sentinel.write_text("kept", encoding="utf-8")
+    monkeypatch.setattr("sage.mcp_init.caller_local_filesystem_reachable", lambda: False)
+    maint = app.state.mcp_mounts["/mcp_maint"]
+
+    via_tool = tool_payload(await maint.call_tool("recompute_views", {"vault_id": vault_id}))
+    async with _client(app) as client:
+        resp = await client.post(f"/sage_vaults/{vault_id}/refresh-views")
+
+    assert resp.status_code == 501, resp.text
+    via_route = resp.json()
+    assert via_tool["error"] == via_route["code"] == "caller_filesystem_unavailable"
+    assert via_tool["detail"] == via_route["detail"]
+    assert via_route["detail"]["operation"] == "recompute_views"
+    assert via_route["message"].startswith(
+        "recompute_views requires a filesystem shared between the caller and the SAGE server"
+    )
+    jsonschema.validate(via_tool, tool_error_schema("", "recompute_views"))
+    assert sentinel.read_text(encoding="utf-8") == "kept"
+    assert not (views / "by_lifecycle").exists()

@@ -2479,11 +2479,21 @@ def register_sage_tools(
         "every document filtered out", so check ``get_vault_stats`` if
         the distinction matters.
 
+        The views are browsable only by a caller that shares the server's
+        filesystem. Under the cloud profile the regeneration is refused with
+        ``caller_filesystem_unavailable`` before the existing views are
+        touched; ``search`` in catalog mode enumerates the same buckets by
+        ``doc_type`` or ``lifecycle_status`` instead.
+
         Error modes:
         - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
           validation at the boundary.
         - ``vault_not_found`` (404): no vault is registered with that id.
           ``detail.available_vaults`` lists the registered vaults.
+        - ``caller_filesystem_unavailable`` (501): the views are written into
+          the server's own vault tree, which a caller cannot browse under the
+          cloud profile; the refusal comes before the existing views are
+          touched.
 
         Args:
             vault_id: Target vault identifier.

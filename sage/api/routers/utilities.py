@@ -212,6 +212,14 @@ async def verify_vault_retrieval(
                 "lists the registered vaults."
             ),
         },
+        501: {
+            "model": ErrorResponse,
+            "description": (
+                "`caller_filesystem_unavailable`: the views are written into the "
+                "server's own vault tree, which a caller cannot browse under the "
+                "cloud profile; the refusal comes before the existing views are touched."
+            ),
+        },
     },
 )
 async def refresh_views(

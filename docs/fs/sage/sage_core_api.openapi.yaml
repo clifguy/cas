@@ -2018,6 +2018,13 @@ paths:
         The symlink views exist for human navigation in Finder or a
         file browser; no SAGE operation consumes them. The API is the
         primary interface for programmatic access.
+
+
+        The views are browsable only by a caller that shares the server's
+        filesystem. Under the cloud profile the regeneration is refused
+        with `caller_filesystem_unavailable` before the existing views are
+        touched; `search` in catalog mode enumerates the same buckets by
+        `doc_type` or `lifecycle_status` instead.
       tags: [Utilities]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -2042,6 +2049,16 @@ paths:
           description: >-
             `vault_not_found`: no vault registered with that id;
             `detail.available_vaults` lists the registered vaults.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "501":
+          description: >-
+            `caller_filesystem_unavailable`: the views are written into the
+            server's own vault tree, which a caller cannot browse under the
+            cloud profile; the refusal comes before the existing views are
+            touched.
           content:
             application/json:
               schema:
@@ -14738,6 +14755,7 @@ components:
         - vault_source_store_refused
         - vault_source_store_unavailable
         recompute_views:
+        - caller_filesystem_unavailable
         - internal_error
         - invalid_parameter
         - invalid_vault_id

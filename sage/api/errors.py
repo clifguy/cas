@@ -1979,14 +1979,18 @@ class DownloadUrlNotAvailableError(SAGEError):
 
 
 class CallerFilesystemUnavailableError(SAGEError):
-    """501: a caller-supplied local path cannot be honored under this deployment.
+    """501: an operation needs a filesystem the caller and server share.
 
-    Under the cloud profile SAGE runs as a remote container that cannot see
-    the calling client's filesystem. The byte-moving path tools answer with a
-    transfer recipe instead, but ``list_directory`` has no byte leg to hand
-    off -- walking and content-hashing a directory only makes sense against
-    the caller's own tree -- so it is refused with this structured error
-    naming the caller-side alternative, closing the container-walk disclosure.
+    Under the cloud profile SAGE runs as a remote container, and the two sides
+    see disjoint filesystems. That defeats an operation in either direction:
+    one taking a caller-supplied local path, which the server cannot resolve,
+    and one whose output lands in the server's own vault tree, which the caller
+    cannot reach (a projection export, the browsable symlink views). The
+    byte-moving path tools answer with a transfer recipe instead, but
+    ``list_directory`` has no byte leg to hand off -- walking and
+    content-hashing a directory only makes sense against the caller's own tree
+    -- and an output written into the container has no one to read it, so each
+    is refused with this structured error naming the in-request alternative.
     Mirrors the "capability unavailable in this deployment" shape of
     :class:`LocalOpenNotAvailableError` and
     :class:`DownloadUrlNotAvailableError` (CAS-ADR-042 constraint 1: the
@@ -1998,8 +2002,8 @@ class CallerFilesystemUnavailableError(SAGEError):
         super().__init__(
             "caller_filesystem_unavailable",
             (
-                f"{operation} resolves a path on the SAGE server, which cannot "
-                f"see the caller's filesystem under the cloud profile; {remedy}."
+                f"{operation} requires a filesystem shared between the caller and "
+                f"the SAGE server, which the cloud profile does not provide; {remedy}."
             ),
             501,
             {"operation": operation, "remedy": remedy},

@@ -1946,6 +1946,7 @@ SCHEMAS = json.loads(
         "vault_source_store_unavailable"
       ],
       "recompute_views": [
+        "caller_filesystem_unavailable",
         "internal_error",
         "invalid_parameter",
         "invalid_vault_id",

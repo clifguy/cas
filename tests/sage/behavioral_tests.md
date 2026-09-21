@@ -1058,6 +1058,31 @@ Creating a `by_doc_type/null/` or `by_doc_type/unclassified/` directory
 would be misleading. The lifecycle view always has a value (documents enter
 the vault as `active`), so it is always complete.
 
+### TEST-SAGE-BH-048a: refresh_views refused without a caller-visible filesystem
+
+**Artifact:** `sage/sage_core_api.openapi.yaml` (recompute_views)
+**Category:** utilities, deployment_profiles
+**Decision:** The views are symlink trees in the server's own vault tree, which
+a caller can browse only when it shares that filesystem. Where it does not (the
+cloud profile), the regeneration is refused before the existing views are
+touched.
+
+**Precondition:** The active profile does not expose the server's filesystem to
+the caller. A `views/` directory already exists under the storage root.
+
+**Input:** `refresh_views()`
+
+**Expected:**
+- HTTP 501
+- `code: "caller_filesystem_unavailable"`, `detail.operation: "recompute_views"`
+- The existing `views/` directory is unchanged: the refusal precedes the wipe
+
+**Rationale:** Under the cloud profile the vault roots are inert container paths
+the vault-source store ignores; views generated there would report success while
+producing nothing a caller can browse. `search` in catalog mode enumerates the
+same buckets through the request. Both request surfaces refuse on the same terms
+(CAS-ADR-052).
+
 ---
 
 ## 9. Source File Provenance
