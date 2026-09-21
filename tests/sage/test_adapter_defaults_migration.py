@@ -246,3 +246,94 @@ def test_retired_source_adapters_schema_file_is_gone():
     manifest = json.loads((_REPO_ROOT / "docs" / "fs" / "manifest.json").read_text())
     paths = [entry["path"] for entry in manifest["schemas"]]
     assert "sage/source_adapters.schema.json" not in paths
+
+
+#: A value each adapter refuses, one per parameter an adapter reads. Pydantic
+#: types ``adapter_defaults`` as a mapping of mappings, so none of these is
+#: refused by field typing: a refusal can only come from the adapter's check.
+_REFUSED_PARAMETERS = [
+    ("pdf", "max_pages", 0),
+    ("pptx", "max_slides", "3"),
+    ("xlsx", "preview_rows", True),
+    ("xlsx", "max_sheets", -1),
+    ("docx", "heading_style_map", {"Custom Section": 10}),
+]
+
+
+@pytest.mark.parametrize(("source", "key", "value"), _REFUSED_PARAMETERS)
+def test_adapter_defaults_refuses_a_parameter_the_adapter_cannot_use(
+    minimal_vault_config_dict, source, key, value
+):
+    """A parameter value its adapter would refuse is refused when written.
+
+    The adapter refuses the same value at projection, so accepting it here would
+    leave every later ingest and re-projection of that format failing, far from
+    the write that caused it -- the ground the dialect check already stands on.
+    """
+    minimal_vault_config_dict["adapter_defaults"] = {source: {key: value}}
+
+    with pytest.raises(ValidationError) as exc:
+        VaultConfig.model_validate(minimal_vault_config_dict)
+
+    assert f"adapter_defaults.{source}.{key}" in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    ("source", "key", "value"),
+    [
+        ("pdf", "max_pages", 5),
+        ("pptx", "max_slides", 1),
+        ("xlsx", "preview_rows", 10),
+        ("xlsx", "max_sheets", None),
+        ("docx", "heading_style_map", {"Custom Section": 2}),
+    ],
+)
+def test_adapter_defaults_accepts_a_parameter_the_adapter_can_use(
+    minimal_vault_config_dict, source, key, value
+):
+    """Each parameter accepts a value its adapter reads.
+
+    Anti-coincidental partner to the refusal above: a check refusing every value
+    of a key would satisfy it.
+    """
+    minimal_vault_config_dict["adapter_defaults"] = {source: {key: value}}
+
+    config = VaultConfig.model_validate(minimal_vault_config_dict)
+
+    assert config.adapter_defaults[source][key] == value
+
+
+#: One stored value per kind of problem the section can hold: a parameter its
+#: adapter refuses, a markdown dialect none reads, a key naming no source type,
+#: and a parameter block that is not a mapping.
+_STORED_PROBLEMS = [
+    pytest.param({"pdf": {"max_pages": 0}}, "adapter_defaults.pdf.max_pages", id="parameter"),
+    pytest.param(
+        {"markdown": {"dialect": "pandc"}}, "adapter_defaults.markdown.dialect", id="dialect"
+    ),
+    pytest.param({"docs": {}}, "adapter_defaults.docs", id="key"),
+    pytest.param({"docx": "not-a-mapping"}, "adapter_defaults.docx", id="shape"),
+]
+
+
+@pytest.mark.parametrize(("defaults", "path"), _STORED_PROBLEMS)
+def test_stored_adapter_defaults_problem_loads_with_a_warning(
+    minimal_vault_config_dict, tmp_path, caplog, defaults, path
+):
+    """A stored configuration holding a refused value loads, and says so.
+
+    A stored configuration is a fact, not a request: refusing it would drop the
+    vault from discovery, unreachable by the surfaces that could repair it
+    (CAS-ADR-047). The value is kept as stored so the projection that reads it
+    still refuses it by name, and the warning names the path to repair.
+    """
+    minimal_vault_config_dict["adapter_defaults"] = defaults
+    stored = _write_config(tmp_path / "vault_config.yaml", minimal_vault_config_dict)
+
+    with caplog.at_level(logging.WARNING, logger="sage.config"):
+        config = load_vault_config(stored)
+
+    assert config.adapter_defaults == defaults
+    warnings = [r.getMessage() for r in caplog.records if "loaded leniently" in r.getMessage()]
+    assert len(warnings) == 1
+    assert path in warnings[0]

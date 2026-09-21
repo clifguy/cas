@@ -2448,6 +2448,7 @@ async def test_reload_vault_picks_up_yaml_edits(minimal_vault_config_dict, tmp_v
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
         config_path=config_path,
+        from_declaration=True,
     ) as services:
         _mcp._vaults["yaml_reload_vault"] = services
         try:

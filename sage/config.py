@@ -4,9 +4,10 @@ Loads vault config from YAML, validates structure, and builds the lifecycle
 transition table used by LifecycleService for state machine validation.
 """
 
+import functools
 import logging
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 from typing import Annotated, Literal
 
@@ -24,9 +25,29 @@ from pydantic import (
 from sage.instrumentation.timing import TimingConfig
 from sage.models.enums import SourceType
 from sage.models.schemas import VaultIdStr
-from sage.source_adapters.markdown_adapter import DIALECTS
+from sage.source_adapters.base import AdapterConfigError, SourceAdapter
 
 logger = logging.getLogger(__name__)
+
+#: The validation context a stored configuration loads under. A stored
+#: configuration is a fact, not a request: a problem the write paths refuse is
+#: logged and loaded instead, because a rejected declaration drops its vault
+#: from the registry, unreachable by the surfaces that could repair it
+#: (CAS-ADR-047). Every load path passes this one mapping, so the bindings
+#: cannot differ in what they tolerate.
+STORED_CONFIG_CONTEXT: Mapping[str, str] = {
+    "lifecycle_validation": "warn",
+    "adapter_defaults_validation": "warn",
+}
+
+
+@functools.cache
+def _source_adapters() -> dict[SourceType, SourceAdapter]:
+    # Imported on first use: the registry pulls in every adapter's parsing
+    # dependencies, which reading a configuration otherwise never needs.
+    from sage.source_adapters.registry import build_source_adapter_registry
+
+    return build_source_adapter_registry()
 
 
 def pattern_is_discriminating(pattern: dict) -> bool:
@@ -1803,42 +1824,53 @@ class VaultConfig(BaseModel):
     _tier3_validators: dict[str, jsonschema.protocols.Validator] = PrivateAttr(default_factory=dict)
 
     @model_validator(mode="after")
-    def _validate_adapter_defaults(self) -> "VaultConfig":
-        """Reject adapter_defaults keys that name no source type, and markdown dialects none reads.
+    def _validate_adapter_defaults(self, info: ValidationInfo) -> "VaultConfig":
+        """Reject adapter_defaults keys that name no source type, and values no adapter reads.
 
         The section is consulted by source-type lookup, so a key that does
         not name one is never read: a typo would otherwise configure
         nothing, silently and permanently. Rejecting at construction puts
         the error in front of whoever just wrote the value, rather than
         leaving a vault projecting at adapter defaults for reasons nobody
-        can see (CAS-ADR-046). A markdown ``dialect`` the adapter does not read
-        is rejected on the same ground: the adapter refuses it at projection, so
-        accepting it here would fail every later markdown ingest of the vault.
+        can see (CAS-ADR-046). A parameter its adapter cannot use is rejected
+        on the same ground, by that adapter's own check: the adapter refuses
+        it at projection, so accepting it here would fail every later ingest
+        of that format in the vault.
+
+        Strictness follows the split in CAS-ADR-047: refused on the write
+        paths, warned and loaded from a stored configuration under
+        ``{"adapter_defaults_validation": "warn"}``. A value loaded that way
+        is kept as stored, so the projection that reads it still refuses it
+        by name.
         """
         valid = {source_type.value for source_type in SourceType}
-        errors: list[str] = []
+        adapters = _source_adapters()
+        problems: list[str] = []
         for key, value in self.adapter_defaults.items():
             if key not in valid:
-                errors.append(
+                problems.append(
                     f"adapter_defaults.{key}: not a source type "
                     f"(expected one of {', '.join(sorted(valid))})"
                 )
             elif not isinstance(value, dict):
-                errors.append(
+                problems.append(
                     f"adapter_defaults.{key}: expected a parameter mapping, "
                     f"got {type(value).__name__}"
                 )
-            elif (
-                key == SourceType.MARKDOWN.value
-                and "dialect" in value
-                and value["dialect"] not in DIALECTS
-            ):
-                errors.append(
-                    f"adapter_defaults.markdown.dialect: not a markdown dialect "
-                    f"(expected one of {', '.join(DIALECTS)})"
-                )
-        if errors:
-            raise ValueError("; ".join(errors))
+            elif (adapter := adapters.get(SourceType(key))) is not None:
+                try:
+                    adapter.check_config(value)
+                except AdapterConfigError as exc:
+                    problems.append(f"adapter_defaults.{key}.{exc.key}: {exc.expected}")
+        if problems:
+            if (info.context or {}).get("adapter_defaults_validation", "strict") == "warn":
+                for problem in problems:
+                    logger.warning(
+                        "adapter_defaults loaded leniently: %s (repair via update_vault_config)",
+                        problem,
+                    )
+            else:
+                raise ValueError("; ".join(problems))
         return self
 
     @model_validator(mode="after")
@@ -2132,12 +2164,10 @@ def load_vault_config(config_path: Path) -> VaultConfig:
     with open(config_path) as f:
         raw = yaml.safe_load(f)
     warn_on_retired_sections(raw)
-    # An on-disk configuration is a fact, not a request: lifecycle-shape
-    # violations load with a warning instead of rejecting, because a
-    # rejected file drops its vault from the registry — unreachable by the
-    # very surfaces (update_vault_config, the settings editor) that could
-    # repair it. Direct validation on the create/update paths stays strict.
-    return VaultConfig.model_validate(raw, context={"lifecycle_validation": "warn"})
+    # An on-disk configuration is a fact, not a request: see
+    # STORED_CONFIG_CONTEXT. Direct validation on the create/update paths
+    # stays strict.
+    return VaultConfig.model_validate(raw, context=STORED_CONFIG_CONTEXT)
 
 
 def build_transition_table(config: VaultConfig) -> TransitionTable:

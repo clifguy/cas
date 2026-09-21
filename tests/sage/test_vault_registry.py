@@ -705,13 +705,16 @@ async def test_reload_vault_rereads_the_declaration_and_threads_its_path(
         config = VaultConfig.model_validate(minimal_vault_config_dict)
 
     _Old.config_path = config_path
+    _Old.from_declaration = True
 
     class _New:
         graph_store = _CountingGraphStore()
 
     captured: dict[str, Any] = {}
 
-    async def fake_reload(registry, vault_id, config, config_path=None, registry_service=None):
+    async def fake_reload(
+        registry, vault_id, config, config_path=None, registry_service=None, **_: Any
+    ):
         captured.update(
             vault_id=vault_id,
             name=config.vault.name,
@@ -780,13 +783,16 @@ async def test_reload_vault_reads_the_declaration_through_the_vault_source_store
         config = VaultConfig.model_validate(minimal_vault_config_dict)
 
     _Old.config_path = config_path
+    _Old.from_declaration = True
 
     class _New:
         graph_store = _CountingGraphStore()
 
     captured: dict[str, Any] = {}
 
-    async def fake_reload(registry, vault_id, config, config_path=None, registry_service=None):
+    async def fake_reload(
+        registry, vault_id, config, config_path=None, registry_service=None, **_: Any
+    ):
         captured["name"] = config.vault.name
         return _New()
 
@@ -815,6 +821,7 @@ def _reload_service_over(config_path: Any, minimal_vault_config_dict: dict, monk
         config = VaultConfig.model_validate(minimal_vault_config_dict)
 
     _Old.config_path = config_path
+    _Old.from_declaration = True
 
     async def unreachable_reload(*args: Any, **kwargs: Any) -> Any:
         raise AssertionError("the rebuild must not start on an unusable declaration")
@@ -886,6 +893,165 @@ async def test_reload_vault_lets_an_absent_declaration_propagate(
 
     with pytest.raises(FileNotFoundError):
         await service.reload_vault("test_vault")
+
+
+class _RecordingStore:
+    """A vault-source store that records each load and returns ``returns``.
+
+    ``returns`` is a config, or an exception to raise, so one stand-in serves
+    both the reload that reads and the one that is refused.
+    """
+
+    def __init__(self, returns: Any) -> None:
+        self.returns = returns
+        self.loads: list[DiscoveredVault] = []
+
+    def load_config(self, discovered: DiscoveredVault) -> VaultConfig:
+        self.loads.append(discovered)
+        if isinstance(self.returns, Exception):
+            raise self.returns
+        return self.returns
+
+
+def _pathless_reload(
+    minimal_vault_config_dict: dict,
+    monkeypatch: Any,
+    *,
+    from_declaration: bool,
+    store: _RecordingStore,
+) -> tuple[Any, dict[str, Any], dict[str, Any]]:
+    """A registry service over one vault carrying no ``config_path``.
+
+    The document-store binding gives every discovered vault that shape. The
+    rebuild is faked to install a bundle carrying the config and provenance it
+    was handed, so a second reload runs against what the first installed.
+    """
+    import sage.mcp_init as sage_mcp_init
+    from sage.services.vault_registry import VaultRegistryService
+
+    class _Old:
+        config = VaultConfig.model_validate(minimal_vault_config_dict)
+        config_path = None
+
+    _Old.from_declaration = from_declaration
+    registry: dict[str, Any] = {"test_vault": _Old()}
+    captured: dict[str, Any] = {}
+
+    async def fake_reload(
+        registry, vault_id, config, config_path=None, registry_service=None, **kwargs: Any
+    ):
+        class _New:
+            graph_store = _CountingGraphStore()
+
+        _New.config = config
+        _New.config_path = config_path
+        _New.from_declaration = kwargs.get("from_declaration")
+        captured.update(config=config, config_path=config_path, **kwargs)
+        registry[vault_id] = _New()
+        return registry[vault_id]
+
+    monkeypatch.setattr(sage_mcp_init, "resolve_stack_vault_source_store", lambda _cfg: store)
+    monkeypatch.setattr(sage_mcp_init, "reload_vault_in_registry", fake_reload)
+    service = VaultRegistryService(registry, initialize_services=None)  # type: ignore[arg-type]
+    return service, registry, captured
+
+
+async def test_reload_vault_rereads_a_pathless_declaration_through_the_store(
+    minimal_vault_config_dict: dict, monkeypatch: Any
+) -> None:
+    """A vault loaded from a declaration re-reads it though it carries no path.
+
+    Under the document-store binding every discovered vault has
+    ``config_path=None``, so a reload branching on the path rebuilt from the
+    config already in memory and never saw an edit made in the store. The
+    store returns a name the loaded config does not carry, so reuse cannot
+    pass for a read, and the read names the vault by the id the binding
+    resolves.
+    """
+    edited = json_roundtrip(minimal_vault_config_dict)
+    edited["vault"]["name"] = "Edited In The Store"
+    store = _RecordingStore(VaultConfig.model_validate(edited))
+    service, _, captured = _pathless_reload(
+        minimal_vault_config_dict, monkeypatch, from_declaration=True, store=store
+    )
+
+    await service.reload_vault("test_vault")
+
+    assert store.loads == [DiscoveredVault(config_path=None, vault_id="test_vault")]
+    assert captured["config"].vault.name == "Edited In The Store"
+    assert captured["from_declaration"] is True
+
+
+async def test_reload_vault_keeps_rereading_a_pathless_declaration(
+    minimal_vault_config_dict: dict, monkeypatch: Any
+) -> None:
+    """The provenance survives the rebuild, so the next reload reads again.
+
+    A rebuild that dropped it would read once and then silently fall back to
+    the in-memory config for every later reload of the vault.
+    """
+    store = _RecordingStore(VaultConfig.model_validate(minimal_vault_config_dict))
+    service, _, _ = _pathless_reload(
+        minimal_vault_config_dict, monkeypatch, from_declaration=True, store=store
+    )
+
+    await service.reload_vault("test_vault")
+    await service.reload_vault("test_vault")
+
+    assert len(store.loads) == 2
+
+
+async def test_reload_vault_refuses_an_unusable_pathless_declaration(
+    minimal_vault_config_dict: dict, monkeypatch: Any
+) -> None:
+    """A store declaration that does not validate is the typed refusal, and
+    the vault keeps serving the services it had.
+
+    Under a path-keyed branch this refusal could not arise on the document
+    store at all: the reload never read it.
+    """
+    from pydantic import ValidationError
+
+    from sage.api.errors import VaultConfigValidationError
+
+    malformed = json_roundtrip(minimal_vault_config_dict)
+    malformed["vault"]["id"] = "Not A Valid Id!!"
+    try:
+        VaultConfig.model_validate(malformed)
+    except ValidationError as exc:
+        refusal = exc
+    store = _RecordingStore(refusal)
+    service, registry, captured = _pathless_reload(
+        minimal_vault_config_dict, monkeypatch, from_declaration=True, store=store
+    )
+    serving = registry["test_vault"]
+
+    with pytest.raises(VaultConfigValidationError):
+        await service.reload_vault("test_vault")
+
+    assert registry["test_vault"] is serving
+    assert captured == {}
+
+
+async def test_reload_vault_reuses_an_in_memory_config(
+    minimal_vault_config_dict: dict, monkeypatch: Any
+) -> None:
+    """A vault built from an in-memory config has no declaration to read.
+
+    The counterpart of the re-read: reading here would ask the store for a
+    declaration that was never written and fail the reload.
+    """
+    store = _RecordingStore(AssertionError("an in-memory vault has no declaration"))
+    service, registry, captured = _pathless_reload(
+        minimal_vault_config_dict, monkeypatch, from_declaration=False, store=store
+    )
+    loaded = registry["test_vault"].config
+
+    await service.reload_vault("test_vault")
+
+    assert store.loads == []
+    assert captured["config"] is loaded
+    assert captured["from_declaration"] is False
 
 
 def json_roundtrip(value: dict) -> dict:

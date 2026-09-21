@@ -2471,7 +2471,7 @@ frozenset, so an omission would otherwise pass silently.
 
 ### TEST-SAGE-AD-123: The adapter is wired into the runtime adapter registry
 
-**Artifact:** `sage/mcp_init.py` (build_source_adapter_registry)
+**Artifact:** `sage/source_adapters/registry.py` (build_source_adapter_registry)
 **Category:** wiring
 **Decision:** Adapter selection during ingestion resolves against this
 registry, so a source type absent from it raises `adapter_not_found`.
@@ -3110,3 +3110,38 @@ name exists anywhere under the vault's source tree.
 **Category:** error-envelope
 **Expected:** The same request as a dry run returns `adapter_config_invalid` with the
 same detail, rather than a preview of an ingest that would be refused.
+
+### TEST-SAGE-AD-188: A vault config write refuses an adapter default its adapter cannot use
+
+**Artifact:** `VaultConfig._validate_adapter_defaults`; `POST /sage_vaults`,
+`PUT /sage_vaults/{vault_id}/config`
+**Category:** error-envelope
+**Decision:** Each `adapter_defaults` entry is checked by the adapter that reads it
+(`SourceAdapter.check_config`), the check projection applies, so the write refuses a
+value exactly when projection would (CAS-ADR-047: strict on write).
+
+**Expected:** Validating a configuration whose `adapter_defaults` carries a pdf
+`max_pages: 0`, pptx `max_slides: "3"`, xlsx `preview_rows: true`, xlsx
+`max_sheets: -1` or docx `heading_style_map: {"Custom Section": 10}` raises, naming
+`adapter_defaults.<source_type>.<key>`; a value the adapter reads for each key
+validates. Over REST, both write surfaces answer 400 `vault_config_validation_error`
+with the path in `detail.errors`, the update leaves the served config unchanged, the
+create registers no vault, and a readable value saves.
+
+### TEST-SAGE-AD-189: A stored adapter-defaults problem loads with a warning
+
+**Artifact:** `load_vault_config`; `VaultSourceStore.load_config` (both bindings)
+**Category:** lifecycle
+**Decision:** A stored configuration loads under `STORED_CONFIG_CONTEXT`: a refused
+parameter, a markdown dialect none reads, a key naming no source type and a
+non-mapping entry are each logged and loaded, since a rejected declaration drops its
+vault from discovery (CAS-ADR-047: lenient on load).
+
+**Expected:** Each of the four problems, stored and loaded, returns a configuration
+holding the value as stored and logs exactly one `loaded leniently` warning naming
+its path; the filesystem and document-store bindings behave identically, and the
+same mapping validated directly is refused.
+
+AD-183 and AD-184 hold their refused vault default the one way it still reaches a
+running vault after AD-188: stored before the refusal existed and loaded under
+`STORED_CONFIG_CONTEXT`, each arm first confirming that the write path refuses it.

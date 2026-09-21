@@ -715,6 +715,44 @@ async def test_write_surfaces_refuse_lifecycle_scope_naming_undeclared_doc_type(
     assert resp.status_code == 200, "control: the same lifecycle without the stray scope saves"
 
 
+async def test_write_surfaces_refuse_an_adapter_default_its_adapter_cannot_use(
+    client, tmp_path, monkeypatch
+):
+    """An ``adapter_defaults`` value the adapter refuses is refused on write.
+
+    Both interactive write surfaces refuse it by path (CAS-ADR-047); the update
+    leaves the vault serving its previous configuration and the create writes
+    no declaration -- asserted on disk, since a create that wrote first and
+    refused after would leave the registry just as empty. The paired valid
+    value saves, so the refused value is the only cause of the refusal.
+    """
+    isolated_root = tmp_path / "sage_vaults"
+    monkeypatch.setattr("sage.vault_management._VAULTS_ROOT", isolated_root)
+    refused = {"pdf": {"max_pages": 0}}
+    resp = await client.put("/sage_vaults/test_vault/config", json={"adapter_defaults": refused})
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "vault_config_validation_error"
+    assert "adapter_defaults.pdf.max_pages" in " ".join(resp.json()["detail"]["errors"])
+    served = (await client.get("/sage_vaults/test_vault/config")).json()
+    assert served.get("adapter_defaults", {}).get("pdf") is None
+
+    config = VaultRegistryService.get_default_config("typed_default", "Typed", "testuser")
+    config["vault"]["storage_root"] = str(tmp_path / "typed_default" / "sources")
+    config["vault"]["brain_root"] = str(tmp_path / "typed_default" / "brain")
+    config["adapter_defaults"] = refused
+    resp = await client.post("/sage_vaults", json={"config": config})
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "vault_config_validation_error"
+    vault_ids = [v["id"] for v in (await client.get("/sage_vaults")).json()]
+    assert "typed_default" not in vault_ids
+    assert not (isolated_root / "typed_default").exists()
+
+    resp = await client.put(
+        "/sage_vaults/test_vault/config", json={"adapter_defaults": {"pdf": {"max_pages": 5}}}
+    )
+    assert resp.status_code == 200, "control: a value the adapter reads saves"
+
+
 @pytest.mark.parametrize(
     ("initial", "scope", "stranded"),
     [(None, ["memo"], True), (None, ["note"], False), (["memo", "note"], ["memo"], True)],

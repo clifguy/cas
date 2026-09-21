@@ -118,17 +118,21 @@ async def _initialize_vault(
     app: FastAPI,
     config: VaultConfig,
     config_path: Path | None = None,
+    from_declaration: bool = False,
     **overrides,
 ) -> None:
     """Initialize services for one vault and add to the registry.
 
-    The durable store provisions its schema externally, so there is no
-    startup-time migration concern here.
+    ``from_declaration`` is true for a vault discovered in the vault-source
+    store, whose declaration a reload re-reads; a vault handed in as a
+    configuration has none. The durable store provisions its schema
+    externally, so there is no startup-time migration concern here.
     """
     registry_service = _ensure_registry_service(app)
     services = await initialize_services(
         config,
         config_path=config_path,
+        from_declaration=from_declaration,
         registry_service=registry_service,
         **overrides,
     )
@@ -668,7 +672,11 @@ def create_app(
                     try:
                         vc = vault_source_store.load_config(discovered)
                         await _initialize_vault(
-                            app, vc, config_path=discovered.config_path, **init_overrides
+                            app,
+                            vc,
+                            config_path=discovered.config_path,
+                            from_declaration=True,
+                            **init_overrides,
                         )
                     except Exception as exc:
                         logger.error(

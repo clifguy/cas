@@ -8,7 +8,9 @@ config refusal and keeps the reporting it had.
 
 A per-request config reaches the adapter only through ``ingest_document``; the
 batch and ``recompute_pipeline`` carry the vault's ``adapter_defaults`` alone, so
-their arms refuse a vault default rather than a request value.
+their arms refuse a vault default rather than a request value. The write paths
+refuse such a default, so those arms hold it the one way it still reaches a
+running vault: stored, and loaded leniently (CAS-ADR-047).
 """
 
 from __future__ import annotations
@@ -24,6 +26,7 @@ from pathlib import Path
 import openpyxl
 import pytest
 from httpx import ASGITransport, AsyncClient
+from pydantic import ValidationError
 
 import sage.mcp_server as _mcp
 from sage.adapters.stubs import (
@@ -32,7 +35,7 @@ from sage.adapters.stubs import (
     StubEmbeddingProvider,
 )
 from sage.app import _initialize_services, create_app
-from sage.config import VaultConfig
+from sage.config import STORED_CONFIG_CONTEXT, VaultConfig
 from sage.mcp_init import SAGEServices
 from sage.mcp_server import get_document, ingest_document, recompute_pipeline, search
 from tests.helpers.pipeline_wait import await_tool_idle
@@ -73,6 +76,24 @@ def _with_xlsx_defaults(config_dict: dict, defaults: dict) -> dict:
     return widened
 
 
+def _stored_with_refused_xlsx_default(config_dict: dict) -> dict:
+    """A configuration holding the refused default, as a stored one may.
+
+    The write paths refuse it, which is asserted here so an arm built on it
+    cannot pass by reading a value the configuration had silently dropped.
+    """
+    stored = _with_xlsx_defaults(config_dict, {"preview_rows": "ten"})
+    with pytest.raises(ValidationError, match="adapter_defaults.xlsx.preview_rows"):
+        VaultConfig.model_validate(stored)
+    return stored
+
+
+def _loaded(config_dict: dict) -> VaultConfig:
+    # Loaded as a stored configuration is, so a refused default still reaches
+    # the adapter that reads it.
+    return VaultConfig.model_validate(config_dict, context=STORED_CONFIG_CONTEXT)
+
+
 def _write_source(tmp_vault_dir: Path, relative: str, body: bytes) -> str:
     path = tmp_vault_dir / "sources" / relative
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -82,7 +103,7 @@ def _write_source(tmp_vault_dir: Path, relative: str, body: bytes) -> str:
 
 @asynccontextmanager
 async def _mcp_vault(config_dict: dict) -> AsyncIterator[SAGEServices]:
-    config = VaultConfig.model_validate(config_dict)
+    config = _loaded(config_dict)
     async with initialize_services_for_test(
         config,
         content_store=StubContentStore(),
@@ -100,7 +121,7 @@ async def _mcp_vault(config_dict: dict) -> AsyncIterator[SAGEServices]:
 @asynccontextmanager
 async def _http_app(config_dict: dict, monkeypatch) -> AsyncIterator[object]:
     monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
-    config = VaultConfig.model_validate(config_dict)
+    config = _loaded(config_dict)
     app = create_app(config=config)
     await _initialize_services(app, config, content_store_factory=lambda _brain: StubContentStore())
     try:
@@ -190,7 +211,7 @@ async def test_ad_183_batch_ingest_reports_a_refused_vault_default_per_file(
     The markdown file in the same batch must ingest: it is the control that the
     refusal is the workbook's own and not a batch-wide rejection.
     """
-    config_dict = _with_xlsx_defaults(minimal_vault_config_dict, {"preview_rows": "ten"})
+    config_dict = _stored_with_refused_xlsx_default(minimal_vault_config_dict)
 
     async with _http_app(config_dict, monkeypatch) as app, _client(app) as client:
         resp = await client.post(
@@ -220,7 +241,7 @@ async def test_ad_184_recompute_pipeline_reports_a_refused_vault_default(
     value, so the document exists; re-projection reads the vault default alone.
     A second call returning the same error shows the claim was released.
     """
-    config_dict = _with_xlsx_defaults(minimal_vault_config_dict, {"preview_rows": "ten"})
+    config_dict = _stored_with_refused_xlsx_default(minimal_vault_config_dict)
     source = _write_source(tmp_vault_dir, "test/book.xlsx", _workbook_bytes())
 
     async with _mcp_vault(config_dict) as services:

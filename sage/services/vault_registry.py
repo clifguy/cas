@@ -287,6 +287,7 @@ class VaultRegistryService:
             services = await self._initialize_services(
                 config,
                 config_path=config_path,
+                from_declaration=True,
                 registry_service=self,
                 abstraction_provider=stack_provider,
             )
@@ -351,6 +352,8 @@ class VaultRegistryService:
         A vault loaded from a declaration re-reads it through the active
         profile's vault-source store (CAS-ADR-043), so an edit SAGE did not
         make takes effect; a vault built from an in-memory config reuses it.
+        Which of the two a vault is was recorded when it was loaded, since a
+        binding with no filesystem path carries no ``config_path`` to tell by.
         The rebuild is build-new-first: on failure the error propagates and
         the registry slot keeps the old, still-serving services.
 
@@ -377,10 +380,12 @@ class VaultRegistryService:
         if old_services is None:
             raise VaultNotFoundError(vault_id, available_vaults=self._registry)
         config_path = old_services.config_path
-        if config_path is not None:
+        if old_services.from_declaration:
             store = resolve_stack_vault_source_store(get_stack_config())
             try:
-                config = store.load_config(DiscoveredVault(config_path=config_path))
+                config = store.load_config(
+                    DiscoveredVault(config_path=config_path, vault_id=vault_id)
+                )
             except CONFIG_FAILURES as exc:
                 # The declaration this reload exists to pick up is the one a
                 # caller just edited, so a malformed edit is an ordinary
@@ -398,6 +403,7 @@ class VaultRegistryService:
             config,
             config_path=config_path,
             registry_service=self,
+            from_declaration=old_services.from_declaration,
         )
 
         try:

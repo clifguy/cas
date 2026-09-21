@@ -67,6 +67,8 @@ class _FakeServices:
         # below stands in for the real stop-thread-and-release-handler
         # teardown.
         self.timing_thread = None
+        # Built from an in-memory config, so a reload reuses it.
+        self.from_declaration = False
 
     def close_timing(self) -> None:
         pass

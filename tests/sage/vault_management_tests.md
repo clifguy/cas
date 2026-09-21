@@ -419,3 +419,24 @@ literal in the web client, and they drifted. Serving it leaves one. The
 round-trip assertion is the load-bearing one: it holds the served
 document to being directly postable, which is the only property a
 client that no longer knows the scaffold's shape can rely on.
+
+## 5. reload_vault
+
+### TEST-SAGE-VM-RELOAD-001: a declared vault re-reads its declaration under every binding
+
+**Artifact:** `VaultRegistryService.reload_vault`
+**Decision:** Whether a reload re-reads is keyed on provenance --
+`SAGEServices.from_declaration`, set by discovery and by `create_vault` and carried
+across a rebuild -- not on `config_path`, which the document-store binding leaves
+`None` for every vault it declares (CAS-ADR-043).
+
+**Expected:**
+- A vault with `config_path=None` and `from_declaration=True` reloads through the
+  store with `DiscoveredVault(config_path=None, vault_id=<id>)`, and the rebuild
+  receives the store's config, not the one in memory.
+- A second reload of the rebuilt vault reads the store again.
+- A store declaration that does not validate is refused as
+  `vault_config_validation_error`, the rebuild never starts, and the registry keeps
+  the serving services.
+- A vault with `from_declaration=False` reads nothing and rebuilds from the config
+  it holds.
