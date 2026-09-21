@@ -1553,8 +1553,7 @@ paths:
       description: >-
         Iterates the document's outbound `depends_on` edges; for each
         target, verifies the lifecycle status is one the vault's
-        configuration declares dependency-satisfying (`active` or
-        `completed` under the base lifecycle) and that
+        configuration declares dependency-satisfying and that
         `pipeline_status` is not `failed` — a target still
         mid-pipeline is not rejected.
         Returns a `satisfied` boolean plus a per-edge breakdown of

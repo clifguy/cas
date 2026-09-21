@@ -1442,9 +1442,8 @@ def register_sage_tools(
 
         Iterates the document's outbound ``depends_on`` edges; for each
         target, verifies the lifecycle status is one the vault's
-        configuration declares dependency-satisfying (``active`` or
-        ``completed`` under the base lifecycle) and pipeline_status not
-        ``failed`` — a target still mid-pipeline is not rejected. A
+        configuration declares dependency-satisfying and pipeline_status
+        not ``failed`` — a target still mid-pipeline is not rejected. A
         target the vault does not hold is reported unsatisfied with
         ``actual`` of "not found" rather than raising.
         Returns ``satisfied`` boolean plus a

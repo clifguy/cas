@@ -1410,6 +1410,6 @@ def test_dependency_tools_give_the_blocked_on_completion_example(tool_name: str)
         assert any(
             "satisfies_dependency: false` on `active`" in s
             and "`completed`" in s
-            and "complete" in s
+            and "blocked until" in s
             for s in _sentences(text)
         ), f"{tool_name} {surface} does not give the blocked-on-completion configuration"
