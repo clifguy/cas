@@ -675,39 +675,7 @@ def _tools_building_a_nesting_model() -> dict[str, type]:
     reason its own code states: a key it refuses keeps ``unknown_filter_key``,
     whose detail says more.
     """
-    import types
-    import typing
     from pathlib import Path as _Path
-
-    from pydantic import BaseModel
-
-    from sage.models import schemas
-
-    def strict_nested(model: type[BaseModel]) -> set[type[BaseModel]]:
-        seen: set[type[BaseModel]] = set()
-        out: set[type[BaseModel]] = set()
-
-        def walk(current: type[BaseModel]) -> None:
-            for field in current.model_fields.values():
-                pending = [field.annotation]
-                while pending:
-                    item = pending.pop()
-                    if isinstance(item, type) and issubclass(item, BaseModel):
-                        if item in seen:
-                            continue
-                        seen.add(item)
-                        out.add(item)
-                        walk(item)
-                        continue
-                    if isinstance(item, types.UnionType) or typing.get_origin(item) is not None:
-                        pending.extend(typing.get_args(item))
-
-        walk(model)
-        return {
-            m
-            for m in out
-            if m.model_config.get("extra") == "forbid" and m is not schemas.RetrievalFilters
-        }
 
     repo_root = _Path(__file__).resolve().parents[2]
     found: dict[str, type] = {}

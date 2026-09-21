@@ -1,6 +1,7 @@
 classification: minor
 category:
   - caller-adaptation
+  - capability
 summary: >-
   An undeclared key nested inside a request is now refused as 400 undeclared_key,
   whose detail carries the field set of the object that refused. detail.parameter
@@ -29,9 +30,14 @@ for_callers: >-
   A client branching on invalid_parameter for a key nested inside a request body should
   branch on undeclared_key and read detail.recognized to repair the call in one round-trip;
   the status moves from 422 to 400 and detail.value is gone, so a client reading it should
-  read detail.key instead. A client handling 422 on
+  read detail.key instead. This supersedes, within the same release, the instruction in
+  batch-upload-refuses-undeclared-entry-keys.yaml to branch on invalid_parameter at
+  files.<n>.<key>: that state is not one any release ships, and the two records fold into
+  one entry with this one last. A client handling 422 on
   POST /sage_vaults/{vault_id}/documents:batch keeps it: that status now carries only the
-  codes-and-tags conflict, never an undeclared key. An ingest that passed a
+  codes-and-tags conflict, never an undeclared key. POST /app/ingest now declares that same
+  422, which it has raised since the conflict refusal landed but did not publish; the
+  behaviour is unchanged and the declaration is what is new. An ingest that passed a
   top-level argument inside metadata -- tier3_metadata, predecessor_id, force and the rest
   -- is now refused rather than silently ignored; pass it as the argument it is. The keys
   metadata does carry (title, version_label, project, doc_type, authority_scope,

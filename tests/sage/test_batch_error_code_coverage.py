@@ -629,14 +629,15 @@ def test_batch_operations_declare_no_per_file_status():
     ``codes`` and ``tags``, which set the same field. The undeclared-key
     refusal that used to share that status is ``undeclared_key`` at 400, with
     the rest of the "you named something that does not exist" family. The
-    application operation also declares 401, 501 and 503, each a refusal of
-    the whole request before any file is examined: a hosted deployment's
+    application operation declares the same 422 for the same conflict, which
+    it raises through the same rule, and also 401, 501 and 503, each a refusal
+    of the whole request before any file is examined: a hosted deployment's
     backend-for-frontend requires a signed-in session and a configured
     sign-in, and does not offer path-based ingest.
     """
     expected = {
         "sage_core": {"200", "400", "404", "422"},
-        "cas_app": {"200", "400", "401", "404", "501", "503"},
+        "cas_app": {"200", "400", "401", "404", "422", "501", "503"},
     }
     for spec_name, operation_id in _BATCH_OPERATIONS:
         statuses = set(_operation(_load(spec_name), operation_id).get("responses") or {})

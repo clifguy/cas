@@ -97,6 +97,17 @@ async def scan_endpoint(
                 "`detail.available_vaults` lists the registered vaults."
             ),
         },
+        422: {
+            "model": ErrorResponse,
+            "description": (
+                "`invalid_parameter`: an entry of `files` supplies both "
+                "`codes` and `tags` in its `parsed_metadata`, which set the "
+                "same field. `detail.parameter` locates the entry as "
+                "`files.<n>.parsed_metadata.tags` and `detail.value` carries "
+                "its value. No file is ingested. An undeclared key in an "
+                "entry is refused as `undeclared_key` (400) instead."
+            ),
+        },
     },
 )
 async def ingest_endpoint(
