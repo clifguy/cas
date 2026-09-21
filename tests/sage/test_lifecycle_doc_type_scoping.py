@@ -953,3 +953,47 @@ async def test_force_reingest_preview_refuses_what_the_run_refuses(
         assert result.dry_run is True
         assert result.would_create is True
     assert (await graph_store.get_document(first.document.id)).doc_type == WORK_ITEM
+
+
+async def test_force_reingest_preview_follows_the_runs_precedence_past_the_record(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_vault_config_dict,
+):
+    """A typeless reused record falls through to the doc_type the run would write.
+
+    The run resolves caller, then filename parse, then the record's own doc_type,
+    then the new-document default. Against a record carrying no doc_type, a
+    preview that stopped at the record's own would compare nothing with nothing
+    and admit a re-ingest the run refuses. No write surface produces a typeless
+    document in a scoped state, so the store is written directly to stage one.
+    """
+    lifecycle, ingestion = _ingestion_pair(
+        VaultConfig.model_validate(_scoped(minimal_vault_config_dict)),
+        graph_store,
+        lock_manager,
+        stub_content_store,
+        stub_embedding_provider,
+        stub_abstraction_provider,
+    )
+    _seed_file(tmp_vault_dir, "fr_typeless.md", "# Typeless\n\nBody.")
+    first = await ingestion.ingest(
+        IngestRequest(
+            source="fr_typeless.md",
+            source_type=SourceType.MARKDOWN,
+            metadata={"doc_type": WORK_ITEM},
+        )
+    )
+    await lifecycle._set_lifecycle(first.document.id, SetLifecycleRequest(action="block"))
+    await graph_store.update_document(first.document.id, {"doc_type": None})
+    request = {"source": "fr_typeless.md", "source_type": SourceType.MARKDOWN, "force": True}
+
+    with pytest.raises(LifecycleStateNotApplicableError) as run_refusal:
+        await ingestion.ingest(IngestRequest(**request))
+    with pytest.raises(LifecycleStateNotApplicableError) as preview_refusal:
+        await ingestion.ingest(IngestRequest(**request, dry_run=True))
+    assert preview_refusal.value.detail == run_refusal.value.detail

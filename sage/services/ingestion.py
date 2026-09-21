@@ -2066,14 +2066,17 @@ class IngestionService:
                 reused = await self._store.get_document(pinned_id or duplicate_of)
                 if reused is not None:
                     # The doc_type the run would write onto the reused record:
-                    # the caller's, else the filename parse's, else the record
-                    # keeps its own -- not the new-document default.
+                    # the caller's, else the filename parse's, else the record's
+                    # own, and only for a record carrying none the predecessor's
+                    # or the new-document default, which `resolved_doc_type`
+                    # already holds once the caller and the parse are exhausted.
                     caller_doc_type = (request.metadata or {}).get("doc_type")
                     self._refuse_retype_out_of_scope(
                         reused,
                         caller_doc_type
                         or (parsed.doc_type if parsed is not None else None)
-                        or reused.doc_type,
+                        or reused.doc_type
+                        or resolved_doc_type,
                     )
 
         return IngestPreview(
