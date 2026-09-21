@@ -23896,6 +23896,49 @@
         "_meta": {
           "org.sage/errorSchema": {
             "$defs": {
+              "CallerFilesystemUnavailableError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/CallerFilesystemUnavailableErrorDetail"
+                  },
+                  "error": {
+                    "const": "caller_filesystem_unavailable",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "CallerFilesystemUnavailableErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "operation": {
+                    "description": "Operation.",
+                    "type": "string"
+                  },
+                  "remedy": {
+                    "description": "Remedy.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "operation",
+                  "remedy"
+                ],
+                "type": "object"
+              },
               "InternalErrorError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -24121,6 +24164,7 @@
             "$schema": "https://json-schema.org/draft/2020-12/schema",
             "discriminator": {
               "mapping": {
+                "caller_filesystem_unavailable": "#/$defs/CallerFilesystemUnavailableError",
                 "internal_error": "#/$defs/InternalErrorError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
@@ -24130,6 +24174,9 @@
               "propertyName": "error"
             },
             "oneOf": [
+              {
+                "$ref": "#/$defs/CallerFilesystemUnavailableError"
+              },
               {
                 "$ref": "#/$defs/InternalErrorError"
               },
@@ -24153,7 +24200,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Regenerate browsable symlink views (by_doc_type/, by_lifecycle/)\nin the vault's storage root.\n\nDrops and recreates the symlink trees under the vault's\n``storage_root``. Useful after bulk metadata updates that moved\ndocuments between doc_type or lifecycle buckets. The views are for\nhuman file-browser navigation; no SAGE tool consumes them.\n\n``doc_type=None`` exclusion: documents whose ``doc_type`` is null are\nsilently omitted from ``by_doc_type/`` (no ``<null>/`` bucket). The\nsibling ``by_lifecycle/`` never drops, since every document has a\nnon-null ``lifecycle_status``. A document present in the graph but\nabsent from ``by_doc_type/`` is the signal that its ``doc_type`` is\nunset — patch via ``update_metadata`` and re-call.\n\nWipe-then-rebuild is NOT atomic: ``{storage_root}/views/`` is removed\nin full and then rebuilt from the current document list. A\nmid-rebuild failure (permission denial, missing symlink target)\nleaves ``views/`` partially regenerated with no rollback; recovery is\na re-call once the cause is addressed. On an empty (or fully\nfiltered-out) vault the wipe runs and ``views/`` is not recreated;\nthe response carries ``views_generated=0`` — indistinguishable from\n\"every document filtered out\", so check ``get_vault_stats`` if\nthe distinction matters.\n\nError modes:\n- ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias\n  validation at the boundary.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n\nArgs:\n    vault_id: Target vault identifier.\n",
+        "description": "Regenerate browsable symlink views (by_doc_type/, by_lifecycle/)\nin the vault's storage root.\n\nDrops and recreates the symlink trees under the vault's\n``storage_root``. Useful after bulk metadata updates that moved\ndocuments between doc_type or lifecycle buckets. The views are for\nhuman file-browser navigation; no SAGE tool consumes them.\n\n``doc_type=None`` exclusion: documents whose ``doc_type`` is null are\nsilently omitted from ``by_doc_type/`` (no ``<null>/`` bucket). The\nsibling ``by_lifecycle/`` never drops, since every document has a\nnon-null ``lifecycle_status``. A document present in the graph but\nabsent from ``by_doc_type/`` is the signal that its ``doc_type`` is\nunset — patch via ``update_metadata`` and re-call.\n\nWipe-then-rebuild is NOT atomic: ``{storage_root}/views/`` is removed\nin full and then rebuilt from the current document list. A\nmid-rebuild failure (permission denial, missing symlink target)\nleaves ``views/`` partially regenerated with no rollback; recovery is\na re-call once the cause is addressed. On an empty (or fully\nfiltered-out) vault the wipe runs and ``views/`` is not recreated;\nthe response carries ``views_generated=0`` — indistinguishable from\n\"every document filtered out\", so check ``get_vault_stats`` if\nthe distinction matters.\n\nThe views are browsable only by a caller that shares the server's\nfilesystem. Under the cloud profile the regeneration is refused with\n``caller_filesystem_unavailable`` before the existing views are\ntouched; ``search`` in catalog mode enumerates the same buckets by\n``doc_type`` or ``lifecycle_status`` instead.\n\nError modes:\n- ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias\n  validation at the boundary.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n- ``caller_filesystem_unavailable`` (501): the views are written into\n  the server's own vault tree, which a caller cannot browse under the\n  cloud profile; the refusal comes before the existing views are\n  touched.\n\nArgs:\n    vault_id: Target vault identifier.\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {

@@ -641,7 +641,24 @@ class UtilitiesService:
         Failed-pipeline documents are included (BH-046).
         Empty categories produce no directory (BH-047).
         Documents with null doc_type are excluded from by_doc_type/ (BH-048).
+
+        The views live in the server's own vault tree, which a caller can browse
+        only when it shares that filesystem. Where it does not -- the cloud
+        profile, whose vault roots are inert container paths the vault-source
+        store ignores -- the regeneration is refused before the existing views
+        are touched, rather than reporting views nobody can reach (CAS-ADR-052).
+
+        Raises:
+            CallerFilesystemUnavailableError: The caller cannot see the server's
+                filesystem under the active profile.
         """
+        from sage.mcp_init import require_caller_local_filesystem
+
+        require_caller_local_filesystem(
+            "recompute_views",
+            "enumerate documents by doc_type or lifecycle_status through search in catalog mode",
+        )
+
         storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
         views_root = storage_root / "views"
 
