@@ -1717,19 +1717,9 @@ class IngestionService:
         )
 
         if existing_doc is not None:
-            # A re-ingestion rewrites the resolved doc_type onto the existing
-            # record, so it may not retype a document out of the scope of the
-            # state it holds, any more than a metadata patch may (CAS-ADR-054).
-            new_doc_type = field_updates.get("doc_type", existing_doc.doc_type)
-            state_scope = self._config.lifecycle.state_scope(existing_doc.lifecycle_status)
-            if (
-                new_doc_type != existing_doc.doc_type
-                and state_scope is not None
-                and new_doc_type not in state_scope
-            ):
-                raise LifecycleStateNotApplicableError(
-                    existing_doc.lifecycle_status, new_doc_type, state_scope
-                )
+            self._refuse_retype_out_of_scope(
+                existing_doc, field_updates.get("doc_type", existing_doc.doc_type)
+            )
             # Force re-ingestion: reuse existing record (BH-019, BH-067).
             # The pre-merged field_updates carry the full metadata into
             # this single update_document call.
@@ -2071,7 +2061,20 @@ class IngestionService:
             # Refused here exactly as the real run refuses it. A valid pin
             # changes which record a re-ingest reuses, not which document
             # represents the bytes, so ``duplicate_of`` is left as resolved.
-            await self._resolve_force_pin(request, provenance_hash)
+            pinned_id = await self._resolve_force_pin(request, provenance_hash)
+            if duplicate_of is not None and request.force:
+                reused = await self._store.get_document(pinned_id or duplicate_of)
+                if reused is not None:
+                    # The doc_type the run would write onto the reused record:
+                    # the caller's, else the filename parse's, else the record
+                    # keeps its own -- not the new-document default.
+                    caller_doc_type = (request.metadata or {}).get("doc_type")
+                    self._refuse_retype_out_of_scope(
+                        reused,
+                        caller_doc_type
+                        or (parsed.doc_type if parsed is not None else None)
+                        or reused.doc_type,
+                    )
 
         return IngestPreview(
             dry_run=True,
@@ -2994,6 +2997,24 @@ class IngestionService:
             "pointer, so landing one there would rest it in the state "
             "naming nowhere",
         )
+
+    def _refuse_retype_out_of_scope(self, existing: Document, new_doc_type: str | None) -> None:
+        """Refuse a re-ingestion that would retype a document out of its state's scope.
+
+        A re-ingestion rewrites the resolved doc_type onto the record it
+        reuses, so it may not leave a document in a state its new doc_type
+        cannot hold, any more than a metadata patch may (CAS-ADR-054). The
+        real run and its dry-run preview both ask here, so they refuse alike.
+        """
+        state_scope = self._config.lifecycle.state_scope(existing.lifecycle_status)
+        if (
+            new_doc_type != existing.doc_type
+            and state_scope is not None
+            and new_doc_type not in state_scope
+        ):
+            raise LifecycleStateNotApplicableError(
+                existing.lifecycle_status, new_doc_type, state_scope
+            )
 
     async def _resolve_force_pin(self, request: IngestRequest, provenance_hash: str) -> str | None:
         """Return the force-reingest pin when it names a holder of the hash.

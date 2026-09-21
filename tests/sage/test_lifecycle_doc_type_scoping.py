@@ -835,3 +835,121 @@ async def test_force_reingest_may_not_retype_out_of_the_states_scope(
         await ingestion.ingest(retype)
         stored = await graph_store.get_document(first.document.id)
         assert (stored.doc_type, stored.lifecycle_status) == (new_type, state)
+
+
+def _ingestion_pair(config, graph_store, lock_manager, content_store, embedder, abstractor):
+    lifecycle = LifecycleService(graph_store, lock_manager, config, content_store)
+    ingestion = IngestionService(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=content_store,
+        embedding_provider=embedder,
+        abstraction_provider=abstractor,
+        config=config,
+        source_adapters={SourceType.MARKDOWN: MarkdownAdapter()},
+        lifecycle_service=lifecycle,
+    )
+    return lifecycle, ingestion
+
+
+async def test_force_reingest_may_retype_between_types_the_state_admits(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_vault_config_dict,
+):
+    """S6: the re-ingest guard reads the state's scope, not merely that it has one.
+
+    `blocked` admits both types here, so a force re-ingest retyping a blocked
+    `work_item` to `control_exception` keeps it in a state its new type holds.
+    A guard refusing any retype out of a scoped state would refuse this.
+    """
+    config_dict = _scoped(minimal_vault_config_dict)
+    _state(config_dict, "blocked")["doc_types"] = [WORK_ITEM, CONTROL_EXCEPTION]
+    lifecycle, ingestion = _ingestion_pair(
+        VaultConfig.model_validate(config_dict),
+        graph_store,
+        lock_manager,
+        stub_content_store,
+        stub_embedding_provider,
+        stub_abstraction_provider,
+    )
+    _seed_file(tmp_vault_dir, "fr_wide.md", "# Wide\n\nBody.")
+    first = await ingestion.ingest(
+        IngestRequest(
+            source="fr_wide.md", source_type=SourceType.MARKDOWN, metadata={"doc_type": WORK_ITEM}
+        )
+    )
+    await lifecycle._set_lifecycle(first.document.id, SetLifecycleRequest(action="block"))
+
+    await ingestion.ingest(
+        IngestRequest(
+            source="fr_wide.md",
+            source_type=SourceType.MARKDOWN,
+            force=True,
+            metadata={"doc_type": CONTROL_EXCEPTION},
+        )
+    )
+
+    stored = await graph_store.get_document(first.document.id)
+    assert (stored.doc_type, stored.lifecycle_status) == (CONTROL_EXCEPTION, "blocked")
+
+
+@pytest.mark.parametrize(
+    ("metadata", "refused"),
+    [({"doc_type": CONTROL_EXCEPTION}, True), (None, False)],
+    ids=["retype-out-of-scope", "doc-type-omitted"],
+)
+async def test_force_reingest_preview_refuses_what_the_run_refuses(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_vault_config_dict,
+    metadata,
+    refused,
+):
+    """A dry run of a force re-ingest applies the same retype guard as the run.
+
+    The `doc-type-omitted` arm re-ingests the blocked `work_item` naming no
+    doc_type. The real run keeps the reused record's doc_type, so the preview
+    must not refuse it either: a preview that fell back to the new-document
+    default doc_type would refuse a re-ingest the run admits.
+    """
+    lifecycle, ingestion = _ingestion_pair(
+        VaultConfig.model_validate(_scoped(minimal_vault_config_dict)),
+        graph_store,
+        lock_manager,
+        stub_content_store,
+        stub_embedding_provider,
+        stub_abstraction_provider,
+    )
+    source = f"fr_preview_{refused}.md"
+    _seed_file(tmp_vault_dir, source, "# Preview\n\nBody.")
+    first = await ingestion.ingest(
+        IngestRequest(
+            source=source, source_type=SourceType.MARKDOWN, metadata={"doc_type": WORK_ITEM}
+        )
+    )
+    await lifecycle._set_lifecycle(first.document.id, SetLifecycleRequest(action="block"))
+    preview = IngestRequest(
+        source=source,
+        source_type=SourceType.MARKDOWN,
+        force=True,
+        dry_run=True,
+        metadata=metadata,
+    )
+
+    if refused:
+        with pytest.raises(LifecycleStateNotApplicableError):
+            await ingestion.ingest(preview)
+    else:
+        result = await ingestion.ingest(preview)
+        assert result.dry_run is True
+        assert result.would_create is True
+    assert (await graph_store.get_document(first.document.id)).doc_type == WORK_ITEM

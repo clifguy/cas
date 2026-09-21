@@ -715,9 +715,13 @@ async def test_write_surfaces_refuse_lifecycle_scope_naming_undeclared_doc_type(
     assert resp.status_code == 200, "control: the same lifecycle without the stray scope saves"
 
 
-@pytest.mark.parametrize(("scope", "stranded"), [(["memo"], True), (["note"], False)])
+@pytest.mark.parametrize(
+    ("initial", "scope", "stranded"),
+    [(None, ["memo"], True), (None, ["note"], False), (["memo", "note"], ["memo"], True)],
+    ids=["first-scope-strands", "first-scope-admits", "shortened-scope-strands"],
+)
 async def test_narrowing_a_state_scope_over_resident_documents_is_destructive(
-    client, tmp_vault_dir, scope, stranded
+    client, tmp_vault_dir, initial, scope, stranded
 ):
     """Scoping a state away from documents that hold it is a destructive change.
 
@@ -725,12 +729,17 @@ async def test_narrowing_a_state_scope_over_resident_documents_is_destructive(
     to `memo` would leave it in a state its doc_type cannot hold, so the
     update is refused without `force` and warned with it. Narrowing to
     `note` strands nothing and saves cleanly: the warning is the stranded
-    document's doing, not any narrowing's.
+    document's doing, not any narrowing's. The `shortened-scope-strands` arm
+    starts from `[memo, note]` rather than unscoped, so a check that caught
+    only a state's first scope would pass the other two arms and fail this.
     """
     current = (await client.get("/sage_vaults/test_vault/config")).json()["lifecycle"]
     widened = copy.deepcopy(current)
     widened["states"].append({"value": "filed", "label": "Filed"})
     widened["transitions"].append({"from_state": "active", "action": "file", "to_state": "filed"})
+    if initial is not None:
+        widened["states"][-1]["doc_types"] = initial
+        widened["transitions"][-1]["doc_types"] = initial
     assert (
         await client.put("/sage_vaults/test_vault/config", json={"lifecycle": widened})
     ).status_code == 200
