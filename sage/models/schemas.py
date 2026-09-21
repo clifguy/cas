@@ -5995,8 +5995,11 @@ class CreateVaultRequest(BaseModel):
     config: dict = Field(
         description=(
             "Full vault configuration object. Structure defined by "
-            "``docs/fs/sage/vault_config.schema.json``; validation is "
-            "performed against that schema before any filesystem writes."
+            "``docs/fs/sage/vault_config.schema.json``. Before anything is "
+            "written it is validated as a vault configuration, and each "
+            "``adapter_defaults`` entry is checked by the adapter that reads "
+            "it; a configuration that fails either is refused with "
+            "``vault_config_validation_error``."
         )
     )
 

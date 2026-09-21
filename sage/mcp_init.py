@@ -29,7 +29,6 @@ from sage.instrumentation.timing import (
     TimingConfig,
     VaultTimingThread,
 )
-from sage.models.enums import SourceType
 from sage.services.documents import DocumentsService
 from sage.services.graph_ops import GraphOpsService
 from sage.services.ingestion import IngestionService
@@ -41,12 +40,7 @@ from sage.services.staging_edges import StagingEdgesService
 from sage.services.user_service import UserService
 from sage.services.utilities import UtilitiesService
 from sage.services.vault_config import VaultConfigService
-from sage.source_adapters.base import SourceAdapter
-from sage.source_adapters.docx_adapter import DocxAdapter
-from sage.source_adapters.markdown_adapter import MarkdownAdapter
-from sage.source_adapters.pdf_adapter import PdfAdapter
-from sage.source_adapters.pptx_adapter import PptxAdapter
-from sage.source_adapters.xlsx_adapter import XlsxAdapter
+from sage.source_adapters.registry import build_source_adapter_registry
 from sage.storage.locks import DocumentLockManager
 from sage.storage_binding import (
     VaultStorageHandle,
@@ -70,23 +64,6 @@ _TIMING_LOGGER_NAMES = (
     "sage.abstraction.timing",
     "sage.abstraction.faithfulness",
 )
-
-
-def build_source_adapter_registry() -> dict[SourceType, SourceAdapter]:
-    """Build the process-wide source-adapter registry.
-
-    Adapter selection during ingestion resolves against this mapping, so a
-    source type absent here raises ``adapter_not_found``. Vault
-    configuration declares no adapters at all (CAS-ADR-046); availability
-    is process-wide capability fixed by the installed implementations.
-    """
-    return {
-        SourceType.MARKDOWN: MarkdownAdapter(),
-        SourceType.DOCX: DocxAdapter(),
-        SourceType.XLSX: XlsxAdapter(),
-        SourceType.PDF: PdfAdapter(),
-        SourceType.PPTX: PptxAdapter(),
-    }
 
 
 @dataclass
@@ -268,6 +245,11 @@ class SAGEServices:
     # lifespan); the production lifespan always supplies one.
     maintenance_service: MaintenanceService | None = None
     config_path: Path | None = None
+    # Whether the configuration was loaded from a declaration in the
+    # vault-source store, which a reload re-reads. Recorded rather than read
+    # off ``config_path``: a binding with no filesystem path declares vaults
+    # too, and carries ``config_path=None`` for every one of them.
+    from_declaration: bool = False
     # Test-only hook: when set, reload paths (reload_vault,
     # reload_vault_in_registry) re-invoke this factory with the vault's
     # brain_root instead of consulting the storage provisioner. Carried on
@@ -887,17 +869,18 @@ def resolve_stack_auth_validator(stack_config: SageCoreConfig) -> TokenValidator
 # Closure-pair invariant: the canonical declaration of kwargs that
 # every transport-reachable production call site of ``initialize_services``
 # must thread. ``tests/sage/test_initialize_services_conformance.py`` walks
-# every call site (MCP standalone lifespan + reload tool in sage/mcp_server.py,
-# FastAPI lifespan in sage/app.py, standalone CLI in sage/migrate.py, the
-# create-vault and reload feature-operation paths in sage/services/vault_registry.py
-# / sage/mcp_init.reload_vault_in_registry) and asserts each captured kwargs
-# dict has every key listed here. Adding a new must-thread kwarg is a
-# deliberate one-line edit to this set, not an automatic consequence of
-# growing the signature -- most signature kwargs are test-injection defaults
-# that no transport-reachable code must override. Presence is the contract:
-# ``registry_service=None`` (as in sage/migrate.py) satisfies the gate
-# because the key is present; silent omission does not.
-REQUIRED_TRANSPORT_KWARGS: frozenset[str] = frozenset({"config_path", "registry_service"})
+# every call site (the FastAPI lifespan in sage/app.py, the reload tool, and
+# the create-vault and reload feature-operation paths in
+# sage/services/vault_registry.py / sage/mcp_init.reload_vault_in_registry)
+# and asserts each captured kwargs dict has every key listed here. Adding a
+# new must-thread kwarg is a deliberate one-line edit to this set, not an
+# automatic consequence of growing the signature -- most signature kwargs are
+# test-injection defaults that no transport-reachable code must override.
+# Presence is the contract: an explicit ``registry_service=None`` satisfies
+# the gate because the key is present; silent omission does not.
+REQUIRED_TRANSPORT_KWARGS: frozenset[str] = frozenset(
+    {"config_path", "from_declaration", "registry_service"}
+)
 
 
 async def initialize_services(
@@ -911,6 +894,7 @@ async def initialize_services(
     abstraction_provider: AbstractionProvider | None = None,
     migrate: bool = False,
     config_path: Path | None = None,
+    from_declaration: bool = False,
     registry_service: "VaultRegistryService | None" = None,
 ) -> SAGEServices:
     """Initialize all SAGE services for a vault configuration.
@@ -958,6 +942,11 @@ async def initialize_services(
         config_path: Source path of the vault_config.yaml file. Stored on
             the returned ``SAGEServices`` so that ``reload_vault`` can
             re-read the file from disk to pick up edits made externally.
+        from_declaration: Whether ``config`` was loaded from a declaration
+            in the vault-source store. Stored on the returned
+            ``SAGEServices`` so that ``reload_vault`` re-reads the
+            declaration under every binding, including one with no
+            ``config_path`` to thread.
         registry_service: Singleton VaultRegistryService used by
             VaultConfigService.update_config to perform the registry-mutation
             step of a config reload. Optional in test fixtures that never
@@ -1140,6 +1129,7 @@ async def initialize_services(
             vault_config_service=vault_config_service,
             maintenance_service=maintenance_service,
             config_path=config_path,
+            from_declaration=from_declaration,
             content_store_factory=content_store_factory,
             graph_store_factory=graph_store_factory,
             timing_thread=timing_thread,
@@ -1192,6 +1182,7 @@ async def reload_vault_in_registry(
     config: VaultConfig,
     config_path: Path | None = None,
     registry_service: "VaultRegistryService | None" = None,
+    from_declaration: bool | None = None,
 ) -> SAGEServices:
     """Atomically swap a vault's services in the registry.
 
@@ -1207,9 +1198,9 @@ async def reload_vault_in_registry(
     (see ``initialize_services``'s transactional cleanup block).
 
     Carries the predecessor's ``content_store_factory`` / ``graph_store_factory``
-    and (when the caller does not supply one) ``config_path`` forward so
-    hermetic-lifespan-test setups survive reload and on-disk YAML edits
-    round-trip correctly.
+    and (when the caller does not supply them) ``config_path`` and
+    ``from_declaration`` forward so hermetic-lifespan-test setups survive
+    reload and a declared vault stays declared, re-read by the next reload.
     """
     old = registry.get(vault_id)
     content_store_factory = None
@@ -1217,6 +1208,8 @@ async def reload_vault_in_registry(
     if old is not None:
         if config_path is None:
             config_path = old.config_path
+        if from_declaration is None:
+            from_declaration = old.from_declaration
         content_store_factory = old.content_store_factory
         graph_store_factory = old.graph_store_factory
 
@@ -1235,6 +1228,7 @@ async def reload_vault_in_registry(
     new_services = await initialize_services(
         config,
         config_path=config_path,
+        from_declaration=bool(from_declaration),
         registry_service=registry_service,
         graph_store_factory=graph_store_factory,
         content_store_factory=content_store_factory,

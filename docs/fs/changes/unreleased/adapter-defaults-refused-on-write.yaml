@@ -1,0 +1,31 @@
+classification: minor
+category:
+  - caller-adaptation
+summary: >-
+  create_vault and update_vault_config refuse an adapter_defaults parameter its
+  adapter cannot use, with vault_config_validation_error whose detail.errors names
+  the path (adapter_defaults.<source_type>.<key>). Each entry is checked by the
+  adapter that reads it, using the same check projection applies, so a value is
+  refused on write exactly when every later ingest or re-projection of that format
+  would refuse it with adapter_config_invalid. The markdown dialect check moves onto
+  the same path. A stored configuration holding such a value, a key naming no
+  source type, or a non-mapping entry now loads with a warning under both
+  vault-source bindings instead of dropping the vault from discovery, following the
+  strict-on-write, lenient-on-load split that lifecycle problems already follow.
+  The value is kept as stored: a refused parameter or dialect is still refused by
+  the projection that reads it, while an unknown key or a non-mapping entry
+  configures nothing, so that format projects at adapter defaults and the load
+  warning is the only trace. The CreateVaultRequest.config description in
+  sage_core_api.openapi.yaml stated that the configuration was validated against
+  vault_config.schema.json, which it never was; it now states the two checks that
+  run.
+for_callers: >-
+  A vault configuration write now refuses an adapter_defaults value the adapter
+  would refuse at projection: a pdf max_pages, pptx max_slides or xlsx preview_rows
+  that is not an integer of at least 1, an xlsx max_sheets that is neither that nor
+  null, or a docx heading_style_map that does not map style names to levels 1
+  through 9. These were accepted before and failed every later ingest of the format.
+  A vault whose stored configuration already holds one keeps loading, with a
+  warning naming the value to repair through update_vault_config; ingests of that
+  format are refused until it is repaired. A stored key naming no source type, or
+  an entry that is not a mapping, also loads with a warning, and configures nothing.

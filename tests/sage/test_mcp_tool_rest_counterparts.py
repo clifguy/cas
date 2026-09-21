@@ -61,6 +61,7 @@ async def yaml_app(
         app,
         config,
         config_path=config_path,
+        from_declaration=True,
         content_store_factory=lambda _brain: StubContentStore(),
     )
     try:

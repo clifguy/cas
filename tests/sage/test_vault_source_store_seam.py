@@ -22,8 +22,9 @@ import logging
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
-from sage.config import StackDocumentStoreConfig
+from sage.config import StackDocumentStoreConfig, VaultConfig
 from sage.services.vault_source_errors import (
     SOURCE_BYTE_METHOD_NAMES,
     _TranslatingVaultSourceStore,
@@ -310,3 +311,30 @@ def test_vss_b1_load_config_warns_on_retired_section(
     # The parsed model drops the section either way; the warning is the only
     # surviving trace of it.
     assert getattr(config, "source_adapters", None) is None
+
+
+def test_vss_b2_load_config_loads_refused_adapter_defaults_with_a_warning(
+    source_store, minimal_vault_config_dict, caplog
+):
+    """B2: a stored declaration holding an ``adapter_defaults`` value the write
+    paths refuse loads under both bindings, keeping the value and warning with
+    its path (CAS-ADR-047: strict on write, lenient on load).
+
+    Trap: the strict half proves the value is one the write paths refuse, so the
+    load's success is the lenient split and not an accepted value; a binding
+    that validated its stored mapping without the stored-configuration context
+    raises here while the other binding passes."""
+    stored = copy.deepcopy(minimal_vault_config_dict)
+    stored["vault"]["id"] = "typed_vault"
+    stored["adapter_defaults"] = {"pdf": {"max_pages": 0}}
+    with pytest.raises(ValidationError):
+        VaultConfig.model_validate(stored)
+    source_store.write_config("typed_vault", stored)
+
+    with caplog.at_level(logging.WARNING, logger="sage.config"):
+        config = source_store.load_config(_discovered_by_id(source_store, "typed_vault"))
+
+    assert config.adapter_defaults == {"pdf": {"max_pages": 0}}
+    matching = [r.getMessage() for r in caplog.records if "loaded leniently" in r.getMessage()]
+    assert len(matching) == 1
+    assert "adapter_defaults.pdf.max_pages" in matching[0]

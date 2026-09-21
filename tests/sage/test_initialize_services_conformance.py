@@ -7,7 +7,7 @@ each kwarg listed in the canonical set. Four call sites are surveyed:
 
   Transport lifespans / one-shot entrypoints
   ------------------------------------------
-  - ``sage/mcp_server.py:reload_vault`` -- MCP reload tool
+  - ``sage/sage_api_tools.py:reload_vault`` -- MCP reload tool
   - ``sage/app.py:_initialize_vault`` -- FastAPI lifespan
 
   Feature-operation call sites (reachable via FastAPI routers + MCP tools)
@@ -116,7 +116,7 @@ class _FakeIngestionService:
 class _FakeServices:
     """Minimal SAGEServices stand-in covering every attribute touched by
     the six drivers below: graph_store (close + list), config_path /
-    content_store_factory / graph_store_factory / timing_thread
+    from_declaration / content_store_factory / graph_store_factory / timing_thread
     (reload_vault_in_registry's close-and-reuse branch), close_timing and
     close_storage (every teardown path calls them), user_service.bootstrap_owner
     (VaultRegistryService.create_vault), ingestion_service (the same method's
@@ -129,6 +129,7 @@ class _FakeServices:
         self.ingestion_service = _FakeIngestionService()
         self.timing_thread = None
         self.config_path: Path | None = None
+        self.from_declaration = False
         self.content_store_factory: Any = None
         self.graph_store_factory: Any = None
         self.storage: Any = None
@@ -246,11 +247,37 @@ async def _drive_fastapi_lifespan(
     return captured
 
 
+async def _drive_fastapi_discovery(
+    *,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    minimal_vault_config_dict: dict,
+) -> list[dict]:
+    """Drive the FastAPI lifespan's discovery loop over a one-vault store."""
+    vault_root = tmp_path / "vault_root"
+    vault_root.mkdir()
+    _materialize_vault(vault_root, "vault_a", minimal_vault_config_dict)
+    mcp_server._vaults.clear()
+
+    captured: list[dict] = []
+
+    async def capturing_init(config, **kwargs):
+        captured.append(kwargs)
+        return _FakeServices(config)
+
+    monkeypatch.setattr("sage.app.initialize_services", capturing_init)
+    app = sage_app.create_app(vault_root=vault_root)
+    async with app.router.lifespan_context(app):
+        pass
+    return captured
+
+
 async def _drive_reload_vault_in_registry(
     *,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     minimal_vault_config_dict: dict,
+    old_declared: bool = False,
 ) -> list[dict]:
     """Drive sage.mcp_init.reload_vault_in_registry with a seeded registry
     so the close-and-reuse branch executes. This is the call site reached
@@ -265,6 +292,7 @@ async def _drive_reload_vault_in_registry(
     # branch runs (exercises the realistic FastAPI reload path).
     old = _FakeServices(config)
     old.config_path = config_path
+    old.from_declaration = old_declared
     registry: dict = {"vault_a": old}
 
     captured: list[dict] = []
@@ -413,6 +441,47 @@ async def test_transport_threads_required_kwargs(
             "every key listed in sage.mcp_init.REQUIRED_TRANSPORT_KWARGS "
             "(T-0136 closure pair)."
         )
+
+
+# ---------------------------------------------------------------------------
+# T2b: declaration provenance values
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("driver", "old_declared"),
+    [
+        pytest.param(_drive_fastapi_discovery, None, id="lifespan_discovery"),
+        pytest.param(_drive_vault_registry_create_vault, None, id="create_vault"),
+        pytest.param(_drive_reload_vault_in_registry, True, id="reload_carries_declared"),
+        pytest.param(_drive_reload_vault_in_registry, False, id="reload_carries_in_memory"),
+    ],
+)
+async def test_declared_vaults_carry_from_declaration(
+    driver,
+    old_declared,
+    isolate_module_state,
+    monkeypatch,
+    tmp_path,
+    minimal_vault_config_dict,
+):
+    """Presence is T2's contract; this pins the value where it is decided.
+
+    A vault discovered in the store or created through it is declared, and a
+    rebuild that names no provenance keeps the predecessor's: reload re-reads
+    only a declared vault, so a wrong value here silently stops a reload from
+    seeing an edit, with every key still present. The in-memory arm keeps the
+    carry-forward from passing as an unconditional ``True``.
+    """
+    kwargs = {} if old_declared is None else {"old_declared": old_declared}
+    captured = await driver(
+        monkeypatch=monkeypatch,
+        tmp_path=tmp_path,
+        minimal_vault_config_dict=minimal_vault_config_dict,
+        **kwargs,
+    )
+    expected = True if old_declared is None else old_declared
+    assert [call["from_declaration"] for call in captured] == [expected]
 
 
 # ---------------------------------------------------------------------------
