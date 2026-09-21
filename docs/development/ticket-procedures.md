@@ -111,7 +111,9 @@ and do not authorize reopening work or making a new acceptance judgment.
 
 ## Dependencies and triage
 
-An A depends_on B edge means B must finish before A. Resolve complete chains,
+By triage convention an A depends_on B edge means B must finish before A; the
+engine's `verify_preconditions` does not enforce that under this vault's
+lifecycle, where `active` still satisfies a dependency. Resolve complete chains,
 anchor validity and retractions using the served graph contract; a completed
 predecessor may satisfy an edge whose anchor remains valid. Never reanchor a valid
 predecessor edge merely because a successor exists. Retractions suppress dependencies;

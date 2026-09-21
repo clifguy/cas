@@ -1327,6 +1327,22 @@ paths:
         per-item database transactions. Length-1 is fully supported.
 
 
+        **A `depends_on` edge is evaluated later, not when it is
+        created.** Creating one does not check the target's state;
+        `verify_preconditions` evaluates it against the vault's
+        dependency-satisfying states. With no configuration the
+        dependency-satisfying set is the engine default, `active` and
+        `completed`, so a target that is still open satisfies the
+        dependency: `depends_on` means the target exists and is live,
+        not that it is finished. A vault opts a base state out by
+        declaring `satisfies_dependency: false` on it in its lifecycle
+        configuration, and opts a domain state in with
+        `satisfies_dependency: true`. To make `depends_on` mean blocked
+        until the target is complete, declare
+        `satisfies_dependency: false` on `active`; `completed` then
+        remains the only satisfying base state.
+
+
         **The batch is NOT atomic.** A per-item error surfaces in
         the response's per-item error envelope but does not roll back
         earlier-or-later successful items. The endpoint returns HTTP 200
@@ -1574,8 +1590,7 @@ paths:
       description: >-
         Iterates the document's outbound `depends_on` edges; for each
         target, verifies the lifecycle status is one the vault's
-        configuration declares dependency-satisfying (`active` or
-        `completed` under the base lifecycle) and that
+        configuration declares dependency-satisfying and that
         `pipeline_status` is not `failed` — a target still
         mid-pipeline is not rejected.
         Returns a `satisfied` boolean plus a per-edge breakdown of
@@ -1584,6 +1599,18 @@ paths:
         re-querying each dependency. A target the vault does not hold
         is reported unsatisfied with `actual` of "not found" rather
         than raising.
+
+
+        With no configuration the dependency-satisfying set is the
+        engine default, `active` and `completed`, so a target that is
+        still open satisfies the dependency: `depends_on` means the
+        target exists and is live, not that it is finished. A vault
+        opts a base state out by declaring `satisfies_dependency: false`
+        on it in its lifecycle configuration, and opts a domain state in
+        with `satisfies_dependency: true`. To make `depends_on` mean
+        blocked until the target is complete, declare
+        `satisfies_dependency: false` on `active`; `completed` then
+        remains the only satisfying base state.
 
 
         This is not a mutation preview. A `dry_run` on a mutation
