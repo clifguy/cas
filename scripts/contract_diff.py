@@ -32,10 +32,14 @@ the classification a finding forces is right either way, and the owner can
 downgrade a finding that is not one through the change record's override.
 
 **An added response is classified by what it answers.** An added success
-response is a capability; an added refusal -- any status outside 2xx -- is an
-adaptation, because a caller must now handle it. A refusal the server already
-returned and the contract merely did not list is a patch, which only the owner's
-override can say.
+response is a capability; an added refusal -- any status outside 2xx, or an
+error code a tool newly publishes -- is an adaptation, because a caller must now
+handle it, and so is a removed code a caller already handled. For the same
+reason an arm added to a refusal union -- a schema only non-2xx responses
+reach -- is an adaptation, while a union widened anywhere else, a success
+response included, is a capability. A refusal the server
+already returned and the contract merely did not list is a patch, which only
+the owner's override can say.
 
 Usage::
 
@@ -212,9 +216,73 @@ class _Collector:
         self.old_document = old_document
         self.new_document = new_document
         self.findings: list[Finding] = []
+        self._refusal_schemas: frozenset[str] | None = None
 
     def add(self, pointer: str, kind: str, category: str) -> None:
         self.findings.append(Finding(self.surface, pointer, kind, category))
+
+    def is_refusal(self, pointer: str) -> bool:
+        """Whether a location describes only refusals: what a non-2xx response carries.
+
+        That is a schema under an operation's non-2xx response, or a component
+        schema reached from such a response and from no request and no success
+        response.
+        """
+        parts = pointer.split("/")
+        if parts[0] == "paths" and "responses" in parts:
+            status = parts[parts.index("responses") + 1]
+            return not status.startswith("2")
+        if parts[:2] == ["components", "schemas"] and len(parts) > 2:
+            if self._refusal_schemas is None:
+                self._refusal_schemas = _refusal_schemas(self.new_document or {})
+            return parts[2] in self._refusal_schemas
+        return False
+
+
+def _refusal_schemas(spec: dict[str, Any]) -> frozenset[str]:
+    """Component schemas reached from a non-2xx response and nothing else."""
+    components = spec.get("components") or {}
+
+    def reached(roots: list[Any]) -> set[str]:
+        pending: list[str] = []
+
+        def collect(node: Any) -> None:
+            if isinstance(node, dict):
+                ref = node.get("$ref")
+                if isinstance(ref, str) and ref.startswith("#/components/"):
+                    pending.append(ref)
+                for value in node.values():
+                    collect(value)
+            elif isinstance(node, list):
+                for value in node:
+                    collect(value)
+
+        collect(roots)
+        seen: set[str] = set()
+        while pending:
+            ref = pending.pop()
+            if ref in seen:
+                continue
+            seen.add(ref)
+            section, _, name = ref.removeprefix("#/components/").partition("/")
+            collect((components.get(section) or {}).get(name))
+        prefix = "#/components/schemas/"
+        return {ref.removeprefix(prefix) for ref in seen if ref.startswith(prefix)}
+
+    refusals: list[Any] = []
+    others: list[Any] = []
+    for item in (spec.get("paths") or {}).values():
+        if not isinstance(item, dict):
+            continue
+        others.append(item.get("parameters"))
+        for method in _HTTP_METHODS:
+            operation = item.get(method)
+            if not isinstance(operation, dict):
+                continue
+            others.extend([operation.get("parameters"), operation.get("requestBody")])
+            for status, response in (operation.get("responses") or {}).items():
+                (others if str(status).startswith("2") else refusals).append(response)
+    return frozenset(reached(refusals) - reached(others))
 
 
 _WIDENING_COMPOSITIONS: Final[tuple[str, ...]] = ("anyOf", "oneOf")
@@ -447,8 +515,10 @@ def _diff_branches(old: Any, new: Any, key: str, pointer: str, out: _Collector) 
         _diff_schema(old_list[i], new_list[j], f"{pointer}/{key}/{j}", out)
     widening = key != "allOf"
     for j in unmatched_new[len(unmatched_old) :]:
-        category = CAPABILITY if widening else CALLER_ADAPTATION
-        out.add(f"{pointer}/{key}/{j}", "branch-added", category)
+        at = f"{pointer}/{key}/{j}"
+        # A widened refusal is a new refusal a caller must now handle.
+        category = CAPABILITY if widening and not out.is_refusal(at) else CALLER_ADAPTATION
+        out.add(at, "branch-added", category)
     for i in unmatched_old[len(unmatched_new) :]:
         category = CALLER_ADAPTATION if widening else CAPABILITY
         out.add(f"{pointer}/{key}/{i}", "branch-removed", category)
@@ -709,8 +779,9 @@ def _tools(catalog: dict[str, Any]) -> dict[tuple[str, str], dict[str, Any]]:
 def diff_mcp_catalog(old: dict[str, Any], new: dict[str, Any]) -> list[Finding]:
     """Every contract-visible difference between two MCP tool catalogs.
 
-    A tool's name, input schema, output schema, and the surface that lists it
-    are contract; its description, title, and annotations are not.
+    A tool's name, input schema, output schema, the refusal codes its error
+    schema publishes, and the surface that lists it are contract; its
+    description, title, and annotations are not.
     """
     out = _Collector("mcp")
     old_tools, new_tools = _tools(old), _tools(new)
@@ -748,7 +819,19 @@ def diff_mcp_catalog(old: dict[str, Any], new: dict[str, Any]) -> list[Finding]:
         elif old_output is not None:
             _diff_schema(old_output, new_output, f"{pointer}/outputSchema", out)
 
+        old_codes, new_codes = _error_codes(old_tool), _error_codes(new_tool)
+        for code in sorted(new_codes - old_codes):
+            out.add(f"{pointer}/errors/{code}", "error-code-added", CALLER_ADAPTATION)
+        for code in sorted(old_codes - new_codes):
+            out.add(f"{pointer}/errors/{code}", "error-code-removed", CALLER_ADAPTATION)
+
     return out.findings
+
+
+def _error_codes(tool: dict[str, Any]) -> set[str]:
+    """The refusal codes a tool publishes in its error schema's discriminator."""
+    schema = (tool.get("_meta") or {}).get("org.sage/errorSchema") or {}
+    return set((schema.get("discriminator") or {}).get("mapping") or {})
 
 
 # ---------------------------------------------------------------------------

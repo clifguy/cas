@@ -32,7 +32,6 @@ _SPECS = {
     "cas_app": _REPO_ROOT / "docs" / "fs" / "cas_app_api.openapi.yaml",
 }
 _ERROR_RESPONSE_REF = "#/components/schemas/ErrorResponse"
-_APP_AUTH_PREFIX = "/app/auth"
 
 #: Operations whose body is read as a raw byte stream rather than bound to a
 #: model, so no body value is validated and ``invalid_parameter`` is
@@ -70,7 +69,7 @@ def _body_routes(app, *, application: bool) -> list[APIRoute]:
             continue
         if route.path.startswith("/app") != application:
             continue
-        if route.path.startswith(_APP_AUTH_PREFIX) or route.body_field is None:
+        if route.body_field is None:
             continue
         routes.append(route)
     return routes
