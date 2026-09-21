@@ -92,7 +92,15 @@ UNREACHABLE_PER_FILE: dict[str, tuple[str, ...]] = {
 #: Codes the single-document ingest declares that a batch refuses once, for the
 #: whole call, before any file is attempted -- so they surface as the batch
 #: operation's own status and never as a per-file entry.
-BATCH_BOUNDARY: frozenset[str] = frozenset({"invalid_vault_id", "vault_not_found"})
+#:
+#: ``invalid_parameter`` is here for the codes-and-tags conflict, which the
+#: single document refuses on its request model and a batch refuses across the
+#: whole envelope before anything is staged or delivered. By the time a batch
+#: builds a per-file request, no entry carries both, so the per-file
+#: construction cannot raise it.
+BATCH_BOUNDARY: frozenset[str] = frozenset(
+    {"invalid_vault_id", "vault_not_found", "invalid_parameter"}
+)
 
 #: Codes a request surface refuses at its boundary, before any operation runs,
 #: because of a name and where it was spelled -- one the operation does not

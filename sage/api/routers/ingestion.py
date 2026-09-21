@@ -292,7 +292,11 @@ def _codes_and_tags_conflict(
             "model": ErrorResponse,
             "description": (
                 "Ingestion failure. The source adapter could not produce a "
-                "valid projection (unsupported format, corrupt content)."
+                "valid projection (unsupported format, corrupt content).\n\n"
+                "`invalid_parameter`: `metadata` supplies both `codes` and "
+                "`tags`, which set the same field. `detail.parameter` locates "
+                "it at `metadata.tags` and `detail.constraint` states the "
+                "rule. No document is created."
             ),
         },
         500: {

@@ -429,6 +429,10 @@ def register_sage_tools(
           level), and ``example``. Refused on the key's presence rather than
           its value, because a string value validates and is then dropped.
           No document is created.
+        - ``invalid_parameter`` (422): ``metadata`` supplies both ``codes``
+          and ``tags``, which set the same field. Detail carries
+          ``parameter`` (``metadata.tags``), ``value`` and ``constraint``.
+          Supply one, not both. No document is created.
         - ``undeclared_key`` (400): an object nested inside an argument --
           ``relocated_from`` -- names a key its schema does not declare.
           Detail carries ``parameter``, ``key``, ``recognized`` and

@@ -37,7 +37,9 @@ for_callers: >-
   POST /sage_vaults/{vault_id}/documents:batch keeps it: that status now carries only the
   codes-and-tags conflict, never an undeclared key. POST /app/ingest now declares that same
   422, which it has raised since the conflict refusal landed but did not publish; the
-  behaviour is unchanged and the declaration is what is new. An ingest that passed a
+  behaviour is unchanged and the declaration is what is new. POST /documents and the
+  ingest_document tool likewise now declare the 422 they answer when metadata supplies both
+  codes and tags, the third surface that refusal reaches. An ingest that passed a
   top-level argument inside metadata -- tier3_metadata, predecessor_id, force and the rest
   -- is now refused rather than silently ignored; pass it as the argument it is. The keys
   metadata does carry (title, version_label, project, doc_type, authority_scope,

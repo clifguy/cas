@@ -720,6 +720,9 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         # Keys of the ``undeclared_key`` detail.
         "key": ERROR_DETAIL_KEY,
         "parameter": ERROR_DETAIL_KEY,
+        # Key of the ``invalid_parameter`` detail, named in the
+        # codes-and-tags conflict error mode.
+        "constraint": ERROR_DETAIL_KEY,
         "colliding_value": ERROR_DETAIL_KEY,
         "current_head_version": ERROR_DETAIL_KEY,
         "current_state": ERROR_DETAIL_KEY,

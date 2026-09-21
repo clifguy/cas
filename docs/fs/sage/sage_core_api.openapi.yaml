@@ -953,6 +953,11 @@ paths:
           description: >-
             Ingestion failure. The source adapter could not produce a
             valid projection (unsupported format, corrupt content).
+
+            `invalid_parameter`: `metadata` supplies both `codes` and `tags`,
+            which set the same field. `detail.parameter` locates it at
+            `metadata.tags` and `detail.constraint` states the rule. No
+            document is created.
           content:
             application/json:
               schema:

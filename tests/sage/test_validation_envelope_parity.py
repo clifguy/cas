@@ -750,3 +750,93 @@ async def test_every_tool_building_a_nesting_model_names_the_accepted_keys(vault
         assert envelope["detail"]["recognized"] == sorted(
             getattr(schemas, expected_model).model_fields
         ), (tool_name, envelope)
+
+
+#: One request body per Core API operation whose body graph nests a model that
+#: refuses extras, planting an undeclared key at that nesting, with the model
+#: that must answer for it. The *set* these cover is derived below; an
+#: operation with no entry fails rather than being skipped.
+#: Keyed by route name -- the handler's, which is what the derivation returns
+#: and is not always the published operation id.
+_HTTP_NESTED_KEY_PROBES: dict[str, tuple[str, dict, str]] = {
+    "ingest": (
+        "documents",
+        {"source": "test/sample.md", "relocated_from": {"bogus_field_x": 1}},
+        "RelocationPointer",
+    ),
+    "update_lifecycles": (
+        "lifecycles",
+        {
+            "items": [
+                {
+                    "document_id": "00000000_absent_document",
+                    "action": "relocate",
+                    "relocated_to": {"bogus_field_x": 1},
+                }
+            ]
+        },
+        "RelocationPointer",
+    ),
+    "create_edges": (
+        "edges",
+        {"items": [{"source_id": "00000000_absent_document", "bogus_field_x": 1}]},
+        "BulkLinkItem",
+    ),
+    "update_metadata": (
+        "metadata",
+        {"items": [{"document_id": "00000000_absent_document", "tags": {"bogus_field_x": 1}}]},
+        "ListFieldPatch",
+    ),
+}
+
+
+def _core_operations_with_a_nested_strict_model() -> set[str]:
+    """Core API operations whose body graph nests a model refusing extras.
+
+    Derived the way the declaration gate derives it, and for the same reason:
+    an operation added later has to arrive here rather than wait to be
+    remembered. ``RetrievalFilters`` is excluded because a key it refuses
+    keeps ``unknown_filter_key``, whose detail says more.
+    """
+    from tests.sage.test_rest_request_strictness_conformance import (
+        _FORM_ENCODED_BODY_MODELS,
+        _core_routes,
+        _operations_with_a_nested_strict_model,
+    )
+
+    reachable = _operations_with_a_nested_strict_model(_core_routes(), _FORM_ENCODED_BODY_MODELS)
+    by_name = {route.name: route for route in _core_routes()}
+    return {name for name, yes in reachable.items() if yes and name in by_name}
+
+
+async def test_every_http_operation_with_a_nested_model_refuses_its_undeclared_keys(http_client):
+    """The HTTP surface answers a nested undeclared key, operation by operation.
+
+    Its sibling gate reads the published 400 against a derivation and never
+    sends a request, so severing the rule at the exception handler for any
+    subset of operations leaves it green -- measured, not supposed. The MCP
+    surface had a probe gate from the start and the HTTP one did not, which is
+    the asymmetry this closes: what a declaration gate proves is that the
+    contract says the right thing, never that the surface does it.
+
+    The multipart batch upload is covered by its own endpoint tests, which
+    post real file parts; it is excluded here rather than given a fake body.
+    """
+    from sage.models import schemas
+
+    derived = _core_operations_with_a_nested_strict_model() - {"batch_ingest_documents"}
+    assert derived, "no operation derived; the walk checks nothing"
+    uncovered = sorted(derived - set(_HTTP_NESTED_KEY_PROBES))
+    assert uncovered == [], f"no nested-key probe defined for {uncovered}"
+
+    for operation in sorted(derived):
+        path, body, expected_model = _HTTP_NESTED_KEY_PROBES[operation]
+        resp = await http_client.post(f"/sage_vaults/{VAULT_ID}/{path}", json=body)
+        envelope = resp.json()
+
+        assert resp.status_code == 400, (operation, resp.text)
+        assert envelope["code"] == "undeclared_key", (operation, envelope)
+        assert envelope["detail"]["key"] == "bogus_field_x", (operation, envelope)
+        assert envelope["detail"]["recognized"] == sorted(
+            getattr(schemas, expected_model).model_fields
+        ), (operation, envelope)
