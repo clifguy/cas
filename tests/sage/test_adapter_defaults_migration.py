@@ -324,8 +324,10 @@ def test_stored_adapter_defaults_problem_loads_with_a_warning(
 
     A stored configuration is a fact, not a request: refusing it would drop the
     vault from discovery, unreachable by the surfaces that could repair it
-    (CAS-ADR-047). The value is kept as stored so the projection that reads it
-    still refuses it by name, and the warning names the path to repair.
+    (CAS-ADR-047). The value is kept as stored, and the warning names the path
+    to repair: for a refused parameter or dialect the projection that reads it
+    still refuses it by name, while an unknown key or a non-mapping entry
+    configures nothing and the warning is its only trace.
     """
     minimal_vault_config_dict["adapter_defaults"] = defaults
     stored = _write_config(tmp_path / "vault_config.yaml", minimal_vault_config_dict)
@@ -337,3 +339,39 @@ def test_stored_adapter_defaults_problem_loads_with_a_warning(
     warnings = [r.getMessage() for r in caplog.records if "loaded leniently" in r.getMessage()]
     assert len(warnings) == 1
     assert path in warnings[0]
+
+
+def test_validating_a_configuration_imports_an_adapter_only_for_its_entries(
+    minimal_vault_config_dict, tmp_path
+):
+    """Reading a configuration pulls in the adapters only when an entry needs one.
+
+    The registry imports every adapter's parsing dependencies, which a
+    configuration with no ``adapter_defaults`` entry never uses. Run in a fresh
+    interpreter that imports only ``sage.config``, so an import made by an
+    earlier test or another module cannot satisfy either half; the second half
+    is the control that the probed module is the one a recognised entry loads,
+    so the first cannot pass for a module never loaded.
+    """
+    import subprocess
+    import sys
+
+    assert "adapter_defaults" not in minimal_vault_config_dict  # precondition
+    config_file = tmp_path / "config.json"
+    config_file.write_text(json.dumps(minimal_vault_config_dict))
+    probe = (
+        "import json, sys\n"
+        "from sage.config import VaultConfig\n"
+        f"config = json.loads(open({str(config_file)!r}).read())\n"
+        "VaultConfig.model_validate(config)\n"
+        "before = 'sage.source_adapters.pdf_adapter' in sys.modules\n"
+        "config['adapter_defaults'] = {'pdf': {'max_pages': 5}}\n"
+        "VaultConfig.model_validate(config)\n"
+        "after = 'sage.source_adapters.pdf_adapter' in sys.modules\n"
+        "print(before, after)\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    )
+
+    assert result.stdout.split() == ["False", "True"]

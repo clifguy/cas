@@ -1840,11 +1840,13 @@ class VaultConfig(BaseModel):
         Strictness follows the split in CAS-ADR-047: refused on the write
         paths, warned and loaded from a stored configuration under
         ``{"adapter_defaults_validation": "warn"}``. A value loaded that way
-        is kept as stored, so the projection that reads it still refuses it
-        by name.
+        is kept as stored. A parameter or dialect its adapter refuses is
+        still refused, by name, by the projection that reads it; a key
+        naming no source type, or an entry that is not a mapping, configures
+        nothing, so that format projects at adapter defaults and the load
+        warning is the only trace.
         """
         valid = {source_type.value for source_type in SourceType}
-        adapters = _source_adapters()
         problems: list[str] = []
         for key, value in self.adapter_defaults.items():
             if key not in valid:
@@ -1857,7 +1859,7 @@ class VaultConfig(BaseModel):
                     f"adapter_defaults.{key}: expected a parameter mapping, "
                     f"got {type(value).__name__}"
                 )
-            elif (adapter := adapters.get(SourceType(key))) is not None:
+            elif (adapter := _source_adapters().get(SourceType(key))) is not None:
                 try:
                     adapter.check_config(value)
                 except AdapterConfigError as exc:
