@@ -1713,13 +1713,23 @@ async def test_bdry_bulk_real_run_carries_no_dry_run_verdicts(confined_vault):
     assert "dry_run_validated" not in leg
 
 
-async def test_bdry_bulk_error_names_a_windows_callers_file_by_its_basename(confined_vault):
+@pytest.mark.parametrize(
+    "caller_path,filename",
+    [
+        pytest.param("C:\\inbox\\bad.md", "bad.md", id="windows"),
+        # A backslash is a legal POSIX filename character, so a reduction that
+        # split on it unconditionally would name this file "b.md".
+        pytest.param("/caller/inbox/a\\b.md", "a\\b.md", id="posix-backslash"),
+    ],
+)
+async def test_bdry_bulk_error_names_the_file_by_its_callers_basename(
+    confined_vault, caller_path, filename
+):
     """A dry-run error entry names the file as the real run's entry would: by
-    the caller path's basename under the caller's own separator, not by the
-    whole Windows path a POSIX reading leaves intact."""
+    the caller path's basename under the caller's own separator."""
     files = [
         {
-            "file_path": "C:\\inbox\\bad.md",
+            "file_path": caller_path,
             "source_type": "markdown",
             "parsed_metadata": {"title": "Bad", "doc_type": "not_a_type"},
         }
@@ -1728,5 +1738,5 @@ async def test_bdry_bulk_error_names_a_windows_callers_file_by_its_basename(conf
         result = _parse(await bulk_ingest_document(_VAULT_ID, files, dry_run=True))
 
     (leg,) = result["uploads"]
-    assert leg["dry_run_error"]["filename"] == "bad.md"
-    assert leg["dry_run_error"]["source_path"] == "C:\\inbox\\bad.md"
+    assert leg["dry_run_error"]["filename"] == filename
+    assert leg["dry_run_error"]["source_path"] == caller_path
