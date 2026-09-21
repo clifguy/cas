@@ -157,6 +157,26 @@ async def test_an_assertions_path_leaving_the_storage_root_is_refused(
         assert (fake.source_stats, fake.source_reads) == (0, 0)
 
 
+async def test_an_absolute_assertions_path_is_refused(monkeypatch, graph_store, minimal_config):
+    """SB-3a: an absolute path leaves the storage root as surely as ``..`` does.
+
+    Joined onto the storage root, an absolute path replaces it outright, so a
+    local read would honour it. Anti-coincidental-pass: a valid file sits at the
+    absolute location, so a containment check that only looks for ``..``
+    segments lets the run succeed here.
+    """
+    select_vault_source_binding(monkeypatch, "filesystem")
+    outside = _storage_root(minimal_config).parent / "absolute.yaml"
+    outside.write_bytes(_VALID)
+    service = _service(graph_store, minimal_config, str(outside))
+
+    with pytest.raises(AssertionsFileInvalidError) as excinfo:
+        await service.eval_retrieval()
+
+    assert excinfo.value.detail["assertions_file"] == str(outside)
+    assert "storage root" in excinfo.value.detail["reason"]
+
+
 async def test_malformed_yaml_read_from_the_store_is_invalid(
     monkeypatch, graph_store, minimal_config
 ):
@@ -174,8 +194,10 @@ async def test_malformed_yaml_read_from_the_store_is_invalid(
 async def test_a_store_refusal_on_the_read_is_typed(monkeypatch, graph_store, minimal_config):
     """SB-5: a store declining the read reaches the caller as ``vault_source_store_refused``.
 
-    Anti-coincidental-pass: ``detail["operation"]`` is asserted to be the read,
-    so a refusal raised from the existence probe instead would fail here.
+    ``detail["operation"]`` echoes the refusal the fake was given, so on its own
+    it says nothing about which probe raised. The stat count does: one stat
+    succeeded before the read was refused, so the refusal came from the read,
+    after the existence probe had answered.
     """
     fake = select_vault_source_binding(monkeypatch, "document_store")
     fake.sources[_ASSERTIONS] = _VALID
@@ -189,3 +211,28 @@ async def test_a_store_refusal_on_the_read_is_typed(monkeypatch, graph_store, mi
     assert exc.status_code == 502
     assert exc.detail["operation"] == "read source"
     assert exc.detail["source_path"] == _ASSERTIONS
+    assert fake.source_stats == 1
+
+
+async def test_a_store_refusal_on_the_existence_probe_is_typed(
+    monkeypatch, graph_store, minimal_config
+):
+    """SB-6: a store declining the existence probe is typed too, never a 404 or 500.
+
+    Anti-coincidental-pass: the file is present in the store, so a probe whose
+    refusal were swallowed as "absent" would surface as
+    ``assertions_file_not_found``; and no read is counted, so the refusal is
+    proven to come from the probe rather than the read after it.
+    """
+    fake = select_vault_source_binding(monkeypatch, "document_store")
+    fake.sources[_ASSERTIONS] = _VALID
+    fake.refuse_stat = store_refusal(403, retryable=False, operation="stat source")
+    service = _service(graph_store, minimal_config, _ASSERTIONS)
+
+    with pytest.raises(VaultSourceStoreRefusedError) as excinfo:
+        await service.eval_retrieval()
+
+    exc = excinfo.value
+    assert exc.status_code == 502
+    assert exc.detail["operation"] == "stat source"
+    assert fake.source_reads == 0

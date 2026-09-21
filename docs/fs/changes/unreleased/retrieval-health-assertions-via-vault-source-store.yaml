@@ -17,4 +17,6 @@ for_callers: >-
   the file is still read from the vault's storage root. The operation may now
   answer vault_source_store_refused (502) or vault_source_store_unavailable
   (503), and refuses an assertions path that leaves the storage root with
-  assertions_file_invalid (400).
+  assertions_file_invalid (400). That includes an absolute assertions_file
+  path, which the filesystem binding previously honoured: move the file under
+  the storage root and name it by a relative path.
