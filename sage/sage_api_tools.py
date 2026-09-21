@@ -28,7 +28,7 @@ from sage.api.errors import (
     validation_error_envelope,
 )
 from sage.mcp_init import SAGEServices
-from sage.models.enums import RetrievalMode, SourceType
+from sage.models.enums import FacetField, RetrievalMode, SourceType
 from sage.models.legacy_form import detect_legacy_form
 from sage.models.schemas import (
     BulkLifecycleItem,
@@ -1816,7 +1816,7 @@ def register_sage_tools(
         response_mode: str | None = None,
         sort_by: str | None = None,
         sort_order: str | None = None,
-        facet_fields: list[str] | None = None,
+        facet_fields: list[FacetField] | None = None,
         facet_value_limit: int | None = None,
         # Tripwires, not functional arguments. These are the ``filters``
         # keys; they are published here only so a wrong-level spelling

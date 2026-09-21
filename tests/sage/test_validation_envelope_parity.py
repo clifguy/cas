@@ -189,6 +189,22 @@ async def test_mcp_search_unknown_facet_field_returns_envelope(vault_services):
     assert "facet_fields" in envelope["detail"]["parameter"]
 
 
+@pytest.mark.parametrize("element", [1, None, "bogus"])
+async def test_mcp_search_facet_field_refusal_names_the_vocabulary(vault_services, element):
+    """Every facet_fields element outside the vocabulary is refused naming it.
+
+    A non-string element and an unknown name alike come back at the
+    element's position with a constraint listing the accepted facet names,
+    so the refusal is repairable whichever seam raises it.
+    """
+    envelope = await _call_search(mode="catalog", target="facets", facet_fields=[element])
+
+    assert envelope["error"] == "invalid_parameter", envelope
+    assert envelope["detail"]["parameter"] == "facet_fields.0", envelope
+    for name in ("doc_type", "lifecycle_status", "source_type", "pipeline_status", "tags"):
+        assert name in envelope["detail"]["constraint"], envelope
+
+
 async def test_mcp_search_wrong_typed_tool_argument_returns_envelope(vault_services):
     """A coercion failure at the argument model returns the envelope.
 

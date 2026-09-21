@@ -165,8 +165,8 @@ def _models_reached(model: type[BaseModel]) -> list[type[BaseModel]]:
     return reached
 
 
-def _definition_docstrings(model: type[BaseModel]) -> set[str]:
-    """The docstrings of every model and enum a published item shape reaches."""
+def _definitions_reached(model: type[BaseModel]) -> list[type]:
+    """Every model and enum a published item shape reaches."""
     classes: list[type] = list(_models_reached(model))
     for current in list(classes):
         pending = [field.annotation for field in current.model_fields.values()]
@@ -176,7 +176,26 @@ def _definition_docstrings(model: type[BaseModel]) -> set[str]:
                 classes.append(annotation)
             elif isinstance(annotation, types.UnionType) or typing.get_origin(annotation):
                 pending.extend(typing.get_args(annotation))
-    return {inspect.cleandoc(cls.__doc__) for cls in classes if cls.__doc__}
+    return classes
+
+
+def _definition_docstrings(model: type[BaseModel]) -> set[str]:
+    return {inspect.cleandoc(cls.__doc__) for cls in _definitions_reached(model) if cls.__doc__}
+
+
+def _keyed(node: object, key: str) -> list[str]:
+    """Every string value held under ``key`` anywhere in a schema."""
+    found: list[str] = []
+    if isinstance(node, dict):
+        if isinstance(node.get(key), str):
+            found.append(node[key])
+        for name, value in node.items():
+            if name != key:
+                found.extend(_keyed(value, key))
+    elif isinstance(node, list):
+        for value in node:
+            found.extend(_keyed(value, key))
+    return found
 
 
 def _descriptions(node: object) -> list[str]:
@@ -288,6 +307,45 @@ def test_published_shapes_carry_no_definition_prose(tool: str, argument: str):
     assert "title" not in published and "description" not in published
     leaked = [text[:60] for text in _descriptions(published) if text in docstrings]
     assert leaked == [], f"definition docstrings published: {leaked}"
+    class_names = {
+        cls.__name__ for cls in _definitions_reached(_model(_NESTED_ITEM_MODELS[(tool, argument)]))
+    }
+    titled = sorted(set(_keyed(published, "title")) & class_names)
+    assert titled == [], f"definition titles published: {titled}"
+
+
+def _schema_class_names() -> set[str]:
+    return {
+        name
+        for name, obj in [*vars(schemas).items(), *vars(mcp_items).items()]
+        if isinstance(obj, type) and issubclass(obj, BaseModel)
+    }
+
+
+@pytest.mark.parametrize(("tool", "argument"), sorted(_NESTED_ITEM_MODELS))
+def test_published_descriptions_name_no_model_class(tool: str, argument: str):
+    """A caller of the tool cannot resolve a Python model name.
+
+    A reference is a backticked class name, or a class name followed by one
+    of its fields; the plain word a class happens to share is not one.
+
+    Field descriptions shared with the Core API specification state their
+    semantics in place rather than pointing at another request model.
+    """
+    import re
+
+    names = _schema_class_names()
+    assert len(names) > 100, "too few model names to be checking anything"
+    cited = sorted(
+        {
+            match
+            for text in _descriptions(_published_item(tool, argument))
+            for match in re.findall(r"`([A-Z][A-Za-z0-9]+)[.`]|\b([A-Z][A-Za-z0-9]+)\.[a-z]", text)
+            for match in match
+            if match in names
+        }
+    )
+    assert cited == [], f"published descriptions name model classes: {cited}"
 
 
 @pytest.mark.parametrize(("tool", "argument"), sorted(_NESTED_ITEM_MODELS))
