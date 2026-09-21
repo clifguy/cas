@@ -5835,6 +5835,7 @@ components:
               - type: array
                 items:
                   type: string
+              - type: "null"
           description: >-
             Caller-supplied metadata fields to merge into the document
             record at ingestion time. Per CAS-ADR-021, callers are
@@ -5843,11 +5844,11 @@ components:
             when needs_review=true) > chain inherit (predecessor's
             doc_type, project, authority_scope when predecessor_id
             is set and the caller omitted the field) > vault default
-            (doc_type only, falls through to `misc`). A field's value
-            may not be null: this mapping's values are a string or a
-            list of strings, so a null is refused at the boundary
-            rather than ignored. Omit the field instead. Unknown field
-            names are stored but have no schema-enforced semantics.
+            (doc_type only, falls through to `misc`). A field whose
+            value is null is treated exactly as an omitted field, so a
+            null doc_type, project or authority_scope on a supersession
+            still inherits the predecessor's value. A field name
+            outside the recognized set is ignored rather than stored.
             Values are strings except
             tags, which may be supplied as a list of strings or as a
             comma-separated string (parity with update_metadata's

@@ -3064,7 +3064,7 @@ class IngestionService:
             ) from exc
 
     @staticmethod
-    def _build_metadata_updates(metadata: dict[str, str | list[str]]) -> dict:
+    def _build_metadata_updates(metadata: dict[str, str | list[str] | None]) -> dict:
         """Convert caller-supplied metadata dict to document field updates.
 
         Known fields are mapped to document columns. Unknown fields are
@@ -3213,7 +3213,7 @@ class IngestionService:
         *,
         baseline: dict,
         parsed: ParsedMetadata | None,
-        caller_metadata: dict[str, str | list[str]] | None,
+        caller_metadata: dict[str, str | list[str] | None] | None,
         predecessor: Document | None,
         adapter_tags: list[str],
         adapter_tag_prefixes: list[str],
@@ -3245,7 +3245,11 @@ class IngestionService:
         caller_keys: set[str] = set()
         if caller_metadata:
             field_updates.update(self._build_metadata_updates(caller_metadata))
-            caller_keys = set(caller_metadata.keys())
+            # A null value means the key was omitted, so it is not a claim on
+            # the field and inheritance decides it. The helper's caller_keys
+            # rule is its own per-field contract; on this path a claimed field
+            # already carries a non-null value in field_view.
+            caller_keys = {k for k, v in caller_metadata.items() if v is not None}
 
         if predecessor is not None:
             field_view = {**baseline, **field_updates}
