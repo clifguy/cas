@@ -6,6 +6,7 @@ test_api_integration.py.
 """
 
 import asyncio
+import copy
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -678,6 +679,40 @@ async def test_create_vault_409_exists(client, tmp_path):
     resp = await client.post("/sage_vaults", json={"config": config})
     assert resp.status_code == 409
     assert resp.json()["code"] == "vault_already_exists"
+
+
+async def test_write_surfaces_refuse_lifecycle_scope_naming_undeclared_doc_type(client, tmp_path):
+    """A lifecycle `doc_types` entry naming no declared doc_type is refused on write.
+
+    Both interactive write surfaces refuse it (CAS-ADR-047); the update
+    leaves the vault serving its previous configuration. Each lifecycle is
+    otherwise valid -- the paired unscoped update below succeeds -- so the
+    stray doc_type is the only cause of the refusal.
+    """
+    current = (await client.get("/sage_vaults/test_vault/config")).json()["lifecycle"]
+    stray = copy.deepcopy(current)
+    stray["states"].append({"value": "blocked", "label": "Blocked", "doc_types": ["ghost"]})
+
+    resp = await client.put("/sage_vaults/test_vault/config", json={"lifecycle": stray})
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "vault_config_validation_error"
+    assert "ghost" in " ".join(resp.json()["detail"]["errors"])
+    served = (await client.get("/sage_vaults/test_vault/config")).json()["lifecycle"]
+    assert "blocked" not in [s["value"] for s in served["states"]]
+
+    config = VaultRegistryService.get_default_config("scoped_ghost", "Scoped", "testuser")
+    config["vault"]["storage_root"] = str(tmp_path / "scoped_ghost" / "sources")
+    config["vault"]["brain_root"] = str(tmp_path / "scoped_ghost" / "brain")
+    config["lifecycle"]["states"].append(
+        {"value": "blocked", "label": "Blocked", "doc_types": ["ghost"]}
+    )
+    resp = await client.post("/sage_vaults", json={"config": config})
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "vault_config_validation_error"
+
+    del stray["states"][-1]["doc_types"]
+    resp = await client.put("/sage_vaults/test_vault/config", json={"lifecycle": stray})
+    assert resp.status_code == 200, "control: the same lifecycle without the stray scope saves"
 
 
 async def test_create_vault_400_invalid(client):

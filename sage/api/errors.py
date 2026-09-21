@@ -470,6 +470,32 @@ class InvalidDocTypeError(SAGEError):
         )
 
 
+class LifecycleStateNotApplicableError(SAGEError):
+    """409: a doc_type change would leave the document in a state its new type lacks.
+
+    A lifecycle state may be scoped to named doc_types (CAS-ADR-054), and no
+    transition moves a document into a state its doc_type cannot hold. A
+    doc_type change is the one other way a document could come to hold one,
+    so it is refused while the document sits in a state scoped away from the
+    requested type. ``state_doc_types`` names the types the state admits; the
+    remedy is to transition the document to a state the new type carries,
+    then change its doc_type.
+    """
+
+    def __init__(self, current_state: str, doc_type: str, state_doc_types: list[str]) -> None:
+        super().__init__(
+            "lifecycle_state_not_applicable",
+            f"Cannot change doc_type to {doc_type} while the document is in "
+            f"{current_state}, a state scoped to {', '.join(sorted(state_doc_types))}",
+            409,
+            {
+                "current_state": current_state,
+                "doc_type": doc_type,
+                "state_doc_types": sorted(state_doc_types),
+            },
+        )
+
+
 class Tier3SchemaViolationError(SAGEError):
     """400: tier3_metadata payload failed validation.
 

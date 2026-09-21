@@ -11,6 +11,7 @@ from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.api.errors import (
     DocumentNotFoundError,
     InvalidDocTypeError,
+    LifecycleStateNotApplicableError,
     ListFieldAddConflictError,
     ListFieldRemoveConflictError,
     SAGEError,
@@ -273,6 +274,21 @@ class MetadataService:
                 valid_types = self._config.valid_doc_type_values()
                 if request.doc_type not in valid_types:
                     raise InvalidDocTypeError(request.doc_type, valid_types)
+                # A document may not come to hold a state its doc_type
+                # cannot (CAS-ADR-054); transitions are held to that, and a
+                # retype is the one other way in.
+                state_scope = next(
+                    (
+                        state.doc_types
+                        for state in self._config.lifecycle.states
+                        if state.value == doc.lifecycle_status
+                    ),
+                    None,
+                )
+                if state_scope is not None and request.doc_type not in state_scope:
+                    raise LifecycleStateNotApplicableError(
+                        doc.lifecycle_status, request.doc_type, state_scope
+                    )
                 updates["doc_type"] = request.doc_type
             if request.document_date is not None:
                 updates["document_date"] = request.document_date

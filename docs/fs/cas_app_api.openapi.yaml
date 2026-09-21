@@ -2668,6 +2668,46 @@ components:
           $ref: '#/components/schemas/LegacyFormErrorDetail'
       additionalProperties: false
       description: The refusal envelope for this error code.
+    LifecycleStateNotApplicableErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - current_state
+      - doc_type
+      - state_doc_types
+      properties:
+        current_state:
+          type: string
+          description: Current state.
+        doc_type:
+          type: string
+          description: Doc type.
+        state_doc_types:
+          type: array
+          items:
+            type: string
+          description: State doc types.
+      description: Additional context for this refusal.
+    LifecycleStateNotApplicableError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: lifecycle_state_not_applicable
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/LifecycleStateNotApplicableErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
     LocalOpenOnlyError:
       type: object
       required:
@@ -5291,6 +5331,7 @@ components:
             - invalid_user_id
             - invalid_vault_id
             - legacy_form
+            - lifecycle_state_not_applicable
             - local_open_only
             - merged_from_validation
             - method_not_allowed
@@ -5851,6 +5892,7 @@ components:
         - invalid_user_id
         - invalid_vault_id
         - legacy_form
+        - lifecycle_state_not_applicable
         - missing_document_identifier
         - patch_empty
         - stale_read
@@ -5973,6 +6015,7 @@ components:
       - $ref: '#/components/schemas/InvalidUserIdError'
       - $ref: '#/components/schemas/InvalidVaultIdError'
       - $ref: '#/components/schemas/LegacyFormError'
+      - $ref: '#/components/schemas/LifecycleStateNotApplicableError'
       - $ref: '#/components/schemas/LocalOpenOnlyError'
       - $ref: '#/components/schemas/MergedFromValidationError'
       - $ref: '#/components/schemas/MethodNotAllowedError'
@@ -6100,6 +6143,7 @@ components:
           invalid_user_id: '#/components/schemas/InvalidUserIdError'
           invalid_vault_id: '#/components/schemas/InvalidVaultIdError'
           legacy_form: '#/components/schemas/LegacyFormError'
+          lifecycle_state_not_applicable: '#/components/schemas/LifecycleStateNotApplicableError'
           local_open_only: '#/components/schemas/LocalOpenOnlyError'
           merged_from_validation: '#/components/schemas/MergedFromValidationError'
           method_not_allowed: '#/components/schemas/MethodNotAllowedError'

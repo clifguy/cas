@@ -1303,14 +1303,14 @@ class IngestionService:
                 raise DocumentNotFoundError(request.predecessor_id)
             if (
                 self._transition_table.validate_transition(
-                    predecessor.lifecycle_status, "supersede"
+                    predecessor.lifecycle_status, "supersede", predecessor.doc_type
                 )
                 is None
             ):
                 raise SupersedeTargetNotActiveError(
                     request.predecessor_id,
                     predecessor.lifecycle_status,
-                    self._transition_table.states_allowing("supersede"),
+                    self._transition_table.states_allowing("supersede", predecessor.doc_type),
                 )
             ran.append(DryRunValidator.PREDECESSOR)
 
@@ -1803,7 +1803,7 @@ class IngestionService:
                     raise SupersedeTargetNotActiveError(
                         predecessor.id,
                         exc.detail["current_state"],
-                        self._transition_table.states_allowing("supersede"),
+                        self._transition_table.states_allowing("supersede", predecessor.doc_type),
                     ) from exc
         else:
             # New document. When a predecessor is being superseded the

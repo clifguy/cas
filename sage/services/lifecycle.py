@@ -105,14 +105,18 @@ class LifecycleService:
             if doc is None:
                 raise DocumentNotFoundError(document_id)
 
-            # Validate action is known (400 vs 409 distinction)
-            if not self._table.is_known_action(request.action):
-                raise InvalidActionError(request.action, self._table.known_actions())
+            # Validate action is known (400 vs 409 distinction). Both
+            # questions are asked for the document's doc_type, so an action
+            # scoped away from it is unknown here (CAS-ADR-054).
+            if not self._table.is_known_action(request.action, doc.doc_type):
+                raise InvalidActionError(request.action, self._table.known_actions(doc.doc_type))
 
             # Validate transition from current state
-            result = self._table.validate_transition(doc.lifecycle_status, request.action)
+            result = self._table.validate_transition(
+                doc.lifecycle_status, request.action, doc.doc_type
+            )
             if result is None:
-                valid = self._table.get_valid_actions(doc.lifecycle_status)
+                valid = self._table.get_valid_actions(doc.lifecycle_status, doc.doc_type)
                 raise InvalidLifecycleTransitionError(
                     doc.lifecycle_status,
                     request.action,
@@ -516,12 +520,14 @@ class LifecycleService:
                 reporting a second code would make the caller-visible
                 error for one rejection depend on timing.
         """
-        result = self._table.validate_transition(predecessor.lifecycle_status, "supersede")
+        result = self._table.validate_transition(
+            predecessor.lifecycle_status, "supersede", predecessor.doc_type
+        )
         if result is None:
             raise SupersedeTargetNotActiveError(
                 predecessor.id,
                 predecessor.lifecycle_status,
-                self._table.states_allowing("supersede"),
+                self._table.states_allowing("supersede", predecessor.doc_type),
             )
         to_state, _ = result
         now = datetime.now(timezone.utc)

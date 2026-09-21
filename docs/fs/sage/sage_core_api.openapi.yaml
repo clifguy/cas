@@ -303,15 +303,18 @@ paths:
 
         **The action vocabulary is vault-config-defined**, not a fixed
         SAGE-wide set. Send the request with `dry_run=true` to learn it
-        without writing: an action this vault has never heard of comes
-        back as `invalid_action` carrying `known_actions`, every action
-        a caller may invoke, and a known action illegal from the
-        document's current state comes back as
-        `invalid_lifecycle_transition` carrying `valid_actions`, the
-        ones legal from where it is. For the full
-        `(from_state, action, to_state, creates_edge)` table rather
-        than either answer, read `lifecycle.transitions` in the vault
-        config (`GET /sage_vaults/{vault_id}/config`).
+        without writing: an action the vault does not offer the
+        document's doc_type comes back as `invalid_action` carrying
+        `known_actions`, every action a caller may invoke on that
+        doc_type, and a known action illegal from the document's current
+        state comes back as `invalid_lifecycle_transition` carrying
+        `valid_actions`, the ones legal from where it is. A state or
+        transition that lists `doc_types` applies only to documents of
+        those doc_types; one without the key applies to every doc_type.
+        For the full `(from_state, action, to_state, creates_edge,
+        doc_types)` table rather than either answer, read
+        `lifecycle.transitions` in the vault config
+        (`GET /sage_vaults/{vault_id}/config`).
 
 
         **The `supersede` action is the canonical atomic form for
@@ -503,8 +506,12 @@ paths:
         `tag_patch_overlap`, `tier3_unset_conflict`,
         `tier3_patch_overlap`, `patch_empty`, `tier3_schema_violation`,
         `tier3_doc_type_change_stale_keys`, `legacy_form`,
-        `stale_read`. Each appears as a per-item error envelope rather
-        than as a batch-level 400/409.
+        `lifecycle_state_not_applicable`, `stale_read`. Each appears as
+        a per-item error envelope rather than as a batch-level 400/409.
+        `lifecycle_state_not_applicable` refuses a `doc_type` change
+        while the document holds a lifecycle state whose `doc_types`
+        excludes the new doc_type; transition it to a state the new
+        doc_type holds first.
 
 
         Empty `items` is valid: the response carries an empty `results`
@@ -1614,7 +1621,10 @@ paths:
         with `satisfies_dependency: true`. To make `depends_on` mean
         blocked until the target is complete, declare
         `satisfies_dependency: false` on `active`; `completed` then
-        remains the only satisfying base state.
+        remains the only satisfying base state. Satisfaction belongs to
+        the state alone: a state whose `doc_types` scopes it to some
+        doc_types satisfies, or not, exactly as it would unscoped,
+        whatever the doc_type of the document that depends on it.
 
 
         This is not a mutation preview. A `dry_run` on a mutation
@@ -2153,7 +2163,7 @@ paths:
       summary: Return the default configuration a new vault would be created with.
       description: >-
         Returns the creation-time scaffold as a JSON object conforming to
-        `docs/fs/sage/vault_config.schema.json`: two doc types, the three
+        `docs/fs/sage/vault_config.schema.json`: two doc types, the four
         base lifecycle states with their transition table, filename
         metadata extraction, tier-1 supersedes inference, and abstraction
         disabled.
@@ -2346,7 +2356,8 @@ paths:
         - The valid `action` vocabulary for
           `POST /sage_vaults/{vault_id}/lifecycles` (under
           `lifecycle.transitions`; each entry includes `from_state`,
-          `action`, `to_state`, `creates_edge`).
+          `action`, `to_state`, `creates_edge`, and `doc_types` when
+          the entry applies only to those doc_types).
 
         - The valid `doc_type` values for
           `POST /sage_vaults/{vault_id}/metadata` or for filtering
@@ -11726,6 +11737,46 @@ components:
           $ref: '#/components/schemas/LegacyFormErrorDetail'
       additionalProperties: false
       description: The refusal envelope for this error code.
+    LifecycleStateNotApplicableErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - current_state
+      - doc_type
+      - state_doc_types
+      properties:
+        current_state:
+          type: string
+          description: Current state.
+        doc_type:
+          type: string
+          description: Doc type.
+        state_doc_types:
+          type: array
+          items:
+            type: string
+          description: State doc types.
+      description: Additional context for this refusal.
+    LifecycleStateNotApplicableError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: lifecycle_state_not_applicable
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/LifecycleStateNotApplicableErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
     LocalOpenOnlyError:
       type: object
       required:
@@ -14349,6 +14400,7 @@ components:
             - invalid_user_id
             - invalid_vault_id
             - legacy_form
+            - lifecycle_state_not_applicable
             - local_open_only
             - merged_from_validation
             - method_not_allowed
@@ -14909,6 +14961,7 @@ components:
         - invalid_user_id
         - invalid_vault_id
         - legacy_form
+        - lifecycle_state_not_applicable
         - missing_document_identifier
         - patch_empty
         - stale_read
@@ -15031,6 +15084,7 @@ components:
       - $ref: '#/components/schemas/InvalidUserIdError'
       - $ref: '#/components/schemas/InvalidVaultIdError'
       - $ref: '#/components/schemas/LegacyFormError'
+      - $ref: '#/components/schemas/LifecycleStateNotApplicableError'
       - $ref: '#/components/schemas/LocalOpenOnlyError'
       - $ref: '#/components/schemas/MergedFromValidationError'
       - $ref: '#/components/schemas/MethodNotAllowedError'
@@ -15158,6 +15212,7 @@ components:
           invalid_user_id: '#/components/schemas/InvalidUserIdError'
           invalid_vault_id: '#/components/schemas/InvalidVaultIdError'
           legacy_form: '#/components/schemas/LegacyFormError'
+          lifecycle_state_not_applicable: '#/components/schemas/LifecycleStateNotApplicableError'
           local_open_only: '#/components/schemas/LocalOpenOnlyError'
           merged_from_validation: '#/components/schemas/MergedFromValidationError'
           method_not_allowed: '#/components/schemas/MethodNotAllowedError'

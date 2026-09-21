@@ -673,7 +673,8 @@ async def resolve_and_execute(
     # target already in a landing state has nothing left to transition:
     # an earlier supersession put it there, and chain repair reaches that
     # case routinely when it re-points an edge at an already-archived
-    # predecessor.
+    # predecessor. Both sets are the vault-wide union over doc_types; each
+    # target's own doc_type is applied where the target is validated below.
     allowed_states = transition_table.states_allowing("supersede")
     landing_states = transition_table.landing_states("supersede")
 
@@ -774,7 +775,9 @@ async def resolve_and_execute(
             continue
 
         current_state = target_doc.lifecycle_status
-        transition = transition_table.validate_transition(current_state, "supersede")
+        transition = transition_table.validate_transition(
+            current_state, "supersede", target_doc.doc_type
+        )
         if transition is not None:
             settled.append(
                 _SettledEdge(

@@ -465,7 +465,7 @@ def test_prepare_supersede_carries_caller_edge_provenance():
             )
         ]
     )
-    predecessor = SimpleNamespace(id="0000000b_pred", lifecycle_status="active")
+    predecessor = SimpleNamespace(id="0000000b_pred", lifecycle_status="active", doc_type="note")
 
     stamped = svc.prepare_supersede(
         predecessor,

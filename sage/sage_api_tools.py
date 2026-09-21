@@ -990,14 +990,18 @@ def register_sage_tools(
 
         The ``action`` vocabulary is vault-config-defined, not a fixed
         SAGE-wide set. Call with ``dry_run=true`` to learn it without
-        writing: an action this vault has never heard of comes back as
-        ``invalid_action`` carrying ``known_actions``, every action a
-        caller may invoke, and a known action illegal from the document's
-        current state comes back as ``invalid_lifecycle_transition``
-        carrying ``valid_actions``, the ones legal from where it is. For
-        the full (from_state, action, to_state, creates_edge) table
-        rather than either answer, read ``lifecycle.transitions`` in the
-        vault config via ``get_vault_config``. The ``cas`` vault uses
+        writing: an action the vault does not offer the document's
+        doc_type comes back as ``invalid_action`` carrying
+        ``known_actions``, every action a caller may invoke on that
+        doc_type, and a known action illegal from the document's current
+        state comes back as ``invalid_lifecycle_transition`` carrying
+        ``valid_actions``, the ones legal from where it is. A state or
+        transition that lists ``doc_types`` applies only to documents of
+        those doc_types; one without the key applies to every doc_type.
+        For the full (from_state, action, to_state, creates_edge,
+        doc_types) table rather than either answer, read
+        ``lifecycle.transitions`` in the vault config via
+        ``get_vault_config``. The ``cas`` vault uses
         ``ingest``, ``supersede``, ``complete``, ``archive``,
         ``reactivate``, ``relocate``.
 
@@ -1396,9 +1400,12 @@ def register_sage_tools(
         ``tags_add_conflict``), ``tag_patch_overlap`` (400),
         ``tier3_unset_conflict`` / ``tier3_patch_overlap`` / ``patch_empty``
         (400), ``tier3_schema_violation`` (400),
-        ``tier3_doc_type_change_stale_keys`` (400), and ``stale_read`` (409,
-        when a per-item ``expected_version`` does not match the target's
-        current version).
+        ``tier3_doc_type_change_stale_keys`` (400),
+        ``lifecycle_state_not_applicable`` (409, a ``doc_type`` change while
+        the document holds a lifecycle state whose ``doc_types`` excludes
+        the new doc_type; transition it to a state the new doc_type holds
+        first), and ``stale_read`` (409, when a per-item
+        ``expected_version`` does not match the target's current version).
 
         Batch-level error modes (the tool's error envelope): ``legacy_form``
         (a per-item ``tags`` is a bare list or ``tier3_metadata`` a bare
@@ -1546,7 +1553,10 @@ def register_sage_tools(
         ``satisfies_dependency: true``. To make ``depends_on`` mean blocked
         until the target is complete, declare ``satisfies_dependency:
         false`` on ``active``; ``completed`` then remains the only
-        satisfying base state.
+        satisfying base state. Satisfaction belongs to the state alone: a
+        state whose ``doc_types`` scopes it to some doc_types satisfies,
+        or not, exactly as it would unscoped, whatever the doc_type of
+        the document that depends on it.
 
         This is not a mutation preview. A ``dry_run`` on a mutation
         answers what that one call would do to committed state; this
@@ -2627,7 +2637,8 @@ def register_sage_tools(
 
         - The valid ``action`` vocabulary for ``update_lifecycles``
           (under ``lifecycle.transitions``; each entry includes
-          ``from_state``, ``action``, ``to_state``, ``creates_edge``).
+          ``from_state``, ``action``, ``to_state``, ``creates_edge``, and
+          ``doc_types`` when the entry applies only to those doc_types).
         - The valid ``doc_type`` values for ``update_metadata``
           or for filtering ``search`` (under
           ``document_types.doc_types``).
@@ -3897,7 +3908,7 @@ def register_sage_tools(
         """Return the default configuration a new vault would be created with.
 
         Returns the creation-time scaffold as a JSON object conforming to
-        ``docs/fs/sage/vault_config.schema.json``: two doc types, the three
+        ``docs/fs/sage/vault_config.schema.json``: two doc types, the four
         base lifecycle states with their transition table, filename
         metadata extraction, tier-1 supersedes inference, and abstraction
         disabled.
