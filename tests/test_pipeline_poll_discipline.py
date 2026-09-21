@@ -269,7 +269,7 @@ INGEST_CALLS: Final[frozenset[str]] = frozenset(
 # Evidence, in a polling function's own body, that the wait consults the claim
 # as well as the status: the registry itself, or one of the shared helper's
 # entry points, which check it unconditionally. Matched as identifiers by
-# ``_consults_claim`` rather than as substrings of the unparsed function -- a
+# ``_function_claim_markers`` rather than as substrings of the unparsed function -- a
 # false exemption here is silent, and is exactly the shape this arm exists to
 # report.
 CLAIM_AWARE_MARKERS: Final[tuple[str, ...]] = (
@@ -577,7 +577,8 @@ def _status_only_poll_helpers(tree: ast.AST) -> list[tuple[int, str]]:
                 and "pipeline_status" in ast.unparse(child)
                 and _sleeps(child)
             ):
-                findings.append((child.lineno, func))
+                if not _consults_claim(child, func):
+                    findings.append((child.lineno, func))
             visit(child, func)
 
     visit(tree, None)
@@ -588,43 +589,116 @@ def _status_only_poll_helpers(tree: ast.AST) -> list[tuple[int, str]]:
     seen: set[int] = set()
     kept: list[tuple[int, str]] = []
     for lineno, func in sorted(findings, key=lambda entry: entry[0]):
-        if id(func) in seen or _consults_claim(func):
+        if id(func) in seen:
             continue
         seen.add(id(func))
         kept.append((lineno, func.name))
     return kept
 
 
-def _consults_claim(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    """Whether the function's own body consults the in-flight claim.
+def _claim_expression(node: ast.AST, aliases: set[str]) -> bool:
+    """Recognize the registry or a currently bound local alias, excluding scopes."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)):
+        return False
+    if isinstance(node, ast.Attribute) and node.attr == "_inflight":
+        return True
+    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+        return node.id in aliases
+    return any(_claim_expression(child, aliases) for child in ast.iter_child_nodes(node))
 
-    Matched on identifiers -- a name or an attribute, which between them cover
-    the function half of a call -- rather than on the unparsed text of the
-    function. Text matching read a marker out of two places it does not belong:
 
-    * a **docstring**, which is prose *about* the wait rather than a check the
-      wait performs -- and "deliberately does not consult ``_inflight``" is a
-      natural sentence for exactly the helper this walk exists to report;
-    * a **nested definition**, whose body runs in its own scope and is
-      attributed to that definition by the walk above, so a nested delegating
-      helper would exempt the enclosing function's own status-only loop.
+def _claim_bindings(stmt: ast.AST, aliases: set[str]) -> set[str]:
+    """Apply a local assignment; other writes conservatively invalidate aliases."""
+    result = aliases.copy()
+    written = {
+        node.id
+        for node in ast.walk(stmt)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
+    }
+    result -= written
+    if isinstance(stmt, (ast.Assign, ast.AnnAssign)) and stmt.value is not None:
+        targets = stmt.targets if isinstance(stmt, ast.Assign) else [stmt.target]
+        if _claim_expression(stmt.value, aliases):
+            result.update(target.id for target in targets if isinstance(target, ast.Name))
+    return result
 
-    Both were reachable and neither was hypothetical. Note which change closes
-    which: the nested-definition case is excluded *here*, by the descent
-    stopping at a nested scope, while the docstring case is excluded by the
-    match being over identifiers at all -- a docstring is a string constant,
-    which is neither a name nor an attribute and has no children to descend
-    into. There is deliberately no separate docstring skip: one would pin
-    nothing, and would leave a later reader believing prose is excluded by a
-    guard rather than by the shape of the match. A scan widened to read string
-    content would reopen the case, and should reopen it visibly.
 
-    Scope is the whole body rather than the polling loop's own predicate, so a
-    marker anywhere in the function exempts every loop in it -- including one
-    appearing only in a timeout diagnostic. That is a known limit rather than
-    an oversight: narrowing to the predicate has to keep admitting the
-    sanctioned shape, which binds the registry to a local name *before* its
-    loop and tests that name inside it.
+def _consults_claim(
+    loop: ast.For | ast.AsyncFor | ast.While,
+    func: ast.FunctionDef | ast.AsyncFunctionDef,
+) -> bool:
+    """Whether this loop's completion decisions read the claim registry.
+
+    Follow local assignments in source order, merging conditional bindings by
+    intersection. A name assigned only later, overwritten, or confined to a
+    nested definition supplies no evidence. The bounded analysis follows no
+    calls and makes no inference about arbitrary containers or object mutation.
+    An inline if/return (or break) and a while predicate are completion
+    decisions; diagnostics and a neighbouring loop are not. Every explicit
+    exit from this loop must be guarded. Fixture delegation is separately
+    recognized by ``_function_claim_markers``.
+    """
+    incoming: set[str] = set()
+
+    def locate(stmts: list[ast.stmt], aliases: set[str]) -> set[str]:
+        nonlocal incoming
+        for stmt in stmts:
+            if stmt is loop:
+                incoming = aliases.copy()
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                aliases = aliases - {stmt.name}
+                continue
+            if isinstance(stmt, ast.If):
+                aliases = locate(stmt.body, aliases.copy()) & locate(stmt.orelse, aliases.copy())
+            else:
+                for _, value in ast.iter_fields(stmt):
+                    if isinstance(value, list) and value and isinstance(value[0], ast.stmt):
+                        locate(value, aliases.copy())
+                aliases = _claim_bindings(stmt, aliases)
+        return aliases
+
+    locate(func.body, set())
+    # A write later in the loop can invalidate a binding on its next iteration.
+    # Re-established bindings inside the loop are recognized in source order.
+    aliases = incoming - {
+        node.id
+        for stmt in loop.body
+        for node in ast.walk(stmt)
+        if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del))
+    }
+    predicate_claim = isinstance(loop, ast.While) and _claim_expression(loop.test, aliases)
+    exits: list[bool] = []
+
+    def decisions(stmts: list[ast.stmt], bound: set[str], guarded: bool) -> set[str]:
+        for stmt in stmts:
+            if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                bound = bound - {stmt.name}
+            elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
+                bound = _claim_bindings(stmt, bound)
+            elif isinstance(stmt, ast.If):
+                claim = _claim_expression(stmt.test, bound)
+                bound = decisions(stmt.body, bound.copy(), guarded or claim) & decisions(
+                    stmt.orelse, bound.copy(), guarded or claim
+                )
+            elif isinstance(stmt, (ast.Return, ast.Break)):
+                exits.append(guarded)
+            else:
+                for _, value in ast.iter_fields(stmt):
+                    if isinstance(value, list) and value and isinstance(value[0], ast.stmt):
+                        decisions(value, bound.copy(), guarded)
+                bound = _claim_bindings(stmt, bound)
+        return bound
+
+    decisions(loop.body, aliases, False)
+    return (predicate_claim or bool(exits)) and all(exits)
+
+
+def _function_claim_markers(func: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """Recognize whole-function claim/delegation markers for fixture adapters.
+
+    This existing fixture-handoff heuristic deliberately has broader scope
+    than the loop-specific exemption. Identifiers count; prose and nested
+    definitions do not. It is not evidence that each polling loop is safe.
     """
 
     def scan(node: ast.AST) -> bool:
@@ -869,7 +943,8 @@ def _module_wait_helpers(tree: ast.AST) -> frozenset[str]:
     return frozenset(
         node.name
         for node in ast.iter_child_nodes(tree)
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and _consults_claim(node)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and _function_claim_markers(node)
     )
 
 
@@ -879,11 +954,11 @@ def _pipeline_wait_lines(
     """Every line at which the function waits on the pipeline.
 
     A wait is either a consultation of the claim -- the shared helper's entry
-    points or the registry, matched exactly as ``_consults_claim`` matches
+    points or the registry, matched exactly as ``_function_claim_markers`` matches
     them -- or a call to one of the module's own waiting helpers, from
     ``_module_wait_helpers``.
 
-    ``_consults_claim``'s *identifier* exclusion is reproduced: the match is on
+    ``_function_claim_markers``'s *identifier* exclusion is reproduced: the match is on
     a name or an attribute, so a docstring saying the fixture deliberately does
     not wait is a string constant and cannot match.
 
@@ -2851,3 +2926,78 @@ def test_unwaited_fixture_arm_reaches_a_fixture_outside_a_test_module(tmp_path: 
         if _unwaited_fixture_handoffs(tree)
     }
     assert reported == {"tests/conftest.py", "tests/sage/conftest.py", "tests/test_mod.py"}
+
+
+@pytest.mark.parametrize(
+    ("binding", "predicate", "diagnostic", "expected"),
+    [
+        ("inflight = service._inflight", "", "assert doc_id not in inflight", [(3, "wait")]),
+        ("inflight = service._inflight", " and doc_id not in inflight", "", []),
+        ("pass", " and doc_id not in service._inflight", "", []),
+        (
+            "inflight = service._inflight; inflight = {}",
+            " and doc_id not in inflight",
+            "",
+            [(3, "wait")],
+        ),
+        ("pass", " and doc_id not in inflight", "inflight = service._inflight", [(3, "wait")]),
+        ("pass", "", "assert service._inflight is not None", [(3, "wait")]),
+    ],
+)
+def test_helper_detector_requires_claim_in_this_loop_decision(
+    binding: str, predicate: str, diagnostic: str, expected: list[tuple[int, str]]
+) -> None:
+    """A registry binding matters only when still valid in the exit decision."""
+    source = (
+        f"async def wait(service, doc_id):\n    {binding}\n"
+        "    for _ in range(10):\n"
+        f"        if doc.pipeline_status in TERMINAL{predicate}:\n"
+        "            return doc\n"
+        "        await asyncio.sleep(0.01)\n"
+        f"    {diagnostic or 'pass'}\n"
+    )
+    assert _status_only_poll_helpers(ast.parse(source)) == expected
+
+
+@pytest.mark.parametrize("aware_first", [True, False])
+def test_helper_detector_reports_first_offending_loop(aware_first: bool) -> None:
+    """An earlier or later claim-aware loop cannot excuse a status-only one."""
+    source = "async def wait(service, doc_id):\n    inflight = service._inflight\n"
+    for aware in [aware_first, not aware_first]:
+        clause = " and doc_id not in inflight" if aware else ""
+        source += (
+            "    for _ in range(10):\n"
+            f"        if doc.pipeline_status in TERMINAL{clause}:\n"
+            "            break\n"
+            "        await asyncio.sleep(0.01)\n"
+        )
+    assert _status_only_poll_helpers(ast.parse(source)) == [(7 if aware_first else 3, "wait")]
+
+
+def test_helper_detector_accepts_claim_in_while_predicate() -> None:
+    """A while predicate can keep polling until both conditions clear."""
+    source = """
+async def wait(service, doc_id):
+    inflight = service._inflight
+    while doc.pipeline_status not in TERMINAL or doc_id in inflight:
+        doc = await fetch()
+        await asyncio.sleep(0.01)
+"""
+    assert _status_only_poll_helpers(ast.parse(source)) == []
+
+
+def test_helper_detector_rejects_nested_and_diagnostic_claims() -> None:
+    """A nested claim check or diagnostic if does not decide to finish the poll."""
+    source = """
+async def wait(service, doc_id):
+    for _ in range(10):
+        async def nested():
+            if doc_id not in service._inflight:
+                return doc
+        if doc_id in service._inflight:
+            print("still held")
+        if doc.pipeline_status in TERMINAL:
+            return doc
+        await asyncio.sleep(0.01)
+"""
+    assert _status_only_poll_helpers(ast.parse(source)) == [(3, "wait")]
