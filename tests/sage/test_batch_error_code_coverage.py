@@ -634,12 +634,14 @@ def test_batch_operations_declare_no_per_file_status():
 
     Declaring the store-refusal statuses, or any other per-file status, on a
     batch operation would name responses it cannot return. The Core upload
-    operation declares 422 for one refusal only: an entry supplying both
-    ``codes`` and ``tags``, which set the same field. The undeclared-key
-    refusal that used to share that status is ``undeclared_key`` at 400, with
-    the rest of the "you named something that does not exist" family. The
-    application operation declares the same 422 for the same conflict, which
-    it raises through the same rule, and also 401, 501 and 503, each a refusal
+    operation's 422 is ``invalid_parameter`` alone, a refusal of the whole
+    request: an entry supplying both ``codes`` and ``tags``, which set the
+    same field, and the value validation every body-taking operation shares.
+    The undeclared-key refusal that used to share that status is
+    ``undeclared_key`` at 400, with the rest of the "you named something that
+    does not exist" family. The application operation declares the same 422
+    for the same refusals, which it raises through the same rules, and also
+    401, 501 and 503, each a refusal
     of the whole request before any file is examined: a hosted deployment's
     backend-for-frontend requires a signed-in session and a configured
     sign-in, and does not offer path-based ingest.

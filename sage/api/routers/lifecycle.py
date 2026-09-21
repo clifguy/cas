@@ -5,7 +5,7 @@
 from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_lifecycle_service, get_vault_id
-from sage.api.response_docs import boundary_400
+from sage.api.response_docs import boundary_400, invalid_parameter_422
 from sage.api.wire_route import WireRoute
 from sage.models.schemas import (
     BulkLifecycleRequest,
@@ -54,6 +54,7 @@ router = APIRouter(route_class=WireRoute, tags=["Document Lifecycle"])
                 "`detail.available_vaults` lists the registered vaults."
             ),
         },
+        422: invalid_parameter_422(),
     },
 )
 async def update_lifecycles(

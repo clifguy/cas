@@ -5,7 +5,7 @@
 from fastapi import APIRouter, Depends
 
 from sage.api.dependencies import get_metadata_service, get_vault_id
-from sage.api.response_docs import boundary_400
+from sage.api.response_docs import boundary_400, invalid_parameter_422
 from sage.api.wire_route import WireRoute
 from sage.models.schemas import (
     BulkMetadataRequest,
@@ -63,6 +63,7 @@ router = APIRouter(route_class=WireRoute, tags=["Document Metadata"])
                 "`current_version`."
             ),
         },
+        422: invalid_parameter_422(),
     },
 )
 async def update_metadata(

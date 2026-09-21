@@ -176,6 +176,18 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ErrorResponse"
+        "422":
+          description: >-
+            `invalid_parameter`: a value in the request failed validation -- a
+            wrong type, a bound, a malformed value -- and no more specific
+            code reports it. `detail.parameter` locates the value as a dotted
+            path from the top of the request, with a list position as its
+            index, `detail.value` carries it, and `detail.constraint` states
+            the rule it broke.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "501":
           description: >-
             `local_profile_only`: a hosted deployment's backend-for-frontend
@@ -337,6 +349,13 @@ paths:
             `files.<n>.parsed_metadata.tags` and `detail.value` carries its
             value. No file is ingested. An undeclared key in an entry is
             refused as `undeclared_key` (400) instead.
+
+            `invalid_parameter`: a value in the request failed validation -- a
+            wrong type, a bound, a malformed value -- and no more specific
+            code reports it. `detail.parameter` locates the value as a dotted
+            path from the top of the request, with a list position as its
+            index, `detail.value` carries it, and `detail.constraint` states
+            the rule it broke.
           content:
             application/json:
               schema:
@@ -3239,6 +3258,40 @@ components:
           $ref: '#/components/schemas/NoProjectionErrorDetail'
       additionalProperties: false
       description: The refusal envelope for this error code.
+    OutputPathInvalidErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - output_path
+      - reason
+      properties:
+        output_path:
+          type: string
+          description: Output path.
+        reason:
+          type: string
+          description: Reason.
+      description: Additional context for this refusal.
+    OutputPathInvalidError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: output_path_invalid
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/OutputPathInvalidErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
     PatchEmptyErrorDetail:
       type: object
       additionalProperties: false
@@ -5352,6 +5405,7 @@ components:
             - missing_successor_id
             - mode_parameter_mismatch
             - no_projection
+            - output_path_invalid
             - patch_empty
             - path_traversal_denied
             - pipeline_incomplete
@@ -5538,6 +5592,7 @@ components:
         - invalid_parameter
         - invalid_vault_id
         - no_projection
+        - output_path_invalid
         - path_traversal_denied
         - unknown_parameter
         - vault_not_found
@@ -6037,6 +6092,7 @@ components:
       - $ref: '#/components/schemas/MissingSuccessorIdError'
       - $ref: '#/components/schemas/ModeParameterMismatchError'
       - $ref: '#/components/schemas/NoProjectionError'
+      - $ref: '#/components/schemas/OutputPathInvalidError'
       - $ref: '#/components/schemas/PatchEmptyError'
       - $ref: '#/components/schemas/PathTraversalDeniedError'
       - $ref: '#/components/schemas/PipelineIncompleteError'
@@ -6165,6 +6221,7 @@ components:
           missing_successor_id: '#/components/schemas/MissingSuccessorIdError'
           mode_parameter_mismatch: '#/components/schemas/ModeParameterMismatchError'
           no_projection: '#/components/schemas/NoProjectionError'
+          output_path_invalid: '#/components/schemas/OutputPathInvalidError'
           patch_empty: '#/components/schemas/PatchEmptyError'
           path_traversal_denied: '#/components/schemas/PathTraversalDeniedError'
           pipeline_incomplete: '#/components/schemas/PipelineIncompleteError'

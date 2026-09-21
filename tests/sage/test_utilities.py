@@ -178,6 +178,76 @@ async def test_bh040_absolute_path_outside_vault(utilities_service, ingested_doc
 
 
 # ---------------------------------------------------------------------------
+# BH-040b/BH-040c: export_projection refuses a directory target before writing
+# ---------------------------------------------------------------------------
+
+
+def _tree(root: Path) -> dict[str, tuple[bool, int, int]]:
+    """Every path under root with its kind, size and modification time."""
+    return {
+        str(path.relative_to(root)): (path.is_dir(), path.stat().st_size, path.stat().st_mtime_ns)
+        for path in sorted(root.rglob("*"))
+    }
+
+
+async def test_bh040b_export_to_storage_root_refused(
+    utilities_service, ingested_doc, tmp_vault_dir
+):
+    """The storage root itself is not a file path, and nothing under it changes."""
+    from sage.api.errors import PathTraversalDeniedError
+
+    root = tmp_vault_dir / "sources"
+    before = _tree(root)
+
+    with pytest.raises(PathTraversalDeniedError) as exc_info:
+        await utilities_service.export_projection(ingested_doc.id, ".")
+
+    assert exc_info.value.detail == {"output_path": "."}
+    assert _tree(root) == before
+
+
+@pytest.mark.parametrize(
+    ("output_path", "reason"),
+    [
+        ("exports", "a directory sits at the target"),
+        ("notes.md/doc.md", "a file sits where a parent directory is needed"),
+    ],
+    ids=["existing-directory", "file-ancestor"],
+)
+async def test_bh040c_export_to_non_file_location_refused(
+    utilities_service, ingested_doc, tmp_vault_dir, output_path: str, reason: str
+):
+    """A target that cannot be written as a file is refused with the reason, and nothing changes."""
+    from sage.api.errors import OutputPathInvalidError
+
+    root = tmp_vault_dir / "sources"
+    (root / "exports").mkdir()
+    (root / "notes.md").write_text("notes", encoding="utf-8")
+    before = _tree(root)
+
+    with pytest.raises(OutputPathInvalidError) as exc_info:
+        await utilities_service.export_projection(ingested_doc.id, output_path)
+
+    assert exc_info.value.code == "output_path_invalid"
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == {"output_path": output_path, "reason": reason}
+    assert _tree(root) == before
+
+
+async def test_bh040c_export_beneath_existing_directory_still_writes(
+    utilities_service, ingested_doc, tmp_vault_dir
+):
+    """A file path inside an existing directory is the ordinary case, not a refusal."""
+    root = tmp_vault_dir / "sources"
+    (root / "exports").mkdir()
+
+    result = await utilities_service.export_projection(ingested_doc.id, "exports/doc.md")
+
+    assert result.output_path == str(root / "exports" / "doc.md")
+    assert (root / "exports" / "doc.md").is_file()
+
+
+# ---------------------------------------------------------------------------
 # read_projection: returns full document text with metadata
 # ---------------------------------------------------------------------------
 

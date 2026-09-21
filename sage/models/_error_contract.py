@@ -1098,6 +1098,7 @@ SCHEMAS = json.loads(
         "missing_successor_id": "#/components/schemas/MissingSuccessorIdError",
         "mode_parameter_mismatch": "#/components/schemas/ModeParameterMismatchError",
         "no_projection": "#/components/schemas/NoProjectionError",
+        "output_path_invalid": "#/components/schemas/OutputPathInvalidError",
         "patch_empty": "#/components/schemas/PatchEmptyError",
         "path_traversal_denied": "#/components/schemas/PathTraversalDeniedError",
         "pipeline_incomplete": "#/components/schemas/PipelineIncompleteError",
@@ -1352,6 +1353,9 @@ SCHEMAS = json.loads(
       },
       {
         "$ref": "#/components/schemas/NoProjectionError"
+      },
+      {
+        "$ref": "#/components/schemas/OutputPathInvalidError"
       },
       {
         "$ref": "#/components/schemas/PatchEmptyError"
@@ -1679,6 +1683,7 @@ SCHEMAS = json.loads(
         "invalid_parameter",
         "invalid_vault_id",
         "no_projection",
+        "output_path_invalid",
         "path_traversal_denied",
         "unknown_parameter",
         "vault_not_found"
@@ -2251,6 +2256,7 @@ SCHEMAS = json.loads(
             "missing_successor_id",
             "mode_parameter_mismatch",
             "no_projection",
+            "output_path_invalid",
             "patch_empty",
             "path_traversal_denied",
             "pipeline_incomplete",
@@ -4153,6 +4159,52 @@ SCHEMAS = json.loads(
     },
     "required": [
       "document_id"
+    ],
+    "type": "object"
+  },
+  "OutputPathInvalidError": {
+    "additionalProperties": false,
+    "description": "The refusal envelope for this error code.",
+    "properties": {
+      "code": {
+        "const": "output_path_invalid",
+        "description": "Machine-readable error code selecting this envelope.",
+        "type": "string"
+      },
+      "detail": {
+        "$ref": "#/components/schemas/OutputPathInvalidErrorDetail"
+      },
+      "message": {
+        "description": "Human-readable error description.",
+        "type": "string"
+      },
+      "read_meta": {
+        "$ref": "#/components/schemas/ReadMeta"
+      }
+    },
+    "required": [
+      "code",
+      "message",
+      "detail"
+    ],
+    "type": "object"
+  },
+  "OutputPathInvalidErrorDetail": {
+    "additionalProperties": false,
+    "description": "Additional context for this refusal.",
+    "properties": {
+      "output_path": {
+        "description": "Output path.",
+        "type": "string"
+      },
+      "reason": {
+        "description": "Reason.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "output_path",
+      "reason"
     ],
     "type": "object"
   },

@@ -18,7 +18,7 @@ from sage.api.errors import (
     translate_validation_error,
     undeclared_entry_key_error,
 )
-from sage.api.response_docs import boundary_400
+from sage.api.response_docs import boundary_400, invalid_parameter_422
 from sage.api.wire_route import WireRoute
 from sage.mcp_init import SAGEServices
 from sage.models.schemas import (
@@ -293,9 +293,8 @@ def _codes_and_tags_conflict(
                 "fresh recipe."
             ),
         },
-        422: {
-            "model": ErrorResponse,
-            "description": (
+        422: invalid_parameter_422(
+            extra=(
                 "Ingestion failure. The source adapter could not produce a "
                 "valid projection (unsupported format, corrupt content).\n\n"
                 "`invalid_parameter`: `metadata` supplies both `codes` and "
@@ -303,7 +302,7 @@ def _codes_and_tags_conflict(
                 "it at `metadata.tags` and `detail.constraint` states the "
                 "rule. No document is created."
             ),
-        },
+        ),
         500: {
             "model": ErrorResponse,
             "description": (
@@ -392,9 +391,8 @@ async def ingest(
                 "`detail.available_vaults` lists the registered vaults."
             ),
         },
-        422: {
-            "model": ErrorResponse,
-            "description": (
+        422: invalid_parameter_422(
+            extra=(
                 "`invalid_parameter`: an entry of `metadata.files` supplies "
                 "both `codes` and `tags` in its `parsed_metadata`, which set "
                 "the same field. `detail.parameter` locates the entry as "
@@ -402,7 +400,7 @@ async def ingest(
                 "its value. No file is staged or ingested. An undeclared key "
                 "in an entry is refused as `undeclared_key` (400) instead."
             ),
-        },
+        ),
     },
 )
 async def batch_ingest_documents(

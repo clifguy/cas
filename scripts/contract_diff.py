@@ -31,6 +31,12 @@ required one an adaptation, wherever they sit. Both categories are minor, so
 the classification a finding forces is right either way, and the owner can
 downgrade a finding that is not one through the change record's override.
 
+**An added response is classified by what it answers.** An added success
+response is a capability; an added refusal -- any status outside 2xx -- is an
+adaptation, because a caller must now handle it. A refusal the server already
+returned and the contract merely did not list is a patch, which only the owner's
+override can say.
+
 Usage::
 
     python -m scripts.contract_diff OLD_SPEC.yaml NEW_SPEC.yaml
@@ -557,6 +563,17 @@ def _diff_request_body(
     _diff_content(old_body.get("content"), new_body.get("content"), at, out)
 
 
+def _added_response_category(status: str) -> str:
+    """An added success is something a caller can now get; an added refusal is not.
+
+    Every status outside 2xx -- ``default`` and a ``4XX`` range included -- is a
+    refusal a caller must now handle. Whether the server already returned it,
+    which would make the declaration a patch, is invisible to a comparison of
+    documents and is the owner's to say through the change record's override.
+    """
+    return CAPABILITY if status.startswith("2") else CALLER_ADAPTATION
+
+
 def _diff_responses(
     old_spec: dict[str, Any],
     new_spec: dict[str, Any],
@@ -568,7 +585,7 @@ def _diff_responses(
     old_responses = old_op.get("responses") or {}
     new_responses = new_op.get("responses") or {}
     for status in sorted(set(map(str, new_responses)) - set(map(str, old_responses))):
-        out.add(f"{pointer}/responses/{status}", "response-added", CAPABILITY)
+        out.add(f"{pointer}/responses/{status}", "response-added", _added_response_category(status))
     for status in sorted(set(map(str, old_responses)) - set(map(str, new_responses))):
         out.add(f"{pointer}/responses/{status}", "response-removed", CALLER_ADAPTATION)
     old_by_status = {str(k): v for k, v in old_responses.items()}

@@ -39,7 +39,7 @@ from app.backend.models import (
 )
 from app.backend.scan_service import ScanService
 from sage.api.dependencies import refuse_undeclared_parameters
-from sage.api.response_docs import boundary_400
+from sage.api.response_docs import boundary_400, invalid_parameter_422
 from sage.api.wire_route import WireRoute
 
 router = APIRouter(
@@ -66,6 +66,7 @@ router = APIRouter(
                 "`detail.available_vaults` lists the registered vaults."
             ),
         },
+        422: invalid_parameter_422(),
     },
 )
 async def scan_endpoint(
@@ -100,9 +101,8 @@ async def scan_endpoint(
                 "`detail.available_vaults` lists the registered vaults."
             ),
         },
-        422: {
-            "model": ErrorResponse,
-            "description": (
+        422: invalid_parameter_422(
+            extra=(
                 "`invalid_parameter`: an entry of `files` supplies both "
                 "`codes` and `tags` in its `parsed_metadata`, which set the "
                 "same field. `detail.parameter` locates the entry as "
@@ -110,7 +110,7 @@ async def scan_endpoint(
                 "its value. No file is ingested. An undeclared key in an "
                 "entry is refused as `undeclared_key` (400) instead."
             ),
-        },
+        ),
     },
 )
 async def ingest_endpoint(

@@ -371,9 +371,23 @@ OPENAPI_POSITIVE: list[tuple[str, Callable[[dict[str, Any]], None], str, str, st
     (
         "response-added",
         lambda s: _get(s)["responses"].__setitem__("409", {"description": "Conflict."}),
-        CAPABILITY,
+        CALLER_ADAPTATION,
         "response-added",
         "responses/409",
+    ),
+    (
+        "response-added-success",
+        lambda s: _get(s)["responses"].__setitem__("201", {"description": "Created."}),
+        CAPABILITY,
+        "response-added",
+        "responses/201",
+    ),
+    (
+        "response-added-default",
+        lambda s: _get(s)["responses"].__setitem__("default", {"description": "Error."}),
+        CALLER_ADAPTATION,
+        "response-added",
+        "responses/default",
     ),
     (
         "response-removed",

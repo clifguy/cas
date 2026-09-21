@@ -1,0 +1,15 @@
+classification: patch
+summary: >-
+  Every operation that binds a request body now declares its 422 invalid_parameter
+  response, in the Core API specification and the CAS Application API specification: a
+  value in the body that fails validation with no more specific code to report it -- a
+  wrong type, a bound, a malformed value -- located by detail.parameter as a dotted path
+  from the top of the request. The routers publish the same entry from one shared
+  definition, replacing FastAPI's default 422 schema, which named a body the server never
+  sends. The three operations that already declared a 422 for a codes-and-tags conflict
+  keep that text and gain the shared refusal after it. transfer_upload, which streams its
+  body unparsed, declares none, since no body value is validated there.
+detector_override:
+  reason: >-
+    Declares a refusal every body-taking operation already returned at 422; no call the
+    server accepted before is refused, and no status any call answered changes.

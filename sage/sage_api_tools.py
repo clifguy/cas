@@ -4036,10 +4036,14 @@ def register_sage_tools(
         the source adapter during ingestion.
 
         ``output_path`` may be relative (resolved against ``storage_root``)
-        or absolute, but it must resolve to a location inside the
-        vault's ``storage_root``. Targets outside the vault tree are
-        refused with ``path_traversal_denied``. Missing parent directories
-        are created, and a file already at the target is overwritten.
+        or absolute, but it must resolve to a file location inside the
+        vault's ``storage_root``. Targets outside the vault tree, and the
+        root itself, are refused with ``path_traversal_denied``; a target
+        that is not a file location -- an existing directory, or a path
+        through an existing file -- is refused with ``output_path_invalid``,
+        whose ``detail.reason`` says which. Both refusals come before any read,
+        and nothing is written. Missing parent directories are created,
+        and a file already at the target is overwritten.
 
         The destination is a path in the server's own vault tree, which a
         caller can read back only when it shares that filesystem. Under the
@@ -4052,7 +4056,10 @@ def register_sage_tools(
         - ``invalid_document_id`` (400): ``document_id`` is not a well-formed
           document id.
         - ``path_traversal_denied`` (400): ``output_path`` resolves outside the
-          vault's ``storage_root``.
+          vault's ``storage_root``, or to the root itself.
+        - ``output_path_invalid`` (400): ``output_path`` is not a file location --
+          a directory sits at the target, or a file sits where a parent
+          directory is needed; ``detail.reason`` says which.
         - ``vault_not_found`` (404): no vault is registered with that id.
           ``detail.available_vaults`` lists the registered vaults.
         - ``document_not_found`` (404): no document with that id.

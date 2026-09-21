@@ -21727,6 +21727,49 @@
                 ],
                 "type": "object"
               },
+              "OutputPathInvalidError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/OutputPathInvalidErrorDetail"
+                  },
+                  "error": {
+                    "const": "output_path_invalid",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "OutputPathInvalidErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "output_path": {
+                    "description": "Output path.",
+                    "type": "string"
+                  },
+                  "reason": {
+                    "description": "Reason.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "output_path",
+                  "reason"
+                ],
+                "type": "object"
+              },
               "PathTraversalDeniedError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -21876,6 +21919,7 @@
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
                 "no_projection": "#/$defs/NoProjectionError",
+                "output_path_invalid": "#/$defs/OutputPathInvalidError",
                 "path_traversal_denied": "#/$defs/PathTraversalDeniedError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
@@ -21905,6 +21949,9 @@
                 "$ref": "#/$defs/NoProjectionError"
               },
               {
+                "$ref": "#/$defs/OutputPathInvalidError"
+              },
+              {
                 "$ref": "#/$defs/PathTraversalDeniedError"
               },
               {
@@ -21921,7 +21968,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Write stored projection to a Markdown file for inspection.\n\nExports the stored projection text for a document to a\nspecified file path inside the vault's ``storage_root``. Used for\ndebugging and manual inspection of the adapter's output. The\nprojection is the structured plain-text rendering produced by\nthe source adapter during ingestion.\n\n``output_path`` may be relative (resolved against ``storage_root``)\nor absolute, but it must resolve to a location inside the\nvault's ``storage_root``. Targets outside the vault tree are\nrefused with ``path_traversal_denied``. Missing parent directories\nare created, and a file already at the target is overwritten.\n\nThe destination is a path in the server's own vault tree, which a\ncaller can read back only when it shares that filesystem. Under the\ncloud profile the export is refused with\n``caller_filesystem_unavailable`` before any read; ``read_projection``\ndelivers the projection to the caller instead.\n\nError modes:\n- ``invalid_vault_id`` (400): ``vault_id`` is not a well-formed vault id.\n- ``invalid_document_id`` (400): ``document_id`` is not a well-formed\n  document id.\n- ``path_traversal_denied`` (400): ``output_path`` resolves outside the\n  vault's ``storage_root``.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n- ``document_not_found`` (404): no document with that id.\n- ``no_projection`` (404): the document exists but has no stored\n  projection (e.g. ingestion failed mid-pipeline).\n- ``caller_filesystem_unavailable`` (501): the export writes into the\n  server's own vault tree, which a caller cannot read back under the\n  cloud profile; the refusal comes before any read.\n\nArgs:\n    vault_id: Target vault identifier.\n    document_id: Document whose projection is exported.\n    output_path: Destination, relative to the vault's ``storage_root``\n        or absolute inside it.\n",
+        "description": "Write stored projection to a Markdown file for inspection.\n\nExports the stored projection text for a document to a\nspecified file path inside the vault's ``storage_root``. Used for\ndebugging and manual inspection of the adapter's output. The\nprojection is the structured plain-text rendering produced by\nthe source adapter during ingestion.\n\n``output_path`` may be relative (resolved against ``storage_root``)\nor absolute, but it must resolve to a file location inside the\nvault's ``storage_root``. Targets outside the vault tree, and the\nroot itself, are refused with ``path_traversal_denied``; a target\nthat is not a file location -- an existing directory, or a path\nthrough an existing file -- is refused with ``output_path_invalid``,\nwhose ``detail.reason`` says which. Both refusals come before any read,\nand nothing is written. Missing parent directories are created,\nand a file already at the target is overwritten.\n\nThe destination is a path in the server's own vault tree, which a\ncaller can read back only when it shares that filesystem. Under the\ncloud profile the export is refused with\n``caller_filesystem_unavailable`` before any read; ``read_projection``\ndelivers the projection to the caller instead.\n\nError modes:\n- ``invalid_vault_id`` (400): ``vault_id`` is not a well-formed vault id.\n- ``invalid_document_id`` (400): ``document_id`` is not a well-formed\n  document id.\n- ``path_traversal_denied`` (400): ``output_path`` resolves outside the\n  vault's ``storage_root``, or to the root itself.\n- ``output_path_invalid`` (400): ``output_path`` is not a file location --\n  a directory sits at the target, or a file sits where a parent\n  directory is needed; ``detail.reason`` says which.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n- ``document_not_found`` (404): no document with that id.\n- ``no_projection`` (404): the document exists but has no stored\n  projection (e.g. ingestion failed mid-pipeline).\n- ``caller_filesystem_unavailable`` (501): the export writes into the\n  server's own vault tree, which a caller cannot read back under the\n  cloud profile; the refusal comes before any read.\n\nArgs:\n    vault_id: Target vault identifier.\n    document_id: Document whose projection is exported.\n    output_path: Destination, relative to the vault's ``storage_root``\n        or absolute inside it.\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {

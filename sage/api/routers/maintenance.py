@@ -19,7 +19,7 @@ from sage.api.dependencies import (
     get_vault_id,
     get_vault_registry_service,
 )
-from sage.api.response_docs import boundary_400
+from sage.api.response_docs import boundary_400, invalid_parameter_422
 from sage.api.wire_route import WireRoute
 from sage.models.schemas import (
     DriftReport,
@@ -177,6 +177,7 @@ async def detect_drift(
                 "`start_time`; retry once it has returned."
             ),
         },
+        422: invalid_parameter_422(),
     },
 )
 async def reabstract_deferred(
@@ -212,6 +213,7 @@ async def reabstract_deferred(
                 "`detail.available_vaults` lists the registered vaults."
             ),
         },
+        422: invalid_parameter_422(),
     },
 )
 async def optimize_content_store(
@@ -257,6 +259,7 @@ async def optimize_content_store(
                 "signal. The same request may succeed on a later attempt."
             ),
         },
+        422: invalid_parameter_422(),
     },
 )
 async def verify_vault_source_files(
@@ -350,6 +353,7 @@ async def verify_vault_source_files(
                 "on a later attempt."
             ),
         },
+        422: invalid_parameter_422(),
     },
 )
 async def restore_vault_source_file(

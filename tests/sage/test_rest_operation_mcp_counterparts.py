@@ -466,6 +466,68 @@ async def test_export_projection_refuses_an_escaping_path_on_both_surfaces(
 
 
 @pytest.mark.parametrize("document", ["real", "missing"])
+@pytest.mark.parametrize(
+    ("output_path", "code"),
+    [
+        (".", "path_traversal_denied"),
+        ("exports", "output_path_invalid"),
+        ("notes.md/doc.md", "output_path_invalid"),
+    ],
+    ids=["storage-root", "existing-directory", "file-ancestor"],
+)
+async def test_export_projection_refuses_a_non_file_target_on_both_surfaces(
+    yaml_app,
+    tmp_vault_dir,
+    document: str,
+    output_path: str,
+    code: str,
+    tool_payload: Callable[[object], dict],
+):
+    """EX-7: a target that is not a file location is refused alike, before the read.
+
+    A missing document still answers the path refusal rather than
+    ``document_not_found``, so the target is settled before the projection is read.
+    """
+    app, vault_id = yaml_app
+    doc_id = (
+        await _ingest(app.state.vault_registry[vault_id], tmp_vault_dir, "ex_directory")
+        if document == "real"
+        else _MISSING_DOCUMENT_ID
+    )
+    root = tmp_vault_dir / "sources"
+    (root / "exports").mkdir(exist_ok=True)
+    (root / "notes.md").write_text("notes", encoding="utf-8")
+    before = {
+        str(path.relative_to(root)): (path.is_dir(), path.stat().st_size, path.stat().st_mtime_ns)
+        for path in root.rglob("*")
+    }
+    maint = app.state.mcp_mounts["/mcp_maint"]
+
+    via_tool = tool_payload(
+        await maint.call_tool(
+            "export_projection",
+            {"vault_id": vault_id, "document_id": doc_id, "output_path": output_path},
+        )
+    )
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents/{doc_id}/export",
+            json={"output_path": output_path},
+        )
+
+    assert resp.status_code == 400, resp.text
+    via_route = resp.json()
+    assert via_tool["error"] == via_route["code"] == code
+    assert via_tool["detail"] == via_route["detail"]
+    assert via_route["detail"]["output_path"] == output_path
+    after = {
+        str(path.relative_to(root)): (path.is_dir(), path.stat().st_size, path.stat().st_mtime_ns)
+        for path in root.rglob("*")
+    }
+    assert after == before
+
+
+@pytest.mark.parametrize("document", ["real", "missing"])
 async def test_export_projection_refused_under_the_cloud_profile_before_any_read(
     yaml_app, tmp_vault_dir, monkeypatch, document: str, tool_payload: Callable[[object], dict]
 ):
