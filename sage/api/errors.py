@@ -2033,8 +2033,8 @@ class TransferTokenInvalidError(SAGEError):
     answers only "not redeemable" -- reintroducing exactly the oracle the
     single code exists to avoid. Retries *within* the window are a different
     matter and are already supported: a byte leg that fails reopens its
-    entry, and a completion that fails after redemption hands the token back
-    with its staged bytes intact.
+    entry, up to the token's refusal limit, and a completion that fails after
+    redemption hands the token back with its staged bytes intact.
     """
 
     def __init__(self) -> None:
@@ -2100,8 +2100,8 @@ class TransferContentTooLargeError(SAGEError):
     The upload endpoint bounds the body while streaming it to staging, so an
     oversize payload is aborted at the ceiling instead of filling the
     container's disk; the partial staging file is removed and the token
-    reverts to retryable. The ceiling is ``SAGE_MAX_TRANSFER_BYTES``
-    (default 100 MB).
+    reverts to retryable, until its refusal limit is reached. The ceiling is
+    ``SAGE_MAX_TRANSFER_BYTES`` (default 100 MB).
     """
 
     def __init__(self, max_bytes: int) -> None:
@@ -2117,6 +2117,36 @@ class TransferContentTooLargeError(SAGEError):
         )
 
 
+class TransferRefusalLimitError(SAGEError):
+    """410: a refused byte delivery exhausted its upload token.
+
+    A delivery the upload endpoint refuses -- over the ceiling, not the bound
+    digest, or abandoned mid-body -- stages nothing and leaves the token
+    retryable, but only up to the token's refusal limit
+    (``transfer.max_refused_deliveries``). The refusal that reaches it
+    reclaims the transfer, so a disclosed token cannot be used to stream up
+    to the ceiling for as long as it lives. The remedy is the one a lapsed
+    token has: re-issue the originating call for a fresh recipe.
+
+    The byte leg is authenticated by the token alone, so the refusal names
+    only what the presenter already knows -- the transfer it named and the
+    limit its own deliveries reached. Any later presentation of the token
+    meets ``transfer_token_invalid``, like any other unredeemable token.
+    """
+
+    def __init__(self, transfer_id: str, max_refused_deliveries: int) -> None:
+        super().__init__(
+            "transfer_refusal_limit_reached",
+            (
+                f"Transfer {transfer_id} was refused {max_refused_deliveries} "
+                f"deliveries and has been reclaimed; re-issue the originating "
+                f"call to mint a fresh token."
+            ),
+            410,
+            {"transfer_id": transfer_id, "max_refused_deliveries": max_refused_deliveries},
+        )
+
+
 class SourceDigestMismatchError(SAGEError):
     """400: the bytes delivered are not the bytes the caller declared.
 
@@ -2125,7 +2155,8 @@ class SourceDigestMismatchError(SAGEError):
     against the digest an upload token was bound to at mint, and on the
     ingest itself, against the digest of the source it reads. Both refuse
     before anything is staged or retained, so the same call with the right
-    bytes succeeds, and on the upload leg the token stays unspent.
+    bytes succeeds, and on the upload leg the token stays unspent, short of
+    its refusal limit (see ``TransferRefusalLimitError``).
 
     The two arms disclose differently. The upload leg is authenticated by the
     token alone, so its refusal names only the transfer and the digest of the

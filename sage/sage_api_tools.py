@@ -618,7 +618,11 @@ def register_sage_tools(
                 whole exchange -- byte delivery plus the completion call --
                 must finish inside that window; the recipe's own
                 ``expires_at`` is authoritative where a deployment has tuned
-                the lifetime. A lapsed recipe cannot be resumed, and its
+                the lifetime. A token is also reclaimed once
+                3 refused deliveries have been made against it by default --
+                a body over the ceiling, bytes not matching its bound digest,
+                or a body abandoned mid-stream; earlier refusals leave it
+                retryable. A lapsed recipe cannot be resumed, and its
                 staged bytes are gone: re-issue this call for a fresh one.
             source_type: Source artifact format (markdown, docx, xlsx, pptx,
                 pdf). Selects the source adapter. Optional: when omitted,
@@ -727,9 +731,10 @@ def register_sage_tools(
                 digest with ``source_digest_mismatch``. When the call returns
                 an upload recipe, each token is bound to this digest and the
                 upload endpoint refuses any other bytes without spending the
-                token -- so a token seen by anyone not already holding the
-                exact file admits nothing. Pass it again on the completion
-                call. Omit to admit any bytes.
+                token, short of its refusal limit -- so a token seen by
+                anyone not already holding the exact file admits nothing.
+                Pass it again on the completion call. Omit to admit any
+                bytes.
         """
         try:
             # First, before any validation or vault work: a misplaced
@@ -3626,7 +3631,11 @@ def register_sage_tools(
                 default, and the whole exchange -- byte delivery plus the
                 completion call -- must finish inside that window; the
                 recipe's own ``expires_at`` is authoritative where a
-                deployment has tuned the lifetime. A lapsed recipe cannot be
+                deployment has tuned the lifetime. A token is also reclaimed
+                once 3 refused deliveries have been made against it by
+                default -- a body over the ceiling, bytes not matching its
+                bound digest, or a body abandoned mid-stream; earlier
+                refusals leave it retryable. A lapsed recipe cannot be
                 resumed, and its staged bytes are gone: re-issue this call
                 for a fresh one.
             document_id: Optional pin naming the document to restore.
@@ -3637,9 +3646,9 @@ def register_sage_tools(
                 with ``source_digest_mismatch`` before anything is written.
                 When the call returns an upload recipe, the token is bound to
                 this digest and the upload endpoint refuses any other bytes
-                without spending it -- so a token seen by anyone not already
-                holding the exact file admits nothing. Pass it again on the
-                completion call.
+                without spending it, short of its refusal limit -- so a token
+                seen by anyone not already holding the exact file admits
+                nothing. Pass it again on the completion call.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)

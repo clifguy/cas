@@ -49,8 +49,9 @@ _SPOOL_CHUNK_BYTES = 65536
             extra=(
                 "`source_digest_mismatch`: the token was minted against a declared "
                 "`sha256` and the delivered bytes have a different digest. Nothing "
-                "is staged and the token stays retryable. The detail names the "
-                "transfer and the delivered digest, never the bound one."
+                "is staged and the token stays retryable until its refusal limit is "
+                "reached. The detail names the transfer and the delivered digest, "
+                "never the bound one."
             ),
         ),
         409: {
@@ -65,7 +66,14 @@ _SPOOL_CHUNK_BYTES = 65536
             "description": (
                 "`transfer_token_invalid`: the token names no redeemable "
                 "pending transfer (unknown, expired, already used, or scoped "
-                "to a different direction)."
+                "to a different direction). "
+                "`transfer_refusal_limit_reached`: this delivery was refused, "
+                "and it was the token's last: the token has now been refused "
+                "`transfer.max_refused_deliveries` deliveries (default 3), so "
+                "the transfer is reclaimed and a fresh recipe must be minted by "
+                "re-issuing the originating call. A body over the ceiling, "
+                "bytes not matching a bound digest, and a body abandoned "
+                "mid-stream each count as a refusal."
             ),
         },
         413: {
@@ -73,7 +81,8 @@ _SPOOL_CHUNK_BYTES = 65536
             "description": (
                 "`transfer_content_too_large`: the body exceeded the transfer "
                 "ceiling and the delivery was aborted; the partial staging "
-                "file is removed and the token stays retryable."
+                "file is removed and the token stays retryable until its "
+                "refusal limit is reached."
             ),
         },
     },
@@ -90,7 +99,11 @@ async def transfer_upload(
     declared Content-Length is never trusted, and an oversize or interrupted
     delivery rolls the transfer back to a retryable state. A token minted
     against a digest admits only bytes with that digest; any others are
-    refused the same way, staging nothing and spending nothing. The receipt
+    refused the same way, staging nothing and spending nothing. Refusals are
+    bounded per token: the one that reaches the configured limit reclaims
+    the transfer, so a disclosed token cannot be used to stream up to the
+    ceiling for as long as it lives. A failure on the server's side is not
+    the presenter's refusal and does not count. The receipt
     carries the received size and digest so the sender can verify the
     delivery against the local file before issuing the completion call.
     """
@@ -112,7 +125,7 @@ async def transfer_upload(
         # the delivery.
         store.check_bound_digest(entry.transfer_id, digest.hexdigest())
     except TransferContentTooLargeError, SourceDigestMismatchError, ClientDisconnect:
-        store.fail_upload(entry.transfer_id)
+        store.refuse_upload(entry.transfer_id)
         raise
     except Exception:
         store.fail_upload(entry.transfer_id)

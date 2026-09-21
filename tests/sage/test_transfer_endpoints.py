@@ -66,12 +66,15 @@ def _parse(result: str | dict) -> dict:
 
 
 @contextlib.contextmanager
-def _profile(name: str, transfer_base: str | None = _BASE):
-    """Pin profile + transfer coordinates, mirroring the confinement suite."""
+def _profile(name: str, transfer_base: str | None = _BASE, **transfer: object):
+    """Pin profile + transfer coordinates, mirroring the confinement suite.
+
+    Keyword arguments beyond the base URL are further ``transfer`` settings.
+    """
     saved = _mcp_init._stack_config
     kwargs: dict = {"profile": name}
     if transfer_base is not None:
-        kwargs["transfer"] = {"public_base_url": transfer_base}
+        kwargs["transfer"] = {"public_base_url": transfer_base, **transfer}
     _mcp_init.set_stack_config(SageCoreConfig(**kwargs))
     try:
         yield
@@ -611,6 +614,262 @@ async def test_bulk_digest_refusal_is_per_leg(client, tmp_path):
 
     assert summary_a.get("error_count") == 0, summary_a
     assert summary_a["documents_created"]["new"] == 1
+
+
+# ---------------------------------------------------------------------------
+# Refusal limit
+# ---------------------------------------------------------------------------
+
+#: How many refused deliveries a token minted under the default stack config
+#: survives. Derived rather than written down, as ``_TTL`` is.
+_REFUSAL_LIMIT = _StackTransferConfig.model_fields["max_refused_deliveries"].default
+
+
+async def _put(client, token: str, body: bytes):
+    return await client.put("/upload", content=body, headers={"X-Upload-Token": token})
+
+
+async def test_repeated_ceiling_aborts_exhaust_the_token(client, tmp_path, monkeypatch):
+    """Oversize deliveries are refused up to the limit; the one that reaches
+    it reclaims the transfer with a typed 410.
+
+    Anti-coincidental-pass: the refusals before the last are asserted to be
+    the ordinary 413, so a limit that tripped early fails; the last is
+    asserted by code, so an ordinary 413 on it (no limit at all) fails; and a
+    well-formed delivery afterwards must be refused as an unknown token, so a
+    limit that answered 410 but left the entry live fails.
+    """
+    monkeypatch.setenv("SAGE_MAX_TRANSFER_BYTES", "64")
+
+    with _profile("cloud"):
+        item = await _mint_upload(tmp_path, "abused.md", b"placeholder")
+        staging_dir = get_transfer_store()._entries[item["transfer_id"]].staging_dir
+        big = b"y" * 200
+
+        for _ in range(_REFUSAL_LIMIT - 1):
+            refused = await _put(client, item["token"], big)
+            assert refused.status_code == 413, refused.text
+            assert refused.json()["code"] == "transfer_content_too_large"
+
+        exhausted = await _put(client, item["token"], big)
+        assert exhausted.status_code == 410, exhausted.text
+        assert exhausted.json()["code"] == "transfer_refusal_limit_reached"
+        assert exhausted.json()["detail"] == {
+            "transfer_id": item["transfer_id"],
+            "max_refused_deliveries": _REFUSAL_LIMIT,
+        }
+
+        after = await _put(client, item["token"], b"# ok\n")
+        assert after.status_code == 410, after.text
+        assert after.json()["code"] == "transfer_token_invalid"
+
+    assert item["transfer_id"] not in get_transfer_store()._entries
+    assert not staging_dir.exists()
+
+
+async def test_repeated_digest_mismatches_exhaust_the_token(client, tmp_path):
+    """Wrong-digest deliveries count toward the same limit, and once it is
+    reached even the right bytes are refused.
+
+    Anti-coincidental-pass: the final delivery carries the *bound* bytes, so
+    a reclaim that only blocked further mismatches fails; the bound digest is
+    searched for in every response, so a limit refusal that disclosed it
+    fails.
+    """
+    right = b"# Bound\n\nThe exact caller file.\n"
+    wrong = b"# Bound\n\nSomebody else's bytes.\n"
+    bound = _sha256_hex(right)
+
+    with _profile("cloud"):
+        item = await _mint_bound_upload(tmp_path, "bound.md", bound)
+
+        responses = [await _put(client, item["token"], wrong) for _ in range(_REFUSAL_LIMIT)]
+        after = await _put(client, item["token"], right)
+
+    assert [r.status_code for r in responses] == [400] * (_REFUSAL_LIMIT - 1) + [410]
+    assert responses[-1].json()["code"] == "transfer_refusal_limit_reached"
+    assert after.status_code == 410, after.text
+    assert after.json()["code"] == "transfer_token_invalid"
+    for resp in [*responses, after]:
+        assert bound not in resp.text
+
+
+async def test_token_survives_refusals_below_the_limit(client, tmp_path, monkeypatch):
+    """The paired control: one refusal short of the limit, of either kind,
+    and the same token still stages and completes the right file.
+
+    Anti-coincidental-pass: a limit that tripped a delivery early fails
+    here while the exhaustion tests above still pass. Each refusal is pinned
+    by code, so an oversize body that was refused on its digest instead --
+    the ceiling unset -- fails too. A limit counted per refusal kind passes
+    here; the mixed-kind test below is what excludes it.
+    """
+    monkeypatch.setenv("SAGE_MAX_TRANSFER_BYTES", "64")
+    right = b"# Kept\n"
+    kinds = [
+        (b"y" * 200, "transfer_content_too_large"),
+        (b"# not the bound file\n", "source_digest_mismatch"),
+    ]
+
+    with _profile("cloud"):
+        item = await _mint_bound_upload(tmp_path, "kept.md", _sha256_hex(right))
+        for n in range(_REFUSAL_LIMIT - 1):
+            body, code = kinds[n % 2]
+            refused = await _put(client, item["token"], body)
+            assert refused.json()["code"] == code, refused.text
+
+        accepted = await _put(client, item["token"], right)
+        assert accepted.status_code == 201, accepted.text
+        done = _parse(
+            await ingest_document(_VAULT_ID, source_type="markdown", transfer_token=item["token"])
+        )
+
+    assert "error" not in done, done
+
+
+async def test_refusals_of_different_kinds_share_one_limit(client, tmp_path, monkeypatch):
+    """Oversize bodies and wrong digests count against one limit, not one each.
+
+    Anti-coincidental-pass: the two kinds alternate, so no kind alone reaches
+    the limit by the last delivery. A store keeping a count per kind answers
+    that delivery with its own 413 or 400 rather than the 410, where the
+    single-kind exhaustion tests above cannot tell the two apart.
+    """
+    monkeypatch.setenv("SAGE_MAX_TRANSFER_BYTES", "64")
+    right = b"# Mixed\n"
+    kinds = [b"y" * 200, b"# not the bound file\n"]
+
+    with _profile("cloud"):
+        item = await _mint_bound_upload(tmp_path, "mixed.md", _sha256_hex(right))
+        responses = [await _put(client, item["token"], kinds[n % 2]) for n in range(_REFUSAL_LIMIT)]
+
+    assert _REFUSAL_LIMIT >= 3, "needs a limit no single kind reaches when alternating"
+    assert [r.json()["code"] for r in responses[:-1]] == [
+        ("transfer_content_too_large", "source_digest_mismatch")[n % 2]
+        for n in range(_REFUSAL_LIMIT - 1)
+    ]
+    assert responses[-1].status_code == 410, responses[-1].text
+    assert responses[-1].json()["code"] == "transfer_refusal_limit_reached"
+
+
+async def _put_then_disconnect(app, token: str) -> None:
+    """Send one chunk of an upload body, then drop the connection.
+
+    Driven below the HTTP client, which cannot disconnect mid-body: the ASGI
+    ``receive`` yields a partial body and then ``http.disconnect``, as a
+    server does when the peer goes away.
+    """
+    messages = iter(
+        [
+            {"type": "http.request", "body": b"partial", "more_body": True},
+            {"type": "http.disconnect"},
+        ]
+    )
+
+    async def receive():
+        return next(messages, {"type": "http.disconnect"})
+
+    async def send(_message):
+        return None
+
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "PUT",
+        "scheme": "http",
+        "path": "/upload",
+        "raw_path": b"/upload",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [(b"host", b"test"), (b"x-upload-token", token.encode())],
+        "client": ("127.0.0.1", 1),
+        "server": ("test", 80),
+    }
+    with contextlib.suppress(Exception):
+        await app(scope, receive, send)
+
+
+async def test_client_disconnect_counts_toward_the_limit(app, client, tmp_path):
+    """A delivery the presenter abandons mid-body is a refusal like any other.
+
+    Otherwise the limit is bypassed by streaming to just under the ceiling
+    and dropping the connection, over and over.
+
+    Anti-coincidental-pass: the first disconnect is asserted to leave the
+    token live, so a disconnect that was simply fatal fails; after the limit,
+    a well-formed delivery must be refused as an unknown token, which a
+    disconnect routed to the uncounted rollback never produces.
+    """
+    with _profile("cloud"):
+        item = await _mint_upload(tmp_path, "dropped.md", b"placeholder")
+
+        await _put_then_disconnect(app, item["token"])
+        entry = get_transfer_store()._entries[item["transfer_id"]]
+        assert entry.state == "pending_bytes"
+        assert entry.refused_deliveries == 1
+
+        for _ in range(_REFUSAL_LIMIT - 1):
+            await _put_then_disconnect(app, item["token"])
+
+        after = await _put(client, item["token"], b"# ok\n")
+
+    assert after.status_code == 410, after.text
+    assert after.json()["code"] == "transfer_token_invalid"
+
+
+async def test_server_fault_does_not_count_toward_the_limit(app, tmp_path, monkeypatch):
+    """A delivery that fails on the server's side costs the token nothing.
+
+    Anti-coincidental-pass: more faults than the limit are driven before the
+    good delivery, so a handler that counted every failure would have
+    reclaimed the transfer and the final delivery would be refused. Each
+    fault is asserted to reach the caller as a 500, through a transport that
+    reports application errors as responses rather than re-raising them, so
+    a fault that never happened -- the patch not taking -- fails too.
+    """
+
+    def _fault(self, transfer_id, sha256):
+        raise RuntimeError("simulated staging fault")
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        with _profile("cloud"):
+            item = await _mint_upload(tmp_path, "faulty.md", b"placeholder")
+
+            with monkeypatch.context() as patched:
+                patched.setattr(TransferStore, "check_bound_digest", _fault)
+                faulted = [
+                    await _put(client, item["token"], b"# body\n")
+                    for _ in range(_REFUSAL_LIMIT + 1)
+                ]
+
+            accepted = await _put(client, item["token"], b"# body\n")
+
+    assert [r.status_code for r in faulted] == [500] * (_REFUSAL_LIMIT + 1)
+    assert accepted.status_code == 201, accepted.text
+
+
+async def test_configured_refusal_limit_is_honoured(client, tmp_path, monkeypatch):
+    """The limit is the deployment's configured value, echoed in the refusal.
+
+    Anti-coincidental-pass: the configured limit differs from the default, so
+    a handler with the default hard-coded fails on the second delivery's
+    status and on the echoed figure.
+    """
+    monkeypatch.setenv("SAGE_MAX_TRANSFER_BYTES", "64")
+    configured = 2
+    assert configured != _REFUSAL_LIMIT
+
+    with _profile("cloud", max_refused_deliveries=configured):
+        item = await _mint_upload(tmp_path, "tight.md", b"placeholder")
+        first = await _put(client, item["token"], b"y" * 200)
+        second = await _put(client, item["token"], b"y" * 200)
+
+    assert first.status_code == 413, first.text
+    assert second.status_code == 410, second.text
+    assert second.json()["code"] == "transfer_refusal_limit_reached"
+    assert second.json()["detail"]["max_refused_deliveries"] == configured
 
 
 async def test_upload_token_failures(client, tmp_path):

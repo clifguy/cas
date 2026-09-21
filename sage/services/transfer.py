@@ -43,8 +43,10 @@ from sage.api.errors import (
     SourceDigestMismatchError,
     TransferAlreadyStagedError,
     TransferNotStagedError,
+    TransferRefusalLimitError,
     TransferTokenInvalidError,
 )
+from sage.config import StackTransferConfig
 from sage.models.schemas import canonicalize_sha256
 from sage.services.caller_paths import caller_basename, caller_path_is_absolute
 
@@ -62,6 +64,13 @@ DOWNLOAD_TOKEN_HEADER = "X-Download-Token"  # noqa: S105 -- header *name*, not a
 #: bounds a file moved through the transfer endpoints, not a base64-inlined
 #: tool response. Overridable via ``SAGE_MAX_TRANSFER_BYTES``.
 DEFAULT_MAX_TRANSFER_BYTES = 100 * 1024 * 1024
+
+
+#: The refusal limit a token minted without one survives -- the stack
+#: config's own default, so the store and the configuration cannot disagree.
+_DEFAULT_MAX_REFUSED_DELIVERIES: int = StackTransferConfig.model_fields[
+    "max_refused_deliveries"
+].default
 
 
 def max_transfer_bytes() -> int:
@@ -144,6 +153,11 @@ class PendingTransfer:
     #: ``None`` for a token that admits any bytes. Held here rather than on
     #: the token so the binding cannot be presented separately from it.
     bound_sha256: str | None = None
+    #: How many refused deliveries an upload entry survives, fixed at mint so
+    #: a configuration change never alters a live token's terms; and how many
+    #: it has had. See :meth:`TransferStore.refuse_upload`.
+    max_refused_deliveries: int = _DEFAULT_MAX_REFUSED_DELIVERIES
+    refused_deliveries: int = 0
     state: Literal["pending_bytes", "streaming", "bytes_staged"] = "pending_bytes"
     staged_size: int | None = None
     staged_sha256: str | None = None
@@ -187,7 +201,12 @@ class TransferStore:
     # -- minting ---------------------------------------------------------
 
     def mint_upload(
-        self, vault_id: str, source: str, ttl_seconds: int, sha256: str | None = None
+        self,
+        vault_id: str,
+        source: str,
+        ttl_seconds: int,
+        sha256: str | None = None,
+        max_refused_deliveries: int = _DEFAULT_MAX_REFUSED_DELIVERIES,
     ) -> MintedTransfer:
         """Mint an upload token bound to one vault and one caller-named source.
 
@@ -195,6 +214,9 @@ class TransferStore:
         will admit: the byte leg refuses anything else through
         :meth:`check_bound_digest`. The binding is what leaves a disclosed
         token worthless to a holder without the exact file.
+
+        ``max_refused_deliveries`` is how many refused deliveries the token
+        survives before :meth:`refuse_upload` reclaims it.
 
         Takes the path the caller named and derives the staged basename from it,
         rather than accepting the two spellings separately. The entry needs both
@@ -220,6 +242,7 @@ class TransferStore:
             )
             entry.filename = caller_basename(source, "transfer_source")
             entry.declared_source = source
+            entry.max_refused_deliveries = max_refused_deliveries
             if sha256 is not None:
                 entry.bound_sha256 = canonicalize_sha256(sha256)
         minted.content_hash = entry.bound_sha256
@@ -305,7 +328,7 @@ class TransferStore:
 
         Called by the byte leg once the body has been read and before
         :meth:`finish_upload` records it, so a refusal leaves the entry
-        streaming and the caller's rollback -- :meth:`fail_upload` -- returns
+        streaming and the caller's rollback -- :meth:`refuse_upload` -- returns
         the token to retryable with nothing staged. An unbound entry admits
         any digest.
 
@@ -333,15 +356,44 @@ class TransferStore:
             entry.staged_sha256 = sha256
 
     def fail_upload(self, transfer_id: str) -> None:
-        """Roll a failed byte delivery back to a retryable state."""
+        """Roll a byte delivery that failed on the server's side back to retryable.
+
+        The failure is not the presenter's, so it costs the token nothing; a
+        delivery the endpoint *refused* goes through :meth:`refuse_upload`.
+        """
         with self._lock:
             entry = self._entries.get(transfer_id)
             if entry is None:
                 return
-            entry.staged_path.unlink(missing_ok=True)
-            entry.state = "pending_bytes"
-            entry.staged_size = None
-            entry.staged_sha256 = None
+            self._roll_back_locked(entry)
+
+    def refuse_upload(self, transfer_id: str) -> None:
+        """Roll a refused byte delivery back, and count it against the token.
+
+        A refused delivery stages nothing and does not spend the token, so a
+        caller who sent the wrong file retries on the same one. Left
+        unbounded, that would let a holder of a disclosed token stream up to
+        the transfer ceiling again and again until the token lapsed, so the
+        refusal that reaches the entry's limit reclaims the transfer instead
+        -- the entry and its staging directory go, as the expiry sweep takes
+        them -- and the token is thereafter unknown.
+
+        Raises :class:`TransferRefusalLimitError` when this refusal exhausted
+        the token. Called while the refusal that prompted it is being
+        handled, so the underlying refusal travels as the raised error's
+        context.
+        """
+        with self._lock:
+            entry = self._entries.get(transfer_id)
+            if entry is None:
+                return
+            self._roll_back_locked(entry)
+            entry.refused_deliveries += 1
+            if entry.refused_deliveries < entry.max_refused_deliveries:
+                return
+            self._entries.pop(transfer_id)
+        entry.cleanup()
+        raise TransferRefusalLimitError(transfer_id, entry.max_refused_deliveries)
 
     def consume_upload(self, token: str, vault_id: str) -> PendingTransfer:
         """Redeem an upload token against its staged bytes and pop the entry.
@@ -433,6 +485,13 @@ class TransferStore:
         self._entries[transfer_id] = entry
         return MintedTransfer(transfer_id, token, expires_at), entry
 
+    @staticmethod
+    def _roll_back_locked(entry: PendingTransfer) -> None:
+        entry.staged_path.unlink(missing_ok=True)
+        entry.state = "pending_bytes"
+        entry.staged_size = None
+        entry.staged_sha256 = None
+
     def _validated_locked(
         self,
         token: str,
@@ -495,8 +554,8 @@ def reset_transfer_store() -> None:
 # recipe the caller's environment executes verbatim.
 
 
-def _transfer_coordinates() -> tuple[str, int]:
-    """Resolve (public base URL, token TTL) from the stack config.
+def _transfer_coordinates() -> tuple[str, int, int]:
+    """Resolve (public base URL, token TTL, refusal limit) from the stack config.
 
     Raises :class:`sage.api.errors.TransferEndpointNotConfiguredError` when
     the deployment declares no public base URL -- minting a recipe whose URL
@@ -508,7 +567,7 @@ def _transfer_coordinates() -> tuple[str, int]:
     cfg = get_stack_config().transfer
     if not cfg.public_base_url:
         raise TransferEndpointNotConfiguredError()
-    return cfg.public_base_url.rstrip("/"), cfg.token_ttl_seconds
+    return cfg.public_base_url.rstrip("/"), cfg.token_ttl_seconds, cfg.max_refused_deliveries
 
 
 def mint_upload_recipe(
@@ -523,14 +582,20 @@ def mint_upload_recipe(
     """
     from sage.models.schemas import UploadRecipe, UploadRecipeItem
 
-    base_url, ttl_seconds = _transfer_coordinates()
+    base_url, ttl_seconds, max_refused_deliveries = _transfer_coordinates()
     store = get_transfer_store()
     items: list[UploadRecipeItem] = []
     leg_expiries: list[datetime] = []
     for source, sha256 in zip(
         sources, digests if digests is not None else [None] * len(sources), strict=True
     ):
-        minted = store.mint_upload(vault_id, source, ttl_seconds, sha256=sha256)
+        minted = store.mint_upload(
+            vault_id,
+            source,
+            ttl_seconds,
+            sha256=sha256,
+            max_refused_deliveries=max_refused_deliveries,
+        )
         leg_expiries.append(minted.expires_at)
         items.append(
             UploadRecipeItem(
@@ -564,7 +629,7 @@ def mint_download_recipe_for_source(
     """Mint a download recipe for a retained source file."""
     from sage.models.schemas import DownloadRecipe
 
-    base_url, ttl_seconds = _transfer_coordinates()
+    base_url, ttl_seconds, _ = _transfer_coordinates()
     filename = staging_name(source_path, "download")
     minted = get_transfer_store().mint_download_source(
         vault_id,
@@ -596,7 +661,7 @@ def mint_download_recipe_for_projection(
     """Mint a download recipe for a projection, spooled at mint time."""
     from sage.models.schemas import DownloadRecipe
 
-    base_url, ttl_seconds = _transfer_coordinates()
+    base_url, ttl_seconds, _ = _transfer_coordinates()
     filename = f"{document_id}.md"
     minted = get_transfer_store().mint_download_projection(
         vault_id,

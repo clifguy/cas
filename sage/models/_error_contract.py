@@ -1139,6 +1139,7 @@ SCHEMAS = json.loads(
         "transfer_content_too_large": "#/components/schemas/TransferContentTooLargeError",
         "transfer_endpoint_not_configured": "#/components/schemas/TransferEndpointNotConfiguredError",
         "transfer_not_staged": "#/components/schemas/TransferNotStagedError",
+        "transfer_refusal_limit_reached": "#/components/schemas/TransferRefusalLimitReachedError",
         "transfer_token_already_used": "#/components/schemas/TransferTokenAlreadyUsedError",
         "transfer_token_invalid": "#/components/schemas/TransferTokenInvalidError",
         "undeclared_key": "#/components/schemas/UndeclaredKeyError",
@@ -1476,6 +1477,9 @@ SCHEMAS = json.loads(
       },
       {
         "$ref": "#/components/schemas/TransferNotStagedError"
+      },
+      {
+        "$ref": "#/components/schemas/TransferRefusalLimitReachedError"
       },
       {
         "$ref": "#/components/schemas/TransferTokenAlreadyUsedError"
@@ -2283,6 +2287,7 @@ SCHEMAS = json.loads(
             "transfer_content_too_large",
             "transfer_endpoint_not_configured",
             "transfer_not_staged",
+            "transfer_refusal_limit_reached",
             "transfer_token_already_used",
             "transfer_token_invalid",
             "unexpected_relocated_to",
@@ -6145,6 +6150,52 @@ SCHEMAS = json.loads(
     },
     "required": [
       "transfer_id"
+    ],
+    "type": "object"
+  },
+  "TransferRefusalLimitReachedError": {
+    "additionalProperties": false,
+    "description": "The refusal envelope for this error code.",
+    "properties": {
+      "code": {
+        "const": "transfer_refusal_limit_reached",
+        "description": "Machine-readable error code selecting this envelope.",
+        "type": "string"
+      },
+      "detail": {
+        "$ref": "#/components/schemas/TransferRefusalLimitReachedErrorDetail"
+      },
+      "message": {
+        "description": "Human-readable error description.",
+        "type": "string"
+      },
+      "read_meta": {
+        "$ref": "#/components/schemas/ReadMeta"
+      }
+    },
+    "required": [
+      "code",
+      "message",
+      "detail"
+    ],
+    "type": "object"
+  },
+  "TransferRefusalLimitReachedErrorDetail": {
+    "additionalProperties": false,
+    "description": "Additional context for this refusal.",
+    "properties": {
+      "max_refused_deliveries": {
+        "description": "Max refused deliveries.",
+        "type": "integer"
+      },
+      "transfer_id": {
+        "description": "Transfer id.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "transfer_id",
+      "max_refused_deliveries"
     ],
     "type": "object"
   },
