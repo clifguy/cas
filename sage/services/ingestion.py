@@ -3245,8 +3245,10 @@ class IngestionService:
         caller_keys: set[str] = set()
         if caller_metadata:
             field_updates.update(self._build_metadata_updates(caller_metadata))
-            # A null value means the key was omitted, so it leaves the field
-            # open to chain inheritance rather than claiming it.
+            # A null value means the key was omitted, so it is not a claim on
+            # the field and inheritance decides it. The helper's caller_keys
+            # rule is its own per-field contract; on this path a claimed field
+            # already carries a non-null value in field_view.
             caller_keys = {k for k, v in caller_metadata.items() if v is not None}
 
         if predecessor is not None:

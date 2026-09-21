@@ -1117,8 +1117,8 @@ class IngestRequest(BaseModel):
             "only, falls through to `misc`). A field whose value is null is "
             "treated exactly as an omitted field, so a null doc_type, project "
             "or authority_scope on a supersession still inherits the "
-            "predecessor's value. Unknown field names are stored but have no "
-            "schema-enforced semantics. Values are strings except tags, "
+            "predecessor's value. A field name outside the recognized set is "
+            "ignored rather than stored. Values are strings except tags, "
             "which may be supplied as a list of strings or as a "
             "comma-separated string (parity with update_metadata's "
             "list-typed tags field). `codes` sets the same field as `tags`, so "
@@ -1236,11 +1236,12 @@ class IngestRequest(BaseModel):
         has every reason to try the other spelling.
 
         Checked on the key's presence rather than its value, because the
-        damaging case is the one that validates. ``metadata`` is declared as
-        ``str | list[str]``, so a mapping already fails -- as a complaint
-        about the value's type, naming neither the right position nor the
-        right shape. A string passes, is stored under a name nothing reads,
-        and leaves the argument it was meant for unset, all without a word:
+        damaging case is the one that validates. ``metadata`` values are
+        declared as ``str | list[str] | None``, so a mapping already fails --
+        as a complaint about the value's type, naming neither the right
+        position nor the right shape. A string passes, is ignored as a name
+        the ingest does not read, and leaves the argument it was meant for
+        unset, all without a word:
         the caller sees a successful ingest whose typed field is absent.
 
         ``mode="before"`` is load-bearing: the ``mode="after"`` validator

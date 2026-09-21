@@ -5847,8 +5847,8 @@ components:
             (doc_type only, falls through to `misc`). A field whose
             value is null is treated exactly as an omitted field, so a
             null doc_type, project or authority_scope on a supersession
-            still inherits the predecessor's value. Unknown field
-            names are stored but have no schema-enforced semantics.
+            still inherits the predecessor's value. A field name
+            outside the recognized set is ignored rather than stored.
             Values are strings except
             tags, which may be supplied as a list of strings or as a
             comma-separated string (parity with update_metadata's

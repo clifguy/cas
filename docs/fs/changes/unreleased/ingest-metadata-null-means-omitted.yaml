@@ -12,7 +12,8 @@ summary: >-
   the predecessor's value rather than landing on the derived default. The
   `metadata` property in the Core API specification gains a null arm on its
   values, and its description in both the model and the specification states
-  the rule.
+  the rule. The same description no longer says an unrecognized key is stored:
+  such a key is ignored, as it always has been.
 for_callers: >-
   A client that serializes absent optional fields as null can now send them
   inside `metadata` on an ingest; each null behaves exactly as leaving the key

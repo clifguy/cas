@@ -254,6 +254,22 @@ async def test_misplaced_top_level_name_with_null_value_is_still_refused(vault_s
     assert result["detail"]["fields"] == ["predecessor_id"]
 
 
+async def test_unknown_metadata_key_is_ignored(vault_services):
+    """A key outside the recognized set is accepted and stored nowhere on the record."""
+    result = await _call_ingest(
+        {
+            "source": "test/first.md",
+            "source_type": "markdown",
+            "metadata": {"custom_key": "custom_value"},
+        }
+    )
+
+    assert "error" not in result, result
+    stored = json.dumps(await _settled(vault_services, result["id"]))
+    assert "custom_key" not in stored
+    assert "custom_value" not in stored
+
+
 # ---------------------------------------------------------------------------
 # Published contract
 # ---------------------------------------------------------------------------
