@@ -1,7 +1,7 @@
 {
   "title": "CAS Test Plan Manifest",
   "description": "Inventory of test specification files, their coverage targets, and implementation status. Follows the pattern of docs/fs/manifest.json.",
-  "manifest_version": "0.9.22",
+  "manifest_version": "0.9.23",
   "manifest_date": "2026-09-21",
   "tiers": {
     "1": "Contract tests: schema validation and API contract shape verification, mechanically derived from the formal substrate.",
@@ -52,7 +52,7 @@
         "docs/fs/sage/lifecycle.schema.json",
         "docs/fs/sage/vault_config.schema.json"
       ],
-      "test_count": 136,
+      "test_count": 155,
       "decision_date": "2026-04-06"
     },
     {
@@ -94,9 +94,9 @@
         "sage/adapters/interfaces.py",
         "docs/fs/sage/vault_config.schema.json"
       ],
-      "test_count": 80,
+      "test_count": 172,
       "decision_date": "2026-04-06",
-      "notes": "nomic-embed-text EmbeddingProvider (8 tests, AD-001..AD-008), LanceDB ContentStore (RETIRED with the embedded storage backend, CAS-ADR-042; was 17 tests, AD-009..AD-025 -- Postgres content-store coverage lives in tests/sage/test_content_store_postgres.py), Qwen3 AbstractionProvider (8 tests, AD-026..AD-033), Markdown adapter provenance (1 test, AD-034), Docx source adapter (18 tests, AD-035..AD-052), Xlsx source adapter (15 tests, AD-053..AD-067), Word template .dotx adapter (8 tests, AD-068..AD-075), PDF source adapter v0.1 native-text only (19 tests, AD-076..AD-094), Qwen3 lazy loading (3 tests, AD-095..AD-097, relocated from AD-035..AD-037 in v0.9.15), LanceDB has_chunks existence check (RETIRED with the embedded storage backend; was 2 tests, AD-098..AD-099, renumbered from AD-068..AD-069 in v0.9.16 to resolve cross-class collision with dotx specs -- the has_chunks contract is covered against Postgres by test_has_chunks in tests/sage/test_content_store_postgres.py). Numbering is contiguous AD-001..AD-099 with two retired ranges; test_count reflects only active specs."
+      "notes": "Active adapter specification headings across embedding, abstraction and source formats; retired embedded-storage headings are excluded. Counts are enforced by tests/test_plan_manifest.py."
     },
     {
       "path": "tests/app/frontend_tests.md",
@@ -106,9 +106,9 @@
       "covers": [
         "CAS Application Spec (CAS SAGE vault)"
       ],
-      "test_count": 56,
+      "test_count": 59,
       "decision_date": "2026-04-08",
-      "notes": "UI behavior tests for all 6 views: Dashboard (6 tests), Ingest (11 tests), Metadata Review (5 tests), Edge Review (6 tests), Search (5 tests), Document Detail (6 tests), Graph Explorer (13 tests), Navigation/vault selector (3 tests)."
+      "notes": "UI behavior specifications for Dashboard, Ingest, Metadata Review, Edge Review, Search, Document Detail, Graph Explorer and navigation/vault selection. Counts are enforced by tests/test_plan_manifest.py."
     },
     {
       "path": "tests/app/backend_tests.md",
@@ -201,9 +201,9 @@
         "app/backend/router.py",
         "sage/app_tools.py"
       ],
-      "test_count": 19,
+      "test_count": 24,
       "decision_date": "2026-04-15",
-      "notes": "BatchIngestService extracted from duplicate batch ingest logic in sage/mcp_server.py (JSON delivery) and app/backend/router.py (SSE delivery). The service owns the three-phase pipeline; callers provide delivery glue. TEST-BIS-001 through TEST-BIS-019 across 7 sections: service interface (BIS-001/002), file descriptor normalization (BIS-003/004), Phase 1 edge plan construction (BIS-005..007), Phase 2 per-file ingestion (BIS-008..011), Phase 3 post-ingest edge execution (BIS-012/013), progress callbacks (BIS-014..017), caller integration (BIS-018/019)."
+      "notes": "BatchIngestService extracted from duplicate batch ingest logic in sage/mcp_server.py (JSON delivery) and app/backend/router.py (SSE delivery). The service owns the three-phase pipeline; callers provide delivery glue. TEST-BIS-001 through TEST-BIS-019 across 7 sections: service interface (BIS-001/002), file descriptor normalization (BIS-003/004), Phase 1 edge plan construction (BIS-005..007), Phase 2 per-file ingestion (BIS-008..011), Phase 3 post-ingest edge execution (BIS-012/013), progress callbacks (BIS-014..017), caller integration (BIS-018/019). Additional specifications BIS-020..022 and BIS-024..025 cover pending-metadata counts, predecessor lifecycle synchronization, atomic chain repair, file indices and shared wire error entries; BIS-023 is unallocated."
     },
     {
       "path": "tests/app/cleanup_tests.md",
@@ -243,9 +243,9 @@
         "sage/api/routers/vaults.py",
         "sage/vault_management.py"
       ],
-      "test_count": 14,
+      "test_count": 15,
       "decision_date": "2026-04-18",
-      "notes": "Three MCP tools (create_vault, get_vault_config, update_vault_config) and the REST force-gate refinement to PUT /sage_vaults/{vault_id}/config. Design decisions: no delete tool; single-shape create (the original two-mode design was collapsed to a single config-dict argument matching CreateVaultRequest after the MCP-OpenAPI conformance gate flagged the asymmetry; callers wanting sensible defaults obtain the scaffold separately -- in-process from VaultRegistryService.get_default_config(), off-process from the default-config read); echo-back on create; named-section update kwargs (the original `sections: dict` wrapper was replaced with one optional kwarg per top-level section to match UpdateVaultConfigRequest directly); full-section replacement (no partial-section merges); destructive-change gate requiring force=True; vault.id immutability regardless of force; REST parity via force=true query parameter. TEST-APP-MCP-030 / -031 / -033 / -034 cover create_vault (default-config dict, duplicate rejection, full-config, invalid config); MCP-035 covers get_vault_config; MCP-036..040 cover update_vault_config (preserves omitted sections, blocks destructive without force, force proceeds with warnings, vault.id rejected even with force, invalid section rejected); TEST-SAGE-VM-REST-001..003 cover REST endpoint parity for the force gate; TEST-SAGE-VM-REST-004 covers the default-config read that serves the creation scaffold. TEST-APP-MCP-032 (mixed-mode rejection) was removed as the convenience kwargs no longer exist, which is why the MCP-030..040 range is sparse and holds ten specs rather than eleven."
+      "notes": "Three MCP tools (create_vault, get_vault_config, update_vault_config) and the REST force-gate refinement to PUT /sage_vaults/{vault_id}/config. Design decisions: no delete tool; single-shape create (the original two-mode design was collapsed to a single config-dict argument matching CreateVaultRequest after the MCP-OpenAPI conformance gate flagged the asymmetry; callers wanting sensible defaults obtain the scaffold separately -- in-process from VaultRegistryService.get_default_config(), off-process from the default-config read); echo-back on create; named-section update kwargs (the original `sections: dict` wrapper was replaced with one optional kwarg per top-level section to match UpdateVaultConfigRequest directly); full-section replacement (no partial-section merges); destructive-change gate requiring force=True; vault.id immutability regardless of force; REST parity via force=true query parameter. TEST-APP-MCP-030 / -031 / -033 / -034 cover create_vault (default-config dict, duplicate rejection, full-config, invalid config); MCP-035 covers get_vault_config; MCP-036..040 cover update_vault_config (preserves omitted sections, blocks destructive without force, force proceeds with warnings, vault.id rejected even with force, invalid section rejected); TEST-SAGE-VM-REST-001..003 cover REST endpoint parity for the force gate; TEST-SAGE-VM-REST-004 covers the default-config read that serves the creation scaffold. TEST-APP-MCP-032 (mixed-mode rejection) was removed as the convenience kwargs no longer exist, which is why the MCP-030..040 range is sparse and holds ten specs rather than eleven. TEST-SAGE-VM-RELOAD-001 covers re-reading a declared vault under every binding."
     }
   ],
   "fixture_directories": {
@@ -382,6 +382,11 @@
       "version": "0.9.22",
       "date": "2026-09-21",
       "summary": "Lifecycle doc_type scoping (CAS-ADR-054). tests/sage/contract_tests.md gains TEST-SAGE-LC-012 (a scoped state and transition validate), LC-013 (an empty, duplicate or malformed scope fails) and LC-014 (a scope on the '(new)' ingestion row fails), each gated by tests/sage/test_lifecycle_config_validation.py::test_schema_expresses_doc_type_scoping_shape. The loader-only and behavioral rules are pinned in tests/sage/test_lifecycle_doc_type_scoping.py. Contract test count: 62 -> 65."
+    },
+    {
+      "version": "0.9.23",
+      "date": "2026-09-21",
+      "summary": "Reconcile all active specification-heading counts: behavioral 136 -> 154, adapters 80 -> 172, frontend 56 -> 59, batch ingest service 19 -> 24, vault management 14 -> 15. tests/test_plan_manifest.py enforces every listed file and exact count: Markdown headings containing a TEST- identifier at any depth, excluding RETIRED headings, prose and fenced examples. Specification contents and historical entries are unchanged."
     }
   ]
 }
