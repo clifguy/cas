@@ -379,6 +379,15 @@ export function DocTypesEditor({
 
 // --- Lifecycle ---
 
+// Sets one row's raw scope text. The copy is dense: assigning past the end of
+// a plain spread leaves holes, which `filter` skips when a row is removed, and
+// the text above the hole would then shift onto the wrong row.
+function withText(prev: (string | undefined)[], idx: number, text: string): (string | undefined)[] {
+  const next = Array.from({ length: Math.max(prev.length, idx + 1) }, (_, i) => prev[i]);
+  next[idx] = text;
+  return next;
+}
+
 // Replaces an entry's doc_type scope with the one a text field names. A blank
 // field drops the key, leaving the entry unscoped (CAS-ADR-054).
 function withScope<T extends { doc_types?: string[] | null }>(entry: T, text: string): T {
@@ -416,7 +425,7 @@ export function LifecycleEditor({
     setStates(prev => prev.map((s, i) => i === idx ? { ...s, [field]: value } : s));
   };
   const updateStateScope = (idx: number, text: string) => {
-    setStateScopeText(prev => { const next = [...prev]; next[idx] = text; return next; });
+    setStateScopeText(prev => withText(prev, idx, text));
     setStates(prev => prev.map((s, i) => i === idx ? withScope(s, text) : s));
   };
   const addState = () => setStates(prev => [...prev, { value: '', label: '' }]);
@@ -429,7 +438,7 @@ export function LifecycleEditor({
     setTransitions(prev => prev.map((t, i) => i === idx ? { ...t, [field]: value } : t));
   };
   const updateTransitionScope = (idx: number, text: string) => {
-    setTransitionScopeText(prev => { const next = [...prev]; next[idx] = text; return next; });
+    setTransitionScopeText(prev => withText(prev, idx, text));
     setTransitions(prev => prev.map((t, i) => i === idx ? withScope(t, text) : t));
   };
   const addTransition = () => setTransitions(prev => [...prev, { from_state: '', action: '', to_state: '' }]);

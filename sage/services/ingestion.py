@@ -1360,6 +1360,13 @@ class IngestionService:
         """
         request, _adapter, predecessor, ran = await self._validate_without_bytes(request)
         ran.insert(0, DryRunValidator.REQUEST_SHAPE)
+        # A declared digest stands for the bytes, so a force pin is held to it
+        # here exactly as the run holds it to the delivered hash, and a pin
+        # naming no document or another document's bytes is refused before
+        # the upload. Without a digest the refusal waits for the bytes: it
+        # reports the hash the pin failed to match.
+        if request.force and request.sha256 is not None:
+            await self._resolve_force_pin(request, request.sha256)
         if request.tier3_metadata is not None:
             parsed = (
                 self._parse_source_filename(
@@ -1374,8 +1381,9 @@ class IngestionService:
                 if request.document_id is not None:
                     reused = await self._store.get_document(request.document_id)
                     if reused is None:
-                        # The run refuses a pin naming no document once the
-                        # bytes arrive; there is nothing to resolve against.
+                        # Reached only without a digest, which the refusal
+                        # above needs; the run refuses this pin once the
+                        # bytes arrive, and there is nothing to resolve.
                         return ran
                 elif request.sha256 is not None:
                     matches = await self._store.find_documents_by_hashes(
@@ -1618,10 +1626,6 @@ class IngestionService:
         # below: that record's own doc_type is a rung of the chain, and
         # validating without it would check the payload against a doc_type
         # the write never carries.
-        #
-        # The vocabulary gate runs whether or not a tier3 payload came
-        # with the call: a misspelled doc_type carrying no typed metadata
-        # is exactly the case that used to commit.
         if final_tier3 is not None and not request.force:
             resolved_dt = self._resolve_ingest_doc_type(
                 request=request, parsed=parsed, predecessor=predecessor

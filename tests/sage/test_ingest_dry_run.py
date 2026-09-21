@@ -935,35 +935,41 @@ async def test_force_reingest_tier3_refusal_names_the_reused_records_doc_type(
     assert excinfo.value.detail["doc_type"] == "loose_record"
 
 
-async def test_force_reingest_preview_resolves_from_the_pinned_record(
-    tmp_vault_dir, graph_store, dry_ingestion_service
-):
-    """The representative and the pinned holder carry different doc_types, so
-    resolving from ``duplicate_of`` rather than the pin reports the wrong one."""
-    source, held = await _seed(
-        dry_ingestion_service, tmp_vault_dir, "pinned_type.md", "loose_record"
-    )
+async def _seed_with_typed_sibling(service, graph_store, tmp_vault_dir, name):
+    """Two holders of the same bytes: the lookup's representative as
+    ``loose_record`` and a sibling as ``bare_record``, so resolving from the
+    representative rather than a pin on the sibling names the wrong doc_type."""
+    source, held = await _seed(service, tmp_vault_dir, name, "loose_record")
     sibling = held.model_copy(
         update={
-            "id": "ffffffff_pinned_type_sibling",
-            "source_path": "pinned_type_sibling.md",
+            "id": f"ffffffff_{Path(name).stem}_sibling",
+            "source_path": f"{Path(name).stem}_sibling.md",
             "doc_type": "bare_record",
         }
     )
     await graph_store.insert_document(sibling)
+    return source, held, sibling
 
-    preview = await dry_ingestion_service.ingest(
-        IngestRequest(
-            source=str(source),
-            source_type=SourceType.MARKDOWN,
-            force=True,
-            document_id=sibling.id,
-            dry_run=True,
-        )
+
+async def test_force_reingest_preview_resolves_from_the_pinned_record(
+    tmp_vault_dir, graph_store, dry_ingestion_service
+):
+    source, held, sibling = await _seed_with_typed_sibling(
+        dry_ingestion_service, graph_store, tmp_vault_dir, "pinned_type.md"
     )
+    request = {
+        "source": str(source),
+        "source_type": SourceType.MARKDOWN,
+        "force": True,
+        "document_id": sibling.id,
+    }
+
+    preview = await dry_ingestion_service.ingest(IngestRequest(**request, dry_run=True))
+    await dry_ingestion_service.ingest(IngestRequest(**request))
 
     assert preview.duplicate_of == held.id
     assert preview.resolved_doc_type == "bare_record"
+    assert (await graph_store.get_document(sibling.id)).doc_type == "bare_record"
 
 
 @pytest.mark.parametrize(
@@ -1070,6 +1076,68 @@ async def test_no_bytes_check_resolves_the_reused_record_from_the_pin(
         )
 
     assert excinfo.value.detail["doc_type"] == "loose_record"
+
+
+async def test_no_bytes_check_prefers_the_pin_over_the_declared_digest(
+    tmp_vault_dir, graph_store, dry_ingestion_service
+):
+    """The pin names which holder of the bytes is reused, as it does in the run;
+    the digest only finds the representative, which carries another doc_type."""
+    source, held, sibling = await _seed_with_typed_sibling(
+        dry_ingestion_service, graph_store, tmp_vault_dir, "nb_pin_and_digest.md"
+    )
+
+    with pytest.raises(Tier3SchemaViolationError) as excinfo:
+        await dry_ingestion_service.validate_without_bytes(
+            _no_bytes_request(
+                source.name,
+                document_id=sibling.id,
+                sha256=held.source_content_hash,
+                tier3_metadata={"bogus": 1},
+            )
+        )
+
+    assert excinfo.value.detail["doc_type"] == "bare_record"
+
+
+async def test_no_bytes_check_resolves_a_filename_doc_type_without_a_pin_or_digest(
+    dry_ingestion_service,
+):
+    """A doc_type the filename parse names ranks above the reused record, so the
+    check can run with neither a pin nor a digest."""
+    with pytest.raises(Tier3SchemaViolationError) as excinfo:
+        await dry_ingestion_service.validate_without_bytes(
+            _no_bytes_request(
+                "2026-09-21_CAS_LR_named-by-filename.md",
+                needs_review=True,
+                tier3_metadata={"bogus": 1},
+            )
+        )
+
+    assert excinfo.value.detail["doc_type"] == "loose_record"
+
+
+@pytest.mark.parametrize("pin", ["dangling", "other_bytes"])
+async def test_no_bytes_check_refuses_a_pin_the_declared_digest_rules_out(
+    tmp_vault_dir, dry_ingestion_service, pin
+):
+    """With a declared digest the pin is checked as the byte call checks it,
+    whether or not the request carries a Tier-3 payload."""
+    source, held = await _seed(dry_ingestion_service, tmp_vault_dir, f"nb_pin_{pin}.md", "misc")
+    _other_source, other = await _seed(
+        dry_ingestion_service, tmp_vault_dir, f"nb_pin_{pin}_other.md", "misc"
+    )
+    pinned = "ffffffff_no_such_document" if pin == "dangling" else other.id
+
+    with pytest.raises(ForceReingestPinMismatchError):
+        await dry_ingestion_service.validate_without_bytes(
+            _no_bytes_request(source.name, document_id=pinned, sha256=held.source_content_hash)
+        )
+    # The pin the digest does hold is admitted: the check refuses the pin, not
+    # every pinned request.
+    await dry_ingestion_service.validate_without_bytes(
+        _no_bytes_request(source.name, document_id=held.id, sha256=held.source_content_hash)
+    )
 
 
 async def test_no_bytes_check_leaves_an_unknowable_doc_type_to_the_byte_call(

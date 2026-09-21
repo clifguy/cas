@@ -352,6 +352,47 @@ describe('Settings editors — draft resync when a fresh prop arrives', () => {
       expect(saved.transitions[2]).toEqual(scoped.transitions[2]);
     });
 
+    // A single change event (a paste, an autofill, one keystroke) on a row
+    // below the end of the scope-text array, then removing a row above it:
+    // the text must stay with its own row. Typing character by character
+    // would hide a sparse array, so the edit is one event.
+    it('keeps edited scope text on its own row when a row above is removed', () => {
+      const three: Lifecycle = {
+        base_states_required: true,
+        states: [
+          { value: 'a', label: 'A' },
+          { value: 'b', label: 'B', doc_types: ['adr'] },
+          { value: 'c', label: 'C' },
+        ],
+        transitions: [
+          { from_state: 'a', action: 'one', to_state: 'b' },
+          { from_state: 'b', action: 'two', to_state: 'c', doc_types: ['adr'] },
+          { from_state: 'c', action: 'three', to_state: 'a' },
+        ],
+      };
+      render(
+        <LifecycleEditor
+          lifecycle={three}
+          editing
+          onEdit={vi.fn()}
+          onCancel={vi.fn()}
+          onSave={vi.fn()}
+          saving={false}
+        />,
+      );
+
+      fireEvent.change(screen.getByLabelText('Doc types for state 3'), { target: { value: 'ticket' } });
+      fireEvent.change(screen.getByLabelText('Doc types for transition 3'), { target: { value: 'ticket' } });
+      const [statesTable, transitionsTable] = screen.getAllByRole('table');
+      fireEvent.click(within(statesTable).getAllByRole('button', { name: 'Remove' })[0]);
+      fireEvent.click(within(transitionsTable).getAllByRole('button', { name: 'Remove' })[0]);
+
+      expect(screen.getByLabelText('Doc types for state 1')).toHaveValue('adr');
+      expect(screen.getByLabelText('Doc types for state 2')).toHaveValue('ticket');
+      expect(screen.getByLabelText('Doc types for transition 1')).toHaveValue('adr');
+      expect(screen.getByLabelText('Doc types for transition 2')).toHaveValue('ticket');
+    });
+
     it("surfaces the server's refusal message on a lifecycle save", async () => {
       const message =
         "the transition 'active -> block -> blocked' applies to doc_type(s) adr outside the scope of the state 'blocked' (ticket)";
