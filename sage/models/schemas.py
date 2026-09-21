@@ -7,9 +7,17 @@ extensions like 'filed' that aren't in the base enum.
 import re
 import uuid
 from datetime import date, datetime
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, Union
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializeAsAny,
+    TypeAdapter,
+    model_validator,
+)
 from pydantic_core import PydanticCustomError
 
 from sage.models.enums import (
@@ -30,6 +38,8 @@ from sage.models.enums import (
     TraversalDirection,
     UserType,
 )
+from sage.models.error_contract import build_models as _build_error_models
+from sage.models.error_contract import select_detail as _select_error_detail
 from sage.models.legacy_form import detect_legacy_form
 
 # ---------------------------------------------------------------------------
@@ -6090,8 +6100,38 @@ class PendingMetadataItem(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+_ERROR_MODELS = _build_error_models(ReadMeta)
+globals().update(_ERROR_MODELS)
+_ERROR_ENVELOPE_ADAPTER = TypeAdapter(
+    Union[tuple(model for name, model in _ERROR_MODELS.items() if name.endswith("Error"))]
+)
+
+
 class ErrorResponse(BaseModel):
     """Uniform error envelope for all endpoints."""
+
+    @classmethod
+    def __get_pydantic_json_schema__(cls, core_schema: Any, handler: Any) -> dict:
+        schema = handler(_ERROR_ENVELOPE_ADAPTER.core_schema)
+        schema["oneOf"] = schema.pop("anyOf")
+        mapping = {}
+        for branch in schema["oneOf"]:
+            resolved = handler.resolve_ref_schema(branch)
+            code = resolved.get("properties", {}).get("code", {}).get("const")
+            if code is not None:
+                mapping[code] = branch["$ref"]
+        schema["discriminator"] = {"propertyName": "code", "mapping": mapping}
+        return schema
+
+    @model_validator(mode="before")
+    @classmethod
+    def _typed_detail(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            value = dict(value)
+            value["detail"] = _select_error_detail(
+                value.get("code", ""), value.get("detail"), _ERROR_MODELS
+            )
+        return value
 
     code: str = Field(
         description=(
@@ -6101,7 +6141,7 @@ class ErrorResponse(BaseModel):
         )
     )
     message: str = Field(description="Human-readable error description.")
-    detail: dict | None = Field(
+    detail: dict | SerializeAsAny[BaseModel] | None = Field(
         default=None,
         description=(
             "Additional context. Structure varies by error type (e.g., "

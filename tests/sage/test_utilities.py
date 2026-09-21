@@ -1048,7 +1048,9 @@ def test_discover_response_carries_success_marker_no_body():
 def test_error_response_carries_failure_marker():
     """The error envelope rides the same carrier with success=False — the
     failure-side parallel of the success marker."""
-    response = ErrorResponse(code="document_not_found", message="no such document")
+    response = ErrorResponse(
+        code="document_not_found", message="no such document", detail={"document_id": "missing"}
+    )
     assert response.read_meta.success is False
     assert response.read_meta.body_present is False
 

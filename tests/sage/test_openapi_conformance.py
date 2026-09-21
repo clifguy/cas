@@ -1656,19 +1656,34 @@ def _flatten_yaml_properties(schema_def: dict, spec: dict) -> dict:
     `components/schemas` and recurse; inline parts contribute their
     `properties` directly. Non-`allOf` schemas pass through unchanged.
     """
-    if "allOf" in schema_def:
-        merged: dict = {}
-        for part in schema_def["allOf"]:
+    merged = dict(schema_def.get("properties") or {})
+    for keyword in ("allOf", "oneOf", "anyOf"):
+        for part in schema_def.get(keyword, []):
             ref = part.get("$ref")
             if ref:
-                # "#/components/schemas/Document" -> "Document"
-                name = ref.rsplit("/", 1)[-1]
-                ref_def = spec["components"]["schemas"].get(name, {})
-                merged.update(_flatten_yaml_properties(ref_def, spec))
-            else:
-                merged.update(part.get("properties") or {})
-        return merged
-    return schema_def.get("properties") or {}
+                part = spec["components"]["schemas"].get(ref.rsplit("/", 1)[-1], {})
+            merged.update(_flatten_yaml_properties(part, spec))
+    merged.update(schema_def.get("properties") or {})
+    return merged
+
+
+def _wire_model_field_names(model: type[BaseModel]) -> set[str]:
+    """Root models serialize their selected value rather than a `root` property."""
+    if not getattr(model, "__pydantic_root_model__", False):
+        return set(model.model_fields)
+    schema = model.model_json_schema()
+    definitions = schema.get("$defs", {})
+
+    def fields(node):
+        if "$ref" in node:
+            return fields(definitions[node["$ref"].rsplit("/", 1)[-1]])
+        found = set(node.get("properties", {}))
+        for keyword in ("oneOf", "anyOf", "allOf"):
+            for child in node.get(keyword, []):
+                found |= fields(child)
+        return found
+
+    return fields(schema)
 
 
 def test_every_yaml_schema_has_pydantic_class(sage_core_spec: dict | None):
@@ -1736,7 +1751,7 @@ def test_every_yaml_schema_has_pydantic_class(sage_core_spec: dict | None):
         model = pydantic_classes[schema_name]
         yaml_props = _flatten_yaml_properties(schema_def, sage_core_spec)
 
-        pyd_field_names = set(model.model_fields.keys())
+        pyd_field_names = _wire_model_field_names(model)
         yaml_field_names = set(yaml_props.keys())
         gap = yaml_field_names - pyd_field_names
         if gap:
@@ -1868,7 +1883,9 @@ def test_every_pydantic_field_has_a_yaml_property(
             if model is None:
                 continue
             compared += 1
-            undeclared = set(model.model_fields) - set(_flatten_yaml_properties(schema_def, spec))
+            undeclared = _wire_model_field_names(model) - set(
+                _flatten_yaml_properties(schema_def, spec)
+            )
             if undeclared:
                 violations.append(f"  {label}: {schema_name} -> {sorted(undeclared)}")
 
@@ -1929,7 +1946,7 @@ def test_every_cas_app_yaml_schema_has_pydantic_class(cas_app_spec: dict | None)
         model = pydantic_classes[schema_name]
         yaml_props = _flatten_yaml_properties(schema_def, cas_app_spec)
 
-        pyd_field_names = set(model.model_fields.keys())
+        pyd_field_names = _wire_model_field_names(model)
         yaml_field_names = set(yaml_props.keys())
         gap = yaml_field_names - pyd_field_names
         if gap:

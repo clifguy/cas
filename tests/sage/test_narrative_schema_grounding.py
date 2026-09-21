@@ -97,12 +97,9 @@ runs four constructions over every package file, and the
 stays genuinely out of reach and is pinned rather than swept; that
 function's docstring says which and why.
 
-What the pass measured is the residue below: thirty-five names, and
-overwhelmingly one category. ``SAGEError.detail`` is an untyped mapping,
-so a narrative telling a caller which keys to read names something real
-that no contract node declares. Typing the detail envelope per error
-family would resolve every one of them at once, which is the finding
-those pins record.
+Error detail names now resolve through code-discriminated response schemas.
+The remaining pins describe other intentionally dynamic narrative categories;
+they do not exempt error-detail keys from structural reachability.
 
 **The extractor is not the sibling gate's.** The parity module's
 ``_IDENTIFIER`` requires an underscore, and ``linearity`` has none.
@@ -207,7 +204,6 @@ from typing import Any, Final
 
 import pytest
 
-from tests.helpers.vault_addressed import NOT_REGISTRY_RESOLVED
 from tests.sage.test_mcp_docstring_disclosure_parity import (
     _STRUCTURAL_HEADER,
     _prose_body,
@@ -628,21 +624,6 @@ def unresolved_for(surface_name: str, tool_name: str) -> list[str]:
 # ``test_narrative_identifiers_resolve_to_the_contract_vocabulary``
 # parametrizes over every mapped pair.
 #
-# Two categories below are named rather than spelled out per entry,
-# because each covers enough names that repeating the sentence would
-# obscure how large the class is.
-
-# Overwhelmingly the largest category, and the one this table did not
-# carry before the structural tail was swept. A SAGEError's ``detail`` is
-# an untyped mapping: no schema declares its keys, so a narrative that
-# tells a caller which keys to read names something real that no
-# contract node defines. The remedy is not a pin but a typed detail
-# envelope per error family, which would resolve every one of these at
-# once; until then the pin records that the key was checked and found to
-# be a genuine detail field rather than an invented one. Each was
-# verified against its construction site in ``sage/api/errors.py``.
-ERROR_DETAIL_KEY: Final[str] = "key of the untyped SAGEError detail mapping"
-
 # A Python builtin an ``Error modes:`` block names because the tool
 # really does raise it rather than a SAGEError. Naming it is accurate
 # disclosure -- the caller sees exactly that class -- and no contract
@@ -676,9 +657,7 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
     ("sage_core", "get_default_vault_config"): {
         "vault_config": "the vault configuration schema file the scaffold conforms to",
     },
-    ("sage_core", "get_document"): {
-        "store_status": ERROR_DETAIL_KEY,
-    },
+    ("sage_core", "get_document"): {},
     ("sage_core", "get_filename_metadata"): {
         "cas": "example vault id in a worked example",
         "doc_code": "example filename segment field, defined per vault",
@@ -698,14 +677,6 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
     ("sage_core", "ingest_document"): {
         "cas": "example vault id in a worked example",
         "false": "prose: a literal boolean value",
-        # Key of the untyped ``invalid_doc_type`` detail, named in the
-        # doc_type-vocabulary error mode.
-        "valid_types": ERROR_DETAIL_KEY,
-        # Key of the ``vault_migration_in_flight`` detail.
-        "start_time": ERROR_DETAIL_KEY,
-        # Keys of the ``source_type_unresolved`` detail.
-        "extension": ERROR_DETAIL_KEY,
-        "registered_source_types": ERROR_DETAIL_KEY,
         "sage_vaults": (
             "the vault-scoped route prefix, in the endpoint paths this "
             "narrative names; a URL segment, not a contract node"
@@ -713,47 +684,14 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "ticket_id": "example tier-3 metadata key in a worked example",
         "unique": "prose: the tier-3 uniqueness property, not a field name",
         "imports": "vault source-tree directory, not a contract node",
-        # Keys of the untyped error ``detail``, named in the
-        # ``Error modes:`` block. See the category note above the table.
-        "allowed_states": ERROR_DETAIL_KEY,
-        "attempted_action": ERROR_DETAIL_KEY,
-        # Keys of the ``undeclared_key`` detail.
-        "key": ERROR_DETAIL_KEY,
-        "parameter": ERROR_DETAIL_KEY,
-        # Key of the ``invalid_parameter`` detail, named in the
-        # codes-and-tags conflict error mode.
-        "constraint": ERROR_DETAIL_KEY,
-        "colliding_value": ERROR_DETAIL_KEY,
-        "current_head_version": ERROR_DETAIL_KEY,
-        "current_state": ERROR_DETAIL_KEY,
-        "declared_sha256": ERROR_DETAIL_KEY,
-        "delivered_sha256": ERROR_DETAIL_KEY,
-        "document_content_hash": ERROR_DETAIL_KEY,
-        "example": ERROR_DETAIL_KEY,
-        "existing_document_id": ERROR_DETAIL_KEY,
-        "existing_source_path": ERROR_DETAIL_KEY,
-        "fields": ERROR_DETAIL_KEY,
-        "instance": ERROR_DETAIL_KEY,
-        "new_source_path": ERROR_DETAIL_KEY,
-        "pinned_source_content_hash": ERROR_DETAIL_KEY,
-        "pointer_content_hash": ERROR_DETAIL_KEY,
-        "recognized": ERROR_DETAIL_KEY,
-        "required_state": ERROR_DETAIL_KEY,
-        "store_status": ERROR_DETAIL_KEY,
     },
     ("sage_core", "optimize_vault_content_store"): {
         "ValueError": BUILTIN_EXCEPTION,
     },
-    ("sage_core", "read_section"): {
-        "candidate_matches": ERROR_DETAIL_KEY,
-    },
-    ("sage_core", "restore_vault_source_file"): {
-        "candidate_ids": ERROR_DETAIL_KEY,
-        "declared_sha256": ERROR_DETAIL_KEY,
-        "delivered_sha256": ERROR_DETAIL_KEY,
-        "store_status": ERROR_DETAIL_KEY,
-    },
+    ("sage_core", "read_section"): {},
+    ("sage_core", "restore_vault_source_file"): {},
     ("sage_core", "search"): {
+        "recommended_limit": "key of the successful response hints mapping, not an error detail",
         "null": "prose: the JSON literal, in a worked filter example",
         "failure_record": "example doc_type value in a worked example",
         "fix_commit": "example tier-3 metadata key in a worked example",
@@ -775,29 +713,8 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         ),
         "excerpt_chars": "key of the scored excerpt hint, naming the passage cap applied",
         "excerpted_count": "key of the scored excerpt hint, counting the passages cut",
-        "allowed_modes": ERROR_DETAIL_KEY,
-        "allowed_targets": ERROR_DETAIL_KEY,
-        "constraint": ERROR_DETAIL_KEY,
-        "example": ERROR_DETAIL_KEY,
-        "expected_type": ERROR_DETAIL_KEY,
-        "fields": ERROR_DETAIL_KEY,
-        "forbidden_param": ERROR_DETAIL_KEY,
-        "hint": ERROR_DETAIL_KEY,
-        "key": ERROR_DETAIL_KEY,
-        "operation": ERROR_DETAIL_KEY,
-        "parameter": ERROR_DETAIL_KEY,
-        "received_type": ERROR_DETAIL_KEY,
-        "recognized": ERROR_DETAIL_KEY,
-        "recommended_limit": ERROR_DETAIL_KEY,
-        "valid_keys": ERROR_DETAIL_KEY,
-        "valid_modes": ERROR_DETAIL_KEY,
-        "valid_values": ERROR_DETAIL_KEY,
     },
-    ("sage_core", "list_headings"): {
-        # Carried on the error envelope's untyped ``detail``, which no
-        # schema describes.
-        "available_headings": "field of the heading_not_found error detail",
-    },
+    ("sage_core", "list_headings"): {},
     ("sage_core", "list_pending_metadata"): {
         "sage_vaults": (
             "the vault-scoped route prefix, in the fully-qualified endpoint "
@@ -821,19 +738,13 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "inline": "value of the MCP-only delivery argument",
         "spill": "value of the MCP-only delivery argument",
     },
-    ("sage_core", "recompute_abstract"): {
-        "start_time": "field of the reabstract_already_in_flight error detail",
-    },
+    ("sage_core", "recompute_abstract"): {},
     ("sage_core", "recompute_deferred_vault_abstracts"): {
         "PDFs": "prose: documents in Portable Document Format",
         "reabstract_deferred": "operator fallback script under scripts/",
-        "start_time": "field of the reabstract_already_in_flight error detail",
         "RuntimeError": BUILTIN_EXCEPTION,
     },
-    ("sage_core", "recompute_pipeline"): {
-        "start_time": ERROR_DETAIL_KEY,
-        "store_status": ERROR_DETAIL_KEY,
-    },
+    ("sage_core", "recompute_pipeline"): {},
     ("sage_core", "recompute_views"): {
         # The symlink directory. The response field counting what landed
         # in it is ``by_lifecycle_status``, which resolves.
@@ -846,34 +757,14 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "CTEs": "prose: SQL common table expressions used by graph traversal",
     },
     ("sage_core", "update_lifecycles"): {
-        # Keys of the untyped ``relocated_to_provenance_mismatch`` detail,
-        # named in the relocate narrative so a refused caller can see both
-        # digests the origin admits.
-        "also_accounted_content_hash": ERROR_DETAIL_KEY,
-        "document_content_hash": ERROR_DETAIL_KEY,
         "cas": "example vault id in a worked example",
         "sage_vaults": (
             "the vault-scoped route prefix, in the endpoint paths this "
             "narrative names; a URL segment, not a contract node"
         ),
-        # Key of the untyped ``invalid_lifecycle_transition`` detail,
-        # named in the per-item error-code paragraph.
-        "valid_actions": ERROR_DETAIL_KEY,
-        # Key of the untyped ``invalid_action`` detail. Its sibling above
-        # narrows to one state; this one is the whole caller-invocable
-        # roster, and is what the vocabulary paragraph sends a caller to.
-        "known_actions": ERROR_DETAIL_KEY,
     },
     ("sage_core", "update_metadata"): {
         "other_key": "placeholder in a worked example, not a field name",
-        "current_version": ERROR_DETAIL_KEY,
-        # Key of the untyped ``invalid_doc_type`` detail, named in the
-        # doc_type-vocabulary paragraph.
-        "valid_types": ERROR_DETAIL_KEY,
-        # Codes built as f"{field}_add_conflict" at the raise site, so
-        # the literal never appears in source for the AST scan to find.
-        "tags_add_conflict": "error code from a parameterized family",
-        "tags_remove_conflict": "error code from a parameterized family",
     },
     ("sage_core", "update_vault_config"): {
         "sage_vaults": (
@@ -883,29 +774,27 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "vault_config": "the per-vault YAML file, not a contract node",
     },
     ("sage_core", "verify_hashes"): {
-        # Names the published shape of the digest a caller sends rather
-        # than an implementation detail: here the alias *is* the
-        # contract, so naming it is disclosure, not leakage.
         "Sha256Str": "typed alias naming the published digest shape",
     },
     ("sage_core", "verify_vault_retrieval"): {
         "null": "prose: the JSON literal a failure reports for an unfound rank",
         "top_k": "key of an assertion in the assertions YAML file, not a contract node",
     },
-    ("sage_core", "verify_vault_source_files"): {
-        "store_status": ERROR_DETAIL_KEY,
-        "unmatched_ids": ERROR_DETAIL_KEY,
-    },
+    ("sage_core", "verify_vault_source_files"): {},
 }
 
-# Key of the ``vault_not_found`` detail. Every tool that resolves a
-# ``vault_id`` declares that refusal in its ``Error modes:`` block, so the key
-# is pinned on each such pair here rather than spelled out per entry.
-for _pair in _mapped_tool_pairs():
-    _tool = _surface_registry(_SURFACES_BY_NAME[_pair[0]])[_pair[1]]
-    if "vault_id" in inspect.signature(_tool).parameters and _pair[1] not in NOT_REGISTRY_RESOLVED:
-        UNRESOLVED_IDENTIFIERS.setdefault(_pair, {})["available_vaults"] = ERROR_DETAIL_KEY
-
+# Keep the former available-vaults cases active after removing their detail pins.
+# Empty entries assert full resolution, so their removal is not a test exemption.
+for _surface, _operation in [
+    ("cas_app", "list_directory"),
+    ("sage_core", "chain"),
+    ("sage_core", "delete_edge"),
+    ("sage_core", "export_projection"),
+    ("sage_core", "get_vault_stats"),
+    ("sage_core", "verify_preconditions"),
+    ("sage_core", "verify_vault_drift"),
+]:
+    UNRESOLVED_IDENTIFIERS.setdefault((_surface, _operation), {})
 
 # Anti-vacuity floors. An extractor that silently returns the empty set,
 # or a vocabulary that silently swallows everything, makes every
@@ -971,7 +860,10 @@ def test_unresolved_identifier_pins_are_not_stale(surface_name: str, tool_name: 
     forces the pin out.
     """
     still_unresolved = set(unresolved_for(surface_name, tool_name))
-    stale = sorted(set(UNRESOLVED_IDENTIFIERS[(surface_name, tool_name)]) - still_unresolved)
+    pins = UNRESOLVED_IDENTIFIERS[(surface_name, tool_name)]
+    if not pins:
+        assert not still_unresolved, "formerly pinned narratives must remain fully resolved"
+    stale = sorted(set(pins) - still_unresolved)
     assert not stale, (
         f"{surface_name}.{tool_name} pins {stale}, which the contract now "
         "defines. Remove the pin -- it no longer records anything."
@@ -1235,95 +1127,36 @@ def test_the_tail_sweep_is_not_vacuous() -> None:
 
 
 def test_error_detail_pins_name_real_detail_keys() -> None:
-    """Every ``ERROR_DETAIL_KEY`` pin is a key some error actually sets.
-
-    The category's own claim, gated. A pin asserts that a name the sweep
-    reported is a real thing outside the contract's nodes -- so a name
-    pinned under this category is being certified as a genuine detail
-    field. Certified by hand, that reproduces one level up exactly the
-    defect this module exists to catch: an invented name, pinned as
-    real, reads identically to a real one and the ratchet cannot tell
-    them apart. ``test_unresolved_identifier_pins_are_not_stale`` only
-    asks whether a pin is still unresolvable, which an invented name is
-    forever.
-
-    A detail mapping is built two ways -- as a dict literal passed to
-    ``super().__init__``, and by assigning into one (``detail["k"] =
-    v``) where the key is conditional -- so both forms are read. Three of
-    the pins (``candidate_matches``, ``hint``, ``instance``) exist only
-    in the second, which is why a dict-literal-only scan is not enough.
-    """
-    keys: set[str] = set()
-    for path in _SAGE_PACKAGE.rglob("*.py"):
-        try:
-            tree = ast.parse(path.read_text())
-        except SyntaxError, UnicodeDecodeError:  # pragma: no cover - defensive
-            continue
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Dict):
-                keys |= {
-                    key.value
-                    for key in node.keys
-                    if isinstance(key, ast.Constant) and isinstance(key.value, str)
-                }
-            if (
-                isinstance(node, ast.Subscript)
-                and isinstance(node.slice, ast.Constant)
-                and isinstance(node.slice.value, str)
-            ):
-                keys.add(node.slice.value)
-
-    pinned = {
-        name
-        for entries in UNRESOLVED_IDENTIFIERS.values()
-        for name, category in entries.items()
-        if category == ERROR_DETAIL_KEY
-    }
-    assert pinned, "no ERROR_DETAIL_KEY pins found; the category has gone unused"
-    assert not pinned - keys, (
-        f"pinned as error-detail keys but set by no error: {sorted(pinned - keys)}. "
-        "Either the name is invented -- the defect this module catches, pinned "
-        "as though it were real -- or it belongs under a different category."
-    )
-
-    # The control. A scan that collected every string it walked past
-    # would satisfy the assertion above for any pin at all, including an
-    # invented one; this name is written in this module and set by no
-    # error.
-    assert "tier3_unique_index_blocked" not in keys
+    """Former detail exceptions resolve through actual reachable schema nodes."""
+    for surface_name, operation_id in [
+        ("sage_core", "read_section"),
+        ("sage_core", "ingest_document"),
+    ]:
+        surface = _SURFACES_BY_NAME[surface_name]
+        spec = _load_spec(surface.spec_path)
+        operation = _find_operation(spec, operation_id)
+        names = operation_vocabulary(spec, operation)
+        assert {
+            "candidate_matches",
+            "declared_sha256",
+            "current_state",
+            "available_vaults",
+        } <= names
+        assert "fabricated_error_detail_field" not in names
 
 
 def test_response_descriptions_are_checked_not_folded() -> None:
-    """A response description no longer supplies its own vocabulary.
+    """Real detail fields resolve; an invented description cannot validate itself."""
+    import copy
 
-    The inversion. While ``operation_vocabulary`` folded every snake_case
-    token of ``responses[*].description`` into the operation's own names,
-    a code invented there resolved against its own prose -- and one both
-    surfaces agreed on, which the disclosure-parity gate actively drives
-    them toward, passed every gate in this repository.
-
-    ``candidate_matches`` is the probe because it is the one measured
-    name the fold was supplying to a surface that was *already* swept:
-    with the fold gone it becomes unresolved and is pinned as the error
-    detail key it is. Asserting on the vocabulary's contents rather than
-    on the gate being green is what distinguishes "fold removed" from
-    "fold removed and the name reintroduced by some other route".
-    """
     surface = _SURFACES_BY_NAME["sage_core"]
     spec = _load_spec(surface.spec_path)
-    operation = _find_operation(spec, "read_section")
-    assert operation is not None
-
-    # It is named in the operation's own response prose ...
-    assert "candidate_matches" in named_identifiers(_response_prose(operation))
-    # ... and that is no longer enough to make it part of the contract.
-    assert "candidate_matches" not in operation_vocabulary(spec, operation)
-    assert "candidate_matches" not in contract_vocabulary()
-    # So it surfaces as a finding, and carries its category.
-    assert (
-        UNRESOLVED_IDENTIFIERS[("sage_core", "read_section")]["candidate_matches"]
-        == ERROR_DETAIL_KEY
-    )
+    operation = copy.deepcopy(_find_operation(spec, "read_section"))
+    assert "candidate_matches" in operation_vocabulary(spec, operation)
+    operation["responses"]["404"]["description"] += " `fabricated_error_detail_field`"
+    assert "fabricated_error_detail_field" in named_identifiers(_response_prose(operation))
+    assert "fabricated_error_detail_field" not in operation_vocabulary(spec, operation)
+    assert "fabricated_error_detail_field" not in contract_vocabulary()
 
 
 def test_every_local_ref_in_the_specs_resolves() -> None:
