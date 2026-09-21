@@ -623,6 +623,20 @@ def _claim_bindings(stmt: ast.AST, aliases: set[str]) -> set[str]:
     return result
 
 
+def _header_claim_bindings(node: ast.AST, aliases: set[str]) -> set[str]:
+    """Invalidate names bound by a compound header before entering its body."""
+    result = aliases.copy()
+    if isinstance(node, (ast.For, ast.AsyncFor)):
+        result = _claim_bindings(node.target, result)
+    elif isinstance(node, (ast.With, ast.AsyncWith)):
+        for item in node.items:
+            if item.optional_vars is not None:
+                result = _claim_bindings(item.optional_vars, result)
+    elif isinstance(node, ast.ExceptHandler) and node.name is not None:
+        result.discard(node.name)
+    return result
+
+
 def _consults_claim(
     loop: ast.For | ast.AsyncFor | ast.While,
     func: ast.FunctionDef | ast.AsyncFunctionDef,
@@ -643,8 +657,9 @@ def _consults_claim(
     def locate(stmts: list[ast.stmt], aliases: set[str]) -> set[str]:
         nonlocal incoming
         for stmt in stmts:
+            body_aliases = _header_claim_bindings(stmt, aliases)
             if stmt is loop:
-                incoming = aliases.copy()
+                incoming = body_aliases.copy()
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 aliases = aliases - {stmt.name}
                 continue
@@ -653,7 +668,10 @@ def _consults_claim(
             else:
                 for _, value in ast.iter_fields(stmt):
                     if isinstance(value, list) and value and isinstance(value[0], ast.stmt):
-                        locate(value, aliases.copy())
+                        locate(value, body_aliases.copy())
+                if isinstance(stmt, (ast.Try, ast.TryStar)):
+                    for handler in stmt.handlers:
+                        locate(handler.body, _header_claim_bindings(handler, aliases))
                 aliases = _claim_bindings(stmt, aliases)
         return aliases
 
@@ -669,23 +687,34 @@ def _consults_claim(
     predicate_claim = isinstance(loop, ast.While) and _claim_expression(loop.test, aliases)
     exits: list[bool] = []
 
-    def decisions(stmts: list[ast.stmt], bound: set[str], guarded: bool) -> set[str]:
+    def decisions(
+        stmts: list[ast.stmt], bound: set[str], guarded: bool, own_break: bool = True
+    ) -> set[str]:
         for stmt in stmts:
             if isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
                 bound = bound - {stmt.name}
             elif isinstance(stmt, (ast.For, ast.AsyncFor, ast.While)):
+                # A nested break belongs to that loop, but a return exits the
+                # same function and must still carry a claim decision.
+                decisions(stmt.body, _header_claim_bindings(stmt, bound), guarded, False)
+                decisions(stmt.orelse, bound.copy(), guarded, own_break)
                 bound = _claim_bindings(stmt, bound)
             elif isinstance(stmt, ast.If):
                 claim = _claim_expression(stmt.test, bound)
-                bound = decisions(stmt.body, bound.copy(), guarded or claim) & decisions(
-                    stmt.orelse, bound.copy(), guarded or claim
+                bound = decisions(stmt.body, bound.copy(), guarded or claim, own_break) & decisions(
+                    stmt.orelse, bound.copy(), guarded or claim, own_break
                 )
-            elif isinstance(stmt, (ast.Return, ast.Break)):
+            elif isinstance(stmt, ast.Return) or (isinstance(stmt, ast.Break) and own_break):
                 exits.append(guarded)
             else:
                 for _, value in ast.iter_fields(stmt):
                     if isinstance(value, list) and value and isinstance(value[0], ast.stmt):
-                        decisions(value, bound.copy(), guarded)
+                        decisions(value, _header_claim_bindings(stmt, bound), guarded, own_break)
+                if isinstance(stmt, (ast.Try, ast.TryStar)):
+                    for handler in stmt.handlers:
+                        decisions(
+                            handler.body, _header_claim_bindings(handler, bound), guarded, own_break
+                        )
                 bound = _claim_bindings(stmt, bound)
         return bound
 
@@ -3001,3 +3030,60 @@ async def wait(service, doc_id):
         await asyncio.sleep(0.01)
 """
     assert _status_only_poll_helpers(ast.parse(source)) == [(3, "wait")]
+
+
+@pytest.mark.parametrize("header", ["for", "async for", "with", "async with"])
+def test_helper_detector_invalidates_header_bindings(header: str) -> None:
+    """Loop and context-manager targets shadow a registry alias before the body."""
+    if header.endswith("for"):
+        body = f"    {header} inflight in replacements:\n"
+        indent = "        "
+        line = 3
+    else:
+        body = f"    {header} replacement() as inflight:\n        for _ in range(10):\n"
+        indent = "            "
+        line = 4
+    source = (
+        "async def wait(service, doc_id):\n    inflight = service._inflight\n"
+        + body
+        + indent
+        + "if doc.pipeline_status in TERMINAL and doc_id not in inflight:\n"
+        + indent
+        + "    return doc\n"
+        + indent
+        + "await asyncio.sleep(0.01)\n"
+    )
+    assert _status_only_poll_helpers(ast.parse(source)) == [(line, "wait")]
+    # A different header target leaves the original alias valid.
+    control = source.replace("inflight in replacements", "item in replacements").replace(
+        "as inflight:", "as item:"
+    )
+    assert _status_only_poll_helpers(ast.parse(control)) == []
+
+
+@pytest.mark.parametrize("guarded", [False, True])
+@pytest.mark.parametrize("nested", ["loop", "handler"])
+def test_helper_detector_checks_all_function_returns(nested: str, guarded: bool) -> None:
+    """Function returns escape through loops/handlers; their breaks stay local."""
+    clause = " and doc_id not in service._inflight" if guarded else ""
+    if nested == "loop":
+        inner = (
+            "        for doc in documents:\n"
+            f"            if doc.pipeline_status in TERMINAL{clause}:\n"
+            "                return doc\n"
+            "            break\n"
+        )
+    else:
+        inner = (
+            "        try:\n            doc = await fetch()\n"
+            "        except LookupError:\n"
+            f"            if doc.pipeline_status in TERMINAL{clause}:\n"
+            "                return doc\n"
+        )
+    source = (
+        "async def wait(service, doc_id):\n    for _ in range(10):\n"
+        + inner
+        + "        if doc_id not in service._inflight:\n            break\n"
+        + "        await asyncio.sleep(0.01)\n"
+    )
+    assert _status_only_poll_helpers(ast.parse(source)) == ([] if guarded else [(2, "wait")])
