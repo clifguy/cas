@@ -1147,6 +1147,44 @@ def test_recipe_minting_roster_is_exhaustive_over_the_live_surface():
     )
 
 
+#: How the upload token's refusal limit is spelled on the tool surface.
+#: Derived from the configured default for the same reason ``_TTL_FIGURE`` is.
+_REFUSAL_FIGURE = (
+    f"{StackTransferConfig.model_fields['max_refused_deliveries'].default} refused deliveries"
+)
+
+#: The tools whose recipes carry *upload* legs, and so owe the caller the
+#: number of refused deliveries a token survives. The download minters are
+#: absent: a download leg has no refusal to retry.
+_UPLOAD_MINTING_TOOLS = frozenset(
+    {"bulk_ingest_document", "ingest_document", "restore_vault_source_file"}
+)
+
+
+@pytest.mark.parametrize("tool_name", sorted(_UPLOAD_MINTING_TOOLS))
+def test_upload_minting_tools_state_the_refusal_limit(tool_name: str):
+    """A tool that can hand back an upload leg states how many refusals its
+    tokens survive.
+
+    A caller told only that a refusal leaves the token retryable would retry
+    without bound, and meet the reclaimed transfer as an unexplained 410.
+
+    Anti-coincidental-pass: the figure is derived from the configured
+    default, so a docstring stating the limit in some other number -- or a
+    default retuned without the docstrings -- fails.
+    """
+    assert _UPLOAD_MINTING_TOOLS <= _RECIPE_MINTING_TOOLS
+    tools = _registered_mcp_tools()
+    assert tool_name in tools, f"{tool_name} is not a registered MCP tool"
+    doc = _docstring(tools[tool_name])
+
+    assert _REFUSAL_FIGURE in doc, (
+        f"{tool_name}: the tool description does not state the upload token's "
+        f"refusal limit ({_REFUSAL_FIGURE!r}). A caller retrying a refused "
+        "delivery needs to know when the token stops admitting retries."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Ordinary-surface self-sufficiency — no ordinary tool may require the
 # maintenance surface to complete an ordinary-path call

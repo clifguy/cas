@@ -4688,6 +4688,40 @@ components:
           $ref: '#/components/schemas/TransferNotStagedErrorDetail'
       additionalProperties: false
       description: The refusal envelope for this error code.
+    TransferRefusalLimitReachedErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - transfer_id
+      - max_refused_deliveries
+      properties:
+        transfer_id:
+          type: string
+          description: Transfer id.
+        max_refused_deliveries:
+          type: integer
+          description: Max refused deliveries.
+      description: Additional context for this refusal.
+    TransferRefusalLimitReachedError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: transfer_refusal_limit_reached
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/TransferRefusalLimitReachedErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
     TransferTokenAlreadyUsedErrorDetail:
       type: object
       additionalProperties: false
@@ -5315,6 +5349,7 @@ components:
             - transfer_content_too_large
             - transfer_endpoint_not_configured
             - transfer_not_staged
+            - transfer_refusal_limit_reached
             - transfer_token_already_used
             - transfer_token_invalid
             - unexpected_relocated_to
@@ -5995,6 +6030,7 @@ components:
       - $ref: '#/components/schemas/TransferContentTooLargeError'
       - $ref: '#/components/schemas/TransferEndpointNotConfiguredError'
       - $ref: '#/components/schemas/TransferNotStagedError'
+      - $ref: '#/components/schemas/TransferRefusalLimitReachedError'
       - $ref: '#/components/schemas/TransferTokenAlreadyUsedError'
       - $ref: '#/components/schemas/TransferTokenInvalidError'
       - $ref: '#/components/schemas/UnexpectedRelocatedToError'
@@ -6121,6 +6157,7 @@ components:
           transfer_content_too_large: '#/components/schemas/TransferContentTooLargeError'
           transfer_endpoint_not_configured: '#/components/schemas/TransferEndpointNotConfiguredError'
           transfer_not_staged: '#/components/schemas/TransferNotStagedError'
+          transfer_refusal_limit_reached: '#/components/schemas/TransferRefusalLimitReachedError'
           transfer_token_already_used: '#/components/schemas/TransferTokenAlreadyUsedError'
           transfer_token_invalid: '#/components/schemas/TransferTokenInvalidError'
           unexpected_relocated_to: '#/components/schemas/UnexpectedRelocatedToError'

@@ -1046,8 +1046,9 @@ class IngestRequest(BaseModel):
             "any other digest (`source_digest_mismatch`) before anything is "
             "retained. On a call that returns an upload recipe, each token is "
             "bound to this digest: the upload endpoint refuses any other bytes "
-            "without spending the token, so a token disclosed to anyone not "
-            "already holding the exact file admits nothing."
+            "without spending the token, short of its refusal limit, so a "
+            "token disclosed to anyone not already holding the exact file "
+            "admits nothing."
         ),
     )
     source_type: SourceType | None = Field(
@@ -5056,7 +5057,8 @@ class SourceFileRestoreRequest(BaseModel):
             "have any other digest is refused (`source_digest_mismatch`) before "
             "the retained copy is touched. On a call that returns an upload "
             "recipe, the token is bound to this digest: the upload endpoint "
-            "refuses any other bytes without spending the token."
+            "refuses any other bytes without spending the token, short of "
+            "its refusal limit."
         ),
     )
 
@@ -6215,7 +6217,10 @@ class UploadRecipeItem(BaseModel):
     token: str = Field(
         description=(
             "One-time upload token for this leg, presented in the token "
-            "header. Valid for exactly one successful delivery."
+            "header. Valid for exactly one successful delivery. A refused "
+            "delivery leaves it retryable until the deployment's refusal "
+            "limit is reached; the refusal that reaches it reclaims the "
+            "transfer."
         )
     )
     url: str = Field(description="Complete URL of the byte-delivery leg, used verbatim.")

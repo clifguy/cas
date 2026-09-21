@@ -548,7 +548,11 @@ def register_app_tools(
                 by default, and the whole exchange -- every leg's byte
                 delivery plus the completion call -- must finish inside that
                 window; the recipe's own ``expires_at`` is authoritative
-                where a deployment has tuned the lifetime. A lapsed recipe
+                where a deployment has tuned the lifetime. A leg's token is
+                also reclaimed once 3 refused deliveries have been made
+                against it by default -- a body over the ceiling, bytes not
+                matching its bound digest, or a body abandoned mid-stream;
+                earlier refusals leave it retryable. A lapsed recipe
                 cannot be resumed, and its staged bytes are gone: re-issue
                 this call for a fresh one. Each entry may also carry
                 ``source_type`` (str — closed ``SourceType`` vocabulary:
@@ -582,8 +586,8 @@ def register_app_tools(
                 ``source_digest_mismatch`` error, and where the call returns
                 an upload recipe, that entry's token is bound to it, so the
                 upload endpoint refuses any other bytes for that leg without
-                spending its token or touching the other legs. Pass it again
-                on the completion entry.
+                spending its token (short of its refusal limit) or touching
+                the other legs. Pass it again on the completion entry.
             infer_edges: When True (default), run two-phase edge inference
                 across the batch after ingestion. When False, ingest
                 documents only with no edge creation or lifecycle

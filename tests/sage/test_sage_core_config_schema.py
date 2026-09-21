@@ -496,8 +496,9 @@ def test_sch_s_021_document_store_absent_passes_defaults_applied():
 def test_sch_s_022_transfer_block_shape():
     """The schema declares a top-level `transfer` object with
     `additionalProperties: false` and the two properties the transfer-recipe
-    minting path reads: `public_base_url` (nullable string, default null) and
-    `token_ttl_seconds` (integer, default 900).
+    minting path reads: `public_base_url` (nullable string, default null),
+    `token_ttl_seconds` (integer, default 900) and `max_refused_deliveries`
+    (integer, default 3).
 
     Catches drift in the block shape -- a missing `additionalProperties: false`
     would make SCH-S-023 incapable of detecting a stray/typo'd key, and a
@@ -507,9 +508,48 @@ def test_sch_s_022_transfer_block_shape():
     block = schema["properties"]["transfer"]
     assert block["type"] == "object"
     assert block["additionalProperties"] is False
-    assert set(block["properties"]) == {"public_base_url", "token_ttl_seconds"}
+    assert set(block["properties"]) == {
+        "public_base_url",
+        "token_ttl_seconds",
+        "max_refused_deliveries",
+    }
     assert block["properties"]["public_base_url"]["default"] is None
     assert block["properties"]["token_ttl_seconds"]["default"] == 900
+    assert block["properties"]["max_refused_deliveries"]["default"] == 3
+
+
+def test_sch_s_022a_transfer_refusal_limit_default_and_floor():
+    """`transfer.max_refused_deliveries` defaults to 3 in both the schema and
+    the model, and both refuse a limit below 2.
+
+    The floor is what keeps a first refused delivery retryable: a limit of 1
+    would reclaim the transfer on the caller's first wrong file.
+
+    Anti-coincidental-pass: 2 is asserted to pass both gates, so a floor set
+    one too high fails; 1 is asserted to fail both, so either gate alone
+    admitting it fails; and the schema and model defaults are read
+    separately, so a default present in only one fails.
+    """
+    from pydantic import ValidationError
+
+    from sage.config import SageCoreConfig, StackTransferConfig
+
+    schema = _stack_schema()
+    prop = schema["properties"]["transfer"]["properties"]["max_refused_deliveries"]
+    assert prop["type"] == "integer"
+    assert prop["default"] == 3
+    assert prop["minimum"] == 2
+    assert StackTransferConfig().max_refused_deliveries == 3
+
+    floor = {"transfer": {"max_refused_deliveries": 2}}
+    jsonschema.validate(floor, schema)
+    assert SageCoreConfig.model_validate(floor).transfer.max_refused_deliveries == 2
+
+    below = {"transfer": {"max_refused_deliveries": 1}}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(below, schema)
+    with pytest.raises(ValidationError):
+        SageCoreConfig.model_validate(below)
 
 
 def test_sch_s_023_transfer_unknown_property_rejected():

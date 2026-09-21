@@ -4293,7 +4293,9 @@ paths:
         route carries no bearer authentication -- and admits exactly one
         successful delivery. The body is streamed to staging under an
         incremental byte ceiling, so an oversize upload aborts mid-stream
-        without filling the container's disk.
+        without filling the container's disk. A refused delivery stages
+        nothing and leaves the token retryable, up to the deployment's
+        refusal limit; the refusal that reaches it reclaims the transfer.
       tags: [Transfer]
       parameters:
         - name: X-Upload-Token
@@ -4326,8 +4328,9 @@ paths:
           description: >-
             `source_digest_mismatch`: the token was minted against a declared
             `sha256` and the delivered bytes have a different digest. Nothing
-            is staged and the token stays retryable. The detail names the
-            transfer and the delivered digest, never the bound one.
+            is staged and the token stays retryable until its refusal limit is
+            reached. The detail names the transfer and the delivered digest,
+            never the bound one.
 
             `unknown_parameter`: the request carries a body field or query
             parameter the operation does not declare.
@@ -4347,7 +4350,13 @@ paths:
           description: >-
             `transfer_token_invalid`: the token names no redeemable pending
             transfer (unknown, expired, already used, or scoped to a
-            different direction).
+            different direction). `transfer_refusal_limit_reached`: this
+            delivery was refused, and it was the token's last: the token has
+            now been refused `transfer.max_refused_deliveries` deliveries
+            (default 3), so the transfer is reclaimed and a fresh recipe must
+            be minted by re-issuing the originating call. A body over the
+            ceiling, bytes not matching a bound digest, and a body abandoned
+            mid-stream each count as a refusal.
           content:
             application/json:
               schema:
@@ -4356,7 +4365,8 @@ paths:
           description: >-
             `transfer_content_too_large`: the body exceeded the transfer
             ceiling and the delivery was aborted; the partial staging file is
-            removed and the token stays retryable.
+            removed and the token stays retryable until its refusal limit is
+            reached.
           content:
             application/json:
               schema:
@@ -5814,8 +5824,9 @@ components:
             any other digest (`source_digest_mismatch`) before anything is
             retained. On a call that returns an upload recipe, each token is
             bound to this digest: the upload endpoint refuses any other bytes
-            without spending the token, so a token disclosed to anyone not
-            already holding the exact file admits nothing.
+            without spending the token, short of its refusal limit, so a
+            token disclosed to anyone not already holding the exact file
+            admits nothing.
         source_type:
           anyOf:
             - $ref: "#/components/schemas/SourceType"
@@ -9154,7 +9165,8 @@ components:
             have any other digest is refused (`source_digest_mismatch`) before
             the retained copy is touched. On a call that returns an upload
             recipe, the token is bound to this digest: the upload endpoint
-            refuses any other bytes without spending the token.
+            refuses any other bytes without spending the token, short of
+            its refusal limit.
 
     SourceFileRestoreReport:
       type: object
@@ -9980,7 +9992,10 @@ components:
           type: string
           description: >-
             One-time upload token for this leg, presented in the token
-            header. Valid for exactly one successful delivery.
+            header. Valid for exactly one successful delivery. A refused
+            delivery leaves it retryable until the deployment's refusal
+            limit is reached; the refusal that reaches it reclaims the
+            transfer.
         url:
           type: string
           description: Complete URL of the byte-delivery leg, used verbatim.
@@ -13714,6 +13729,40 @@ components:
           $ref: '#/components/schemas/TransferNotStagedErrorDetail'
       additionalProperties: false
       description: The refusal envelope for this error code.
+    TransferRefusalLimitReachedErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - transfer_id
+      - max_refused_deliveries
+      properties:
+        transfer_id:
+          type: string
+          description: Transfer id.
+        max_refused_deliveries:
+          type: integer
+          description: Max refused deliveries.
+      description: Additional context for this refusal.
+    TransferRefusalLimitReachedError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: transfer_refusal_limit_reached
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/TransferRefusalLimitReachedErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
     TransferTokenAlreadyUsedErrorDetail:
       type: object
       additionalProperties: false
@@ -14341,6 +14390,7 @@ components:
             - transfer_content_too_large
             - transfer_endpoint_not_configured
             - transfer_not_staged
+            - transfer_refusal_limit_reached
             - transfer_token_already_used
             - transfer_token_invalid
             - unexpected_relocated_to
@@ -15021,6 +15071,7 @@ components:
       - $ref: '#/components/schemas/TransferContentTooLargeError'
       - $ref: '#/components/schemas/TransferEndpointNotConfiguredError'
       - $ref: '#/components/schemas/TransferNotStagedError'
+      - $ref: '#/components/schemas/TransferRefusalLimitReachedError'
       - $ref: '#/components/schemas/TransferTokenAlreadyUsedError'
       - $ref: '#/components/schemas/TransferTokenInvalidError'
       - $ref: '#/components/schemas/UnexpectedRelocatedToError'
@@ -15147,6 +15198,7 @@ components:
           transfer_content_too_large: '#/components/schemas/TransferContentTooLargeError'
           transfer_endpoint_not_configured: '#/components/schemas/TransferEndpointNotConfiguredError'
           transfer_not_staged: '#/components/schemas/TransferNotStagedError'
+          transfer_refusal_limit_reached: '#/components/schemas/TransferRefusalLimitReachedError'
           transfer_token_already_used: '#/components/schemas/TransferTokenAlreadyUsedError'
           transfer_token_invalid: '#/components/schemas/TransferTokenInvalidError'
           unexpected_relocated_to: '#/components/schemas/UnexpectedRelocatedToError'

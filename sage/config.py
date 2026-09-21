@@ -1377,6 +1377,22 @@ class StackTransferConfig(BaseModel):
             "fresh recipe."
         ),
     )
+    max_refused_deliveries: int = Field(
+        default=3,
+        ge=2,
+        description=(
+            "How many refused byte deliveries an upload token survives. A "
+            "delivery the upload endpoint refuses -- a body over the transfer "
+            "ceiling, bytes that do not match the token's bound digest, or a "
+            "body abandoned mid-stream -- stages nothing and leaves the token "
+            "retryable until this many have been refused; the refusal that "
+            "reaches the limit reclaims the transfer. The bound caps what a "
+            "holder of a disclosed token can cost the deployment at this many "
+            "deliveries of up to the ceiling each. The floor of 2 keeps a "
+            "caller's first wrong file recoverable on the same token. The "
+            "limit is fixed on a token when it is minted."
+        ),
+    )
 
 
 class SageCoreConfig(BaseModel):
