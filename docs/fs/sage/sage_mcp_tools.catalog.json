@@ -2754,6 +2754,190 @@
             "files": {
               "items": {
                 "additionalProperties": true,
+                "description": "One file entry of the ``bulk_ingest_document`` MCP tool.\n\nThe upload's per-file metadata plus the entry's source, because the tool\nreceives no file parts: each entry names its bytes by exactly one of\n``file_path`` or ``transfer_token``. Its field names are the set the tool\nrefuses any other name against (CAS-ADR-037).",
+                "properties": {
+                  "file_path": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Path to the source file, read directly only when the caller's machine is the machine running the SAGE server process. Supply exactly one of `file_path` or `transfer_token`.",
+                    "title": "File Path"
+                  },
+                  "parsed_metadata": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "description": "Caller-supplied parsed metadata for one file of a bulk upload.\n\nEvery field is optional. A key outside this set is refused rather than\nignored.",
+                        "properties": {
+                          "codes": {
+                            "anyOf": [
+                              {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "description": "Code identifiers (e.g. \"PV07\", \"CD-2\"), in order.",
+                            "title": "Codes"
+                          },
+                          "date": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "description": "Document calendar date (YYYY-MM-DD). A value that is not a calendar date is reported for that file as `invalid_document_date`.",
+                            "title": "Date"
+                          },
+                          "doc_type": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "description": "Document type.",
+                            "title": "Doc Type"
+                          },
+                          "project": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "description": "Project identifier.",
+                            "title": "Project"
+                          },
+                          "tags": {
+                            "anyOf": [
+                              {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "description": "Tags for the document, in order, each carried whole: a tag that contains a comma stays one tag. `codes` sets the same field, so an entry supplying both is refused at `files.<n>.parsed_metadata.tags` before any file is ingested.",
+                            "title": "Tags"
+                          },
+                          "title": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "description": "Document title. When omitted, the stem of the uploaded file's name seeds it.",
+                            "title": "Title"
+                          },
+                          "version": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "description": "Canonical version label (e.g. \"v1.2.0\", \"v3.0\").",
+                            "title": "Version"
+                          }
+                        },
+                        "title": "BatchIngestParsedMetadata",
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Optional caller-supplied parsed metadata for this file (keys: title, date, project, codes, version, doc_type, tags). When omitted, the file stem seeds the title and the vault's configured filename parser fills the remaining fields."
+                  },
+                  "sha256": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Optional SHA-256 of this file, as 64 hex characters in either case, bare or `sha256:`-prefixed. Checked before retention, including dry runs. A mismatch is a per-file `source_digest_mismatch`; a malformed string refuses the request with 400 `invalid_sha256` at `files.<index>.sha256`. Omission or null leaves the digest undeclared.",
+                    "title": "Sha256"
+                  },
+                  "source_type": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Source artifact format for this file (closed SourceType vocabulary: markdown, docx, xlsx, pptx, pdf). Must be a source type with a registered adapter. Optional: when omitted, it is inferred from the uploaded file's extension, and an extension no registered adapter claims is reported for that file as `source_type_unresolved`.",
+                    "title": "Source Type"
+                  },
+                  "tier3_metadata": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Optional Tier-3 metadata for this file, validated against the `metadata_schema` the vault config declares for the file's resolved doc_type (CAS-ADR-028). A payload the schema rejects, or any payload for a doc_type declaring no schema, is reported for that file as `tier3_schema_violation` and leaves the rest of the batch to run. A sibling of `parsed_metadata`, not a key in it: `parsed_metadata` carries the Tier-1 fields a filename parser can supply, and Tier-3 metadata never comes from a filename.",
+                    "title": "Tier3 Metadata"
+                  },
+                  "transfer_token": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "The one-time token from a previously returned upload recipe, redeemed after the recipe's byte leg delivered this file to the upload endpoint. Supply exactly one of `file_path` or `transfer_token`.",
+                    "title": "Transfer Token"
+                  }
+                },
+                "title": "BulkIngestFileEntry",
                 "type": "object"
               },
               "title": "Files",
@@ -4345,6 +4529,161 @@
             "items": {
               "items": {
                 "additionalProperties": true,
+                "description": "One edge-creation request inside a bulk batch.\n\nMirrors ``LinkRequest`` field-for-field except for the envelope-level\n``dry_run`` (which lives on ``BulkLinkRequest`` and is propagated to\neach item; per-item override is not supported per CAS-ADR-029).",
+                "properties": {
+                  "edge_type": {
+                    "description": "Typed relationship between source and target.",
+                    "enum": [
+                      "supersedes",
+                      "derived_from",
+                      "instantiated_from",
+                      "covers",
+                      "references",
+                      "bundles_with",
+                      "authoritative_for",
+                      "depends_on",
+                      "sync_target",
+                      "retracts",
+                      "merged_from"
+                    ],
+                    "title": "EdgeType",
+                    "type": "string"
+                  },
+                  "notes": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Optional annotation.",
+                    "title": "Notes"
+                  },
+                  "rationale": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Decision rationale for creating this relationship.",
+                    "title": "Rationale"
+                  },
+                  "rationale_kind": {
+                    "anyOf": [
+                      {
+                        "description": "Typed discriminator for the provenance of an edge's `rationale` text.\n\nPromoted from the rationale-text prefix convention introduced in\nCAS-ADR-019 (auto edge inference may delete only its own edges) to a\ntyped, indexed column on the edges table so chain-repair and\nfuture inference rules filter via SQL rather than Python `startswith()`.\n\n`manual` is the default for edges with no recognized rationale prefix\n(hand-curated via create_edge, legacy edges without a prefix, edges\nwritten before this column was added). The column is NOT NULL with\nDEFAULT 'manual' in storage.",
+                        "enum": [
+                          "version_chain",
+                          "references_mention",
+                          "filename_code_match",
+                          "manual"
+                        ],
+                        "title": "RationaleKind",
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Optional explicit discriminator (CAS-ADR-019). Same semantics as `LinkRequest.rationale_kind`."
+                  },
+                  "retracted_edge_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Required for `retracts` edges; null for every other edge type.",
+                    "title": "Retracted Edge Id"
+                  },
+                  "source_id": {
+                    "description": "Origin document ID.",
+                    "title": "Source Id",
+                    "type": "string"
+                  },
+                  "source_valid_from_version": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Source-chain anchor (same semantics as `LinkRequest.source_valid_from_version`).",
+                    "title": "Source Valid From Version"
+                  },
+                  "synced_from_content_hash": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Provenance field. Same semantics as `LinkRequest.synced_from_content_hash`.",
+                    "title": "Synced From Content Hash"
+                  },
+                  "synced_from_version": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Provenance field. Same semantics as `LinkRequest.synced_from_version`.",
+                    "title": "Synced From Version"
+                  },
+                  "target_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Target document ID. Must be null on `retracts` edges; required for every other edge type.",
+                    "title": "Target Id"
+                  },
+                  "target_valid_from_version": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Target-chain anchor (same semantics as `LinkRequest.target_valid_from_version`).",
+                    "title": "Target Valid From Version"
+                  }
+                },
+                "required": [
+                  "source_id",
+                  "edge_type"
+                ],
+                "title": "BulkLinkItem",
                 "type": "object"
               },
               "title": "Items",
@@ -17917,6 +18256,114 @@
             "items": {
               "items": {
                 "additionalProperties": true,
+                "description": "One lifecycle transition request inside a bulk batch.\n\nMirrors ``SetLifecycleRequest`` plus the ``document_id`` carried in\nthe request body (since the bulk endpoint does not address documents\nvia the URL path).",
+                "properties": {
+                  "action": {
+                    "description": "Lifecycle transition action. Vault-config-defined; same shape as `SetLifecycleRequest.action`.",
+                    "title": "Action",
+                    "type": "string"
+                  },
+                  "doc_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Back-compatible alias for the per-item `document_id`; supply exactly one of `document_id` or `doc_id` per item.",
+                    "title": "Doc Id"
+                  },
+                  "document_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Target document id for this item. Accepts `doc_id` as a back-compatible alias; supply exactly one of `document_id` or `doc_id` per item.",
+                    "title": "Document Id"
+                  },
+                  "relocated_to": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "description": "Where a document's counterpart lives after a relocation between vaults.\n\nRecorded on both sides of a move: the destination's chain root carries\na pointer at the origin, and the origin's retired head carries one at\nthe destination. Nothing in the engine follows either. No traversal,\nretrieval, dependency, or reconciliation path consults a pointer, so\nthe consumer is a reasoning caller that can weigh a hint, retry, and\nask -- which is what lets the shape do without a global document\ncoordinate, since the substrate has none to offer (CAS-ADR-050).\n\nThat fixes what each member is worth. `vault_id` and `server_address`\nnarrow a search without settling it: a vault identifier is unique\nwithin an installation rather than across installations, and an\naddress is a deployment fact. `source_content_hash` is the member that\nconfirms, because it names bytes that demonstrably passed through both\nsides, so a caller arriving from either direction can check that it\nlanded where the pointer meant.\n\nThe digest names the bytes that *travelled* -- the copy the origin\nserved and the destination received -- rather than either vault's\noriginal delivery, and each half is made to prove it locally at the\nmoment it writes. Neither check follows the pointer or reaches the\ncounterpart, which is what keeps them available across deployments.\n\nWhat each half accounts for differs. The destination knows exactly\nwhat it received, so it admits one value. The origin admits either\ndigest it records -- its source provenance digest or its as-stored\ndigest -- because it cannot know which of its two byte-sets the caller\ntook: a caller still holding the file it originally ingested relocates\nthat, while a caller that does not fetches what the vault serves,\nwhich is the retained copy. Where a binding rewrites its copy at rest\nthe second is the ordinary case, and admitting only the first would\nrefuse every relocation out of such a vault.\n\nWhat the pair establishes is byte lineage, not content equality. A\nrelocation hands the destination exactly the bytes the origin served,\nso what a reader sees is preserved by the composition and by the\nstorage binding's contract rather than asserted here.",
+                        "properties": {
+                          "document_id": {
+                            "description": "The counterpart document's identifier, minted by and local to the counterpart vault.",
+                            "title": "Document Id",
+                            "type": "string"
+                          },
+                          "relocated_at": {
+                            "description": "When the relocation was performed, as recorded by the caller that composed it. The two sides are written by separate calls, so their timestamps are close rather than identical.",
+                            "format": "date-time",
+                            "title": "Relocated At",
+                            "type": "string"
+                          },
+                          "server_address": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "description": "Where the counterpart vault answered at the time of the relocation. A deployment fact rather than an identity: one vault is reachable at different addresses under different profiles, and a workstation's loopback address is common to every workstation. Null when the caller composed both halves against a single deployment and has no distinguishing address to record.",
+                            "title": "Server Address"
+                          },
+                          "source_content_hash": {
+                            "description": "The SHA-256 of the bytes that travelled between the two vaults. The one member that confirms rather than hints: a caller arriving from either direction matches it to know it reached the document the pointer meant. Checked at write time on both halves against digests each already records, so a pointer neither side accounts for is refused rather than stored. The destination accounts for the bytes it was delivered; the origin accounts for either its provenance digest or its as-stored digest, which differ where its store rewrites its copy at rest.",
+                            "title": "Source Content Hash",
+                            "type": "string"
+                          },
+                          "vault_id": {
+                            "description": "The counterpart vault's identifier. Unique within an installation rather than across installations, so it narrows a search rather than settling one.",
+                            "title": "Vault Id",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "vault_id",
+                          "document_id",
+                          "source_content_hash",
+                          "relocated_at"
+                        ],
+                        "title": "RelocationPointer",
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Where the document is going. Required when `action=\"relocate\"`, which refuses with 400 `missing_relocated_to` without it; forbidden for all other actions, which refuse with 400 `unexpected_relocated_to`. SAGE writes it onto the document in the same statement that moves the lifecycle state, so a relocated document always names where it went."
+                  },
+                  "successor_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Document id of the replacement version. Required when `action=\"supersede\"`; forbidden for all other actions, which refuse with 400 `unexpected_successor_id`. Same shape and semantics as `SetLifecycleRequest.successor_id`.",
+                    "title": "Successor Id"
+                  }
+                },
+                "required": [
+                  "action"
+                ],
+                "title": "BulkLifecycleItem",
                 "type": "object"
               },
               "title": "Items",
@@ -19253,6 +19700,223 @@
             "items": {
               "items": {
                 "additionalProperties": true,
+                "description": "One metadata patch request inside a bulk batch.\n\nMirrors `UpdateMetadataRequest` plus the `document_id` carried in the\nrequest body (since the bulk endpoint does not address documents via\nthe URL path).",
+                "properties": {
+                  "authority_scope": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "New authority scope; omit to leave unchanged.",
+                    "title": "Authority Scope"
+                  },
+                  "doc_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Back-compatible alias for the per-item `document_id`; supply exactly one of `document_id` or `doc_id` per item.",
+                    "title": "Doc Id"
+                  },
+                  "doc_type": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Must be a valid value in the vault's document_types configuration.",
+                    "title": "Doc Type"
+                  },
+                  "document_date": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Document calendar date (YYYY-MM-DD).",
+                    "title": "Document Date"
+                  },
+                  "document_id": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Target document id for this item. Accepts `doc_id` as a back-compatible alias; supply exactly one of `document_id` or `doc_id` per item.",
+                    "title": "Document Id"
+                  },
+                  "expected_version": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Optimistic-concurrency token (CAS-ADR-038 Primitive B). Same semantics as `UpdateMetadataRequest.expected_version`: when supplied, verified against the per-item document's current version inside its per-document lock; mismatch surfaces a structured `stale_read` per-item error envelope without aborting the batch (CAS-ADR-029 partial-success semantics). When omitted, the per-item write is last-writer-wins.",
+                    "title": "Expected Version"
+                  },
+                  "project": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "New project scope for the document; omit to leave unchanged.",
+                    "title": "Project"
+                  },
+                  "tags": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "description": "Patch operations on a list-valued metadata field (CAS-ADR-038\nPrimitive A).\n\nGeneric ops-object: ``{add: [...], remove: [...]}``. Either list may\nbe omitted but at least one must be present and non-empty.\nStrict-conflict semantics are enforced at the service layer (add of\nan already-present value and remove of an absent value both raise\n400). The model validators here enforce shape-level invariants that\ndon't require knowing the stored state: at least one non-empty\noperation must be present, ``add`` and ``remove`` must be disjoint,\nand neither list may contain internal duplicates.\n\nThe model is field-name-agnostic — the service-layer applier carries\nthe field name through to the error envelope so codes like\n``tags_add_conflict`` derive from the field rather than the patch\ntype.",
+                        "properties": {
+                          "add": {
+                            "anyOf": [
+                              {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "description": "Values to add. None may already be present on the field.",
+                            "title": "Add"
+                          },
+                          "remove": {
+                            "anyOf": [
+                              {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "description": "Values to remove. All must currently be present on the field.",
+                            "title": "Remove"
+                          }
+                        },
+                        "title": "ListFieldPatch",
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Patch operations on the tag set: {add?: list[str], remove?: list[str]}. Same semantics as `UpdateMetadataRequest.tags`."
+                  },
+                  "tier3_metadata": {
+                    "anyOf": [
+                      {
+                        "additionalProperties": true,
+                        "description": "Patch operations on a document's tier3_metadata dict.\n\n`set` keys overwrite existing values without error -- the verb is\nliteral (assert this post-state value). `unset` keys must currently\nbe present (strict-conflict at the service layer). `set` and `unset`\nkeys must be disjoint. The merged result is validated against the\nresolved doc_type's metadata_schema after the patch is applied\nin memory.",
+                        "properties": {
+                          "set": {
+                            "anyOf": [
+                              {
+                                "additionalProperties": true,
+                                "type": "object"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "description": "Key-value pairs to set. Overwrites existing keys.",
+                            "title": "Set"
+                          },
+                          "unset": {
+                            "anyOf": [
+                              {
+                                "items": {
+                                  "type": "string"
+                                },
+                                "type": "array"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "description": "Keys to remove. All must currently be present.",
+                            "title": "Unset"
+                          }
+                        },
+                        "title": "Tier3Patch",
+                        "type": "object"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "Patch operations on tier3_metadata: {set?: dict, unset?: list[str]}. Same semantics as `UpdateMetadataRequest.tier3_metadata`."
+                  },
+                  "title": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "New human-readable title; omit to leave unchanged.",
+                    "title": "Title"
+                  },
+                  "version_label": {
+                    "anyOf": [
+                      {
+                        "type": "string"
+                      },
+                      {
+                        "type": "null"
+                      }
+                    ],
+                    "default": null,
+                    "description": "New caller-supplied version label; omit to leave unchanged.",
+                    "title": "Version Label"
+                  }
+                },
+                "title": "BulkMetadataItem",
                 "type": "object"
               },
               "title": "Items",
