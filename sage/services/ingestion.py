@@ -57,6 +57,7 @@ from sage.api.errors import (
     IdenticalContentSupersedeError,
     InvalidDocTypeError,
     InvalidLifecycleTransitionError,
+    LifecycleStateNotApplicableError,
     NoProjectionError,
     PipelineWorkInFlightError,
     ReabstractDocumentAlreadyInFlightError,
@@ -81,6 +82,7 @@ from sage.config import (
     RELOCATION_ACTION,
     VaultConfig,
     build_transition_table,
+    document_scope,
 )
 from sage.models.enums import (
     SUCCESSFUL_TERMINAL_PIPELINE_STATUSES,
@@ -1303,14 +1305,16 @@ class IngestionService:
                 raise DocumentNotFoundError(request.predecessor_id)
             if (
                 self._transition_table.validate_transition(
-                    predecessor.lifecycle_status, "supersede", predecessor.doc_type
+                    predecessor.lifecycle_status, "supersede", document_scope(predecessor.doc_type)
                 )
                 is None
             ):
                 raise SupersedeTargetNotActiveError(
                     request.predecessor_id,
                     predecessor.lifecycle_status,
-                    self._transition_table.states_allowing("supersede", predecessor.doc_type),
+                    self._transition_table.states_allowing(
+                        "supersede", document_scope(predecessor.doc_type)
+                    ),
                 )
             ran.append(DryRunValidator.PREDECESSOR)
 
@@ -1713,6 +1717,19 @@ class IngestionService:
         )
 
         if existing_doc is not None:
+            # A re-ingestion rewrites the resolved doc_type onto the existing
+            # record, so it may not retype a document out of the scope of the
+            # state it holds, any more than a metadata patch may (CAS-ADR-054).
+            new_doc_type = field_updates.get("doc_type", existing_doc.doc_type)
+            state_scope = self._config.lifecycle.state_scope(existing_doc.lifecycle_status)
+            if (
+                new_doc_type != existing_doc.doc_type
+                and state_scope is not None
+                and new_doc_type not in state_scope
+            ):
+                raise LifecycleStateNotApplicableError(
+                    existing_doc.lifecycle_status, new_doc_type, state_scope
+                )
             # Force re-ingestion: reuse existing record (BH-019, BH-067).
             # The pre-merged field_updates carry the full metadata into
             # this single update_document call.
@@ -1803,7 +1820,9 @@ class IngestionService:
                     raise SupersedeTargetNotActiveError(
                         predecessor.id,
                         exc.detail["current_state"],
-                        self._transition_table.states_allowing("supersede", predecessor.doc_type),
+                        self._transition_table.states_allowing(
+                            "supersede", document_scope(predecessor.doc_type)
+                        ),
                     ) from exc
         else:
             # New document. When a predecessor is being superseded the

@@ -8,11 +8,18 @@ import logging
 import re
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import jsonschema
 import yaml
-from pydantic import BaseModel, Field, PrivateAttr, ValidationInfo, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    Field,
+    PrivateAttr,
+    ValidationInfo,
+    model_validator,
+)
 
 from sage.instrumentation.timing import TimingConfig
 from sage.models.enums import SourceType
@@ -543,6 +550,35 @@ class VaultIdentity(BaseModel):
     )
 
 
+#: The scope key of a document that carries no doc_type. It names no
+#: doc_type a vault can declare, so it matches only unscoped lifecycle
+#: entries -- unlike `None`, which asks a `TransitionTable` for the vault as
+#: a whole and so matches every entry (CAS-ADR-054).
+UNTYPED_DOCUMENT_SCOPE = ""
+
+
+def document_scope(doc_type: str | None) -> str:
+    """The key a document's lifecycle questions are resolved against.
+
+    Every per-document query on a `TransitionTable` passes this rather than
+    the raw doc_type, so a typeless document is held to the entries that
+    apply to every doc_type instead of being read as the whole vault.
+    """
+    return doc_type if doc_type is not None else UNTYPED_DOCUMENT_SCOPE
+
+
+def _distinct_doc_types(value: list[str]) -> list[str]:
+    """Refuse a scope that lists a doc_type twice, as the schema's `uniqueItems` does."""
+    if len(set(value)) != len(value):
+        duplicates = sorted({v for v in value if value.count(v) > 1})
+        raise ValueError(f"doc_types lists a duplicate doc_type: {', '.join(duplicates)}")
+    return value
+
+
+#: A lifecycle entry's doc_type scope: a list with no repeated doc_type.
+DocTypeScope = Annotated[list[str], AfterValidator(_distinct_doc_types)]
+
+
 class LifecycleTransition(BaseModel):
     from_state: str = Field(
         description=("Source state. Use '(new)' for the initial ingestion transition.")
@@ -576,7 +612,7 @@ class LifecycleTransition(BaseModel):
             "edge from the new version to the old."
         ),
     )
-    doc_types: list[str] | None = Field(
+    doc_types: DocTypeScope | None = Field(
         default=None,
         min_length=1,
         description=(
@@ -695,7 +731,7 @@ class LifecycleState(BaseModel):
             "false to exclude a base state."
         ),
     )
-    doc_types: list[str] | None = Field(
+    doc_types: DocTypeScope | None = Field(
         default=None,
         min_length=1,
         description=(
@@ -774,6 +810,14 @@ class LifecycleConfig(BaseModel):
         """
         retired = {t.to_state for t in self.transitions if t.action == "supersede"}
         return frozenset(state.value for state in self.states) - retired
+
+    def state_scope(self, value: str) -> list[str] | None:
+        """The doc_types the state `value` is scoped to, or None if it applies to all.
+
+        An undeclared state reads as unscoped: scope constrains the states a
+        vault declares, and the loader reports an undeclared one elsewhere.
+        """
+        return next((state.doc_types for state in self.states if state.value == value), None)
 
     def terminal_states(self) -> frozenset[str]:
         """The declared states from which no further transition is expected.

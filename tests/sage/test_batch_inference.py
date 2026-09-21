@@ -109,7 +109,13 @@ class _SupersedeStore:
     `edge_keys` to exercise the duplicate path.
     """
 
-    def __init__(self, docs: dict[str, str], edge_keys: set[tuple[str, str, str]] | None = None):
+    def __init__(
+        self,
+        docs: dict[str, str],
+        edge_keys: set[tuple[str, str, str]] | None = None,
+        doc_types: dict[str, str] | None = None,
+    ):
+        self._doc_types = dict(doc_types or {})
         self.staged = []
         self.updated = []
         self.superseded = []
@@ -132,6 +138,7 @@ class _SupersedeStore:
         mock_doc = MagicMock()
         mock_doc.id = doc_id
         mock_doc.lifecycle_status = status
+        mock_doc.doc_type = self._doc_types.get(doc_id, "note")
         return mock_doc
 
     async def update_document(self, doc_id, updates):
@@ -1974,3 +1981,52 @@ def test_bi_005_app_layer_does_not_define_edge_inference():
     """
     with pytest.raises(ImportError):
         importlib.import_module("app.backend.edge_inference")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("doc_type", "refused"), [("control_exception", True), ("work_item", False)]
+)
+async def test_supersede_gate_and_refusal_read_the_targets_doc_type(doc_type, refused):
+    """A scoped supersede row admits only its doc_types, and a refusal says so.
+
+    `supersede` from `active` applies to `work_item` alone; from `completed`
+    it applies to every doc_type. An active `control_exception` target is
+    refused, and the permitted states the refusal names are its own type's
+    -- `completed` -- not the vault-wide union, which would add `active`.
+    The `work_item` arm, under the same table and state, is superseded.
+    """
+    table = TransitionTable(
+        [
+            LifecycleTransition(
+                from_state="active",
+                action="supersede",
+                to_state="archived",
+                creates_edge="supersedes",
+                doc_types=["work_item"],
+            ),
+            LifecycleTransition(
+                from_state="completed",
+                action="supersede",
+                to_state="archived",
+                creates_edge="supersedes",
+            ),
+        ]
+    )
+    source, target = "aaaaaaa3_doc_v3", "aaaaaaa2_doc_v2"
+    plan = EdgePlan(
+        edges=[PlannedEdge(source, target, EdgeType.SUPERSEDES, 1, "version_chain", "v3 > v2")]
+    )
+    store = _SupersedeStore({target: "active"}, doc_types={target: doc_type})
+
+    result = await _run(plan, {}, store, _SupersedeOps(), table)
+
+    if refused:
+        assert store.superseded == []
+        (warning,) = result.warnings
+        assert (
+            warning.detail == SupersedeTargetNotActiveError(target, "active", ["completed"]).message
+        )
+    else:
+        assert result.warnings == []
+        assert store.state_of(target) == "archived"

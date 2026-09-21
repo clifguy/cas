@@ -891,6 +891,12 @@ paths:
             when no document holds the hash).
 
 
+            `lifecycle_state_not_applicable`: `force: true` would change
+            the existing document's `doc_type` while it holds a lifecycle
+            state whose `doc_types` excludes the new doc_type; transition
+            it to a state the new doc_type holds first.
+
+
             `supersede_target_not_active`: `predecessor_id` was set but
             the vault's lifecycle transition table does not permit
             `supersede` from the predecessor's current state. Detail
@@ -14674,6 +14680,7 @@ components:
         - invalid_user_id
         - invalid_vault_id
         - legacy_form
+        - lifecycle_state_not_applicable
         - merged_from_validation
         - misplaced_metadata
         - misplaced_top_level_field

@@ -1758,6 +1758,7 @@ SCHEMAS = json.loads(
         "invalid_user_id",
         "invalid_vault_id",
         "legacy_form",
+        "lifecycle_state_not_applicable",
         "merged_from_validation",
         "misplaced_metadata",
         "misplaced_top_level_field",

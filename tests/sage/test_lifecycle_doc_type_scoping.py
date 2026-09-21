@@ -37,11 +37,17 @@ from sage.adapters.stubs import StubContentStore
 from sage.api.errors import (
     InvalidActionError,
     InvalidLifecycleTransitionError,
+    LifecycleStateNotApplicableError,
     SupersedeTargetNotActiveError,
     VaultConfigValidationError,
 )
 from sage.app import _initialize_services, create_app
-from sage.config import VaultConfig, build_transition_table, load_vault_config
+from sage.config import (
+    VaultConfig,
+    build_transition_table,
+    document_scope,
+    load_vault_config,
+)
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import (
     BulkMetadataRequest,
@@ -122,7 +128,7 @@ def _load_from_disk(config_dict: dict, tmp_path: Path) -> VaultConfig:
     return load_vault_config(path)
 
 
-def _doc(name: str, doc_type: str, lifecycle_status: str = "active") -> Document:
+def _doc(name: str, doc_type: str | None, lifecycle_status: str = "active") -> Document:
     now = datetime.now(timezone.utc)
     doc_id = _id(name)
     return Document(
@@ -713,3 +719,119 @@ async def test_retype_between_types_the_state_admits_is_allowed(
 
     assert response.results[0].status == "success", response.results[0].error
     assert (await graph_store.get_document(doc.id)).doc_type == CONTROL_EXCEPTION
+
+
+@pytest.mark.parametrize("entry", ["state", "transition"])
+def test_duplicate_scope_entry_is_refused(minimal_vault_config_dict, entry):
+    """A repeated doc_type is refused, as the schema's `uniqueItems` refuses it."""
+    mutated = _scoped(minimal_vault_config_dict)
+    target = _state(mutated, "blocked") if entry == "state" else _transition(mutated, "block")
+    target["doc_types"] = [WORK_ITEM, WORK_ITEM]
+
+    with pytest.raises(ValidationError, match="duplicate"):
+        VaultConfig.model_validate(mutated)
+
+
+def test_untyped_document_matches_only_unscoped_rows(minimal_vault_config_dict):
+    """A document without a doc_type is not the vault as a whole.
+
+    `None` asks for the vault-wide union and so admits the scoped `block`
+    row; the key a typeless document resolves to must admit only the rows
+    that apply to every doc_type.
+    """
+    table = build_transition_table(VaultConfig.model_validate(_scoped(minimal_vault_config_dict)))
+    untyped = document_scope(None)
+
+    assert table.validate_transition("active", "block", None) == ("blocked", None)
+    assert table.validate_transition("active", "block", untyped) is None
+    assert "block" not in table.get_valid_actions("active", untyped)
+    assert "complete" in table.get_valid_actions("active", untyped)
+    assert document_scope(WORK_ITEM) == WORK_ITEM
+
+
+async def test_untyped_document_cannot_take_a_scoped_action(
+    graph_store, lock_manager, stub_content_store, minimal_vault_config_dict
+):
+    """The service resolves a typeless document against unscoped rows only."""
+    service = _lifecycle(
+        _scoped(minimal_vault_config_dict), graph_store, lock_manager, stub_content_store
+    )
+    doc = _doc("untyped", None)
+    await graph_store.insert_document(doc)
+
+    with pytest.raises(InvalidActionError):
+        await service._set_lifecycle(doc.id, SetLifecycleRequest(action="block"))
+    await service._set_lifecycle(doc.id, SetLifecycleRequest(action="complete"))
+    assert (await graph_store.get_document(doc.id)).lifecycle_status == "completed"
+
+
+@pytest.mark.parametrize(
+    ("state", "new_type", "refused"),
+    [
+        ("blocked", CONTROL_EXCEPTION, True),
+        ("active", CONTROL_EXCEPTION, False),
+        ("blocked", WORK_ITEM, False),
+    ],
+    ids=["retype-out-of-scope", "retype-from-unscoped", "no-retype-in-scope"],
+)
+async def test_force_reingest_may_not_retype_out_of_the_states_scope(
+    tmp_vault_dir,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_vault_config_dict,
+    state,
+    new_type,
+    refused,
+):
+    """S6: a force re-ingest carrying a new doc_type is held to the same rule.
+
+    Re-ingestion reuses the existing record and writes the resolved doc_type
+    through, so it is a retype. The `active` arm retypes the same document
+    successfully, so the refusal is the scoped state's doing; the
+    `no-retype-in-scope` arm re-ingests the blocked document keeping its
+    doc_type, so the refusal is the retype's doing, not the re-ingest's.
+    """
+    config = VaultConfig.model_validate(_scoped(minimal_vault_config_dict))
+    lifecycle = LifecycleService(graph_store, lock_manager, config, stub_content_store)
+    ingestion = IngestionService(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=stub_abstraction_provider,
+        config=config,
+        source_adapters={SourceType.MARKDOWN: MarkdownAdapter()},
+        lifecycle_service=lifecycle,
+    )
+    source = f"fr_{state}_{new_type}.md"
+    _seed_file(tmp_vault_dir, source, "# Force\n\nBody.")
+    first = await ingestion.ingest(
+        IngestRequest(
+            source=source, source_type=SourceType.MARKDOWN, metadata={"doc_type": WORK_ITEM}
+        )
+    )
+    if state == "blocked":
+        await lifecycle._set_lifecycle(first.document.id, SetLifecycleRequest(action="block"))
+    retype = IngestRequest(
+        source=source,
+        source_type=SourceType.MARKDOWN,
+        force=True,
+        metadata={"doc_type": new_type},
+    )
+
+    if refused:
+        with pytest.raises(LifecycleStateNotApplicableError) as exc:
+            await ingestion.ingest(retype)
+        assert exc.value.detail == {
+            "current_state": "blocked",
+            "doc_type": CONTROL_EXCEPTION,
+            "state_doc_types": [WORK_ITEM],
+        }
+        assert (await graph_store.get_document(first.document.id)).doc_type == WORK_ITEM
+    else:
+        await ingestion.ingest(retype)
+        stored = await graph_store.get_document(first.document.id)
+        assert (stored.doc_type, stored.lifecycle_status) == (new_type, state)

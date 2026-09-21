@@ -277,14 +277,7 @@ class MetadataService:
                 # A document may not come to hold a state its doc_type
                 # cannot (CAS-ADR-054); transitions are held to that, and a
                 # retype is the one other way in.
-                state_scope = next(
-                    (
-                        state.doc_types
-                        for state in self._config.lifecycle.states
-                        if state.value == doc.lifecycle_status
-                    ),
-                    None,
-                )
+                state_scope = self._config.lifecycle.state_scope(doc.lifecycle_status)
                 if state_scope is not None and request.doc_type not in state_scope:
                     raise LifecycleStateNotApplicableError(
                         doc.lifecycle_status, request.doc_type, state_scope

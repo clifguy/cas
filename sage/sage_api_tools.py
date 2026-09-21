@@ -532,6 +532,10 @@ def register_sage_tools(
           ``document_id``, ``pinned_source_content_hash`` (null when no
           document has that id), ``source_content_hash``, and
           ``existing_document_id`` (null when no document holds the hash).
+        - ``lifecycle_state_not_applicable`` (409): ``force=true`` would
+          change the existing document's ``doc_type`` while it holds a
+          lifecycle state whose ``doc_types`` excludes the new doc_type;
+          transition it to a state the new doc_type holds first.
         - ``document_not_found`` (404): ``predecessor_id`` names no document
           in the vault.
         - ``supersede_target_not_active`` (409): ``predecessor_id`` was set
