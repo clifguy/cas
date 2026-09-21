@@ -2411,8 +2411,9 @@ class DocTypeRequirements(BaseModel):
         description=(
             "Whether this doc_type appears in the vault's "
             "`document_types.doc_types` vocabulary at all. False means the "
-            "value was resolved from caller metadata, a filename parse, or "
-            "predecessor inheritance without ever being declared."
+            "value was resolved from caller metadata, a filename parse, the "
+            "reused record's own doc_type on a force re-ingest, or predecessor "
+            "inheritance without ever being declared."
         )
     )
     has_metadata_schema: bool = Field(

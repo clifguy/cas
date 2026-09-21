@@ -19,7 +19,8 @@ summary: >-
   to the delivered hash, so a pin naming no document or another document's bytes is refused
   as force_reingest_pin_mismatch before the upload rather than after it, and the leg's
   dry_run_validated names that check as force_pin, a new DryRunValidator value. The descriptions of
-  IngestPreview.resolved_doc_type (in both specifications), of IngestRequest.metadata, and of
+  IngestPreview.resolved_doc_type and DocTypeRequirements.is_declared (in both
+  specifications), of IngestRequest.metadata, and of
   the upload leg's dry_run_validated name the added rung and the deferred check.
 for_callers: >-
   A force re-ingest that names no doc_type now validates tier3_metadata against, and

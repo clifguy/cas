@@ -915,11 +915,14 @@ async def test_force_reingest_tier3_validates_against_the_reused_records_doc_typ
 
 @pytest.mark.parametrize("dry_run", [True, False], ids=["preview", "run"])
 async def test_force_reingest_tier3_refusal_names_the_reused_records_doc_type(
-    tmp_vault_dir, dry_ingestion_service, dry_run
+    tmp_vault_dir, graph_store, dry_ingestion_service, dry_run
 ):
-    source, _held = await _seed(
+    """The refusal names the reused record's doc_type, and leaves that record as
+    it was: the check runs ahead of the write it guards, not after it."""
+    source, held = await _seed(
         dry_ingestion_service, tmp_vault_dir, f"reused_bad_{dry_run}.md", "loose_record"
     )
+    before = await graph_store.get_document(held.id)
 
     with pytest.raises(Tier3SchemaViolationError) as excinfo:
         await dry_ingestion_service.ingest(
@@ -933,6 +936,9 @@ async def test_force_reingest_tier3_refusal_names_the_reused_records_doc_type(
         )
 
     assert excinfo.value.detail["doc_type"] == "loose_record"
+    after = await graph_store.get_document(held.id)
+    assert after.tier3_metadata == before.tier3_metadata
+    assert after.updated_at == before.updated_at
 
 
 async def _seed_with_typed_sibling(service, graph_store, tmp_vault_dir, name):
