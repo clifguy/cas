@@ -459,12 +459,16 @@ def _eval_retrieval_error_instances() -> list:
         AssertionsFileInvalidError,
         AssertionsFileNotFoundError,
         AssertionsNotConfiguredError,
+        VaultSourceStoreRefusedError,
+        VaultSourceStoreUnavailableError,
     )
 
     return [
         AssertionsFileNotFoundError("x"),
         AssertionsFileInvalidError("x", "reason"),
         AssertionsNotConfiguredError(),
+        VaultSourceStoreRefusedError("x", "read source", 403),
+        VaultSourceStoreUnavailableError("x", "read source", 429),
     ]
 
 

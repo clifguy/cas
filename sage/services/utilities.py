@@ -7,8 +7,10 @@ export_projection: Write stored projection text to a Markdown file.
   - Relative paths within storage_root are permitted (BH-039).
 
 eval_retrieval: Run retrieval health assertions against the vault.
-  - Assertions loaded from a separate YAML file (BH-041).
-  - Missing or malformed file produces clear errors (BH-042).
+  - Assertions loaded from a separate YAML file (BH-041), read through the
+    vault-source store under either binding (BH-041a).
+  - Missing, malformed, or out-of-root file produces clear errors (BH-042,
+    BH-042a).
 
 refresh_views: Regenerate symlink-based browsable folder views.
   - Both by_doc_type/ and by_lifecycle/ views always generated (BH-043).
@@ -23,7 +25,7 @@ import logging
 import os
 import shutil
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import yaml
 
@@ -65,6 +67,9 @@ from sage.services.caller_paths import (
 )
 from sage.services.passage_split import group_sections, join_passages
 from sage.services.read_diagnostics import build_not_found_detail
+
+if TYPE_CHECKING:
+    from sage.vault_source_binding import VaultSourceStore
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +153,12 @@ class UtilitiesService:
         self._content = content_store
         self._embedding = embedding_provider
         self._config = config
+
+    def _vault_source_store(self) -> "VaultSourceStore":
+        """The active profile's vault-source store, resolved at call time."""
+        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+
+        return resolve_stack_vault_source_store(get_stack_config())
 
     # ------------------------------------------------------------------
     # Shared projection retrieval
@@ -498,10 +509,20 @@ class UtilitiesService:
         each through the discover path a caller uses, and returns a pass/fail
         report.
 
+        The file is named by a storage-root-relative path and read through the
+        active vault-source store, addressed as a document's ``source_path``
+        is (CAS-ADR-043): from the local tree under the filesystem binding, and
+        from the vault's folder in the document store under the document-store
+        binding. Both request surfaces share this one read, so the operation
+        behaves alike under either deployment profile (CAS-ADR-052).
+
         Raises:
             AssertionsNotConfiguredError: No assertions_file in vault config.
             AssertionsFileNotFoundError: Referenced file does not exist.
-            AssertionsFileInvalidError: File is malformed YAML or wrong structure.
+            AssertionsFileInvalidError: File is malformed YAML or wrong structure,
+                or its path leaves the vault's storage root.
+            VaultSourceStoreRefusedError: The store declined the read.
+            VaultSourceStoreUnavailableError: The store could not serve it now.
         """
         # Check config
         rh_config = self._config.retrieval_health
@@ -509,18 +530,24 @@ class UtilitiesService:
             raise AssertionsNotConfiguredError()
 
         assertions_path = rh_config.assertions_file
-
-        # Resolve relative to vault storage_root (where domain configs live)
+        store = self._vault_source_store()
+        vault_id = self._config.vault.id
         storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
-        full_path = (storage_root / assertions_path).resolve()
 
-        if not full_path.exists():
+        # Containment is asked before presence, so a path that names somewhere
+        # outside the vault is refused without the store being consulted.
+        if store.source_is_out_of_root(vault_id, storage_root, assertions_path):
+            raise AssertionsFileInvalidError(
+                assertions_path, "the path leaves the vault's storage root"
+            )
+        # A missing key read directly is a store refusal on some bindings; the
+        # existence check keeps an absent file the 404 it is.
+        if not store.source_exists(vault_id, storage_root, assertions_path):
             raise AssertionsFileNotFoundError(assertions_path)
 
         # Load and parse assertions
         try:
-            with open(full_path, encoding="utf-8") as f:
-                raw = yaml.safe_load(f)
+            raw = yaml.safe_load(store.read_source(vault_id, storage_root, assertions_path))
         except yaml.YAMLError as exc:
             raise AssertionsFileInvalidError(assertions_path, str(exc))
 

@@ -1506,7 +1506,10 @@ class RetrievalHealthConfig(BaseModel):
         default=None,
         description=(
             "Path to a YAML file containing retrieval health assertions, "
-            "relative to the domain configuration directory. Each "
+            "relative to the vault's storage root and read through the "
+            "vault-source store, as a document's source path is: from the "
+            "local tree under the filesystem binding, and from the vault's "
+            "document-store folder under the document-store binding. Each "
             "assertion specifies a query, an expected document ID, and a "
             "top-k threshold."
         ),

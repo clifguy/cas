@@ -1863,8 +1863,14 @@ paths:
         configuration changes.
 
 
-        The assertions YAML file is resolved relative to the vault's
-        `storage_root`. The file must have a top-level `assertions:`
+        The assertions YAML file is named by a path relative to the
+        vault's `storage_root` and read through the vault-source store,
+        addressed as a document's `source_path` is: under the filesystem
+        binding (the local profile) it is read from `storage_root` on
+        the server's disk; under the document-store binding (the cloud
+        profile) it is read from the vault's folder in the document
+        store, at the same relative path. A path leaving the storage
+        root is refused. The file must have a top-level `assertions:`
         key whose value is a list of objects; each object must include
         `query` and `expected_document_id` and may include `top_k`
         (default 10).
@@ -1881,7 +1887,8 @@ paths:
         "400":
           description: >-
             `assertions_file_invalid`: the referenced YAML is malformed or
-            has the wrong structure.
+            has the wrong structure, or its path leaves the vault's
+            `storage_root`.
 
             `assertions_not_configured`: the vault config has no
             `retrieval_health.assertions_file` entry.
@@ -1897,11 +1904,32 @@ paths:
         "404":
           description: >-
             `assertions_file_not_found`: the configured assertions file does not
-            exist under the vault's `storage_root`.
+            exist at its path in the vault-source store -- under `storage_root`
+            on the filesystem binding, or in the vault's document-store folder
+            on the document-store binding.
 
 
             `vault_not_found`: no vault registered with that id;
             `detail.available_vaults` lists the registered vaults.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "502":
+          description: >-
+            `vault_source_store_refused`: the vault-source store declined the
+            operation on its merits -- quota, a permission it withdrew, a reply
+            that could not be used. Resolve it at the store before retrying;
+            `detail.store_status` carries the status it declined with.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "503":
+          description: >-
+            `vault_source_store_unavailable`: the vault-source store declined to
+            serve the operation just now -- throttling, or a transient backend
+            signal. The same request may succeed on a later attempt.
           content:
             application/json:
               schema:
@@ -14601,6 +14629,8 @@ components:
         - invalid_vault_id
         - unknown_parameter
         - vault_not_found
+        - vault_source_store_refused
+        - vault_source_store_unavailable
         verify_vault_source_files:
         - document_scope_unmatched
         - internal_error

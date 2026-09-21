@@ -1,0 +1,20 @@
+classification: minor
+category: [capability, caller-adaptation]
+summary: >-
+  The retrieval-health operation (verify_vault_retrieval on the MCP maintenance
+  surface; POST /sage_vaults/{vault_id}/eval-retrieval on the Core API) reads
+  its assertions file through the vault-source store, addressed as a document's
+  source_path is, instead of from the server's local disk. Both surfaces declare
+  vault_source_store_refused (502) and vault_source_store_unavailable (503), and
+  refuse an assertions path leaving the storage root as assertions_file_invalid.
+  The operation descriptions and the vault configuration's
+  retrieval_health.assertions_file description state where the file is resolved
+  under each binding.
+for_callers: >-
+  Retrieval-health checks now run under the document-store binding (the cloud
+  profile): place the assertions file in the vault's document-store folder at
+  the path retrieval_health.assertions_file names. Under the filesystem binding
+  the file is still read from the vault's storage root. The operation may now
+  answer vault_source_store_refused (502) or vault_source_store_unavailable
+  (503), and refuses an assertions path that leaves the storage root with
+  assertions_file_invalid (400).

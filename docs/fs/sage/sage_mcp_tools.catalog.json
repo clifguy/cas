@@ -26327,6 +26327,100 @@
                   "available_vaults"
                 ],
                 "type": "object"
+              },
+              "VaultSourceStoreRefusedError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/VaultSourceStoreRefusedErrorDetail"
+                  },
+                  "error": {
+                    "const": "vault_source_store_refused",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "VaultSourceStoreRefusedErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "operation": {
+                    "description": "Operation.",
+                    "type": "string"
+                  },
+                  "source_path": {
+                    "description": "Source path.",
+                    "type": "string"
+                  },
+                  "store_status": {
+                    "description": "Store status.",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "source_path",
+                  "operation"
+                ],
+                "type": "object"
+              },
+              "VaultSourceStoreUnavailableError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/VaultSourceStoreUnavailableErrorDetail"
+                  },
+                  "error": {
+                    "const": "vault_source_store_unavailable",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "VaultSourceStoreUnavailableErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "operation": {
+                    "description": "Operation.",
+                    "type": "string"
+                  },
+                  "source_path": {
+                    "description": "Source path.",
+                    "type": "string"
+                  },
+                  "store_status": {
+                    "description": "Store status.",
+                    "type": "integer"
+                  }
+                },
+                "required": [
+                  "source_path",
+                  "operation"
+                ],
+                "type": "object"
               }
             },
             "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -26339,7 +26433,9 @@
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
-                "vault_not_found": "#/$defs/VaultNotFoundError"
+                "vault_not_found": "#/$defs/VaultNotFoundError",
+                "vault_source_store_refused": "#/$defs/VaultSourceStoreRefusedError",
+                "vault_source_store_unavailable": "#/$defs/VaultSourceStoreUnavailableError"
               },
               "propertyName": "error"
             },
@@ -26367,6 +26463,12 @@
               },
               {
                 "$ref": "#/$defs/VaultNotFoundError"
+              },
+              {
+                "$ref": "#/$defs/VaultSourceStoreRefusedError"
+              },
+              {
+                "$ref": "#/$defs/VaultSourceStoreUnavailableError"
               }
             ]
           }
@@ -26375,7 +26477,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Run retrieval health assertions against the vault.\n\nLoads assertions from the YAML file referenced in\n``retrieval_health.assertions_file`` of the vault config, runs\neach as a semantic search, and returns a pass/fail report.\nEach assertion is a ``(query, expected_document_id, top_k)``\ntriple: the assertion passes when the expected document\nappears within the top-k results for the query. Failures\nreport the actual rank (out of ``top_k * 5``) when the expected\ndocument was found beyond top-k, or ``null`` when it was not\nfound at all. Used as a smoke test after bulk ingestion or\nconfiguration changes.\n\nThe assertions YAML file is resolved relative to the vault's\n``storage_root``. The file must have a top-level ``assertions:``\nkey whose value is a list of objects; each object must include\n``query`` and ``expected_document_id`` and may include ``top_k``\n(default 10).\n\nError modes:\n- ``invalid_vault_id`` (400): ``vault_id`` is not a well-formed vault id.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n- ``assertions_not_configured`` (400): the vault config has no\n  ``retrieval_health.assertions_file`` entry.\n- ``assertions_file_invalid`` (400): the referenced YAML is malformed\n  or has the wrong structure.\n- ``assertions_file_not_found`` (404): the configured assertions file\n  does not exist under the vault's ``storage_root``.\n\nArgs:\n    vault_id: Target vault identifier.\n",
+        "description": "Run retrieval health assertions against the vault.\n\nLoads assertions from the YAML file referenced in\n``retrieval_health.assertions_file`` of the vault config, runs\neach as a semantic search, and returns a pass/fail report.\nEach assertion is a ``(query, expected_document_id, top_k)``\ntriple: the assertion passes when the expected document\nappears within the top-k results for the query. Failures\nreport the actual rank (out of ``top_k * 5``) when the expected\ndocument was found beyond top-k, or ``null`` when it was not\nfound at all. Used as a smoke test after bulk ingestion or\nconfiguration changes.\n\nThe assertions YAML file is named by a path relative to the\nvault's ``storage_root`` and read through the vault-source store,\naddressed as a document's ``source_path`` is: under the filesystem\nbinding (the local profile) it is read from ``storage_root`` on\nthe server's disk; under the document-store binding (the cloud\nprofile) it is read from the vault's folder in the document\nstore, at the same relative path. A path leaving the storage\nroot is refused. The file must have a top-level ``assertions:``\nkey whose value is a list of objects; each object must include\n``query`` and ``expected_document_id`` and may include ``top_k``\n(default 10).\n\nError modes:\n- ``invalid_vault_id`` (400): ``vault_id`` is not a well-formed vault id.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n- ``assertions_not_configured`` (400): the vault config has no\n  ``retrieval_health.assertions_file`` entry.\n- ``assertions_file_invalid`` (400): the referenced YAML is malformed\n  or has the wrong structure, or its path leaves the vault's\n  ``storage_root``.\n- ``assertions_file_not_found`` (404): the configured assertions file\n  does not exist at its path in the vault-source store -- under\n  ``storage_root`` on the filesystem binding, or in the vault's\n  document-store folder on the document-store binding.\n- ``vault_source_store_refused`` (502): the vault-source store declined\n  the read on its merits; ``detail.store_status`` carries the status\n  it declined with.\n- ``vault_source_store_unavailable`` (503): the vault-source store\n  declined to serve the read just now; the same call may succeed on\n  a later attempt.\n\nArgs:\n    vault_id: Target vault identifier.\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
