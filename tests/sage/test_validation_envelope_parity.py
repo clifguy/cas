@@ -808,7 +808,7 @@ async def test_every_tool_building_a_nesting_model_names_the_accepted_keys(vault
         # The tool publishes an error schema through ``tools/list``; a code it
         # can raise has to be in that tool's family table or the schema it
         # advertises rejects the envelope it just returned. Registering a code
-        # is a five-part act and the table is the part with no other reader,
+        # is a six-part act and the table is the part with no other reader,
         # so this asserts it against a refusal the tool actually produced
         # rather than against the table's own contents.
         jsonschema.validate(envelope, tool_error_schema("", tool_name))
@@ -915,3 +915,102 @@ async def test_every_http_operation_with_a_nested_model_refuses_its_undeclared_k
         assert envelope["detail"]["recognized"] == sorted(
             getattr(schemas, expected_model).model_fields
         ), (operation, expected_model, envelope)
+
+
+async def test_both_surfaces_locate_a_nested_key_at_the_same_parameter(vault_services, http_client):
+    """The two surfaces report the same ``detail.parameter`` for the same key.
+
+    The MCP surface validates each batch item against the item model and then
+    restates the item's position, so the location it reports is built rather
+    than read off the validator. The probe gates assert the code, the key and
+    the accepted set, and a re-prefix that dropped a nested segment -- reporting
+    ``items.0`` where HTTP reports ``items.0.tags`` -- satisfied all three with
+    the suite green. So the location is asserted here, on every pair both
+    surfaces probe, against the other surface rather than against a literal.
+    """
+    shared = sorted(
+        (tool, model)
+        for (tool, model) in _NESTED_KEY_PROBES
+        if (("ingest" if tool == "ingest_document" else tool), model) in _HTTP_NESTED_KEY_PROBES
+    )
+    assert shared, "no pair probed on both surfaces; nothing is compared"
+
+    for tool, model in shared:
+        route = "ingest" if tool == "ingest_document" else tool
+        path, body = _HTTP_NESTED_KEY_PROBES[(route, model)]
+        mcp_env = _decode_envelope(
+            await mcp.call_tool(tool, {"vault_id": VAULT_ID, **_NESTED_KEY_PROBES[(tool, model)]})
+        )
+        http_env = (await http_client.post(f"/sage_vaults/{VAULT_ID}/{path}", json=body)).json()
+
+        assert mcp_env["detail"]["parameter"] == http_env["detail"]["parameter"], (
+            tool,
+            model,
+            mcp_env["detail"]["parameter"],
+            http_env["detail"]["parameter"],
+        )
+
+
+#: A real call per (tool, code) the MCP family table lists for this change's two
+#: codes, producing that refusal through the tool. Keyed by the table's own
+#: pairs, so an entry with no probe fails, and so does a probe for a pair the
+#: table does not list.
+_FAMILY_TABLE_PROBES: dict[tuple[str, str], dict] = {
+    ("ingest_document", "undeclared_key"): {
+        "source": "test/sample.md",
+        "source_type": "markdown",
+        "relocated_from": {"bogus_field_x": 1},
+    },
+    ("ingest_document", "misplaced_top_level_field"): {
+        "source": "test/sample.md",
+        "source_type": "markdown",
+        "metadata": {"tier3_metadata": "T-1"},
+    },
+    ("update_lifecycles", "undeclared_key"): {
+        "items": [{"document_id": "00000000_absent_document", "bogus_field_x": 1}]
+    },
+    ("update_metadata", "undeclared_key"): {
+        "items": [{"document_id": "00000000_absent_document", "bogus_field_x": 1}]
+    },
+    ("create_edges", "undeclared_key"): {
+        "items": [{"source_id": "00000000_absent_document", "bogus_field_x": 1}]
+    },
+    ("bulk_ingest_document", "undeclared_key"): {
+        "files": [{"file_path": "test/sample.md", "bogus_field_x": 1}]
+    },
+}
+
+
+async def test_every_family_table_entry_publishes_a_schema_its_refusal_satisfies(
+    vault_services,
+):
+    """Each tool's published error schema accepts the refusal the tool returns.
+
+    The table is the one part of registering a code that nothing else reads:
+    omit a row and the tool still refuses correctly, but advertises through
+    ``tools/list`` a schema that rejects the envelope it emits. The probe gate
+    above checks this only for the tools it derives and only for the code it
+    plants, so a row for another tool or another code could go missing with
+    the suite green -- measured, not supposed.
+
+    Keyed on the table's own pairs for this change's codes rather than on a
+    list, so the assertion is about the table: a row with no probe fails, and a
+    probe the table does not back fails too.
+    """
+    import jsonschema
+
+    from sage.models.error_contract import SCHEMAS, tool_error_schema
+
+    ours = {"undeclared_key", "misplaced_top_level_field"}
+    table = SCHEMAS["ErrorResponse"]["x-mcp-tool-errors"]
+    listed = {(tool, code) for tool, codes in table.items() for code in codes if code in ours}
+    assert listed, "no row lists either code; the table checks nothing"
+    assert listed == set(_FAMILY_TABLE_PROBES), (
+        f"unprobed rows {sorted(listed - set(_FAMILY_TABLE_PROBES))}, "
+        f"unbacked probes {sorted(set(_FAMILY_TABLE_PROBES) - listed)}"
+    )
+
+    for (tool, code), payload in sorted(_FAMILY_TABLE_PROBES.items()):
+        envelope = _decode_envelope(await mcp.call_tool(tool, {"vault_id": VAULT_ID, **payload}))
+        assert envelope["error"] == code, (tool, code, envelope)
+        jsonschema.validate(envelope, tool_error_schema("", tool))
