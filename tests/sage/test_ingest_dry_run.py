@@ -1078,6 +1078,29 @@ async def test_no_bytes_check_resolves_the_reused_record_from_the_pin(
     assert excinfo.value.detail["doc_type"] == "loose_record"
 
 
+async def test_force_reingest_run_validates_tier3_against_the_pinned_record(
+    tmp_vault_dir, graph_store, dry_ingestion_service
+):
+    """The run's deferred check reads the record the pin names, not the hash
+    lookup's representative, which carries another doc_type."""
+    source, _held, sibling = await _seed_with_typed_sibling(
+        dry_ingestion_service, graph_store, tmp_vault_dir, "run_pinned_t3.md"
+    )
+
+    with pytest.raises(Tier3SchemaViolationError) as excinfo:
+        await dry_ingestion_service.ingest(
+            IngestRequest(
+                source=str(source),
+                source_type=SourceType.MARKDOWN,
+                force=True,
+                document_id=sibling.id,
+                tier3_metadata={"bogus": 1},
+            )
+        )
+
+    assert excinfo.value.detail["doc_type"] == "bare_record"
+
+
 async def test_no_bytes_check_prefers_the_pin_over_the_declared_digest(
     tmp_vault_dir, graph_store, dry_ingestion_service
 ):
@@ -1133,11 +1156,42 @@ async def test_no_bytes_check_refuses_a_pin_the_declared_digest_rules_out(
         await dry_ingestion_service.validate_without_bytes(
             _no_bytes_request(source.name, document_id=pinned, sha256=held.source_content_hash)
         )
-    # The pin the digest does hold is admitted: the check refuses the pin, not
-    # every pinned request.
-    await dry_ingestion_service.validate_without_bytes(
+    # The pin the digest does hold is admitted, and the receipt names the check.
+    ran = await dry_ingestion_service.validate_without_bytes(
         _no_bytes_request(source.name, document_id=held.id, sha256=held.source_content_hash)
     )
+
+    assert DryRunValidator.FORCE_PIN in ran
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        pytest.param({"document_id": "held"}, id="pin-without-digest"),
+        pytest.param({"sha256": "held"}, id="digest-without-pin"),
+        pytest.param({"document_id": "held", "sha256": "held", "force": False}, id="not-forced"),
+    ],
+)
+async def test_no_bytes_receipt_omits_the_pin_check_when_it_did_not_run(
+    tmp_vault_dir, dry_ingestion_service, fields
+):
+    """The pin is checked only when a forced request carries both a pin and a
+    digest; any other request must not be reported as having had it checked."""
+    source, held = await _seed(
+        dry_ingestion_service,
+        tmp_vault_dir,
+        "nb_receipt_" + "_".join(sorted(fields)) + ".md",
+        "misc",
+    )
+    values = {"document_id": held.id, "sha256": held.source_content_hash}
+    request = {k: (values[k] if v == "held" else v) for k, v in fields.items()}
+    request.setdefault("force", True)
+
+    ran = await dry_ingestion_service.validate_without_bytes(
+        IngestRequest(source=source.name, source_type=SourceType.MARKDOWN, dry_run=True, **request)
+    )
+
+    assert DryRunValidator.FORCE_PIN not in ran
 
 
 async def test_no_bytes_check_leaves_an_unknowable_doc_type_to_the_byte_call(

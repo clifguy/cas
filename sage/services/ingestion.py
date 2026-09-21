@@ -1366,7 +1366,8 @@ class IngestionService:
         # the upload. Without a digest the refusal waits for the bytes: it
         # reports the hash the pin failed to match.
         if request.force and request.sha256 is not None:
-            await self._resolve_force_pin(request, request.sha256)
+            if await self._resolve_force_pin(request, request.sha256) is not None:
+                ran.append(DryRunValidator.FORCE_PIN)
         if request.tier3_metadata is not None:
             parsed = (
                 self._parse_source_filename(

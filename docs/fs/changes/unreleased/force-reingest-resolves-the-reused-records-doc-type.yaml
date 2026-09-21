@@ -1,4 +1,6 @@
-classification: patch
+classification: minor
+category:
+  - capability
 summary: >-
   A force re-ingest that names no doc_type now resolves the doc_type it validates and
   reports from the record it reuses, the one it already wrote. The ingest dry run reported
@@ -15,7 +17,14 @@ summary: >-
   the leg's dry_run_validated rather than checking against a doc_type the write would not
   carry. With a declared sha256 it also holds a force pin to that digest as the run holds it
   to the delivered hash, so a pin naming no document or another document's bytes is refused
-  as force_reingest_pin_mismatch before the upload rather than after it. The descriptions of
+  as force_reingest_pin_mismatch before the upload rather than after it, and the leg's
+  dry_run_validated names that check as force_pin, a new DryRunValidator value. The descriptions of
   IngestPreview.resolved_doc_type (in both specifications), of IngestRequest.metadata, and of
   the upload leg's dry_run_validated name the added rung and the deferred check.
-for_callers: ""
+for_callers: >-
+  A force re-ingest that names no doc_type now validates tier3_metadata against, and
+  previews resolved_doc_type as, the doc_type of the record it reuses, so a payload valid for
+  that record is no longer refused. An upload-first ingest dry run that declares sha256 and
+  pins a force re-ingest with document_id now refuses a pin the digest rules out before the
+  upload, and reports the check in the leg's dry_run_validated as the new value force_pin;
+  a client matching dry_run_validated against a closed list should admit it.

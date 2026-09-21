@@ -6276,7 +6276,10 @@ class UploadRecipeItem(BaseModel):
             "run when the call is repeated with the transfer token, as does "
             "the `tier3_metadata` check of a force re-ingest that names no "
             "doc_type and neither pins the record it reuses nor declares its "
-            "`sha256`. Absent outside a dry run, and on a leg carrying "
+            "`sha256`. `force_pin` names the check of a force re-ingest's "
+            "`document_id` pin against the declared `sha256`, made only when "
+            "the call carries both; without the digest the pin waits for the "
+            "bytes. Absent outside a dry run, and on a leg carrying "
             "`dry_run_error`."
         ),
     )

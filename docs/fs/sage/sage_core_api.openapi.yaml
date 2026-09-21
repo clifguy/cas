@@ -10324,6 +10324,7 @@ components:
               - landing_state
               - adapter_config
               - tier3_metadata
+              - force_pin
           description: >-
             On a dry run, the validators that read no source bytes and that
             this leg's file gave something to check, each of which passed
@@ -10332,8 +10333,11 @@ components:
             run when the call is repeated with the transfer token, as does
             the `tier3_metadata` check of a force re-ingest that names no
             doc_type and neither pins the record it reuses nor declares its
-            `sha256`. Absent outside a dry run, and on a leg carrying
-            `dry_run_error`.
+            `sha256`. `force_pin` names the check of a force re-ingest's
+            `document_id` pin against the declared `sha256`, made only
+            when the call carries both; without the digest the pin waits
+            for the bytes. Absent outside a dry run, and on a leg
+            carrying `dry_run_error`.
         dry_run_error:
           anyOf:
             - $ref: "#/components/schemas/BatchIngestFileError"
