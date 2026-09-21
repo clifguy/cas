@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING
 
 from sage.adapters.interfaces import ContentStore, GraphStore, NaturalKeyConflict
 from sage.api.errors import SupersedeTargetNotActiveError
-from sage.config import render_state_set
+from sage.config import document_scope, render_state_set
 from sage.models.enums import EdgeType, RationaleKind
 from sage.models.schemas import Edge, EdgeWarning, LinkRequest, StagingEdge
 from sage.services.filename_parser import ParsedMetadata, normalize_version
@@ -673,8 +673,9 @@ async def resolve_and_execute(
     # target already in a landing state has nothing left to transition:
     # an earlier supersession put it there, and chain repair reaches that
     # case routinely when it re-points an edge at an already-archived
-    # predecessor.
-    allowed_states = transition_table.states_allowing("supersede")
+    # predecessor. The set is the vault-wide union over doc_types; whether a
+    # target may be superseded, and the states its refusal names, are read
+    # for the target's own doc_type where it is validated below.
     landing_states = transition_table.landing_states("supersede")
 
     # Pass 1 -- settle every edge without writing anything. A Tier-1
@@ -774,7 +775,8 @@ async def resolve_and_execute(
             continue
 
         current_state = target_doc.lifecycle_status
-        transition = transition_table.validate_transition(current_state, "supersede")
+        target_scope = document_scope(target_doc.doc_type)
+        transition = transition_table.validate_transition(current_state, "supersede", target_scope)
         if transition is not None:
             settled.append(
                 _SettledEdge(
@@ -798,7 +800,7 @@ async def resolve_and_execute(
                 source_id,
                 target_id,
                 current_state,
-                render_state_set(allowed_states),
+                render_state_set(transition_table.states_allowing("supersede", target_scope)),
             )
             settled.append(
                 _SettledEdge(
@@ -816,7 +818,9 @@ async def resolve_and_execute(
                         # precondition reads identically wherever it is
                         # reported.
                         detail=SupersedeTargetNotActiveError(
-                            target_id, current_state, allowed_states
+                            target_id,
+                            current_state,
+                            transition_table.states_allowing("supersede", target_scope),
                         ).message,
                     ),
                 )

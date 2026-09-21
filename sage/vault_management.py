@@ -162,7 +162,8 @@ async def _check_destructive_changes(
     new_config: VaultConfig,
     graph_store: GraphStore,
 ) -> list[str]:
-    """Return warnings for removed doc_types/lifecycle states that have documents."""
+    """Return warnings for removed doc_types or states, and narrowed state scopes,
+    that would affect existing documents."""
     warnings: list[str] = []
 
     old_doc_types = {dt.value for dt in old_config.document_types.doc_types}
@@ -184,6 +185,30 @@ async def _check_destructive_changes(
             n = counts.get(st, 0)
             if n > 0:
                 warnings.append(f"Removing lifecycle state '{st}' would affect {n} document(s)")
+
+    # A state newly scoped, or scoped more narrowly, strands the documents
+    # already in it whose doc_type the new scope excludes: no transition may
+    # move them, and nothing names the configuration as the cause
+    # (CAS-ADR-054). The scan runs only when some kept state's scope narrowed.
+    narrowed: dict[str, set[str]] = {}
+    for state in new_config.lifecycle.states:
+        if state.value not in old_states or state.doc_types is None:
+            continue
+        old_scope = old_config.lifecycle.state_scope(state.value)
+        if old_scope is None or not set(old_scope) <= set(state.doc_types):
+            narrowed[state.value] = set(state.doc_types)
+    if narrowed:
+        stranded: dict[str, int] = {}
+        for doc in await graph_store.list_all_documents():
+            scope = narrowed.get(doc.lifecycle_status)
+            if scope is not None and doc.doc_type not in scope:
+                stranded[doc.lifecycle_status] = stranded.get(doc.lifecycle_status, 0) + 1
+        for st in sorted(stranded):
+            warnings.append(
+                f"Scoping lifecycle state '{st}' to doc_type(s) "
+                f"{', '.join(sorted(narrowed[st]))} would strand {stranded[st]} document(s) "
+                "of other doc_types in it"
+            )
 
     return warnings
 

@@ -57,6 +57,7 @@ from sage.api.errors import (
     IdenticalContentSupersedeError,
     InvalidDocTypeError,
     InvalidLifecycleTransitionError,
+    LifecycleStateNotApplicableError,
     NoProjectionError,
     PipelineWorkInFlightError,
     ReabstractDocumentAlreadyInFlightError,
@@ -81,6 +82,7 @@ from sage.config import (
     RELOCATION_ACTION,
     VaultConfig,
     build_transition_table,
+    document_scope,
 )
 from sage.models.enums import (
     SUCCESSFUL_TERMINAL_PIPELINE_STATUSES,
@@ -1303,14 +1305,16 @@ class IngestionService:
                 raise DocumentNotFoundError(request.predecessor_id)
             if (
                 self._transition_table.validate_transition(
-                    predecessor.lifecycle_status, "supersede"
+                    predecessor.lifecycle_status, "supersede", document_scope(predecessor.doc_type)
                 )
                 is None
             ):
                 raise SupersedeTargetNotActiveError(
                     request.predecessor_id,
                     predecessor.lifecycle_status,
-                    self._transition_table.states_allowing("supersede"),
+                    self._transition_table.states_allowing(
+                        "supersede", document_scope(predecessor.doc_type)
+                    ),
                 )
             ran.append(DryRunValidator.PREDECESSOR)
 
@@ -1713,6 +1717,9 @@ class IngestionService:
         )
 
         if existing_doc is not None:
+            self._refuse_retype_out_of_scope(
+                existing_doc, field_updates.get("doc_type", existing_doc.doc_type)
+            )
             # Force re-ingestion: reuse existing record (BH-019, BH-067).
             # The pre-merged field_updates carry the full metadata into
             # this single update_document call.
@@ -1803,7 +1810,9 @@ class IngestionService:
                     raise SupersedeTargetNotActiveError(
                         predecessor.id,
                         exc.detail["current_state"],
-                        self._transition_table.states_allowing("supersede"),
+                        self._transition_table.states_allowing(
+                            "supersede", document_scope(predecessor.doc_type)
+                        ),
                     ) from exc
         else:
             # New document. When a predecessor is being superseded the
@@ -2052,7 +2061,23 @@ class IngestionService:
             # Refused here exactly as the real run refuses it. A valid pin
             # changes which record a re-ingest reuses, not which document
             # represents the bytes, so ``duplicate_of`` is left as resolved.
-            await self._resolve_force_pin(request, provenance_hash)
+            pinned_id = await self._resolve_force_pin(request, provenance_hash)
+            if duplicate_of is not None and request.force:
+                reused = await self._store.get_document(pinned_id or duplicate_of)
+                if reused is not None:
+                    # The doc_type the run would write onto the reused record:
+                    # the caller's, else the filename parse's, else the record's
+                    # own, and only for a record carrying none the predecessor's
+                    # or the new-document default, which `resolved_doc_type`
+                    # already holds once the caller and the parse are exhausted.
+                    caller_doc_type = (request.metadata or {}).get("doc_type")
+                    self._refuse_retype_out_of_scope(
+                        reused,
+                        caller_doc_type
+                        or (parsed.doc_type if parsed is not None else None)
+                        or reused.doc_type
+                        or resolved_doc_type,
+                    )
 
         return IngestPreview(
             dry_run=True,
@@ -2975,6 +3000,24 @@ class IngestionService:
             "pointer, so landing one there would rest it in the state "
             "naming nowhere",
         )
+
+    def _refuse_retype_out_of_scope(self, existing: Document, new_doc_type: str | None) -> None:
+        """Refuse a re-ingestion that would retype a document out of its state's scope.
+
+        A re-ingestion rewrites the resolved doc_type onto the record it
+        reuses, so it may not leave a document in a state its new doc_type
+        cannot hold, any more than a metadata patch may (CAS-ADR-054). The
+        real run and its dry-run preview both ask here, so they refuse alike.
+        """
+        state_scope = self._config.lifecycle.state_scope(existing.lifecycle_status)
+        if (
+            new_doc_type != existing.doc_type
+            and state_scope is not None
+            and new_doc_type not in state_scope
+        ):
+            raise LifecycleStateNotApplicableError(
+                existing.lifecycle_status, new_doc_type, state_scope
+            )
 
     async def _resolve_force_pin(self, request: IngestRequest, provenance_hash: str) -> str | None:
         """Return the force-reingest pin when it names a holder of the hash.

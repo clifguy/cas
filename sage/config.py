@@ -8,11 +8,18 @@ import logging
 import re
 from collections.abc import Iterable
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 import jsonschema
 import yaml
-from pydantic import BaseModel, Field, PrivateAttr, ValidationInfo, model_validator
+from pydantic import (
+    AfterValidator,
+    BaseModel,
+    Field,
+    PrivateAttr,
+    ValidationInfo,
+    model_validator,
+)
 
 from sage.instrumentation.timing import TimingConfig
 from sage.models.enums import SourceType
@@ -543,6 +550,35 @@ class VaultIdentity(BaseModel):
     )
 
 
+#: The scope key of a document that carries no doc_type. It names no
+#: doc_type a vault can declare, so it matches only unscoped lifecycle
+#: entries -- unlike `None`, which asks a `TransitionTable` for the vault as
+#: a whole and so matches every entry (CAS-ADR-054).
+UNTYPED_DOCUMENT_SCOPE = ""
+
+
+def document_scope(doc_type: str | None) -> str:
+    """The key a document's lifecycle questions are resolved against.
+
+    Every per-document query on a `TransitionTable` passes this rather than
+    the raw doc_type, so a typeless document is held to the entries that
+    apply to every doc_type instead of being read as the whole vault.
+    """
+    return doc_type if doc_type is not None else UNTYPED_DOCUMENT_SCOPE
+
+
+def _distinct_doc_types(value: list[str]) -> list[str]:
+    """Refuse a scope that lists a doc_type twice, as the schema's `uniqueItems` does."""
+    if len(set(value)) != len(value):
+        duplicates = sorted({v for v in value if value.count(v) > 1})
+        raise ValueError(f"doc_types lists a duplicate doc_type: {', '.join(duplicates)}")
+    return value
+
+
+#: A lifecycle entry's doc_type scope: a list with no repeated doc_type.
+DocTypeScope = Annotated[list[str], AfterValidator(_distinct_doc_types)]
+
+
 class LifecycleTransition(BaseModel):
     from_state: str = Field(
         description=("Source state. Use '(new)' for the initial ingestion transition.")
@@ -576,6 +612,30 @@ class LifecycleTransition(BaseModel):
             "edge from the new version to the old."
         ),
     )
+    doc_types: DocTypeScope | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The doc_types this transition applies to. Omitted or null "
+            "applies it to every doc_type in the vault, so it may connect "
+            "only states that are themselves unscoped. Listed, only a "
+            "document of a listed doc_type may take it; each entry must "
+            "name a doc_type the vault declares, and the list must lie "
+            "within the scope of both states the transition connects. The "
+            "'(new)' ingestion transition may not carry it, and the state "
+            "it lands in must be unscoped, so that every doc_type can be "
+            "ingested."
+        ),
+    )
+
+    def applies_to(self, doc_type: str | None) -> bool:
+        """Whether a document of `doc_type` may take this transition.
+
+        `None` asks for the vault as a whole, which every transition
+        belongs to, so the vault-wide queries of `TransitionTable` read
+        the union of every doc_type's rows.
+        """
+        return doc_type is None or self.doc_types is None or doc_type in self.doc_types
 
 
 #: Lifecycle states that satisfy depends_on preconditions when a state
@@ -671,6 +731,16 @@ class LifecycleState(BaseModel):
             "false to exclude a base state."
         ),
     )
+    doc_types: DocTypeScope | None = Field(
+        default=None,
+        min_length=1,
+        description=(
+            "The doc_types this state applies to. Omitted or null applies "
+            "it to every doc_type in the vault. Listed, only a document of "
+            "a listed doc_type may hold it; each entry must name a doc_type "
+            "the vault declares."
+        ),
+    )
 
 
 class LifecycleConfig(BaseModel):
@@ -741,6 +811,14 @@ class LifecycleConfig(BaseModel):
         retired = {t.to_state for t in self.transitions if t.action == "supersede"}
         return frozenset(state.value for state in self.states) - retired
 
+    def state_scope(self, value: str) -> list[str] | None:
+        """The doc_types the state `value` is scoped to, or None if it applies to all.
+
+        An undeclared state reads as unscoped: scope constrains the states a
+        vault declares, and the loader reports an undeclared one elsewhere.
+        """
+        return next((state.doc_types for state in self.states if state.value == value), None)
+
     def terminal_states(self) -> frozenset[str]:
         """The declared states from which no further transition is expected.
 
@@ -791,7 +869,14 @@ class LifecycleConfig(BaseModel):
         second way in would leave a document in the state naming nowhere;
         and it may not be declared dependency-satisfying, because nothing
         in this vault resolves across the boundary its document crossed.
-        And no
+        Also unconditionally, `doc_types` scoping must be coherent
+        (CAS-ADR-054): a transition's scope lies within the scope of each
+        state it connects, an unscoped transition counting as every
+        doc_type, so no transition moves a document into a state its
+        doc_type cannot hold; and the ingestion row carries no scope and
+        lands in an unscoped state, so every doc_type can be ingested.
+        Whether each listed doc_type is declared reads the
+        `document_types` section and is `VaultConfig`'s to check. And no
         lifecycle may resolve to an empty dependency-satisfying set,
         which would fail every `depends_on` precondition permanently with
         nothing naming the configuration as the cause. When
@@ -937,6 +1022,42 @@ class LifecycleConfig(BaseModel):
                 "the action 'ingest' is reserved for the '(new)' ingestion "
                 f"transition; found it on from_state(s): {', '.join(stray_ingest)}"
             )
+        state_scopes = {state.value: state.doc_types for state in self.states}
+        for row in new_rows:
+            if row.doc_types is not None:
+                problems.append(
+                    "the '(new)' ingestion transition may not declare doc_types: it is "
+                    "the single ingest row for every doc_type the vault declares"
+                )
+            landing_scope = state_scopes.get(row.to_state)
+            if landing_scope is not None:
+                problems.append(
+                    f"the ingest landing state '{row.to_state}' is scoped to doc_type(s) "
+                    f"{', '.join(sorted(landing_scope))}, so a document of any other "
+                    "doc_type could not be ingested; the landing state must apply to "
+                    "every doc_type"
+                )
+        for row in self.transitions:
+            if row.from_state == INGESTION_PSEUDO_STATE:
+                continue
+            where = f"{row.from_state} -> {row.action} -> {row.to_state}"
+            for endpoint in dict.fromkeys((row.from_state, row.to_state)):
+                endpoint_scope = state_scopes.get(endpoint)
+                if endpoint_scope is None:
+                    continue
+                if row.doc_types is None:
+                    outside = "every doc_type"
+                else:
+                    stray = sorted(set(row.doc_types) - set(endpoint_scope))
+                    if not stray:
+                        continue
+                    outside = f"doc_type(s) {', '.join(stray)}"
+                problems.append(
+                    f"the transition '{where}' applies to {outside} outside the scope of "
+                    f"the state '{endpoint}' ({', '.join(sorted(endpoint_scope))}); a "
+                    "transition may not move a document into or out of a state its "
+                    "doc_type cannot hold"
+                )
         if self.base_states_required:
             missing_states = BASE_LIFECYCLE_STATES - declared_states
             if missing_states:
@@ -1720,6 +1841,46 @@ class VaultConfig(BaseModel):
             raise ValueError("; ".join(errors))
         return self
 
+    @model_validator(mode="after")
+    def _validate_lifecycle_scopes(self, info: ValidationInfo) -> "VaultConfig":
+        """Reject lifecycle `doc_types` entries naming no declared doc_type.
+
+        A scope entry is matched against a document's doc_type, so one
+        naming a type the vault does not declare can never match: a typo
+        would narrow the state or transition to nothing without a word.
+        The check reads two sections, which is why it lives here rather
+        than on `LifecycleConfig`, and it follows that model's strictness
+        split (CAS-ADR-047): refused on the write paths, warned and loaded
+        from disk under ``{"lifecycle_validation": "warn"}``.
+        """
+        declared = self.valid_doc_type_values()
+        problems: list[str] = []
+        for state in self.lifecycle.states:
+            stray = sorted(set(state.doc_types or ()) - declared)
+            if stray:
+                problems.append(
+                    f"the lifecycle state '{state.value}' scopes to {', '.join(stray)}, "
+                    "which is not a declared doc_type"
+                )
+        for row in self.lifecycle.transitions:
+            stray = sorted(set(row.doc_types or ()) - declared)
+            if stray:
+                problems.append(
+                    f"the transition '{row.from_state} -> {row.action} -> {row.to_state}' "
+                    f"scopes to {', '.join(stray)}, which is not a declared doc_type"
+                )
+        if problems:
+            if (info.context or {}).get("lifecycle_validation", "strict") == "warn":
+                for problem in problems:
+                    logger.warning(
+                        "lifecycle configuration loaded leniently: %s "
+                        "(repair via update_vault_config)",
+                        problem,
+                    )
+            else:
+                raise ValueError("; ".join(problems))
+        return self
+
     def model_post_init(self, __context: object) -> None:  # noqa: D401
         """Build the tier3 validator cache on every construction.
 
@@ -1809,18 +1970,29 @@ class TransitionTable:
             self._table.setdefault(t.from_state, []).append(t)
             self._all_actions.add(t.action)
 
-    def validate_transition(self, current_state: str, action: str) -> tuple[str, str | None] | None:
-        """Return (to_state, creates_edge) if valid, None if invalid."""
-        for t in self._table.get(current_state, []):
+    def _rows(self, current_state: str, doc_type: str | None) -> list[LifecycleTransition]:
+        return [t for t in self._table.get(current_state, []) if t.applies_to(doc_type)]
+
+    def validate_transition(
+        self, current_state: str, action: str, doc_type: str | None = None
+    ) -> tuple[str, str | None] | None:
+        """Return (to_state, creates_edge) if valid, None if invalid.
+
+        Every query on the table takes an optional `doc_type`. Given one,
+        only the rows that apply to that doc_type count (CAS-ADR-054);
+        omitted, the table answers for the vault as a whole, the union of
+        every doc_type's rows.
+        """
+        for t in self._rows(current_state, doc_type):
             if t.action == action:
                 return (t.to_state, t.creates_edge)
         return None
 
-    def get_valid_actions(self, current_state: str) -> list[str]:
+    def get_valid_actions(self, current_state: str, doc_type: str | None = None) -> list[str]:
         """Return action names valid from current_state (BH-012, BH-013)."""
-        return [t.action for t in self._table.get(current_state, [])]
+        return [t.action for t in self._rows(current_state, doc_type)]
 
-    def states_allowing(self, action: str) -> list[str]:
+    def states_allowing(self, action: str, doc_type: str | None = None) -> list[str]:
         """Return the states from which `action` is a valid transition.
 
         The inverse of `get_valid_actions`. A caller rejecting a document
@@ -1834,10 +2006,10 @@ class TransitionTable:
         return sorted(
             from_state
             for from_state, transitions in self._table.items()
-            if any(t.action == action for t in transitions)
+            if any(t.action == action and t.applies_to(doc_type) for t in transitions)
         )
 
-    def landing_states(self, action: str) -> set[str]:
+    def landing_states(self, action: str, doc_type: str | None = None) -> set[str]:
         """Return the states `action` can leave a document in.
 
         The dual of `states_allowing`: that reports the states an action
@@ -1851,17 +2023,18 @@ class TransitionTable:
             t.to_state
             for transitions in self._table.values()
             for t in transitions
-            if t.action == action
+            if t.action == action and t.applies_to(doc_type)
         }
 
-    def is_known_action(self, action: str) -> bool:
+    def is_known_action(self, action: str, doc_type: str | None = None) -> bool:
         """True if action appears anywhere in the transition table.
 
-        Unknown actions get 400; known-but-invalid-from-state get 409.
+        Unknown actions get 400; known-but-invalid-from-state get 409. An
+        action scoped away from `doc_type` is unknown to that doc_type.
         """
-        return action in self._all_actions
+        return action in self.known_actions(doc_type)
 
-    def known_actions(self) -> list[str]:
+    def known_actions(self, doc_type: str | None = None) -> list[str]:
         """Every caller-invocable action the table declares, sorted.
 
         The whole roster, as distinct from `get_valid_actions`, which
@@ -1870,9 +2043,18 @@ class TransitionTable:
         contain the answer. The ingestion transition is excluded on the
         same grounds it is excluded from the table itself: it is not
         user-invocable, so offering it would name an action that refuses
-        from every state.
+        from every state. Given a `doc_type`, the roster is that doc_type's.
         """
-        return sorted(self._all_actions)
+        if doc_type is None:
+            return sorted(self._all_actions)
+        return sorted(
+            {
+                t.action
+                for transitions in self._table.values()
+                for t in transitions
+                if t.applies_to(doc_type)
+            }
+        )
 
     def ingest_landing_state(self) -> str:
         """The state a newly ingested document lands in.

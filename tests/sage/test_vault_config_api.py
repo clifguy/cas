@@ -6,6 +6,7 @@ test_api_integration.py.
 """
 
 import asyncio
+import copy
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -678,6 +679,107 @@ async def test_create_vault_409_exists(client, tmp_path):
     resp = await client.post("/sage_vaults", json={"config": config})
     assert resp.status_code == 409
     assert resp.json()["code"] == "vault_already_exists"
+
+
+async def test_write_surfaces_refuse_lifecycle_scope_naming_undeclared_doc_type(client, tmp_path):
+    """A lifecycle `doc_types` entry naming no declared doc_type is refused on write.
+
+    Both interactive write surfaces refuse it (CAS-ADR-047); the update
+    leaves the vault serving its previous configuration. Each lifecycle is
+    otherwise valid -- the paired unscoped update below succeeds -- so the
+    stray doc_type is the only cause of the refusal.
+    """
+    current = (await client.get("/sage_vaults/test_vault/config")).json()["lifecycle"]
+    stray = copy.deepcopy(current)
+    stray["states"].append({"value": "blocked", "label": "Blocked", "doc_types": ["ghost"]})
+
+    resp = await client.put("/sage_vaults/test_vault/config", json={"lifecycle": stray})
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "vault_config_validation_error"
+    assert "ghost" in " ".join(resp.json()["detail"]["errors"])
+    served = (await client.get("/sage_vaults/test_vault/config")).json()["lifecycle"]
+    assert "blocked" not in [s["value"] for s in served["states"]]
+
+    config = VaultRegistryService.get_default_config("scoped_ghost", "Scoped", "testuser")
+    config["vault"]["storage_root"] = str(tmp_path / "scoped_ghost" / "sources")
+    config["vault"]["brain_root"] = str(tmp_path / "scoped_ghost" / "brain")
+    config["lifecycle"]["states"].append(
+        {"value": "blocked", "label": "Blocked", "doc_types": ["ghost"]}
+    )
+    resp = await client.post("/sage_vaults", json={"config": config})
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "vault_config_validation_error"
+
+    del stray["states"][-1]["doc_types"]
+    resp = await client.put("/sage_vaults/test_vault/config", json={"lifecycle": stray})
+    assert resp.status_code == 200, "control: the same lifecycle without the stray scope saves"
+
+
+@pytest.mark.parametrize(
+    ("initial", "scope", "stranded"),
+    [(None, ["memo"], True), (None, ["note"], False), (["memo", "note"], ["memo"], True)],
+    ids=["first-scope-strands", "first-scope-admits", "shortened-scope-strands"],
+)
+async def test_narrowing_a_state_scope_over_resident_documents_is_destructive(
+    client, tmp_vault_dir, initial, scope, stranded
+):
+    """Scoping a state away from documents that hold it is a destructive change.
+
+    A `note` rests in `filed`. Narrowing `filed` (and its entry transition)
+    to `memo` would leave it in a state its doc_type cannot hold, so the
+    update is refused without `force` and warned with it. Narrowing to
+    `note` strands nothing and saves cleanly: the warning is the stranded
+    document's doing, not any narrowing's. The `shortened-scope-strands` arm
+    starts from `[memo, note]` rather than unscoped, so a check that caught
+    only a state's first scope would pass the other two arms and fail this.
+    """
+    current = (await client.get("/sage_vaults/test_vault/config")).json()["lifecycle"]
+    widened = copy.deepcopy(current)
+    widened["states"].append({"value": "filed", "label": "Filed"})
+    widened["transitions"].append({"from_state": "active", "action": "file", "to_state": "filed"})
+    if initial is not None:
+        widened["states"][-1]["doc_types"] = initial
+        widened["transitions"][-1]["doc_types"] = initial
+    assert (
+        await client.put("/sage_vaults/test_vault/config", json={"lifecycle": widened})
+    ).status_code == 200
+
+    test_dir = tmp_vault_dir / "sources" / "test"
+    test_dir.mkdir(parents=True, exist_ok=True)
+    (test_dir / "filed.md").write_text("# Filed\n\nContent.")
+    ingested = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={
+            "source": "test/filed.md",
+            "source_type": "markdown",
+            "metadata": {"doc_type": "note"},
+        },
+    )
+    assert ingested.status_code == 201, ingested.text
+    doc_id = ingested.json()["document"]["id"]
+    moved = await client.post(
+        "/sage_vaults/test_vault/lifecycles",
+        json={"items": [{"document_id": doc_id, "action": "file"}]},
+    )
+    assert moved.json()["results"][0]["status"] == "success", moved.text
+
+    narrowed = copy.deepcopy(widened)
+    narrowed["states"][-1]["doc_types"] = scope
+    narrowed["transitions"][-1]["doc_types"] = scope
+    resp = await client.put("/sage_vaults/test_vault/config", json={"lifecycle": narrowed})
+
+    if not stranded:
+        assert resp.status_code == 200, resp.text
+        assert resp.json()["warnings"] == []
+        return
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["code"] == "destructive_config_change"
+    assert any("'filed'" in w and "1 document" in w for w in resp.json()["detail"]["warnings"])
+    forced = await client.put(
+        "/sage_vaults/test_vault/config?force=true", json={"lifecycle": narrowed}
+    )
+    assert forced.status_code == 200
+    assert any("'filed'" in w for w in forced.json()["warnings"])
 
 
 async def test_create_vault_400_invalid(client):

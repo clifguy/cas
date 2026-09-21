@@ -84,6 +84,7 @@ UNREACHABLE_PER_FILE: dict[str, tuple[str, ...]] = {
     "expected_head_version_requires_predecessor": ("expected_head_version",),
     "force_reingest_path_mismatch": ("force",),
     "force_reingest_pin_mismatch": ("force", "document_id"),
+    "lifecycle_state_not_applicable": ("force",),
     "relocated_from_provenance_mismatch": ("relocated_from",),
     "relocation_source_undelivered": ("relocated_from",),
     "invalid_sha256": ("relocated_from",),

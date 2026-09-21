@@ -388,6 +388,43 @@ def test_schema_expresses_transition_endpoint_patterns(minimal_vault_config_dict
     )
 
 
+def test_schema_expresses_doc_type_scoping_shape(minimal_vault_config_dict):
+    """The schema carries the shape of `doc_types` scoping, and no more.
+
+    A state and a non-ingestion transition may each carry a non-empty,
+    duplicate-free list of doc_type identifiers; the `(new)` row may not
+    carry one, being the single ingest row for every doc_type. Whether a
+    listed doc_type is *declared* reads the `document_types` section, which
+    this schema cannot see -- the final case pins that division.
+    """
+    base = _lifecycle_variant(minimal_vault_config_dict)["lifecycle"]
+    scoped = copy.deepcopy(base)
+    scoped["states"].append({"value": "blocked", "label": "Blocked", "doc_types": ["note"]})
+    scoped["transitions"].append(
+        {"from_state": "active", "action": "block", "to_state": "blocked", "doc_types": ["note"]}
+    )
+    assert _schema_errors(scoped) == []
+
+    def _with_scope(value) -> dict:
+        variant = copy.deepcopy(scoped)
+        variant["states"][-1]["doc_types"] = value
+        return variant
+
+    assert _schema_errors(_with_scope([])), "an empty scope must fail minItems"
+    assert _schema_errors(_with_scope(["note", "note"])), "a duplicate must fail uniqueItems"
+    assert _schema_errors(_with_scope(["Not A Type"])), "a malformed identifier must fail"
+
+    scoped_ingest = copy.deepcopy(scoped)
+    for transition in scoped_ingest["transitions"]:
+        if transition["from_state"] == "(new)":
+            transition["doc_types"] = ["note"]
+    assert _schema_errors(scoped_ingest), "the '(new)' row must not carry doc_types"
+
+    assert _schema_errors(_with_scope(["ghost"])) == [], (
+        "doc_type declaration is a loader-only invariant; the schema cannot express it"
+    )
+
+
 def _draft_landing_variant(config_dict: dict) -> dict:
     """A configuration landing ingest in a state that cannot be superseded.
 

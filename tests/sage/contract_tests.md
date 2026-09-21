@@ -537,6 +537,46 @@ ingestion transition on existing documents.
 **Rationale:** The declaration drives the depends_on satisfaction set; omitted
 or null defers to the engine default.
 
+### TEST-SAGE-LC-012: Doc-type scoping declaration accepted
+
+**Artifact:** `docs/fs/sage/lifecycle.schema.json`
+**Category:** valid
+**Constraint:** `states[].doc_types` and `transitions[].doc_types` accept a
+non-empty, duplicate-free list of doc_type identifiers
+
+**Input:** The base lifecycle plus a `blocked` state with `doc_types: [note]`
+and a transition `active --block--> blocked` with `doc_types: [note]`.
+
+**Expected:** PASS
+**Rationale:** A scoped entry applies only to documents of the listed
+doc_types; an entry without the key applies to every doc_type (CAS-ADR-054).
+Whether a listed doc_type is declared is a loader-only invariant.
+
+### TEST-SAGE-LC-013: Empty or malformed doc-type scope
+
+**Artifact:** `docs/fs/sage/lifecycle.schema.json`
+**Category:** invalid
+**Constraint:** `doc_types` has `minItems: 1`, `uniqueItems`, and identifier-shaped items
+
+**Input:** The LC-012 lifecycle with the `blocked` state's `doc_types` set in
+turn to `[]`, `[note, note]`, and `["Not A Type"]`.
+
+**Expected:** FAIL for each
+**Rationale:** An empty scope would admit no document at all; the key is
+omitted, not emptied, to mean every doc_type.
+
+### TEST-SAGE-LC-014: Doc-type scope on the ingestion transition
+
+**Artifact:** `docs/fs/sage/lifecycle.schema.json`
+**Category:** invalid
+**Constraint:** the `(new)` row may not carry `doc_types` (item conditional)
+
+**Input:** The LC-012 lifecycle with `doc_types: [note]` on the `(new)` row.
+
+**Expected:** FAIL
+**Rationale:** The ingestion row is the single ingest row for every doc_type;
+scoping it would leave the other doc_types unable to be ingested.
+
 ---
 
 ## metadata_extraction.schema.json

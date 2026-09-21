@@ -1081,6 +1081,7 @@ SCHEMAS = json.loads(
         "invalid_user_id": "#/components/schemas/InvalidUserIdError",
         "invalid_vault_id": "#/components/schemas/InvalidVaultIdError",
         "legacy_form": "#/components/schemas/LegacyFormError",
+        "lifecycle_state_not_applicable": "#/components/schemas/LifecycleStateNotApplicableError",
         "local_open_only": "#/components/schemas/LocalOpenOnlyError",
         "local_profile_only": "#/components/schemas/LocalProfileOnlyError",
         "merged_from_validation": "#/components/schemas/MergedFromValidationError",
@@ -1303,6 +1304,9 @@ SCHEMAS = json.loads(
       },
       {
         "$ref": "#/components/schemas/LegacyFormError"
+      },
+      {
+        "$ref": "#/components/schemas/LifecycleStateNotApplicableError"
       },
       {
         "$ref": "#/components/schemas/LocalOpenOnlyError"
@@ -1754,6 +1758,7 @@ SCHEMAS = json.loads(
         "invalid_user_id",
         "invalid_vault_id",
         "legacy_form",
+        "lifecycle_state_not_applicable",
         "merged_from_validation",
         "misplaced_metadata",
         "misplaced_top_level_field",
@@ -2060,6 +2065,7 @@ SCHEMAS = json.loads(
         "invalid_user_id",
         "invalid_vault_id",
         "legacy_form",
+        "lifecycle_state_not_applicable",
         "missing_document_identifier",
         "patch_empty",
         "stale_read",
@@ -2229,6 +2235,7 @@ SCHEMAS = json.loads(
             "invalid_user_id",
             "invalid_vault_id",
             "legacy_form",
+            "lifecycle_state_not_applicable",
             "local_open_only",
             "merged_from_validation",
             "method_not_allowed",
@@ -3409,6 +3416,60 @@ SCHEMAS = json.loads(
       "field",
       "received_type",
       "example"
+    ],
+    "type": "object"
+  },
+  "LifecycleStateNotApplicableError": {
+    "additionalProperties": false,
+    "description": "The refusal envelope for this error code.",
+    "properties": {
+      "code": {
+        "const": "lifecycle_state_not_applicable",
+        "description": "Machine-readable error code selecting this envelope.",
+        "type": "string"
+      },
+      "detail": {
+        "$ref": "#/components/schemas/LifecycleStateNotApplicableErrorDetail"
+      },
+      "message": {
+        "description": "Human-readable error description.",
+        "type": "string"
+      },
+      "read_meta": {
+        "$ref": "#/components/schemas/ReadMeta"
+      }
+    },
+    "required": [
+      "code",
+      "message",
+      "detail"
+    ],
+    "type": "object"
+  },
+  "LifecycleStateNotApplicableErrorDetail": {
+    "additionalProperties": false,
+    "description": "Additional context for this refusal.",
+    "properties": {
+      "current_state": {
+        "description": "Current state.",
+        "type": "string"
+      },
+      "doc_type": {
+        "description": "Doc type.",
+        "type": "string"
+      },
+      "state_doc_types": {
+        "description": "State doc types.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "current_state",
+      "doc_type",
+      "state_doc_types"
     ],
     "type": "object"
   },
