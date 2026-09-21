@@ -66,6 +66,51 @@ def test_no_candidates_reports_nothing():
     assert undeclared_entry_key_error([], recognized_by_depth=_RECOGNIZED) is None
 
 
+_ELSEWHERE = "Undeclared keys at other locations are reported once this object is repaired."
+
+
+def test_every_key_at_the_chosen_location_is_named_once():
+    """One refusal names every undeclared key in the object it reports.
+
+    The keys are written in reverse sorted order, so a rule returning them as
+    written fails, and the chosen object is not the one holding the
+    alphabetically first key overall, so a rule that sorted everything and
+    took the head would locate the wrong object.
+    """
+    error = undeclared_entry_key_error(
+        [(0, 1, "zeta", 1), (0, 1, "alpha", 2), (0, 0, "xray", 3), (0, 0, "echo", 4)],
+        recognized_by_depth=_RECOGNIZED,
+    )
+    assert isinstance(error, UndeclaredKeyError)
+    assert error.detail["parameter"] == "files.0"
+    assert error.detail["keys"] == ["echo", "xray"]
+    assert error.detail["key"] == "echo"
+    assert error.detail["recognized"] == ["entry_name"]
+    assert "'files.0.echo', 'files.0.xray' are not declared keys." in error.message
+    assert error.message.endswith(_ELSEWHERE)
+
+
+def test_a_single_location_carries_no_note_about_others():
+    """Several keys in one object, and nothing elsewhere: no note is added."""
+    error = undeclared_entry_key_error(
+        [(3, 1, "zeta", 1), (3, 1, "alpha", 2)], recognized_by_depth=_RECOGNIZED
+    )
+    assert isinstance(error, UndeclaredKeyError)
+    assert error.detail["keys"] == ["alpha", "zeta"]
+    assert error.detail["key"] == "alpha"
+    assert _ELSEWHERE not in error.message
+
+
+def test_a_refusal_naming_no_key_is_a_defect_at_construction():
+    """An empty key set is refused where the error is built, by name.
+
+    Otherwise it fails as an ``IndexError`` inside error construction, which a
+    surface reports as an internal error masking the refusal meant.
+    """
+    with pytest.raises(ValueError, match="at least one undeclared key"):
+        UndeclaredKeyError(parameter="files.0", keys=[], recognized=["entry_name"])
+
+
 def _conflict(candidates: list[tuple[int, object]]) -> tuple[str, object]:
     error = codes_and_tags_conflict_error(candidates)
     assert isinstance(error, InvalidParameterError)

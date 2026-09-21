@@ -1658,6 +1658,51 @@ async def test_b31_undeclared_key_wins_over_a_malformed_value(batch_app):
     )
 
 
+async def test_b38_undeclared_key_wins_over_a_malformed_digest(batch_app):
+    """An entry carrying an undeclared key and a malformed ``sha256`` is refused
+    for the key, as the MCP tool and the application's ingest route refuse it.
+    The control is the same entry without the key."""
+    app, vault_id, _config = batch_app
+    entry = {"source_type": "markdown", "sha256": "not-a-digest"}
+    async with _client(app) as client:
+        control = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[_md_part("a.md", b"# A\n\nbody")],
+            data={"metadata": json.dumps({"files": [entry]})},
+        )
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[_md_part("a.md", b"# A\n\nbody")],
+            data={"metadata": json.dumps({"files": [{**entry, "bogus_field_x": 1}]})},
+        )
+
+    assert control.status_code == 400, control.text
+    assert control.json()["code"] == "invalid_sha256", control.text
+    _assert_undeclared_key(resp, "files.0", "bogus_field_x", BatchIngestFileMetadata.model_fields)
+
+
+@pytest.mark.parametrize("dry_run", [False, True])
+async def test_b39_every_undeclared_key_in_one_object_is_named(batch_app, dry_run):
+    """Two undeclared keys in one ``parsed_metadata``, written in reverse sorted
+    order, are refused once and named sorted, dry run or not."""
+    app, vault_id, _config = batch_app
+    envelope = {
+        "dry_run": dry_run,
+        "files": [{"source_type": "markdown", "parsed_metadata": {"zulu_x": 1, "alpha_x": 2}}],
+    }
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[_md_part("a.md", b"# A\n\nbody")],
+            data={"metadata": json.dumps(envelope)},
+        )
+
+    _assert_undeclared_key(
+        resp, "files.0.parsed_metadata", "alpha_x", BatchIngestParsedMetadata.model_fields
+    )
+    assert resp.json()["detail"]["keys"] == ["alpha_x", "zulu_x"]
+
+
 async def test_b30_first_party_upload_envelope_is_accepted(batch_app):
     """The envelope the application's upload client builds is not refused.
 

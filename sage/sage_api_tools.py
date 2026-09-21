@@ -245,7 +245,9 @@ def _validated_items(model: type[BaseModel], items: list) -> list:
 
     Other failures keep the envelope and the location they already had. Only
     an undeclared key is relocated, because only it is built here rather than
-    by the item's own validator.
+    by the item's own validator. Its note that other objects carry undeclared
+    keys looks past the failing item to the rest of the batch, as the HTTP
+    surface's whole-body validation does.
     """
     validated = []
     for index, item in enumerate(items):
@@ -257,11 +259,22 @@ def _validated_items(model: type[BaseModel], items: list) -> list:
                 located = envelope.detail["parameter"]
                 raise UndeclaredKeyError(
                     parameter=f"items.{index}" + (f".{located}" if located else ""),
-                    key=envelope.detail["key"],
+                    keys=envelope.detail["keys"],
                     recognized=envelope.detail["recognized"],
+                    elsewhere=envelope.elsewhere
+                    or any(_carries_undeclared_key(model, later) for later in items[index + 1 :]),
                 ) from exc
             raise
     return validated
+
+
+def _carries_undeclared_key(model: type[BaseModel], item: object) -> bool:
+    """Whether validating ``item`` against ``model`` refuses an undeclared key."""
+    try:
+        model.model_validate(item)
+    except ValidationError as exc:
+        return isinstance(validation_error_envelope(exc, root_model=model), UndeclaredKeyError)
+    return False
 
 
 def register_sage_tools(
@@ -447,7 +460,8 @@ def register_sage_tools(
           Supply one, not both. No document is created.
         - ``undeclared_key`` (400): an object nested inside an argument --
           ``relocated_from`` -- names a key its schema does not declare.
-          Detail carries ``parameter``, ``key``, ``recognized`` and
+          Detail carries ``parameter``, ``keys`` (every undeclared key in
+          that object, sorted), ``key`` (the first), ``recognized`` and
           ``example``. No document is created.
         - ``source_type_unresolved`` (400): ``source_type`` was omitted and no
           registered adapter claims the source's extension. Detail carries
@@ -1108,7 +1122,8 @@ def register_sage_tools(
           ``detail.available_vaults`` lists the registered vaults.
         - ``undeclared_key`` (400): an item, or an object nested inside one,
           names a key its schema does not declare. ``detail.parameter``
-          locates the object, ``detail.key`` names the key, and
+          locates the object, ``detail.keys`` names every undeclared key in
+          it, sorted (``detail.key`` is the first), and
           ``detail.recognized`` lists the names that object accepts. A
           batch-boundary refusal raised before any per-item work.
         - ``invalid_document_id`` (400): a document id a per-item request
@@ -1275,7 +1290,8 @@ def register_sage_tools(
           ``detail.available_vaults`` lists the registered vaults.
         - ``undeclared_key`` (400): an item, or an object nested inside one,
           names a key its schema does not declare. ``detail.parameter``
-          locates the object, ``detail.key`` names the key, and
+          locates the object, ``detail.keys`` names every undeclared key in
+          it, sorted (``detail.key`` is the first), and
           ``detail.recognized`` lists the names that object accepts. A
           batch-boundary refusal raised before any per-item work.
         - ``invalid_sha256`` (400): a per-item ``synced_from_content_hash``
@@ -1430,9 +1446,10 @@ def register_sage_tools(
         YYYY-MM-DD calendar date), ``undeclared_key`` (400, an item or an
         object nested inside one such as ``tags`` or ``tier3_metadata`` names
         a key its schema does not declare; ``detail.parameter`` locates the
-        object, ``detail.key`` names the key, and ``detail.recognized`` lists
-        the names that object accepts), ``vault_not_found`` (404, no vault is
-        registered with that id), and ``internal_error`` (a malformed
+        object, ``detail.keys`` names every undeclared key in it, sorted, and
+        ``detail.recognized`` lists the names that object accepts),
+        ``vault_not_found`` (404, no vault is registered with that id), and
+        ``internal_error`` (a malformed
         ``items`` shape or invalid ``response_mode``).
         ``detail.available_vaults`` lists the registered vaults.
 

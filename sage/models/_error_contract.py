@@ -4537,10 +4537,6 @@ SCHEMAS = json.loads(
     "additionalProperties": false,
     "description": "Additional context for this refusal.",
     "properties": {
-      "also_accounted_content_hash": {
-        "description": "Also accounted content hash.",
-        "type": "string"
-      },
       "document_content_hash": {
         "description": "Document content hash.",
         "type": "string"
@@ -6371,6 +6367,13 @@ SCHEMAS = json.loads(
         "description": "Key.",
         "type": "string"
       },
+      "keys": {
+        "description": "Keys.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
       "parameter": {
         "description": "Parameter.",
         "type": "string"
@@ -6386,6 +6389,7 @@ SCHEMAS = json.loads(
     "required": [
       "parameter",
       "key",
+      "keys",
       "recognized",
       "example"
     ],

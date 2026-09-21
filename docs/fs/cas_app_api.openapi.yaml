@@ -305,8 +305,10 @@ paths:
 
             `undeclared_key`: an object nested inside the request carries a
             key its schema does not declare. `detail.parameter` locates the
-            object, `detail.key` names the key, and `detail.recognized` lists
-            the names that object does accept.
+            object, `detail.keys` names every undeclared key in it, sorted,
+            with `detail.key` the first, and `detail.recognized` lists the
+            names that object does accept. Undeclared keys in another object
+            are reported once this one is repaired.
           content:
             application/json:
               schema:
@@ -2880,6 +2882,7 @@ components:
       required:
       - parameter
       - key
+      - keys
       - recognized
       - example
       properties:
@@ -2889,6 +2892,11 @@ components:
         key:
           type: string
           description: Key.
+        keys:
+          type: array
+          items:
+            type: string
+          description: Keys.
         recognized:
           type: array
           items:
@@ -3471,9 +3479,6 @@ components:
         document_content_hash:
           type: string
           description: Document content hash.
-        also_accounted_content_hash:
-          type: string
-          description: Also accounted content hash.
       description: Additional context for this refusal.
     RelocatedFromProvenanceMismatchError:
       type: object

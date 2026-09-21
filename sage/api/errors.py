@@ -7,7 +7,7 @@ ErrorResponse schema. The exception handler converts them to JSON responses.
 import logging
 import types
 import typing
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from datetime import datetime
 from enum import StrEnum
 from typing import Final
@@ -383,8 +383,9 @@ class RelocationProvenanceMismatchError(SAGEError):
 
     ``also_accounted`` carries the origin's second admissible digest when
     it has one, so a caller refused here can see both values rather than
-    inferring the other. Absent on the destination half, which has only
-    one.
+    inferring the other. The destination half accounts for exactly one, so
+    its family declares no second digest and the constructor refuses one
+    rather than emit a key that family forbids.
     """
 
     def __init__(
@@ -394,6 +395,8 @@ class RelocationProvenanceMismatchError(SAGEError):
         document_hash: str,
         also_accounted: str | None = None,
     ) -> None:
+        if also_accounted is not None and field == "relocated_from":
+            raise ValueError("the relocated_from half accounts for exactly one digest")
         accounted = f"{document_hash} or {also_accounted}" if also_accounted else document_hash
         detail = {
             "field": field,
@@ -1067,22 +1070,49 @@ class UndeclaredKeyError(SAGEError):
     model that refused. ``parameter`` locates that model -- empty when the
     refusing model is the one the call was validated against, as it is where a
     surface validates each item of a batch on its own.
+
+    Every undeclared key in that one object is named, sorted, in ``keys``:
+    naming them one per refusal would cost a round trip per key for a single
+    mistake. ``key`` is the first of them. Undeclared keys in *other* objects
+    are left to a later refusal rather than folded in, because ``parameter``
+    and ``recognized`` describe one object; ``elsewhere`` says so in the
+    message, so a caller who repairs this object is not surprised by the next.
     """
 
     def __init__(
-        self, parameter: str, key: str, recognized: list[str], example: str | None = None
+        self,
+        parameter: str,
+        keys: Iterable[str],
+        recognized: list[str],
+        example: str | None = None,
+        elsewhere: bool = False,
     ) -> None:
-        located = f"{parameter}.{key}" if parameter else key
+        named = sorted(set(keys))
+        if not named:
+            raise ValueError("an undeclared_key refusal names at least one undeclared key")
+        self.elsewhere = elsewhere
+        located = [f"{parameter}.{key}" if parameter else key for key in named]
         accepted = sorted(recognized)
         if example is None:
             example = _undeclared_key_example(parameter, accepted)
+        subject = (
+            f"{located[0]!r} is not a declared key."
+            if len(located) == 1
+            else f"{', '.join(repr(name) for name in located)} are not declared keys."
+        )
+        message = f"{subject} Accepted: {accepted!r}. Example: {example}"
+        if elsewhere:
+            message += (
+                " Undeclared keys at other locations are reported once this object is repaired."
+            )
         super().__init__(
             "undeclared_key",
-            (f"{located!r} is not a declared key. Accepted: {accepted!r}. Example: {example}"),
+            message,
             400,
             {
                 "parameter": parameter,
-                "key": key,
+                "key": named[0],
+                "keys": named,
                 "recognized": accepted,
                 "example": example,
             },
@@ -2656,41 +2686,73 @@ def unknown_parameter_names(exc: ValidationError | RequestValidationError) -> li
     return sorted(names)
 
 
+def undeclared_entry_keys(
+    files: Iterable[object], declared_by_depth: dict[int, Collection[str]]
+) -> list[tuple[int, int, str, object]]:
+    """Walk batch file entries for names their declared sets do not include.
+
+    Returns ``(file index, depth, key, value)`` candidates for
+    ``undeclared_entry_key_error``: depth 0 is a key on the entry itself and
+    depth 1 a key in the ``parsed_metadata`` mapping it carries. An entry or a
+    ``parsed_metadata`` that is not a mapping is passed over, because it
+    declares no names to check -- its shape is the model's to refuse.
+
+    Surfaces whose entries arrive as plain mappings walk them here, before any
+    value is checked, so an undeclared name is reported ahead of a malformed
+    value on every batch surface alike.
+    """
+    candidates: list[tuple[int, int, str, object]] = []
+    for index, entry in enumerate(files):
+        if not isinstance(entry, dict):
+            continue
+        locations = [(0, entry)]
+        parsed = entry.get("parsed_metadata")
+        if isinstance(parsed, dict):
+            locations.append((1, parsed))
+        for depth, mapping in locations:
+            declared = declared_by_depth[depth]
+            candidates.extend(
+                (index, depth, name, mapping[name]) for name in mapping if name not in declared
+            )
+    return candidates
+
+
 def undeclared_entry_key_error(
     candidates: Iterable[tuple[int, int, str, object]],
     *,
     recognized_by_depth: dict[int, Iterable[str]],
 ) -> UndeclaredKeyError | None:
-    """Return the refusal for one of a batch's undeclared file-entry keys.
+    """Return the refusal for a batch's undeclared file-entry keys.
 
     Each candidate is ``(file index, depth, key, value)``, where depth 0 is a
     key on the file entry itself and depth 1 a key in the ``parsed_metadata`` it
-    carries. The key reported is the one at the lowest file index, then the
-    lowest depth, then first in sorted order, located as ``files.<n>`` or
-    ``files.<n>.parsed_metadata``. ``None`` when there is no candidate.
+    carries. The object reported is the one at the lowest file index, then the
+    lowest depth, located as ``files.<n>`` or ``files.<n>.parsed_metadata``,
+    and every undeclared key in it is named. Keys in other objects are left to
+    a later refusal, and the message says they exist. ``None`` when there is no
+    candidate.
 
-    The Core API batch upload and the MCP bulk ingest tool both report through
-    this rule, so the same entries are refused at the same location, under the
-    same code, with the same key chosen among several. What they do *not*
-    share is the accepted set at depth 0: an upload's bytes arrive as file
-    parts, so its entries declare no name for them, while the tool's entries
-    name a path or a transfer token. ``recognized_by_depth`` is therefore the
-    caller's to supply rather than derived here -- a shared answer would be
-    wrong for one of the two surfaces. The ``parsed_metadata`` set is one
-    model and is shared.
-
-    A request body validated by the framework reports the first undeclared key
-    the validator lists instead.
+    Every batch ingest surface -- the Core API upload, the MCP bulk ingest tool
+    and the application's ingest route -- reports through this rule, so the
+    same entries are refused at the same location, under the same code, naming
+    the same keys. What they do *not* share is the accepted set at depth 0: an
+    upload's bytes arrive as file parts, so its entries declare no name for
+    them, while the other surfaces' entries name a path or a transfer token.
+    ``recognized_by_depth`` is therefore the caller's to supply rather than
+    derived here -- a shared answer would be wrong for one of the surfaces.
     """
-    chosen = min(candidates, key=lambda candidate: candidate[:3], default=None)
-    if chosen is None:
+    by_location: dict[tuple[int, int], list[str]] = {}
+    for index, depth, key, _value in candidates:
+        by_location.setdefault((index, depth), []).append(key)
+    if not by_location:
         return None
-    index, depth, key, _value = chosen
+    index, depth = min(by_location)
     prefix = f"files.{index}" if depth == 0 else f"files.{index}.parsed_metadata"
     return UndeclaredKeyError(
         parameter=prefix,
-        key=key,
+        keys=by_location[(index, depth)],
         recognized=list(recognized_by_depth[depth]),
+        elsewhere=len(by_location) > 1,
     )
 
 
@@ -2941,16 +3003,41 @@ def translate_validation_error(
         # surface that validates each item of a batch against the item model
         # reports the key one segment deep, and the same rule has to answer
         # there so the two surfaces do not diverge on the same mistake.
+        #
+        # Every undeclared key the validator reported in the same object is
+        # named in the one refusal; keys in other objects are left to a later
+        # one, and the refusal says they exist.
         if err_type == "extra_forbidden" and root_model is not None:
             refusing = _model_for_loc(root_model, loc)
             if refusing is not None and loc:
+                by_object = _undeclared_keys_by_object(exc, root_model)
                 return UndeclaredKeyError(
                     parameter=".".join(str(segment) for segment in loc[:-1]),
-                    key=str(loc[-1]),
+                    keys=by_object[loc[:-1]],
                     recognized=list(refusing.model_fields),
+                    elsewhere=len(by_object) > 1,
                 )
 
     return None
+
+
+def _undeclared_keys_by_object(
+    exc: ValidationError | RequestValidationError, root_model: type[BaseModel]
+) -> dict[tuple, list[str]]:
+    """Group the undeclared nested keys a validation error reports by the object holding them.
+
+    Only keys whose location resolves to a model count, which is the same
+    condition the nested rule fires on, so every group is one a refusal could
+    name. Keyed by the object's location, in the order the validator reported.
+    """
+    grouped: dict[tuple, list[str]] = {}
+    for err in exc.errors():
+        if err.get("type") != "extra_forbidden":
+            continue
+        loc = _strip_transport_segment(tuple(err.get("loc") or ()), exc)
+        if loc and _model_for_loc(root_model, loc) is not None:
+            grouped.setdefault(loc[:-1], []).append(str(loc[-1]))
+    return grouped
 
 
 def _generic_parameter_error(

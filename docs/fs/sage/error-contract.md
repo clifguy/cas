@@ -7,6 +7,13 @@ values stay present, such as an absent pinned content hash; conditional context
 is omitted when unavailable. Malformed-input echoes deliberately admit arbitrary
 JSON where the refused input can have any shape.
 
+An optional key is one a constructor sets when it is given the argument that
+carries it; a family declares no optional key its constructors cannot set. The
+contract tests hold both directions: every emitted key is declared, and every
+declared optional key is emitted by some constructor supplied its optional
+arguments. Where one constructor serves several codes, chosen by an argument, it
+refuses an optional argument whose key the chosen code does not declare.
+
 Both REST specifications publish the same families. The Core specification is the
 authority for shared definitions; `scripts/generate_error_contract.py` derives the
 packaged runtime projection. Strict Pydantic variants and the live REST OpenAPI

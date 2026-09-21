@@ -1,0 +1,14 @@
+classification: minor
+category:
+  - caller-adaptation
+summary: >-
+  RelocatedFromProvenanceMismatchErrorDetail no longer declares also_accounted_content_hash,
+  in both REST specifications, the packaged error-contract projection and the MCP catalog.
+  The destination half of a relocation accounts for one digest only, so no constructor on
+  that path ever set the key: the declaration was wider than the behaviour. The typed error
+  contract tests now hold the reverse direction as well, failing on any optional detail key
+  no emitted error sets, and that check found this one.
+for_callers: >-
+  Nothing a caller received changes: relocated_from_provenance_mismatch never carried
+  also_accounted_content_hash. A client generated from the specification should drop any
+  branch reading it; relocated_to_provenance_mismatch keeps the key.

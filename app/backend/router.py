@@ -28,6 +28,7 @@ from fastapi.responses import StreamingResponse
 from app.backend.dependencies import (
     get_ingest_streaming_service,
     get_scan_service,
+    refuse_undeclared_entry_keys,
 )
 from app.backend.ingest_streaming_service import IngestStreamingService
 from app.backend.models import (
@@ -78,6 +79,7 @@ async def scan_endpoint(
 @router.post(
     "/ingest",
     operation_id="bulk_ingest_document",
+    dependencies=[Depends(refuse_undeclared_entry_keys)],
     responses={
         400: boundary_400(
             request=(

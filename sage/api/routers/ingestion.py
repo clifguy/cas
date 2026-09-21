@@ -44,7 +44,7 @@ def _undeclared_file_entry_key(exc: ValidationError) -> UndeclaredKeyError | Non
 
     Only a key under ``files.<n>`` or ``files.<n>.parsed_metadata`` qualifies;
     every other defect in the envelope stays ``invalid_batch_metadata``. Which
-    key is reported, when there are several, is ``undeclared_entry_key_error``'s.
+    object is reported, and which of its keys, is ``undeclared_entry_key_error``'s.
     The accepted sets are the two models' own, so an entry here is refused
     against what an upload declares -- no ``file_path``, because the bytes
     arrive as file parts.
