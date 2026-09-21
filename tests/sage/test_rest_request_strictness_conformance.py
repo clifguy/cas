@@ -208,6 +208,175 @@ def test_every_core_operation_declares_the_refusal():
 
 
 # ---------------------------------------------------------------------------
+# The nested-key refusal: which model refused, and whether it can be found
+# ---------------------------------------------------------------------------
+
+
+def _nested_model_paths() -> list[tuple[type[BaseModel], tuple[object, ...], type[BaseModel]]]:
+    """Every ``(root, path, nested)`` a request body reaches, with its location.
+
+    ``_models_in`` answers which models are reachable; this answers where. The
+    path is a validation-error location with the list positions filled in, so
+    it can be handed to the production walk unchanged. Only a model reached
+    through a field of another model appears -- a root is not its own nesting.
+    """
+    triples: list[tuple[type[BaseModel], tuple[object, ...], type[BaseModel]]] = []
+
+    def walk(root: type[BaseModel], model: type[BaseModel], prefix: tuple[object, ...]) -> None:
+        for name, field in model.model_fields.items():
+            pending = [field.annotation]
+            # The segment a container puts between the field name and the
+            # nested model's own keys: a position for a sequence, a key for a
+            # mapping. The mapping case is spelled as a string because that is
+            # what the validator reports, and because a walk that stepped over
+            # it the way it steps over a position would be reading the wrong
+            # model one level up.
+            container: tuple[object, ...] = ()
+            while pending:
+                current = pending.pop()
+                if isinstance(current, type) and issubclass(current, BaseModel):
+                    path = (*prefix, name, *container)
+                    triples.append((root, path, current))
+                    walk(root, current, path)
+                    continue
+                origin = typing.get_origin(current)
+                if origin in (list, tuple, set, frozenset):
+                    container = (0,)
+                elif origin in (dict,):
+                    container = ("__mapping_key__",)
+                if isinstance(current, types.UnionType) or origin is not None:
+                    pending.extend(typing.get_args(current))
+
+    for model in _body_models() | _app_body_models():
+        walk(model, model, ())
+    return triples
+
+
+def test_every_nested_request_model_is_reachable_from_its_root():
+    """The production walk finds the model behind every nested location.
+
+    A refusal names the accepted key set by asking which model refused, and
+    it can only ask by walking the location back to a model. The walk handles
+    the shapes the request models actually have -- an optional model, a list
+    of models -- and answers ``None`` for anything else, which silently
+    returns the caller to a refusal that names only the offending key. This
+    is what makes that narrowness safe: a field shape the walk cannot follow
+    fails here rather than degrading a refusal nobody is looking at.
+    """
+    from sage.api.errors import _model_for_loc
+
+    triples = _nested_model_paths()
+    assert len(triples) >= 10, "nesting walk found too little to be checking anything"
+    assert {nested.__name__ for _, _, nested in triples} >= {
+        "BatchIngestParsedMetadata",
+        "BatchIngestFileMetadata",
+        "RelocationPointer",
+        "RetrievalFilters",
+        "Tier3Patch",
+    }
+
+    unreachable = sorted(
+        f"{root.__name__}{list(path)} -> {nested.__name__}"
+        for root, path, nested in triples
+        if _model_for_loc(root, (*path, "__undeclared__")) is not nested
+    )
+    assert unreachable == []
+
+
+def _operations_with_a_nested_strict_model(
+    routes: list[APIRoute], form_models: dict
+) -> dict[str, bool]:
+    """Per operation id, whether a nested strict model can refuse a key there.
+
+    ``RetrievalFilters`` does not count. A key it refuses keeps
+    ``unknown_filter_key``, whose detail says more than the general refusal
+    does -- the valid key set plus a worked example of the typed-metadata
+    shape -- so the operation that carries it declares that code instead.
+    This is the one shadowing, and it is named here rather than exempted so
+    the next reader meets the reason and not a list.
+    """
+    shadowed = {schemas.RetrievalFilters}
+    answers: dict[str, bool] = {}
+    for route in routes:
+        roots: set[type[BaseModel]] = set()
+        for param in get_flat_dependant(route.dependant).body_params:
+            annotation = param.field_info.annotation
+            if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+                roots.add(annotation)
+        for method in route.methods:
+            form_model = form_models.get((method, route.path))
+            if form_model is not None:
+                roots.add(form_model)
+        nested = {model for root in roots for model in _models_in(root)} - roots
+        strict = {
+            model for model in nested - shadowed if model.model_config.get("extra") == "forbid"
+        }
+        answers[route.name] = bool(strict)
+    return answers
+
+
+def test_every_operation_with_a_nested_strict_model_declares_undeclared_key():
+    """The refusal is declared exactly where it is reachable, both ways.
+
+    The inverse half is the one that decays: an operation that loses its
+    nested model, or whose nesting was only ever ``filters``, keeps a
+    declared branch a caller can never meet and writes handling for. Deriving
+    both directions from the routes means neither can be added to a list and
+    forgotten.
+    """
+    from sage.api.response_docs import REQUEST_400_SENTENCES
+
+    sentence = _normalize(REQUEST_400_SENTENCES["undeclared_key"])
+    reachable = _operations_with_a_nested_strict_model(_core_routes(), _FORM_ENCODED_BODY_MODELS)
+    assert sum(reachable.values()) >= 5, reachable
+
+    paths = _spec()["paths"]
+    wrong = []
+    for route in _core_routes():
+        for method in route.methods:
+            operation = paths[route.path_format][method.lower()]
+            description = operation.get("responses", {}).get("400", {}).get("description", "")
+            declared = sentence in _normalize(description)
+            if declared != reachable[route.name]:
+                wrong.append(
+                    f"{operation['operationId']}: declared={declared} "
+                    f"reachable={reachable[route.name]}"
+                )
+
+    assert sorted(wrong) == []
+
+
+def test_no_mcp_tool_argument_nests_a_model():
+    """The MCP argument boundary stays flat, which is why it needs no walk.
+
+    Every tool argument is a scalar, a mapping, a list of mappings, or a
+    typed alias, so an undeclared name there is always one segment deep and
+    already meets ``unknown_parameter``, whose detail names the whole valid
+    set. Nesting on that surface lives instead in the tool bodies, which
+    validate an item against its own model and pass that model to the
+    envelope. A tool that took a model-typed argument would route its
+    refusal through neither path, so the flatness is asserted rather than
+    assumed.
+    """
+    from sage import mcp_server
+
+    tools = [
+        tool
+        for surface in ("sage", "sage_maint")
+        for tool in mcp_server.build_partitioned_server(surface)._tool_manager.list_tools()  # noqa: SLF001
+    ]
+    assert len(tools) >= 39, "tool enumeration is too small to be checking anything"
+
+    nesting = sorted(
+        f"{tool.name}.{name}"
+        for tool in tools
+        for name, field in tool.fn_metadata.arg_model.model_fields.items()
+        if _models_in(field.annotation)
+    )
+    assert nesting == []
+
+
+# ---------------------------------------------------------------------------
 # CAS Application API
 # ---------------------------------------------------------------------------
 

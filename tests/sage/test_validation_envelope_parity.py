@@ -42,6 +42,7 @@ from sage.app import create_app
 from sage.config import VaultConfig
 from sage.mcp_server import _vaults as _mcp_vaults
 from sage.mcp_server import mcp
+from sage.models.schemas import BulkLifecycleItem
 from tests.sage.conftest import initialize_services_for_test
 
 VAULT_ID = "test_vault"
@@ -343,11 +344,19 @@ async def test_unknown_argument_named_like_a_transport_segment(vault_services, h
     assert http_body["detail"]["rejected_params"] == [name]
 
 
-async def test_unknown_item_field_parity_between_surfaces(vault_services, http_client):
+async def test_undeclared_item_field_parity_between_surfaces(vault_services, http_client):
     """A name nested inside a batch item is refused alike on both surfaces.
 
     Neither surface names it an unknown parameter -- it is not one of the
-    operation's parameters -- and neither lets it through.
+    operation's parameters -- and neither lets it through. Both answer with
+    the item model's own field set, which is the set the caller was refused
+    against, and both locate it at the same item.
+
+    The location is the part that has to be asserted rather than assumed. The
+    MCP surface validates each item against the item model, so the validator
+    reports the key one segment deep, while HTTP validates the whole body and
+    reports it three deep. Equal locations here are a property of the tool
+    restating the position, not of the two validators agreeing.
     """
     item = {"document_id": "00000000_absent_document", "action": "archive", "bogus": 1}
     mcp_envelope = _decode_envelope(
@@ -356,9 +365,12 @@ async def test_unknown_item_field_parity_between_surfaces(vault_services, http_c
     resp = await http_client.post(f"/sage_vaults/{VAULT_ID}/lifecycles", json={"items": [item]})
     http_body = resp.json()
 
-    assert mcp_envelope["error"] == http_body["code"] == "invalid_parameter"
-    assert mcp_envelope["detail"]["parameter"].endswith("bogus")
-    assert http_body["detail"]["parameter"].endswith("bogus")
+    assert mcp_envelope["error"] == http_body["code"] == "undeclared_key"
+    assert resp.status_code == 400, resp.text
+    assert mcp_envelope["detail"] == http_body["detail"]
+    assert http_body["detail"]["parameter"] == "items.0"
+    assert http_body["detail"]["key"] == "bogus"
+    assert http_body["detail"]["recognized"] == sorted(BulkLifecycleItem.model_fields)
 
 
 # ---------------------------------------------------------------------------
@@ -504,3 +516,501 @@ async def test_mode_parameter_mismatch_content_is_pinned_independently(vault_ser
         # The rejection is on the target axis, so a mode set would name a
         # change that does not lift it.
         assert "allowed_modes" not in envelope["detail"]
+
+
+async def test_top_level_field_inside_metadata_parity_between_surfaces(vault_services, http_client):
+    """A top-level argument nested under ``metadata`` is refused alike on both.
+
+    The guard sits on the request model, which both surfaces bind, so the
+    parity is structural rather than two checks kept in step. Asserting it
+    anyway is what catches a later move of the guard into one tool body,
+    which would pass every single-surface test and leave the HTTP caller with
+    the type complaint the guard exists to replace.
+    """
+    body = {"source": "test/sample.md", "source_type": "markdown"}
+    metadata = {"tier3_metadata": "T-1"}
+
+    mcp_envelope = _decode_envelope(
+        await mcp.call_tool("ingest_document", {"vault_id": VAULT_ID, **body, "metadata": metadata})
+    )
+    resp = await http_client.post(
+        f"/sage_vaults/{VAULT_ID}/documents", json={**body, "metadata": metadata}
+    )
+    http_body = resp.json()
+
+    assert mcp_envelope["error"] == http_body["code"] == "misplaced_top_level_field"
+    assert resp.status_code == 400, resp.text
+    assert mcp_envelope["detail"] == http_body["detail"]
+    assert http_body["detail"]["fields"] == ["tier3_metadata"]
+
+
+# ---------------------------------------------------------------------------
+# Every tool that builds a nesting request model refuses its nested keys
+# ---------------------------------------------------------------------------
+
+
+def _constructed_schema_name(node) -> str | None:
+    """The schema name a call builds a model from, or ``None``.
+
+    Both spellings a tool body uses count: ``Model(...)`` and
+    ``Model.model_validate(...)``. Reading only the first was a way for the
+    walk to answer "nothing to check" about a tool that does validate a
+    model -- a silent pass under a docstring promising the opposite, which is
+    the shape this gate exists to catch rather than to have.
+    """
+    import ast
+
+    if not isinstance(node, ast.Call):
+        return None
+    if isinstance(node.func, ast.Name):
+        return node.func.id
+    if isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+        return node.func.value.id
+    return None
+
+
+def test_the_derivation_reads_both_construction_spellings():
+    """A model validated rather than constructed is still derived.
+
+    Exercised on synthetic source, because the repository uses one of the two
+    spellings at every site that matters: a test reading only real source
+    passes against a walk that handles only that spelling, which is the gap.
+
+    Run through ``_tools_in_source`` -- the walk the real derivation calls --
+    rather than through the name helper it uses. Asserting the helper leaves
+    the walk free to ignore what the helper returns, and a test that cannot
+    go red while the walk is wrong is the shape this gate exists to catch.
+    """
+    derived = _tools_in_source(
+        "@mcp.tool()\n"
+        "async def constructs():\n"
+        "    return IngestRequest(source='x')\n"
+        "\n"
+        "@mcp.tool()\n"
+        "async def validates():\n"
+        "    return IngestRequest.model_validate({})\n"
+    )
+
+    from sage.models import schemas
+
+    assert derived == {
+        "constructs": schemas.IngestRequest,
+        "validates": schemas.IngestRequest,
+    }, derived
+
+
+def _tools_in_source(source: str) -> dict[str, type]:
+    """The tools one module's source declares that build a nesting model.
+
+    Split out so the walk itself can be exercised on source written for the
+    purpose. Kept separate from the module list above for no other reason.
+    """
+    import ast
+    import types
+    import typing
+
+    from pydantic import BaseModel
+
+    from sage.models import schemas
+
+    def strict_nested(model: type[BaseModel]) -> set[type[BaseModel]]:
+        seen: set[type[BaseModel]] = set()
+        out: set[type[BaseModel]] = set()
+
+        def walk(current: type[BaseModel]) -> None:
+            for field in current.model_fields.values():
+                pending = [field.annotation]
+                while pending:
+                    item = pending.pop()
+                    if isinstance(item, type) and issubclass(item, BaseModel):
+                        if item in seen:
+                            continue
+                        seen.add(item)
+                        out.add(item)
+                        walk(item)
+                        continue
+                    if isinstance(item, types.UnionType) or typing.get_origin(item) is not None:
+                        pending.extend(typing.get_args(item))
+
+        walk(model)
+        return {
+            m
+            for m in out
+            if m.model_config.get("extra") == "forbid" and m is not schemas.RetrievalFilters
+        }
+
+    found: dict[str, type] = {}
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.AsyncFunctionDef):
+            continue
+        if not any(
+            isinstance(dec, ast.Call)
+            and isinstance(dec.func, ast.Attribute)
+            and dec.func.attr == "tool"
+            for dec in node.decorator_list
+        ):
+            continue
+        for inner in ast.walk(node):
+            name = _constructed_schema_name(inner)
+            if name is None:
+                continue
+            model = getattr(schemas, name, None)
+            if isinstance(model, type) and issubclass(model, BaseModel) and strict_nested(model):
+                found[node.name] = model
+    return found
+
+
+def _tools_building_a_nesting_model() -> dict[str, type]:
+    """Each MCP tool whose body builds a request model nesting a strict model.
+
+    The argument boundary is held flat by its own gate, so a tool's arguments
+    never nest a model. The models do, and a tool builds one in its own body --
+    which is where the refusal has to be handed the model the request was
+    validated against. A tool that skips that step looks identical from outside
+    until a caller sends a nested key, and one of them shipped a docstring
+    promising the refusal it did not produce.
+
+    Derived by reading each tool module rather than listed, so a tool added
+    later arrives here on its own. Models whose undeclared key another rule
+    answers first are excluded by ``_SHADOWED_NESTINGS``, which states the
+    rule that reaches the key instead.
+
+    Two limits of the reading, stated because a derivation that looks total
+    and is not is worse than a list. It matches a model constructed or
+    validated *inside* the tool body; a tool that delegates the construction
+    to a helper is not followed into it, and would be derived as building
+    nothing. And the multipart batch operation binds its envelope as a form
+    field rather than a body model, so it is reached through the conformance
+    module's own map rather than through this walk. Neither is a live gap --
+    every tool builds its model inline today, and the batch operation carries
+    its own endpoint tests -- and both would need a call-graph walk rather
+    than a syntactic one to close.
+    """
+    from pathlib import Path as _Path
+
+    repo_root = _Path(__file__).resolve().parents[2]
+    found: dict[str, type] = {}
+    for module_path in ("sage/sage_api_tools.py", "sage/app_tools.py"):
+        found |= _tools_in_source((repo_root / module_path).read_text())
+    return found
+
+
+#: Nested models whose undeclared key is answered by a more specific refusal,
+#: so ``undeclared_key`` is unreachable for them by construction. Not an
+#: allowlist: each is here because another rule reaches the key first and says
+#: more, and each would have to lose that rule to belong in the probes.
+#:
+#: ``RetrievalFilters`` -- a key it refuses keeps ``unknown_filter_key``, whose
+#: detail carries the valid key set and a worked example.
+#:
+#: ``Tier3Patch`` -- the retired bare-dict form is detected as *any* key
+#: outside ``{set, unset}`` (``sage/models/legacy_form.py``), so a patch object
+#: carrying an undeclared key alongside its ops is read as that form and
+#: refused as ``legacy_form`` before the model is reached. ``ListFieldPatch``
+#: is deliberately not here: its retired form is a bare *list*, so a mapping
+#: with an extra key does reach the model, and it is probed.
+_SHADOWED_NESTINGS: frozenset[str] = frozenset({"RetrievalFilters", "Tier3Patch"})
+
+
+#: One call per (tool, nested model) that plants an undeclared key at that
+#: nesting. Keyed by the pair rather than by the tool, because an operation
+#: nests several models and one probe per operation leaves the others
+#: unchecked -- a gate can then stay green while the rule is severed for
+#: exactly one of them. Hand-written because each call takes a different
+#: shape; the *pairs* are derived, and a derived pair with no entry fails the
+#: gate rather than being skipped.
+_NESTED_KEY_PROBES: dict[tuple[str, str], dict] = {
+    ("ingest_document", "RelocationPointer"): {
+        "source": "test/sample.md",
+        "source_type": "markdown",
+        "relocated_from": {"bogus_field_x": 1},
+    },
+    ("update_lifecycles", "BulkLifecycleItem"): {
+        "items": [{"document_id": "00000000_absent_document", "bogus_field_x": 1}]
+    },
+    ("update_lifecycles", "RelocationPointer"): {
+        "items": [
+            {
+                "document_id": "00000000_absent_document",
+                "action": "relocate",
+                "relocated_to": {"bogus_field_x": 1},
+            }
+        ]
+    },
+    ("create_edges", "BulkLinkItem"): {
+        "items": [{"source_id": "00000000_absent_document", "bogus_field_x": 1}]
+    },
+    ("update_metadata", "BulkMetadataItem"): {
+        "items": [{"document_id": "00000000_absent_document", "bogus_field_x": 1}]
+    },
+    ("update_metadata", "ListFieldPatch"): {
+        "items": [{"document_id": "00000000_absent_document", "tags": {"bogus_field_x": 1}}]
+    },
+}
+
+
+def _derived_nested_pairs(roots: dict[str, type]) -> set[tuple[str, str]]:
+    """Every (operation, nested model) the given roots reach.
+
+    The probe tables are checked against this rather than against the
+    operation list: an operation nests several models, and a gate that plants
+    one key per operation proves only the nesting it happened to pick.
+    """
+    from tests.sage.test_rest_request_strictness_conformance import _nested_model_paths
+
+    by_root: dict[type, set[str]] = {}
+    for root, _path, nested in _nested_model_paths():
+        by_root.setdefault(root, set()).add(nested.__name__)
+    return {
+        (operation, nested)
+        for operation, root in roots.items()
+        for nested in by_root.get(root, set())
+        if nested not in _SHADOWED_NESTINGS
+    }
+
+
+async def test_every_tool_building_a_nesting_model_names_the_accepted_keys(vault_services):
+    """A key nested inside a tool's request model is refused with the field set.
+
+    End to end through each tool rather than against the envelope helper: the
+    helper was already right, and what was missing at the site this gate was
+    written for was the call into it. Asserting the helper would have stayed
+    green through that.
+
+    The derived set is asserted to be covered, so a tool that starts building a
+    nesting model arrives here as a failure naming itself rather than as a
+    silent pass.
+    """
+    import jsonschema
+
+    from sage.models import schemas
+    from sage.models.error_contract import tool_error_schema
+
+    derived = _tools_building_a_nesting_model()
+    assert derived, "no tool found building a nesting model; the walk checks nothing"
+    pairs = _derived_nested_pairs(derived)
+    assert pairs, "no nesting derived; the walk checks nothing"
+    uncovered = sorted(pairs - set(_NESTED_KEY_PROBES))
+    assert uncovered == [], f"no nested-key probe defined for {uncovered}"
+
+    for tool_name, expected_model in sorted(pairs):
+        payload = _NESTED_KEY_PROBES[(tool_name, expected_model)]
+        envelope = _decode_envelope(
+            await mcp.call_tool(tool_name, {"vault_id": VAULT_ID, **payload})
+        )
+
+        assert envelope["error"] == "undeclared_key", (tool_name, expected_model, envelope)
+        assert envelope["detail"]["key"] == "bogus_field_x", (tool_name, envelope)
+        assert envelope["detail"]["recognized"] == sorted(
+            getattr(schemas, expected_model).model_fields
+        ), (tool_name, expected_model, envelope)
+
+        # The tool publishes an error schema through ``tools/list``; a code it
+        # can raise has to be in that tool's family table or the schema it
+        # advertises rejects the envelope it just returned. Registering a code
+        # is a six-part act and the table is the part with no other reader,
+        # so this asserts it against a refusal the tool actually produced
+        # rather than against the table's own contents.
+        jsonschema.validate(envelope, tool_error_schema("", tool_name))
+
+
+#: One request body per (route, nested model) that plants an undeclared key at
+#: that nesting, keyed by the pair for the reason the MCP table is. The route
+#: name is the handler's, which is what the derivation returns and is not
+#: always the published operation id.
+_HTTP_NESTED_KEY_PROBES: dict[tuple[str, str], tuple[str, dict]] = {
+    ("ingest", "RelocationPointer"): (
+        "documents",
+        {"source": "test/sample.md", "relocated_from": {"bogus_field_x": 1}},
+    ),
+    ("update_lifecycles", "BulkLifecycleItem"): (
+        "lifecycles",
+        {"items": [{"document_id": "00000000_absent_document", "bogus_field_x": 1}]},
+    ),
+    ("update_lifecycles", "RelocationPointer"): (
+        "lifecycles",
+        {
+            "items": [
+                {
+                    "document_id": "00000000_absent_document",
+                    "action": "relocate",
+                    "relocated_to": {"bogus_field_x": 1},
+                }
+            ]
+        },
+    ),
+    ("create_edges", "BulkLinkItem"): (
+        "edges",
+        {"items": [{"source_id": "00000000_absent_document", "bogus_field_x": 1}]},
+    ),
+    ("update_metadata", "BulkMetadataItem"): (
+        "metadata",
+        {"items": [{"document_id": "00000000_absent_document", "bogus_field_x": 1}]},
+    ),
+    ("update_metadata", "ListFieldPatch"): (
+        "metadata",
+        {"items": [{"document_id": "00000000_absent_document", "tags": {"bogus_field_x": 1}}]},
+    ),
+}
+
+
+def _core_operations_with_a_nested_strict_model() -> set[str]:
+    """Core API operations whose body graph nests a model refusing extras.
+
+    Derived the way the declaration gate derives it, and for the same reason:
+    an operation added later has to arrive here rather than wait to be
+    remembered. ``RetrievalFilters`` is excluded because a key it refuses
+    keeps ``unknown_filter_key``, whose detail says more.
+    """
+    from tests.sage.test_rest_request_strictness_conformance import (
+        _FORM_ENCODED_BODY_MODELS,
+        _core_routes,
+        _operations_with_a_nested_strict_model,
+    )
+
+    reachable = _operations_with_a_nested_strict_model(_core_routes(), _FORM_ENCODED_BODY_MODELS)
+    by_name = {route.name: route for route in _core_routes()}
+    return {name for name, yes in reachable.items() if yes and name in by_name}
+
+
+async def test_every_http_operation_with_a_nested_model_refuses_its_undeclared_keys(http_client):
+    """The HTTP surface answers a nested undeclared key, operation by operation.
+
+    Its sibling gate reads the published 400 against a derivation and never
+    sends a request, so severing the rule at the exception handler for any
+    subset of operations leaves it green -- measured, not supposed. The MCP
+    surface had a probe gate from the start and the HTTP one did not, which is
+    the asymmetry this closes: what a declaration gate proves is that the
+    contract says the right thing, never that the surface does it.
+
+    The multipart batch upload is covered by its own endpoint tests, which
+    post real file parts; it is excluded here rather than given a fake body.
+    """
+    from fastapi.dependencies.utils import get_flat_dependant
+    from fastapi.routing import APIRoute
+
+    from sage.app import create_app
+    from sage.models import schemas
+
+    roots = {
+        route.name: get_flat_dependant(route.dependant).body_params[0].field_info.annotation
+        for route in create_app().routes
+        if isinstance(route, APIRoute)
+        and route.name in _core_operations_with_a_nested_strict_model()
+        and get_flat_dependant(route.dependant).body_params
+    }
+    pairs = _derived_nested_pairs(roots)
+    assert pairs, "no nesting derived; the walk checks nothing"
+    uncovered = sorted(pairs - set(_HTTP_NESTED_KEY_PROBES))
+    assert uncovered == [], f"no nested-key probe defined for {uncovered}"
+
+    for operation, expected_model in sorted(pairs):
+        path, body = _HTTP_NESTED_KEY_PROBES[(operation, expected_model)]
+        resp = await http_client.post(f"/sage_vaults/{VAULT_ID}/{path}", json=body)
+        envelope = resp.json()
+
+        assert resp.status_code == 400, (operation, expected_model, resp.text)
+        assert envelope["code"] == "undeclared_key", (operation, expected_model, envelope)
+        assert envelope["detail"]["key"] == "bogus_field_x", (operation, envelope)
+        assert envelope["detail"]["recognized"] == sorted(
+            getattr(schemas, expected_model).model_fields
+        ), (operation, expected_model, envelope)
+
+
+async def test_both_surfaces_locate_a_nested_key_at_the_same_parameter(vault_services, http_client):
+    """The two surfaces report the same ``detail.parameter`` for the same key.
+
+    The MCP surface validates each batch item against the item model and then
+    restates the item's position, so the location it reports is built rather
+    than read off the validator. The probe gates assert the code, the key and
+    the accepted set, and a re-prefix that dropped a nested segment -- reporting
+    ``items.0`` where HTTP reports ``items.0.tags`` -- satisfied all three with
+    the suite green. So the location is asserted here, on every pair both
+    surfaces probe, against the other surface rather than against a literal.
+    """
+    shared = sorted(
+        (tool, model)
+        for (tool, model) in _NESTED_KEY_PROBES
+        if (("ingest" if tool == "ingest_document" else tool), model) in _HTTP_NESTED_KEY_PROBES
+    )
+    assert shared, "no pair probed on both surfaces; nothing is compared"
+
+    for tool, model in shared:
+        route = "ingest" if tool == "ingest_document" else tool
+        path, body = _HTTP_NESTED_KEY_PROBES[(route, model)]
+        mcp_env = _decode_envelope(
+            await mcp.call_tool(tool, {"vault_id": VAULT_ID, **_NESTED_KEY_PROBES[(tool, model)]})
+        )
+        http_env = (await http_client.post(f"/sage_vaults/{VAULT_ID}/{path}", json=body)).json()
+
+        assert mcp_env["detail"]["parameter"] == http_env["detail"]["parameter"], (
+            tool,
+            model,
+            mcp_env["detail"]["parameter"],
+            http_env["detail"]["parameter"],
+        )
+
+
+#: A real call per (tool, code) the MCP family table lists for this change's two
+#: codes, producing that refusal through the tool. Keyed by the table's own
+#: pairs, so an entry with no probe fails, and so does a probe for a pair the
+#: table does not list.
+_FAMILY_TABLE_PROBES: dict[tuple[str, str], dict] = {
+    ("ingest_document", "undeclared_key"): {
+        "source": "test/sample.md",
+        "source_type": "markdown",
+        "relocated_from": {"bogus_field_x": 1},
+    },
+    ("ingest_document", "misplaced_top_level_field"): {
+        "source": "test/sample.md",
+        "source_type": "markdown",
+        "metadata": {"tier3_metadata": "T-1"},
+    },
+    ("update_lifecycles", "undeclared_key"): {
+        "items": [{"document_id": "00000000_absent_document", "bogus_field_x": 1}]
+    },
+    ("update_metadata", "undeclared_key"): {
+        "items": [{"document_id": "00000000_absent_document", "bogus_field_x": 1}]
+    },
+    ("create_edges", "undeclared_key"): {
+        "items": [{"source_id": "00000000_absent_document", "bogus_field_x": 1}]
+    },
+    ("bulk_ingest_document", "undeclared_key"): {
+        "files": [{"file_path": "test/sample.md", "bogus_field_x": 1}]
+    },
+}
+
+
+async def test_every_family_table_entry_publishes_a_schema_its_refusal_satisfies(
+    vault_services,
+):
+    """Each tool's published error schema accepts the refusal the tool returns.
+
+    The table is the one part of registering a code that nothing else reads:
+    omit a row and the tool still refuses correctly, but advertises through
+    ``tools/list`` a schema that rejects the envelope it emits. The probe gate
+    above checks this only for the tools it derives and only for the code it
+    plants, so a row for another tool or another code could go missing with
+    the suite green -- measured, not supposed.
+
+    Keyed on the table's own pairs for this change's codes rather than on a
+    list, so the assertion is about the table: a row with no probe fails, and a
+    probe the table does not back fails too.
+    """
+    import jsonschema
+
+    from sage.models.error_contract import SCHEMAS, tool_error_schema
+
+    ours = {"undeclared_key", "misplaced_top_level_field"}
+    table = SCHEMAS["ErrorResponse"]["x-mcp-tool-errors"]
+    listed = {(tool, code) for tool, codes in table.items() for code in codes if code in ours}
+    assert listed, "no row lists either code; the table checks nothing"
+    assert listed == set(_FAMILY_TABLE_PROBES), (
+        f"unprobed rows {sorted(listed - set(_FAMILY_TABLE_PROBES))}, "
+        f"unbacked probes {sorted(set(_FAMILY_TABLE_PROBES) - listed)}"
+    )
+
+    for (tool, code), payload in sorted(_FAMILY_TABLE_PROBES.items()):
+        envelope = _decode_envelope(await mcp.call_tool(tool, {"vault_id": VAULT_ID, **payload}))
+        assert envelope["error"] == code, (tool, code, envelope)
+        jsonschema.validate(envelope, tool_error_schema("", tool))

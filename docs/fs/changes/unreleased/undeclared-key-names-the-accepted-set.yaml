@@ -1,0 +1,49 @@
+classification: minor
+category:
+  - caller-adaptation
+  - capability
+summary: >-
+  An undeclared key nested inside a request is now refused as 400 undeclared_key,
+  whose detail carries the field set of the object that refused. detail.parameter
+  locates that object, detail.key names the key, detail.recognized lists the names
+  the object accepts, and detail.example shows a corrected fragment carrying both
+  the position and two of the accepted names. It replaces the 422 invalid_parameter
+  whose detail named the offending key and nothing else, on POST /documents,
+  POST /documents:batch, POST /lifecycles, POST /metadata, POST /edges and
+  POST /app/ingest, and on the MCP tools that bind the same models -- ingest_document,
+  bulk_ingest_document, update_lifecycles, create_edges and update_metadata. The recognized set is taken from
+  the model that refused rather than written out, so it cannot name a key the refusal
+  would not accept; the two batch surfaces accordingly report different entry-level sets,
+  because an upload's bytes arrive as file parts and its entries declare no file_path
+  while the tool's entries do. POST /documents:batch keeps its 422 for the codes-and-tags
+  conflict alone, which is now its only occupant. detail.value, which that status carried
+  for the undeclared-key case, is not part of the new envelope. A key inside filters keeps unknown_filter_key,
+  whose detail says more. Separately, an argument POST /documents and ingest_document
+  declare -- tier3_metadata among them -- spelled inside metadata is now refused as 400
+  misplaced_top_level_field, carrying fields, recognized (every argument that belongs at
+  the top level) and example, where a mapping was refused as a complaint about the value's
+  type and a string was accepted, stored under a name nothing reads, and left the argument
+  it was meant for unset without a word. IngestRequest.metadata's description no longer
+  says a null value is ignored, which its type has never allowed: the values are a string
+  or a list of strings, so a null is refused at the boundary.
+for_callers: >-
+  A client branching on invalid_parameter for a key nested inside a request body should
+  branch on undeclared_key and read detail.recognized to repair the call in one round-trip;
+  the status moves from 422 to 400 and detail.value is gone, so a client reading it should
+  read detail.key instead. This supersedes, within the same release, the instruction in
+  batch-upload-refuses-undeclared-entry-keys.yaml to branch on invalid_parameter at
+  files.<n>.<key>: that state is not one any release ships, and the two records fold into
+  one entry with this one last. A client handling 422 on
+  POST /sage_vaults/{vault_id}/documents:batch keeps it: that status now carries only the
+  codes-and-tags conflict, never an undeclared key. POST /app/ingest now declares that same
+  422, which it has raised since the conflict refusal landed but did not publish; the
+  behaviour is unchanged and the declaration is what is new. Both new codes carry a declared
+  detail family in the typed error contract, so undeclared_key selects {parameter, key,
+  recognized, example} and misplaced_top_level_field selects {fields, recognized, example}
+  rather than an open object. POST /documents and the
+  ingest_document tool likewise now declare the 422 they answer when metadata supplies both
+  codes and tags, the third surface that refusal reaches. An ingest that passed a
+  top-level argument inside metadata -- tier3_metadata, predecessor_id, force and the rest
+  -- is now refused rather than silently ignored; pass it as the argument it is. The keys
+  metadata does carry (title, version_label, project, doc_type, authority_scope,
+  document_date, date, codes, tags) are unaffected.

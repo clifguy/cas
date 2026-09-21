@@ -1087,6 +1087,7 @@ SCHEMAS = json.loads(
         "method_not_allowed": "#/components/schemas/MethodNotAllowedError",
         "misplaced_filters": "#/components/schemas/MisplacedFiltersError",
         "misplaced_metadata": "#/components/schemas/MisplacedMetadataError",
+        "misplaced_top_level_field": "#/components/schemas/MisplacedTopLevelFieldError",
         "missing_document_id": "#/components/schemas/MissingDocumentIdError",
         "missing_document_identifier": "#/components/schemas/MissingDocumentIdentifierError",
         "missing_heading_path": "#/components/schemas/MissingHeadingPathError",
@@ -1140,6 +1141,7 @@ SCHEMAS = json.loads(
         "transfer_not_staged": "#/components/schemas/TransferNotStagedError",
         "transfer_token_already_used": "#/components/schemas/TransferTokenAlreadyUsedError",
         "transfer_token_invalid": "#/components/schemas/TransferTokenInvalidError",
+        "undeclared_key": "#/components/schemas/UndeclaredKeyError",
         "unexpected_relocated_to": "#/components/schemas/UnexpectedRelocatedToError",
         "unexpected_successor_id": "#/components/schemas/UnexpectedSuccessorIdError",
         "unknown_filter_key": "#/components/schemas/UnknownFilterKeyError",
@@ -1317,6 +1319,9 @@ SCHEMAS = json.loads(
         "$ref": "#/components/schemas/MisplacedMetadataError"
       },
       {
+        "$ref": "#/components/schemas/MisplacedTopLevelFieldError"
+      },
+      {
         "$ref": "#/components/schemas/MissingDocumentIdError"
       },
       {
@@ -1485,6 +1490,9 @@ SCHEMAS = json.loads(
         "$ref": "#/components/schemas/UnexpectedSuccessorIdError"
       },
       {
+        "$ref": "#/components/schemas/UndeclaredKeyError"
+      },
+      {
         "$ref": "#/components/schemas/UnknownFilterKeyError"
       },
       {
@@ -1596,6 +1604,7 @@ SCHEMAS = json.loads(
         "transfer_endpoint_not_configured",
         "transfer_not_staged",
         "transfer_token_invalid",
+        "undeclared_key",
         "unexpected_relocated_to",
         "unexpected_successor_id",
         "unknown_parameter",
@@ -1634,6 +1643,7 @@ SCHEMAS = json.loads(
         "synced_from_inapplicable_edge_type",
         "synced_from_version_not_in_source_chain",
         "tbd_policy_edge",
+        "undeclared_key",
         "unknown_parameter",
         "vault_not_found"
       ],
@@ -1742,6 +1752,7 @@ SCHEMAS = json.loads(
         "legacy_form",
         "merged_from_validation",
         "misplaced_metadata",
+        "misplaced_top_level_field",
         "missing_ingest_source",
         "missing_relocated_to",
         "missing_successor_id",
@@ -1765,6 +1776,7 @@ SCHEMAS = json.loads(
         "transfer_endpoint_not_configured",
         "transfer_not_staged",
         "transfer_token_invalid",
+        "undeclared_key",
         "unexpected_relocated_to",
         "unexpected_successor_id",
         "unknown_parameter",
@@ -2026,6 +2038,7 @@ SCHEMAS = json.loads(
         "relocated_to_provenance_mismatch",
         "reserved_transition",
         "supersede_target_not_active",
+        "undeclared_key",
         "unexpected_relocated_to",
         "unexpected_successor_id",
         "unknown_parameter",
@@ -2052,6 +2065,7 @@ SCHEMAS = json.loads(
         "tier3_patch_overlap",
         "tier3_schema_violation",
         "tier3_unset_conflict",
+        "undeclared_key",
         "unknown_parameter",
         "vault_not_found"
       ],
@@ -2213,6 +2227,7 @@ SCHEMAS = json.loads(
             "method_not_allowed",
             "misplaced_filters",
             "misplaced_metadata",
+            "misplaced_top_level_field",
             "missing_document_id",
             "missing_document_identifier",
             "missing_heading_path",
@@ -2269,6 +2284,7 @@ SCHEMAS = json.loads(
             "transfer_token_invalid",
             "unexpected_relocated_to",
             "unexpected_successor_id",
+            "undeclared_key",
             "unknown_filter_key",
             "unknown_parameter",
             "vault_already_exists",
@@ -3615,6 +3631,63 @@ SCHEMAS = json.loads(
     "type": "object"
   },
   "MisplacedMetadataErrorDetail": {
+    "additionalProperties": false,
+    "description": "Additional context for this refusal.",
+    "properties": {
+      "example": {
+        "description": "Example.",
+        "type": "string"
+      },
+      "fields": {
+        "description": "Fields.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      },
+      "recognized": {
+        "description": "Recognized.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "fields",
+      "recognized",
+      "example"
+    ],
+    "type": "object"
+  },
+  "MisplacedTopLevelFieldError": {
+    "additionalProperties": false,
+    "description": "The refusal envelope for this error code.",
+    "properties": {
+      "code": {
+        "const": "misplaced_top_level_field",
+        "description": "Machine-readable error code selecting this envelope.",
+        "type": "string"
+      },
+      "detail": {
+        "$ref": "#/components/schemas/MisplacedTopLevelFieldErrorDetail"
+      },
+      "message": {
+        "description": "Human-readable error description.",
+        "type": "string"
+      },
+      "read_meta": {
+        "$ref": "#/components/schemas/ReadMeta"
+      }
+    },
+    "required": [
+      "code",
+      "message",
+      "detail"
+    ],
+    "type": "object"
+  },
+  "MisplacedTopLevelFieldErrorDetail": {
     "additionalProperties": false,
     "description": "Additional context for this refusal.",
     "properties": {
@@ -6141,6 +6214,65 @@ SCHEMAS = json.loads(
     "required": [
       "code",
       "message"
+    ],
+    "type": "object"
+  },
+  "UndeclaredKeyError": {
+    "additionalProperties": false,
+    "description": "The refusal envelope for this error code.",
+    "properties": {
+      "code": {
+        "const": "undeclared_key",
+        "description": "Machine-readable error code selecting this envelope.",
+        "type": "string"
+      },
+      "detail": {
+        "$ref": "#/components/schemas/UndeclaredKeyErrorDetail"
+      },
+      "message": {
+        "description": "Human-readable error description.",
+        "type": "string"
+      },
+      "read_meta": {
+        "$ref": "#/components/schemas/ReadMeta"
+      }
+    },
+    "required": [
+      "code",
+      "message",
+      "detail"
+    ],
+    "type": "object"
+  },
+  "UndeclaredKeyErrorDetail": {
+    "additionalProperties": false,
+    "description": "Additional context for this refusal.",
+    "properties": {
+      "example": {
+        "description": "Example.",
+        "type": "string"
+      },
+      "key": {
+        "description": "Key.",
+        "type": "string"
+      },
+      "parameter": {
+        "description": "Parameter.",
+        "type": "string"
+      },
+      "recognized": {
+        "description": "Recognized.",
+        "items": {
+          "type": "string"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "parameter",
+      "key",
+      "recognized",
+      "example"
     ],
     "type": "object"
   },

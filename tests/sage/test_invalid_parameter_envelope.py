@@ -17,20 +17,31 @@ convert every unmatched validation failure on every FastAPI router.
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 from fastapi.exceptions import RequestValidationError
-from pydantic import ValidationError
+from pydantic import BaseModel, ConfigDict, ValidationError
 
 from sage.api.errors import (
     _ENUM_TYPED_FILTER_FIELDS,
     _FILTER_FIELD_TYPE_NAMES,
     InvalidParameterError,
+    _model_for_loc,
     translate_validation_error,
     unknown_parameter_names,
     validation_error_envelope,
 )
-from sage.models.schemas import BulkLifecycleRequest, DiscoverRequest, RetrievalFilters
+from sage.models.schemas import (
+    BulkLifecycleItem,
+    BulkLifecycleRequest,
+    BulkMetadataRequest,
+    DiscoverRequest,
+    IngestRequest,
+    RelocationPointer,
+    RetrievalFilters,
+    Tier3Patch,
+)
 
 
 def _discover_error(**kwargs) -> ValidationError:
@@ -334,3 +345,172 @@ def test_every_non_enum_filter_key_names_its_expected_type():
         f"expected_type entries naming no non-enum filter field; the key was "
         f"renamed, removed, or became enum-typed: {stale}"
     )
+
+
+# ---------------------------------------------------------------------------
+# The nested-key rule: resolving which model refused, and naming its fields
+# ---------------------------------------------------------------------------
+
+
+def test_model_for_loc_resolves_an_optional_nested_model():
+    """An ``X | None`` field resolves to ``X``.
+
+    The optional wrapper is the commonest nesting shape in the request
+    models, and the arm that matters is the only BaseModel arm.
+    """
+    assert _model_for_loc(IngestRequest, ("relocated_from", "bogus")) is RelocationPointer
+
+
+def test_model_for_loc_skips_list_indices():
+    """An integer segment names a position, not a field, and is stepped over.
+
+    Without this the walk would look for a field named ``0`` on the list's
+    element type and give up one segment short of the model that refused.
+    """
+    loc = ("items", 0, "tier3_metadata", "bogus")
+
+    assert _model_for_loc(BulkMetadataRequest, loc) is Tier3Patch
+
+
+def test_model_for_loc_resolves_the_root_for_a_depth_one_loc():
+    """A one-segment location resolves to the root model itself.
+
+    The MCP surface validates each item of a batch as its own root, so the
+    location it reports for an undeclared item key is one segment deep. The
+    HTTP surface reports the same key as ``items.<n>.<key>``. One rule has
+    to serve both, so the walk cannot key on depth.
+    """
+    assert _model_for_loc(BulkLifecycleItem, ("bogus",)) is BulkLifecycleItem
+
+
+def test_model_for_loc_returns_none_for_an_unresolvable_path():
+    """A path that runs through a non-model field resolves to nothing.
+
+    ``None`` is the signal to leave the envelope as it was, so an
+    unresolvable location costs a caller nothing it has today.
+    """
+    assert _model_for_loc(IngestRequest, ("source", "bogus")) is None
+
+
+def test_model_for_loc_returns_none_for_a_multi_model_union():
+    """A union with two model arms is not resolved, deliberately.
+
+    Which arm refused is not knowable from the location alone -- the
+    validator tried both -- so picking one would name a field set the
+    caller was not refused against. No request model has this shape today;
+    the walk declines it rather than growing a wrong answer for the day one
+    does.
+    """
+
+    class _Left(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        left: str | None = None
+
+    class _Right(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        right: str | None = None
+
+    class _Either(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        arm: _Left | _Right | None = None
+
+    assert _model_for_loc(_Either, ("arm", "bogus")) is None
+
+
+def _ingest_nested_error() -> ValidationError:
+    """The error raised by an undeclared key inside ``relocated_from``.
+
+    Four ``missing`` errors for the pointer's required fields are reported
+    ahead of the ``extra_forbidden`` one, which is why the rule scans every
+    error rather than reading the first.
+    """
+    with pytest.raises(ValidationError) as exc_info:
+        IngestRequest(source="/tmp/x.md", relocated_from={"bogus": 1})
+    return exc_info.value
+
+
+def test_nested_undeclared_key_names_the_refusing_models_fields():
+    """The refusal carries the field set of the model that refused.
+
+    Naming the offending key alone costs a round trip, and the operating
+    rule forbids retrying a refused call with different phrasing, so the
+    accepted set has to arrive with the refusal.
+    """
+    err = validation_error_envelope(_ingest_nested_error(), root_model=IngestRequest)
+
+    assert err.code == "undeclared_key"
+    assert err.status_code == 400
+    assert err.detail["parameter"] == "relocated_from"
+    assert err.detail["key"] == "bogus"
+    assert err.detail["recognized"] == sorted(RelocationPointer.model_fields)
+
+
+def test_the_example_is_built_from_the_recognized_names_at_the_refusing_location():
+    """The example shows the accepted names at the place they go.
+
+    Asserting only that an ``example`` is present passes against a constant
+    string, and against one built from the wrong model -- which is the whole
+    property the renderer claims. So the names it shows are checked against
+    ``recognized``, and every name it shows is checked to be one of them: a
+    fragment naming a key the refusal does not accept would send the caller
+    back for a second round trip, which is the cost this envelope exists to
+    remove. The location is asserted too, because the accepted names alone
+    leave the object they belong to unplaced.
+    """
+    err = validation_error_envelope(_ingest_nested_error(), root_model=IngestRequest)
+    example = err.detail["example"]
+    recognized = err.detail["recognized"]
+
+    assert example.startswith(f"{err.detail['parameter']}=")
+    shown = re.findall(r'"([^"]+)":', example)
+    assert shown, example
+    assert set(shown) <= set(recognized), (shown, recognized)
+    assert shown == recognized[: len(shown)]
+    assert err.detail["key"] not in shown
+
+
+def test_nested_undeclared_key_without_a_root_model_stays_invalid_parameter():
+    """Without a root model the envelope is exactly what it was.
+
+    The same exception object as the case above, so the only difference is
+    the argument. A rule that fired unconditionally would still pass a test
+    that built its own error and happened to be unresolvable.
+    """
+    err = validation_error_envelope(_ingest_nested_error())
+
+    assert err.code == "invalid_parameter"
+    assert isinstance(err, InvalidParameterError)
+
+
+def test_the_nested_rule_scans_past_earlier_unrelated_errors():
+    """The undeclared key wins over the ``missing`` errors reported before it.
+
+    ``_generic_parameter_error`` reports ``errors()[0]``, which here is a
+    ``missing`` complaint about a field the caller never meant to send. An
+    implementation placed there would name the wrong problem, and would do
+    so only for the locations where Pydantic happens to order the errors
+    that way.
+    """
+    errors = _ingest_nested_error().errors()
+    assert errors[0]["type"] != "extra_forbidden", "fixture no longer exercises the ordering"
+
+    err = validation_error_envelope(_ingest_nested_error(), root_model=IngestRequest)
+
+    assert err.code == "undeclared_key"
+    assert "missing" not in err.message.lower()
+
+
+def test_filter_scoped_code_still_wins_over_the_nested_rule():
+    """``filters`` keeps its own code now that a general one exists.
+
+    ``RetrievalFilters`` resolves through the walk like any other nested
+    model, so the general rule would answer for it too and retire
+    ``unknown_filter_key`` without a word. The order of the branches is
+    what prevents that, and nothing else states it.
+    """
+    err = validation_error_envelope(
+        _discover_error(query="x", filters={"nope": 1}), root_model=DiscoverRequest
+    )
+
+    assert err.code == "unknown_filter_key"
+    assert err.detail["valid_keys"]

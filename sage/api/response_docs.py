@@ -52,6 +52,12 @@ REQUEST_400_SENTENCES: dict[str, str] = {
         "`unknown_parameter`: the request carries a body field or query parameter "
         "the operation does not declare."
     ),
+    "undeclared_key": (
+        "`undeclared_key`: an object nested inside the request carries a key its "
+        "schema does not declare. `detail.parameter` locates the object, "
+        "`detail.key` names the key, and `detail.recognized` lists the names that "
+        "object does accept."
+    ),
 }
 
 

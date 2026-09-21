@@ -570,3 +570,143 @@ async def test_omitted_source_type_succeeds_via_transport(vault_services):
     )
     assert result.get("error") is None, f"Expected success; got {result}"
     assert result["source_type"] == "markdown"
+
+
+# ---------------------------------------------------------------------------
+# The inverse misplacement: a top-level field spelled inside ``metadata``
+# ---------------------------------------------------------------------------
+
+
+def _top_level_only_fields() -> list[str]:
+    """The ``IngestRequest`` fields that never belong inside ``metadata``."""
+    from sage.models.schemas import INGEST_METADATA_SPELLINGS, IngestRequest
+
+    return sorted(set(IngestRequest.model_fields) - set(INGEST_METADATA_SPELLINGS))
+
+
+async def test_a_top_level_field_inside_metadata_is_refused(vault_services):
+    """``tier3_metadata`` nested under ``metadata`` names where it belongs.
+
+    The same field name is required at the top level on ingest and inside
+    ``filters`` on search, so a caller who has just written one has every
+    reason to try the other spelling here. Refusing it with the position it
+    does belong at is the floor; the field report's call was refused with
+    "Input should be a valid string", which names neither the position nor
+    the shape.
+    """
+    result = await mcp.call_tool(
+        "ingest_document",
+        {
+            "vault_id": "test_vault",
+            "source": "test/sample.md",
+            "source_type": "markdown",
+            "metadata": {"tier3_metadata": {"ticket_id": "T-1"}},
+        },
+    )
+    envelope = _decode_envelope(result)
+
+    assert envelope["error"] == "misplaced_top_level_field"
+    assert envelope["detail"]["fields"] == ["tier3_metadata"]
+    assert "tier3_metadata" in envelope["detail"]["recognized"]
+    assert "tier3_metadata" in envelope["detail"]["example"]
+
+
+async def test_a_top_level_field_inside_metadata_is_refused_even_when_string_valued(
+    vault_services,
+):
+    """A string value takes the same refusal, and this is the case that bites.
+
+    ``metadata`` is declared as ``str | list[str]``, so a dict-valued
+    ``tier3_metadata`` already fails -- as a complaint about the value's type.
+    A string-valued one validates cleanly, is stored under a name nothing
+    reads, and leaves the typed ``tier3_metadata`` argument unset. The caller
+    sees a successful ingest and nothing tells them the field they supplied
+    had no effect -- the same failure the top-level guard above closes for
+    the converse spelling.
+
+    Anti-coincidental-pass: a guard written against the *type* passes the
+    test above and fails this one, which is the only one of the pair that
+    covers the silent case.
+    """
+    result = await mcp.call_tool(
+        "ingest_document",
+        {
+            "vault_id": "test_vault",
+            "source": "test/sample.md",
+            "source_type": "markdown",
+            "metadata": {"tier3_metadata": "T-1"},
+        },
+    )
+    envelope = _decode_envelope(result)
+
+    assert envelope["error"] == "misplaced_top_level_field"
+    assert envelope["detail"]["fields"] == ["tier3_metadata"]
+
+
+@pytest.mark.parametrize("field", _top_level_only_fields())
+async def test_every_top_level_only_field_is_guarded(vault_services, field):
+    """Each name the request declares is refused inside ``metadata``.
+
+    The set is derived rather than listed, so a field added to the request
+    later is guarded without anyone remembering to add it here.
+    """
+    result = await mcp.call_tool(
+        "ingest_document",
+        {
+            "vault_id": "test_vault",
+            "source": "test/sample.md",
+            "source_type": "markdown",
+            "metadata": {field: "x"},
+        },
+    )
+    envelope = _decode_envelope(result)
+
+    assert envelope["error"] == "misplaced_top_level_field", f"{field} was not guarded"
+    assert envelope["detail"]["fields"] == [field]
+
+
+@pytest.mark.parametrize("spelling", ["title", "version_label", "project", "date", "codes", "tags"])
+async def test_a_recognized_metadata_spelling_is_not_guarded(vault_services, spelling):
+    """The names the ingest actually honours inside ``metadata`` still work.
+
+    Asserted as a successful ingest rather than as the absence of this one
+    refusal: a guard derived from the wrong constant would refuse ``date`` or
+    ``codes``, which the ingest reads, and "not refused as
+    ``misplaced_top_level_field``" would not notice a different refusal
+    taking its place.
+    """
+    value = {"codes": ["PV06"], "tags": ["alpha"], "date": "2026-08-28"}.get(spelling, "x")
+    result = _decode_envelope(
+        await mcp.call_tool(
+            "ingest_document",
+            {
+                "vault_id": "test_vault",
+                "source": "test/sample.md",
+                "source_type": "markdown",
+                "metadata": {spelling: value},
+            },
+        )
+    )
+
+    assert result.get("error") is None, result
+
+
+async def test_no_document_is_created_when_the_inverse_guard_fires(vault_services):
+    """The refusal precedes the ingest, as the top-level guard's does.
+
+    A validator placed on the request model runs before the service is
+    reached; one placed in the tool body after the ingest await would satisfy
+    every assertion above and fail this.
+    """
+    await mcp.call_tool(
+        "ingest_document",
+        {
+            "vault_id": "test_vault",
+            "source": "test/sample.md",
+            "source_type": "markdown",
+            "metadata": {"tier3_metadata": "T-1"},
+        },
+    )
+
+    catalog = _parse(await search("test_vault", mode="catalog", limit=50))
+    assert catalog["total_available"] == 0, catalog

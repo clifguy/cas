@@ -39,6 +39,7 @@ from sage.app import _initialize_services, create_app
 from sage.config import SageCoreConfig, VaultConfig
 from sage.mcp_init import SAGEServices
 from sage.models.enums import SourceType
+from sage.models.schemas import BatchIngestFileMetadata, BatchIngestParsedMetadata
 from sage.services import batch_ingest_stream
 from sage.services.batch_ingest import BatchIngestService, FileDescriptor
 from sage.services.batch_ingest_stream import UploadedFile, stream_uploaded_batch_ingest
@@ -1371,12 +1372,38 @@ def _spy_on_staging(monkeypatch) -> list[object]:
 
 
 def _assert_invalid_parameter(resp: httpx.Response, parameter: str, value: object) -> None:
+    """The envelope for a batch-boundary defect that is not an undeclared name.
+
+    An entry supplying both ``codes`` and ``tags`` keeps this shape: the two
+    names are declared, so nothing about the accepted set would help, and what
+    the caller needs is the location and the constraint.
+    """
     assert resp.status_code == 422, resp.text
     assert "application/json" in resp.headers.get("content-type", ""), resp.headers
     body = resp.json()
     assert body["code"] == "invalid_parameter", body
     assert body["detail"]["parameter"] == parameter, body
     assert body["detail"]["value"] == value, body
+
+
+def _assert_undeclared_key(
+    resp: httpx.Response, parameter: str, key: str, recognized: object
+) -> None:
+    """The refusal names where the key sat and what the object there accepts.
+
+    ``recognized`` is asserted against the model's own field names, computed
+    by the caller, never against a literal: a list written out here would
+    agree with an implementation that had drifted from the model in exactly
+    the same way.
+    """
+    assert resp.status_code == 400, resp.text
+    assert "application/json" in resp.headers.get("content-type", ""), resp.headers
+    body = resp.json()
+    assert body["code"] == "undeclared_key", body
+    assert body["detail"]["parameter"] == parameter, body
+    assert body["detail"]["key"] == key, body
+    assert body["detail"]["recognized"] == sorted(recognized), body
+    assert body["detail"]["example"], body
 
 
 async def test_b25_undeclared_parsed_metadata_key_is_refused_before_staging(batch_app, monkeypatch):
@@ -1408,7 +1435,12 @@ async def test_b25_undeclared_parsed_metadata_key_is_refused_before_staging(batc
         )
     after = await state_snapshot(services.graph_store, services.content_store)
 
-    _assert_invalid_parameter(refused, "files.1.parsed_metadata.bogus_field_x", 1)
+    _assert_undeclared_key(
+        refused,
+        "files.1.parsed_metadata",
+        "bogus_field_x",
+        BatchIngestParsedMetadata.model_fields,
+    )
     assert calls == []
     assert_state_unchanged(before, after)
 
@@ -1424,13 +1456,14 @@ async def test_b25_undeclared_parsed_metadata_key_is_refused_before_staging(batc
     assert summary["documents_created"]["new"] == 2, summary
 
 
-async def test_b26_undeclared_file_entry_key_is_invalid_parameter(batch_app, monkeypatch):
+async def test_b26_undeclared_file_entry_key_names_the_accepted_set(batch_app, monkeypatch):
     """An undeclared key on a file entry itself is refused the same way.
 
     Anti-coincidental-pass: the envelope's own validation already rejects
-    this key, so the assertion that matters is the code and location -- the
-    generic ``invalid_batch_metadata`` would fail them. The control proves
-    the rest of the request is sound.
+    this key, so the assertions that matter are the code, the location and
+    the accepted set -- the generic ``invalid_batch_metadata`` would fail all
+    three, and a refusal naming only the key would fail the third. The
+    control proves the rest of the request is sound.
     """
     app, vault_id, _config = batch_app
     calls = _spy_on_staging(monkeypatch)
@@ -1445,7 +1478,9 @@ async def test_b26_undeclared_file_entry_key_is_invalid_parameter(batch_app, mon
                 )
             },
         )
-        _assert_invalid_parameter(refused, "files.1.bogus_field_x", "x")
+        _assert_undeclared_key(
+            refused, "files.1", "bogus_field_x", BatchIngestFileMetadata.model_fields
+        )
         assert calls == []
 
         control = await client.post(
@@ -1498,10 +1533,10 @@ async def test_b27_undeclared_key_location_matches_the_mcp_tool(batch_app, entri
     entry-before-parsed-metadata ordering against a selector that sorted on the
     key name alone.
     """
-    from sage.api.errors import InvalidParameterError
+    from sage.api.errors import UndeclaredKeyError
     from sage.app_tools import _refuse_undeclared_entry_fields
 
-    with pytest.raises(InvalidParameterError) as expected:
+    with pytest.raises(UndeclaredKeyError) as expected:
         _refuse_undeclared_entry_fields([{"file_path": "x.md", **entry} for entry in entries])
 
     app, vault_id, _config = batch_app
@@ -1512,9 +1547,11 @@ async def test_b27_undeclared_key_location_matches_the_mcp_tool(batch_app, entri
             data={"metadata": json.dumps({"infer_edges": False, "files": entries})},
         )
 
-    _assert_invalid_parameter(
-        resp, expected.value.detail["parameter"], expected.value.detail["value"]
-    )
+    body = resp.json()
+    assert resp.status_code == 400, resp.text
+    assert body["code"] == "undeclared_key", body
+    assert body["detail"]["parameter"] == expected.value.detail["parameter"], body
+    assert body["detail"]["key"] == expected.value.detail["key"], body
 
 
 async def test_b28_title_omitted_or_null_is_seeded_from_the_stem(batch_app):
@@ -1578,10 +1615,12 @@ async def test_b28_title_omitted_or_null_is_seeded_from_the_stem(batch_app):
     ],
 )
 async def test_b29_other_envelope_defects_stay_invalid_batch_metadata(batch_app, envelope):
-    """Only an undeclared key in a file entry moves to ``invalid_parameter``.
+    """Only an undeclared key in a file entry moves to ``undeclared_key``.
 
     Anti-coincidental-pass: an implementation that translated every envelope
-    validation failure would report these as ``invalid_parameter`` too.
+    validation failure would report these as ``undeclared_key`` too. The
+    envelope-root key is the sharpest of the three -- it *is* an undeclared
+    key, one level above the entries, and it keeps the envelope's own code.
     """
     app, vault_id, _config = batch_app
     async with _client(app) as client:
@@ -1611,7 +1650,12 @@ async def test_b31_undeclared_key_wins_over_a_malformed_value(batch_app):
             data={"metadata": json.dumps(envelope)},
         )
 
-    _assert_invalid_parameter(resp, "files.0.parsed_metadata.bogus_field_x", 1)
+    _assert_undeclared_key(
+        resp,
+        "files.0.parsed_metadata",
+        "bogus_field_x",
+        BatchIngestParsedMetadata.model_fields,
+    )
 
 
 async def test_b30_first_party_upload_envelope_is_accepted(batch_app):
@@ -2226,9 +2270,7 @@ async def test_unknown_entry_key_precedes_malformed_digest(
             [path],
             [{"source_type": "markdown", "sha256": "bad", "unknown": True}],
         )
-        assert response.status_code == 422
-        assert response.json()["code"] == "invalid_parameter"
-        assert response.json()["detail"]["parameter"] == "files.0.unknown"
+        _assert_undeclared_key(response, "files.0", "unknown", BatchIngestFileMetadata.model_fields)
     else:
         async with _client(app) as client:
             response = await client.post(
