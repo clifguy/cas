@@ -350,3 +350,159 @@ def test_root_strictness_control_rejects_a_permissive_mapping() -> None:
     from tests.sage.test_rest_request_strictness_conformance import _root_refuses_unknown_keys
 
     assert not _root_refuses_unknown_keys(RootModel[dict[str, Any]])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool_name,canonical,alias,extra",
+    [
+        ("get_document", "document_id", "doc_id", {}),
+        ("read_projection", "document_id", "doc_id", {}),
+        ("read_section", "document_id", "doc_id", {"heading_path": ""}),
+        ("list_headings", "document_id", "doc_id", {}),
+        ("traverse", "start_id", "document_id", {}),
+        ("chain", "document_id", "doc_id", {"edge_type": "supersedes"}),
+    ],
+)
+@pytest.mark.parametrize("ambiguous", [False, True])
+async def test_advertised_schema_accepts_actual_identifier_refusals(
+    tool_name: str,
+    canonical: str,
+    alias: str,
+    extra: dict,
+    ambiguous: bool,
+) -> None:
+    import json
+
+    from sage.mcp_server import build_partitioned_server
+
+    server = build_partitioned_server("sage")
+    tool = next(tool for tool in await server.list_tools() if tool.name == tool_name)
+    arguments = {"vault_id": "test", **extra}
+    if ambiguous:
+        arguments.update({canonical: "12345678_document", alias: "87654321_document"})
+    content = await server.call_tool(tool_name, arguments)
+    body = json.loads(content[0].text)
+    assert body["error"] == (
+        "ambiguous_document_identifier" if ambiguous else "missing_document_identifier"
+    )
+    jsonschema.Draft202012Validator(tool.meta[META_KEY]).validate(body)
+
+
+@pytest.mark.asyncio
+async def test_cross_tool_prose_does_not_declare_an_unreachable_refusal() -> None:
+    from sage.mcp_server import build_partitioned_server
+
+    tools = {tool.name: tool for tool in await build_partitioned_server("sage").list_tools()}
+    schema = tools["list_headings"].meta[META_KEY]
+    codes = {
+        schema["$defs"][ref["$ref"].rsplit("/", 1)[-1]]["properties"]["error"]["const"]
+        for ref in schema["oneOf"]
+    }
+    assert "document_not_found" in codes
+    assert "no_projection" in codes
+    assert "heading_not_found" not in codes
+
+
+def test_live_discriminator_resolves_every_authoritative_code() -> None:
+    source = specification("sage/sage_core_api.openapi.yaml")["components"]["schemas"]
+    live = live_specification()["components"]["schemas"]
+    discriminator = live["ErrorResponse"]["discriminator"]
+    assert discriminator["propertyName"] == "code"
+    assert set(discriminator["mapping"]) == set(source["ErrorResponse"]["discriminator"]["mapping"])
+    for code, ref in discriminator["mapping"].items():
+        assert ref.startswith("#/components/schemas/")
+        assert live[ref.rsplit("/", 1)[-1]]["properties"]["code"]["const"] == code
+    # Unknown extensions are deliberately outside the closed known-code mapping.
+    assert "downstream_extension" not in discriminator["mapping"]
+    validator(live_specification()).validate({"code": "downstream_extension", "message": "bad"})
+
+
+def test_root_strictness_requires_an_accepted_specimen_for_every_branch() -> None:
+    from pydantic import BaseModel, ConfigDict, RootModel
+
+    from tests.sage.test_rest_request_strictness_conformance import _root_refuses_unknown_keys
+
+    class Permissive(BaseModel):
+        model_config = ConfigDict(extra="allow")
+        document_id: str
+
+    class Strict(BaseModel):
+        model_config = ConfigDict(extra="forbid")
+        heading_path: str
+
+    for annotation in (Permissive, Permissive | Strict, Strict | Permissive):
+        model = RootModel[annotation]
+        admitted = model.model_validate({"document_id": "12345678_document", "fabricated_key": 1})
+        assert admitted.model_dump()["fabricated_key"] == 1
+        assert not _root_refuses_unknown_keys(model)
+    assert _root_refuses_unknown_keys(RootModel[Strict])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool_name,extra",
+    [
+        ("get_document", {}),
+        ("read_projection", {}),
+        ("read_section", {"heading_path": ""}),
+        ("list_headings", {}),
+    ],
+)
+async def test_advertised_schema_accepts_actual_missing_document_service_refusal(
+    monkeypatch: pytest.MonkeyPatch,
+    tool_name: str,
+    extra: dict,
+) -> None:
+    import json
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from sage import mcp_server
+    from sage.services.documents import DocumentsService
+    from sage.services.utilities import UtilitiesService
+
+    graph = SimpleNamespace(
+        get_document=AsyncMock(return_value=None), list_all_documents=AsyncMock(return_value=[])
+    )
+    services = SimpleNamespace(
+        documents_service=DocumentsService(graph, None),
+        utilities_service=UtilitiesService(graph, None, None, None),
+    )
+    monkeypatch.setitem(mcp_server._vaults, "test", services)
+    server = mcp_server.build_partitioned_server("sage")
+    tool = next(tool for tool in await server.list_tools() if tool.name == tool_name)
+    content = await server.call_tool(
+        tool_name,
+        {
+            "vault_id": "test",
+            "document_id": "12345678_document",
+            **extra,
+        },
+    )
+    body = json.loads(content[0].text)
+    assert body["error"] == "document_not_found"
+    assert body["detail"]["ever_existed"] is False
+    graph.get_document.assert_awaited_with("12345678_document")
+    jsonschema.Draft202012Validator(tool.meta[META_KEY]).validate(body)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", ["sage", "sage_maint"])
+async def test_mcp_discriminator_mappings_select_every_advertised_family(surface: str) -> None:
+    from sage.mcp_server import build_partitioned_server
+
+    for tool in await build_partitioned_server(surface).list_tools():
+        schema = tool.meta[META_KEY]
+        mapping = schema["discriminator"]["mapping"]
+        assert set(mapping.values()) == {branch["$ref"] for branch in schema["oneOf"]}
+        for code, ref in mapping.items():
+            assert ref.startswith("#/$defs/")
+            assert schema["$defs"][ref.rsplit("/", 1)[-1]]["properties"]["error"]["const"] == code
+
+
+def test_unregistered_error_contract_cannot_silently_publish_common_families() -> None:
+    from sage.models.error_contract import tool_error_schema
+
+    with pytest.raises(KeyError, match="undeclared_tool"):
+        tool_error_schema("invalid_parameter", "undeclared_tool")

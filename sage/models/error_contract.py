@@ -162,32 +162,12 @@ def select_detail(code: str, detail: Any, models: dict) -> Any:
 
 @lru_cache(maxsize=256)
 def tool_error_schema(description: str, tool_name: str = "") -> dict:
-    """Publish documented families plus errors shared by argument/routing boundaries."""
-    common = {"internal_error", "invalid_parameter", "unknown_parameter", "vault_not_found"}
-    common.update(
-        code
-        for code in CODE_SCHEMAS
-        if code.startswith("invalid_")
-        and code
-        in {
-            "invalid_document_id",
-            "invalid_vault_id",
-            "invalid_edge_id",
-            "invalid_sha256",
-            "invalid_document_date",
-            "invalid_user_id",
-        }
-    )
-    codes = common | {
-        code
-        for code in CODE_SCHEMAS
-        if re.search(r"(?<!\w)" + re.escape(code) + r"(?!\w)", description)
-    }
-    codes.update(
-        code
-        for code, ref in CODE_SCHEMAS.items()
-        if tool_name in SCHEMAS[ref.rsplit("/", 1)[-1]].get("x-mcp-tools", [])
-    )
+    """Publish explicitly declared tool families, independent of narrative prose.
+
+    The authoritative table includes boundary, service and delegated/callback
+    refusals. An unregistered tool fails rather than receiving a partial schema.
+    """
+    codes = SCHEMAS["ErrorResponse"]["x-mcp-tool-errors"][tool_name]
     definitions = {}
 
     def local(node: Any) -> Any:
@@ -213,5 +193,8 @@ def tool_error_schema(description: str, tool_name: str = "") -> dict:
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "oneOf": choices,
         "$defs": definitions,
-        "discriminator": {"propertyName": "error"},
+        "discriminator": {
+            "propertyName": "error",
+            "mapping": {code: choices[i]["$ref"] for i, code in enumerate(sorted(codes))},
+        },
     }

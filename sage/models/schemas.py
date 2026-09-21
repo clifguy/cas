@@ -6036,7 +6036,13 @@ class ErrorResponse(BaseModel):
     def __get_pydantic_json_schema__(cls, core_schema: Any, handler: Any) -> dict:
         schema = handler(_ERROR_ENVELOPE_ADAPTER.core_schema)
         schema["oneOf"] = schema.pop("anyOf")
-        schema["discriminator"] = {"propertyName": "code"}
+        mapping = {}
+        for branch in schema["oneOf"]:
+            resolved = handler.resolve_ref_schema(branch)
+            code = resolved.get("properties", {}).get("code", {}).get("const")
+            if code is not None:
+                mapping[code] = branch["$ref"]
+        schema["discriminator"] = {"propertyName": "code", "mapping": mapping}
         return schema
 
     @model_validator(mode="before")

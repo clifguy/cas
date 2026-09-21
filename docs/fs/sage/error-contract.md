@@ -19,9 +19,12 @@ Every MCP tool publishes `_meta["org.sage/errorSchema"]` through `tools/list`.
 It is a JSON Schema with local `$defs` references and the existing `error`
 discriminator. It describes the error JSON carried inside text content, not
 structured successful output; `outputSchema` continues to describe successes.
-Each tool carries its documented error families and common argument/routing
-refusals. An envelope's `x-mcp-tools` supplement records a reachable family not
-spelled out in that tool's prose. Authentication and byte-transfer HTTP endpoints
+The authoritative `ErrorResponse.x-mcp-tool-errors` table enumerates each
+registered tool's boundary, service and delegated/callback families. Prose does
+not select families: a discussion of a different tool's error is not a declaration.
+Both surfaces publish explicit discriminator mappings for their known codes.
+Unknown REST extensions use the extension union arm without a mapped discriminator
+entry; JSON Schema union validation remains available for those downstream codes. Authentication and byte-transfer HTTP endpoints
 retain their own transport contracts.
 
 The catalog is regenerated with `python -m scripts.dump_mcp_catalog --write`.

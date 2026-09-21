@@ -330,11 +330,35 @@ def test_every_app_operation_declares_the_refusal():
 
 
 def _root_refuses_unknown_keys(model: type[BaseModel]) -> bool:
-    """A mapping root must actually reject an undeclared key, not claim a config."""
+    """Reject extras only after accepting each branch's otherwise identical input."""
     from pydantic import ValidationError
 
-    try:
-        model.model_validate({"expected": "digest", "fabricated_key": 1})
-    except ValidationError:
-        return True
-    return False
+    from tests.sage.test_wire_shape_conformance import _error_schema_sentinel
+
+    schema = model.model_json_schema()
+    definitions = schema.get("$defs", {})
+
+    def branches(node: dict) -> list[dict]:
+        if "$ref" in node:
+            return branches(definitions[node["$ref"].rsplit("/", 1)[-1]])
+        for keyword in ("oneOf", "anyOf"):
+            if keyword in node:
+                return [branch for child in node[keyword] for branch in branches(child)]
+        return [node]
+
+    specimens = [_error_schema_sentinel(branch, definitions) for branch in branches(schema)]
+    if not specimens:
+        return False
+    for specimen in specimens:
+        if not isinstance(specimen, dict):
+            return False
+        try:
+            model.model_validate(specimen)
+        except ValidationError:
+            return False  # Invalid setup is not evidence of unknown-key refusal.
+        try:
+            model.model_validate({**specimen, "fabricated_key": 1})
+        except ValidationError:
+            continue
+        return False
+    return True
