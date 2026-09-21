@@ -412,6 +412,35 @@ async def test_every_undeclared_item_field_is_named_alike_on_both_surfaces(
     assert http_body["detail"]["keys"] == ["aa", "zz"]
 
 
+async def test_a_later_items_undeclared_name_is_noted_alike_on_both_surfaces(
+    vault_services, http_client
+):
+    """Two items each carrying an undeclared name: the first is refused, and both
+    surfaces say the other is reported once it is repaired.
+
+    The tool validates one item at a time and stops at the first that fails,
+    while HTTP validates the whole body, so a tool that looked only inside the
+    failing item would report the same detail with the note missing.
+    """
+    items = [
+        {"document_id": "00000000_absent_document", "action": "archive", "zz": 1},
+        {"document_id": "00000000_absent_document", "action": "archive", "aa": 1},
+    ]
+    mcp_envelope = _decode_envelope(
+        await mcp.call_tool("update_lifecycles", {"vault_id": VAULT_ID, "items": items})
+    )
+    resp = await http_client.post(f"/sage_vaults/{VAULT_ID}/lifecycles", json={"items": items})
+    http_body = resp.json()
+
+    assert mcp_envelope["error"] == http_body["code"] == "undeclared_key"
+    assert mcp_envelope["detail"] == http_body["detail"]
+    assert http_body["detail"]["parameter"] == "items.0"
+    assert mcp_envelope["message"] == http_body["message"]
+    assert http_body["message"].endswith(
+        "Undeclared keys at other locations are reported once this object is repaired."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Negative control -- the filter-scoped codes keep their distinct payloads
 # ---------------------------------------------------------------------------

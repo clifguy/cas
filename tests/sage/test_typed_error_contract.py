@@ -248,6 +248,12 @@ def test_every_declared_optional_detail_key_is_emitted() -> None:
     covered by the constructor's own optional parameter rather than listed as
     an exception. A key no constructor can set is a contract wider than the
     behaviour, which a generated client would branch on for nothing.
+
+    Where one constructor serves several codes, chosen by an argument, the
+    reflection above builds one of them and a hand-written emission builds
+    each other. Such a constructor refuses an optional argument whose key the
+    chosen code does not declare, so the hand-written emission omitting it is
+    the only shape that code can take rather than one the fixture chose.
     """
     from sage.models.error_contract import CODE_SCHEMAS
 
@@ -269,6 +275,24 @@ def test_every_declared_optional_detail_key_is_emitted() -> None:
         if key not in emitted.get(code, set())
     )
     assert never_set == [], f"declared optional detail keys no emission sets: {never_set}"
+
+
+def test_the_destination_half_refuses_a_second_digest() -> None:
+    """``relocated_from_provenance_mismatch`` declares one digest, so its
+    constructor refuses a second rather than emitting a key the family forbids.
+
+    The origin half, which does account for two, still carries it.
+    """
+    from sage.api.errors import RelocationProvenanceMismatchError
+
+    with pytest.raises(ValueError):
+        RelocationProvenanceMismatchError(
+            "relocated_from", "sha256:aa", "sha256:bb", also_accounted="sha256:cc"
+        )
+    origin = RelocationProvenanceMismatchError(
+        "relocated_to", "sha256:aa", "sha256:bb", also_accounted="sha256:cc"
+    )
+    assert origin.detail["also_accounted_content_hash"] == "sha256:cc"
 
 
 def test_packaged_projection_and_application_mirror_match_authority() -> None:

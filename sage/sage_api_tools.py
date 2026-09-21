@@ -245,7 +245,9 @@ def _validated_items(model: type[BaseModel], items: list) -> list:
 
     Other failures keep the envelope and the location they already had. Only
     an undeclared key is relocated, because only it is built here rather than
-    by the item's own validator.
+    by the item's own validator. Its note that other objects carry undeclared
+    keys looks past the failing item to the rest of the batch, as the HTTP
+    surface's whole-body validation does.
     """
     validated = []
     for index, item in enumerate(items):
@@ -259,10 +261,20 @@ def _validated_items(model: type[BaseModel], items: list) -> list:
                     parameter=f"items.{index}" + (f".{located}" if located else ""),
                     keys=envelope.detail["keys"],
                     recognized=envelope.detail["recognized"],
-                    elsewhere=envelope.elsewhere,
+                    elsewhere=envelope.elsewhere
+                    or any(_carries_undeclared_key(model, later) for later in items[index + 1 :]),
                 ) from exc
             raise
     return validated
+
+
+def _carries_undeclared_key(model: type[BaseModel], item: object) -> bool:
+    """Whether validating ``item`` against ``model`` refuses an undeclared key."""
+    try:
+        model.model_validate(item)
+    except ValidationError as exc:
+        return isinstance(validation_error_envelope(exc, root_model=model), UndeclaredKeyError)
+    return False
 
 
 def register_sage_tools(

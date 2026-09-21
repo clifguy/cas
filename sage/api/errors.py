@@ -383,8 +383,9 @@ class RelocationProvenanceMismatchError(SAGEError):
 
     ``also_accounted`` carries the origin's second admissible digest when
     it has one, so a caller refused here can see both values rather than
-    inferring the other. Absent on the destination half, which has only
-    one.
+    inferring the other. The destination half accounts for exactly one, so
+    its family declares no second digest and the constructor refuses one
+    rather than emit a key that family forbids.
     """
 
     def __init__(
@@ -394,6 +395,8 @@ class RelocationProvenanceMismatchError(SAGEError):
         document_hash: str,
         also_accounted: str | None = None,
     ) -> None:
+        if also_accounted is not None and field == "relocated_from":
+            raise ValueError("the relocated_from half accounts for exactly one digest")
         accounted = f"{document_hash} or {also_accounted}" if also_accounted else document_hash
         detail = {
             "field": field,
@@ -1085,6 +1088,8 @@ class UndeclaredKeyError(SAGEError):
         elsewhere: bool = False,
     ) -> None:
         named = sorted(set(keys))
+        if not named:
+            raise ValueError("an undeclared_key refusal names at least one undeclared key")
         self.elsewhere = elsewhere
         located = [f"{parameter}.{key}" if parameter else key for key in named]
         accepted = sorted(recognized)
@@ -1097,7 +1102,9 @@ class UndeclaredKeyError(SAGEError):
         )
         message = f"{subject} Accepted: {accepted!r}. Example: {example}"
         if elsewhere:
-            message += " Undeclared keys at other locations are reported once these are repaired."
+            message += (
+                " Undeclared keys at other locations are reported once this object is repaired."
+            )
         super().__init__(
             "undeclared_key",
             message,

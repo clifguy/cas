@@ -577,5 +577,5 @@ def test_keys_at_another_location_are_left_to_a_later_refusal_and_said_so():
     assert err.detail["parameter"] == "first"
     assert err.detail["keys"] == ["aa", "zz"]
     assert err.message.endswith(
-        "Undeclared keys at other locations are reported once these are repaired."
+        "Undeclared keys at other locations are reported once this object is repaired."
     )

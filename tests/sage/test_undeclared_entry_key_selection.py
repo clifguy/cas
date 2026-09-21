@@ -66,7 +66,7 @@ def test_no_candidates_reports_nothing():
     assert undeclared_entry_key_error([], recognized_by_depth=_RECOGNIZED) is None
 
 
-_ELSEWHERE = "Undeclared keys at other locations are reported once these are repaired."
+_ELSEWHERE = "Undeclared keys at other locations are reported once this object is repaired."
 
 
 def test_every_key_at_the_chosen_location_is_named_once():
@@ -99,6 +99,16 @@ def test_a_single_location_carries_no_note_about_others():
     assert error.detail["keys"] == ["alpha", "zeta"]
     assert error.detail["key"] == "alpha"
     assert _ELSEWHERE not in error.message
+
+
+def test_a_refusal_naming_no_key_is_a_defect_at_construction():
+    """An empty key set is refused where the error is built, by name.
+
+    Otherwise it fails as an ``IndexError`` inside error construction, which a
+    surface reports as an internal error masking the refusal meant.
+    """
+    with pytest.raises(ValueError, match="at least one undeclared key"):
+        UndeclaredKeyError(parameter="files.0", keys=[], recognized=["entry_name"])
 
 
 def _conflict(candidates: list[tuple[int, object]]) -> tuple[str, object]:
