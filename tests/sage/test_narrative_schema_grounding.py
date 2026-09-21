@@ -646,8 +646,8 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "staging_edges": "graph-store table holding tier-2 edges awaiting review",
     },
     ("sage_core", "create_edges"): {
-        "deliverable_id": "example tier-3 metadata key in a worked example",
-        "template_id": "example tier-3 metadata key in a worked example",
+        "deliverable_id": "document-id placeholder in the worked derived_from example",
+        "template_id": "document-id placeholder in the worked derived_from example",
     },
     ("sage_core", "create_vault"): {
         "dict": "prose: the Python type of the config argument",

@@ -1,0 +1,9 @@
+classification: patch
+summary: >-
+  State the value an edge anchor takes on the create_edges MCP tool and the
+  create_edges OpenAPI operation: source_valid_from_version and
+  target_valid_from_version carry a document id in the endpoint's supersedes
+  lineage, not a version label, and a whole-document link passes the endpoint's
+  own id. The tool description gains a canonical references item beside the
+  derived_from one. Documentation only; anchor validation is unchanged.
+for_callers: ""
