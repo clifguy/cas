@@ -14,9 +14,7 @@ Three rules, held for every registered tool on every surface:
 - it carries no parameter block (``Args:`` and its aliases);
 - every top-level parameter carries a schema ``description``.
 
-``KNOWN_UNCONVERTED`` names the tools not yet brought under the rules. It only
-shrinks: a tool that now satisfies all three must leave it, and a tool added to
-the roster is held to the rules from registration.
+A tool added to the roster is held to the rules from registration.
 
 A compact error-mode list is a curated subset of the tool's published error
 table, so every tool, converted or not, is also held to naming only codes that
@@ -45,27 +43,6 @@ _ARGS_HEADER_RE: Final[re.Pattern[str]] = re.compile(
     re.MULTILINE,
 )
 
-#: Tools that do not yet satisfy the three rules. Remove a tool when it does.
-KNOWN_UNCONVERTED: Final[frozenset[str]] = frozenset(
-    {
-        "create_vault",
-        "export_projection",
-        "get_default_vault_config",
-        "get_vault_config",
-        "get_vault_stats",
-        "migrate_vault",
-        "optimize_vault_content_store",
-        "recompute_deferred_vault_abstracts",
-        "recompute_views",
-        "reload_vault",
-        "restore_vault_source_file",
-        "update_vault_config",
-        "verify_vault_drift",
-        "verify_vault_retrieval",
-        "verify_vault_source_files",
-    }
-)
-
 
 def _violations(tool: object) -> list[str]:
     description = tool.description or ""  # type: ignore[attr-defined]
@@ -91,8 +68,6 @@ def test_roster_is_the_whole_surface() -> None:
 
 @pytest.mark.parametrize("name", sorted(EXPECTED_SURFACE))
 def test_tool_fits_the_description_budget(name: str) -> None:
-    if name in KNOWN_UNCONVERTED:
-        pytest.skip("not yet converted; listed in KNOWN_UNCONVERTED")
     violations = _violations(published_tools()[name])
     assert not violations, f"{name}: " + "; ".join(violations)
 
@@ -145,12 +120,3 @@ def test_reported_not_refused_is_not_stale() -> None:
         listed = _listed_error_codes(tools[name].description or "")
         assert codes <= listed, f"{name}: exemption names unlisted codes {sorted(codes - listed)}"
         assert not codes & set(table.get(name, ())), f"{name}: exempted code is now refusable"
-
-
-def test_known_unconverted_is_not_stale() -> None:
-    """A listed tool still breaks a rule, and names a registered tool."""
-    tools = published_tools()
-    unknown = sorted(KNOWN_UNCONVERTED - set(tools))
-    assert not unknown, f"KNOWN_UNCONVERTED names unregistered tools: {unknown}"
-    conforming = sorted(n for n in KNOWN_UNCONVERTED if not _violations(tools[n]))
-    assert not conforming, f"now within budget; remove from KNOWN_UNCONVERTED: {conforming}"

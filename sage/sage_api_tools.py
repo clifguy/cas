@@ -60,14 +60,18 @@ from sage.models.schemas import (
     DocumentDateStr,
     DocumentIdStr,
     EdgeIdStr,
+    ExportProjectionRequest,
     HashCheckRequest,
     IngestPreview,
     IngestRequest,
+    OptimizeContentStoreRequest,
     ParseFilenameRequest,
+    ReabstractRequest,
     RecomputePipelineStartedResponse,
     RetrievalFilters,
     Sha256Str,
     SourceFileIntegrityRequest,
+    SourceFileRestoreRequest,
     TraverseRequest,
     UpdateVaultConfigRequest,
     UploadRecipe,
@@ -538,6 +542,15 @@ _SEARCH_RESPONSE_MODE = _discover_param(
 )
 
 
+#: How long an upload recipe's token lives, shared by the tools that mint one.
+_UPLOAD_RECIPE_LIFETIME = (
+    "An upload recipe's tokens lapse 900 seconds after issue by default "
+    "(its expires_at is authoritative), and the byte delivery and the "
+    "completion call must both finish inside that window. A token is also "
+    "reclaimed once 3 refused deliveries have been made against it by "
+    "default. A lapsed recipe cannot be resumed: re-issue this call."
+)
+
 _INGEST_SOURCE = _ingest_param(
     str | None,
     "source",
@@ -545,11 +558,7 @@ _INGEST_SOURCE = _ingest_param(
         "An absolute path is read only where the caller's machine is the "
         "machine running the SAGE server process; the retained copy is "
         "authoritative after ingest, and the path passed here is temporary. "
-        "An upload recipe's tokens lapse 900 seconds after issue by default "
-        "(its expires_at is authoritative), and the byte delivery and the "
-        "completion call must both finish inside that window. A token is also "
-        "reclaimed once 3 refused deliveries have been made against it by "
-        "default. A lapsed recipe cannot be resumed: re-issue this call."
+        + _UPLOAD_RECIPE_LIFETIME
     ),
 )
 
@@ -679,6 +688,76 @@ _INGEST_DRY_RUN = _ingest_param(
         "need the bytes wait for the call repeated with the transfer token."
     ),
 )
+
+# Maintenance-surface parameters. Each takes the text of the request field the
+# REST operation validates, where one exists.
+_RESTORE_SOURCE = model_param(
+    str | None, SourceFileRestoreRequest, "source", mcp=_UPLOAD_RECIPE_LIFETIME
+)
+_RESTORE_TRANSFER_TOKEN = model_param(
+    str | None,
+    SourceFileRestoreRequest,
+    "transfer_token",
+    mcp=(
+        "A repair that fails after redeeming the token leaves it redeemable "
+        "within its window, so a retry costs no second upload."
+    ),
+)
+_RESTORE_DOCUMENT_ID = model_param(str | None, SourceFileRestoreRequest, "document_id")
+_RESTORE_SHA256 = model_param(
+    str | None,
+    SourceFileRestoreRequest,
+    "sha256",
+    mcp=(
+        "A token seen by anyone not already holding the exact file therefore "
+        "admits nothing. Pass it again on the completion call."
+    ),
+)
+_INTEGRITY_CHECK_HASHES = model_param(bool, SourceFileIntegrityRequest, "check_hashes")
+_INTEGRITY_DOCUMENT_IDS = model_param(list[str] | None, SourceFileIntegrityRequest, "document_ids")
+_REABSTRACT_INCLUDE_PDF = model_param(bool, ReabstractRequest, "include_pdf")
+_OPTIMIZE_CLEANUP_DAYS = model_param(int, OptimizeContentStoreRequest, "cleanup_older_than_days")
+_EXPORT_OUTPUT_PATH = model_param(str, ExportProjectionRequest, "output_path")
+_EXPORT_DOCUMENT_ID = Annotated[
+    str, Field(description="Document whose stored projection is exported.")
+]
+_NEW_VAULT_ID = Annotated[
+    str,
+    Field(
+        description=(
+            "Identifier the new vault would carry. It shapes the storage and "
+            "brain roots in the returned scaffold; no vault with it need exist."
+        )
+    ),
+]
+_CREATE_VAULT_CONFIG = model_param(
+    dict,
+    CreateVaultRequest,
+    "config",
+    mcp=(
+        "Required sections: vault, document_types, lifecycle, "
+        "metadata_extraction, edge_inference; `get_default_vault_config` "
+        "serves a scaffold to start from."
+    ),
+)
+
+
+def _config_section(field: str) -> object:
+    """An ``update_vault_config`` section argument, described by its request field."""
+    return model_param(dict | None, UpdateVaultConfigRequest, field)
+
+
+_UPDATE_CONFIG_DRY_RUN = model_param(bool, UpdateVaultConfigRequest, "dry_run")
+_UPDATE_CONFIG_FORCE = Annotated[
+    bool,
+    Field(
+        description=(
+            "When true, proceed with destructive changes; warnings are returned "
+            "in the response. When false (default), destructive changes are "
+            "refused with destructive_config_change (409)."
+        )
+    ),
+]
 
 
 def _collect_misplaced(keys: tuple[str, ...], supplied: dict[str, object]) -> list[str]:
@@ -1952,7 +2031,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool(name="recompute_views", annotations=WRITE_DESTRUCTIVE)
-    async def recompute_views(vault_id: str) -> dict:
+    async def recompute_views(vault_id: VaultIdParam) -> dict:
         """Regenerate browsable symlink views (by_doc_type/, by_lifecycle/)
         in the vault's storage root.
 
@@ -1961,41 +2040,26 @@ def register_sage_tools(
         documents between doc_type or lifecycle buckets. The views are for
         human file-browser navigation; no SAGE tool consumes them.
 
-        ``doc_type=None`` exclusion: documents whose ``doc_type`` is null are
-        silently omitted from ``by_doc_type/`` (no ``<null>/`` bucket). The
-        sibling ``by_lifecycle/`` never drops, since every document has a
-        non-null ``lifecycle_status``. A document present in the graph but
-        absent from ``by_doc_type/`` is the signal that its ``doc_type`` is
-        unset — patch via ``update_metadata`` and re-call.
+        Documents whose ``doc_type`` is null are silently omitted from
+        ``by_doc_type/`` (no ``<null>/`` bucket); ``by_lifecycle/`` never
+        drops one. A document absent from ``by_doc_type/`` has its
+        ``doc_type`` unset -- patch via ``update_metadata`` and re-call.
 
-        Wipe-then-rebuild is NOT atomic: ``{storage_root}/views/`` is removed
-        in full and then rebuilt from the current document list. A
-        mid-rebuild failure (permission denial, missing symlink target)
-        leaves ``views/`` partially regenerated with no rollback; recovery is
-        a re-call once the cause is addressed. On an empty (or fully
-        filtered-out) vault the wipe runs and ``views/`` is not recreated;
-        the response carries ``views_generated=0`` — indistinguishable from
-        "every document filtered out", so check ``get_vault_stats`` if
-        the distinction matters.
+        Wipe-then-rebuild is NOT atomic: a mid-rebuild failure leaves
+        ``views/`` partially regenerated with no rollback; recovery is a
+        re-call once the cause is addressed. On an empty vault the wipe runs,
+        ``views/`` is not recreated, and the response carries
+        ``views_generated=0``.
 
         The views are browsable only by a caller that shares the server's
-        filesystem. Under the cloud profile the regeneration is refused with
-        ``caller_filesystem_unavailable`` before the existing views are
-        touched; ``search`` in catalog mode enumerates the same buckets by
-        ``doc_type`` or ``lifecycle_status`` instead.
+        filesystem. Under the cloud profile the regeneration is refused before
+        the existing views are touched; ``search`` in catalog mode enumerates
+        the same buckets by ``doc_type`` or ``lifecycle_status`` instead.
 
         Error modes:
-        - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
-          validation at the boundary.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-        - ``caller_filesystem_unavailable`` (501): the views are written into
-          the server's own vault tree, which a caller cannot browse under the
-          cloud profile; the refusal comes before the existing views are
-          touched.
-
-        Args:
-            vault_id: Target vault identifier.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
+        - ``caller_filesystem_unavailable`` (501): cloud profile; nothing is touched
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2040,59 +2104,33 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool(name="create_vault", annotations=WRITE_ADDITIVE)
-    async def create_vault(config: dict) -> dict:
+    async def create_vault(config: _CREATE_VAULT_CONFIG) -> dict:
         """Create a new vault and register it with the running SAGE instance.
 
-        Pass a complete vault config dict. It is validated against the vault
-        config schema, directories are created, ``vault_config.yaml`` is
-        written under the vault root (default ``~/sage_vaults/<vault_id>/``),
-        services are initialized, and the vault is registered immediately
-        (no restart). The full written config is echoed back so the caller
-        can follow up with ``update_vault_config`` without a separate
-        read.
+        The config is validated against the vault config schema, directories
+        are created, ``vault_config.yaml`` is written under the vault root
+        (default ``~/sage_vaults/<vault_id>/``), services are initialized,
+        and the vault is registered immediately (no restart). The full
+        written config is echoed back so the caller can follow up with
+        ``update_vault_config`` without a separate read.
 
-        Config dict structure: the ``config`` parameter is opaque at the MCP
-        boundary (typed ``dict``); its shape lives in
-        ``docs/fs/sage/vault_config.schema.json``. The top-level sections
-        ``vault``, ``document_types``, ``lifecycle``, ``metadata_extraction``
-        and ``edge_inference`` are required, and ``adapter_defaults``,
-        ``abstraction``, ``access_control_defaults``, ``retrieval_health`` and
-        ``timing`` are optional. A minimal default is served by
-        ``get_default_vault_config``, which returns the scaffold for a vault
-        id with ``vault.name`` and ``vault.owner`` left empty.
+        The new vault inherits the running process's abstraction provider;
+        the config's ``abstraction`` section governs only enable/disable and
+        per-vault parameters. A different provider requires a stack-config
+        edit and process restart.
 
-        The new vault inherits the running process's stack-wide
-        abstraction-provider singleton (built once at startup); the vault
-        config's ``abstraction`` section governs only enable/disable and
-        per-vault parameters, not provider identity. A different provider
-        requires a stack-config edit and process restart.
+        A doc_type's ``metadata_schema`` is compiled at create time, not
+        first ingest, so a malformed schema is refused here.
 
-        Creation is not atomic: it runs five sequential steps (config
-        directory, yaml write, service init, registry insertion, owner
-        bootstrap) with no cross-step rollback. A mid-sequence failure can
-        leave ``~/sage_vaults/{vault_id}/`` present with a partial yaml while
-        the registry has no entry; recovery is to remove the directory and
-        re-call. The final step bootstraps the owner user (required for
-        subsequent access-controlled operations); the response carries only
-        the ``VaultSummary`` plus the echoed config, with no field signaling
-        the owner insert.
-
-        A doc_type's ``metadata_schema`` is compiled into a JSON Schema
-        validator at create time, not first ingest, so a malformed schema
-        (non-Draft 2020-12, unresolvable ``$ref``) surfaces here as
-        ``vault_config_validation_error`` rather than on the first ingest
-        that would exercise it.
+        Creation is not atomic: a mid-sequence failure can leave
+        ``~/sage_vaults/{vault_id}/`` present with a partial yaml while the
+        registry has no entry; recovery is to remove the directory and
+        re-call.
 
         Error modes:
-        - ``vault_already_exists`` (409): a vault with that ``vault_id`` is
-          already registered.
-        - ``vault_config_validation_error`` (400): the config fails schema
-          validation — missing/malformed top-level sections, or a malformed
-          ``document_types.doc_types[].metadata_schema``.
-
-        Args:
-            config: Full vault config dict, validating against
-                ``docs/fs/sage/vault_config.schema.json``.
+        - ``vault_already_exists`` (409)
+        - ``vault_config_validation_error`` (400): the config, or a doc_type's
+          ``metadata_schema``, fails validation
         """
         try:
             summary = await get_vault_registry_service().create_vault(
@@ -2108,7 +2146,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool(name="get_vault_config", annotations=READ_ONLY)
-    async def get_vault_config(vault_id: str) -> dict:
+    async def get_vault_config(vault_id: VaultIdParam) -> dict:
         """Return the full vault configuration as a dict.
 
         Section structure follows the schema: ``vault``, ``document_types``,
@@ -2142,13 +2180,8 @@ def register_sage_tools(
         ``reload_vault`` is called.
 
         Error modes:
-        - ``invalid_vault_id`` (400): the supplied vault_id is not a
-          well-formed vault id.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-
-        Args:
-            vault_id: Target vault identifier.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2159,18 +2192,18 @@ def register_sage_tools(
 
     @mcp.tool(name="update_vault_config", annotations=WRITE_DESTRUCTIVE)
     async def update_vault_config(
-        vault_id: str,
-        vault: dict | None = None,
-        document_types: dict | None = None,
-        lifecycle: dict | None = None,
-        adapter_defaults: dict | None = None,
-        metadata_extraction: dict | None = None,
-        edge_inference: dict | None = None,
-        abstraction: dict | None = None,
-        access_control_defaults: dict | None = None,
-        retrieval_health: dict | None = None,
-        force: bool = False,
-        dry_run: bool = False,
+        vault_id: VaultIdParam,
+        vault: _config_section("vault") = None,
+        document_types: _config_section("document_types") = None,
+        lifecycle: _config_section("lifecycle") = None,
+        adapter_defaults: _config_section("adapter_defaults") = None,
+        metadata_extraction: _config_section("metadata_extraction") = None,
+        edge_inference: _config_section("edge_inference") = None,
+        abstraction: _config_section("abstraction") = None,
+        access_control_defaults: _config_section("access_control_defaults") = None,
+        retrieval_health: _config_section("retrieval_health") = None,
+        force: _UPDATE_CONFIG_FORCE = False,
+        dry_run: _UPDATE_CONFIG_DRY_RUN = False,
     ) -> dict:
         """Update vault configuration at the section level.
 
@@ -2189,44 +2222,17 @@ def register_sage_tools(
 
         The update writes to disk and updates the running config in place;
         subsequent calls see the new vocabulary immediately. The
-        write-then-reload sequence is atomic: the reload builds new services
-        before tearing down the old, and if any step raises (schema
-        migration required, duplicate edges, abstraction-provider build
-        failure) the yaml is rolled back to its pre-call bytes and the
-        previous config keeps serving. ``reload_vault`` is needed only
-        when an external process edited the yaml.
+        write-then-reload sequence is atomic: if any step raises, the yaml is
+        rolled back to its pre-call bytes and the previous config keeps
+        serving. ``reload_vault`` is needed only when an external process
+        edited the yaml.
 
         Error modes:
-        - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
-          validation at the boundary.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-        - ``destructive_config_change`` (409): see above.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
+        - ``destructive_config_change`` (409): see above
         - ``vault_config_validation_error`` (400): the merged config fails
-          schema validation, or the request attempts to change ``vault.id``.
-
-        Dry-run: ``dry_run=true`` validates the merged config and previews
-        which sections would change without writing yaml or reloading. The
-        response carries ``status="previewed"``, ``dry_run=true``,
-        ``warnings`` (dry-run never raises ``destructive_config_change``),
-        and ``preview.changed_sections``. ``force`` is a no-op on dry-run.
-
-        Args:
-            vault_id: Target vault identifier.
-            vault: Replacement for the vault identity section.
-            document_types: Replacement for the document_types section.
-            lifecycle: Replacement for the lifecycle section.
-            adapter_defaults: Replacement for the adapter_defaults section.
-            metadata_extraction: Replacement for the metadata_extraction section.
-            edge_inference: Replacement for the edge_inference section.
-            abstraction: Replacement for the abstraction section.
-            access_control_defaults: Replacement for the access_control_defaults section.
-            retrieval_health: Replacement for the retrieval_health section.
-            force: When True, proceed even if the update would orphan
-                existing documents. Default False.
-            dry_run: When True, preview the change
-                (``preview.changed_sections``) without persisting; never
-                raises destructive_config_change. Default False.
+          validation, or changes ``vault.id``
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2250,7 +2256,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool(name="get_vault_stats", annotations=READ_ONLY)
-    async def get_vault_stats(vault_id: str) -> dict:
+    async def get_vault_stats(vault_id: VaultIdParam) -> dict:
         """Vault statistics and health indicators.
 
         Returns aggregate counts and health summaries for the vault,
@@ -2273,13 +2279,8 @@ def register_sage_tools(
         from ``pending_metadata_count``.
 
         Error modes:
-        - ``invalid_vault_id`` (400): the supplied vault_id is not a
-          well-formed vault id.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-
-        Args:
-            vault_id: Target vault identifier.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2647,98 +2648,49 @@ def register_sage_tools(
     # -------------------------------------------------------------------
 
     @mcp.tool(name="migrate_vault", annotations=WRITE_ADDITIVE)
-    async def migrate_vault(vault_id: str) -> dict:
+    async def migrate_vault(vault_id: VaultIdParam) -> dict:
         """Run the schema-migration surface's backfill and tier3-uniqueness scan.
 
         The durable store provisions its schema externally, so there is no
         pending schema work for this tool to apply and ``columns_added`` is
         always empty.
 
-        Six data backfills run. Documents already at a successful terminal
-        ``pipeline_status`` that still carry the ``pipeline_error`` of a
-        failure they have since recovered from get that field cleared.
-        Documents whose stored ``source_path`` holds a spelling ingest no
-        longer records -- a ``.`` segment, a doubled separator, or a trailing
-        one -- have it reduced to its plain form, so re-projecting them stops
-        raising ``force_reingest_path_mismatch``; each rewrite is reported in
-        ``source_paths_normalized``. A recorded path that walks out of the
-        source tree has no plain form inside it and is left as recorded;
-        ``verify_vault_source_files`` reports those. A vault provisioned before
-        document-level text had a retrieval surface of its own has that text
-        moved off its passages onto that surface. A section longer than the
-        embedding provider's input bound, whose vector therefore represents
-        only its head, is divided into consecutive passages that each fit. The
-        division works from the stored passages -- no source is read and
-        nothing is re-abstracted -- and re-embeds only the documents it
-        rewrites; section reads, heading enumeration and projection text read
-        exactly as before. A document indexed before the text above its first
-        heading had a passage of its own gains that passage, addressed by the
-        empty heading path. A document whose adapter read a heading with no
-        text as a heading, storing the text under it at the empty path or at a
-        path with an empty segment, has that text moved into the section before
-        it, leaving the empty path to the text under no heading. This is the
-        one backfill that reads sources: it re-projects, through the vault's
-        source binding, each document of either kind that an adapter version
-        older than the first to read such a heading as none projected, and
-        replaces its stored passages with the ones that adapter writes wherever
-        the two differ. Ordinarily the only difference is the new passage, and
-        every other heading path and section reads exactly as before; a passage
-        an older adapter shaped differently, such as a heading it mistook, is
-        corrected. Each examined document is stamped with the adapter version
-        that examined it, so a source is read once rather than on every call.
-        Nothing is re-abstracted, and only the documents it rewrites are
-        re-embedded. A document whose source
-        changed since it was indexed or cannot be read is skipped, unstamped,
-        and the server log names each one. And every passage gains its
-        structure relative to its document -- its heading path with a root
-        element equal to the document title removed -- so a title that a source
-        format made the document's top-level heading stops being indexed into
-        every passage of that document at the top ranking weight. Stored
-        heading paths are untouched: they are how a passage is addressed, and
-        enumeration, section reads and any cached path resolve exactly as
-        before.
-        ``backfills_applied`` names each backfill only when it changed rows, so
-        a vault with nothing to repair reports an empty list. Idempotent: a
-        re-call after a repair reports nothing further and no error.
+        Six data backfills run, and ``backfills_applied`` names each one only
+        when it changed rows. They clear the ``pipeline_error`` a recovered
+        failure left behind, reduce a stored ``source_path`` in a spelling
+        ingest no longer records to its plain form (each rewrite reported in
+        ``source_paths_normalized``; a path that walks out of the source tree
+        is left as recorded), and bring stored passages to the current shape.
+        Only the heading backfill reads sources: a document whose source
+        changed since it was indexed or cannot be read is skipped, and the
+        server log names each one. Nothing is re-abstracted, and only the
+        documents a backfill rewrites are re-embedded.
 
-        Run it on a vault with no pipeline work in flight. The backfills
-        rewrite stored passages, so the migration and pipeline work exclude
-        each other: the call is refused while any ingest, reabstract or
-        recompute is queued or running on the vault, and while it runs those
-        calls are refused in turn. The exclusion covers this server process only:
-        a reabstract sweep run as its own job is not seen, so do not run one
-        during a migration.
+        Idempotent: a re-call with nothing left to repair reports empty lists
+        and no error.
 
         **The last backfill is expensive and exclusive, and runs once.** It
-        rewrites the passage table and rebuilds every index over it, including
-        the vector index over the embeddings, which dominates the cost: expect
-        minutes of exclusive access on a vault holding tens of thousands of
-        passages. That backfill re-embeds nothing.
+        rebuilds every index over the passage table, including the vector
+        index: expect minutes of exclusive access on a vault holding tens of
+        thousands of passages.
 
-        tier3 uniqueness activation: every ``unique_keys`` declaration in
-        vault config is scanned. Clean declarations get partial UNIQUE
-        indexes installed; declarations whose existing data violates the
-        constraint are recorded in ``tier3_uniqueness_collisions``, the index
-        is not activated, and any previously-clean index is preserved (no
-        implicit DROP). Activated declarations are listed in
-        ``tier3_uniqueness_activations``.
-        **Callers must inspect both fields** on every call, no-op or not.
-        Query ``get_vault_config`` for the ``unique_keys`` declarations.
+        Run it with no pipeline work in flight: the call is refused while any
+        ingest, reabstract or recompute is queued or running on the vault,
+        and those calls are refused while it runs. The exclusion covers this
+        server process only.
+
+        tier3 uniqueness: each ``unique_keys`` declaration in vault config
+        whose data is clean gets a partial UNIQUE index, listed in
+        ``tier3_uniqueness_activations``; one whose data violates it is
+        recorded in ``tier3_uniqueness_collisions`` and not activated, and a
+        previously clean index is preserved. **Inspect both fields** on
+        every call.
 
         Error modes:
-        - ``invalid_vault_id`` (400): the supplied vault_id is not a
-          well-formed vault id.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-        - ``pipeline_work_in_flight`` (409): an ingest, reabstract or recompute
-          is queued or running on the vault. ``detail`` carries ``vault_id``.
-          Retry once it has drained.
-        - ``vault_migration_in_flight`` (409): another ``migrate_vault`` is
-          running on this vault. ``detail`` carries ``vault_id`` and the time
-          it started.
-
-        Args:
-            vault_id: Target vault identifier.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
+        - ``pipeline_work_in_flight`` (409): retry once it has drained
+        - ``vault_migration_in_flight`` (409): another ``migrate_vault`` is running
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2754,7 +2706,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool(name="verify_vault_drift", annotations=READ_ONLY)
-    async def verify_vault_drift(vault_id: str) -> dict:
+    async def verify_vault_drift(vault_id: VaultIdParam) -> dict:
         """Audit active sync_target / derived_from edges for drift.
 
         Walks every active provenance-bearing edge in the vault and compares
@@ -2768,33 +2720,24 @@ def register_sage_tools(
         ``staleness_basis`` classifying why the edge surfaced:
 
         - ``content_drift``: the recorded ``synced_from_content_hash``
-          differs from the current chain-head hash. The "stale, act now"
-          signal — re-sync the dependent artifact.
+          differs from the current chain-head hash. Stale -- re-sync the
+          dependent artifact.
         - ``chain_advanced_no_content_change``: the chain advanced past the
           recorded version but the head's content hash still matches.
-          Informational — the pointer is behind but the bytes are equivalent.
-        - ``recorded_null``: the edge predates the provenance columns
-          (neither ``synced_from_version`` nor ``synced_from_content_hash``
-          recorded). Informational — back-filling is optional cleanup.
+          Informational.
+        - ``recorded_null``: the edge predates the provenance columns.
+          Informational -- back-filling is optional cleanup.
         - ``chain_nonlinear``: the source's supersedes chain forks (more than
           one head). Data-quality flag, not a drift signal; reconcile the
           chain first. ``current_head_*`` is null; ``competing_head_count``
           is populated.
 
         Error modes:
-        - ``invalid_vault_id`` (400): the supplied vault_id is not a
-          well-formed vault id.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-        - ``chain_nonlinear`` (reported as ``DriftEntry`` rows, not an
-          envelope error, per the bucket above, so one forked chain does not
-          mask drift on other edges).
-        - Graph-store query failures (500): unexpected storage errors while
-          walking edges or resolving chain heads — infrastructure
-          conditions, retrying is appropriate.
-
-        Args:
-            vault_id: Target vault identifier.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
+        - ``chain_nonlinear``: a report row, not an error, so one forked chain
+          does not mask drift elsewhere
+        - Graph-store query failures (500): infrastructure; retrying is appropriate
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2811,7 +2754,9 @@ def register_sage_tools(
 
     @mcp.tool(name="verify_vault_source_files", annotations=READ_ONLY)
     async def verify_vault_source_files(
-        vault_id: str, check_hashes: bool = False, document_ids: list[str] | None = None
+        vault_id: VaultIdParam,
+        check_hashes: _INTEGRITY_CHECK_HASHES = False,
+        document_ids: _INTEGRITY_DOCUMENT_IDS = None,
     ) -> dict:
         """Audit that every document's backing source file is present.
 
@@ -2822,79 +2767,34 @@ def register_sage_tools(
         documents with an intact source file are absent. Read-only —
         mutates nothing.
 
-        ``document_ids`` restricts the audit to the named documents: the
-        store is consulted for those alone, and the report's counts describe
-        that set rather than the vault. Omitted, every document is audited.
-        A scope naming an id with no document is refused with
-        ``document_scope_unmatched`` rather than narrowed, so a misspelled
-        id never yields a clean report over fewer documents than were named.
-
-        When ``check_hashes`` is true, each present file's SHA-256 is
-        recomputed and compared against the digest recorded for the
-        *retained* copy -- ``stored_content_hash``, or
-        ``source_content_hash`` when that is null; a divergent file
-        surfaces as a ``hash_mismatch`` entry (a full file read per
-        document). Default false performs an existence check only.
-
         A recorded path that is a *link* rather than the retained copy
-        surfaces as a ``symlinked`` entry, in both modes and without
-        reading through it. Every other read resolves a link, so such a
-        path otherwise reads as an intact copy while the bytes live
-        wherever the link's owner points. The store refuses to write at a
-        linked path, so repairing that document is refused until the link
-        is removed.
+        surfaces as a ``symlinked`` entry, and one that resolves *outside*
+        the vault's source tree as an ``out_of_root`` entry, which outranks
+        ``missing``. Both are reported in both modes and never read through;
+        the store refuses to write at either path, so repairing the document
+        is refused until the link is removed or the path re-pointed.
 
-        A recorded path that resolves *outside* the vault's source tree --
-        one reached through an ancestor pointing elsewhere, say --
-        surfaces as an ``out_of_root`` entry, in both modes and likewise
-        without reading through it. The store refuses to write there
-        whether or not anything resolves at the far end, which is why this
-        outranks ``missing``: such a document is not repaired by
-        re-delivering its content, but by re-pointing the path or
-        reconfiguring the vault.
+        With ``check_hashes``, a present file whose SHA-256 differs from the
+        digest recorded for the *retained* copy -- ``stored_content_hash``,
+        or ``source_content_hash`` when that is null -- surfaces as a
+        ``hash_mismatch`` entry. This is an integrity check on the stored
+        copy, not a provenance check.
 
-        This is an integrity check on the stored copy, not a provenance
-        check. A store may retain a copy that is not byte-identical to
-        what the caller delivered, in which case the two recorded digests
-        differ by design and only the stored one describes the bytes on
-        the store. A document whose ``stored_content_hash`` is null was
-        ingested before the two were recorded separately: its provenance
-        digest is the as-stored one, so this audit stays correct for it,
-        but its delivered-byte digest is unrecoverable -- re-delivering
-        the original bytes creates a new document instead of matching it.
+        This audits the vault-local source files (the ``imports/`` copies
+        that ``get_document`` delivers), distinct from the content store
+        that ``optimize_vault_content_store`` reclaims.
 
-        Note: this audits the vault-local source files (the ``imports/``
-        copies that ``get_document`` delivers), distinct from the content
-        store that ``optimize_vault_content_store`` reclaims.
+        A store refusal ends the walk rather than becoming a per-document
+        status, so no report is returned; the audit is read-only and
+        repeatable, so re-running it is the whole remedy for a transient one.
 
         Error modes:
-        - ``invalid_vault_id`` (400): the supplied vault_id is not a
-          well-formed vault id.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-        - ``invalid_document_id`` (400): an entry in ``document_ids`` is not
-          a well-formed document id.
-        - ``document_scope_unmatched`` (404): ``document_ids`` names an id with
-          no document in the vault; ``detail.unmatched_ids`` lists every such id.
-        - ``vault_source_store_refused`` (502): the store declined the operation
-          on its merits -- quota, a permission it withdrew, a reply that could
-          not be used. Resolve it at the store before retrying;
-          ``detail.store_status`` carries the status it declined with.
-        - ``vault_source_store_unavailable`` (503): the store declined to serve
-          the operation just now -- throttling, or a transient backend signal.
-          The same call may succeed later.
-
-        A refusal ends the walk rather than becoming a per-document status, so
-        no report is returned and the findings gathered so far are discarded.
-        The audit is read-only and repeatable, so re-running it is the whole
-        remedy for a refusal the store called transient.
-
-        Args:
-            vault_id: Target vault identifier.
-            check_hashes: Recompute and compare on-disk hashes when true;
-                existence check only when false (default).
-            document_ids: Audit only these documents, in any lifecycle
-                state. At least one id; omit to audit the whole vault.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
+        - ``invalid_document_id`` (400): an entry in ``document_ids``
+        - ``document_scope_unmatched`` (404): ``detail.unmatched_ids`` lists every such id
+        - ``vault_source_store_refused`` (502): resolve it at the store before retrying
+        - ``vault_source_store_unavailable`` (503): the same call may succeed later
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2919,153 +2819,49 @@ def register_sage_tools(
 
     @mcp.tool(name="restore_vault_source_file", annotations=WRITE_DESTRUCTIVE)
     async def restore_vault_source_file(
-        vault_id: str,
-        source: str | None = None,
-        document_id: str | None = None,
-        transfer_token: str | None = None,
-        sha256: str | None = None,
+        vault_id: VaultIdParam,
+        source: _RESTORE_SOURCE = None,
+        document_id: _RESTORE_DOCUMENT_ID = None,
+        transfer_token: _RESTORE_TRANSFER_TOKEN = None,
+        sha256: _RESTORE_SHA256 = None,
     ) -> dict:
         """Repair a document's retained source file by writing delivered bytes back over it.
 
-        The repair counterpart of ``verify_vault_source_files``. That
-        audit reports a retained copy that changed outside SAGE but cannot fix
-        one, and re-ingesting cannot stand in: retention sees only that the
-        offered bytes differ from what sits at its target -- indistinguishable
-        from a name collision -- so it homes the document at a second path and
-        leaves the damaged copy in place. This writes to the path the document
-        record already names, so the document does not move.
-
-        SAGE keeps no pristine second copy of a source, so ``source`` supplies
-        the bytes. The target document is resolved from their digest against
-        recorded provenance: the bytes identify the document that was made from
-        them, which is why ``document_id`` is normally unnecessary. Supply
-        ``document_id`` when that resolution is ambiguous (several documents
-        share a provenance digest) or unavailable (a document ingested before
-        delivered and stored digests were recorded separately, whose provenance
-        digest describes the stored copy rather than the delivered bytes).
+        The repair counterpart of ``verify_vault_source_files``. Re-ingesting
+        cannot stand in: retention sees only that the offered bytes differ
+        from what sits at its target, so it homes the document at a second
+        path and leaves the damaged copy in place. This writes to the path the
+        document record already names, so the document does not move. The
+        target is resolved from the delivered bytes' digest, which is why
+        ``document_id`` is normally unnecessary.
 
         Writes nothing when the retained copy already hashes to its recorded
-        digest, returning ``status: already_intact``. A recorded path that is a
-        *link* is never reported that way, however the bytes behind it hash: it
-        is not the copy the record names, and the write is refused
-        (``vault_source_path_refused``) rather than landing wherever the link
-        points. Remove the link and re-run. Nor is a recorded path that
-        resolves *outside* the vault's source tree, for the same reason and
-        with the same refusal: the store will not write there, so the repair
-        cannot land where the record names. Re-point the path or reconfigure
-        the vault, then re-run. Where a write does happen
-        the store reports the digest of the copy it now holds, and the record's
-        ``stored_content_hash`` follows it only where the store demonstrably
-        rewrote the bytes -- which is what happens under a store that rewrites
-        its copy at rest, where writing the original bytes back yields a
-        correct but freshly rewritten copy. The provenance digest is never
+        digest, returning ``status: already_intact``. A recorded path that is
+        a *link*, or that resolves *outside* the vault's source tree, is
+        never reported that way: the write is refused
+        (``vault_source_path_refused``). Remove the link or re-point the path,
+        then re-run. Where a write does happen, the record's
+        ``stored_content_hash`` follows the store's digest only where the
+        store demonstrably rewrote the bytes; the provenance digest is never
         touched.
-
-        Two report fields say what the call could and did not establish.
-        ``provenance_verified`` is false only for a pinned restore of a document
-        carrying no stored digest, whose recorded provenance describes its
-        stored copy rather than the delivered bytes, so nothing on the record
-        can confirm the file handed over. ``record_refreshed`` is false where
-        the recorded digest was deliberately left alone -- so a call can report
-        ``status: restored`` with the record still describing a different copy,
-        and the mismatch still reported by the audit.
-
-        Nothing else repairs the copy: this is deliberately not something an
-        ingest does, because an ingest that silently repaired would erase the
-        operator's only evidence that something other than SAGE wrote to the
-        store.
 
         Two-phase when the server cannot read the caller's filesystem: an
         absolute ``source`` returns an upload recipe (``status:
         upload_required``), the caller's environment delivers the bytes, and
         the call is repeated with the recipe's token as ``transfer_token``.
 
-        A pin says which copy to write over; it does not license writing
-        arbitrary bytes there. The delivered digest is checked against the
-        pinned document's provenance, so delivering the wrong file under a pin
-        is refused rather than overwriting the copy and re-describing the record
-        to match.
-
         Error modes:
-        - ``invalid_vault_id`` (400): the supplied vault_id is not a
-          well-formed vault id.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-        - ``invalid_document_id`` (400): the supplied document_id is not a
-          well-formed document id.
-        - ``invalid_sha256`` (400): the supplied sha256 is not a well-formed
-          sha256 digest.
-        - ``restore_target_unresolved`` (404): no document, or more than one,
-          claims the delivered bytes; ``detail.candidate_ids`` names them.
-        - ``document_not_found`` (404): the supplied document_id names no document.
-        - ``source_file_not_found`` (404): no readable file at ``source``.
-        - ``restore_provenance_mismatch`` (400): the pinned document was not
-          ingested from the delivered bytes.
-        - ``restore_source_not_absolute`` (400): ``source`` is not an absolute path.
-        - ``source_digest_mismatch`` (400): ``sha256`` was supplied and the
-          delivered bytes have a different digest. Detail carries ``source``,
-          ``declared_sha256`` and ``delivered_sha256``. Nothing is written.
-        - ``ambiguous_ingest_source`` (400): both ``source`` and
-          ``transfer_token`` were supplied.
-        - ``missing_ingest_source`` (400): neither was supplied.
-        - ``transfer_token_invalid`` (410): ``transfer_token`` names no
-          redeemable pending transfer (unknown, expired, already used, or
-          scoped to a different vault). Re-issue the call with the original
-          ``source`` to mint a fresh recipe.
-        - ``transfer_not_staged`` (409): ``transfer_token`` is valid but the
-          bytes have not been delivered to the upload endpoint yet. Run the
-          recipe's byte leg, then repeat this call; the token stays valid.
-        - ``transfer_endpoint_not_configured`` (500): this deployment needs
-          the transfer channel but declares no public transfer endpoint, so
-          no recipe can be minted.
-        - ``vault_source_path_refused`` (400): the document's recorded source_path
-          cannot be written at the path it names.
-        - ``vault_source_store_refused`` (502): the store declined the operation
-          on its merits -- quota, a permission it withdrew, a reply that opened
-          no usable upload session. Resolve it at the store before retrying;
-          ``detail.store_status`` carries the status it declined with.
-        - ``vault_source_store_unavailable`` (503): the store declined to serve
-          the operation just now -- throttling, a transient backend signal, an
-          upload session it expired. The same call may succeed later.
-
-        A repair that fails after redeeming a ``transfer_token`` -- for any
-        reason above, not only a store refusal -- leaves that token redeemable
-        within its original window: the bytes arrived intact and only the
-        repair failed, so a retry costs no second upload.
-
-        Args:
-            vault_id: Target vault identifier.
-            source: Absolute path to a file holding the originally-ingested
-                bytes. Exactly one of ``source`` or ``transfer_token``.
-                Absolute on the machine that holds the file: where the server
-                cannot reach the caller's filesystem the path is read with the
-                calling environment's conventions, so a Windows drive-letter
-                or UNC spelling earns an upload recipe rather than a refusal.
-                Where the two are co-located the server is the reader and its
-                own conventions apply. Unlike an ingest, a relative path has
-                no vault-relative reading here and is refused either way. A
-                minted recipe's token lapses 900 seconds after issue by
-                default, and the whole exchange -- byte delivery plus the
-                completion call -- must finish inside that window; the
-                recipe's own ``expires_at`` is authoritative where a
-                deployment has tuned the lifetime. A token is also reclaimed
-                once 3 refused deliveries have been made against it by
-                default -- a body over the ceiling, bytes not matching its
-                bound digest, or a body abandoned mid-stream; earlier
-                refusals leave it retryable. A lapsed recipe cannot be
-                resumed, and its staged bytes are gone: re-issue this call
-                for a fresh one.
-            document_id: Optional pin naming the document to restore.
-            transfer_token: Completion handle from a prior ``upload_required``
-                recipe; supply instead of ``source``.
-            sha256: SHA-256 digest of the file being restored, bare hex or
-                ``sha256:``-prefixed. Bytes with any other digest are refused
-                with ``source_digest_mismatch`` before anything is written.
-                When the call returns an upload recipe, the token is bound to
-                this digest and the upload endpoint refuses any other bytes
-                without spending it, short of its refusal limit -- so a token
-                seen by anyone not already holding the exact file admits
-                nothing. Pass it again on the completion call.
+        - 400: ``invalid_vault_id``, ``invalid_document_id``, ``invalid_sha256``
+        - 400: ``ambiguous_ingest_source``, ``missing_ingest_source``
+        - 400: ``restore_source_not_absolute``, ``restore_provenance_mismatch``
+        - 400: ``source_digest_mismatch``, ``vault_source_path_refused``
+        - ``vault_not_found`` (404)
+        - 404: ``document_not_found``, ``source_file_not_found``, ``restore_target_unresolved``
+        - 409: ``transfer_not_staged``
+        - 410: ``transfer_token_invalid``
+        - 500: ``transfer_endpoint_not_configured``
+        - 502: ``vault_source_store_refused``
+        - 503: ``vault_source_store_unavailable``
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -3093,7 +2889,9 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool(name="recompute_deferred_vault_abstracts", annotations=WRITE_ADDITIVE)
-    async def recompute_deferred_vault_abstracts(vault_id: str, include_pdf: bool = False) -> dict:
+    async def recompute_deferred_vault_abstracts(
+        vault_id: VaultIdParam, include_pdf: _REABSTRACT_INCLUDE_PDF = False
+    ) -> dict:
         """Backfill semantic abstracts for documents whose pipeline_status is abstraction_skipped.
 
         Enumerates documents in the named vault at
@@ -3101,65 +2899,35 @@ def register_sage_tools(
         document, and polls until each reaches terminal status
         (``abstraction_complete``, ``abstraction_skipped``,
         ``abstraction_interrupted``, or ``failed``).
+
         Returns a ReabstractReport with per-document outcomes and aggregate
-        counts.
+        counts. Every outcome beyond ``success`` and ``skipped_pdf`` counts
+        toward ``failed_count``.
 
-        The per-document poll is bounded. A generation slow enough outlasts
-        any waiter, so a document that has not settled within the server's
-        wait ceiling is abandoned and recorded with outcome ``timeout``
-        rather than polled indefinitely. Abandoning is a statement about the
-        poll, not about the document: the generation may still complete. It
-        is not, however, self-healing. This operation enumerates
-        ``abstraction_skipped`` only, and an abandoned document sits at
-        ``abstraction_in_progress``, so a later call reaches it only once
-        something else advances it -- the generation finishing, startup
-        recovery, or the out-of-band bulk sweep with a selector naming that
-        status. Work dropped by a stopped abstraction worker is a separate
-        case and does not land here: stopping the worker settles it at the
-        terminal ``abstraction_interrupted``, which the poll returns and the
-        bulk sweep enumerates by default.
-
-        Outcomes beyond ``success`` and ``skipped_pdf`` all count toward
-        ``failed_count``. ``dispatch_failed`` means the dispatch call raised;
-        its message preserves the exception without attributing it to the
-        provider. ``still_skipped``, ``timeout``, and ``interrupted`` identify
-        skipped abstraction, wait expiry, and queue interruption. ``llm_failure``
-        covers background failures and legacy post-dispatch fallbacks,
-        including a document disappearing while waiting; consult its message.
+        The per-document poll is bounded: a document that has not settled
+        within the server's wait ceiling is recorded with outcome ``timeout``,
+        though its generation may still complete. It then sits at
+        ``abstraction_in_progress``, which this operation does not enumerate.
 
         Reuses the in-process abstraction provider this MCP server loaded at
-        startup; does NOT spin up a second Qwen3 instance. The standalone
-        ``scripts/reabstract_deferred.py`` remains the operator fallback for
-        cron-style workflows where no MCP server is running.
+        startup; does NOT initialize a second provider. The standalone
+        ``scripts/reabstract_deferred.py`` remains the operator fallback where
+        no MCP server is running.
 
-        Single-flight per vault: a concurrent call returns a structured
-        ``reabstract_already_in_flight`` (409) whose detail carries the
-        in-flight operation's ``start_time``.
+        Single-flight per vault: a concurrent call returns
+        ``reabstract_already_in_flight`` (409), whose detail carries the
+        running operation's ``start_time``, rather than queueing.
 
-        Long-running: an N-document pass takes roughly N times the
-        per-document abstraction wall-clock (seconds to tens of seconds each
-        against a local MLX model, sub-second against the test stub). The tool
-        returns a single ReabstractReport once the pass completes; allocate a
-        generous client-side timeout. (The HTTP route streams per-document
-        SSE progress; the MCP contract is report-and-return.)
+        Long-running: a pass takes roughly N times the per-document
+        abstraction wall-clock, so allocate a generous client-side timeout;
+        the tool returns a single ReabstractReport once the pass completes.
 
         Error modes:
-        - ``invalid_vault_id`` (400): the supplied vault_id is not a
-          well-formed vault id.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-        - ``reabstract_already_in_flight`` (409): a reabstract is already
-          running on this vault.
-        - ``vault_migration_in_flight`` (409): ``migrate_vault`` is running
-          on this vault; retry once it has returned.
-        - ``RuntimeError``: the vault is not wired for abstraction. A
-          deployed vault always is, so a caller has nothing to act on.
-
-        Args:
-            vault_id: Target vault identifier.
-            include_pdf: When False (default), source_type=pdf documents are
-                skipped (scanned PDFs typically have no extractable text).
-                When True, PDFs are included in the worklist.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
+        - ``reabstract_already_in_flight`` (409)
+        - ``vault_migration_in_flight`` (409): retry once ``migrate_vault`` has returned
+        - ``RuntimeError``: the vault is not wired for abstraction; a deployed vault always is
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -3175,41 +2943,33 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool(name="optimize_vault_content_store", annotations=WRITE_ADDITIVE)
-    async def optimize_vault_content_store(vault_id: str, cleanup_older_than_days: int = 7) -> dict:
+    async def optimize_vault_content_store(
+        vault_id: VaultIdParam, cleanup_older_than_days: _OPTIMIZE_CLEANUP_DAYS = 7
+    ) -> dict:
         """Reclaim bloat in the per-vault content store.
 
         Wraps a ``VACUUM (FULL, ANALYZE)`` against every surface of the vault's
         content store: removes dead tuples, returns free space to the OS, and
-        shrinks the relations. Postgres MVCC writes a new row version on every update or
-        delete rather than reclaiming space in place, so disk usage on
-        actively-churned vaults grows until this is called.
+        shrinks the relations. Postgres MVCC writes a new row version on every
+        update or delete rather than reclaiming space in place, so disk usage
+        on actively-churned vaults grows until this is called.
 
         Runs on its own autocommit connection (VACUUM cannot run inside a
         transaction block) and holds no lock that blocks concurrent reads or
-        writes; a first run against a highly-churned vault may still take
-        minutes and exceed an MCP client timeout, with subsequent runs
-        settling to seconds.
+        writes; a first run against a highly-churned vault
+        may still take minutes and exceed an MCP client timeout, with
+        subsequent runs settling to seconds.
 
         Returns an OptimizeContentStoreReport with pre/post observations
         (content-store byte size, retained version count, fragment counts),
         each taken over the same surfaces the reclamation ran against — the
         caller-visible evidence of reclamation, since the underlying
-        operation itself returns nothing. ``cleanup_older_than_days`` has no
-        Postgres analog (VACUUM reclaims every eligible dead tuple
-        regardless of age) and is accepted only for the port contract; it is
-        echoed for audit-log alignment.
+        operation itself returns nothing.
 
         Error modes:
-        - ``invalid_vault_id`` (400): the supplied vault_id is not a
-          well-formed vault id.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-        - ``ValueError``: ``cleanup_older_than_days`` is negative.
-
-        Args:
-            vault_id: Target vault identifier.
-            cleanup_older_than_days: Accepted for the port contract; has no
-                effect on the Postgres binding (see above).
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
+        - ``ValueError``: ``cleanup_older_than_days`` is negative
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -3231,7 +2991,7 @@ def register_sage_tools(
     # -------------------------------------------------------------------
 
     @mcp.tool(name="reload_vault", annotations=WRITE_DESTRUCTIVE)
-    async def reload_vault(vault_id: str) -> dict:
+    async def reload_vault(vault_id: VaultIdParam) -> dict:
         """Reload a vault by closing its current services and reinitializing.
 
         When the vault was loaded from its ``vault_config.yaml`` declaration,
@@ -3262,16 +3022,11 @@ def register_sage_tools(
         is unknown rather than the vault empty.
 
         Error modes:
-        - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
-          validation at the boundary.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-        - ``vault_config_validation_error`` (400): the vault's declaration on the
-          store is not valid YAML, or does not validate as a vault configuration.
-          ``detail.errors`` names each problem to correct.
-
-        Args:
-            vault_id: Target vault identifier.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
+        - ``vault_config_validation_error`` (400): the declaration is not valid
+          YAML or not a valid vault configuration; ``detail.errors`` names each
+          problem
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -3310,7 +3065,7 @@ def register_sage_tools(
         return get_stack_config_report()
 
     @mcp.tool(name="get_default_vault_config", annotations=READ_ONLY)
-    async def get_default_vault_config(vault_id: str) -> dict:
+    async def get_default_vault_config(vault_id: _NEW_VAULT_ID) -> dict:
         """Return the default configuration a new vault would be created with.
 
         Returns the creation-time scaffold as a JSON object conforming to
@@ -3328,11 +3083,7 @@ def register_sage_tools(
         to ``create_vault``.
 
         Error modes:
-        - ``invalid_vault_id`` (400): ``vault_id`` is not a well-formed vault id.
-
-        Args:
-            vault_id: Identifier the new vault would carry. Shapes the storage
-                and brain roots in the returned scaffold.
+        - ``invalid_vault_id`` (400)
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -3344,7 +3095,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool(name="verify_vault_retrieval", annotations=READ_ONLY)
-    async def verify_vault_retrieval(vault_id: str) -> dict:
+    async def verify_vault_retrieval(vault_id: VaultIdParam) -> dict:
         """Run retrieval health assertions against the vault.
 
         Loads assertions from the YAML file referenced in
@@ -3371,27 +3122,14 @@ def register_sage_tools(
         (default 10).
 
         Error modes:
-        - ``invalid_vault_id`` (400): ``vault_id`` is not a well-formed vault id.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-        - ``assertions_not_configured`` (400): the vault config has no
-          ``retrieval_health.assertions_file`` entry.
-        - ``assertions_file_invalid`` (400): the referenced YAML is malformed
-          or has the wrong structure, or its path leaves the vault's
-          ``storage_root``.
-        - ``assertions_file_not_found`` (404): the configured assertions file
-          does not exist at its path in the vault-source store -- under
-          ``storage_root`` on the filesystem binding, or in the vault's
-          document-store folder on the document-store binding.
-        - ``vault_source_store_refused`` (502): the vault-source store declined
-          the read on its merits; ``detail.store_status`` carries the status
-          it declined with.
-        - ``vault_source_store_unavailable`` (503): the vault-source store
-          declined to serve the read just now; the same call may succeed on
-          a later attempt.
-
-        Args:
-            vault_id: Target vault identifier.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
+        - ``assertions_not_configured`` (400): no ``retrieval_health.assertions_file`` entry
+        - ``assertions_file_invalid`` (400): malformed, wrongly structured, or
+          outside ``storage_root``
+        - ``assertions_file_not_found`` (404)
+        - ``vault_source_store_refused`` (502): ``detail.store_status`` carries the store's status
+        - ``vault_source_store_unavailable`` (503): the same call may succeed later
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -3402,7 +3140,11 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool(name="export_projection", annotations=WRITE_DESTRUCTIVE)
-    async def export_projection(vault_id: str, document_id: str, output_path: str) -> dict:
+    async def export_projection(
+        vault_id: VaultIdParam,
+        document_id: _EXPORT_DOCUMENT_ID,
+        output_path: _EXPORT_OUTPUT_PATH,
+    ) -> dict:
         """Write stored projection to a Markdown file for inspection.
 
         Exports the stored projection text for a document to a
@@ -3428,28 +3170,12 @@ def register_sage_tools(
         delivers the projection to the caller instead.
 
         Error modes:
-        - ``invalid_vault_id`` (400): ``vault_id`` is not a well-formed vault id.
-        - ``invalid_document_id`` (400): ``document_id`` is not a well-formed
-          document id.
-        - ``path_traversal_denied`` (400): ``output_path`` resolves outside the
-          vault's ``storage_root``, or to the root itself.
-        - ``output_path_invalid`` (400): ``output_path`` is not a file location --
-          a directory sits at the target, or a file sits where a parent
-          directory is needed; ``detail.reason`` says which.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-        - ``document_not_found`` (404): no document with that id.
-        - ``no_projection`` (404): the document exists but has no stored
-          projection (e.g. ingestion failed mid-pipeline).
-        - ``caller_filesystem_unavailable`` (501): the export writes into the
-          server's own vault tree, which a caller cannot read back under the
-          cloud profile; the refusal comes before any read.
-
-        Args:
-            vault_id: Target vault identifier.
-            document_id: Document whose projection is exported.
-            output_path: Destination, relative to the vault's ``storage_root``
-                or absolute inside it.
+        - ``invalid_vault_id``, ``invalid_document_id`` (400)
+        - ``path_traversal_denied``, ``output_path_invalid`` (400): see above
+        - ``vault_not_found`` (404)
+        - ``document_not_found`` (404)
+        - ``no_projection`` (404): e.g. ingestion failed mid-pipeline
+        - ``caller_filesystem_unavailable`` (501): cloud profile
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)

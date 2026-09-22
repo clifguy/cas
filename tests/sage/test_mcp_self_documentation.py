@@ -46,6 +46,15 @@ from sage.models.enums import (
     SortOrder,
     TraversalDirection,
 )
+from sage.models.schemas import (
+    CreateVaultRequest,
+    ExportProjectionRequest,
+    OptimizeContentStoreRequest,
+    ReabstractRequest,
+    SourceFileIntegrityRequest,
+    SourceFileRestoreRequest,
+    UpdateVaultConfigRequest,
+)
 from sage.sage_api_tools import (
     _INGEST_METADATA_KEYS,
     _SEARCH_FILTER_KEYS,
@@ -57,6 +66,7 @@ from tests.helpers.published_tool import (
     parameter_descriptions,
     published_text,
     published_tool,
+    published_tools_on,
     tool_name_of,
 )
 
@@ -1668,3 +1678,94 @@ def test_dependency_tools_give_the_blocked_on_completion_example(tool_name: str)
             and "blocked until" in s
             for s in _sentences(text)
         ), f"{tool_name} {surface} does not give the blocked-on-completion configuration"
+
+
+# ---------------------------------------------------------------------------
+# Maintenance-surface parameters are described by the fields REST validates
+# ---------------------------------------------------------------------------
+
+_CONFIG_SECTIONS: Final[tuple[str, ...]] = (
+    "vault",
+    "document_types",
+    "lifecycle",
+    "adapter_defaults",
+    "metadata_extraction",
+    "edge_inference",
+    "abstraction",
+    "access_control_defaults",
+    "retrieval_health",
+)
+
+#: Each maintenance-surface parameter whose REST operation validates a request
+#: field, with that field.
+_MAINTENANCE_REQUEST_FIELDS: Final[dict[tuple[str, str], tuple[type, str]]] = {
+    ("create_vault", "config"): (CreateVaultRequest, "config"),
+    ("export_projection", "output_path"): (ExportProjectionRequest, "output_path"),
+    ("optimize_vault_content_store", "cleanup_older_than_days"): (
+        OptimizeContentStoreRequest,
+        "cleanup_older_than_days",
+    ),
+    ("recompute_deferred_vault_abstracts", "include_pdf"): (ReabstractRequest, "include_pdf"),
+    ("restore_vault_source_file", "source"): (SourceFileRestoreRequest, "source"),
+    ("restore_vault_source_file", "document_id"): (SourceFileRestoreRequest, "document_id"),
+    ("restore_vault_source_file", "transfer_token"): (SourceFileRestoreRequest, "transfer_token"),
+    ("restore_vault_source_file", "sha256"): (SourceFileRestoreRequest, "sha256"),
+    ("update_vault_config", "dry_run"): (UpdateVaultConfigRequest, "dry_run"),
+    **{
+        ("update_vault_config", section): (UpdateVaultConfigRequest, section)
+        for section in _CONFIG_SECTIONS
+    },
+    ("verify_vault_source_files", "check_hashes"): (SourceFileIntegrityRequest, "check_hashes"),
+    ("verify_vault_source_files", "document_ids"): (SourceFileIntegrityRequest, "document_ids"),
+}
+
+#: Maintenance-surface parameters with no request-body field to derive from,
+#: each with the reason. A path or query parameter is described on its own.
+_MAINTENANCE_AUTHORED_PARAMETERS: Final[dict[tuple[str, str], str]] = {
+    ("export_projection", "document_id"): "a path parameter on the REST route",
+    ("get_default_vault_config", "vault_id"): "names a vault that need not exist",
+    ("update_vault_config", "force"): "a query parameter on the REST route",
+}
+
+
+@pytest.mark.parametrize(("tool_name", "parameter"), sorted(_MAINTENANCE_REQUEST_FIELDS))
+def test_maintenance_parameters_publish_their_request_field(tool_name: str, parameter: str):
+    """A parameter the REST operation also validates is described by that field.
+
+    The parameter is described once, for both surfaces: the published text
+    opens with the request field's own description, and anything after it is
+    an MCP-only supplement.
+
+    Anti-coincidental-pass: this is a prefix match on the field's text, not a
+    similarity, so a hand-written paraphrase of the field fails.
+    """
+    model, field = _MAINTENANCE_REQUEST_FIELDS[(tool_name, parameter)]
+    tool = published_tools_on("sage_maint")[tool_name]
+    published = parameter_descriptions(tool.parameters)[parameter]
+    expected = model.model_fields[field].description
+    assert expected, f"{model.__name__}.{field} has no description"
+    assert published.startswith(expected), (
+        f"{tool_name}.{parameter} does not publish {model.__name__}.{field}'s description"
+    )
+
+
+def test_maintenance_parameter_classification_is_exhaustive():
+    """Every maintenance parameter is either derived or named as authored.
+
+    Read from the live surface, so a parameter added later, or a tool moved
+    onto the surface, is classified before it can publish text written twice.
+    ``vault_id`` is the shared vault parameter and is not per-tool.
+    """
+    live = {
+        (name, parameter)
+        for name, tool in published_tools_on("sage_maint").items()
+        for parameter in tool.parameters.get("properties") or {}
+        if parameter != "vault_id" or name == "get_default_vault_config"
+    }
+    assert live, "the maintenance surface publishes no parameters"
+    both = set(_MAINTENANCE_REQUEST_FIELDS) & set(_MAINTENANCE_AUTHORED_PARAMETERS)
+    assert not both, f"classified as both derived and authored: {sorted(both)}"
+    classified = set(_MAINTENANCE_REQUEST_FIELDS) | set(_MAINTENANCE_AUTHORED_PARAMETERS)
+    assert live == classified, (
+        f"unclassified: {sorted(live - classified)}; stale: {sorted(classified - live)}"
+    )

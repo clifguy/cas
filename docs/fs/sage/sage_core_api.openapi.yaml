@@ -3980,32 +3980,16 @@ paths:
         Read-only.
 
 
-        ``document_ids`` restricts the audit to the named documents: the
-        store is consulted for those alone, and the report's counts describe
-        that set rather than the vault. Omitted, every document is audited.
-        A scope naming an id with no document is refused with
-        ``document_scope_unmatched`` rather than narrowed, so a misspelled
-        id never yields a clean report over fewer documents than were named.
+        A recorded path that is a link rather than the retained copy surfaces
+        as ``symlinked``, and one that resolves outside the vault's source
+        tree as ``out_of_root``, which outranks ``missing``. Both are
+        reported in both modes and never read through; the store refuses to
+        write at either path, so repairing the document is refused until the
+        link is removed or the path re-pointed.
 
 
-        A ``symlinked`` row is reported in both modes and is never read
-        through. The bytes behind a link are not the copy the record
-        names, and the store refuses to write at such a path, so a repair
-        of that document will be refused until the link is removed.
-
-
-        An ``out_of_root`` row is reported in both modes and likewise
-        never read through. The store refuses to write outside the
-        vault's source tree whether or not anything resolves at the far
-        end, so this outranks ``missing``: an absent copy at such a path
-        is not repaired by re-delivering the content, but by re-pointing
-        the path or reconfiguring the vault.
-
-
-        An integrity check on the stored copy, not a provenance check: a
-        store may retain a copy that is not byte-identical to what the
-        caller delivered, in which case only the stored digest describes
-        the bytes on the store.
+        This is an integrity check on the stored copy, not a provenance
+        check.
 
 
         Audits the vault-local source files (the ``imports/`` copies that
@@ -4089,42 +4073,23 @@ paths:
       summary: Repair a document's retained source file by writing delivered bytes back over it.
       description: >-
         The repair counterpart of ``verify_vault_source_files``.
-        That audit reports a retained copy that changed outside SAGE but
-        cannot fix one, and re-ingesting cannot stand in: retention sees
-        only that the offered bytes differ from what sits at its target --
-        indistinguishable from a name collision -- so it homes the
-        document at a second path and leaves the damaged copy in place.
-        This writes to the path the document record already names, so the
-        document does not move.
+        Re-ingesting cannot stand in: retention sees only that the offered
+        bytes differ from what sits at its target, so it homes the document
+        at a second path and leaves the damaged copy in place. This writes to
+        the path the document record already names, so the document does not
+        move. The target is resolved from the delivered bytes' digest, which
+        is why ``document_id`` is normally unnecessary.
 
 
-        SAGE keeps no pristine second copy of a source, so ``source``
-        supplies the bytes. The target document is resolved from their
-        digest against recorded provenance, which is why ``document_id``
-        is normally unnecessary; supply it when that resolution is
-        ambiguous or unavailable.
-
-
-        Writes nothing when the retained copy already hashes to its
-        recorded digest, returning ``status: already_intact``. Where a
-        write does happen the store reports the digest of the copy it now
-        holds -- reading it back only under a binding that may have
-        rewritten the bytes -- and the record's ``stored_content_hash``
-        follows it only where the store demonstrably did; the provenance
-        digest is never touched.
-
-
-        A recorded path that is a *link* is never reported
-        ``already_intact``, however the bytes behind it hash: it is not the
-        copy the record names, and the write is refused
-        (``vault_source_path_refused``) rather than landing wherever the
-        link points. Remove the link and re-run.
-
-
-        Nor is a recorded path that resolves *outside* the vault's source
-        tree, for the same reason and with the same refusal: the store
-        will not write there, so the repair cannot land where the record
-        names. Re-point the path or reconfigure the vault, then re-run.
+        Writes nothing when the retained copy already hashes to its recorded
+        digest, returning ``status: already_intact``. A recorded path that is
+        a *link*, or that resolves *outside* the vault's source tree, is
+        never reported that way: the write is refused
+        (``vault_source_path_refused``). Remove the link or re-point the
+        path, then re-run. Where a write does happen, the record's
+        ``stored_content_hash`` follows the store's digest only where the
+        store demonstrably rewrote the bytes; the provenance digest is never
+        touched.
 
 
         Two-phase when the server cannot read the caller's filesystem: an
@@ -4256,90 +4221,39 @@ paths:
   /sage_vaults/{vault_id}/maintenance/migrate:
     post:
       operationId: migrate_vault
-      summary: Apply pending schema migrations to a single vault in the running session.
+      summary: Run the schema-migration surface's backfill and tier3-uniqueness scan.
       description: >-
-        Per-vault schema-migration operation for the SAGE Core API
-        maintenance surface (CAS-ADR-029). Runs the graph store's own
-        migrating initialization: closes the running
-        vault's graph_store, opens a fresh one to apply ALTER TABLE
-        migrations and BACKFILL_PLAN backfills, then reloads the vault in
-        the registry so subsequent operations observe the new schema.
+        The durable store provisions its schema externally, so there is no
+        pending schema work for this operation to apply and columns_added is
+        always empty.
 
 
         Six data backfills run, and backfills_applied names each one only
-        when it changed rows, so a vault with nothing to repair reports an
-        empty list. Documents already at a successful
-        terminal pipeline_status that still carry the pipeline_error of a
-        failure they have since recovered from get that field cleared.
-        Documents holding a stored source_path in a spelling ingest no
-        longer records -- a `.` segment, a doubled separator, or a
-        trailing one -- have it reduced to its plain form, so that
-        re-projecting them stops raising force_reingest_path_mismatch;
-        each rewrite is reported in source_paths_normalized. A recorded
-        path that walks out of the vault's source tree has no plain form
-        inside it and is left as recorded. A vault provisioned before
-        document-level text had a retrieval surface of its own has that
-        text moved off its passages onto that surface. A section longer
-        than the embedding provider's input bound, whose vector therefore
-        represents only its head, is divided into consecutive passages that
-        each fit. The division works from the stored passages -- no source
-        is read and nothing is re-abstracted -- and re-embeds only the
-        documents it rewrites; section reads, heading enumeration and
-        projection text read exactly as before. A document indexed before the
-        text above its first heading had a passage of its own gains that
-        passage, addressed by the empty heading path. A document whose adapter
-        read a heading with no text as a heading, storing the text under it at
-        the empty path or at a path with an empty segment, has that text moved
-        into the section before it, leaving the empty path to the text under
-        no heading. This is the one backfill that reads sources: it
-        re-projects, through the vault's source binding, each document of
-        either kind that an adapter version older than the first to read such
-        a heading as none projected, and replaces its stored passages with
-        the ones that adapter writes wherever the two differ. Ordinarily the
-        only difference is the new passage, and every other heading path and
-        section reads exactly as before; a passage an older adapter shaped
-        differently, such as a heading it mistook, is corrected. Each examined
-        document is stamped with the adapter version that examined it, so a
-        source is read once rather than on every call. Nothing is re-abstracted, and only the documents it
-        rewrites are re-embedded. A document whose source changed since it was
-        indexed or cannot be read is skipped, unstamped, and the server log
-        names each one. And every passage
-        gains its structure relative to its document -- its heading path
-        with a root element equal to the document title removed -- so a
-        title that a source format made the document's top-level heading
-        stops being indexed into every passage of that document at the
-        top ranking weight. Stored heading paths are untouched: they are
-        how a passage is addressed, and enumeration, section reads and
-        any cached path resolve exactly as before.
+        when it changed rows. They clear the pipeline_error a recovered
+        failure left behind, reduce a stored source_path in a spelling
+        ingest no longer records to its plain form (each rewrite reported in
+        source_paths_normalized; a path that walks out of the source tree is
+        left as recorded), and bring stored passages to the current shape.
+        Only the heading backfill reads sources: a document whose source
+        changed since it was indexed or cannot be read is skipped, and the
+        server log names each one. Nothing is re-abstracted, and only the
+        documents a backfill rewrites are re-embedded.
+
+
+        Idempotent: a re-call with nothing left to repair reports empty
+        columns_added and backfills_applied lists and no error.
 
 
         The last backfill is expensive and exclusive, and runs once. It
-        rewrites the passage table and rebuilds every index over it,
-        including the vector index over the embeddings, which dominates
-        the cost: expect minutes of exclusive access on a vault holding
-        tens of thousands of passages. That backfill re-embeds nothing.
+        rebuilds every index over the passage table, including the vector
+        index: expect minutes of exclusive access on a vault holding tens of
+        thousands of passages.
 
 
-        Run it on a vault with no pipeline work in flight. The backfills
-        rewrite stored passages, so the migration and pipeline work exclude
-        each other: the call is refused while any ingest, reabstract or
-        recompute is queued or running on the vault, and while it runs
-        those calls are refused in turn. The exclusion covers this server
-        process only: a reabstract sweep run as its own job is not seen, so
-        do not run one during a migration.
-
-
-        Idempotent: a re-call against an already-migrated vault with
-        nothing left to repair returns a MigrationReport with empty
-        columns_added and backfills_applied lists and no error; the
-        registry reload is skipped on the no-op path to avoid pointless
-        thrash.
-
-
-        Cross-process staleness (F-10, CAS-ADR-029): the operation is not
-        bulletproof if other MCP server processes hold imports of the
-        same vault directory. Callers must restart any other open MCP
-        sessions to observe the new schema.
+        Run it with no pipeline work in flight: the call is refused while any
+        ingest, reabstract or recompute is queued or running on the vault,
+        and those calls are refused while it runs. The exclusion covers this
+        server process only.
       tags: [Maintenance]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -4396,45 +4310,25 @@ paths:
 
 
         The summary carries a ReabstractReport with per-document outcomes
-        and aggregate counts.
+        and aggregate counts. Every outcome beyond `success` and
+        `skipped_pdf` counts toward `failed_count`.
 
 
-        The per-document poll is bounded. A generation slow enough outlasts
-        any waiter, so a document that has not settled within the server's
-        wait ceiling is abandoned and recorded with outcome 'timeout'
-        rather than polled indefinitely. Abandoning is a statement about the
-        poll, not about the document: the generation may still complete. It
-        is not, however, self-healing. This operation enumerates
-        'abstraction_skipped' only, and an abandoned document sits at
-        'abstraction_in_progress', so a later call reaches it only once
-        something else advances it -- the generation finishing, startup
-        recovery, or the out-of-band bulk sweep with a selector naming that
-        status. Work dropped by a stopped abstraction worker is a separate
-        case and does not land here: stopping the worker settles it at the
-        terminal 'abstraction_interrupted', which the poll returns and the
-        bulk sweep enumerates by default.
-
-
-        Outcomes beyond `success` and `skipped_pdf` all count toward
-        `failed_count`. `dispatch_failed` means the dispatch call raised;
-        its message preserves the exception without attributing it to the
-        provider. `still_skipped`, `timeout`, and `interrupted` identify
-        skipped abstraction, wait expiry, and queue interruption. `llm_failure`
-        covers background failures and legacy post-dispatch fallbacks,
-        including a document disappearing while waiting; consult its message.
+        The per-document poll is bounded: a document that has not settled
+        within the server's wait ceiling is recorded with outcome 'timeout',
+        though its generation may still complete. It then sits at
+        'abstraction_in_progress', which this operation does not enumerate.
 
 
         Reuses the in-process abstraction provider that the running SAGE
         process loaded once at startup; does NOT initialize a second
-        provider (the F-8 unified-memory cautionary tale). The
-        complementary scripts/reabstract_deferred.py remains as the
-        operator fallback for cron-style workflows where no MCP server is
-        running.
+        provider. The standalone scripts/reabstract_deferred.py remains the
+        operator fallback where no MCP server is running.
 
 
-        Single-flight per vault: a concurrent call against the same vault
-        returns 409 reabstract_already_in_flight with the start_time of
-        the running operation rather than queueing.
+        Single-flight per vault: a concurrent call returns 409
+        reabstract_already_in_flight, whose detail carries the running
+        operation's start_time, rather than queueing.
 
 
         Response is `text/event-stream`. Per-document state
@@ -9397,7 +9291,9 @@ components:
           default: false
           description: >-
             When true, recompute each present file's SHA-256 and compare
-            against the recorded source_content_hash, surfacing
+            against the digest recorded for the retained copy
+            (stored_content_hash, or source_content_hash when that is null),
+            surfacing
             `hash_mismatch` rows. Adds a full file read per document;
             default false performs an existence check only.
         document_ids:
@@ -9447,7 +9343,7 @@ components:
           description: >-
             `missing` — the source file does not exist under the storage
             root. `hash_mismatch` — the file exists but its content hash
-            differs from the recorded source_content_hash (only emitted
+            differs from the digest recorded for the retained copy (only emitted
             when check_hashes=True). `symlinked` — the recorded path is a
             link rather than the retained copy itself. `out_of_root` — the
             recorded path resolves outside the vault's source tree. The
@@ -9478,8 +9374,8 @@ components:
         every document's backing source file is present under the vault
         storage root, is the copy itself rather than a link to one, and
         names a path inside the vault's source tree, and — when
-        check_hashes is set — that each present file still hashes to its
-        recorded source_content_hash. Documents with an intact source
+        check_hashes is set — that each present file still hashes to the
+        digest recorded for its retained copy. Documents with an intact source
         file are absent from the report.
       properties:
         vault_id:
