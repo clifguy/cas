@@ -84,10 +84,8 @@ _INFER_EDGES = model_param(
     BatchIngestUploadMetadata,
     "infer_edges",
     mcp=(
-        "Inference runs across the whole batch after all documents are "
-        "inserted: Tier 1 edges (e.g. supersedes via version_chain) land as "
-        "production edges; Tier 2 candidates are deposited in the staging-edge "
-        "table for review via ``list_staging_edges``. When inference creates a "
+        "Tier 1 edges land as production edges; Tier 2 candidates are deposited "
+        "in the staging-edge table for review via ``list_staging_edges``. When inference creates a "
         "Tier-1 ``supersedes`` edge, the target transitions as part of edge "
         'execution -- no explicit ``update_lifecycles(action="supersede")`` '
         "is required. Both the states the transition may be taken from and the "

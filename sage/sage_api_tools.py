@@ -138,8 +138,9 @@ _LIFECYCLE_ITEMS = published_item_list(
             "``document_id`` and ``doc_id`` supplied — resolved per item, "
             "before any mutation), ``document_not_found`` (the item's own "
             "document, or a ``supersede`` successor that does not exist), "
-            "``invalid_lifecycle_transition`` (carrying the ``valid_actions`` "
-            "for the state the document is in), ``unexpected_successor_id``, "
+            "``invalid_action``, ``invalid_lifecycle_transition`` (carrying the ``valid_actions`` "
+            "for the state the document is in), ``missing_successor_id``, "
+            "``missing_relocated_to``, ``unexpected_successor_id``, "
             "``unexpected_relocated_to`` (a qualifier supplied with an action "
             "that does not take it), ``relocated_to_provenance_mismatch`` (the "
             "pointer names a source content hash the document does not "
@@ -235,7 +236,7 @@ _METADATA_ITEMS = published_item_list(
 _BATCH_RESPONSE_MODE_NOTE = (
     f"The inline budget is {DEFAULT_MCP_INLINE_BUDGET_BYTES:,} bytes, set per "
     "process by SAGE_MCP_INLINE_BUDGET_BYTES. An invalid value is refused as "
-    "internal_error before any per-item work."
+    "invalid_parameter before any per-item work."
 )
 
 #: The verbs ``update_staging_edge`` accepts; any other is refused.
@@ -1147,10 +1148,10 @@ def register_sage_tools(
         ``synced_from_version_not_in_source_chain`` (404).
 
         Error modes:
-        - ``invalid_vault_id`` (400)
         - ``vault_not_found`` (404)
-        - 400: ``undeclared_key``, ``invalid_sha256``, ``invalid_document_id``, ``invalid_edge_id``
-        - ``legacy_form``: a malformed ``items`` shape or ``response_mode``
+        - 400: ``invalid_vault_id``, ``undeclared_key``, ``invalid_sha256``,
+          ``invalid_document_id``, ``invalid_edge_id``
+        - ``invalid_parameter`` (422): a malformed ``items`` or ``response_mode``
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -1222,7 +1223,7 @@ def register_sage_tools(
         - ``vault_not_found`` (404)
         - 400: ``legacy_form``, ``invalid_document_id``, ``invalid_document_date``
         - ``undeclared_key`` (400): ``lifecycle_status`` is set with ``update_lifecycles``
-        - ``internal_error``: a malformed ``items`` shape or an invalid ``response_mode``
+        - ``invalid_parameter`` (422): a malformed ``items`` or ``response_mode``
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
