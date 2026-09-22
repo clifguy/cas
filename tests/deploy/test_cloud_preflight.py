@@ -2518,6 +2518,8 @@ def _refusal_message(variable: str, bash_bin: str, **overrides: str) -> str:
         ("CAS_BASE_URL", "https://cas.test.invalid\r", "$'https://cas.test.invalid\\r'"),
         ("PREFLIGHT_RESOURCE_GROUP", "rg-cas\n", "$'rg-cas\\n'"),
         ("PREFLIGHT_EXPECTED_PG_MAJOR", "16\n", "$'16\\n'"),
+        ("EXPECTED_SAGE_CNAME_SUFFIX", "azure-api.net\n", "$'azure-api.net\\n'"),
+        ("EXPECTED_CAS_CNAME_SUFFIX", "azurecontainerapps.io\r", "$'azurecontainerapps.io\\r'"),
     ],
     ids=[
         "vault-source",
@@ -2532,6 +2534,8 @@ def _refusal_message(variable: str, bash_bin: str, **overrides: str) -> str:
         "cas-base-url",
         "resource-group",
         "pg-major",
+        "sage-cname-suffix",
+        "cas-cname-suffix",
     ],
 )
 def test_a_control_character_in_any_operator_input_is_refused(
@@ -2554,7 +2558,8 @@ def test_a_control_character_in_any_operator_input_is_refused(
     * the hosts and URLs build every probe and the banner, so a trailing newline
       splits the banner and fails each check with an opaque curl exit after the
       warm-up budget; ``PREFLIGHT_RESOURCE_GROUP`` and
-      ``PREFLIGHT_EXPECTED_PG_MAJOR`` are rendered into detail rows.
+      ``PREFLIGHT_EXPECTED_PG_MAJOR`` are rendered into detail rows, and the
+      CNAME suffixes are compared against every resolved target.
 
     ``scalar-with-comma`` holds the other half of the message contract: a
     single-valued variable is shown whole, so a refusal that split it on commas

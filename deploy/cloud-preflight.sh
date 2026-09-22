@@ -44,7 +44,8 @@
 #   PREFLIGHT_CHECKS           comma-list allowlist of check ids to run
 #   PREFLIGHT_SKIP             comma-list denylist of check ids to skip
 #                              (a control character in any of these, in the
-#                              hosts and URLs, or in PREFLIGHT_RESOURCE_GROUP or
+#                              hosts and URLs, the CNAME suffixes,
+#                              PREFLIGHT_RESOURCE_GROUP or
 #                              PREFLIGHT_EXPECTED_PG_MAJOR is refused before any
 #                              check runs, as is a PREFLIGHT_CHECKS or
 #                              PREFLIGHT_SKIP entry naming no registered check,
@@ -1524,8 +1525,8 @@ PREFLIGHT_SKIP, PREFLIGHT_RESOLVE_CMD, PREFLIGHT_TLS_PROBE_CMD. See the header
 of this script for the full reference.
 
 A control character in PREFLIGHT_EXPECTED_VAULTS, the check lists,
-PREFLIGHT_VAULT_SOURCE, PREFLIGHT_EXPECTED_ASUID, the hosts and URLs,
-PREFLIGHT_RESOURCE_GROUP or PREFLIGHT_EXPECTED_PG_MAJOR is refused
+PREFLIGHT_VAULT_SOURCE, PREFLIGHT_EXPECTED_ASUID, the hosts and URLs, the CNAME
+suffixes, PREFLIGHT_RESOURCE_GROUP or PREFLIGHT_EXPECTED_PG_MAJOR is refused
 before any check runs, as is a PREFLIGHT_CHECKS or PREFLIGHT_SKIP entry that
 names no registered check (--dry-run lists them) and a selection that leaves no
 check to run.
@@ -1534,7 +1535,7 @@ EOF
 }
 
 # The tenant parameters refused below hold ids, lists of ids, a backend name,
-# a token, hosts and URLs, so a value carrying a control character is
+# a token, hosts, URLs and host suffixes, so a value carrying a control character is
 # malformed rather than exotic: none of them can contain one. It is refused
 # here, before any network call, rather than left to a check -- where a newline
 # splits the banner or a matrix row, is read by grep -F as a second pattern,
@@ -1723,7 +1724,8 @@ fi
 refuse_control_characters_in_lists PREFLIGHT_EXPECTED_VAULTS PREFLIGHT_CHECKS PREFLIGHT_SKIP
 refuse_control_characters_in_values PREFLIGHT_VAULT_SOURCE PREFLIGHT_EXPECTED_ASUID \
   BASE_DOMAIN SAGE_FQDN CAS_FQDN SAGE_BASE_URL CAS_BASE_URL \
-  PREFLIGHT_RESOURCE_GROUP PREFLIGHT_EXPECTED_PG_MAJOR
+  PREFLIGHT_RESOURCE_GROUP PREFLIGHT_EXPECTED_PG_MAJOR \
+  EXPECTED_SAGE_CNAME_SUFFIX EXPECTED_CAS_CNAME_SUFFIX
 refuse_unknown_check_ids PREFLIGHT_CHECKS PREFLIGHT_SKIP
 
 # Derive endpoints and apply tenant-parameter / seam defaults.
