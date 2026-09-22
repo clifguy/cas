@@ -396,14 +396,49 @@ it. Restored servers need their own inspected backup policy and deletion lock.
 Use a reviewed deployment/recovery change to adopt their coordinates; never
 silently replace the configured serving generation.
 
-See Microsoft's [backup and restore model](https://learn.microsoft.com/en-us/azure/postgresql/backup-restore/concepts-backup-restore)
-and [geo-disaster recovery](https://learn.microsoft.com/en-us/azure/postgresql/backup-restore/concepts-geo-disaster-recovery),
+See Microsoft's [backup and restore model](https://learn.microsoft.com/en-us/azure/postgresql/backup-restore/concepts-backup-restore),
+[geo-disaster recovery](https://learn.microsoft.com/en-us/azure/postgresql/backup-restore/concepts-geo-disaster-recovery),
+[restore of a deleted server](https://learn.microsoft.com/en-us/azure/postgresql/backup-restore/how-to-restore-deleted-server),
 and PostgreSQL's [logical dump compatibility](https://www.postgresql.org/docs/17/app-pgdump.html).
 
 During the overlap, maintenance snapshots produced by the newer `pg_dump` require
 its matching `pg_restore` client. Use the migration runtime's client when inspecting
 or restoring those archives; do not assume the incumbent server's older client can
 read them.
+
+### Retiring the source
+
+Retention of the source is an owner decision with an explicit deadline, set
+against the source's own restore window rather than the replacement's retention
+setting. While the source stays unwritten, its rolling window still covers
+pre-cutover points until the window's length has elapsed since cutover. After
+that it holds only the cutover-time state that the source database itself preserves.
+
+Before requesting retirement, recheck the replacement's actual earliest restore
+point, geo-backup availability and restore-verification outcome, or an explicitly
+accepted limitation. Confirm that all four consumers name the replacement FQDN, and
+that no migration or restore job execution is active. Write down the exact
+resources to remove. The source server and its own deletion lock, selected by
+resource id because both locks share a name, are the only candidates. Shared
+networking, the private DNS zone, identities and everything belonging to the
+replacement are excluded. Remove the lock and the server only with explicit
+approval given immediately before execution. A passed deadline is not approval.
+
+Deleting a Flexible Server discards its point-in-time restore history. Azure
+retains a backup of a deleted server for five days, restorable from the same
+subscription with `createMode: ReviveDropped`, and only at the deletion
+timestamp. Microsoft does not guarantee the revival. Take any archive the
+retention decision calls for before deleting.
+
+After retirement, never clear the `serving:<generation>` fence or the persistent
+generation selection. An empty generation selects the original server name, and
+deployment would create a new empty server there and switch every consumer to it.
+The deploy guard also refuses an empty generation whenever the last deployment
+served one; when a failed apply has left that deployment without outputs, it reads
+the servers in the resource group instead. The fence remains the primary control.
+That fallback cannot tell a retained replacement from a serving one: after a
+rollback that keeps the replacement, a failed apply leaves every later deploy
+refused until the replacement is removed, under its own explicit approval.
 
 ## Isolated restore verification
 
