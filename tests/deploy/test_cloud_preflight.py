@@ -2473,6 +2473,149 @@ def test_usage_states_expected_vaults_refuses_control_characters() -> None:
     assert any("PREFLIGHT_EXPECTED_VAULTS" in line for line in lines), proc.stderr
 
 
+def _refusal_message(variable: str, bash_bin: str, **overrides: str) -> str:
+    """Run the harness against a recording stub, assert the run was refused at
+    required-input validation, and return the one ``preflight: <variable>`` line.
+
+    Refused means: the usage exit code, no banner, no matrix row on either
+    stream, and no request reaching the stub. The stub is served so that a run
+    which got past validation would have something to call, which is what makes
+    its silence evidence rather than an absence of opportunity.
+    """
+    requested: list[str] = []
+
+    def _recording(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        requested.append(path)
+        return _green(method, path, body)
+
+    with serve(_recording) as url:
+        proc = _run(_base_env(url, **overrides), bash_bin=bash_bin)
+    assert not requested, f"the refusal must precede every network call: {requested}"
+    assert proc.returncode == 2, f"expected the usage path:\n{proc.stdout}{proc.stderr}"
+    assert not _verdicts(proc.stdout) and not _verdicts(proc.stderr), proc.stdout
+    assert "=== CAS cloud preflight" not in proc.stderr, "the checks must not have started"
+    messages = [
+        line for line in proc.stderr.splitlines() if line.startswith(f"preflight: {variable} ")
+    ]
+    assert len(messages) == 1, proc.stderr
+    return messages[0]
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
+@pytest.mark.parametrize(
+    ("variable", "value", "escaped_entry"),
+    [
+        ("PREFLIGHT_VAULT_SOURCE", "document_store\n", "$'document_store\\n'"),
+        ("PREFLIGHT_EXPECTED_ASUID", "zzz\nabc", "$'zzz\\nabc'"),
+        ("PREFLIGHT_CHECKS", "vault_load\n", "$'vault_load\\n'"),
+        ("PREFLIGHT_SKIP", "vault_load\r", "$'vault_load\\r'"),
+    ],
+    ids=["vault-source", "expected-asuid", "checks", "skip"],
+)
+def test_a_control_character_in_any_operator_input_is_refused(
+    variable: str, value: str, escaped_entry: str, bash_bin: str
+) -> None:
+    """A control character is refused in the four other slug-, id- and
+    token-valued inputs, not only in the expected-vaults list.
+
+    Each variable fails differently when one is let through, which is why each
+    is carried rather than one standing for the rest:
+
+    * ``PREFLIGHT_VAULT_SOURCE`` is supplied by a repository variable and
+      interpolated into a matrix detail, so a trailing newline splits a row;
+    * ``PREFLIGHT_EXPECTED_ASUID`` is compared with ``grep -F``, which reads a
+      multi-line value as one pattern per line and credits it by any one line;
+    * ``PREFLIGHT_CHECKS`` compared whole selects no check at all, and the run
+      passes on an empty matrix;
+    * ``PREFLIGHT_SKIP`` compared whole is silently not honoured.
+
+    A refusal applied only to the expected-vaults list passes the sibling
+    scenario and fails the vault-source and asuid cases. The two check-list
+    cases are held by this refusal and by the unknown-id refusal alike, since an
+    entry carrying a control character names no registered check either; which
+    one answers changes the message's wording, not the escaped entry it shows.
+    """
+    message = _refusal_message(variable, bash_bin, **{variable: value})
+    assert escaped_entry in message, message
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
+@pytest.mark.parametrize("variable", ["PREFLIGHT_CHECKS", "PREFLIGHT_SKIP"])
+@pytest.mark.parametrize(
+    ("value", "unknown"),
+    [("nosuch", "nosuch"), ("vault_load,nosuch", "nosuch"), ("vault_loa", "vault_loa")],
+    ids=["alone", "mixed", "prefix"],
+)
+def test_a_check_list_naming_no_registered_check_is_refused(
+    variable: str, value: str, unknown: str, bash_bin: str
+) -> None:
+    """An allowlist or denylist entry naming no registered check is refused.
+
+    Unrefused, an allowlist of unknown ids selects nothing and the preflight
+    exits 0 on an empty matrix -- a gate passing vacuously -- and a denylist
+    entry that names nothing skips nothing while reading as a skip.
+
+    What each shape excludes:
+
+    * ``alone`` -- the vacuous pass itself;
+    * ``mixed`` -- a guard that fails only when *zero* checks are selected, which
+      the registered ``vault_load`` would satisfy while ``nosuch`` goes unnoticed;
+    * ``prefix`` -- a lookup matching a substring of the registered ids rather
+      than a whole id, which credits ``vault_loa`` through ``vault_load``;
+    * ``vault_load`` absent from the message -- the refusal names the unknown
+      entry, not the whole value.
+    """
+    message = _refusal_message(variable, bash_bin, **{variable: value})
+    assert unknown in message, message
+    assert "vault_load" not in message, f"only the unknown entry is named: {message!r}"
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
+def test_empty_elements_in_the_check_lists_are_not_unknown_ids(bash_bin: str) -> None:
+    """An empty element in the allowlist, and an empty denylist, are not refused.
+
+    The guard against the refusal over-reaching: an operator-edited list
+    acquires stray commas, and an empty field is no id at all rather than an
+    unknown one. A refusal that looked up every field would fail this run while
+    passing every refusal scenario above.
+    """
+    with serve(_green) as url:
+        proc = _run(
+            _base_env(url, PREFLIGHT_CHECKS="vault_load,,", PREFLIGHT_SKIP=""),
+            bash_bin=bash_bin,
+        )
+    assert proc.returncode == 0, f"{proc.stdout}{proc.stderr}"
+    assert _verdicts(proc.stdout) == {"vault_load": "PASS"}, proc.stdout
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
+@pytest.mark.parametrize(
+    ("checks", "skip"),
+    [(",", ""), ("vault_load", "vault_load")],
+    ids=["empty-elements-only", "skip-covers-allowlist"],
+)
+def test_a_selection_leaving_no_check_to_run_is_refused(
+    checks: str, skip: str, bash_bin: str
+) -> None:
+    """A selection that leaves no check to run is refused rather than passed.
+
+    Neither shape names an unknown id, so the unknown-id refusal admits both,
+    and both would otherwise reach an empty matrix and exit 0. ``,`` is an
+    allowlist of empty elements -- set, so it filters, yet naming nothing;
+    ``vault_load`` skipped from an allowlist of ``vault_load`` is a denylist
+    covering the whole selection. The guard above holds the other boundary: an
+    allowlist with stray commas that still names a check runs it.
+    """
+    message = _refusal_message(
+        "PREFLIGHT_CHECKS", bash_bin, PREFLIGHT_CHECKS=checks, PREFLIGHT_SKIP=skip
+    )
+    assert "select no check" in message, message
+
+
 @_NEEDS_RUNTIME
 @pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
 def test_vault_load_credits_an_advertised_id_that_carries_a_metacharacter(bash_bin: str) -> None:
@@ -3008,28 +3151,38 @@ def _synthetic_jwt(**claims: object) -> str:
     return f"{_seg({'alg': 'none', 'typ': 'JWT'})}.{_seg(dict(claims))}.signature"
 
 
-def _diag_env(**overrides: str) -> dict[str, str]:
-    """Minimal env that runs main() with no checks selected -- diagnostic only."""
+def _diag_env(tmp_path: Path, **overrides: str) -> dict[str, str]:
+    """Minimal env that runs main() with one offline check -- diagnostic only.
+
+    A selection must leave at least one check to run, so the run selects the
+    asuid TXT check against a stub resolver that answers the real name and not
+    the negative control: main() emits the diagnostic, the check passes without
+    a network call, and the run exits 0.
+    """
+    resolver = _write_stub_cmd(
+        tmp_path,
+        "resolve",
+        'case "$1" in *nxdomain-control*) ;; *) echo \'"verification-token"\' ;; esac\n',
+    )
     env = {
         "SAGE_FQDN": "sage.test.invalid",
         "BASE_DOMAIN": "test.invalid",
         "AUTH_TOKEN": "test-token",
-        # Select a non-existent check id: main() emits the diagnostic, then the
-        # check loop matches nothing -> no network, exit 0.
-        "PREFLIGHT_CHECKS": "__none__",
+        "PREFLIGHT_CHECKS": "dns_asuid_txt",
+        "PREFLIGHT_RESOLVE_CMD": resolver,
     }
     env.update(overrides)
     return env
 
 
 @_NEEDS_BASH
-def test_diagnostic_decodes_jwt_iss_aud_ver() -> None:
+def test_diagnostic_decodes_jwt_iss_aud_ver(tmp_path: Path) -> None:
     # A real (synthetic) JWT: the diagnostic reports the *decoded* claim values,
     # which only appear if the payload segment was actually base64url-decoded.
     token = _synthetic_jwt(
         iss="https://login.microsoftonline.com/tid/v2.0", aud=_DIAG_GUID, ver="2.0"
     )
-    proc = _run(_diag_env(AUTH_TOKEN=token))
+    proc = _run(_diag_env(tmp_path, AUTH_TOKEN=token))
     assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
     assert f"aud={_DIAG_GUID}" in proc.stderr, proc.stderr
     assert "iss=https://login.microsoftonline.com/tid/v2.0" in proc.stderr, proc.stderr
@@ -3037,21 +3190,21 @@ def test_diagnostic_decodes_jwt_iss_aud_ver() -> None:
 
 
 @_NEEDS_BASH
-def test_diagnostic_degrades_on_non_jwt_token() -> None:
+def test_diagnostic_degrades_on_non_jwt_token(tmp_path: Path) -> None:
     # The default AUTH_TOKEN is not a 3-segment JWT; the decoder must degrade
     # gracefully (not crash under `set -euo pipefail`) and the run must complete.
-    proc = _run(_diag_env())  # AUTH_TOKEN="test-token"
+    proc = _run(_diag_env(tmp_path))  # AUTH_TOKEN="test-token"
     assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
     assert "token-claims: unavailable" in proc.stderr, proc.stderr
     assert "=== preflight complete" in proc.stderr, "the run must reach completion"
 
 
 @_NEEDS_BASH
-def test_diagnostic_never_prints_raw_token() -> None:
+def test_diagnostic_never_prints_raw_token(tmp_path: Path) -> None:
     token = _synthetic_jwt(
         iss="https://login.microsoftonline.com/tid/v2.0", aud=_DIAG_GUID, ver="2.0"
     )
-    proc = _run(_diag_env(AUTH_TOKEN=token))
+    proc = _run(_diag_env(tmp_path, AUTH_TOKEN=token))
     assert token not in (proc.stdout + proc.stderr), "the raw bearer token must never be logged"
 
 
