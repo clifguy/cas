@@ -6310,6 +6310,7 @@ components:
       required:
       - success
       - body_present
+      - server_build
       properties:
         success:
           type: boolean

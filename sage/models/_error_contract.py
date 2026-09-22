@@ -4520,7 +4520,8 @@ SCHEMAS = json.loads(
     },
     "required": [
       "success",
-      "body_present"
+      "body_present",
+      "server_build"
     ],
     "type": "object"
   },

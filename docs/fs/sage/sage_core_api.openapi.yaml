@@ -7885,7 +7885,7 @@ components:
         caller can tell a delivered success apart from a transport-truncated
         fragment, and a thin/empty body apart from a populated one. The same
         carrier rides the error envelope with `success=false`.
-      required: [success, body_present]
+      required: [success, body_present, server_build]
       properties:
         success:
           type: boolean

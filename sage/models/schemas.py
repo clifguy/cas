@@ -1465,9 +1465,13 @@ class ReadMeta(BaseModel):
 
         The build half of the stamp is a process constant and arrives by
         default; the fingerprint is per vault, so the service that answered
-        supplies it from its own configuration (CAS-ADR-055).
+        supplies it from its own configuration (CAS-ADR-055). Built through
+        validation rather than ``model_copy``, so the field's shape constraint
+        holds on this path too.
         """
-        return self.model_copy(update={"vault_config_fingerprint": vault_config_fingerprint})
+        return type(self).model_validate(
+            {**self.model_dump(), "vault_config_fingerprint": vault_config_fingerprint}
+        )
 
     @classmethod
     def projection_freshness(

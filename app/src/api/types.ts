@@ -252,7 +252,7 @@ export interface ReadMeta {
   body_length?: number | null;
   projection_status?: 'current' | 'stale' | null;
   projection_recovery?: string | null;
-  server_build?: string;
+  server_build: string;
   vault_config_fingerprint?: string | null;
 }
 

@@ -14,7 +14,7 @@ import re
 
 import pytest
 from httpx import ASGITransport, AsyncClient
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from sage import build_info
 from sage.adapters.stubs import (
@@ -25,6 +25,7 @@ from sage.adapters.stubs import (
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from sage.models import schemas
+from tests.helpers.pipeline_wait import await_tool_idle
 
 _FINGERPRINT = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -33,10 +34,12 @@ _FINGERPRINT = re.compile(r"^sha256:[0-9a-f]{64}$")
 async def app(minimal_vault_config_dict, tmp_vault_dir):
     config = VaultConfig.model_validate(minimal_vault_config_dict)
     app = create_app(config=config)
+    # One store behind a factory, so projections survive a config reload.
+    content_store = StubContentStore()
     await _initialize_services(
         app,
         config,
-        content_store=StubContentStore(),
+        content_store_factory=lambda _brain_root: content_store,
         embedding_provider=StubEmbeddingProvider(),
         abstraction_provider=StubAbstractionProvider(),
     )
@@ -57,14 +60,22 @@ async def client(app):
         yield c
 
 
-async def _ingest(client) -> str:
+async def _ingest(app, client) -> str:
+    """Ingest the sample and wait until every read path can serve it."""
     resp = await client.post(
         "/sage_vaults/test_vault/documents",
         json={"source": "test/sample.md", "source_type": "markdown"},
     )
     assert resp.status_code == 201, resp.text
-    await asyncio.sleep(0.5)
-    return resp.json()["document"]["id"]
+    doc_id = resp.json()["document"]["id"]
+
+    async def fetch():
+        return (await client.get(f"/sage_vaults/test_vault/documents/{doc_id}")).json()
+
+    await await_tool_idle(
+        fetch, doc_id, service=app.state.vault_registry["test_vault"].ingestion_service
+    )
+    return doc_id
 
 
 def _live_fingerprint(app) -> str:
@@ -211,7 +222,7 @@ def _fill(value, doc_id: str):
 
 @pytest.mark.parametrize(("method", "path", "body"), _CASES)
 async def test_every_read_response_is_stamped(app, client, method, path, body):
-    doc_id = await _ingest(client)
+    doc_id = await _ingest(app, client)
     resp = await client.request(method, _fill(path, doc_id), json=_fill(body, doc_id))
     assert resp.status_code == 200, resp.text
     read_meta = resp.json()["read_meta"]
@@ -235,15 +246,22 @@ async def test_error_envelope_carries_build_and_omits_fingerprint(client):
 # ---------------------------------------------------------------------------
 
 
-async def _read_fingerprint(client, doc_id: str) -> str:
-    resp = await client.get(f"/sage_vaults/test_vault/documents/{doc_id}")
-    assert resp.status_code == 200, resp.text
-    return resp.json()["read_meta"]["vault_config_fingerprint"]
+async def _read_fingerprints(client, doc_id: str) -> dict[str, str]:
+    """The fingerprint every read path reports, keyed by its stamp case."""
+    seen = {}
+    for model, calls in _READ_CALLS.items():
+        for case, method, path, body in calls:
+            resp = await client.request(method, _fill(path, doc_id), json=_fill(body, doc_id))
+            assert resp.status_code == 200, resp.text
+            seen[f"{model}:{case}"] = resp.json()["read_meta"]["vault_config_fingerprint"]
+    return seen
 
 
 async def test_noop_config_write_leaves_fingerprint_unchanged(app, client):
-    doc_id = await _ingest(client)
-    before = await _read_fingerprint(client, doc_id)
+    """Every read path follows the configuration through a reload, not only one."""
+    doc_id = await _ingest(app, client)
+    before = _live_fingerprint(app)
+    assert set((await _read_fingerprints(client, doc_id)).values()) == {before}
     config_before = app.state.vault_registry["test_vault"].config
 
     current = (await client.get("/sage_vaults/test_vault/config")).json()
@@ -253,16 +271,18 @@ async def test_noop_config_write_leaves_fingerprint_unchanged(app, client):
     assert rewrite.status_code == 200, rewrite.text
     # The write really reloaded: the vault now answers from a new config object.
     assert app.state.vault_registry["test_vault"].config is not config_before
-    assert await _read_fingerprint(client, doc_id) == before
+    assert set((await _read_fingerprints(client, doc_id)).values()) == {before}
 
-    # Positive control: a real rule edit through the same path moves it.
+    # Positive control: a real rule edit through the same path moves it on every read path.
     lifecycle = copy.deepcopy(current["lifecycle"])
     lifecycle["transitions"].append(
         {"from_state": "completed", "action": "reactivate", "to_state": "active"}
     )
     edit = await client.put("/sage_vaults/test_vault/config", json={"lifecycle": lifecycle})
     assert edit.status_code == 200, edit.text
-    assert await _read_fingerprint(client, doc_id) != before
+    after = _live_fingerprint(app)
+    assert after != before
+    assert set((await _read_fingerprints(client, doc_id)).values()) == {after}
 
 
 # ---------------------------------------------------------------------------
@@ -271,7 +291,7 @@ async def test_noop_config_write_leaves_fingerprint_unchanged(app, client):
 
 
 async def test_build_identity_matches_startup_handshake(app, client, tool_payload):
-    doc_id = await _ingest(client)
+    doc_id = await _ingest(app, client)
     server = app.state.mcp_mounts["/mcp"]
     opts = server._mcp_server.create_initialization_options()
 
@@ -294,7 +314,7 @@ async def test_search_budget_measures_stamped_response(app, client, monkeypatch)
     """Budget sizing sees the stamp, so a response fitted to the budget still fits."""
     from sage.services import retrieval
 
-    await _ingest(client)
+    await _ingest(app, client)
     measured: list[str | None] = []
     original = retrieval._serialized_response_bytes
 
@@ -311,3 +331,14 @@ async def test_search_budget_measures_stamped_response(app, client, monkeypatch)
     assert resp.json().get("hints"), "the budget policy did not engage"
     assert measured, "the budget policy measured nothing"
     assert all(fp == _live_fingerprint(app) for fp in measured), measured
+    # The fitted response delivered is the stamped one that was measured.
+    assert resp.json()["read_meta"]["vault_config_fingerprint"] == _live_fingerprint(app)
+
+
+def test_stamped_enforces_the_fingerprint_shape():
+    """The stamp goes through validation, so a malformed fingerprint is refused."""
+    meta = schemas.ReadMeta(success=True, body_present=False)
+    with pytest.raises(ValidationError):
+        meta.stamped("garbage")
+    good = "sha256:" + "a" * 64
+    assert meta.stamped(good).vault_config_fingerprint == good
