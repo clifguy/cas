@@ -1,6 +1,0 @@
-classification: patch
-summary: >-
-  Complete the get_vault_config section enumeration on the OpenAPI and MCP
-  descriptions, including timing, and check both lists against the vault
-  configuration schema.
-for_callers: ""

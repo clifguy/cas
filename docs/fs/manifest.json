@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Inventory and version tracking for the CAS Formal Substrate (CAS-ADR-008). Each artifact's version is the release MAJOR.MINOR in which it last changed, or null until a release first publishes it; no counter is assigned when a change is authored. revision_history is assembled per release: a change adds a numberless change record under changes/unreleased/, and the release step folds every unreleased record into one entry for the new release, newest first. Entries written before this scheme, which carry a substrate counter in their version field, follow the release entries and are kept verbatim.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-09-15",
+  "manifest_date": "2026-09-22",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -18,7 +18,7 @@
       "path": "sage/vault_config.schema.json",
       "title": "SAGE Vault Configuration",
       "status": "draft",
-      "version": "2.5",
+      "version": "2.6",
       "role": "Root schema for SAGE vault configuration. A domain instantiation produces a single YAML file that validates against this schema.",
       "instantiation_checklist_items": [
         1
@@ -28,7 +28,7 @@
       "path": "sage/sage_core_config.schema.json",
       "title": "SAGE Core API Configuration",
       "status": "draft",
-      "version": "2.3",
+      "version": "2.6",
       "role": "Stack-wide configuration for the SAGE Core API process (CAS-ADR-030, CAS-ADR-042, CAS-ADR-043). Loaded once at process startup before any vault is registered; carries resources whose enforcement spans the whole SAGE process (the abstraction provider, its model, and the local provider's optional context-window override and clause (f) opener constraint), the deployment-profile marker that co-binds the adapter-port implementations for one deployment target, the durable-storage binding selector (postgres, the storage port's sole binding), the vault-source-store binding selector (filesystem default, tenant document-store alternative), the Postgres storage-engine connection parameters (non-secret; password from the environment), the optional OAuth resource-server auth binding (absent by default; non-secret issuer/audience coordinates when a deployment authenticates its callers), and the caller-local transfer channel block (the public endpoint base minted recipes embed, the one-time token lifetime, and how many refused deliveries an upload token survives; omitted by deployments that never mint recipes). The on-disk file is sage/config.yaml at the repo root.",
       "instantiation_checklist_items": []
     },
@@ -46,7 +46,7 @@
       "path": "sage/lifecycle.schema.json",
       "title": "SAGE Lifecycle State Machine",
       "status": "draft",
-      "version": "2.3",
+      "version": "2.6",
       "role": "Defines lifecycle states and valid transitions. Base set is always present; domains extend it.",
       "instantiation_checklist_items": [
         3
@@ -84,7 +84,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "2.5",
+      "version": "2.6",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -92,7 +92,7 @@
       "path": "cas_app_api.openapi.yaml",
       "title": "CAS Application API",
       "status": "draft",
-      "version": "2.5",
+      "version": "2.6",
       "role": "OpenAPI 3.1.0 specification for the CAS Application backend HTTP surface (mounted at the /app prefix). Defines directory scan and batch-ingest endpoints used by the CAS Application UI. Architecturally distinct from the SAGE Core API; the two specs are validated together by tests/sage/test_openapi_conformance.py and must respect URL-prefix boundaries (sage_core_api owns /sage_vaults/*, cas_app_api owns /app/*).",
       "instantiation_checklist_items": []
     },
@@ -100,7 +100,7 @@
       "path": "sage/sage_mcp_tools.catalog.json",
       "title": "SAGE MCP Tool Catalog",
       "status": "draft",
-      "version": "2.5",
+      "version": "2.6",
       "role": "The tools the SAGE MCP surfaces publish through tools/list: name, input and output schemas, annotations, and description, for the ordinary surface (/mcp) and the maintenance surface (/mcp_maint). Generated from the servers by scripts/dump_mcp_catalog.py and held to them by a test gate; the contract comparison reads it as the MCP half of the published contract.",
       "instantiation_checklist_items": []
     },
@@ -189,6 +189,240 @@
   ],
   "deferred": [],
   "revision_history": [
+    {
+      "release": "2.6",
+      "date": "2026-09-22",
+      "changes": [
+        {
+          "classification": "minor",
+          "category": [
+            "caller-adaptation"
+          ],
+          "summary": "create_vault and update_vault_config refuse an adapter_defaults parameter its adapter cannot use, with vault_config_validation_error whose detail.errors names the path (adapter_defaults.<source_type>.<key>). Each entry is checked by the adapter that reads it, using the same check projection applies, so a value is refused on write exactly when every later ingest or re-projection of that format would refuse it with adapter_config_invalid. The markdown dialect check moves onto the same path. A stored configuration holding such a value, a key naming no source type, or a non-mapping entry now loads with a warning under both vault-source bindings instead of dropping the vault from discovery, following the strict-on-write, lenient-on-load split that lifecycle problems already follow. The value is kept as stored: a refused parameter or dialect is still refused by the projection that reads it, while an unknown key or a non-mapping entry configures nothing, so that format projects at adapter defaults and the load warning is the only trace. The CreateVaultRequest.config description in sage_core_api.openapi.yaml stated that the configuration was validated against vault_config.schema.json, which it never was; it now states the two checks that run.",
+          "for_callers": "A vault configuration write now refuses an adapter_defaults value the adapter would refuse at projection: a pdf max_pages, pptx max_slides or xlsx preview_rows that is not an integer of at least 1, an xlsx max_sheets that is neither that nor null, or a docx heading_style_map that does not map style names to levels 1 through 9. These were accepted before and failed every later ingest of the format. A vault whose stored configuration already holds one keeps loading, with a warning naming the value to repair through update_vault_config; ingests of that format are refused until it is repaired. A stored key naming no source type, or an entry that is not a mapping, also loads with a warning, and configures nothing."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "caller-adaptation"
+          ],
+          "summary": "POST /app/ingest refuses an undeclared name in a file entry, or in the parsed_metadata it carries, before any value in the request is checked, as POST /documents:batch and the bulk_ingest_document tool already did. An entry carrying both an undeclared key and a malformed sha256, or a malformed parsed_metadata date, was refused on that route as invalid_sha256 or invalid_document_date because the request model lists declared fields ahead of extra ones; it is now refused as undeclared_key, located and chosen by the rule the other two batch surfaces share. The check runs as a dependency of the route ahead of the body's own validation, answers for entry names only, and leaves a body it cannot walk, or one naming an undeclared top-level field, to the model's own refusal.",
+          "for_callers": "A client of POST /app/ingest that sends an entry with both an undeclared key and a malformed value now receives undeclared_key first, on every batch ingest surface; repair the named keys, then the value refusal follows if the value is still malformed."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "caller-adaptation"
+          ],
+          "summary": "The Core API batch upload (POST /sage_vaults/{vault_id}/documents:batch) no longer discards an undeclared key in a file's parsed_metadata. BatchIngestFileMetadata.parsed_metadata is now the closed BatchIngestParsedMetadata component (title, date, project, codes, version, doc_type, each optional and nullable) rather than an open object, and an undeclared key there, or on the file entry itself, is refused as 422 invalid_parameter located at files.<n>.parsed_metadata.<key> or files.<n>.<key>, before anything is staged or ingested. With several undeclared keys, the one reported is the one the MCP bulk_ingest_document tool reports for the same entries, and that tool now takes its parsed-metadata names from the same component and validates each entry's parsed_metadata against it: a value that is not a mapping, or a field of the wrong type, is refused as 422 invalid_parameter at files.<n>.parsed_metadata, files.<n>.parsed_metadata.<field>, or files.<n>.parsed_metadata.<field>.<index> for one item of a list field, before anything is delivered or ingested, where a string codes previously ingested one code per character and a non-string title failed the call with an internal error. An undeclared entry key was previously refused as 400 invalid_batch_metadata; every other envelope defect, including a parsed-metadata value of the wrong type, still is. A parsed-metadata value of the wrong type was previously passed through to the ingest. A null title now seeds the title from the file stem, as an omitted one does. The operation declares the 422 response.",
+          "for_callers": "A batch upload whose parsed_metadata carries a key other than title, date, project, codes, version or doc_type is now refused with 422 invalid_parameter instead of having the key ignored; drop the key or move it to the field it was meant for. A client branching on invalid_batch_metadata for an unknown file-entry key should branch on invalid_parameter, reading detail.parameter for the location. A parsed_metadata value of the wrong type (codes that is not a list of strings, a title that is not a string) is refused as 400 invalid_batch_metadata on the upload, and as 422 invalid_parameter by the bulk_ingest_document tool. A null title is treated as omitted."
+        },
+        {
+          "classification": "patch",
+          "summary": "Every operation that binds a request body now declares its 422 invalid_parameter response, in the Core API specification and the CAS Application API specification: a value in the body that fails validation with no more specific code to report it -- a wrong type, a bound, a malformed value -- located by detail.parameter as a dotted path from the top of the request. The routers publish the same entry from one shared definition, replacing FastAPI's default 422 schema, which named a body the server never sends. The three operations that already declared a 422 for a codes-and-tags conflict keep that text and gain the shared refusal after it. transfer_upload, which streams its body unparsed, declares none, since no body value is validated there.",
+          "detector_override": {
+            "reason": "Declares a refusal every body-taking operation already returned at 422; no call the server accepted before is refused, and no status any call answered changes."
+          }
+        },
+        {
+          "classification": "patch",
+          "summary": "The four Core API operations without a request body that take a value able to fail validation now declare their 422 invalid_parameter in the Core API specification and in the routers, with the shared sentence: get_default_vault_config (the required vault_id), get_document (include_content), delete_edge (dry_run) and list_pending_metadata (limit, offset, response_mode). The served OpenAPI document no longer publishes FastAPI's default 422 HTTPValidationError on any operation, and drops the HTTPValidationError and ValidationError schemas. That default stood on 25 operations, 21 of which cannot answer 422 at all, and named a body the server never sends. A gate classifies every body-less route by whether it binds a value that can fail validation, and holds the live document and the specification to the result.",
+          "detector_override": {
+            "reason": "Declares a refusal the four operations already returned at 422 invalid_parameter; no call the server accepted before is refused, and no status any call answered changes. The removed default appeared only in the served document, never in the published specifications."
+          }
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "Bulk ingest takes a caller-settable `needs_review` on every surface, and each file entry may carry `tier3_metadata` and `parsed_metadata.tags`. The MCP tool passed no `needs_review` to the batch orchestrator, so it always used the service default and the value the Core API batch route already published had no counterpart there. `tier3_metadata` is a sibling of `parsed_metadata` rather than a key in it, because `parsed_metadata` flattens into the per-file request's Tier-1 metadata; it is validated per file against the resolved doc_type's `metadata_schema` and a payload that schema rejects is reported as that file's `tier3_schema_violation` without failing the batch. `codes` and `tags` set the same field, so an entry supplying both is refused once for the whole call at `files.<n>.parsed_metadata.tags` through a rule the surfaces share. The single-document ingest refuses the same pair at `metadata.tags`, where it had accepted both and let mapping walk order decide which one landed; the refusal is a model validator, so no schema renders it and the `metadata` description states it instead. Touches the MCP tool catalog, both OpenAPI specifications and the frontend type mirror.",
+          "for_callers": "Bulk ingest now accepts `needs_review`, so a caller holding metadata it already trusts can commit it as authoritative instead of confirming every record afterwards; the default still routes a batch through the metadata-review queue. Each file entry may also carry `tier3_metadata` and, inside `parsed_metadata`, a `tags` list carried whole so a tag containing a comma stays one tag. Supplying both `codes` and `tags` is now refused wherever it happens -- on the batch surfaces and on the single-document ingest, which previously accepted the pair and resolved it by walk order."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation"
+          ],
+          "summary": "POST /chain and the chain tool default edge_type to supersedes. ChainRequest no longer lists edge_type as required; the schema property and the Pydantic field carry the default and a reworded description, and the tool's signature and Args entry state it. An explicit edge_type still selects the walk.",
+          "for_callers": "chain(vault_id, document_id) now walks a document's version history without naming edge_type. Calls that pass edge_type are unaffected."
+        },
+        {
+          "classification": "patch",
+          "summary": "State the value an edge anchor takes on the create_edges MCP tool and the create_edges OpenAPI operation: source_valid_from_version and target_valid_from_version carry a document id in the endpoint's supersedes lineage, not a version label, and a whole-document link passes the endpoint's own id. The tool description gains a canonical references item beside the derived_from one. Documentation only; anchor validation is unchanged.",
+          "for_callers": ""
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "Accept optional declared SHA-256 digests on multipart batch and app ingestion.",
+          "for_callers": "File entries may supply sha256 as bare or lowercase-prefixed hex in either hex case. Digests are checked before retention, including dry runs; a mismatch is a per-file source_digest_mismatch and later files continue. A malformed string refuses the request with invalid_sha256 at files.<index>.sha256."
+        },
+        {
+          "classification": "patch",
+          "summary": "State the engine-default dependency-satisfying set (active and completed) on the create_edges and verify_preconditions OpenAPI operations and MCP tools, with the satisfies_dependency opt-out and opt-in and the configuration that makes depends_on mean blocked until the target completes. Documentation only; dependency evaluation is unchanged.",
+          "for_callers": ""
+        },
+        {
+          "classification": "patch",
+          "summary": "export_projection refuses a target that cannot be written as a file before reading the projection or writing anything. The storage root itself (output_path \".\") is refused with path_traversal_denied, as a strict descendant of the root is required. A target inside the root that is not a file location -- an existing directory, or a path running through an existing file -- is refused with the new output_path_invalid (400, detail output_path and reason). Each of these calls previously failed on the write or on creating its parent directories with an unmapped server error -- a 500 on the Core API and an untyped tool failure on MCP. The new code is declared in both specifications' error schemas, the operation's 400 response, and the tool's error table and Error modes.",
+          "detector_override": {
+            "reason": "Replaces an unmapped server error with a typed refusal for the same calls; every call that succeeded before still succeeds, and the new code names a condition that had no contract."
+          }
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "A force re-ingest that names no doc_type now resolves the doc_type it validates and reports from the record it reuses, the one it already wrote. The ingest dry run reported IngestPreview.resolved_doc_type as it would for a new document, falling through to the predecessor or misc, and both the preview and the real run checked tier3_metadata against that value, so a payload valid for the reused record's doc_type was refused as tier3_schema_violation. Both paths now read one resolution -- caller, filename parse, the reused record (the pinned one under a document_id pin), predecessor, misc -- which also feeds the preview's retype guard. On a force re-ingest the tier3 check therefore runs once the reused record is known, after the identical-content, pin and path checks rather than before them. The upload-first dry run, which has no bytes to hash, finds the reused record through the document_id pin or the declared sha256; with neither, and no doc_type named, it leaves the tier3 check to the call that delivers the bytes and omits tier3_metadata from the leg's dry_run_validated rather than checking against a doc_type the write would not carry. With a declared sha256 it also holds a force pin to that digest as the run holds it to the delivered hash, so a pin naming no document or another document's bytes is refused as force_reingest_pin_mismatch before the upload rather than after it, and the leg's dry_run_validated names that check as force_pin, a new DryRunValidator value. The descriptions of IngestPreview.resolved_doc_type and DocTypeRequirements.is_declared (in both specifications), of IngestRequest.metadata, and of the upload leg's dry_run_validated name the added rung and the deferred check.",
+          "for_callers": "A force re-ingest that names no doc_type now validates tier3_metadata against, and previews resolved_doc_type as, the doc_type of the record it reuses, so a payload valid for that record is no longer refused. An upload-first ingest dry run that declares sha256 and pins a force re-ingest with document_id now refuses a pin the digest rules out before the upload, and reports the check in the leg's dry_run_validated as the new value force_pin; a client matching dry_run_validated against a closed list should admit it."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "An ingest dry run whose source is an absolute path the server cannot read now runs the validators that read no bytes -- the request's own shape, source type and adapter, expected_head_version, the predecessor and its supersede transition, the caller's doc_type, the landing state, the adapter config and a supplied tier3_metadata payload -- before answering with the upload recipe. UploadRecipeItem gains two optional fields: dry_run_validated, naming the validators a leg's file passed, and dry_run_error, a BatchIngestFileError carrying the refusal it would get. ingest_document and POST /documents refuse the call as a real ingest would when a check fails and otherwise set dry_run_validated on their one leg; bulk_ingest_document reports each leg's verdict, keeping the batch's per-file failure shape, with file_index the entry's position in files. Both fields are absent outside a dry run. The ingest_document and bulk_ingest_document docstrings, the operation's Dry run paragraph and the IngestRequest.dry_run description say so. The batch's per-entry request construction is shared between its ingest loop and this check.",
+          "for_callers": "ingest_document(dry_run=true), POST /documents with dry_run, and bulk_ingest_document(dry_run=true) can now check metadata and Tier-3 payloads without uploading the files. Each leg of the recipe such a call returns names the checks its file passed in dry_run_validated, or, on a batch, the refusal it would get in dry_run_error; the checks that need the bytes run when the call is repeated with the transfer tokens."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "A null value inside the single-document ingest's `metadata` is accepted and means the key was omitted, on POST /documents and the ingest_document tool. It had been refused as invalid_parameter at a location naming one arm of the value's type (`metadata.doc_type.str`), where the batch surfaces' per-file `parsed_metadata` already accepted a null for the same keys and an optional request property's null already meant omission. The chain-inheritance rule now counts a key as caller-supplied only when its value is not null, so a null `doc_type`, `project` or `authority_scope` on a supersession inherits the predecessor's value rather than landing on the derived default. The `metadata` property in the Core API specification gains a null arm on its values, and its description in both the model and the specification states the rule. The same description no longer says an unrecognized key is stored: such a key is ignored, as it always has been.",
+          "for_callers": "A client that serializes absent optional fields as null can now send them inside `metadata` on an ingest; each null behaves exactly as leaving the key out, including on a supersession, where it inherits the predecessor's doc_type, project or authority_scope. This supersedes, within the same release, the statement in undeclared-key-names-the-accepted-set.yaml that a null value inside `metadata` is refused at the boundary. A top-level argument spelled inside `metadata` is still refused as misplaced_top_level_field whatever its value."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation"
+          ],
+          "summary": "A lifecycle state and a lifecycle transition may each carry an optional doc_types list in lifecycle.schema.json. Listed, the entry applies only to documents of those doc_types; omitted, it applies to every doc_type, so every existing configuration is unchanged. update_lifecycles resolves each item against the document's doc_type: an action scoped away from it is invalid_action, whose known_actions is that doc_type's roster, and invalid_lifecycle_transition lists only the valid_actions that doc_type carries. A supersession consults the predecessor's rows. The configuration loader holds three new invariants, refused on vault create and update_vault_config and warned-and-loaded from disk: every listed doc_type is declared in document_types; a transition's scope lies within the scope of each state it connects, an unscoped transition counting as every doc_type; and the '(new)' ingestion row carries no doc_types and lands in an unscoped state. update_metadata refuses a doc_type change while the document holds a state scoped away from the new doc_type, with the new 409 lifecycle_state_not_applicable, detail carrying current_state, doc_type and state_doc_types; the family joins ErrorResponse as LifecycleStateNotApplicableError. A force re-ingest that would retype the reused document out of its state's scope is refused with the same code, and update_vault_config treats narrowing a state's scope over documents of other doc_types already in it as a destructive_config_change, refused without force. A document carrying no doc_type matches only unscoped entries, and a doc_types list naming a doc_type twice is refused. The update_lifecycles, verify_preconditions, update_metadata and get_vault_config descriptions state the scoping; dependency satisfaction stays a property of the state alone.",
+          "for_callers": "Nothing changes for a vault whose lifecycle carries no doc_types. A vault operator may now declare a state, and the transitions into and out of it, for one doc_type without making them legal on every other. A client driving update_lifecycles should read known_actions and valid_actions as the document's own doc_type's answers. A client retyping documents through update_metadata or a force re-ingest may now see lifecycle_state_not_applicable, and resolves it by transitioning the document to a state the new doc_type holds before retrying. A client decoding ErrorResponse may now see the lifecycle_state_not_applicable code, which the extension envelope no longer admits."
+        },
+        {
+          "classification": "patch",
+          "summary": "The MCP catalog now publishes the item shape of every batch argument instead of an open object with no properties: the files entries of bulk_ingest_document (with the parsed_metadata each may carry), and the items of create_edges, update_lifecycles and update_metadata. Each shape is generated from the item model the tool body already validates against -- BulkIngestFileEntry (new, the upload's BatchIngestFileMetadata plus file_path and transfer_token, and now the source of the entry names the tool accepts), BulkLinkItem, BulkLifecycleItem and BulkMetadataItem -- with every reference resolved in place, so each declares its properties, types and required keys. Each field's description is published; a definition's own title and description -- a model's or an enum's docstring, written for maintainers -- are not. Every published object stays open (additionalProperties true) although the models forbid undeclared fields: a client that coerces arguments to the published schema would otherwise drop a misspelled key before sending it, where today the server refuses it by name as undeclared_key. The arguments still arrive as plain mappings, so validation, refusals and their locations are unchanged. A client that validates against the published schema now checks item types and required keys itself; every such call was already refused by the server. search's facet_fields now publishes its closed vocabulary (the FacetField enum) as its item type rather than untyped items; the names it accepts are unchanged, and a refusal of any other element still names them. Ten field descriptions of BulkLinkItem, BulkLifecycleItem and BulkMetadataItem, shared with the Core API specification, now state their semantics in place instead of pointing at LinkRequest, SetLifecycleRequest or UpdateMetadataRequest, which a tool caller cannot resolve.",
+          "detector_override": {
+            "reason": "Declares nested item shapes the server already enforced; no call the server accepted before is refused."
+          }
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation"
+          ],
+          "summary": "GET /pending-metadata and the list_pending_metadata tool page the queue in document-id order and choose a row shape. Both take limit (0..100, default 10), offset and response_mode (light or full; omitted, a page of more than five rows is light) and return a PendingMetadataPage carrying items, total_available, limit, offset and the response_mode served. Light rows are the catalog DocumentSummaryLight. The HTTP response changes from a bare array of PendingMetadataItem to that page. The tool keeps its count, vault_id and status keys, count now being the rows on the page, and its full rows now carry the extracted_fields annotations the HTTP surface serves rather than an empty map. DocumentSummaryLight and ResponseMode descriptions name the new surface.",
+          "for_callers": "A client reading GET /sage_vaults/{vault_id}/pending-metadata as a JSON array should read the page's items and use total_available for the queue size. The default page holds ten rows, so a client that needs the whole queue pages with limit and offset. A tool caller that relied on every pending document arriving in one full response passes limit and response_mode=full, or pages."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "Each PreconditionCheck row in a verify_preconditions result now carries the target's title and doc_type alongside target_id, both null when actual is \"not found\" (doc_type is also null for a target that has none). The values come from the read the check already makes of each target, so no read is added. The Core API specification's PreconditionCheck schema and verify_preconditions description, the Pydantic model, the MCP tool description and the MCP tool catalog change together.",
+          "for_callers": "verify_preconditions rows (GET /sage_vaults/{vault_id}/preconditions/{document_id} and the verify_preconditions tool) now name each target by title and doc_type, so a caller can report a blocked dependency without reading each target; both are null when the target is not found."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation"
+          ],
+          "summary": "ReadMeta gains server_build and vault_config_fingerprint. Every read-path response (get_document, search in every mode and target, read_projection, read_section) names the release version and build of the server that answered, in the serverInfo.version form, and a sha256 fingerprint of the effective vault configuration the answer was computed under, covering every section with defaults filled in. The REST error envelope carries server_build and omits the fingerprint. server_build is published as required, since every response carrying read markers emits it. Search measures its inline byte budget with the stamp included.",
+          "for_callers": "read_meta now carries server_build and, on vault-scoped reads, vault_config_fingerprint. Record both; when either differs from the value recorded earlier, the server was redeployed or the vault's rules changed (lifecycle transitions, dependency-satisfying states, document types), and a cached interpretation of earlier answers may no longer hold. A no-op configuration write leaves the fingerprint unchanged. The stamp does not refresh tool schemas a client cached at session start."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation"
+          ],
+          "summary": "The view-regeneration operation (recompute_views on the MCP maintenance surface; POST /sage_vaults/{vault_id}/refresh-views on the Core API) is refused under the cloud profile with caller_filesystem_unavailable (501) before the existing views are touched, on both surfaces. The operation declares the 501 response, the tool's error family and the ErrorResponse x-mcp-tool-errors table list the code, and the operation and tool descriptions state the per-profile behavior.",
+          "for_callers": "Under the cloud profile, recompute_views and POST refresh-views now answer caller_filesystem_unavailable (501) instead of reporting views written onto container disk no caller can browse. Enumerate documents by doc_type or lifecycle_status with search in catalog mode instead. Under the local profile the operation is unchanged."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "caller-adaptation"
+          ],
+          "summary": "RelocatedFromProvenanceMismatchErrorDetail no longer declares also_accounted_content_hash, in both REST specifications, the packaged error-contract projection and the MCP catalog. The destination half of a relocation accounts for one digest only, so no constructor on that path ever set the key: the declaration was wider than the behaviour. The typed error contract tests now hold the reverse direction as well, failing on any optional detail key no emitted error sets, and that check found this one.",
+          "for_callers": "Nothing a caller received changes: relocated_from_provenance_mismatch never carried also_accounted_content_hash. A client generated from the specification should drop any branch reading it; relocated_to_provenance_mismatch keeps the key."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation"
+          ],
+          "summary": "The retrieval-health operation (verify_vault_retrieval on the MCP maintenance surface; POST /sage_vaults/{vault_id}/eval-retrieval on the Core API) reads its assertions file through the vault-source store, addressed as a document's source_path is, instead of from the server's local disk. Both surfaces declare vault_source_store_refused (502) and vault_source_store_unavailable (503), and refuse an assertions path leaving the storage root as assertions_file_invalid. The operation descriptions and the vault configuration's retrieval_health.assertions_file description state where the file is resolved under each binding.",
+          "for_callers": "Retrieval-health checks now run under the document-store binding (the cloud profile): place the assertions file in the vault's document-store folder at the path retrieval_health.assertions_file names. Under the filesystem binding the file is still read from the vault's storage root. The operation may now answer vault_source_store_refused (502) or vault_source_store_unavailable (503), and refuses an assertions path that leaves the storage root with assertions_file_invalid (400). That includes an absolute assertions_file path, which the filesystem binding previously honoured: move the file under the storage root and name it by a relative path."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation"
+          ],
+          "summary": "Publish code-discriminated error envelopes and typed detail families in both REST specifications and namespaced MCP tool metadata. Derive packaged runtime models from the authoritative schemas and ground error-detail vocabulary.",
+          "for_callers": "REST error codes now select machine-readable detail schemas. MCP tools publish their documented error families and shared boundary errors under _meta[\"org.sage/errorSchema\"], with locally resolvable references and the existing error discriminator. Error payloads, statuses, read markers and null handling are unchanged; success output schemas continue to describe successes only."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "UndeclaredKeyErrorDetail gains a required keys array, published in both REST specifications, the packaged error-contract projection and the MCP catalog. An undeclared_key refusal now names every undeclared key in the object it locates, sorted, where it named one per refusal; key stays and is the first of keys. One object is reported per refusal -- the lowest file index, then the lowest depth, on the batch surfaces -- and when undeclared keys also sit in another object the message says they are reported once this one is repaired. Several keys read as \"'<p>.<a>', '<p>.<b>' are not declared keys.\"; a single key's message is unchanged. Where a request body is validated by the framework, key is now the first undeclared key in sorted order rather than the first the validator lists, which is the order the batch surfaces already used. The refusal holds under dry_run, and the MCP batch-item tools carry keys through when they restate an item's position. keys is required rather than optional so a client never branches on its presence; the contract comparison reads the new required property as caller-adaptation, which this release already carries for undeclared_key, a code no release has shipped yet.",
+          "for_callers": "A caller that met undeclared_key once per misspelled key can repair every key in the named object from one refusal: read detail.keys. detail.key is unchanged in meaning for a single key and is the first of detail.keys otherwise."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "An undeclared_key refusal on a batch item (update_lifecycles, update_metadata, create_edges, on both surfaces) redirects a misfiled key and marks aliases. detail.see_also names each sibling operation on the same surface that accepts an undeclared key, with the key and where it goes there (for example lifecycle_status in an update_metadata item points at update_lifecycles items[].action), and the message says the same. detail.aliases maps an accepted alias to its canonical name, and detail.recognized lists canonical names only, so doc_id no longer reads as a field distinct from document_id. Both keys are emitted only when non-empty. The redirect is derived from the item models' declared fields, aliases and ownership markers; an alias redirects to its canonical field, and a name several siblings declare is redirected to each.",
+          "for_callers": "An undeclared_key detail may now carry see_also (a list of {key, operation, location}) and aliases (alias to canonical name). For update_lifecycles and update_metadata items, recognized no longer lists doc_id; it appears in aliases as doc_id -> document_id and is still accepted. A caller that read recognized as the complete accepted set should union it with the keys of aliases."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "caller-adaptation",
+            "capability"
+          ],
+          "summary": "An undeclared key nested inside a request is now refused as 400 undeclared_key, whose detail carries the field set of the object that refused. detail.parameter locates that object, detail.key names the key, detail.recognized lists the names the object accepts, and detail.example shows a corrected fragment carrying both the position and two of the accepted names. It replaces the 422 invalid_parameter whose detail named the offending key and nothing else, on POST /documents, POST /documents:batch, POST /lifecycles, POST /metadata, POST /edges and POST /app/ingest, and on the MCP tools that bind the same models -- ingest_document, bulk_ingest_document, update_lifecycles, create_edges and update_metadata. The recognized set is taken from the model that refused rather than written out, so it cannot name a key the refusal would not accept; the two batch surfaces accordingly report different entry-level sets, because an upload's bytes arrive as file parts and its entries declare no file_path while the tool's entries do. POST /documents:batch keeps its 422 for the codes-and-tags conflict alone, which is now its only occupant. detail.value, which that status carried for the undeclared-key case, is not part of the new envelope. A key inside filters keeps unknown_filter_key, whose detail says more. Separately, an argument POST /documents and ingest_document declare -- tier3_metadata among them -- spelled inside metadata is now refused as 400 misplaced_top_level_field, carrying fields, recognized (every argument that belongs at the top level) and example, where a mapping was refused as a complaint about the value's type and a string was accepted, stored under a name nothing reads, and left the argument it was meant for unset without a word. IngestRequest.metadata's description no longer says a null value is ignored, which its type has never allowed: the values are a string or a list of strings, so a null is refused at the boundary.",
+          "for_callers": "A client branching on invalid_parameter for a key nested inside a request body should branch on undeclared_key and read detail.recognized to repair the call in one round-trip; the status moves from 422 to 400 and detail.value is gone, so a client reading it should read detail.key instead. This supersedes, within the same release, the instruction in batch-upload-refuses-undeclared-entry-keys.yaml to branch on invalid_parameter at files.<n>.<key>: that state is not one any release ships, and the two records fold into one entry with this one last. A client handling 422 on POST /sage_vaults/{vault_id}/documents:batch keeps it: that status now carries only the codes-and-tags conflict, never an undeclared key. POST /app/ingest now declares that same 422, which it has raised since the conflict refusal landed but did not publish; the behaviour is unchanged and the declaration is what is new. Both new codes carry a declared detail family in the typed error contract, so undeclared_key selects {parameter, key, recognized, example} and misplaced_top_level_field selects {fields, recognized, example} rather than an open object. POST /documents and the ingest_document tool likewise now declare the 422 they answer when metadata supplies both codes and tags, the third surface that refusal reaches. An ingest that passed a top-level argument inside metadata -- tier3_metadata, predecessor_id, force and the rest -- is now refused rather than silently ignored; pass it as the argument it is. The keys metadata does carry (title, version_label, project, doc_type, authority_scope, document_date, date, codes, tags) are unaffected."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "An ingest or a source-file restore can declare the SHA-256 of the file it means. IngestRequest, SourceFileRestoreRequest and the ingest_document and restore_vault_source_file tools gain an optional sha256, and each bulk_ingest_document file entry may carry one; a bare or sha256:-prefixed digest is accepted and canonicalized. On a restore, bytes with another digest are refused with source_digest_mismatch before the retained copy is touched. The declaration is held wherever the bytes are first seen. Where the call returns an upload recipe, each leg's token is bound to its entry's digest and UploadRecipeItem echoes it as sha256; PUT /upload then refuses any other bytes with 400 source_digest_mismatch, staging nothing and leaving the token retryable, and the refusal names the transfer and the delivered digest but never the bound one. On the ingest itself -- a co-located read, a redeemed token, a resident source, and a dry run alike -- a source with another digest is refused with the same code before anything is retained, with detail carrying source, declared_sha256 and delivered_sha256 (null for a resident source no document records). In a batch the mismatch is that file's summary.errors[] entry, and a malformed entry digest refuses the whole call with invalid_sha256 located at files.<n>.sha256. A token minted without a digest behaves as before.",
+          "for_callers": "Nothing changes for a call that omits sha256. To make a recipe's tokens worthless to anyone not already holding the exact file, pass the file's sha256 on the originating call and again on the completion call; deliver the bytes as before, and treat a 400 source_digest_mismatch from the upload leg as \"wrong file\", retrying the same token with the right one. A client decoding UploadRecipeItem may now see a sha256 field, and one branching on BatchIngestFileError.code may now see source_digest_mismatch."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation"
+          ],
+          "summary": "An upload token now survives a bounded number of refused deliveries. PUT /upload counts each delivery it refuses against the token -- a body over the transfer ceiling (413 transfer_content_too_large), bytes not matching a bound digest (400 source_digest_mismatch), and a body abandoned mid-stream -- and each still stages nothing and leaves the token retryable, until the refusal that reaches the limit. That one is answered 410 transfer_refusal_limit_reached, with detail carrying transfer_id and max_refused_deliveries, and the transfer is reclaimed: its staging directory is removed and any later presentation of the token is refused as transfer_token_invalid. A failure on the server's side does not count. The limit is the new stack configuration key transfer.max_refused_deliveries (integer, default 3, minimum 2), fixed on each token at mint. The new error family joins ErrorResponse as TransferRefusalLimitReachedError. The upload endpoint's 400, 410 and 413 descriptions, UploadRecipeItem.token, the sha256 descriptions of IngestRequest and SourceFileRestoreRequest, and the ingest_document, bulk_ingest_document and restore_vault_source_file tool descriptions state the limit.",
+          "for_callers": "A client that retries a refused upload on the same token keeps working for the first refusals, as before. Once PUT /upload answers 410 transfer_refusal_limit_reached, the token is gone: treat it as a lapsed token and re-issue the originating call for a fresh recipe. A client decoding ErrorResponse may now see the transfer_refusal_limit_reached code. An operator may raise or lower the limit with transfer.max_refused_deliveries; nothing needs changing to keep the default."
+        },
+        {
+          "classification": "patch",
+          "summary": "Complete the get_vault_config section enumeration on the OpenAPI and MCP descriptions, including timing, and check both lists against the vault configuration schema.",
+          "for_callers": ""
+        }
+      ]
+    },
     {
       "release": "2.5",
       "date": "2026-09-15",
