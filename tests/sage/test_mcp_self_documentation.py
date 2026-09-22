@@ -45,6 +45,7 @@ from sage.models.enums import (
 from sage.sage_api_tools import _INGEST_METADATA_KEYS, _SEARCH_FILTER_KEYS
 from sage.services.retrieval import DEFAULT_MCP_INLINE_BUDGET_BYTES
 from tests.helpers.adapter_claims import ENABLEMENT_CLAIM_MARKERS
+from tests.helpers.published_tool import published_text, tool_name_of
 
 #: How the inline budget is spelled on the tool surface. Derived, so that
 #: recalibrating the budget either carries the docstrings with it or
@@ -87,9 +88,14 @@ def _annotation_includes(annotation: Any, target: type) -> bool:
 
 
 def _docstring(fn: Any) -> str:
-    """Return ``fn``'s docstring (or raise if absent)."""
-    doc = inspect.getdoc(fn)
-    assert doc is not None, f"{fn.__name__} has no docstring"
+    """Return what a client is shown of ``fn``'s tool (or raise if empty).
+
+    The published description plus the parameter descriptions, rendered as a
+    trailing ``Args:`` block: a caller is told what either carries, and
+    nothing a client truncates away. See ``tests.helpers.published_tool``.
+    """
+    doc = published_text(tool_name_of(fn))
+    assert doc, f"{fn.__name__} publishes no description"
     return doc
 
 
@@ -820,11 +826,10 @@ def test_discover_facet_block_documents_facet_field_vocabulary():
     first, mirroring the catalog-block isolation above.
     """
     doc = _docstring(search)
-    match = re.search(r"Facet enumeration:.*?(?=\n\s*Response-mode semantics)", doc, re.DOTALL)
-    assert match is not None, (
-        "search docstring must carry a ``Facet enumeration:`` section "
-        "between the edge-enumeration example and the response-mode matrix."
-    )
+    # The block runs to the next unindented line: the following section
+    # header, whatever it is.
+    match = re.search(r"Facet enumeration:.*?(?=\n\S)", doc, re.DOTALL)
+    assert match is not None, "search must publish a ``Facet enumeration:`` section."
     facet_block = match.group(0)
     for field in (
         "doc_type",
@@ -1088,8 +1093,8 @@ def test_no_registered_mcp_tool_directs_callers_to_poll_for_status():
     """
     offenders: dict[str, list[str]] = {}
     for name, tool in _registered_mcp_tools().items():
-        doc = inspect.getdoc(tool)
-        if doc is None:
+        doc = published_text(name)
+        if not doc:
             continue
         hits = _poll_directions(re.sub(r"\s+", " ", doc).lower())
         if hits:
@@ -1179,7 +1184,7 @@ def test_recipe_minting_roster_is_exhaustive_over_the_live_surface():
     candidates = {
         name
         for name, tool in _registered_mcp_tools().items()
-        if (doc := inspect.getdoc(tool)) is not None and any(marker in doc for marker in markers)
+        if any(marker in published_text(name) for marker in markers)
     }
 
     unclassified = candidates - _RECIPE_MINTING_TOOLS - _RECIPE_MENTIONERS_THAT_DO_NOT_MINT
@@ -1401,7 +1406,7 @@ def test_ingest_tools_expose_dry_run(tool_name):
     """Both ingest wrappers must expose ``dry_run: bool = False``.
 
     Structural, in the shape the sibling mutation wrappers are pinned in:
-    parameter present, annotation identity-equal to ``bool``, default
+    parameter present, annotated type identity-equal to ``bool``, default
     ``False``. Replacing the annotation with ``str`` or moving the default
     to ``True`` fails.
     """
@@ -1413,7 +1418,12 @@ def test_ingest_tools_expose_dry_run(tool_name):
         "the tool that most needs a preview."
     )
     param = sig.parameters["dry_run"]
-    assert param.annotation is bool, (
+    # A published description wraps the type in ``Annotated``; the type
+    # itself is what this pins.
+    annotation = param.annotation
+    if get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    assert annotation is bool, (
         f"{tool_name}.dry_run annotation is {param.annotation!r}; expected "
         "``bool``. Every other mutation MCP wrapper uses ``bool = False``."
     )

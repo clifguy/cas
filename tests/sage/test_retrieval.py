@@ -9909,15 +9909,13 @@ def test_stated_excerpt_floor_matches_the_constant():
     of the description is held to the Pydantic one by the verbatim parity
     gate, so it needs no assertion of its own here.
     """
-    import inspect as _inspect
-
-    from sage.mcp_server import search
     from sage.services.retrieval import _EXCERPT_FLOOR_CHARS
+    from tests.helpers.published_tool import published_text
 
     stated = f"never fewer than {_EXCERPT_FLOOR_CHARS}"
     hints_description = DiscoverResponse.model_fields["hints"].description
     assert stated in " ".join(hints_description.split())
-    assert stated in " ".join((_inspect.getdoc(search) or "").split())
+    assert stated in " ".join(published_text("search").split())
 
 
 async def test_deterministic_mode_carries_no_budget_element(

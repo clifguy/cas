@@ -101,9 +101,9 @@ from typing import Final, NamedTuple
 import pytest
 
 from tests.helpers.docstring_blocks import ERROR_MODES_HEADER
+from tests.helpers.published_tool import published_text
 from tests.sage.test_mcp_tool_conformance import (
     _SURFACES_BY_NAME,
-    _all_registered_tools,
     _find_operation,
     _load_spec,
     _mapped_tool_pairs,
@@ -422,9 +422,10 @@ def _surfaces_for(surface_name: str, tool_name: str) -> tuple[str, str, str]:
     """The live surfaces of one mapped pair.
 
     Returns ``(docstring, spec_narrative, spec_whole)``. The docstring is
-    read from the built server's ``Tool`` model rather than from the
-    function, because that is the text a client actually receives in its
-    catalog.
+    what a client receives: the built server's tool description plus its
+    parameter descriptions, rendered as a trailing ``Args:`` block. A
+    parameter documented in the input schema has been disclosed exactly as
+    one documented under a docstring ``Args:`` entry was.
 
     ``spec_narrative`` is the operation's summary and description -- the
     prose a caller reads as the account of the call. ``spec_whole`` adds
@@ -436,7 +437,6 @@ def _surfaces_for(surface_name: str, tool_name: str) -> tuple[str, str, str]:
     weaken the tool-says-more direction, which is the direction most
     pairs diverge in; schema property descriptions have their own gate.
     """
-    tool = _all_registered_tools()[tool_name]
     surface = _SURFACES_BY_NAME[surface_name]
     spec = _load_spec(surface.spec_path)
     op_id = _resolve_expected_operation_id(surface, tool_name)
@@ -455,7 +455,7 @@ def _surfaces_for(surface_name: str, tool_name: str) -> tuple[str, str, str]:
     if operation.get("requestBody"):
         structural.append(_described(spec, operation["requestBody"]))
     return (
-        tool.description or "",
+        published_text(tool_name),
         narrative,
         narrative + "\n\n" + "\n\n".join(part for part in structural if part),
     )
@@ -545,7 +545,7 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     ("sage_core", "get_vault_stats"): Pin(6, 1),
     # doc_only fell from 13 as the operation gained the source-type
     # precedence its tool docstring already stated.
-    ("sage_core", "ingest_document"): Pin(13, 12),
+    ("sage_core", "ingest_document"): Pin(12, 3),
     # doc_only fell from 3 as the paging paragraph landed on both sides.
     ("sage_core", "list_pending_metadata"): Pin(7, 2),
     ("sage_core", "list_vaults"): Pin(4, 5),
@@ -564,7 +564,7 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # paragraph the docstring already stated, once the transfer became
     # reachable over this surface too.
     ("sage_core", "restore_vault_source_file"): Pin(0, 9),
-    ("sage_core", "search"): Pin(3, 9),
+    ("sage_core", "search"): Pin(0, 4),
     # spec_only fell from 5 for the same reason as get_filename_metadata:
     # the docstring now declares the boundary refusals, covering one claim
     # the contract was stating alone.
@@ -577,7 +577,7 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # doc_only fell from 16 once a qualified error-mode header ended the
     # prose body: its per-item and batch-level code lists had been read as
     # claims.
-    ("sage_core", "update_metadata"): Pin(8, 13),
+    ("sage_core", "update_metadata"): Pin(7, 13),
     ("sage_core", "update_vault_config"): Pin(7, 8),
     ("sage_core", "verify_hashes"): Pin(4, 5),
     # doc_only fell from 7 as the operation's 400 gained the boundary-refusal

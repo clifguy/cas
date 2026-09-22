@@ -675,15 +675,14 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         ),
     },
     ("sage_core", "ingest_document"): {
-        "cas": "example vault id in a worked example",
         "false": "prose: a literal boolean value",
         "sage_vaults": (
             "the vault-scoped route prefix, in the endpoint paths this "
             "narrative names; a URL segment, not a contract node"
         ),
-        "ticket_id": "example tier-3 metadata key in a worked example",
         "unique": "prose: the tier-3 uniqueness property, not a field name",
-        "imports": "vault source-tree directory, not a contract node",
+        "UIs": "prose: user interfaces, in the needs_review parameter description",
+        "misc": "the vault's fallback doc_type value, not a contract node",
     },
     ("sage_core", "optimize_vault_content_store"): {
         "ValueError": BUILTIN_EXCEPTION,
@@ -692,14 +691,10 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
     ("sage_core", "restore_vault_source_file"): {},
     ("sage_core", "search"): {
         "recommended_limit": "key of the successful response hints mapping, not an error detail",
-        "null": "prose: the JSON literal, in a worked filter example",
-        "failure_record": "example doc_type value in a worked example",
-        "fix_commit": "example tier-3 metadata key in a worked example",
         "catalog_response_degraded_to_light": (
             "value of the reason key in the catalog degrade hint, which the "
             "contract types as an untyped hints mapping"
         ),
-        "carried_shape": ("key of the catalog degrade hint, naming the row model delivered"),
         "facets_response_exceeds_inline_budget": (
             "value of the reason key in the facets budget hint, which the "
             "contract types as an untyped hints mapping"
@@ -711,8 +706,6 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
             "value of the reason key in the scored excerpt hint, which the "
             "contract types as an untyped hints mapping"
         ),
-        "excerpt_chars": "key of the scored excerpt hint, naming the passage cap applied",
-        "excerpted_count": "key of the scored excerpt hint, counting the passages cut",
     },
     ("sage_core", "list_headings"): {},
     ("sage_core", "list_pending_metadata"): {

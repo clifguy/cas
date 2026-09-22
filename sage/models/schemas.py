@@ -1077,11 +1077,7 @@ class IngestRequest(BaseModel):
     )
     created_by: str | None = Field(
         default=None,
-        description=(
-            "User ID of the actor initiating ingestion. Used for provenance "
-            "tracking. Phase 2+ implementations may derive this from the "
-            "authenticated caller identity."
-        ),
+        description=("User ID of the actor initiating ingestion. Used for provenance tracking."),
     )
     force: bool = Field(
         default=False,
@@ -1100,7 +1096,7 @@ class IngestRequest(BaseModel):
             "after ingest: filename inference runs, parsed values populate "
             "the document where the caller did not supply them, and "
             "metadata_confirmed is set to false so the document appears in "
-            "pending-metadata. When false (default per CAS-ADR-021), "
+            "pending-metadata. When false (default), "
             "filename inference is skipped entirely; the document is "
             "committed with caller-supplied metadata authoritative and "
             "metadata_confirmed=true. Bulk-ingest UIs that want human "
@@ -1113,7 +1109,7 @@ class IngestRequest(BaseModel):
         default=None,
         description=(
             "Caller-supplied metadata fields to merge into the document "
-            "record at ingestion time. Per CAS-ADR-021, callers are "
+            "record at ingestion time. Callers are "
             "authoritative for metadata; SAGE applies values per-field with "
             "the precedence chain caller > filename parse (only when "
             "needs_review=true) > the reused record's own value (only on a "
@@ -1153,7 +1149,7 @@ class IngestRequest(BaseModel):
         default=None,
         description=(
             "Optimistic-concurrency token on the chain head identified by "
-            "`predecessor_id` (CAS-ADR-038 Primitive C). When supplied, the "
+            "`predecessor_id`. When supplied, the "
             "substrate verifies it against the predecessor's current "
             "`updated_at` inside the per-predecessor lock at supersede time; "
             "on mismatch the supersede is rejected with a structured "
@@ -1172,16 +1168,13 @@ class IngestRequest(BaseModel):
         default=None,
         description=(
             "Caller-authoritative tier-3 typed metadata applied at "
-            "create time per CAS-ADR-021. Validated against the "
+            "create time. Validated against the "
             "doc_type's `metadata_schema` declared in vault config "
             "(`document_types.{doc_type}.metadata_schema`); if the "
             "doc_type has no schema declared, the ingest fails with "
             "400 `tier3_schema_violation`. Bare-dict form: the entire "
-            "object is the tier-3 metadata for the new document. This "
-            "is the ingest-vs-update shape asymmetry called out in "
-            "CAS-ADR-028: ingest takes the literal dict, whereas "
-            "`UpdateMetadataRequest.tier3_metadata` takes a "
-            "`Tier3Patch` ops-object with `set`/`unset` semantics."
+            "object is the tier-3 metadata for the new document, "
+            "whereas `update_metadata` takes a `set`/`unset` ops-object."
         ),
     )
     relocated_from: RelocationPointer | None = Field(
@@ -3682,7 +3675,7 @@ class DiscoverRequest(BaseModel):
     use_abstract_prefilter: bool = Field(
         default=True,
         description=(
-            "Enable two-pass abstract-boosted retrieval (CAS-ADR-011). When "
+            "Enable two-pass abstract-boosted retrieval. When "
             "true, documents whose semantic abstract matches the query "
             "receive a score boost above documents whose abstract does not "
             "match. Applies to semantic and keyword modes. Documents "
