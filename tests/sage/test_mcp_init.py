@@ -174,9 +174,9 @@ async def test_di_006_services_functional_with_stubs(minimal_vault_config_dict, 
 # test_stack_abstraction_dispatch.py for STK-001..005). The per-vault
 # dispatch in initialize_services is reduced to the disabled-gate opt-out:
 #
-# 1. SAGE_TEST_STUB_PROVIDERS=1 -> Stub (belt-and-suspenders)
-# 2. vault.abstraction.enabled is False -> Stub (vault opted out)
-# 3. otherwise -> the injected stack provider
+#   1. SAGE_TEST_STUB_PROVIDERS=1                 -> Stub (belt-and-suspenders)
+#   2. vault.abstraction.enabled is False         -> Stub (vault opted out)
+#   3. otherwise                                  -> the injected stack provider
 #
 # DI-007 / DI-010 (env-var short-circuit), DI-011 / DI-012 (model/provider
 # dispatch) move to STK-* at stack scope.

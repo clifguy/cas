@@ -33,6 +33,8 @@ expected outcome rather than a defect.
 Computes SHA-256 of raw source bytes for content_hash.
 """
 
+from __future__ import annotations
+
 import hashlib
 import re
 import shutil
@@ -40,6 +42,7 @@ import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pptx import Presentation
 from pptx.enum.shapes import MSO_SHAPE_TYPE
@@ -53,6 +56,10 @@ from sage.source_adapters.base import (
     positive_int,
     respell_created_path,
 )
+
+if TYPE_CHECKING:
+    from pptx.oxml.shapes.autoshape import CT_Shape
+    from pptx.shapes.autoshape import Shape
 
 # OPC main-part content types for the presentation and template flavors.
 _PPTX_MAIN_TYPE = (
@@ -172,7 +179,7 @@ def _render_shape(shape) -> list[str]:
     return [alt] if alt else []
 
 
-def _title_shape(slide):
+def _title_shape(slide) -> Shape | None:
     """Return the slide's title placeholder, or None when it has none."""
     try:
         return slide.shapes.title
@@ -180,7 +187,7 @@ def _title_shape(slide):
         return None
 
 
-def _title_element(slide):
+def _title_element(slide) -> CT_Shape | None:
     """Return the underlying XML element of the slide's title placeholder.
 
     python-pptx constructs a fresh proxy object on every shape access, so a

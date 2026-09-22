@@ -24,6 +24,7 @@ import os
 import re
 import sys
 import tempfile
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -84,7 +85,7 @@ def _decode_safe_cid(text: str) -> str:
 
 
 @contextlib.contextmanager
-def _suppress_pdf_noise():
+def _suppress_pdf_noise() -> Iterator[None]:
     """Suppress stderr + pdfminer/pypdf logger noise during PDF parsing.
 
     Real-world PDFs frequently emit "Ignoring wrong pointing object N M
@@ -322,7 +323,7 @@ def _safe_ocr_tempdir() -> str | None:
 
 
 @contextlib.contextmanager
-def _ocr_tempdir_off_tmp():
+def _ocr_tempdir_off_tmp() -> Iterator[None]:
     """Scope ``tempfile.tempdir`` off ``/tmp`` for an OCR call, or no-op.
 
     A near no-op where the process temp dir already resolves off ``/tmp``

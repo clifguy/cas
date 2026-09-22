@@ -15,9 +15,15 @@ read from the provider's model registry rather than held here as a per-model
 table, so it tracks the model roster instead of ageing with it.
 """
 
+from __future__ import annotations
+
 import asyncio
 import logging
 import re
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from anthropic import AsyncAnthropic
 
 from sage.adapters.abstraction_prompt import _format_system_prompt, wrap_source_document
 from sage.adapters.interfaces import AbstractionInputTooLargeError, AbstractionProvider
@@ -151,7 +157,7 @@ class AnthropicAbstractionProvider(AbstractionProvider):
         # unified-memory lock.
         self._input_limit_lock = asyncio.Lock()
 
-    def _ensure_client(self):
+    def _ensure_client(self) -> AsyncAnthropic:
         """Lazily construct and cache the async SDK client.
 
         The ``anthropic`` import is deferred to call time (mirrors the local

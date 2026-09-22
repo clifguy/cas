@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from sage.adapters.interfaces import ContentStore, GraphStore
+    from sage.config import VaultConfig
     from sage.models.schemas import Document
     from sage.storage_binding import PurgeAuditSink, VaultStorageHandle, VaultStorageProvisioner
     from sage.vault_source_binding import VaultSourceStore
@@ -240,7 +241,7 @@ def _order_chain_from_head(
 # ─── Store acquisition ──────────────────────────────────────────────
 
 
-def resolve_vault_config(source_store: VaultSourceStore, vault_id: str):
+def resolve_vault_config(source_store: VaultSourceStore, vault_id: str) -> VaultConfig | None:
     """Locate and load ``vault_id``'s declaration through the vault-source store.
 
     Returns the loaded config, or ``None`` when no discovered vault matches.

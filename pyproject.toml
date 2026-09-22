@@ -101,6 +101,7 @@ test = [
     "reportlab>=4.0",
     "Pillow>=10.0",
     "import-linter>=2.11",
+    "ruff==0.15.12",
 ]
 mlx = [
     # Apple-Silicon-only; the marker keeps it out of the Linux resolution path
@@ -161,13 +162,15 @@ extend-exclude = [".venv"]
 "deploy/*.py" = "py312"
 
 [tool.ruff.lint]
-select = ["F", "E", "W", "I", "S"]
+select = ["F", "E", "W", "I", "S", "ANN201", "ANN202", "ANN204", "ANN205", "ANN206"]
 preview = false
 
 [tool.ruff.lint.isort]
 known-first-party = ["sage", "root_harness", "app"]
 
 [tool.ruff.lint.per-file-ignores]
+# Return annotations are required throughout SAGE, including nested functions.
+"!sage/**/*.py" = ["ANN201", "ANN202", "ANN204", "ANN205", "ANN206"]
 "tests/**/*.py" = ["S101", "S105", "S106", "S108", "S311", "S603", "S607"]
 "scripts/**/*.py" = ["S603", "S607"]
 # The cloud preflight probe opens only fixed-scheme https URLs to the known SAGE

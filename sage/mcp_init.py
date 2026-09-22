@@ -503,10 +503,10 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
     opt out via ``vault.abstraction.enabled = False``.
 
     Dispatch contract:
-      1. SAGE_TEST_STUB_PROVIDERS=1 -> Stub (env override)
-      2. stack.abstraction.provider == "stub" -> Stub (explicit opt-out)
+      1. SAGE_TEST_STUB_PROVIDERS=1               -> Stub (env override)
+      2. stack.abstraction.provider == "stub"      -> Stub (explicit opt-out)
       3. stack.abstraction.provider == "local-mlx"
-         and stack.abstraction.model is None -> raise ValueError
+         and stack.abstraction.model is None       -> raise ValueError
       4. stack.abstraction.provider == "local-mlx"
          and stack.abstraction.model is not None -> local MLX provider (factory)
       5. stack.abstraction.provider == "anthropic"
@@ -1030,12 +1030,12 @@ async def initialize_services(
         # Abstraction provider: post CAS-ADR-030, the factory dispatch
         # lives in build_stack_abstraction_provider (stack scope). The per-vault
         # path here only consults the vault-scope opt-out. Precedence:
-        # 1. vault.abstraction.enabled is False -> Stub (ADR-011 opt-in)
-        # 2. abstraction_provider injected -> use injection
-        # 3. SAGE_TEST_STUB_PROVIDERS=1 -> Stub (belt-and-suspenders
-        # for tests that don't go through stack startup)
-        # 4. no injection, env var unset -> raise (production path
-        # must thread the stack-built provider through)
+        #   1. vault.abstraction.enabled is False        -> Stub (ADR-011 opt-in)
+        #   2. abstraction_provider injected             -> use injection
+        #   3. SAGE_TEST_STUB_PROVIDERS=1                -> Stub (belt-and-suspenders
+        #      for tests that don't go through stack startup)
+        #   4. no injection, env var unset               -> raise (production path
+        #      must thread the stack-built provider through)
         if not config.abstraction.enabled:
             abstraction_provider = StubAbstractionProvider()
         elif abstraction_provider is None:

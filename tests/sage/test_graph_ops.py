@@ -903,8 +903,8 @@ async def test_link_nonexistent_target_raises_404(graph_store, graph_ops_service
 # Write-time guards on synced_from_* fields
 #
 # (A) Inapplicable-edge-type guard: synced_from_* only applies to
-# sync_target / derived_from. Setting them on any other edge type
-# raises SyncedFromInapplicableEdgeType (400).
+#     sync_target / derived_from. Setting them on any other edge type
+#     raises SyncedFromInapplicableEdgeType (400).
 # ---------------------------------------------------------------------------
 
 

@@ -801,16 +801,16 @@ class Qwen3AbstractionProvider(AbstractionProvider):
     # unified memory until process exit, regardless of idle time.
     #
     # Pattern options weighed (acceptance criteria):
-    # - LFU/LRU eviction of model contexts — CHOSEN. CAS holds one
-    # resident MLX model, so this reduces to "unload the one
-    # model when it has been idle longer than the threshold."
-    # - Watchdog process monitoring resident memory — rejected.
-    # Adds a second long-lived component (lifecycle, supervisor,
-    # IPC) disproportionate to the single-developer Mac setup.
-    # - Graceful degradation (smaller model, batched generation) —
-    # rejected. Changes output characteristics; different concern.
-    # - Hybrid — already achieved: (reactive) +
-    # (preventive) compose. Nothing is replaced.
+    #   - LFU/LRU eviction of model contexts — CHOSEN. CAS holds one
+    #     resident MLX model, so this reduces to "unload the one
+    #     model when it has been idle longer than the threshold."
+    #   - Watchdog process monitoring resident memory — rejected.
+    #     Adds a second long-lived component (lifecycle, supervisor,
+    #     IPC) disproportionate to the single-developer Mac setup.
+    #   - Graceful degradation (smaller model, batched generation) —
+    #     rejected. Changes output characteristics; different concern.
+    #   - Hybrid — already achieved: (reactive) +
+    #     (preventive) compose. Nothing is replaced.
     #
     # Residual: caller-side wiring (a supervisor, a periodic task,
     # an external signal) is deliberately out of scope. This module

@@ -3,55 +3,55 @@
 Spec (plain English):
 
 T1 -- Happy path: ADR mention creates a `references` edge.
-  Inputs: Pre-seeded ADR document with tag `adr` and title `ADR-099: ...`.
+  Inputs:  Pre-seeded ADR document with tag `adr` and title `ADR-099: ...`.
            A new ticket markdown whose body contains the literal `CAS-ADR-099`.
-  Expect: One `references` edge from the ticket's just-ingested doc id to
+  Expect:  One `references` edge from the ticket's just-ingested doc id to
            the ADR's doc id; rationale_kind == REFERENCES_MENTION; evidence
            starts with `[references_mention]`.
-  Why: Core acceptance criterion of the inference rule.
+  Why:     Core acceptance criterion of the inference rule.
 
 T2 -- Happy path: ticket id mention creates a `references` edge.
-  Inputs: Pre-seeded ticket document carrying an `id:` tag. New doc whose
+  Inputs:  Pre-seeded ticket document carrying an `id:` tag. New doc whose
            body mentions a ticket id.
-  Expect: One `references` edge from the new doc to the ticket.
-  Why: Covers the second default pattern surface.
+  Expect:  One `references` edge from the new doc to the ticket.
+  Why:     Covers the second default pattern surface.
 
 T3 -- Happy path: failure record mention creates a `references` edge.
-  Inputs: Pre-seeded failure record with `tier3_metadata.failure_id=F3`.
+  Inputs:  Pre-seeded failure record with `tier3_metadata.failure_id=F3`.
            New doc whose body mentions `F3`.
-  Expect: One `references` edge from the new doc to the F3 record.
-  Why: Covers the third default pattern surface.
+  Expect:  One `references` edge from the new doc to the F3 record.
+  Why:     Covers the third default pattern surface.
 
 T4 -- Idempotency under re-ingest.
-  Inputs: Same source markdown as T1, ingested twice.
-  Expect: Only one `references` edge between the (source, target) pair
+  Inputs:  Same source markdown as T1, ingested twice.
+  Expect:  Only one `references` edge between the (source, target) pair
            after the second ingest.
-  Why: Re-ingest is the ticket's stated natural answer to ambiguity (a)
+  Why:     Re-ingest is the ticket's stated natural answer to ambiguity (a)
            on first-vs-every ingest; duplicates would inflate traversal
            counts.
 
 T5 -- Unresolved identifier is silently skipped.
-  Inputs: New doc whose body mentions `CAS-ADR-999` (no such ADR exists
+  Inputs:  New doc whose body mentions `CAS-ADR-999` (no such ADR exists
            in the vault).
-  Expect: No edge is created; ingest completes successfully.
-  Why: The most likely failure mode -- an unresolved identifier must not
+  Expect:  No edge is created; ingest completes successfully.
+  Why:     The most likely failure mode -- an unresolved identifier must not
            break ingestion. Mentions of identifiers that haven't been ingested
            yet are common (forward references, drafts).
 
 T6 -- Manual `references` edges are not touched.
-  Inputs: Pre-existing manual `references` edge (rationale_kind=MANUAL)
+  Inputs:  Pre-existing manual `references` edge (rationale_kind=MANUAL)
            from doc A to an ADR. Ingest doc A's body with no inline mention
            of the ADR.
-  Expect: The manual edge survives; no inferred edge is added; manual
+  Expect:  The manual edge survives; no inferred edge is added; manual
            edge's rationale_kind remains MANUAL.
-  Why: Regression guard for the CAS-ADR-019 provenance gate. The rule
+  Why:     Regression guard for the CAS-ADR-019 provenance gate. The rule
            must not displace or rewrite hand-curated edges.
 
 T7 -- Pattern config drives behavior (per-vault configurability).
-  Inputs: Vault config that omits the `T-NNNN` pattern. Ingest a doc whose
+  Inputs:  Vault config that omits the `T-NNNN` pattern. Ingest a doc whose
            body mentions both `CAS-ADR-099` and a ticket id.
-  Expect: ADR edge created; no ticket edge created.
-  Why: The ticket requires per-vault pattern configurability; vaults
+  Expect:  ADR edge created; no ticket edge created.
+  Why:     The ticket requires per-vault pattern configurability; vaults
            that don't use ticket grammar must be able to disable that
            pattern.
 """

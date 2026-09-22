@@ -234,7 +234,7 @@ def _pim_metadata_extraction():
 
 # ---------------------------------------------------------------------------
 # 1. Version Chain Inference (EI-013 through EI-018b)
-# Relocated verbatim from tests/app/test_app_backend.py.
+#    Relocated verbatim from tests/app/test_app_backend.py.
 # ---------------------------------------------------------------------------
 
 
@@ -432,7 +432,7 @@ class TestVersionChain:
 
 # ---------------------------------------------------------------------------
 # 2. Filename Code Match Inference (EI-019 through EI-024)
-# Relocated verbatim from tests/app/test_app_backend.py.
+#    Relocated verbatim from tests/app/test_app_backend.py.
 # ---------------------------------------------------------------------------
 
 
@@ -558,7 +558,7 @@ class TestFilenameCodeMatch:
 
 # ---------------------------------------------------------------------------
 # 3. Two-Phase Orchestration (EI-025 through EI-039)
-# Relocated verbatim from tests/app/test_app_backend.py.
+#    Relocated verbatim from tests/app/test_app_backend.py.
 # ---------------------------------------------------------------------------
 
 

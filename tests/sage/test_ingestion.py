@@ -235,7 +235,7 @@ async def test_bh_019_force_reingestion(tmp_vault_dir, graph_store, ingestion_se
 # ---------------------------------------------------------------------------
 # BH-020: Failed pipeline quarantines document from retrieval
 # (Retrieval not implemented in this slice; test that failed docs
-# are marked correctly for quarantine)
+#  are marked correctly for quarantine)
 # ---------------------------------------------------------------------------
 
 

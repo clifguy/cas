@@ -4,7 +4,7 @@ Covers TEST-SAGE-CR-013..022: traverse honors the edge-type
 resolution_policy registry and anchor-in-lineage filtering. All tests
 use the canonical ADR worked example unless otherwise noted:
 
-    Chain A: a1 <- a2 <- a3 <- a4 <- a5 (source=newer, target=older)
+    Chain A: a1 <- a2 <- a3 <- a4 <- a5   (source=newer, target=older)
     Chain B: b1 <- b2 <- b3
     covers edge: source=a3, target=b2, policy=transitive_both,
                  source_anchor=a3, target_anchor=b2.
@@ -87,7 +87,7 @@ async def _seed_supersedes_chain(graph_store, chain: list[str]) -> None:
     """Insert supersedes edges connecting chain oldest->newest.
 
     For chain [a1, a2, a3, a4, a5], writes edges
-        a2->a1, a3->a2, a4->a3, a5->a4 (source supersedes target).
+        a2->a1, a3->a2, a4->a3, a5->a4  (source supersedes target).
     """
     now = datetime.now(timezone.utc)
     for i in range(1, len(chain)):

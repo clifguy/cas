@@ -44,7 +44,10 @@ SAGE's durable store lives outside the repository, in Postgres (connection detai
 
 ## Coding conventions
 
-- Type hints on all function signatures.
+- Type hints on all function signatures. Ruff enforces return annotations throughout
+  `sage/` (including private, special, static, class, nested, and generator functions)
+  with ANN201, ANN202, ANN204, ANN205, and ANN206. This gate does not enable
+  parameter-annotation or `Any` restrictions, and does not cover other directories.
 - Pydantic models for all API request and response bodies, derived from the JSON Schema files in `docs/fs/`.
 - Keep subsystem imports cleanly separated.
 - Database files must never be stored inside cloud-synced directories or inside the Git repository.

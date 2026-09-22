@@ -51,7 +51,7 @@ from sage.models.schemas import canonicalize_sha256
 from sage.services.caller_paths import caller_basename, caller_path_is_absolute
 
 if TYPE_CHECKING:
-    from sage.models.schemas import UploadRecipe
+    from sage.models.schemas import DownloadRecipe, UploadRecipe
 
 #: Header carrying the upload token on the transfer endpoint's PUT leg.
 UPLOAD_TOKEN_HEADER = "X-Upload-Token"  # noqa: S105 -- header *name*, not a credential
@@ -572,7 +572,7 @@ def _transfer_coordinates() -> tuple[str, int, int]:
 
 def mint_upload_recipe(
     vault_id: str, sources: list[str], digests: Sequence[str | None] | None = None
-):
+) -> UploadRecipe:
     """Mint one upload leg per caller-local source and build the recipe.
 
     ``digests``, when given, is index-aligned with ``sources``: each leg's
@@ -625,7 +625,7 @@ def mint_download_recipe_for_source(
     content_hash: str,
     content_size: int,
     write_to_path: str,
-):
+) -> DownloadRecipe:
     """Mint a download recipe for a retained source file."""
     from sage.models.schemas import DownloadRecipe
 
@@ -657,7 +657,7 @@ def mint_download_recipe_for_projection(
     document_id: str,
     text: str,
     write_to_path: str,
-):
+) -> DownloadRecipe:
     """Mint a download recipe for a projection, spooled at mint time."""
     from sage.models.schemas import DownloadRecipe
 

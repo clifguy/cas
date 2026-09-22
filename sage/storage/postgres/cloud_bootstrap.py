@@ -40,9 +40,13 @@ import asyncio
 import os
 import re
 import sys
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Final
+from typing import TYPE_CHECKING, Final
+
+if TYPE_CHECKING:
+    from psycopg import AsyncConnection
 
 from sage.storage.postgres.schema import (
     DEFAULT_EXTENSIONS,
@@ -304,7 +308,7 @@ async def _run(env: dict[str, str] | None = None) -> None:
     connection_class = make_token_auth_connection_class(get_postgres_credential())
 
     @asynccontextmanager
-    async def connect(database: str):
+    async def connect(database: str) -> AsyncIterator[AsyncConnection]:
         params = PostgresConnectionParams(
             host=cfg.host,
             database=database,
