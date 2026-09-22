@@ -72,14 +72,17 @@ def test_tool_fits_the_description_budget(name: str) -> None:
     assert not violations, f"{name}: " + "; ".join(violations)
 
 
-#: A listed error-mode entry: a bullet opening with one or more comma-separated
-#: codes in double backticks (``- ``a``, ``b`` (400)``), or a bullet grouping
-#: several codes under one status (``- 400: ``a``, ``b````). Only the opening run
-#: counts: a code named later, in the condition text, is a cross-reference.
+#: A listed error-mode entry: a bullet opening with one or more codes in double
+#: backticks, separated by commas or slashes (``- ``a``, ``b`` (400)``), or a
+#: bullet grouping codes under one or more statuses (``- 400: ``a``, ``b````,
+#: ``- 502 / 503: ``a`` / ``b````). Only the opening run counts: a code named
+#: later, in the condition text, is a cross-reference.
 _ERROR_ENTRY_RE: Final[re.Pattern[str]] = re.compile(
-    r"^\s*- (``[a-z0-9_]+``(?:, ``[a-z0-9_]+``)*)", re.MULTILINE
+    r"^\s*- (``[a-z0-9_]+``(?:(?:, | / )``[a-z0-9_]+``)*)", re.MULTILINE
 )
-_GROUPED_ENTRY_RE: Final[re.Pattern[str]] = re.compile(r"^\s*- \d{3}: (.*)$", re.MULTILINE)
+_GROUPED_ENTRY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*- \d{3}(?: / \d{3})*: (.*)$", re.MULTILINE
+)
 _CODE_RE: Final[re.Pattern[str]] = re.compile(r"``([a-z0-9_]+)``")
 
 #: Codes an error-mode list may name that the tool never refuses with, by tool.
@@ -104,10 +107,19 @@ def _listed_error_codes(description: str) -> set[str]:
     [
         ("- ``first_code`` (400)", {"first_code"}),
         ("- ``first_code``, ``second_code`` (400): why", {"first_code", "second_code"}),
+        ("- ``first_code`` / ``second_code`` (400)", {"first_code", "second_code"}),
         ("- 400: ``first_code``, ``second_code``", {"first_code", "second_code"}),
+        ("- 502 / 503: ``first_code`` / ``second_code``", {"first_code", "second_code"}),
         ("- ``first_code`` (409): another ``some_tool`` is running", {"first_code"}),
     ],
-    ids=["single", "comma-run", "grouped-by-status", "condition-names-a-tool"],
+    ids=[
+        "single",
+        "comma-run",
+        "slash-run",
+        "grouped-by-status",
+        "grouped-by-two-statuses",
+        "condition-names-a-tool",
+    ],
 )
 def test_error_list_parser_reads_every_listed_code(bullet: str, expected: set[str]) -> None:
     """Every code a bullet lists is read, and a name in its condition is not.
