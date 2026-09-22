@@ -496,6 +496,57 @@ def test_link_docstring_documents_derived_from_anchor_semantics():
     )
 
 
+def _anchor_section(doc: str) -> str:
+    """The docstring span that documents the per-item anchor fields, whitespace-collapsed."""
+    start = doc.index("Per-item anchor fields")
+    end = doc.index("chain-head precondition", start)
+    return " ".join(doc[start:end].split())
+
+
+def test_link_docstring_states_anchor_values_are_document_ids():
+    """create_edge must say what value an anchor field takes, not only which ones are required.
+
+    The anchor section must state that an anchor carries a document id
+    in its endpoint's ``supersedes`` lineage, not a version label, and
+    that a whole-document link passes the endpoint's own id.
+
+    Anti-coincidental-pass: each rule is asserted as a whole sentence,
+    so the same rule stated with the opposite polarity ("must not name
+    a document ...") fails where fragment checks would pass it. The
+    check reads only the anchor section, so the ``invalid_document_id``
+    error-mode line, which also says "document id", cannot satisfy it.
+    """
+    section = _anchor_section(_docstring(create_edge))
+    rules = (
+        "An anchor field takes a document id, not a version label: each anchor "
+        "must name a document in its endpoint's ``supersedes`` lineage.",
+        "To link whole documents, pass the endpoint's own id as its anchor.",
+    )
+    for rule in rules:
+        assert rule in section, f"create_edge anchor guidance must state: {rule}"
+
+
+def test_link_docstring_carries_canonical_references_example():
+    """create_edge must carry a transitive_both example with both anchors set to the endpoint ids.
+
+    Anti-coincidental-pass: the backreferences require each anchor to
+    repeat its own endpoint placeholder, so an example anchored to a
+    version label such as ``"v3"``, or with the anchors swapped, fails;
+    pinning ``edge_type="references"`` keeps the existing
+    ``derived_from`` example from satisfying it.
+    """
+    pattern = re.compile(
+        r'edge_type="references",\s*source_id="(<[^"]+>)",\s*'
+        r'target_id="(<[^"]+>)",\s*'
+        r'source_valid_from_version="\1",\s*'
+        r'target_valid_from_version="\2"'
+    )
+    assert pattern.search(_docstring(create_edge)), (
+        "create_edge docstring must carry a canonical references example whose "
+        "anchors are the endpoint ids."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Criterion 4 — merged_from chain-head precondition
 # ---------------------------------------------------------------------------

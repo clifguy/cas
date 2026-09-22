@@ -1247,12 +1247,21 @@ def register_sage_tools(
           depends_on, instantiated_from): requires both
           ``source_valid_from_version`` and ``target_valid_from_version``.
 
-        Canonical ``derived_from`` item (kwarg form shown; pass it as an
-        ``items`` dict)::
+        An anchor field takes a document id, not a version label: each anchor
+        must name a document in its endpoint's ``supersedes`` lineage. To link
+        whole documents, pass the endpoint's own id as its anchor.
+
+        Canonical ``derived_from`` and ``references`` items (kwarg form
+        shown; pass each as an ``items`` dict)::
 
             edge_type="derived_from", source_id="<deliverable_id>",
             target_id="<template_id>",
             source_valid_from_version="<deliverable_id>"
+
+            edge_type="references", source_id="<source_id>",
+            target_id="<target_id>",
+            source_valid_from_version="<source_id>",
+            target_valid_from_version="<target_id>"
 
         **``merged_from`` chain-head precondition.** Both endpoints must be
         chain heads — neither ``source_id`` nor ``target_id`` may have an
