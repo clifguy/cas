@@ -11,7 +11,9 @@ summary: >-
   accepted alias to its canonical name, and detail.recognized lists canonical
   names only, so doc_id no longer reads as a field distinct from document_id.
   Both keys are emitted only when non-empty. The redirect is derived from the
-  item models' declared fields and their declared ownership markers.
+  item models' declared fields, aliases and ownership markers; an alias
+  redirects to its canonical field, and a name several siblings declare is
+  redirected to each.
 for_callers: >-
   An undeclared_key detail may now carry see_also (a list of {key, operation,
   location}) and aliases (alias to canonical name). For update_lifecycles and

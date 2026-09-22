@@ -137,7 +137,7 @@ async def test_recognized_marks_doc_id_as_alias(vault_services, tool):
 
 async def test_alias_is_named_in_the_message(vault_services):
     envelope = await _mcp_refusal("update_metadata", {"document_id": _DOC, "bogus_key": 1})
-    assert "doc_id → document_id" in envelope["message"]
+    assert "doc_id -> document_id" in envelope["message"]
 
 
 async def test_model_without_aliases_carries_no_aliases_key(vault_services):
@@ -211,3 +211,22 @@ def test_registry_binds_every_items_tool():
     assert sorted(bound) == sorted(BATCH_ITEM_MODELS)
     for operation in BATCH_ITEM_MODELS:
         assert operation in SERVER_ASSIGNMENT
+
+
+def test_an_alias_redirects_to_its_canonical_location():
+    """``doc_id`` refused where no item declares it points where ``document_id`` would."""
+    assert key_owners("doc_id", refusing=BulkLinkItem) == [
+        {"key": "doc_id", "operation": "update_lifecycles", "location": "items[].document_id"},
+        {"key": "doc_id", "operation": "update_metadata", "location": "items[].document_id"},
+    ]
+
+
+def test_a_sibling_on_another_surface_is_not_named(monkeypatch):
+    """Only operations on the refusing operation's surface are redirect targets."""
+    from sage.api import errors
+
+    monkeypatch.setitem(errors.SERVER_ASSIGNMENT, "update_lifecycles", "sage_maint")
+    assert key_owners("lifecycle_status", refusing=BulkMetadataItem) == []
+    assert key_owners("edge_type", refusing=BulkMetadataItem) == [
+        {"key": "edge_type", "operation": "create_edges", "location": "items[].edge_type"}
+    ]

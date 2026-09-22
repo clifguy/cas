@@ -1063,11 +1063,14 @@ def _undeclared_key_example(parameter: str, recognized: list[str]) -> str:
 def key_owners(key: str, *, refusing: type[BaseModel]) -> list[dict[str, str]]:
     """Sibling operations that accept ``key``, and where it goes in each.
 
-    Derived from the batch item models' declared fields and their ``Sets``
-    markers, so the redirect cannot name a field a model does not declare.
-    Only operations on the refusing operation's surface are named, and never
-    the refusing operation itself; a model outside the batch-item registry
-    has no siblings to name.
+    Derived from the batch item models' declared fields, their ``AliasOf``
+    markers and their ``Sets`` markers, so the redirect cannot name a field
+    a model does not declare; an alias redirects to the canonical field it
+    names. Only operations on the refusing operation's surface are named,
+    and never the refusing operation itself; a model outside the batch-item
+    registry has no siblings to name. The match is by name alone, so a name
+    several siblings declare -- the per-item ``document_id`` -- is redirected
+    to each of them, whatever role the caller meant it for.
     """
     refusing_operation = next(
         (name for name, model in BATCH_ITEM_MODELS.items() if model is refusing), None
@@ -1079,7 +1082,10 @@ def key_owners(key: str, *, refusing: type[BaseModel]) -> list[dict[str, str]]:
     for operation, model in sorted(BATCH_ITEM_MODELS.items()):
         if operation == refusing_operation or SERVER_ASSIGNMENT.get(operation) != surface:
             continue
-        field = key if key in canonical_fields(model) else field_sets(model).get(key)
+        if key in canonical_fields(model):
+            field = key
+        else:
+            field = field_aliases(model).get(key) or field_sets(model).get(key)
         if field is not None:
             owners.append({"key": key, "operation": operation, "location": f"items[].{field}"})
     return owners
@@ -1145,7 +1151,7 @@ class UndeclaredKeyError(SAGEError):
             message += (
                 " Aliases: "
                 + ", ".join(
-                    f"{alias} → {canonical}" for alias, canonical in sorted(aliases.items())
+                    f"{alias} -> {canonical}" for alias, canonical in sorted(aliases.items())
                 )
                 + "."
             )
