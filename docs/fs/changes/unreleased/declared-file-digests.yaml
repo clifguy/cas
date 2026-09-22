@@ -1,9 +1,0 @@
-classification: minor
-category: [capability]
-summary: >-
-  Accept optional declared SHA-256 digests on multipart batch and app ingestion.
-for_callers: >-
-  File entries may supply sha256 as bare or lowercase-prefixed hex in either
-  hex case. Digests are checked before retention, including dry runs; a mismatch
-  is a per-file source_digest_mismatch and later files continue. A malformed
-  string refuses the request with invalid_sha256 at files.<index>.sha256.

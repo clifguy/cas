@@ -1,8 +1,0 @@
-classification: patch
-summary: >-
-  State the engine-default dependency-satisfying set (active and completed) on
-  the create_edges and verify_preconditions OpenAPI operations and MCP tools,
-  with the satisfies_dependency opt-out and opt-in and the configuration that
-  makes depends_on mean blocked until the target completes. Documentation
-  only; dependency evaluation is unchanged.
-for_callers: ""
