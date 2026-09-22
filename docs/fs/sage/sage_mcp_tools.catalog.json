@@ -3478,7 +3478,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Walk an edge chain to both ends from a starting document.\n\nFollows edges of a single type in both directions from the\nstarting document, collecting all reachable nodes into an\nordered list with positional metadata (head, tail, query\nposition, ``is_linear``). Three round-trips for a chain of two\nor more: an existence check on the starting document, then the\nwalk itself -- one recursive CTE whatever the chain length --\nthen a query for the connecting edges. A chain whose\n``total_length`` is 1 skips that edge query and spends two\nround-trips on the ``available_edge_types`` hint instead, asking\nfor the document's inbound and outbound edges separately: four\nin all. The hint turns on the whole chain being one document,\nnot on a page of one, so a ``limit`` of 1 over a longer chain\ndoes not trigger it. Designed for version history retrieval on\nsupersedes chains but works with any edge type. A document with\nno edges of the requested type returns a single-entry chain (the\ndocument itself as both head and tail).\n\n``limit`` and ``offset`` page the returned entries without\nchanging the walk: ``total_length`` stays the size of the whole\nchain, ``length`` counts what this response carries, and each\nentry keeps its absolute ``position`` rather than being\nrenumbered from the start of the page. ``head_id`` and\n``tail_id`` likewise name the chain's own ends, which a page\nneed not contain.\n\n``is_linear`` is true when the chain is strictly linear: no\ndocument shares a predecessor or a successor of the requested\nedge type with another. False marks a fork or a merge in the\nlineage -- a data quality problem rather than an ordinary shape,\nand worth surfacing when chasing supersedes chains that have not\nyet been reconciled.\n\nError modes:\n- ``invalid_vault_id`` (400): the supplied vault_id is not a\n  well-formed vault id.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n- ``invalid_document_id`` (400): the supplied document_id is not a\n  well-formed id; rejected at the boundary before any lookup.\n- ``document_not_found`` (404): no document with that id.\n\nArgs:\n    vault_id: Target vault identifier.\n    edge_type: Edge type to follow (e.g. \"supersedes\", \"references\").\n        Defaults to ``supersedes``, the version history of the document.\n    document_id: Document ID to start the chain walk from. Alias: ``doc_id``.\n        Supply exactly one of ``document_id`` or ``doc_id``. The result\n        is symmetric: any chain member returns the full ordered chain\n        with that member's position indicated.\n    doc_id: Alias for ``document_id``; supply exactly one.\n    limit: Maximum chain entries to return. Default: all.\n        Use with offset to page through long version chains.\n    offset: Skip this many entries from the start (oldest). Default: 0.\n",
+        "description": "Walk an edge chain to both ends from a starting document.\n\nFollows edges of a single type in both directions from the\nstarting document, collecting all reachable nodes into an\nordered list with positional metadata (head, tail, query\nposition, ``is_linear``). Three round-trips for a chain of two\nor more: an existence check on the starting document, then the\nwalk itself -- one recursive CTE whatever the chain length --\nthen a query for the connecting edges. A chain whose\n``total_length`` is 1 skips that edge query and spends two\nround-trips on the ``available_edge_types`` hint instead, asking\nfor the document's inbound and outbound edges separately: four\nin all. The hint turns on the whole chain being one document,\nnot on a page of one, so a ``limit`` of 1 over a longer chain\ndoes not trigger it. Designed for version history retrieval on\nsupersedes chains but works with any edge type. A document with\nno edges of the requested type returns a single-entry chain (the\ndocument itself as both head and tail).\n\n``limit`` and ``offset`` page the returned entries without\nchanging the walk: ``total_length`` stays the size of the whole\nchain, ``length`` counts what this response carries, and each\nentry keeps its absolute ``position`` rather than being\nrenumbered from the start of the page. ``head_id`` and\n``tail_id`` likewise name the chain's own ends, which a page\nneed not contain.\n\n``is_linear`` is true when the chain is strictly linear: no\ndocument shares a predecessor or a successor of the requested\nedge type with another. False marks a fork or a merge in the\nlineage -- a data quality problem rather than an ordinary shape,\nand worth surfacing when chasing supersedes chains that have not\nyet been reconciled.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``invalid_document_id`` (400)\n- ``document_not_found`` (404)\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -3492,6 +3492,7 @@
                 }
               ],
               "default": null,
+              "description": "Alias for `document_id`; supply exactly one of the two.",
               "title": "Doc Id"
             },
             "document_id": {
@@ -3504,10 +3505,12 @@
                 }
               ],
               "default": null,
+              "description": "Document ID to start the chain walk from. The walk proceeds in both directions from this document. The result is symmetric: any chain member returns the full ordered chain with that member's position indicated. Alias: `doc_id`; supply exactly one of the two.",
               "title": "Document Id"
             },
             "edge_type": {
               "default": "supersedes",
+              "description": "Edge type to follow. Defaults to `supersedes`, the version history of the document. The chain walk follows only this edge type in both directions.",
               "title": "Edge Type",
               "type": "string"
             },
@@ -3521,14 +3524,17 @@
                 }
               ],
               "default": null,
+              "description": "Maximum number of chain entries to return after offset is applied. Null (default) returns the entire chain. Pagination is caller-side slicing performed on the full chain returned by the graph walk; the walk itself is unbounded.",
               "title": "Limit"
             },
             "offset": {
               "default": 0,
+              "description": "Number of chain entries to skip from the start of the ordered chain before applying `limit`. Used together with `limit` to page through long chains.",
               "title": "Offset",
               "type": "integer"
             },
             "vault_id": {
+              "description": "Target vault identifier. `list_vaults` names the registered vaults.",
               "title": "Vault Id",
               "type": "string"
             }
@@ -9302,7 +9308,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Ingest a source file into SAGE, running the projection ->\nindexing -> abstraction pipeline.\n\nStages 2-3 (indexing, abstraction) dispatch as a background task;\nthe call returns in seconds with ``pipeline_status`` typically\nnon-terminal (projection_complete or indexing_in_progress), keeping\nthe RPC under the 60-second MCP client timeout. To observe the\noutcome, wait for a terminal ``pipeline_status`` on the document:\n``abstraction_complete`` (the happy path), ``abstraction_skipped``\n(the vault sets ``abstraction.enabled=false`` or the projection is\nempty, so Stage 3 is bypassed), or ``failed`` (any Stage exception;\n``pipeline_error`` is populated). A wait must also accept\n``abstraction_interrupted``, which means the queue draining the work\nwas stopped before it finished and the next server start re-runs it.\nA requested supersede transition\nruns synchronously, so the version chain is complete on return.\n\nRun that wait on the caller's side, as a single wait that returns\nonce the status becomes terminal -- not as one status request per\nunit of caller work. ``get_document`` and\n``GET /sage_vaults/{vault_id}/documents/{document_id}`` both report\nthe current status cheaply, so the cost of waiting is set by how\noften the caller asks. Bound the wait: a document left at\n``abstraction_in_progress`` with no work in flight (the process\nrestarted mid-job) never reaches a terminal status on its own, and\nan unbounded wait on that state does not return.\n\nMetadata is caller-authoritative. Pass prepared values via\n``metadata`` and leave ``needs_review=false``; the document commits\nwith ``metadata_confirmed=true``. Set ``needs_review=true`` to defer\nto the review queue: filename inference fills fields the caller\nomitted (the field set is vault-config-defined under\n``metadata_extraction.filename_extraction``; see\n``get_vault_config``) and the document is held with\n``metadata_confirmed=false`` until confirmed via ``update_metadata``.\n\nMetadata goes in ``metadata``, nested. The recognized keys are\n``title``, ``version_label``, ``project``, ``doc_type``,\n``authority_scope``, ``document_date``, and ``tags`` -- for example\n``metadata={\"title\": \"...\", \"tags\": [\"...\"]}``. Each is also accepted\nat the top level only to be refused there: passing one as a direct\nargument raises ``misplaced_metadata`` naming every misplaced field,\nrather than applying part of the call and discarding the rest. The\nconverse is refused too: an argument this tool declares -- notably\n``tier3_metadata``, which ``search`` requires inside ``filters`` and\nthis tool requires at the top level -- spelled inside ``metadata``\nraises ``misplaced_top_level_field`` rather than being stored under a\nname nothing reads.\n\nTrio-field inheritance on supersede: when ``predecessor_id`` is set\nand the caller omits ``doc_type``, ``project``, or\n``authority_scope`` from ``metadata``, each omitted field inherits\nthe predecessor's non-None value silently. Pass the field\nexplicitly to override.\n\nTier3 uniqueness: a doc_type declaring a ``unique`` constraint on\na tier3 field enforces per-vault uniqueness on it at ingest time,\nchecked in the same transaction as the row insert so the existing\ndocument is never disturbed. Call with ``dry_run=true`` to read\nwhich fields a doc_type declares unique, under\n``requirements.unique_tier3_fields``. In the ``cas`` vault,\n``ticket.ticket_id`` is the live example.\n\nDry run: ``dry_run=true`` reports what this call would do and\npersists nothing, returning an ``IngestPreview`` rather than a\ndocument. The source is located and hashed where it stands but\nnever read into the vault, so no projection, indexing or\nabstraction runs and the import area is untouched. The preview\nnames the resolved doc_type, the content hash, the duplicate\nverdict naming the document already holding those bytes, whether\nthe ingest would supersede, and the doc_type's declared\nrequirement set. Every validator that runs raises the error a\nreal run would, with one deliberate exception: a duplicate comes\nback as ``would_create: false`` rather than as\n``duplicate_content``, because reporting it is what a preview is\nfor. Because nothing is projected, an adapter-extracted\n``tier3_metadata`` cannot be evaluated -- ``tier3_validated`` is\nfalse when the caller supplied none, and a real run may still\nrefuse. Three further refusals sit below the branch point and\nare neither checked nor reported, each turning on state the\npreview does not reach: ``tier3_unique_constraint_violation``,\nwhich the insert transaction raises and which cannot be settled\noutside it -- a preview reporting no collision could still\ncollide before the real call arrives;\n``force_reingest_path_mismatch``, which turns on the colliding\nrecord's own source path; and ``stale_chain_head`` on an\n``expected_head_version`` that no longer matches. A\n``force_reingest_pin_mismatch`` is checked only where the preview\nholds the content hash; it goes unchecked for a source resident in\nthe store with no prior document record, which has no hash to judge\nthe pin against. A clean preview is not a promise that the real run\ncommits. When ``source`` is an absolute path the server cannot read,\na dry run first runs every validator that reads no bytes and then\nreturns the upload recipe, whose leg's ``dry_run_validated`` names\nthe validators that ran; the checks that need the bytes wait for the\ncall repeated with the transfer token.\n\nError modes:\n- ``invalid_vault_id`` (400): the supplied vault_id is not a\n  well-formed vault id.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n- ``invalid_document_id`` (400): a document id the call names is not\n  well-formed.\n- ``invalid_document_date`` (400): the supplied document_date is not a\n  well-formed calendar date (YYYY-MM-DD).\n- ``invalid_sha256`` (400): a content hash the call supplies is not a\n  well-formed sha256 digest.\n- ``misplaced_metadata`` (400): a recognized ``metadata`` key was\n  passed as a top-level argument instead of nested under\n  ``metadata``. Detail carries ``fields`` (every misplaced key, so a\n  single retry fixes them all), ``recognized`` (the full key set),\n  and ``example``. No document is created.\n- ``misplaced_top_level_field`` (400): the converse -- an argument\n  this tool declares was spelled inside ``metadata``. Detail carries\n  ``fields``, ``recognized`` (every argument that belongs at the top\n  level), and ``example``. Refused on the key's presence rather than\n  its value, because a string value validates and is then dropped.\n  No document is created.\n- ``invalid_parameter`` (422): ``metadata`` supplies both ``codes``\n  and ``tags``, which set the same field. Detail carries\n  ``parameter`` (``metadata.tags``), ``value`` and ``constraint``.\n  Supply one, not both. No document is created.\n- ``undeclared_key`` (400): an object nested inside an argument --\n  ``relocated_from`` -- names a key its schema does not declare.\n  Detail carries ``parameter``, ``keys`` (every undeclared key in\n  that object, sorted), ``key`` (the first), ``recognized`` and\n  ``example``. No document is created.\n- ``source_type_unresolved`` (400): ``source_type`` was omitted and no\n  registered adapter claims the source's extension. Detail carries\n  ``extension`` (null when the source has none) and\n  ``registered_source_types``. No document is created.\n- ``adapter_not_found`` (400): no source adapter is registered for\n  ``source_type``.\n- ``adapter_config_invalid`` (400): the source adapter refused a value\n  it cannot use in its config, the vault's ``adapter_defaults`` merged\n  with ``config``. Detail names the source type, the key and the\n  value. Raised before the source is retained, and by a ``dry_run``\n  call too. No document is created.\n- ``source_unreadable`` (400): the source adapter could not read the\n  source -- malformed, truncated, encrypted, or not in the format its\n  source type names. Detail names the source type and the source as\n  supplied. No document is created.\n- ``source_file_not_found`` (404): ``source`` does not resolve to a\n  readable file.\n- ``vault_source_path_refused`` (400): the vault-source store refused\n  the destination it would have retained the source at -- a symlink or\n  a directory sitting there, a path resolving out of the vault's source\n  tree, or an ``imports`` entry that is not a directory. The reason\n  names the destination by its vault-relative path.\n- ``reserved_transition`` (409): the vault's lifecycle lands a fresh\n  ingest in the terminal ``relocated`` state, which the engine reserves\n  to the one action carrying a relocation pointer. An ingest carries\n  none, so landing one there would rest a document in the state naming\n  nowhere, and no transition leaves the state to repair it. Possible\n  only on a configuration that loaded leniently; repair the ``(new)``\n  row via ``update_vault_config``.\n- ``relocated_from_provenance_mismatch`` (400): ``relocated_from``\n  names a source content hash the delivered bytes do not carry. Detail\n  carries ``field``, ``pointer_content_hash`` and\n  ``document_content_hash``. Refused before the source is retained, so\n  no copy is left behind.\n- ``relocation_source_undelivered`` (400): ``relocated_from`` was\n  supplied for a source already resident in this vault's store that\n  belongs to no document here, so nothing was hashed on this call and\n  no prior record's provenance can be inherited. There is no recorded\n  digest to check the pointer against; deliver the document's source\n  bytes instead. A resident source that *does* carry a record is\n  checked against that record's digest rather than refused.\n- ``ambiguous_ingest_source`` (400): both ``source`` and\n  ``transfer_token`` were supplied; they are mutually exclusive.\n- ``missing_ingest_source`` (400): neither ``source`` nor\n  ``transfer_token`` was supplied.\n- ``transfer_token_invalid`` (410): ``transfer_token`` names no\n  redeemable pending transfer (unknown, expired, already used, or\n  scoped to a different vault). Re-issue the call with the original\n  ``source`` to mint a fresh recipe.\n- ``transfer_not_staged`` (409): ``transfer_token`` is valid but the\n  bytes have not been delivered to the upload endpoint yet. Run the\n  recipe's byte leg, then repeat this call; the token stays valid.\n- ``transfer_endpoint_not_configured`` (500): this deployment needs\n  the transfer channel but declares no public transfer endpoint, so\n  no recipe can be minted.\n- ``vault_source_store_refused`` (502): the vault-source store declined\n  either to retain the source or to serve the read-back the projection\n  makes of it -- quota, a permission it withdrew, a reply that opened\n  no usable upload session. Resolve it at the store before retrying;\n  ``detail.store_status`` carries the status it declined with. A\n  refusal on the read-back leaves the retained copy in place; a retry\n  reuses it rather than sending the bytes again.\n- ``vault_source_store_unavailable`` (503): the store declined to serve\n  the retention or that read-back just now -- throttling, a transient\n  backend signal, an upload session it expired. The same call may\n  succeed later.\n- ``duplicate_content`` (409): a document already carries this\n  content hash. The key is the hash alone, so identical bytes at a\n  path the vault has never seen refuse too. Where several documents\n  carry it, the refusal names a version a supersession has not\n  retired, lowest document id among equals, so re-running the same\n  call names the same document. Override with ``force=true``.\n- ``force_reingest_path_mismatch`` (409): ``force=true`` and the\n  content-hash match resolves to a document stored at a different\n  ``source_path`` than ``source``, without a ``document_id``\n  confirming the target. Force-reingest keys the record to reuse by\n  content hash alone, so a byte-identical file at a different path can\n  collide with an unrelated document; the guard refuses rather than\n  overwrite its identity. Detail carries ``existing_document_id``,\n  ``existing_source_path``, ``new_source_path``, and\n  ``source_content_hash``. Pass ``document_id`` to confirm the intended\n  record (for example, a document whose file legitimately moved).\n- ``force_reingest_pin_mismatch`` (409): ``force=true`` and\n  ``document_id`` names a document that does not carry the delivered\n  content hash, or no document at all. A pin may select any document\n  holding these bytes, never a record holding other bytes, and is\n  refused whether or not another document holds them. Detail carries\n  ``document_id``, ``pinned_source_content_hash`` (null when no\n  document has that id), ``source_content_hash``, and\n  ``existing_document_id`` (null when no document holds the hash).\n- ``lifecycle_state_not_applicable`` (409): ``force=true`` would\n  change the existing document's ``doc_type`` while it holds a\n  lifecycle state whose ``doc_types`` excludes the new doc_type;\n  transition it to a state the new doc_type holds first.\n- ``document_not_found`` (404): ``predecessor_id`` names no document\n  in the vault.\n- ``supersede_target_not_active`` (409): ``predecessor_id`` was set\n  but the vault's lifecycle transition table does not permit\n  ``supersede`` from the predecessor's current state. Detail\n  carries ``current_state`` and the ``allowed_states`` the table\n  does permit; a table permitting ``supersede`` from no state\n  reports an empty ``allowed_states`` and a ``required_state`` of\n  ``(none)``. There is no one remedy, because there is no one\n  table: read ``allowed_states``, which the refusal already\n  carries and which a ``dry_run=true`` call raises without\n  writing anything, for the states this vault admits. The vault's\n  whole ``lifecycle.transitions`` table, if you want it rather\n  than this one answer, is on ``get_vault_config``. A vault may\n  permit ``supersede`` from\n  ``completed`` or another non-``active`` state, in which case\n  the predecessor needs no walk-back at all. Where one is needed,\n  move the predecessor to a permitted state directly from where\n  it stands via ``update_lifecycles`` -- ``reactivate`` from\n  ``completed``, where the table declares it -- rather than\n  archiving first, which records shipped work as dropped for the\n  length of the walk.\n- ``identical_content_supersede`` (409): the new file's content\n  hash matches the predecessor's; chains require distinct content\n  per step.\n- ``stale_chain_head`` (409): ``expected_head_version`` did not\n  match the predecessor's current ``updated_at`` at supersede time.\n  Detail carries ``predecessor_id``, ``expected_head_version``,\n  ``current_head_id``, and ``current_head_version`` so the caller\n  can pivot to the current head and retry.\n- ``expected_head_version_requires_predecessor`` (400):\n  ``expected_head_version`` supplied without ``predecessor_id`` (the\n  token is bound to the predecessor's chain head).\n- ``invalid_doc_type`` (400): ``metadata.doc_type`` names a value\n  the vault does not declare. Detail carries ``doc_type`` and\n  ``valid_types``, the whole vocabulary. Scoped to what you named:\n  omitting the field, inheriting a predecessor's value, and a\n  filename-inferred value are all admitted, so this fires only on\n  a value you supplied.\n- ``tier3_schema_violation`` (400): ``tier3_metadata`` is set but\n  the resolved doc_type has no ``metadata_schema``, or the payload\n  failed validation. Detail carries ``doc_type``, ``path`` (JSON\n  Pointer; empty when the doc_type has no schema), ``message``, and\n  ``instance``.\n- ``tier3_unique_constraint_violation`` (409): ``tier3_metadata``\n  supplied a value already in use on a ``unique`` tier3 field.\n  Detail carries ``doc_type``, ``field``, ``colliding_value``, and\n  ``existing_document_id``. ``force=true`` does NOT override this --\n  uniqueness is independent of content-hash deduplication.\n- ``vault_migration_in_flight`` (409): ``migrate_vault`` is running\n  on this vault. ``detail`` carries ``vault_id`` and the migration's\n  ISO 8601 ``start_time``. Raised before anything else, a ``dry_run``\n  included; retry once the migration has returned.\n- ``source_digest_mismatch`` (400): ``sha256`` was supplied and the\n  source this call ingests has a different digest. Detail carries\n  ``source``, ``declared_sha256`` and ``delivered_sha256`` (null for a\n  resident source no document here records). Refused before the\n  source is retained, a ``dry_run`` included.\n\nAn ingest that fails after redeeming a ``transfer_token`` -- for any\nreason above, not only a store refusal -- leaves that token redeemable\nwithin its original window: the bytes arrived intact and only the\ningest failed, so a retry costs no second upload.\n\nArgs:\n    vault_id: Target vault identifier.\n    source: Source file path relative to the vault's storage_root,\n        or an absolute path to an external file (copied verbatim\n        into the vault's imports/ directory). An absolute path names\n        a file on the caller's machine and is read directly only\n        when that machine is the machine running the SAGE server\n        process; the retained copy lands on the vault's configured\n        source store and is authoritative after ingest, wherever\n        that store lives -- the path passed here is temporary.\n        Behavior is identical whether the vault's stores are local\n        or cloud-hosted. Supply exactly one of ``source`` or\n        ``transfer_token``. When the server cannot read the caller's\n        filesystem directly, an absolute ``source`` returns an\n        upload recipe (``status: upload_required``) instead of\n        ingesting: deliver the file to the recipe's URL with its\n        one-time token, then repeat this call with\n        ``transfer_token`` to complete the ingest. The recipe's\n        tokens lapse 900 seconds after issue by default, and the\n        whole exchange -- byte delivery plus the completion call --\n        must finish inside that window; the recipe's own\n        ``expires_at`` is authoritative where a deployment has tuned\n        the lifetime. A token is also reclaimed once\n        3 refused deliveries have been made against it by default --\n        a body over the ceiling, bytes not matching its bound digest,\n        or a body abandoned mid-stream; earlier refusals leave it\n        retryable. A lapsed recipe cannot be resumed, and its\n        staged bytes are gone: re-issue this call for a fresh one.\n    source_type: Source artifact format (markdown, docx, xlsx, pptx,\n        pdf). Selects the source adapter. Optional: when omitted,\n        it is inferred from the source's file extension against the\n        registered adapters' declared extensions (``.md`` and\n        ``.markdown`` to markdown, ``.docx``/``.dotx`` to docx, and\n        so on). An explicit value is never overridden by inference,\n        and an extension no registered adapter claims is refused with\n        ``source_type_unresolved`` rather than guessed. For a\n        ``transfer_token`` completion the extension read is the\n        staged file's, which carries the caller's own basename.\n    config: Adapter-specific configuration (optional). Not a\n        SAGE-wide shape; inspect ``adapter_defaults`` in\n        ``get_vault_config`` for the per-adapter shape, such as\n        the markdown adapter's dialect. Deep-merged over the\n        vault's adapter defaults; a key the adapter does not read\n        is ignored.\n    created_by: Creator name. Defaults to vault owner.\n    force: Allow re-ingestion of duplicate content. The record to\n        reuse is resolved by content hash alone, not by ``source``\n        path; a byte-identical file at a different path collides with\n        whatever document already carries that hash. When that\n        document sits at a different ``source_path``, the ingest is\n        rejected with ``force_reingest_path_mismatch`` unless\n        ``document_id`` names the intended target. Same-path\n        re-ingestion is unaffected.\n    predecessor_id: When set, the ingested document supersedes this\n        predecessor: SAGE creates a ``supersedes`` edge (new -> old)\n        and applies the ``supersede`` transition to the predecessor\n        synchronously, landing it where the vault's transition table\n        says (``archived`` in the create-vault scaffold). The\n        predecessor's current state must permit ``supersede`` under\n        that table, with a content hash differing from the new file.\n        Trio fields inherit from it when omitted (see above).\n    expected_head_version: Optimistic-concurrency token on the chain\n        head identified by ``predecessor_id``. Verified against the\n        predecessor's current ``updated_at`` under the\n        per-predecessor lock at supersede time; mismatch rejects with\n        ``stale_chain_head``. Pass the value observed on a prior\n        ``get_document`` read (ISO 8601 with ``Z`` suffix). Omit for\n        last-writer-wins. Requires ``predecessor_id``.\n    needs_review: When true, the document enters the metadata-review\n        queue (metadata_confirmed=false) and filename inference fills\n        omitted fields. Default false: inference is skipped and\n        caller metadata commits authoritatively. Use\n        ``get_filename_metadata`` for suggestions without queuing.\n    metadata: Caller-supplied metadata fields, authoritative per\n        field over filename parse, chain inheritance, and vault\n        defaults. Recognized keys: title, version_label, project,\n        doc_type, authority_scope, document_date, tags. Tags accept a\n        list or a comma-separated string (whitespace trimmed, empty\n        fragments dropped).\n    tier3_metadata: Per-doc_type typed payload, validated against the\n        doc_type's declared ``metadata_schema``. To learn what a\n        doc_type requires before composing one, call with\n        ``dry_run=true``: the preview reports the declared and\n        required field names, the unique keys and the permitted\n        source types, and a refusal carries the same set. When the\n        doc_type declares no schema and this is non-null, ingest\n        fails with ``tier3_schema_violation``. Stored verbatim\n        once validated; queryable via ``search`` filters as\n        ``{\"tier3_metadata\": {\"<field>\": <value>}}`` (exact equality;\n        null matches absent-or-null fields).\n    relocated_from: Where the document was before it relocated into\n        this vault, as ``{\"vault_id\", \"document_id\",\n        \"server_address\", \"source_content_hash\", \"relocated_at\"}``\n        naming the counterpart; ``server_address`` may be null.\n        Supplied on the destination half of a relocation, which is\n        performed first. Stored verbatim and never followed: the\n        vault id and address are hints for a caller recovering\n        provenance, and the content hash is what confirms a\n        resolution reached the intended document. The hash names\n        the bytes that travelled between the two vaults, and on\n        this half it is checked rather than assumed: it must match the digest this vault\n        will record for the source, which is the digest of the\n        bytes the call delivers, or of the record they are\n        inherited from where a resident source is re-projected.\n        Otherwise the call refuses with\n        ``relocated_from_provenance_mismatch``. The origin half\n        is ``update_lifecycles`` with ``action=\"relocate\"``. Omit\n        for an ordinary ingest.\n    document_id: Pins the force-reingest target. Consulted only when\n        ``force=true``; ignored otherwise. Names the record to\n        re-ingest into -- any document carrying the delivered content\n        hash, not only the one a duplicate refusal would name -- so a\n        different-path hash match is treated as a deliberate reuse\n        (for example, a moved file) rather than the unrelated-document\n        collision that ``force_reingest_path_mismatch`` guards against.\n        A document without that hash, or no document at all, is\n        refused with ``force_reingest_pin_mismatch``.\n    transfer_token: One-time token from a previously returned upload\n        recipe, redeemed after the recipe's byte leg has delivered\n        the file to the upload endpoint. The staged bytes run through\n        the identical pipeline as a path ingest, so the response is\n        indistinguishable from a co-located one. Supply exactly one\n        of ``transfer_token`` or ``source``; all other arguments are\n        passed again on this completion call exactly as on the\n        originating call.\n    dry_run: Report what this call would do and persist nothing.\n        See the *Dry run* paragraph above for what the preview\n        carries and what it cannot evaluate. A ``transfer_token``\n        is read but not spent on a dry run, so the same token\n        completes the real ingest afterwards.\n    sha256: SHA-256 digest of the file to ingest, bare hex or\n        ``sha256:``-prefixed. The call refuses a source with any other\n        digest with ``source_digest_mismatch``. When the call returns\n        an upload recipe, each token is bound to this digest and the\n        upload endpoint refuses any other bytes without spending the\n        token, short of its refusal limit -- so a token seen by\n        anyone not already holding the exact file admits nothing.\n        Pass it again on the completion call. Omit to admit any\n        bytes.\n",
+        "description": "Ingest a source file into SAGE, running the projection ->\nindexing -> abstraction pipeline.\n\nStages 2-3 (indexing, abstraction) run in the background, so the\ncall returns with ``pipeline_status`` typically non-terminal; a\nrequested supersede runs synchronously, so the version chain is\ncomplete on return. To observe the outcome, wait for a terminal\n``pipeline_status`` on the document: ``abstraction_complete``,\n``abstraction_skipped``, or ``failed`` (which sets ``pipeline_error``).\nA wait must also accept\n``abstraction_interrupted``: the work was stopped before it finished\nand the next server start re-runs it. Run one bounded wait on the\ncaller's side, not a status request per unit of work.\n\nMetadata is caller-authoritative. ``dry_run=true`` previews the\ncall and the doc_type's requirements, persisting nothing.\n\nError modes:\n- ``vault_not_found`` (404)\n- 400: ``invalid_vault_id``, ``invalid_document_id``,\n  ``invalid_document_date``, ``invalid_sha256``, ``misplaced_metadata``,\n  ``misplaced_top_level_field``, ``undeclared_key``,\n  ``source_type_unresolved``, ``adapter_not_found``,\n  ``adapter_config_invalid``, ``source_unreadable``,\n  ``source_digest_mismatch``, ``vault_source_path_refused``,\n  ``relocated_from_provenance_mismatch``,\n  ``relocation_source_undelivered``, ``ambiguous_ingest_source``,\n  ``missing_ingest_source``,\n  ``expected_head_version_requires_predecessor``, ``invalid_doc_type``,\n  ``tier3_schema_violation``\n- 404: ``source_file_not_found``, ``document_not_found``\n- 409: ``duplicate_content``, ``force_reingest_path_mismatch``,\n  ``force_reingest_pin_mismatch``, ``lifecycle_state_not_applicable``,\n  ``supersede_target_not_active``, ``identical_content_supersede``,\n  ``stale_chain_head``, ``tier3_unique_constraint_violation``,\n  ``transfer_not_staged``, ``reserved_transition``,\n  ``vault_migration_in_flight``\n- 410: ``transfer_token_invalid``\n- 422: ``invalid_parameter``\n- 500: ``transfer_endpoint_not_configured``\n- 502 / 503: ``vault_source_store_refused`` / ``vault_source_store_unavailable``\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -9324,7 +9330,7 @@
                 }
               ],
               "default": null,
-              "description": "Tripwire, not a functional argument. Supply this key inside metadata={...}; a non-null value here is refused with misplaced_metadata.",
+              "description": "Tripwire, not a functional argument; use metadata={...} (misplaced_metadata).",
               "title": "Authority Scope"
             },
             "config": {
@@ -9338,6 +9344,7 @@
                 }
               ],
               "default": null,
+              "description": "Adapter-specific configuration overrides. Structure depends on the adapter type; the markdown adapter, for example, takes the dialect to read the document in. Deep-merged over the vault's adapter defaults, whose per-adapter shape is ``adapter_defaults`` in ``get_vault_config``; a key the adapter does not read is ignored.",
               "title": "Config"
             },
             "created_by": {
@@ -9350,6 +9357,7 @@
                 }
               ],
               "default": null,
+              "description": "User ID of the actor initiating ingestion. Used for provenance tracking. Defaults to vault owner.",
               "title": "Created By"
             },
             "doc_type": {
@@ -9370,7 +9378,7 @@
                 }
               ],
               "default": null,
-              "description": "Tripwire, not a functional argument. Supply this key inside metadata={...}; a non-null value here is refused with misplaced_metadata.",
+              "description": "Tripwire, not a functional argument; use metadata={...} (misplaced_metadata).",
               "title": "Doc Type"
             },
             "document_date": {
@@ -9391,7 +9399,7 @@
                 }
               ],
               "default": null,
-              "description": "Tripwire, not a functional argument. Supply this key inside metadata={...}; a non-null value here is refused with misplaced_metadata.",
+              "description": "Tripwire, not a functional argument; use metadata={...} (misplaced_metadata).",
               "title": "Document Date"
             },
             "document_id": {
@@ -9404,10 +9412,12 @@
                 }
               ],
               "default": null,
+              "description": "Pins the force-reingest target. Force-reingest keys the record to reuse by content hash alone; when the incoming file is byte-identical to an existing document stored at a different source_path, the hash match may be an unrelated document. To protect that document's identity, a different-path collision is rejected with 409 `force_reingest_path_mismatch` unless this field names the record the caller intends to overwrite (for example, re-ingesting a document whose file legitimately moved). Where several documents carry the delivered content hash, this field selects any one of them, not only the one a duplicate refusal would name. A value naming a document that does not carry the delivered content hash, or no document at all, is rejected with 409 `force_reingest_pin_mismatch`. Consulted only when `force=true`; ignored otherwise.",
               "title": "Document Id"
             },
             "dry_run": {
               "default": false,
+              "description": "When true, run the validators that do not require reading the source into the vault, compute the would-be verdict, and do NOT persist. Nothing is retained into the vault's import area, no projection, indexing or abstraction runs, and no record is written. The response is an `IngestPreview` rather than a document: it carries `dry_run=true`, the resolved doc_type, the delivered content hash and the duplicate verdict, whether the ingest would supersede, and the target doc_type's full declared requirement set. Because a preview does not project, an adapter-extracted `tier3_metadata` payload cannot be evaluated; `tier3_validated` reports false when the caller supplied none, and a real run may still refuse. When the source must first be uploaded, the response is the `UploadRecipe` instead, returned only after the validators that read no bytes have passed; its leg's `dry_run_validated` names them. The source is located and hashed where it stands but never read into the vault, so no projection, indexing or abstraction runs and the import area is untouched. Every validator that runs raises the error a real run would, with one deliberate exception: a duplicate comes back as would_create: false rather than as duplicate_content, because reporting it is what a preview is for. Three further refusals sit below the branch point and are neither checked nor reported, each turning on state the preview does not reach: tier3_unique_constraint_violation, which the insert transaction raises and which cannot be settled outside it -- a preview reporting no collision could still collide before the real call arrives; force_reingest_path_mismatch, which turns on the colliding record's own source path; and stale_chain_head on an expected_head_version that no longer matches. A force_reingest_pin_mismatch goes unchecked for a source resident in the store with no prior document record, which has no hash to judge the pin against. A clean preview is not a promise that the real run commits. For an upload, the checks that need the bytes wait for the call repeated with the transfer token.",
               "title": "Dry Run",
               "type": "boolean"
             },
@@ -9421,10 +9431,12 @@
                 }
               ],
               "default": null,
+              "description": "Optimistic-concurrency token on the chain head identified by `predecessor_id`. When supplied, the substrate verifies it against the predecessor's current `updated_at` inside the per-predecessor lock at supersede time; on mismatch the supersede is rejected with a structured `stale_chain_head` 409 carrying the current head id and version in detail. When omitted (the default), the supersede proceeds without a version check (back-compat for callers that have not adopted the contract). The version source is the predecessor's `updated_at` value as observed on a prior `GET /documents/{id}` read, in its canonical wire form (ISO 8601 with `Z` suffix). Requires `predecessor_id`; supplying this token on a fresh-chain ingest returns 400 `expected_head_version_requires_predecessor`. Pass the ``updated_at`` observed on a prior ``get_document`` read.",
               "title": "Expected Head Version"
             },
             "force": {
               "default": false,
+              "description": "When true, bypasses duplicate content detection and re-runs the full pipeline on the existing document record (if one exists carrying the same source_content_hash). Returns 200 (re-processed) instead of 201 (new). The document ID is preserved. Use for pipeline failure recovery.",
               "title": "Force",
               "type": "boolean"
             },
@@ -9439,10 +9451,12 @@
                 }
               ],
               "default": null,
+              "description": "Caller-supplied metadata fields to merge into the document record at ingestion time. Callers are authoritative for metadata; SAGE applies values per-field with the precedence chain caller > filename parse (only when needs_review=true) > the reused record's own value (only on a force re-ingest that reuses a record) > chain inherit (predecessor's doc_type, project, authority_scope when predecessor_id is set and the caller omitted the field) > vault default (doc_type only, falls through to `misc`). A field whose value is null is treated exactly as an omitted field, so a null doc_type, project or authority_scope on a supersession still inherits the predecessor's value. A field name outside the recognized set is ignored rather than stored. Values are strings except tags, which may be supplied as a list of strings or as a comma-separated string (parity with update_metadata's list-typed tags field). `codes` sets the same field as `tags`, so metadata supplying both is refused at `metadata.tags` rather than resolved by which key is walked last. Recognized keys: ``title``, ``version_label``, ``project``, ``doc_type``, ``authority_scope``, ``document_date``, ``tags`` -- e.g. metadata={\"title\": \"...\", \"tags\": [\"...\"]}. A key passed at the top level is refused with misplaced_metadata naming every misplaced key; an argument this tool declares -- notably ``tier3_metadata`` -- spelled inside ``metadata`` is refused with misplaced_top_level_field.",
               "title": "Metadata"
             },
             "needs_review": {
               "default": false,
+              "description": "When true, the document is held in the metadata-review queue after ingest: filename inference runs, parsed values populate the document where the caller did not supply them, and metadata_confirmed is set to false so the document appears in pending-metadata. When false (default), filename inference is skipped entirely; the document is committed with caller-supplied metadata authoritative and metadata_confirmed=true. Bulk-ingest UIs that want human confirmation of inferred values pass needs_review=true explicitly; agent ingests with prepared metadata leave it at the default. The fields filename inference fills are vault configuration (``metadata_extraction.filename_extraction`` in ``get_vault_config``); ``get_filename_metadata`` shows its suggestions without queuing.",
               "title": "Needs Review",
               "type": "boolean"
             },
@@ -9456,6 +9470,7 @@
                 }
               ],
               "default": null,
+              "description": "When provided, the ingested document is treated as a new version that supersedes the named predecessor. After successful ingestion, SAGE applies the `supersede` lifecycle transition on the predecessor: creates a `supersedes` edge from the new document to the predecessor and moves the predecessor to the state the vault's transition table lands `supersede` in (`archived` in the create-vault scaffold). Predecessor validation (exists + the vault's transition table permits `supersede` from its current state + different content hash) runs before projection; failures return 404/409 before any pipeline work begins. An omitted ``doc_type``, ``project`` or ``authority_scope`` inherits the predecessor's value. A ``supersede_target_not_active`` refusal carries the ``allowed_states``; move the predecessor to one with ``update_lifecycles`` (``reactivate`` from ``completed``) rather than archiving it first.",
               "title": "Predecessor Id"
             },
             "project": {
@@ -9476,7 +9491,7 @@
                 }
               ],
               "default": null,
-              "description": "Tripwire, not a functional argument. Supply this key inside metadata={...}; a non-null value here is refused with misplaced_metadata.",
+              "description": "Tripwire, not a functional argument; use metadata={...} (misplaced_metadata).",
               "title": "Project"
             },
             "relocated_from": {
@@ -9490,6 +9505,7 @@
                 }
               ],
               "default": null,
+              "description": "Where this document was before it relocated into this vault. Supplied on the destination half of a relocation, which is written first so an interrupted move leaves its evidence on the document a reader is most likely to hold. Persisted verbatim and never followed. Omit it for an ordinary ingest. Shape: {\"vault_id\", \"document_id\", \"server_address\", \"source_content_hash\", \"relocated_at\"}; server_address may be null. The content hash must match the digest this vault records for the source, or the call is refused with relocated_from_provenance_mismatch. The origin half is ``update_lifecycles`` with action=\"relocate\".",
               "title": "Relocated From"
             },
             "sha256": {
@@ -9502,6 +9518,7 @@
                 }
               ],
               "default": null,
+              "description": "SHA-256 digest of the file this call ingests, bare hex or `sha256:`-prefixed. When supplied, the call refuses a source with any other digest (`source_digest_mismatch`) before anything is retained. On a call that returns an upload recipe, each token is bound to this digest: the upload endpoint refuses any other bytes without spending the token, short of its refusal limit, so a token disclosed to anyone not already holding the exact file admits nothing. Pass it again on the completion call.",
               "title": "Sha256"
             },
             "source": {
@@ -9514,6 +9531,7 @@
                 }
               ],
               "default": null,
+              "description": "Path or URI to the source artifact: a path relative to the vault's storage_root, or an absolute path naming a file on the caller's machine. An absolute path is read directly only where the caller and the server share a machine; where they do not, the call returns an upload recipe (`status: upload_required`) instead of ingesting, and is repeated with `transfer_token` once the recipe's byte leg has delivered the file. Supply exactly one of `source` or `transfer_token`. An absolute path is read only where the caller's machine is the machine running the SAGE server process; the retained copy is authoritative after ingest, and the path passed here is temporary. An upload recipe's tokens lapse 900 seconds after issue by default (its expires_at is authoritative), and the byte delivery and the completion call must both finish inside that window. A token is also reclaimed once 3 refused deliveries have been made against it by default. A lapsed recipe cannot be resumed: re-issue this call.",
               "title": "Source"
             },
             "source_type": {
@@ -9526,6 +9544,7 @@
                 }
               ],
               "default": null,
+              "description": "Source artifact format. Determines which source adapter processes the artifact. Must be a source type with a registered adapter. Optional: when omitted, it is inferred from the extension of the source being ingested against the registered adapters' declared extensions -- for a `transfer_token` completion, the staged file, which carries the caller's own basename. An explicit value is never overridden, even where it disagrees with the extension. An omitted value whose extension no registered adapter claims is refused with `source_type_unresolved`. The registered formats are markdown, docx, xlsx, pptx and pdf; a refusal names them in ``registered_source_types``. Inference reads the extension: ``.md`` and ``.markdown`` map to markdown, ``.docx``/``.dotx`` to docx.",
               "title": "Source Type"
             },
             "tags": {
@@ -9546,7 +9565,7 @@
                 }
               ],
               "default": null,
-              "description": "Tripwire, not a functional argument. Supply this key inside metadata={...}; a non-null value here is refused with misplaced_metadata.",
+              "description": "Tripwire, not a functional argument; use metadata={...} (misplaced_metadata).",
               "title": "Tags"
             },
             "tier3_metadata": {
@@ -9560,6 +9579,7 @@
                 }
               ],
               "default": null,
+              "description": "Caller-authoritative tier-3 typed metadata applied at create time. Validated against the doc_type's `metadata_schema` declared in vault config (`document_types.{doc_type}.metadata_schema`); if the doc_type has no schema declared, the ingest fails with 400 `tier3_schema_violation`. Bare-dict form: the entire object is the tier-3 metadata for the new document, whereas `update_metadata` takes a `set`/`unset` ops-object. Tier3 uniqueness: a doc_type declaring a unique constraint on a tier3 field enforces per-vault uniqueness on it at ingest time, checked in the same transaction as the row insert so the existing document is never disturbed; force does not override it. Call with dry_run=true to read which fields a doc_type declares unique, under requirements.unique_tier3_fields, and which it requires. Queryable via ``search`` as filters={\"tier3_metadata\": {...}}.",
               "title": "Tier3 Metadata"
             },
             "title": {
@@ -9580,7 +9600,7 @@
                 }
               ],
               "default": null,
-              "description": "Tripwire, not a functional argument. Supply this key inside metadata={...}; a non-null value here is refused with misplaced_metadata.",
+              "description": "Tripwire, not a functional argument; use metadata={...} (misplaced_metadata).",
               "title": "Title"
             },
             "transfer_token": {
@@ -9593,9 +9613,11 @@
                 }
               ],
               "default": null,
+              "description": "One-time token from a previously returned upload recipe, redeemed after the recipe's byte leg has delivered the file to the upload endpoint. The staged bytes run through the same pipeline as a path ingest. Supply exactly one of `transfer_token` or `source`; every other field is sent again on this completion call exactly as on the originating call. On a dry run the token is read but not spent. An ingest that fails after redeeming the token leaves it redeemable within its window, so a retry costs no second upload.",
               "title": "Transfer Token"
             },
             "vault_id": {
+              "description": "Target vault identifier. `list_vaults` names the registered vaults.",
               "title": "Vault Id",
               "type": "string"
             },
@@ -9617,7 +9639,7 @@
                 }
               ],
               "default": null,
-              "description": "Tripwire, not a functional argument. Supply this key inside metadata={...}; a non-null value here is refused with misplaced_metadata.",
+              "description": "Tripwire, not a functional argument; use metadata={...} (misplaced_metadata).",
               "title": "Version Label"
             }
           },
@@ -16051,7 +16073,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Search documents, edges, or facets; semantic, keyword, catalog, or deterministic modes.\n\nModes:\n    semantic: Vector + optional BM25 fusion. Requires query.\n    keyword: BM25-only search. Requires query. Use query=\"*\" for filter-only listing.\n        Terms are conjunctive: a document matches only if it carries\n        every term, so each term added narrows the result and can\n        empty it. The terms need not appear together in one passage --\n        a document developing a subject across its sections matches --\n        but the document is ranked by its best-matching passage, which\n        is the excerpt returned. A quoted phrase is the exception and\n        must be satisfied within a single passage, since adjacency\n        across a passage boundary is not meaningful. Terms joined by or\n        admit either, and each alternative is satisfied across the\n        document as a bare term is, so adding an alternative widens.\n        A term prefixed with \"-\" is excluded, and excluding one narrows\n        the scope of the whole query: a query carrying an exclusion is\n        satisfied within a single passage, terms and alternatives\n        alike, so appending an excluded term can drop a document the\n        same query without it matched. When a\n        query of bare terms returns nothing, hints.warnings names the\n        terms the query parsed to -- stopwords are dropped and the\n        rest stemmed, so they are not the words typed. The other forms\n        carry their own advisory or, where every term is optional, none.\n    catalog: Filter-only SQL enumeration -- the canonical way to\n        enumerate documents already in a vault. A query is refused\n        rather than ignored, since nothing would consume it. Returns\n        document metadata only (no chunks or scores). Supports pagination\n        via limit + offset. Best for deterministic enumeration by tags,\n        doc_type, or other metadata. Pass limit=0 to receive\n        total_available alone, with no results, as an existence or\n        count check.\n    deterministic: Exact heading path extraction. Requires document_id + heading_path.\n\nEdge enumeration:\n    When ``target=\"edges\"`` (only valid with ``mode=\"catalog\"``,\n    which a call omitting ``mode`` resolves to on its own, while a\n    call naming a non-catalog one is still refused), results are\n    edge rows rather than document rows. Filter by any\n    subset of ``{\"source_id\": ..., \"target_id\": ..., \"edge_type\": ...}``;\n    an empty filter returns all edges in the vault, paginated. Each\n    row carries the edge id (required for ``delete_edge`` and the\n    ``retracts`` edge_type), endpoints, edge_type, anchor versions,\n    rationale, and retraction state (``retracted_at`` plus the id\n    of the disclaiming retracts edge, when applicable). Use\n    ``response_mode=\"light\"`` to strip to identity columns; ``full``\n    to carry the complete envelope. Default obeys a threshold rule:\n    ``light`` when more than 5 results would be returned, otherwise\n    ``full``.\n\n    Example::\n\n        search(\n            vault_id=\"cas\",\n            mode=\"catalog\",\n            target=\"edges\",\n            filters={\"source_id\": \"<doc_id>\", \"edge_type\": \"references\"},\n            response_mode=\"full\")\n\nFacet enumeration:\n    When ``target=\"facets\"`` (only valid with ``mode=\"catalog\"``,\n    which a call omitting ``mode`` resolves to on its own, while a\n    call naming a non-catalog one is still refused), results are\n    one row per facet field -- doc_type,\n    lifecycle_status, source_type, pipeline_status, tags -- each\n    carrying that field's top distinct values with\n    matching-document counts plus ``total_distinct``, the true\n    distinct-value count for the slice. This is the bounded way\n    to ask what exists in a vault: each row's value map is\n    capped (50 values by default; ``facet_value_limit`` sets\n    the cap explicitly), so the number of values returned never\n    grows with document count or tagging density, and no\n    pagination applies (non-default ``limit``, ``offset``,\n    ``sort_by``, ``sort_order``, and ``response_mode`` are\n    rejected via ``mode_parameter_mismatch``). The facets value\n    cap is denominated in values rather than bytes, so a facets\n    response whose serialized size exceeds the MCP inline\n    ceiling carries a ``facets_response_exceeds_inline_budget``\n    hint, naming the ``recommended_facet_value_limit`` to\n    re-call at whenever a smaller cap would fit and omitting it\n    when none would. A row was truncated exactly\n    when its ``total_distinct`` exceeds its value count; to\n    read a full vocabulary, re-call with ``facet_value_limit``\n    set to the reported ``total_distinct``. ``facet_fields``\n    selects a subset of the facet fields. Document-target\n    filter keys narrow the slice being faceted;\n    ``total_available`` is the count of documents matching the\n    filters. Documents with a null field are excluded from that\n    field's values but still counted in ``total_available``;\n    tag counts may sum above it (multi-tag documents) or below\n    it (untagged documents).\n\n    Example::\n\n        search(\n            vault_id=\"cas\",\n            target=\"facets\",\n            filters={\"doc_type\": \"ticket\"})\n\nResponse-mode semantics across targets:\n    ``response_mode`` is the canonical payload-depth selector for the\n    document and edge targets. Behavior matrix:\n\n    - ``target=\"documents\", mode=\"catalog\"``: ``light`` returns a\n      stripped ``DocumentSummaryLight`` carrying only id, title,\n      doc_type, lifecycle_status, and tier3_metadata; ``full``\n      returns the complete ``DocumentSummary``. The edge-side\n      >5-results default-to-light rule does NOT apply --\n      document-target defaults remain full-equivalent unless\n      ``response_mode=\"light\"`` is passed explicitly.\n    - ``target=\"documents\", mode=\"semantic\"`` or ``\"keyword\"``:\n      ``light`` suppresses ``chunk_content`` but preserves the full\n      ``DocumentSummary``; ``full`` includes ``chunk_content``.\n    - ``target=\"documents\", mode=\"deterministic\"``:\n      ``response_mode`` is ignored. Deterministic always returns\n      chunk content.\n    - ``target=\"edges\"``: see the *Edge enumeration* section above.\n    - ``target=\"facets\"``: ``response_mode`` is rejected via\n      ``mode_parameter_mismatch`` -- facet rows have a single\n      fixed shape.\n\nArgs:\n    vault_id: Target vault identifier.\n    mode: Retrieval mode (semantic, keyword, catalog,\n        deterministic). Default: semantic, except that a request\n        naming a catalog-only target (``edges``, ``facets``) and\n        no mode resolves to catalog, the one mode those targets\n        accept. A mode given explicitly is never changed: naming a\n        non-catalog one alongside those targets is still rejected\n        via ``mode_parameter_mismatch`` rather than corrected.\n    query: Search query text (required for semantic and keyword\n        modes; refused by catalog and deterministic, which do not\n        consume it, and by the catalog-only targets, which refuse\n        it on the target axis rather than the mode axis --\n        ``heading_path`` is refused the same way and for the same\n        reason).\n    scope: Retrieval scope (all, authoritative, specific, filtered). Default: all.\n    filters: Scope filters. Document-target keys: doc_type, project,\n        lifecycle_status, exclude_terminal_lifecycle, tags,\n        document_ids, pipeline_status, source_type,\n        tier3_metadata (these also narrow the\n        faceted slice when ``target=\"facets\"``). Edge-target keys\n        (only when ``target=\"edges\"``): source_id, target_id,\n        edge_type.\n        Every key belongs nested here -- ``doc_type``,\n        ``project``, ``lifecycle_status``,\n        ``exclude_terminal_lifecycle``, ``tags``,\n        ``document_ids``, ``pipeline_status``, ``source_type``,\n        ``tier3_metadata``, ``source_id``, ``target_id``, and\n        ``edge_type`` -- for example\n        ``filters={\"doc_type\": \"adr\", \"lifecycle_status\":\n        \"active\"}``. Each is also accepted at the top level only\n        to be refused there: passing one as a direct argument\n        raises ``misplaced_filters`` naming every misplaced key,\n        rather than searching with the constraint silently\n        dropped and returning an unfiltered result set.\n        ``source_type`` selects on the format the document was\n        ingested from, and takes one of a closed set: \"markdown\",\n        \"docx\", \"pdf\", \"email\", \"onenote\", \"teams_chat\", \"xlsx\",\n        \"pptx\". Anything else is refused via\n        ``invalid_filter_value`` rather than returning an empty\n        result, so a one-call existence question gets a definite\n        answer. ``edge_type`` is closed the same way.\n        ``exclude_terminal_lifecycle`` is a rule rather than a\n        value: it drops documents whose lifecycle state the vault\n        declares terminal, resolving that set from the vault's\n        own configuration so the caller need not name the states.\n        It narrows alongside ``lifecycle_status`` rather than\n        replacing it, and constrains nothing in a vault that\n        declares no terminal state.\n        The ``tier3_metadata`` key takes a dict of field-name to\n        expected-value pairs that match against each document's\n        ``tier3_metadata``. Equality is exact; ``null``\n        in the expected value matches documents whose stored field\n        is null or absent. All pairs AND together. Mixing\n        document-only and edge-only keys is rejected via\n        ``mode_parameter_mismatch``.\n        Example (documents): ``{\"doc_type\": \"failure_record\",\n        \"tier3_metadata\": {\"severity\": \"high\", \"fix_commit\": null}}``.\n        Example (edges): ``{\"source_id\": \"...\", \"edge_type\":\n        \"references\"}``.\n    document_id: Target document (required for deterministic mode).\n    heading_path: Heading path prefix (required for deterministic mode).\n        The empty string addresses the text under no heading.\n    limit: Maximum results (0-100). Default: 10. 0 is catalog-only and\n        returns total_available with no results, for documents and for\n        edges alike; other modes and the facets target refuse it.\n    offset: Skip this many results before returning (catalog mode pagination). Default: 0.\n    use_hybrid: Use hybrid RRF fusion of vector + BM25 in semantic mode. Default: true.\n    use_abstract_prefilter: Boost documents whose semantic abstract matches the\n        query (two-pass retrieval). Applies to semantic and keyword modes. Default: true.\n    include_abstracts: Include semantic_abstract in results. Default: false.\n        Abstracts are large and rarely needed in search result lists. Set true\n        when you need document summaries for disambiguation or orientation.\n    min_relevance: Minimum relevance score to include in results. Default: None\n        (no filtering). For semantic mode (cosine similarity), scores range 0-1;\n        reasonable thresholds are 0.3-0.5. Does not apply to catalog or\n        deterministic modes which have no relevance scores.\n    target: Result row type. \"documents\" (default) preserves the\n        historical surface; \"edges\" enumerates production edges\n        via filter on ``source_id`` / ``target_id`` /\n        ``edge_type``; \"facets\" aggregates distinct values with\n        counts per document metadata field. \"edges\" and \"facets\"\n        are valid only with ``mode=\"catalog\"``, and supply it\n        themselves when no mode is given. See the *Edge\n        enumeration* and *Facet enumeration* sections above.\n    response_mode: Canonical payload-depth selector. See the\n        *Response-mode semantics across targets* section above for\n        the full matrix. \"light\" returns the stripped shape\n        (DocumentSummaryLight for catalog+documents, identity\n        columns for edges, chunk_content-suppressed for\n        semantic/keyword); \"full\" returns the complete envelope.\n        When unset, edges apply the >5-results default-threshold\n        rule; documents preserve full-equivalent behavior unless\n        the response would overrun the inline budget, in which\n        case catalog degrades it to light, semantic and keyword\n        cut their longest passages to an excerpt, and each says\n        so (see the *Inline budget hint* section below).\n    sort_by: Sort key for catalog mode results. One of:\n        \"title\", \"doc_type\", \"document_date\",\n        \"lifecycle_status\". Ignored by semantic, keyword, and\n        deterministic modes. Default: unset -- catalog falls\n        back to active-lifecycle-first then ``document_date``\n        descending. Ties are broken by document id, so the\n        order is total and paging a filtered set returns each\n        document exactly once.\n    sort_order: Sort direction for catalog mode results. One\n        of: \"asc\", \"desc\". Ignored by semantic, keyword, and\n        deterministic modes. Default: unset -- ascending when\n        ``sort_by`` is specified.\n    facet_fields: Facet fields to aggregate when\n        ``target=\"facets\"``. Any subset of: doc_type,\n        lifecycle_status, source_type, pipeline_status, tags.\n        Default: unset -- all five. Rows return in that fixed\n        field order regardless of the order given here.\n        Rejected for other targets.\n    facet_value_limit: Per-field cap on returned facet values\n        when ``target=\"facets\"``, keeping the top values by\n        descending count then value. Minimum 1; default: unset\n        -- the built-in cap of 50 applies. Every row's\n        ``total_distinct`` reports the true distinct count\n        regardless of the cap, so truncation is always\n        detectable. Rejected for other targets.\n\nInline budget hint:\n    A documents-target catalog response whose serialized full\n    shape would exceed the Claude Code MCP inline ceiling is\n    returned in the light shape instead, provided that fits,\n    and says so: ``hints`` carries\n    ``reason=\"catalog_response_degraded_to_light\"`` alongside\n    ``carried_shape`` and ``response_mode=\"light\"``, so light\n    rows are never read as the full projection. Identity\n    columns, ``doc_type`` and ``tier3_metadata`` survive; call\n    ``get_document`` per id for the rest, or re-page smaller\n    with ``response_mode=\"full\"``. Passing ``response_mode``\n    explicitly suppresses the degrade, since the parameter is\n    the caller's own answer to the same question.\n\n    A semantic or keyword response over the ceiling keeps every\n    hit and every field, and instead cuts each ``chunk_content``\n    longer than one shared cap to its first ``excerpt_chars``\n    characters, where the cap is the largest that fits and never\n    fewer than 200. ``hints`` carries\n    ``reason=\"scored_response_excerpted\"`` with\n    ``excerpt_chars`` and ``excerpted_count``. To read a cut\n    passage whole, call ``search`` with ``mode=\"deterministic\"``,\n    ``document_id`` set to the hit's document id, and the hit's\n    ``heading_path``. A hit whose ``heading_path`` is null comes\n    from text under no heading -- the whole body of a document\n    with no headings, or the text before a document's first\n    heading; ``search`` with ``mode=\"deterministic\"`` or\n    ``read_section``, given an empty ``heading_path``, returns it\n    whole. An\n    explicit ``response_mode`` suppresses the excerpt, as it\n    suppresses the catalog degrade.\n\n    Where neither the light shape nor an excerpt would fit, the\n    response is\n    returned unchanged with ``recommended_limit``, and facets\n    responses carry ``recommended_facet_value_limit`` instead,\n    since the facets target rejects ``limit``. When present,\n    re-page with ``limit=recommended_limit`` (or re-call with\n    ``facet_value_limit=recommended_facet_value_limit``) to keep\n    the response inline and avoid the disk/jq fallback. The\n    budget defaults to 45,000 bytes and is configurable per process\n    via ``SAGE_MCP_INLINE_BUDGET_BYTES``.\n\nError modes:\n- ``invalid_vault_id`` (400): the supplied vault_id is not a\n  well-formed vault id.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n- ``misplaced_filters`` (400): a recognized ``filters`` key was\n  passed as a top-level argument instead of nested under\n  ``filters``. Detail carries ``fields`` (every misplaced key, so\n  a single retry fixes them all), ``recognized`` (the full key\n  set), and ``example``. No search is run, so the constraint can\n  never go missing from the result set unannounced.\n- ``invalid_mode`` (400): ``mode`` is not one of ``semantic``,\n  ``keyword``, ``catalog``, ``deterministic``. Detail carries\n  the offending ``mode`` and ``valid_modes``.\n- ``unknown_filter_key`` (400): a key in ``filters`` is not a\n  declared field on ``RetrievalFilters``. Detail carries the\n  offending ``key``, ``valid_keys``, and a worked ``example``.\n- ``invalid_filter_value`` (400): a value in ``filters`` falls\n  outside a closed vocabulary (``source_type``, ``edge_type``).\n  Detail carries ``field``, ``value``, and ``valid_values``.\n  Vault-configured vocabularies (``doc_type``,\n  ``lifecycle_status``) cannot be checked this way; they surface\n  as a ``warnings`` entry in the response ``hints`` instead --\n  the result stays successful and empty, but an unrecognized\n  value is named rather than left to look like a true zero.\n- ``invalid_filter_shape`` (400): a value in ``filters`` has the\n  wrong type for its field (e.g., ``{\"tags\": 42}`` where\n  ``list[str]`` was expected). Detail carries ``field``,\n  ``expected_type``, ``received_type``.\n- ``invalid_document_id`` (400): an entry in the ``document_ids``\n  filter is not a well-formed document id. The whole call is\n  rejected and the envelope names the offending entry. A\n  well-formed id that matches no document is not an error --\n  it is a successful empty result, as it has always been.\n- ``mode_parameter_mismatch`` (400): a parameter is set that the\n  chosen mode or the chosen target forbids (e.g., ``heading_path``\n  outside deterministic mode, ``facet_fields`` off the ``facets``\n  target, ``limit=0`` outside catalog mode). Detail carries ``mode``, ``target``,\n  ``forbidden_param``, and the allowed set for whichever axis the\n  constraint is on -- ``allowed_modes`` or ``allowed_targets``,\n  never both.\n- ``missing_query`` / ``missing_document_id`` / ``missing_heading_path``\n  (400): a parameter required for the chosen mode is absent (the\n  inverse case of ``mode_parameter_mismatch``).\n- ``invalid_parameter`` (422): a parameter outside ``filters``\n  violates a bound or cannot be coerced to its declared type.\n  Detail carries ``parameter``, ``value``, ``constraint``, and --\n  where one applies -- a ``hint`` naming the way forward.\n  ``limit`` above its cap is the common case; page through larger\n  result sets with ``offset`` rather than raising ``limit``.\n- ``storage_query_failed`` (500): the storage backend refused the\n  query. Detail carries the ``operation`` that failed. The\n  backend's own wording is logged for the vault operator rather\n  than returned, so this names a defect to report rather than a\n  request to correct.\n",
+        "description": "Search documents, edges, or facets; semantic, keyword, catalog, or deterministic modes.\n\nModes (for the default ``target=\"documents\"``):\n    semantic: Vector + optional BM25 fusion. Requires query.\n    keyword: BM25-only search. Requires query; ``query`` gives the syntax.\n    catalog: Filter-only enumeration -- the canonical way to list the\n        documents already in a vault. Metadata only, paged by limit +\n        offset; ``limit=0`` returns ``total_available`` alone.\n    deterministic: Exact heading-path extraction. Requires\n        document_id + heading_path.\n\nEdge enumeration:\n    ``target=\"edges\"`` returns edge rows, with the edge id\n    ``delete_edge`` needs, filtered by ``source_id``, ``target_id``\n    and ``edge_type``. A call omitting ``mode`` resolves to catalog;\n    naming a non-catalog mode is still refused. E.g.\n    ``filters={\"source_id\": \"<doc_id>\", \"edge_type\": \"references\"}``.\n\nFacet enumeration:\n    ``target=\"facets\"`` returns one row per field -- doc_type,\n    lifecycle_status, source_type, pipeline_status, tags -- with its\n    top values, their counts, and ``total_distinct``;\n    ``facet_value_limit`` sets the cap. A call omitting ``mode``\n    resolves to catalog; naming a non-catalog mode is still refused.\n    E.g. ``filters={\"doc_type\": \"ticket\"}``.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``misplaced_filters`` (400): a ``filters`` key passed at the top level\n- ``invalid_mode`` (400)\n- ``unknown_filter_key`` (400): a ``filters`` key that is not declared\n- ``invalid_filter_value`` (400): a value outside a closed vocabulary\n- ``invalid_filter_shape`` (400): a ``filters`` value of the wrong type\n- ``invalid_document_id`` (400): a malformed ``document_ids`` entry\n- ``mode_parameter_mismatch`` (400): a parameter the mode or target forbids\n- ``missing_query`` / ``missing_document_id`` / ``missing_heading_path`` (400)\n- ``invalid_parameter`` (422): a bound or type violation outside ``filters``\n- ``storage_query_failed`` (500): a defect to report\n",
         "inputSchema": {
           "$defs": {
             "FacetField": {
@@ -16101,7 +16123,7 @@
                 }
               ],
               "default": null,
-              "description": "Tripwire, not a functional argument. Supply this key inside filters={...}; a non-null value here is refused with misplaced_filters.",
+              "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters).",
               "title": "Doc Type"
             },
             "document_id": {
@@ -16114,6 +16136,7 @@
                 }
               ],
               "default": null,
+              "description": "Target document for deterministic extraction. Required for deterministic mode.",
               "title": "Document Id"
             },
             "document_ids": {
@@ -16137,7 +16160,7 @@
                 }
               ],
               "default": null,
-              "description": "Tripwire, not a functional argument. Supply this key inside filters={...}; a non-null value here is refused with misplaced_filters.",
+              "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters).",
               "title": "Document Ids"
             },
             "edge_type": {
@@ -16161,7 +16184,7 @@
                 }
               ],
               "default": null,
-              "description": "Tripwire, not a functional argument. Supply this key inside filters={...}; a non-null value here is refused with misplaced_filters.",
+              "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters).",
               "title": "Edge Type"
             },
             "exclude_terminal_lifecycle": {
@@ -16185,7 +16208,7 @@
                 }
               ],
               "default": null,
-              "description": "Tripwire, not a functional argument. Supply this key inside filters={...}; a non-null value here is refused with misplaced_filters.",
+              "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters).",
               "title": "Exclude Terminal Lifecycle"
             },
             "facet_fields": {
@@ -16201,6 +16224,7 @@
                 }
               ],
               "default": null,
+              "description": "Facet fields to aggregate for the facets target. Any subset of: doc_type, lifecycle_status, source_type, pipeline_status, tags. Null (default) aggregates all five. Rows return in that fixed field order regardless of the order given here. Not valid for other targets.",
               "title": "Facet Fields"
             },
             "facet_value_limit": {
@@ -16213,6 +16237,7 @@
                 }
               ],
               "default": null,
+              "description": "Per-field cap on the number of facet values returned for the facets target, keeping the top values by descending count then value. Minimum 1. Null (default) applies the built-in cap of 50. Each row's total_distinct reports the true distinct-value count regardless of the cap, so truncation is always detectable; to read a full vocabulary, re-call with facet_value_limit set to the reported total_distinct. This is the parameter the facets budget hint recommends lowering when the serialized response exceeds the MCP inline ceiling. Not valid for other targets. The facets value cap is denominated in values rather than bytes, so a facets response whose serialized size exceeds the MCP inline ceiling carries a facets_response_exceeds_inline_budget hint, naming the recommended_facet_value_limit to re-call at whenever a smaller cap would fit and omitting it when none would.",
               "title": "Facet Value Limit"
             },
             "filters": {
@@ -16226,6 +16251,7 @@
                 }
               ],
               "default": null,
+              "description": "Metadata filters applied before retrieval. Document-target keys: ``doc_type``, ``project``, ``lifecycle_status``, ``exclude_terminal_lifecycle``, ``tags``, ``document_ids``, ``pipeline_status``, ``source_type``, ``tier3_metadata`` (these also narrow the faceted slice). Edge-target keys (target=\"edges\"): ``source_id``, ``target_id``, ``edge_type``; mixing the two sets is refused. Every key belongs nested here, e.g. filters={\"doc_type\": \"adr\", \"lifecycle_status\": \"active\"}; a key passed at the top level is refused with misplaced_filters rather than dropped. ``source_type`` takes one of markdown, docx, pdf, email, onenote, teams_chat, xlsx, pptx, and ``edge_type`` is closed the same way; anything else is refused with invalid_filter_value. ``exclude_terminal_lifecycle`` drops documents in a state the vault declares terminal. ``tier3_metadata`` takes field-to-value pairs that must all match exactly; null matches a null or absent field.",
               "title": "Filters"
             },
             "heading_path": {
@@ -16238,10 +16264,12 @@
                 }
               ],
               "default": null,
+              "description": "Heading hierarchy path for deterministic extraction (e.g., \"Section 3 > Definitions > Normalization\"). Required for deterministic mode, and refused outside it. The empty string addresses the text under no heading. A catalog-only target refuses it on the target axis, naming documents as the target that takes one.",
               "title": "Heading Path"
             },
             "include_abstracts": {
               "default": false,
+              "description": "When true, include the `semantic_abstract` field on each returned chunk's document record. Off by default because abstracts are large strings and inflate the response payload; turn on when the caller needs to inspect or display abstracts. Applies to semantic and keyword modes.",
               "title": "Include Abstracts",
               "type": "boolean"
             },
@@ -16266,11 +16294,12 @@
                 }
               ],
               "default": null,
-              "description": "Tripwire, not a functional argument. Supply this key inside filters={...}; a non-null value here is refused with misplaced_filters.",
+              "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters).",
               "title": "Lifecycle Status"
             },
             "limit": {
               "default": 10,
+              "description": "Maximum number of results to return. In catalog mode, 0 asks for the count alone: the response carries total_available and no results. Other modes, and the facets target, refuse 0. Range 0-100; default 10. Catalog mode supports pagination via limit + offset. Pass limit=0 to receive total_available alone, with no results, as an existence or count check.",
               "title": "Limit",
               "type": "integer"
             },
@@ -16284,6 +16313,7 @@
                 }
               ],
               "default": null,
+              "description": "Minimum relevance score (0.0-1.0) required for a chunk to appear in results. Null (default) applies no threshold. Used to suppress weak matches when the caller wants tight precision; the filter is applied after ranking and before limit is applied, so weak-match suppression may reduce the returned result count below the requested limit.",
               "title": "Min Relevance"
             },
             "mode": {
@@ -16296,10 +16326,11 @@
                 }
               ],
               "default": null,
-              "description": "Retrieval mode. Defaults to semantic, except that naming a catalog-only target (edges, facets) and no mode resolves to catalog, the one mode those targets accept. A mode given explicitly is never changed: a non-catalog one is still refused with mode_parameter_mismatch."
+              "description": "Retrieval mode selecting the underlying query strategy. Defaults to semantic, except that a request naming a catalog-only target (edges, facets) and no mode resolves to catalog, the one mode those targets accept. A mode supplied explicitly is never changed: a non-catalog one is still rejected via mode_parameter_mismatch rather than corrected. Supports four modes: semantic is vector similarity search, optionally fused with BM25 keyword matching, and returns ranked chunks with relevance scores; keyword is BM25 only; catalog enumerates by filter; deterministic is exact content extraction by document ID and heading path, used for governed content transfer between documents or agents."
             },
             "offset": {
               "default": 0,
+              "description": "Number of results to skip before returning. Used with limit for pagination in catalog mode. Ignored by other modes.",
               "title": "Offset",
               "type": "integer"
             },
@@ -16324,7 +16355,7 @@
                 }
               ],
               "default": null,
-              "description": "Tripwire, not a functional argument. Supply this key inside filters={...}; a non-null value here is refused with misplaced_filters.",
+              "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters).",
               "title": "Pipeline Status"
             },
             "project": {
@@ -16348,7 +16379,7 @@
                 }
               ],
               "default": null,
-              "description": "Tripwire, not a functional argument. Supply this key inside filters={...}; a non-null value here is refused with misplaced_filters.",
+              "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters).",
               "title": "Project"
             },
             "query": {
@@ -16361,6 +16392,7 @@
                 }
               ],
               "default": null,
+              "description": "Search query text. Required for semantic and keyword modes, and refused by the other two: catalog enumerates by filter and deterministic extracts by heading path, so neither consumes it. A catalog-only target refuses it too, on the target axis, naming documents as the target that takes one. In keyword mode, terms are conjunctive: a document matches only if it carries every term, so each term added narrows the result and can empty it. The terms need not appear together in one passage -- a document developing a subject across its sections matches -- but the document is ranked by its best-matching passage, which is the excerpt returned. A quoted phrase is the exception and must be satisfied within a single passage, since adjacency across a passage boundary is not meaningful. Terms joined by or admit either, and each alternative is satisfied across the document as a bare term is, so adding an alternative widens. A term prefixed with \"-\" is excluded, and excluding one narrows the scope of the whole query: a query carrying an exclusion is satisfied within a single passage, terms and alternatives alike, so appending an excluded term can drop a document the same query without it matched. When a query of bare terms returns nothing, hints.warnings names the terms the query parsed to -- stopwords are dropped and the rest stemmed, so they are not the words typed. The other forms carry their own advisory or, where every term is optional, none. Use query=\"*\" in keyword mode for a filter-only listing. In catalog mode a query is refused rather than ignored, since nothing would consume it.",
               "title": "Query"
             },
             "response_mode": {
@@ -16373,10 +16405,12 @@
                 }
               ],
               "default": null,
+              "description": "Canonical payload-depth selector across SAGE surfaces. Semantics by target and mode: (edges) `light` returns identity columns only (edge_id, endpoints, edge_type); `full` carries the complete envelope; default obeys a >5-results threshold rule. (documents+catalog) `light` returns a stripped DocumentSummaryLight; `full` returns the full DocumentSummary; the threshold rule does NOT apply -- default is full-equivalent. (documents+semantic/keyword) `light` suppresses chunk_content; `full` includes it. (documents+deterministic) ignored; deterministic always returns chunk content. Left unset, a documents-target response that would overrun the MCP inline budget is fitted and says so in hints: catalog returns the light shape (catalog_response_degraded_to_light); semantic and keyword cut each long chunk_content to one shared excerpt length, never fewer than 200 characters (scored_response_excerpted) -- read a cut passage whole with mode=\"deterministic\" and its heading_path. Where neither fits, hints.recommended_limit (for facets, recommended_facet_value_limit) names a size that does. An explicit response_mode suppresses both. The budget is 45,000 bytes, set per process by SAGE_MCP_INLINE_BUDGET_BYTES.",
               "title": "Response Mode"
             },
             "scope": {
               "default": "all",
+              "description": "Retrieval scope that narrows the candidate set before relevance ranking. Default \"all\" applies no scope filter. Results can be scoped (all, authoritative, specific, filtered) and filtered by metadata criteria.",
               "title": "Scope",
               "type": "string"
             },
@@ -16390,6 +16424,7 @@
                 }
               ],
               "default": null,
+              "description": "Sort key for catalog mode results. Optional. Default when omitted: active lifecycle first, then document_date descending. Ignored by other retrieval modes. Ties are broken by document id, so the order is total and paging a filtered set returns each document exactly once. One of: title, doc_type, document_date, lifecycle_status.",
               "title": "Sort By"
             },
             "sort_order": {
@@ -16402,6 +16437,7 @@
                 }
               ],
               "default": null,
+              "description": "Sort direction for catalog mode results. Optional. Defaults to ascending when sort_by is specified. Ignored by other modes. One of: asc, desc.",
               "title": "Sort Order"
             },
             "source_id": {
@@ -16425,7 +16461,7 @@
                 }
               ],
               "default": null,
-              "description": "Tripwire, not a functional argument. Supply this key inside filters={...}; a non-null value here is refused with misplaced_filters.",
+              "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters).",
               "title": "Source Id"
             },
             "source_type": {
@@ -16449,7 +16485,7 @@
                 }
               ],
               "default": null,
-              "description": "Tripwire, not a functional argument. Supply this key inside filters={...}; a non-null value here is refused with misplaced_filters.",
+              "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters).",
               "title": "Source Type"
             },
             "tags": {
@@ -16473,11 +16509,12 @@
                 }
               ],
               "default": null,
-              "description": "Tripwire, not a functional argument. Supply this key inside filters={...}; a non-null value here is refused with misplaced_filters.",
+              "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters).",
               "title": "Tags"
             },
             "target": {
               "default": "documents",
+              "description": "Selects what the query enumerates: documents (default), edges, or facets. \"edges\" is valid only with mode=catalog and with edge-only filter keys (source_id, target_id, edge_type). \"facets\" is valid only with mode=catalog and document-only filter keys, and rejects non-default pagination and payload-shape parameters (limit, offset, sort_by, sort_order, response_mode). Both supply that mode themselves when no mode is given. Other mode/parameter combinations are rejected via mode_parameter_mismatch.",
               "title": "Target",
               "type": "string"
             },
@@ -16502,7 +16539,7 @@
                 }
               ],
               "default": null,
-              "description": "Tripwire, not a functional argument. Supply this key inside filters={...}; a non-null value here is refused with misplaced_filters.",
+              "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters).",
               "title": "Target Id"
             },
             "tier3_metadata": {
@@ -16526,20 +16563,23 @@
                 }
               ],
               "default": null,
-              "description": "Tripwire, not a functional argument. Supply this key inside filters={...}; a non-null value here is refused with misplaced_filters.",
+              "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters).",
               "title": "Tier3 Metadata"
             },
             "use_abstract_prefilter": {
               "default": true,
+              "description": "Enable two-pass abstract-boosted retrieval. When true, documents whose semantic abstract matches the query receive a score boost above documents whose abstract does not match. Applies to semantic and keyword modes. Documents without abstracts are not excluded. Set to false for pure content-only relevance ranking.",
               "title": "Use Abstract Prefilter",
               "type": "boolean"
             },
             "use_hybrid": {
               "default": true,
+              "description": "Enable hybrid retrieval (vector + BM25 fusion) in semantic mode. Valuable when queries contain both natural language and specific identifiers. Set to false for pure vector similarity search.",
               "title": "Use Hybrid",
               "type": "boolean"
             },
             "vault_id": {
+              "description": "Target vault identifier. `list_vaults` names the registered vaults.",
               "title": "Vault Id",
               "type": "string"
             }

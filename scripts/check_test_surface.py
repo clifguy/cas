@@ -158,6 +158,31 @@ _CONFORMANCE_STREAMS: Final[str] = (
 )
 
 KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
+    "tests/sage/test_mcp_server.py::test_docstring_documents_doc_id_alias[chain]": (
+        "renamed test_published_tool_documents_doc_id_alias when the alias pin moved "
+        "from the Python docstring to the text a client publishes, which is the "
+        "description plus the parameter descriptions"
+    ),
+    "tests/sage/test_mcp_server.py::test_docstring_documents_doc_id_alias[get_document]": (
+        "renamed test_published_tool_documents_doc_id_alias when the alias pin moved "
+        "from the Python docstring to the text a client publishes, which is the "
+        "description plus the parameter descriptions"
+    ),
+    "tests/sage/test_mcp_server.py::test_docstring_documents_doc_id_alias[list_headings]": (
+        "renamed test_published_tool_documents_doc_id_alias when the alias pin moved "
+        "from the Python docstring to the text a client publishes, which is the "
+        "description plus the parameter descriptions"
+    ),
+    "tests/sage/test_mcp_server.py::test_docstring_documents_doc_id_alias[read_projection]": (
+        "renamed test_published_tool_documents_doc_id_alias when the alias pin moved "
+        "from the Python docstring to the text a client publishes, which is the "
+        "description plus the parameter descriptions"
+    ),
+    "tests/sage/test_mcp_server.py::test_docstring_documents_doc_id_alias[read_section]": (
+        "renamed test_published_tool_documents_doc_id_alias when the alias pin moved "
+        "from the Python docstring to the text a client publishes, which is the "
+        "description plus the parameter descriptions"
+    ),
     "tests/deploy/test_cloud_preflight.py::test_sweep_marker_resolves_against_its_response_schema"
     "[/pending-metadata-^[[:space:]]*\\\\[]": (
         're-parametrized as [/pending-metadata-"total_available"] when the pending-metadata '

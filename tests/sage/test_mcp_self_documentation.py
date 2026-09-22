@@ -37,14 +37,22 @@ from sage.mcp_server import (
 )
 from sage.models.enums import (
     TERMINAL_PIPELINE_STATUSES,
+    CatalogSortBy,
     EdgeType,
     PipelineStatus,
     RationaleKind,
     RetrievalMode,
+    SortOrder,
 )
 from sage.sage_api_tools import _INGEST_METADATA_KEYS, _SEARCH_FILTER_KEYS
 from sage.services.retrieval import DEFAULT_MCP_INLINE_BUDGET_BYTES
 from tests.helpers.adapter_claims import ENABLEMENT_CLAIM_MARKERS
+from tests.helpers.published_tool import (
+    parameter_descriptions,
+    published_text,
+    published_tool,
+    tool_name_of,
+)
 
 #: How the inline budget is spelled on the tool surface. Derived, so that
 #: recalibrating the budget either carries the docstrings with it or
@@ -87,9 +95,14 @@ def _annotation_includes(annotation: Any, target: type) -> bool:
 
 
 def _docstring(fn: Any) -> str:
-    """Return ``fn``'s docstring (or raise if absent)."""
-    doc = inspect.getdoc(fn)
-    assert doc is not None, f"{fn.__name__} has no docstring"
+    """Return what a client is shown of ``fn``'s tool (or raise if empty).
+
+    The published description plus the parameter descriptions, rendered as a
+    trailing ``Args:`` block: a caller is told what either carries, and
+    nothing a client truncates away. See ``tests.helpers.published_tool``.
+    """
+    doc = published_text(tool_name_of(fn))
+    assert doc, f"{fn.__name__} publishes no description"
     return doc
 
 
@@ -757,6 +770,61 @@ def test_search_docstring_documents_count_only_limit():
     assert "catalog" in entry
 
 
+def test_search_publishes_the_sort_vocabularies():
+    """``sort_by`` and ``sort_order`` publish the values they accept.
+
+    Read from each parameter's own description rather than from the whole
+    published text, because the values are ordinary words: a whole-text
+    search for ``asc`` and ``desc`` is satisfied by "ascending" and
+    "descending" in unrelated prose, and three of the four sort keys are
+    named by the filter documentation. Measured -- the whole-text form of
+    this pin stayed green with the ``sort_order`` vocabulary deleted.
+
+    Enum-driven, so a value added to either enum without reaching the tool
+    fails here. Both vocabularies are closed and neither is expressible in
+    the published schema, which types the two parameters as bare strings.
+    """
+    params = parameter_descriptions(published_tool("search").parameters)
+    for name, enum in (("sort_by", CatalogSortBy), ("sort_order", SortOrder)):
+        description = params.get(name, "")
+        for member in enum:
+            assert member.value in description, (
+                f"search.{name} must publish {enum.__name__} value "
+                f"{member.value!r} on its own description; got: {description!r}"
+            )
+
+
+def test_ingest_document_publishes_the_registered_source_types():
+    """``source_type`` names every format an adapter is registered for.
+
+    Derived from the adapter registry rather than from a list written here,
+    so a newly registered adapter that never reaches the tool's text fails
+    this. Read from the parameter's own description: the format names are
+    common words that appear elsewhere in the published text.
+    """
+    from sage.source_adapters.registry import build_source_adapter_registry
+
+    params = parameter_descriptions(published_tool("ingest_document").parameters)
+    description = params.get("source_type", "")
+    for source_type in build_source_adapter_registry():
+        assert source_type.value in description, (
+            f"ingest_document.source_type must name the registered format "
+            f"{source_type.value!r}; got: {description!r}"
+        )
+
+
+def test_ingest_document_publishes_the_failed_status_side_effect():
+    """The ``failed`` terminal status names the field carrying the reason.
+
+    A caller waiting on the pipeline learns the status and then has to know
+    where the cause sits; the sibling statuses carry no such field, so this
+    one sentence is the whole of that disclosure.
+    """
+    assert "pipeline_error" in _docstring(ingest_document), (
+        "ingest_document must state that the failed status sets pipeline_error"
+    )
+
+
 def test_discover_docstring_documents_source_type_vocabulary():
     """The source_type filter must publish its closed vocabulary.
 
@@ -820,11 +888,10 @@ def test_discover_facet_block_documents_facet_field_vocabulary():
     first, mirroring the catalog-block isolation above.
     """
     doc = _docstring(search)
-    match = re.search(r"Facet enumeration:.*?(?=\n\s*Response-mode semantics)", doc, re.DOTALL)
-    assert match is not None, (
-        "search docstring must carry a ``Facet enumeration:`` section "
-        "between the edge-enumeration example and the response-mode matrix."
-    )
+    # The block runs to the next unindented line: the following section
+    # header, whatever it is.
+    match = re.search(r"Facet enumeration:.*?(?=\n\S)", doc, re.DOTALL)
+    assert match is not None, "search must publish a ``Facet enumeration:`` section."
     facet_block = match.group(0)
     for field in (
         "doc_type",
@@ -1088,8 +1155,8 @@ def test_no_registered_mcp_tool_directs_callers_to_poll_for_status():
     """
     offenders: dict[str, list[str]] = {}
     for name, tool in _registered_mcp_tools().items():
-        doc = inspect.getdoc(tool)
-        if doc is None:
+        doc = published_text(name)
+        if not doc:
             continue
         hits = _poll_directions(re.sub(r"\s+", " ", doc).lower())
         if hits:
@@ -1179,7 +1246,7 @@ def test_recipe_minting_roster_is_exhaustive_over_the_live_surface():
     candidates = {
         name
         for name, tool in _registered_mcp_tools().items()
-        if (doc := inspect.getdoc(tool)) is not None and any(marker in doc for marker in markers)
+        if any(marker in published_text(name) for marker in markers)
     }
 
     unclassified = candidates - _RECIPE_MINTING_TOOLS - _RECIPE_MENTIONERS_THAT_DO_NOT_MINT
@@ -1401,7 +1468,7 @@ def test_ingest_tools_expose_dry_run(tool_name):
     """Both ingest wrappers must expose ``dry_run: bool = False``.
 
     Structural, in the shape the sibling mutation wrappers are pinned in:
-    parameter present, annotation identity-equal to ``bool``, default
+    parameter present, annotated type identity-equal to ``bool``, default
     ``False``. Replacing the annotation with ``str`` or moving the default
     to ``True`` fails.
     """
@@ -1413,7 +1480,12 @@ def test_ingest_tools_expose_dry_run(tool_name):
         "the tool that most needs a preview."
     )
     param = sig.parameters["dry_run"]
-    assert param.annotation is bool, (
+    # A published description wraps the type in ``Annotated``; the type
+    # itself is what this pins.
+    annotation = param.annotation
+    if get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    assert annotation is bool, (
         f"{tool_name}.dry_run annotation is {param.annotation!r}; expected "
         "``bool``. Every other mutation MCP wrapper uses ``bool = False``."
     )

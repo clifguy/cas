@@ -60,6 +60,7 @@ from sage.models.enums import EdgeType as _EdgeType
 from sage.models.enums import PipelineStatus
 from sage.services._dry_run import DRY_RUN_SENTINEL_EDGE_ID as _DRY_RUN_SENTINEL_EDGE_ID
 from tests.helpers.pipeline_wait import await_tool_idle
+from tests.helpers.published_tool import published_text
 from tests.sage.conftest import initialize_services_for_test
 from tests.sage.test_ingestion_metadata_extraction import _pim_vault_config_dict
 
@@ -2964,8 +2965,7 @@ def test_sage_discover_docstring_carries_edge_example():
     the cross-tool documentation contract breaks (e.g., a later edit
     drops the example).
     """
-    doc = search.__doc__
-    assert doc is not None
+    doc = published_text("search")
     assert 'target="edges"' in doc, (
         "search docstring must carry a worked example for the target='edges' dispatch"
     )
@@ -2975,8 +2975,7 @@ def test_sage_unlink_docstring_points_at_edge_discovery():
     """31. delete_edge docstring references search(target="edges")
     as the canonical path to discover edge_id. Guard test.
     """
-    doc = _sage_unlink_tool.__doc__
-    assert doc is not None
+    doc = published_text("delete_edge")
     assert 'target="edges"' in doc, (
         "delete_edge docstring must point at search(target='edges') "
         "as the canonical edge_id discovery path"
@@ -3174,8 +3173,7 @@ def test_sage_discover_docstring_carries_facet_example():
     worked example. Guard test that fails closed when the documentation
     contract breaks.
     """
-    doc = search.__doc__
-    assert doc is not None
+    doc = published_text("search")
     assert 'target="facets"' in doc, (
         "search docstring must carry a worked example for the target='facets' dispatch"
     )
@@ -3303,11 +3301,8 @@ def test_traverse_docstring_documents_alias():
     see it.
     """
     import re
-    import textwrap
 
-    doc = traverse.__doc__
-    assert doc is not None
-    dedented = textwrap.dedent(doc)
+    dedented = published_text("traverse")
     # Anchor the match to the start_id: line of the Args section: the
     # word document_id must appear on the same line where start_id is
     # being described. A loose `"document_id" in doc` would pass
@@ -3566,25 +3561,20 @@ async def test_rejects_neither_document_id_nor_doc_id(vault_services, tool_fn, e
 
 
 @pytest.mark.parametrize(
-    "tool_fn",
-    [get_document, read_projection, read_section, list_headings, chain],
-    ids=["get_document", "read_projection", "read_section", "list_headings", "chain"],
+    "tool_name", ["get_document", "read_projection", "read_section", "list_headings", "chain"]
 )
-def test_docstring_documents_doc_id_alias(tool_fn):
-    """C1. Each tool's docstring documents the ``doc_id`` alias inline on the
-    ``document_id`` Args entry (where an MCP caller browsing the schema sees
-    it), not in unrelated prose. Anchoring to the ``document_id:`` line
+def test_published_tool_documents_doc_id_alias(tool_name):
+    """C1. Each tool documents the ``doc_id`` alias on its ``document_id``
+    parameter, where an MCP caller reading the published tool sees it, not in
+    unrelated prose. Read from what the client forwards -- the description
+    and the parameter descriptions -- because a docstring line the client
+    truncates away documents nothing. Anchoring to the ``document_id:`` line
     defeats a loose ``"doc_id" in doc`` coincidental pass.
     """
     import re
-    import textwrap
 
-    doc = tool_fn.__doc__
-    assert doc is not None
-    dedented = textwrap.dedent(doc)
-    assert re.search(r"document_id:[^\n]*doc_id", dedented), (
-        f"{tool_fn.__name__} docstring must document `doc_id` as an alias "
-        "inline on the document_id Args entry"
+    assert re.search(r"document_id:[^\n]*doc_id", published_text(tool_name)), (
+        f"{tool_name} must document `doc_id` as an alias on its document_id parameter"
     )
 
 

@@ -13,7 +13,6 @@ pre-initialized vault registry, bypassing transport).
 
 import asyncio
 import hashlib
-import inspect
 import json
 from pathlib import Path
 
@@ -34,6 +33,7 @@ from sage.mcp_server import (
     read_projection,
 )
 from tests.helpers.pipeline_wait import await_pipeline_idle
+from tests.helpers.published_tool import published_text, tool_name_of
 from tests.sage.conftest import initialize_services_for_test
 
 _VAULT_ID = "test_vault"
@@ -873,5 +873,5 @@ def test_mpi_007_path_parameter_docstrings_state_server_local_contract():
     ):
         # Collapse whitespace so the check is about content, not where the
         # docstring happens to wrap.
-        doc = " ".join((inspect.getdoc(tool) or "").split())
-        assert contract in doc, f"{tool.__name__} docstring lacks the server-local path contract"
+        doc = " ".join(published_text(tool_name_of(tool)).split())
+        assert contract in doc, f"{tool.__name__} does not publish the server-local path contract"

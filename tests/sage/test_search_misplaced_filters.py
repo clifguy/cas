@@ -50,7 +50,7 @@ from sage.adapters.stubs import (
 from sage.config import VaultConfig
 from sage.mcp_server import _vaults as _mcp_vaults
 from sage.mcp_server import ingest_document, mcp, search
-from sage.models.schemas import RetrievalFilters
+from sage.models.schemas import DiscoverRequest, RetrievalFilters
 from sage.sage_api_tools import _SEARCH_FILTER_KEYS
 from tests.helpers.pipeline_wait import await_pipeline_idle
 from tests.sage.conftest import initialize_services_for_test
@@ -204,6 +204,10 @@ def test_filter_keys_are_published_in_the_tool_schema():
 #: well-formed value like any other, and an annotation that cannot hold one
 #: rejects it at the framework's argument model -- before the guard runs --
 #: with a format complaint in place of the misplaced-field message.
+#: A tripwire's marking is published once per misplaceable key, so every
+#: character is paid for many times over in each tool listing.
+TRIPWIRE_DESCRIPTION_MAX = 80
+
 #: Written here as the literal union rather than read back from the tripwire
 #: annotation, so the comparison is against an independent statement of the
 #: permissive shape rather than against whatever the annotation happens to
@@ -226,8 +230,9 @@ def test_published_tripwires_are_marked_as_tripwires():
     from the docstring's ``Args:`` block, with no annotation present at
     all; the nested-home substring is text only the annotation supplies.
     ``filters`` itself -- the functional parameter the tripwires point at
-    -- is asserted to carry no description, so a builder that described
-    every property could not carry this test either. And the arms are
+    -- is asserted to carry the request model's description and no tripwire
+    text, so a builder that described every property alike could not carry
+    this test either. And the arms are
     compared whole against an independently rendered permissive union, so
     a narrowing *the schema renders* passes at no depth: reading arm
     ``type`` values alone admits a ``pattern`` on the string arm, and
@@ -264,16 +269,23 @@ def test_published_tripwires_are_marked_as_tripwires():
             f"search.{key}'s description must name what a non-null value "
             f"earns; got: {description!r}"
         )
+        assert len(description) <= TRIPWIRE_DESCRIPTION_MAX, (
+            f"search.{key}'s description is {len(description)} chars; a tripwire "
+            f"is repeated once per misplaceable key, so its marking stays under "
+            f"{TRIPWIRE_DESCRIPTION_MAX}: {description!r}"
+        )
 
-    # The negative control: the functional parameter the tripwires point
-    # at carries no description, so the assertions above are reading the
-    # annotation rather than blanket schema-builder behavior.
-    assert "description" not in props["filters"], (
-        "search.filters is a functional argument and is expected to carry no "
-        "description here. If that changed deliberately, this test's negative "
-        "control needs a different subject -- without one, the per-key "
-        "assertions above would pass with the tripwire markings gone."
+    # The control: the functional parameter the tripwires point at carries
+    # the request model's own description, not tripwire text, so the
+    # assertions above are reading the tripwire annotation rather than
+    # blanket schema-builder behavior -- a builder that stamped one text on
+    # every property, or derived it from the docstring, fails here.
+    filters_description = props["filters"].get("description", "")
+    assert filters_description.startswith(DiscoverRequest.model_fields["filters"].description), (
+        "search.filters must publish the request model's filters description; "
+        f"got: {filters_description!r}"
     )
+    assert "not a functional argument" not in filters_description
 
     # The permissive annotation the guard depends on is unchanged: any
     # well-formed shape must still arrive and earn the misplaced-field

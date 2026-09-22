@@ -1011,8 +1011,9 @@ def test_every_substrate_property_has_description():
             _walk_substrate_schema(schema, "#", rel_path, issues)
         elif rel_path.endswith(".catalog.json"):
             # A generated tool catalog: each tool's description is the caller-facing
-            # text. Its input schemas are generated from signatures, whose parameter
-            # prose lives in the tool docstring rather than in per-property fields.
+            # text. Its input schemas are generated from signatures; per-parameter
+            # prose is published on each property and held there by the
+            # tool-description budget gate, not by this one.
             catalog = json.loads(file_path.read_text())
             if not _has_nonempty_description(catalog):
                 issues.append(f"{rel_path}::#")
