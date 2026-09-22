@@ -2510,14 +2510,36 @@ def _refusal_message(variable: str, bash_bin: str, **overrides: str) -> str:
         ("PREFLIGHT_EXPECTED_ASUID", "zzz\nabc", "$'zzz\\nabc'"),
         ("PREFLIGHT_CHECKS", "vault_load\n", "$'vault_load\\n'"),
         ("PREFLIGHT_SKIP", "vault_load\r", "$'vault_load\\r'"),
+        ("PREFLIGHT_EXPECTED_ASUID", "a,b\nc", "$'a,b\\nc'"),
+        ("BASE_DOMAIN", "test.invalid\n", "$'test.invalid\\n'"),
+        ("SAGE_FQDN", "sage.test.invalid\n", "$'sage.test.invalid\\n'"),
+        ("CAS_FQDN", "cas.test\tinvalid", "$'cas.test\\tinvalid'"),
+        ("SAGE_BASE_URL", "https://sage.test.invalid\n", "$'https://sage.test.invalid\\n'"),
+        ("CAS_BASE_URL", "https://cas.test.invalid\r", "$'https://cas.test.invalid\\r'"),
+        ("PREFLIGHT_RESOURCE_GROUP", "rg-cas\n", "$'rg-cas\\n'"),
+        ("PREFLIGHT_EXPECTED_PG_MAJOR", "16\n", "$'16\\n'"),
     ],
-    ids=["vault-source", "expected-asuid", "checks", "skip"],
+    ids=[
+        "vault-source",
+        "expected-asuid",
+        "checks",
+        "skip",
+        "scalar-with-comma",
+        "base-domain",
+        "sage-fqdn",
+        "cas-fqdn",
+        "sage-base-url",
+        "cas-base-url",
+        "resource-group",
+        "pg-major",
+    ],
 )
 def test_a_control_character_in_any_operator_input_is_refused(
     variable: str, value: str, escaped_entry: str, bash_bin: str
 ) -> None:
-    """A control character is refused in the four other slug-, id- and
-    token-valued inputs, not only in the expected-vaults list.
+    """A control character is refused in each tenant parameter parametrised
+    here -- ids, lists, a backend name, a token, hosts and URLs -- not only in
+    the expected-vaults list.
 
     Each variable fails differently when one is let through, which is why each
     is carried rather than one standing for the rest:
@@ -2528,7 +2550,15 @@ def test_a_control_character_in_any_operator_input_is_refused(
       multi-line value as one pattern per line and credits it by any one line;
     * ``PREFLIGHT_CHECKS`` compared whole selects no check at all, and the run
       passes on an empty matrix;
-    * ``PREFLIGHT_SKIP`` compared whole is silently not honoured.
+    * ``PREFLIGHT_SKIP`` compared whole is silently not honoured;
+    * the hosts and URLs build every probe and the banner, so a trailing newline
+      splits the banner and fails each check with an opaque curl exit after the
+      warm-up budget; ``PREFLIGHT_RESOURCE_GROUP`` and
+      ``PREFLIGHT_EXPECTED_PG_MAJOR`` are rendered into detail rows.
+
+    ``scalar-with-comma`` holds the other half of the message contract: a
+    single-valued variable is shown whole, so a refusal that split it on commas
+    as it does the lists would report the fragment ``$'b\\nc'`` as the entry.
 
     A refusal applied only to the expected-vaults list passes the sibling
     scenario and fails the vault-source and asuid cases. The two check-list
@@ -2574,8 +2604,15 @@ def test_a_check_list_naming_no_registered_check_is_refused(
 
 @_NEEDS_RUNTIME
 @pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
-def test_empty_elements_in_the_check_lists_are_not_unknown_ids(bash_bin: str) -> None:
-    """An empty element in the allowlist, and an empty denylist, are not refused.
+@pytest.mark.parametrize(
+    ("checks", "skip"),
+    [("vault_load,,", ""), ("vault_load", ",")],
+    ids=["allowlist", "denylist"],
+)
+def test_empty_elements_in_the_check_lists_are_not_unknown_ids(
+    checks: str, skip: str, bash_bin: str
+) -> None:
+    """An empty element in either check list is not refused.
 
     The guard against the refusal over-reaching: an operator-edited list
     acquires stray commas, and an empty field is no id at all rather than an
@@ -2584,7 +2621,7 @@ def test_empty_elements_in_the_check_lists_are_not_unknown_ids(bash_bin: str) ->
     """
     with serve(_green) as url:
         proc = _run(
-            _base_env(url, PREFLIGHT_CHECKS="vault_load,,", PREFLIGHT_SKIP=""),
+            _base_env(url, PREFLIGHT_CHECKS=checks, PREFLIGHT_SKIP=skip),
             bash_bin=bash_bin,
         )
     assert proc.returncode == 0, f"{proc.stdout}{proc.stderr}"
