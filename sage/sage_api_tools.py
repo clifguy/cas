@@ -39,6 +39,7 @@ from sage.models.enums import (
     CatalogSortBy,
     EdgeType,
     FacetField,
+    ResponseMode,
     RetrievalMode,
     SortOrder,
     SourceType,
@@ -72,7 +73,7 @@ from sage.models.schemas import (
     UploadRecipe,
     VaultIdStr,
 )
-from sage.services.metadata import PENDING_METADATA_DEFAULT_LIMIT
+from sage.services.metadata import PENDING_METADATA_DEFAULT_LIMIT, PENDING_METADATA_MAX_LIMIT
 from sage.services.retrieval import DEFAULT_MCP_INLINE_BUDGET_BYTES
 from sage.services.stack_config import get_stack_config_report
 from sage.services.transfer import DeliveryDeclaration
@@ -291,6 +292,14 @@ _READ_PROJECTION_WRITE_TO_PATH = (
 #: ``traverse.direction`` is published as a bare string, so its closed set is
 #: named in the description, from the enum ``TraverseRequest`` validates.
 _DIRECTION_NOTE = "One of " + ", ".join(f'"{d.value}"' for d in TraversalDirection) + "."
+
+#: ``traverse.depth`` is published as a bare integer; its range is read from
+#: the bounds ``TraverseRequest`` validates.
+_DEPTH_BOUNDS = {type(m).__name__: m for m in TraverseRequest.model_fields["depth"].metadata}
+_DEPTH_NOTE = f"Range {_DEPTH_BOUNDS['Ge'].ge}-{_DEPTH_BOUNDS['Le'].le}."
+
+#: A bare-string ``response_mode`` names its closed set from ``ResponseMode``.
+_RESPONSE_MODE_NOTE = "One of " + " or ".join(f'"{m.value}"' for m in ResponseMode) + "."
 
 #: The edge-walking tools take ``edge_type`` as a bare string; its closed set is
 #: named from the enum their request models validate.
@@ -1414,7 +1423,7 @@ def register_sage_tools(
         direction: model_param(str, TraverseRequest, "direction", mcp=_DIRECTION_NOTE) = (
             "outbound"
         ),
-        depth: model_param(int, TraverseRequest, "depth", mcp="Range 1-1000.") = 3,
+        depth: model_param(int, TraverseRequest, "depth", mcp=_DEPTH_NOTE) = 3,
         debug: model_param(
             bool,
             TraverseRequest,
@@ -2452,7 +2461,8 @@ def register_sage_tools(
             int,
             Field(
                 description=(
-                    f"Page size, 0..100. Default {PENDING_METADATA_DEFAULT_LIMIT}. "
+                    f"Page size, 0..{PENDING_METADATA_MAX_LIMIT}. "
+                    f"Default {PENDING_METADATA_DEFAULT_LIMIT}. "
                     "`0` returns `total_available` with no rows."
                 )
             ),
@@ -2464,7 +2474,7 @@ def register_sage_tools(
             str | None,
             Field(
                 description=(
-                    'One of "light" or "full". Omitted, a page of more than five '
+                    f"{_RESPONSE_MODE_NOTE} Omitted, a page of more than five "
                     "rows is light and a smaller one is full."
                 )
             ),
