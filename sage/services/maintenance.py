@@ -341,7 +341,7 @@ class MaintenanceService:
         there is no pending-column work for this method to detect or apply and
         ``columns_added`` is always empty.
 
-        Two data backfills run, each naming itself in ``backfills_applied``
+        Six data backfills run, each naming itself in ``backfills_applied``
         only when it changed rows, so a clean vault reports an empty list and a
         re-call after a repair reports nothing further.
 
@@ -370,6 +370,13 @@ class MaintenanceService:
         stored under a heading with no text into the section before it, so the
         empty heading path addresses only text under no heading (see
         ``_store_text_before_first_heading``).
+
+        The other three reshape stored passages without reading a source: moving
+        document-level text onto its own retrieval surface
+        (``_migrate_to_document_surface``), dividing a passage longer than the
+        embedding provider's input bound (``_divide_passages_over_input_bound``),
+        and indexing each passage's structure relative to its document
+        (``_migrate_to_relative_indexed_structure``).
 
         Scan every ``unique_keys`` declaration in vault config. For each
         declared (doc_type, field), build the chain-head-grouped value map and

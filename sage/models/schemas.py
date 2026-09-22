@@ -5053,7 +5053,7 @@ class SourceFileIntegrityEntry(BaseModel):
         description=(
             "`missing` — the source file does not exist under the storage "
             "root. `hash_mismatch` — the file exists but its content hash "
-            "differs from the recorded source_content_hash (only emitted "
+            "differs from the digest recorded for the retained copy (only emitted "
             "when check_hashes=True). `symlinked` — the recorded path is a "
             "link rather than the retained copy itself. `out_of_root` — the "
             "recorded path resolves outside the vault's source tree. The "
@@ -5089,7 +5089,9 @@ class SourceFileIntegrityRequest(BaseModel):
         default=False,
         description=(
             "When true, recompute each present file's SHA-256 and compare "
-            "against the recorded source_content_hash, surfacing "
+            "against the digest recorded for the retained copy "
+            "(stored_content_hash, or source_content_hash when that is null), "
+            "surfacing "
             "`hash_mismatch` rows. Adds a full file read per document; "
             "default false performs an existence check only."
         ),
@@ -5113,7 +5115,7 @@ class SourceFileIntegrityReport(BaseModel):
 
     Per-vault audit that every document's backing source file is present
     under the vault storage root, and — when check_hashes is set — that
-    each present file still hashes to its recorded source_content_hash.
+    each present file still hashes to the digest recorded for its retained copy.
     `entries` carries one row per document whose source file is missing,
     symlinked, out of root, or mismatched; documents with an intact
     source file are absent.

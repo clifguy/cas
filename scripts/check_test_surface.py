@@ -158,6 +158,18 @@ _CONFORMANCE_STREAMS: Final[str] = (
 )
 
 KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
+    (
+        "tests/sage/test_mcp_docstring_disclosure_parity.py::"
+        "test_unenrolled_pins_are_not_stale[sage_core-restore_vault_source_file]"
+    ): (
+        "the pair came clean and was enrolled, so it is now held by the enrolled-pair "
+        "claim and identifier tests instead of a pin"
+    ),
+    "tests/sage/test_mcp_tool_description_budget.py::test_known_unconverted_is_not_stale": (
+        "retired with the list it guarded: every registered tool now satisfies the "
+        "description budget, so the budget gate holds each one unconditionally and "
+        "there is no exemption list left to go stale"
+    ),
     "tests/sage/test_mcp_server.py::test_docstring_documents_doc_id_alias[chain]": (
         "renamed test_published_tool_documents_doc_id_alias when the alias pin moved "
         "from the Python docstring to the text a client publishes, which is the "

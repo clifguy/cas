@@ -650,7 +650,6 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "template_id": "document-id placeholder in the worked derived_from example",
     },
     ("sage_core", "create_vault"): {
-        "dict": "prose: the Python type of the config argument",
         "sage_vaults": "on-disk vault directory, not a contract node",
         "vault_config": "the per-vault YAML file, not a contract node",
     },
@@ -720,9 +719,7 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "identifier_mention": "vault-config value for an edge-inference method",
         "re_ingestion": "vault-config value for an edge-inference method",
     },
-    ("sage_core", "migrate_vault"): {
-        "graph_store": "the storage component, not a contract node",
-    },
+    ("sage_core", "migrate_vault"): {},
     ("sage_core", "read_projection"): {
         # Values of ``delivery``, an MCP-only argument with no REST
         # counterpart (see MCP_ONLY_ARGUMENTS); the argument name resolves,

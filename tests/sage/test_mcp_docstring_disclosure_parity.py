@@ -485,6 +485,7 @@ ENROLLED_PAIRS: Final[frozenset[tuple[str, str]]] = frozenset(
         ("sage_core", "list_staging_edges"),
         ("sage_core", "recompute_pipeline"),
         ("sage_core", "reload_vault"),
+        ("sage_core", "restore_vault_source_file"),
         ("sage_core", "verify_preconditions"),
         ("sage_core", "verify_vault_retrieval"),
     }
@@ -533,7 +534,9 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # into the published parameter descriptions, which the whole-docstring
     # side credits, in the wording the operation already used.
     ("sage_core", "create_edges"): Pin(4, 5),
-    ("sage_core", "create_vault"): Pin(4, 17),
+    # Both counts fell as the prose was condensed to the description budget
+    # and the config rules moved into the published parameter description.
+    ("sage_core", "create_vault"): Pin(3, 9),
     ("sage_core", "delete_edge"): Pin(6, 3),
     # doc_only fell from 2 as the 200 response declared the download recipe
     # the docstring already described.
@@ -554,8 +557,13 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     ("sage_core", "list_vaults"): Pin(4, 5),
     # spec_only fell from 7 as the docstring gained the vault_not_found detail
     # its operation already declares.
-    ("sage_core", "migrate_vault"): Pin(6, 9),
-    ("sage_core", "optimize_vault_content_store"): Pin(2, 2),
+    # Both counts fell as the backfill narrative was condensed to the budget
+    # on both surfaces together, and the operation description dropped the
+    # schema-migration and cross-process claims the store no longer makes.
+    ("sage_core", "migrate_vault"): Pin(0, 3),
+    # doc_only fell from 2 as the port-contract note moved into the published
+    # parameter description.
+    ("sage_core", "optimize_vault_content_store"): Pin(2, 1),
     # doc_only fell from 10 as the delivery and write_to_path rules moved into
     # the published parameter descriptions, out of the prose body.
     ("sage_core", "read_projection"): Pin(2, 5),
@@ -564,12 +572,11 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # body: its synchronous refusal list had been read as claims.
     # doc_only fell again, from 14, as its prose was condensed to the budget.
     ("sage_core", "recompute_abstract"): Pin(3, 7),
-    ("sage_core", "recompute_deferred_vault_abstracts"): Pin(5, 6),
-    ("sage_core", "recompute_views"): Pin(4, 10),
-    # doc_only fell from 10 as the operation gained the two-phase transfer
-    # paragraph the docstring already stated, once the transfer became
-    # reachable over this surface too.
-    ("sage_core", "restore_vault_source_file"): Pin(0, 9),
+    # Both counts fell as the prose was condensed to the budget on both
+    # surfaces together; the single-flight rule now reads alike on each.
+    ("sage_core", "recompute_deferred_vault_abstracts"): Pin(4, 2),
+    # doc_only fell from 10 as the prose was condensed to the budget.
+    ("sage_core", "recompute_views"): Pin(4, 7),
     ("sage_core", "search"): Pin(0, 4),
     # spec_only fell from 5 for the same reason as get_filename_metadata:
     # the docstring now declares the boundary refusals, covering one claim
@@ -601,8 +608,12 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # surface, so an unrelated paragraph can carry a claim over the floor. The
     # pin moves because the measurement did, which is the rule this list runs
     # on; the pair is no better reconciled than it was.
-    ("sage_core", "verify_vault_drift"): Pin(5, 6),
-    ("sage_core", "verify_vault_source_files"): Pin(3, 7),
+    # doc_only fell from 6 as the prose was condensed to the budget.
+    ("sage_core", "verify_vault_drift"): Pin(5, 5),
+    # Both counts fell as the link and out-of-root rules were condensed on
+    # both surfaces together, and the scope rules moved into the published
+    # parameter description.
+    ("sage_core", "verify_vault_source_files"): Pin(0, 2),
     # doc_only fell from 36 as the operation gained the caller-settable
     # needs_review its tool already had, and a paragraph disclosing it: claims
     # the docstring had been making alone now have counterparts. A
