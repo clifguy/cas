@@ -3148,7 +3148,7 @@ class TraverseRequest(BaseModel):
             "When true, the response populates `resolution_path` with a "
             "per-event trace of chain-scoped resolution decisions (anchor "
             "hits and misses, retractions applied, tombstones applied). "
-            "Opt-in; response is unchanged when false (CAS-ADR-017)."
+            "Opt-in; response is unchanged when false."
         ),
     )
 

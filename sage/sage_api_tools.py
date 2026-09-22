@@ -35,7 +35,16 @@ from sage.api.errors import (
     validation_error_envelope,
 )
 from sage.mcp_init import SAGEServices
-from sage.models.enums import CatalogSortBy, FacetField, RetrievalMode, SortOrder, SourceType
+from sage.models.enums import (
+    CatalogSortBy,
+    EdgeType,
+    FacetField,
+    ResponseMode,
+    RetrievalMode,
+    SortOrder,
+    SourceType,
+    TraversalDirection,
+)
 from sage.models.legacy_form import detect_legacy_form
 from sage.models.schemas import (
     BATCH_ITEM_MODELS,
@@ -54,6 +63,7 @@ from sage.models.schemas import (
     HashCheckRequest,
     IngestPreview,
     IngestRequest,
+    ParseFilenameRequest,
     RecomputePipelineStartedResponse,
     RetrievalFilters,
     Sha256Str,
@@ -63,7 +73,7 @@ from sage.models.schemas import (
     UploadRecipe,
     VaultIdStr,
 )
-from sage.services.metadata import PENDING_METADATA_DEFAULT_LIMIT
+from sage.services.metadata import PENDING_METADATA_DEFAULT_LIMIT, PENDING_METADATA_MAX_LIMIT
 from sage.services.retrieval import DEFAULT_MCP_INLINE_BUDGET_BYTES
 from sage.services.stack_config import get_stack_config_report
 from sage.services.transfer import DeliveryDeclaration
@@ -238,6 +248,62 @@ _BATCH_RESPONSE_MODE_NOTE = (
     "process by SAGE_MCP_INLINE_BUDGET_BYTES. An invalid value is refused as "
     "invalid_parameter before any per-item work."
 )
+
+#: How a download-capable ``write_to_path`` behaves on each delivery arm,
+#: shared by the tools that can mint a download recipe. The sentence before
+#: it, naming what the local arm writes, is each tool's own.
+_WRITE_TO_PATH_RECIPE = (
+    "Where the server shares the caller's filesystem, the target must not "
+    "exist (write_path_exists) and its parent must exist and be "
+    "writable, and a failure to open the target for exclusive creation "
+    "reports write_path_invalid. Where the server does not share the caller's "
+    "filesystem, the response is a download recipe carrying this path for the "
+    "caller's own environment to write, and the path is read with that "
+    "environment's conventions -- a Windows drive-letter or UNC spelling is "
+    "accepted on that arm. The path must be absolute either way, and is "
+    "checked before the {subject} is read, so a malformed path reports "
+    "write_path_invalid {regardless}. A minted recipe's token lapses 900 "
+    "seconds after issue by default and the fetch must finish inside that "
+    "window; the recipe's own `expires_at` is authoritative where a "
+    "deployment has tuned the lifetime, and a lapsed recipe is re-issued "
+    "rather than resumed."
+)
+
+_GET_DOCUMENT_WRITE_TO_PATH = (
+    "Absolute filesystem path, resolved on the machine running the SAGE server "
+    "process: SAGE streams the retained source bytes there (from the vault's "
+    "configured source store, unbounded by the inline-content ceiling) and "
+    "populates `written_to`, `content_size` and `content_hash`. "
+    + _WRITE_TO_PATH_RECIPE.format(
+        subject="document", regardless="whether or not the document exists"
+    )
+    + " Mutually exclusive with `include_content`."
+)
+
+_READ_PROJECTION_WRITE_TO_PATH = (
+    "Absolute filesystem path, resolved on the machine running the SAGE server "
+    "process: SAGE writes the projection text there and returns metadata only "
+    "(`written_to`, `content_size`; `projection_text` is null). "
+    + _WRITE_TO_PATH_RECIPE.format(
+        subject="projection", regardless="whatever the document's pipeline state"
+    )
+)
+
+#: ``traverse.direction`` is published as a bare string, so its closed set is
+#: named in the description, from the enum ``TraverseRequest`` validates.
+_DIRECTION_NOTE = "One of " + ", ".join(f'"{d.value}"' for d in TraversalDirection) + "."
+
+#: ``traverse.depth`` is published as a bare integer; its range is read from
+#: the bounds ``TraverseRequest`` validates.
+_DEPTH_BOUNDS = {type(m).__name__: m for m in TraverseRequest.model_fields["depth"].metadata}
+_DEPTH_NOTE = f"Range {_DEPTH_BOUNDS['Ge'].ge}-{_DEPTH_BOUNDS['Le'].le}."
+
+#: A bare-string ``response_mode`` names its closed set from ``ResponseMode``.
+_RESPONSE_MODE_NOTE = "One of " + " or ".join(f'"{m.value}"' for m in ResponseMode) + "."
+
+#: The edge-walking tools take ``edge_type`` as a bare string; its closed set is
+#: named from the enum their request models validate.
+_EDGE_TYPE_NOTE = "One of " + ", ".join(f'"{e.value}"' for e in EdgeType) + "."
 
 #: The verbs ``update_staging_edge`` accepts; any other is refused.
 STAGING_EDGE_ACTIONS: tuple[str, ...] = ("confirm", "dismiss")
@@ -487,11 +553,16 @@ _INGEST_SOURCE = _ingest_param(
     ),
 )
 
+#: The source formats an adapter is registered for, as the parameter
+#: descriptions name them. Held equal to the adapter registry by test rather
+#: than read from it, so loading the tool module instantiates no adapter.
+_REGISTERED_SOURCE_FORMATS = "markdown, docx, xlsx, pptx and pdf"
+
 _INGEST_SOURCE_TYPE = _ingest_param(
     str | None,
     "source_type",
     mcp=(
-        "The registered formats are markdown, docx, xlsx, pptx and pdf; a "
+        f"The registered formats are {_REGISTERED_SOURCE_FORMATS}; a "
         "refusal names them in ``registered_source_types``. Inference reads "
         "the extension: ``.md`` and ``.markdown`` map to markdown, "
         "``.docx``/``.dotx`` to docx."
@@ -866,12 +937,22 @@ def register_sage_tools(
 
     @mcp.tool(annotations=READ_ONLY)
     async def get_filename_metadata(
-        vault_id: str,
-        filename: str,
-        source_type: str,
+        vault_id: VaultIdParam,
+        filename: model_param(str, ParseFilenameRequest, "filename"),
+        source_type: model_param(
+            str,
+            ParseFilenameRequest,
+            "source_type",
+            mcp=(
+                f"The registered formats are {_REGISTERED_SOURCE_FORMATS} "
+                "-- the same set `ingest_document` accepts, so a filename that "
+                "parses here is one that can go on to be ingested."
+            ),
+        ),
     ) -> dict:
         """Parse a filename's basename through the vault's filename parsing and
-        return the extracted metadata. Side-effect free: no document is
+        return the metadata fields the parser extracts from the supplied
+        filename under the named adapter. Side-effect free: no document is
         created and vault state is unchanged.
 
         This is the companion to ``ingest_document``'s caller-authoritative
@@ -888,22 +969,10 @@ def register_sage_tools(
         ``doc_date``, ``project``, ``doc_code``, ``title``, and ``version``.
 
         Error modes:
-        - ``invalid_vault_id`` (400): the supplied vault_id is not a
-          well-formed vault id.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
         - ``adapter_not_found`` (400): no source adapter is registered for
           ``source_type``.
-
-        Args:
-            vault_id: Target vault identifier.
-            filename: Filename to parse; the basename is used (directory
-                components are stripped).
-            source_type: Source artifact format (markdown, docx, xlsx, pptx,
-                pdf, email, onenote, teams_chat). Must be one SAGE has a
-                registered adapter for -- the same set ``ingest_document``
-                accepts, so a filename that parses here is one that can go
-                on to be ingested.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -916,11 +985,28 @@ def register_sage_tools(
 
     @mcp.tool(annotations=READ_ONLY)
     async def get_document(
-        vault_id: str,
-        document_id: str | None = None,
-        include_content: bool = False,
-        write_to_path: str | None = None,
-        doc_id: str | None = None,
+        vault_id: VaultIdParam,
+        document_id: Annotated[
+            str | None,
+            Field(description=f"The document's unique identifier. {DOC_ID_ALIAS_NOTE}"),
+        ] = None,
+        include_content: Annotated[
+            bool,
+            Field(
+                description=(
+                    "When true, add `content` (base64) and `content_size` to the "
+                    "response. Fails with content_too_large (413) past the inline "
+                    "ceiling (default 100 MB; override via "
+                    "SAGE_MAX_INLINE_CONTENT_BYTES): use `write_to_path` instead. "
+                    "Mutually exclusive with `write_to_path`."
+                )
+            ),
+        ] = False,
+        write_to_path: Annotated[
+            str | None,
+            Field(description=_GET_DOCUMENT_WRITE_TO_PATH),
+        ] = None,
+        doc_id: DocIdAliasParam = None,
     ) -> dict:
         """Retrieve a document record with all metadata, lifecycle state, and
         pipeline status. Optional delivery of the vault-local source file
@@ -928,76 +1014,27 @@ def register_sage_tools(
 
         Two mutually-exclusive delivery modes:
         - include_content=true: inline base64 bytes in the response.
-          Fails with 413 ``content_too_large`` if the file exceeds the
-          inline ceiling (default 100 MB; override via
-          SAGE_MAX_INLINE_CONTENT_BYTES). Best for small files.
+          Best for small files.
         - write_to_path=/abs/path: SAGE writes the bytes to the
           filesystem path; response carries only metadata (written_to,
           content_size, content_hash). Preferred for files that would
           exceed MCP tool-result size ceilings.
 
-        Error modes:
-        - ``invalid_vault_id`` (400): the supplied vault_id is not a
-          well-formed vault id.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-        - ``invalid_document_id`` (400): the supplied document_id is not a
-          well-formed id; rejected at the boundary before any lookup.
+        Error modes (the two store codes only when bytes are requested):
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
+        - ``invalid_document_id`` (400)
         - ``document_not_found`` (404): no document with that id.
-        - ``content_file_missing`` (404): only when bytes are
-          requested (either delivery mode); the document record
-          exists but the vault-local file is absent.
-        - ``content_too_large`` (413): include_content=true but the
-          file exceeds the inline ceiling. Use ``write_to_path`` instead.
-        - ``content_delivery_conflict`` (400): both ``include_content``
-          and ``write_to_path`` were set; choose one.
-        - ``write_path_exists`` (409): ``write_to_path`` target
-          already exists.
-        - ``write_path_invalid`` (400): ``write_to_path`` is not absolute,
-          its parent is missing or not writable, or the target cannot be
-          opened for exclusive creation after validation. An existing target
-          instead returns ``write_path_exists`` (409); errors after opening
-          are not translated into ``write_path_invalid``.
-        - ``vault_source_store_refused`` (502): the store declined the operation
-          on its merits -- quota, a permission it withdrew, a reply that could
-          not be used. Resolve it at the store before retrying;
-          ``detail.store_status`` carries the status it declined with.
-        - ``vault_source_store_unavailable`` (503): the store declined to serve
-          the operation just now -- throttling, or a transient backend signal.
-          The same call may succeed later.
-          Both only when bytes are requested; a metadata-only read touches
-          the store not at all.
-
-        Args:
-            vault_id: Target vault identifier.
-            document_id: The document's unique identifier. Alias: ``doc_id``.
-                Supply exactly one of ``document_id`` or ``doc_id``.
-            doc_id: Alias for ``document_id``; supply exactly one.
-            include_content: When true, add `content` (base64) and
-                `content_size` to the response. Default: false.
-            write_to_path: Absolute filesystem path, resolved on the
-                machine running the SAGE server process where that machine
-                shares the caller's filesystem: SAGE streams the retained
-                source bytes there (from the vault's configured source
-                store, unbounded by the inline-content ceiling) and
-                populates `written_to`, `content_size`, and `content_hash`
-                in the response, the target must not exist, and its parent
-                must exist and be writable. Where it does not, the response
-                is a download recipe carrying this path for the caller's
-                own environment to write, and the path is read with that
-                environment's conventions -- a Windows drive-letter or UNC
-                spelling is accepted on that arm, since it is absolute on
-                the machine that will write it. The path must be absolute
-                either way, and is checked before the document is read, so
-                a malformed path reports ``write_path_invalid`` whether or
-                not the document exists. A later failure to open the target
-                for exclusive creation can also report ``write_path_invalid``.
-                A minted recipe's token lapses 900 seconds after issue by
-                default and the fetch must finish inside that window; the
-                recipe's own ``expires_at`` is authoritative where a
-                deployment has tuned the lifetime, and a lapsed recipe is
-                re-issued rather than resumed.
-                Mutually exclusive with `include_content`.
+        - ``content_file_missing`` (404): bytes requested; the vault-local
+          file is absent.
+        - ``content_too_large`` (413)
+        - ``content_delivery_conflict`` (400): both delivery modes set.
+        - ``write_path_exists`` (409)
+        - ``write_path_invalid`` (400)
+        - ``vault_source_store_refused`` (502): resolve it at the store before
+          retrying; ``detail.store_status`` carries its status.
+        - ``vault_source_store_unavailable`` (503): the same call may succeed
+          later.
         """
         try:
             # Validate each id-bearing parameter by its literal name (so the
@@ -1305,7 +1342,18 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool(annotations=READ_ONLY)
-    async def verify_preconditions(vault_id: str, document_id: str) -> dict:
+    async def verify_preconditions(
+        vault_id: VaultIdParam,
+        document_id: Annotated[
+            str,
+            Field(
+                description=(
+                    "Identifier of the document whose preconditions to check. "
+                    "Any document with outbound `depends_on` edges is valid."
+                )
+            ),
+        ],
+    ) -> dict:
         """Check whether all depends_on targets for a document are
         satisfied (dependency-satisfying lifecycle, pipeline not failed).
 
@@ -1340,25 +1388,13 @@ def register_sage_tools(
         answers what that one call would do to committed state; this
         answers whether a document's dependencies are in a state that
         permits work to proceed, aggregated across every outbound
-        ``depends_on`` edge. The ingest preview's declared requirement
-        set is the nearest a ``dry_run`` comes to reporting on the
-        vault rather than on the request, and it is still scoped to
-        the single document the call names.
+        ``depends_on`` edge.
 
         Error modes:
-        - ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias
-          validation at the boundary.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-        - ``invalid_document_id`` (400): ``document_id`` is not a well-formed
-          document id.
-        - ``document_not_found`` (404): no document with ``document_id``.
-
-        Args:
-            vault_id: Target vault identifier.
-            document_id: Identifier of the document whose preconditions
-                to check. Any document with outbound ``depends_on``
-                edges is valid.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
+        - ``invalid_document_id`` (400)
+        - ``document_not_found`` (404)
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -1371,13 +1407,42 @@ def register_sage_tools(
 
     @mcp.tool(annotations=READ_ONLY)
     async def traverse(
-        vault_id: str,
-        start_id: str | None = None,
-        edge_type: str | None = None,
-        direction: str = "outbound",
-        depth: int = 3,
-        debug: bool = False,
-        document_id: str | None = None,
+        vault_id: VaultIdParam,
+        start_id: model_param(
+            str | None,
+            TraverseRequest,
+            "start_id",
+            mcp=(
+                "Alias: `document_id`; supply exactly one of the two. The "
+                "response key remains `start_id` whichever form was used."
+            ),
+        ) = None,
+        edge_type: model_param(
+            str | None, TraverseRequest, "edge_type", mcp=_EDGE_TYPE_NOTE
+        ) = None,
+        direction: model_param(str, TraverseRequest, "direction", mcp=_DIRECTION_NOTE) = (
+            "outbound"
+        ),
+        depth: model_param(int, TraverseRequest, "depth", mcp=_DEPTH_NOTE) = 3,
+        debug: model_param(
+            bool,
+            TraverseRequest,
+            "debug",
+            mcp=(
+                "Entries are `anchor_hit`, `anchor_miss`, `retracts_applied` "
+                "and `tombstone_applied`."
+            ),
+        ) = False,
+        document_id: Annotated[
+            str | None,
+            Field(
+                description=(
+                    "Alias for `start_id`; supply exactly one of the two. "
+                    "Supplying both, even with equal values, returns "
+                    "ambiguous_document_identifier."
+                )
+            ),
+        ] = None,
     ) -> dict:
         """Walk the document graph from a starting document.
 
@@ -1399,35 +1464,13 @@ def register_sage_tools(
         ``edge_counts.{edge_type}`` reflects total visible edges from the
         query position including masked ones; if ``edge_counts >
         len(nodes)`` the result has masked siblings. ``supersedes`` is
-        point-to-point and exempt; the rule applies only to the five
-        ``transitive_both`` types.
+        point-to-point and not subject to this dedup; the rule applies only
+        to the five ``transitive_both`` types.
 
         Error modes:
-        - ``invalid_vault_id`` (400): the supplied vault_id is not a
-          well-formed vault id.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-        - ``invalid_document_id`` (400): a document id the call names is not
-          well-formed.
-
-        Args:
-            vault_id: Target vault identifier.
-            start_id: Starting document identifier. Alias: ``document_id``.
-                Supply exactly one of ``start_id`` or ``document_id``. The
-                response key remains ``start_id`` regardless of which input
-                form was used.
-            edge_type: Filter by edge type (optional). When omitted,
-                traversal returns edges of all types.
-            direction: Traversal direction (outbound, inbound, both). Default: outbound.
-            depth: Maximum traversal depth (1-1000). Default: 3.
-            debug: When true, populate `resolution_path` on the response
-                with per-event entries (`anchor_hit`, `anchor_miss`,
-                `retracts_applied`, `tombstone_applied`) explaining why
-                each candidate edge was surfaced or suppressed. Default:
-                false (zero overhead when disabled).
-            document_id: Alias for ``start_id``. Either parameter
-                is accepted; supply exactly one. Supplying both — even with
-                equal values — returns ``ambiguous_document_identifier``.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
+        - ``invalid_document_id`` (400)
         """
         try:
             # Validate each id-bearing parameter by its literal
@@ -1471,9 +1514,9 @@ def register_sage_tools(
     @mcp.tool(annotations=READ_ONLY)
     async def chain(
         vault_id: VaultIdParam,
-        edge_type: Annotated[str, Field(description=param_doc(ChainRequest, "edge_type"))] = (
-            "supersedes"
-        ),
+        edge_type: Annotated[
+            str, Field(description=param_doc(ChainRequest, "edge_type", mcp=_EDGE_TYPE_NOTE))
+        ] = ("supersedes"),
         document_id: Annotated[
             str | None,
             Field(
@@ -1703,11 +1746,33 @@ def register_sage_tools(
 
     @mcp.tool(annotations=READ_ONLY)
     async def read_projection(
-        vault_id: str,
-        document_id: str | None = None,
-        write_to_path: str | None = None,
-        doc_id: str | None = None,
-        delivery: Literal["inline", "spill", "auto"] = "auto",
+        vault_id: VaultIdParam,
+        document_id: Annotated[
+            str | None,
+            Field(description=f"The document's unique identifier. {DOC_ID_ALIAS_NOTE}"),
+        ] = None,
+        write_to_path: Annotated[
+            str | None,
+            Field(description=_READ_PROJECTION_WRITE_TO_PATH),
+        ] = None,
+        doc_id: DocIdAliasParam = None,
+        delivery: Annotated[
+            Literal["inline", "spill", "auto"],
+            Field(
+                description=(
+                    "Pins the delivery shape instead of leaving it implicit in "
+                    "whether `write_to_path` was supplied. `auto` (default): "
+                    "spill to disk when `write_to_path` is given, inline "
+                    "otherwise. `inline`: force the inline body; supplying "
+                    "`write_to_path` alongside it returns delivery_conflict. "
+                    "`spill`: force write-to-disk delivery; it requires "
+                    "`write_to_path` and returns delivery_conflict without one. "
+                    "Decide up front with `read_meta.body_length` (the inline "
+                    "body size on a prior or auto read) before forcing `inline` "
+                    "on a large document."
+                )
+            ),
+        ] = "auto",
     ) -> dict:
         """Read a document's full text into context with metadata header.
 
@@ -1717,74 +1782,26 @@ def register_sage_tools(
           uploading the document. Use this instead of ``search``
           when you need the whole document.
         - ``write_to_path=/abs/path``: SAGE writes the projection text
-          to the given absolute path. The response carries ``written_to``
-          and ``content_size``; ``projection_text`` is null. Preferred
-          for large projections that would exceed the MCP tool-result
-          inline budget. Mirrors ``get_document(write_to_path=...)``.
+          to the given absolute path. Preferred for large projections that
+          would exceed the MCP tool-result inline budget. Mirrors
+          ``get_document(write_to_path=...)``.
 
-        ``delivery`` pins which shape you get instead of leaving it implicit
-        in whether ``write_to_path`` was supplied:
-        - ``auto`` (default): spill to disk when ``write_to_path`` is given,
-          inline otherwise — the prior behavior.
-        - ``inline``: force the inline body. Supplying ``write_to_path``
-          alongside it is contradictory and returns ``delivery_conflict``.
-        - ``spill``: force write-to-disk delivery; it requires
-          ``write_to_path`` and returns ``delivery_conflict`` without one.
-        Decide up front with ``read_meta.body_length`` (the inline body
-        size on a prior or auto read) before forcing ``inline`` on a large
-        document.
+        ``no_projection`` means the document exists but has no stored
+        projection (e.g. ingestion failed mid-pipeline or the document is
+        awaiting reabstraction). Inspect ``pipeline_status`` via
+        ``get_document``; if recoverable, ``recompute_abstract`` may restore
+        the projection.
 
         Error modes:
-        - ``invalid_vault_id`` (400): the supplied vault_id is not a
-          well-formed vault id.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-        - ``invalid_document_id`` (400): the supplied document_id is not a
-          well-formed id; rejected at the boundary before any lookup.
-        - ``document_not_found`` (404): no document with that id.
-        - ``no_projection`` (404): the document exists but has no
-          stored projection (e.g. ingestion failed mid-pipeline or
-          the document is awaiting reabstraction). Inspect
-          ``pipeline_status`` via ``get_document``; if recoverable,
-          ``recompute_abstract`` may restore the projection.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
+        - ``invalid_document_id`` (400)
+        - ``document_not_found`` (404)
+        - ``no_projection`` (404)
         - ``delivery_conflict`` (400): ``delivery`` contradicts
-          ``write_to_path`` (``inline`` with a path, or ``spill``
-          without one).
-        - ``write_path_exists`` (409): ``write_to_path`` target already
-          exists.
-        - ``write_path_invalid`` (400): ``write_to_path`` is not absolute,
-          its parent is missing or not writable, or the target cannot be
-          opened for exclusive creation after validation. An existing target
-          instead returns ``write_path_exists`` (409); errors after opening
-          are not translated into ``write_path_invalid``.
-
-        Args:
-            vault_id: Target vault identifier.
-            document_id: The document's unique identifier. Alias: ``doc_id``.
-                Supply exactly one of ``document_id`` or ``doc_id``.
-            doc_id: Alias for ``document_id``; supply exactly one.
-            write_to_path: Absolute filesystem path, resolved on the
-                machine running the SAGE server process where that machine
-                shares the caller's filesystem: SAGE writes the projection
-                text there and returns metadata only, the target must not
-                exist, and its parent must exist and be writable. Where it
-                does not, the response is a download recipe carrying this
-                path for the caller's own environment to write, and the
-                path is read with that environment's conventions -- a
-                Windows drive-letter or UNC spelling is accepted on that
-                arm, since it is absolute on the machine that will write
-                it. The path must be absolute either way, and is checked
-                before the projection is read, so a malformed path reports
-                ``write_path_invalid`` whatever the document's pipeline
-                state. A later failure to open the target for exclusive
-                creation can also report ``write_path_invalid``. A minted
-                recipe's token lapses 900 seconds after issue by default and
-                the fetch must finish inside that window; the recipe's own
-                ``expires_at`` is authoritative where a deployment has tuned
-                the lifetime, and a lapsed recipe is re-issued rather than
-                resumed.
-            delivery: Inline-vs-spill selector (``inline | spill | auto``).
-                ``auto`` keeps the write_to_path-driven default.
+          ``write_to_path``.
+        - ``write_path_exists`` (409)
+        - ``write_path_invalid`` (400)
         """
         try:
             # See get_document: validate each id param by literal name for the
@@ -1814,10 +1831,22 @@ def register_sage_tools(
 
     @mcp.tool(annotations=READ_ONLY)
     async def read_section(
-        vault_id: str,
-        heading_path: str,
-        document_id: str | None = None,
-        doc_id: str | None = None,
+        vault_id: VaultIdParam,
+        heading_path: Annotated[
+            str,
+            Field(
+                description=(
+                    'Heading path prefix (e.g. "Technical Description > '
+                    'Composite Claim Binding"). The empty string addresses the '
+                    "text under no heading."
+                )
+            ),
+        ],
+        document_id: Annotated[
+            str | None,
+            Field(description=f"The document's unique identifier. {DOC_ID_ALIAS_NOTE}"),
+        ] = None,
+        doc_id: DocIdAliasParam = None,
     ) -> dict:
         """Read a section of a document by heading path.
 
@@ -1837,21 +1866,9 @@ def register_sage_tools(
         index heading_path text alongside content.
 
         Error modes:
-        - ``invalid_vault_id`` (400): the supplied vault_id is not a
-          well-formed vault id.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-        - ``invalid_document_id`` (400): a document id the call names is not
-          well-formed.
-
-        Args:
-            vault_id: Target vault identifier.
-            document_id: The document's unique identifier. Alias: ``doc_id``.
-                Supply exactly one of ``document_id`` or ``doc_id``.
-            doc_id: Alias for ``document_id``; supply exactly one.
-            heading_path: Heading path prefix
-                (e.g. "Technical Description > Composite Claim Binding").
-                The empty string addresses the text under no heading.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
+        - ``invalid_document_id`` (400)
         """
         try:
             # See get_document: validate each id param by literal name for the
@@ -1879,9 +1896,12 @@ def register_sage_tools(
 
     @mcp.tool(annotations=READ_ONLY)
     async def list_headings(
-        vault_id: str,
-        document_id: str | None = None,
-        doc_id: str | None = None,
+        vault_id: VaultIdParam,
+        document_id: Annotated[
+            str | None,
+            Field(description=f"The document's unique identifier. {DOC_ID_ALIAS_NOTE}"),
+        ] = None,
+        doc_id: DocIdAliasParam = None,
     ) -> dict:
         """List all heading paths for a document in document order.
 
@@ -1903,18 +1923,9 @@ def register_sage_tools(
         that has none.
 
         Error modes:
-        - ``invalid_vault_id`` (400): the supplied vault_id is not a
-          well-formed vault id.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-        - ``invalid_document_id`` (400): a document id the call names is not
-          well-formed.
-
-        Args:
-            vault_id: Target vault identifier.
-            document_id: The document's unique identifier. Alias: ``doc_id``.
-                Supply exactly one of ``document_id`` or ``doc_id``.
-            doc_id: Alias for ``document_id``; supply exactly one.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
+        - ``invalid_document_id`` (400)
         """
         try:
             # See get_document: validate each id param by literal name for the
@@ -2279,7 +2290,19 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool(name="verify_hashes", annotations=READ_ONLY)
-    async def verify_hash(vault_id: str, hashes: list[str]) -> dict:
+    async def verify_hash(
+        vault_id: VaultIdParam,
+        hashes: model_param(
+            list[str],
+            HashCheckRequest,
+            "hashes",
+            mcp=(
+                "Canonical `sha256:<hex>` or bare hex, digest in either case. "
+                "An empty list short-circuits; a hash that cannot be "
+                "normalized rejects the whole call with invalid_sha256."
+            ),
+        ),
+    ) -> dict:
         """Bulk hash existence check against the graph store.
 
         For each input hash, returns whether an existing document in the
@@ -2317,18 +2340,9 @@ def register_sage_tools(
         means "nothing matched".
 
         Error modes:
-        - ``invalid_sha256`` (400): a hash could not be normalized to the
-          canonical form. The envelope names the offending value as the
-          caller supplied it.
-        - ``invalid_vault_id`` (400): malformed ``vault_id``.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-
-        Args:
-            vault_id: Target vault identifier.
-            hashes: Content hashes, canonical or bare, digest in either case.
-                An empty list short-circuits; a hash that cannot be
-                normalized rejects the whole call with ``invalid_sha256``.
+        - ``invalid_sha256`` (400): names the offending value as supplied.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2341,7 +2355,7 @@ def register_sage_tools(
             return error_response(e)
 
     @mcp.tool(annotations=READ_ONLY)
-    async def list_staging_edges(vault_id: str) -> dict:
+    async def list_staging_edges(vault_id: VaultIdParam) -> dict:
         """List Tier 2 suggested edges awaiting review.
 
         SAGE's edge-inference subsystem runs edges through tiers
@@ -2365,13 +2379,8 @@ def register_sage_tools(
         can sweep all candidate edges from one document together.
 
         Error modes:
-        - ``invalid_vault_id`` (400): the supplied vault_id is not a
-          well-formed vault id.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-
-        Args:
-            vault_id: Target vault identifier.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2447,10 +2456,29 @@ def register_sage_tools(
 
     @mcp.tool(annotations=READ_ONLY)
     async def list_pending_metadata(
-        vault_id: str,
-        limit: int = PENDING_METADATA_DEFAULT_LIMIT,
-        offset: int = 0,
-        response_mode: str | None = None,
+        vault_id: VaultIdParam,
+        limit: Annotated[
+            int,
+            Field(
+                description=(
+                    f"Page size, 0..{PENDING_METADATA_MAX_LIMIT}. "
+                    f"Default {PENDING_METADATA_DEFAULT_LIMIT}. "
+                    "`0` returns `total_available` with no rows."
+                )
+            ),
+        ] = PENDING_METADATA_DEFAULT_LIMIT,
+        offset: Annotated[
+            int, Field(description="Number of queue documents to skip before the page.")
+        ] = 0,
+        response_mode: Annotated[
+            str | None,
+            Field(
+                description=(
+                    f"{_RESPONSE_MODE_NOTE} Omitted, a page of more than five "
+                    "rows is light and a smaller one is full."
+                )
+            ),
+        ] = None,
     ) -> dict:
         """List documents with unconfirmed metadata.
 
@@ -2479,21 +2507,10 @@ def register_sage_tools(
         one is full.
 
         Error modes:
-        - ``invalid_vault_id`` (400): the supplied vault_id is not a
-          well-formed vault id.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-        - ``invalid_parameter`` (422): ``limit`` is outside 0..100,
-          ``offset`` is negative, or ``response_mode`` is neither
-          ``light`` nor ``full``.
-
-        Args:
-            vault_id: Target vault identifier.
-            limit: Page size, 0..100. Default 10. ``0`` returns
-                ``total_available`` with no rows.
-            offset: Number of queue documents to skip before the page.
-            response_mode: ``light`` or ``full``. Omitted, a page of more
-                than five rows is light and a smaller one is full.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
+        - ``invalid_parameter`` (422): ``limit``, ``offset`` or
+          ``response_mode`` out of range.
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)

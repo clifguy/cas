@@ -1768,10 +1768,7 @@ paths:
         answers what that one call would do to committed state; this
         answers whether a document's dependencies are in a state that
         permits work to proceed, aggregated across every outbound
-        `depends_on` edge. The ingest preview's declared requirement
-        set is the nearest a `dry_run` comes to reporting on the vault
-        rather than on the request, and it is still scoped to the
-        single document the call names.
+        `depends_on` edge.
       tags: [Graph]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -6531,8 +6528,7 @@ components:
             When true, the response populates `resolution_path` with a
             per-event trace of chain-scoped resolution decisions
             (anchor hits and misses, retractions applied, tombstones
-            applied). Opt-in; response is unchanged when false
-            (CAS-ADR-017).
+            applied). Opt-in; response is unchanged when false.
 
     ChainRequest:
       type: object
