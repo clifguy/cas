@@ -1090,6 +1090,7 @@ class RetrievalService:
             if request.target == RetrievalTarget.EDGES:
                 response = await self._catalog_edges(request, phases)
                 self._apply_warnings(response, request)
+                self._stamp(response)
                 _apply_catalog_budget_hint(response)
                 return response
 
@@ -1103,6 +1104,7 @@ class RetrievalService:
             if request.target == RetrievalTarget.FACETS:
                 response = await self._catalog_facets(request, phases)
                 self._apply_warnings(response, request)
+                self._stamp(response)
                 _apply_facets_budget_hint(response)
                 return response
 
@@ -1141,6 +1143,7 @@ class RetrievalService:
             # set is empty, whereas a filter value the vault does not
             # recognize is worth reporting in every mode.
             self._apply_warnings(response, request)
+            self._stamp(response)
 
             # Fit a response that would bust the Claude Code MCP inline
             # ceiling, or hint at how the caller can. Applied here
@@ -1156,6 +1159,14 @@ class RetrievalService:
                 _apply_scored_budget_policy(response, request)
 
             return response
+
+    def _stamp(self, response: DiscoverResponse) -> None:
+        """Name the vault configuration this answer was computed under (CAS-ADR-055).
+
+        Applied before any budget measurement, so a response fitted to the
+        inline budget is measured with the stamp it will be delivered with.
+        """
+        response.read_meta = response.read_meta.stamped(self._config.fingerprint())
 
     def _validate_tier3_filter_keys(
         self,

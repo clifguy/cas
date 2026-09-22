@@ -20,6 +20,7 @@ from pydantic import (
 )
 from pydantic_core import PydanticCustomError
 
+from sage.build_info import VERSION_WITH_BUILD
 from sage.models.enums import (
     CatalogSortBy,
     DryRunValidator,
@@ -1433,6 +1434,40 @@ class ReadMeta(BaseModel):
             "pointer without a second probing round-trip."
         ),
     )
+    server_build: str = Field(
+        default_factory=lambda: VERSION_WITH_BUILD,
+        description=(
+            "Release version and build identity of the SAGE server that produced "
+            "this response, in the form the MCP initialize handshake advertises as "
+            "serverInfo.version (for example 2.5.31+d0026c6). A value different "
+            "from one recorded earlier means the server now runs different code. "
+            "It does not refresh tool schemas a client cached at session start; "
+            "re-reading those remains the client's job."
+        ),
+    )
+    vault_config_fingerprint: Sha256Str | None = Field(
+        default=None,
+        description=(
+            "Fingerprint (sha256:<hex>) of the effective vault configuration the "
+            "response was computed under: every section, with defaults filled in. "
+            "It moves whenever a configured rule moves -- lifecycle transitions, "
+            "dependency-satisfying states, document types -- and is unchanged by a "
+            "write that leaves the configuration as it was. Engine defaults that "
+            "live in code are covered by server_build, so compare both. Omitted "
+            "where the response was not computed under a vault's configuration, as "
+            "on the error envelope. Like server_build, it signals a change and "
+            "does not refresh client-cached tool schemas."
+        ),
+    )
+
+    def stamped(self, vault_config_fingerprint: str) -> "ReadMeta":
+        """Return a copy naming the vault configuration the answer was computed under.
+
+        The build half of the stamp is a process constant and arrives by
+        default; the fingerprint is per vault, so the service that answered
+        supplies it from its own configuration (CAS-ADR-055).
+        """
+        return self.model_copy(update={"vault_config_fingerprint": vault_config_fingerprint})
 
     @classmethod
     def projection_freshness(

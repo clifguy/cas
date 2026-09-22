@@ -6337,6 +6337,15 @@ components:
           - string
           - 'null'
           description: Name of the tool that recomputes a stale projection (recompute_abstract). Populated only when projection_status is 'stale'; null otherwise. Gives a caller an actionable recovery pointer without a second probing round-trip.
+        server_build:
+          type: string
+          description: Release version and build identity of the SAGE server that produced this response, in the form the MCP initialize handshake advertises as serverInfo.version (for example 2.5.31+d0026c6). A value different from one recorded earlier means the server now runs different code. It does not refresh tool schemas a client cached at session start; re-reading those remains the client's job.
+        vault_config_fingerprint:
+          type:
+          - string
+          - 'null'
+          pattern: ^sha256:[0-9a-f]{64}$
+          description: 'Fingerprint (sha256:<hex>) of the effective vault configuration the response was computed under: every section, with defaults filled in. It moves whenever a configured rule moves -- lifecycle transitions, dependency-satisfying states, document types -- and is unchanged by a write that leaves the configuration as it was. Engine defaults that live in code are covered by server_build, so compare both. Omitted where the response was not computed under a vault''s configuration, as on the error envelope. Like server_build, it signals a change and does not refresh client-cached tool schemas.'
 
     # -------------------------------------------------------------------------
     # Interactive sign-in (backend-for-frontend)

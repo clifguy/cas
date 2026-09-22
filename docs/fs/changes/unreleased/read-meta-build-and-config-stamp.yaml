@@ -1,0 +1,20 @@
+classification: minor
+category:
+  - capability
+summary: >-
+  ReadMeta gains server_build and vault_config_fingerprint. Every read-path
+  response (get_document, search in every mode and target, read_projection,
+  read_section) names the release version and build of the server that
+  answered, in the serverInfo.version form, and a sha256 fingerprint of the
+  effective vault configuration the answer was computed under, covering every
+  section with defaults filled in. The REST error envelope carries server_build
+  and omits the fingerprint. Search measures its inline byte budget with the
+  stamp included.
+for_callers: >-
+  read_meta now carries server_build and, on vault-scoped reads,
+  vault_config_fingerprint. Record both; when either differs from the value
+  recorded earlier, the server was redeployed or the vault's rules changed
+  (lifecycle transitions, dependency-satisfying states, document types), and a
+  cached interpretation of earlier answers may no longer hold. A no-op
+  configuration write leaves the fingerprint unchanged. The stamp does not
+  refresh tool schemas a client cached at session start.
