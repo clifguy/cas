@@ -59,6 +59,14 @@ def item_shape(model: type[BaseModel]) -> dict[str, Any]:
     return _inline(schema, definitions)
 
 
-def published_item_list(model: type[BaseModel]) -> Any:
-    """A ``list[dict]`` annotation that publishes ``model`` as its item shape."""
-    return Annotated[list[dict], WithJsonSchema({"type": "array", "items": item_shape(model)})]
+def published_item_list(model: type[BaseModel], *, description: str | None = None) -> Any:
+    """A ``list[dict]`` annotation that publishes ``model`` as its item shape.
+
+    ``description`` is written into the replacement schema itself: the schema
+    replaces the field's whole JSON Schema, so a description supplied beside it
+    is not relied on to survive the replacement.
+    """
+    schema: dict[str, Any] = {"type": "array", "items": item_shape(model)}
+    if description:
+        schema["description"] = description
+    return Annotated[list[dict], WithJsonSchema(schema)]

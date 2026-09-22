@@ -1,0 +1,14 @@
+classification: patch
+summary: >-
+  Publish per-parameter documentation in the MCP input schema for the write
+  tools -- bulk_ingest_document, create_edges, delete_edge, recompute_abstract,
+  recompute_pipeline, update_lifecycles, update_metadata and
+  update_staging_edge -- and cut each tool description to 2,048 characters or
+  fewer: no Args block, a shorter prose body, and compact error-mode lists.
+  The batch tools' items argument now carries its own description. The
+  recompute_pipeline operation description is condensed with its tool
+  description. Rationale citations are dropped from five request-model field
+  descriptions, on the OpenAPI specification and the request models alike.
+  The MCP tool catalog is regenerated. Documentation only; no parameter,
+  type, default or behaviour changes.
+for_callers: ""

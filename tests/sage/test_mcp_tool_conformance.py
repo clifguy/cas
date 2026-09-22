@@ -273,6 +273,10 @@ def _python_types_and_optional(annotation: Any) -> tuple[frozenset[type], bool]:
     an empty set as "skip type check, name-match still applies".
     """
     optional = False
+    # A published description wraps the type in ``Annotated``; compare the
+    # type it wraps, or every described parameter skips the type check.
+    if typing.get_origin(annotation) is typing.Annotated:
+        annotation = typing.get_args(annotation)[0]
     origin = typing.get_origin(annotation)
 
     if origin is typing.Union or origin is types.UnionType:
@@ -1479,3 +1483,19 @@ def test_the_options_reachability_gate_fires_on_a_dropped_option():
         "unreachable; if it does not, the gate's own comparison is not separating "
         "an option the counterpart offers from one it does not."
     )
+
+
+def test_python_types_see_through_a_published_description():
+    """A described parameter is type-checked like an undescribed one.
+
+    ``Annotated`` carries the parameter's published description. Reduced to
+    the empty set, it would read as "cannot tell" and skip the type
+    comparison for every described parameter, silently.
+    """
+    from typing import Annotated
+
+    from pydantic import Field
+
+    described = Annotated[int | None, Field(description="A described parameter.")]
+    assert _python_types_and_optional(described) == (frozenset({int}), True)
+    assert _python_types_and_optional(described) == _python_types_and_optional(int | None)

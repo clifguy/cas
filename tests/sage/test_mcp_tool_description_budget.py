@@ -44,10 +44,7 @@ _ARGS_HEADER_RE: Final[re.Pattern[str]] = re.compile(
 #: Tools that do not yet satisfy the three rules. Remove a tool when it does.
 KNOWN_UNCONVERTED: Final[frozenset[str]] = frozenset(
     {
-        "bulk_ingest_document",
-        "create_edges",
         "create_vault",
-        "delete_edge",
         "export_projection",
         "get_default_vault_config",
         "get_document",
@@ -62,16 +59,11 @@ KNOWN_UNCONVERTED: Final[frozenset[str]] = frozenset(
         "optimize_vault_content_store",
         "read_projection",
         "read_section",
-        "recompute_abstract",
         "recompute_deferred_vault_abstracts",
-        "recompute_pipeline",
         "recompute_views",
         "reload_vault",
         "restore_vault_source_file",
         "traverse",
-        "update_lifecycles",
-        "update_metadata",
-        "update_staging_edge",
         "update_vault_config",
         "verify_hashes",
         "verify_preconditions",

@@ -750,7 +750,6 @@ UNRESOLVED_IDENTIFIERS: Final[dict[tuple[str, str], dict[str, str]]] = {
         "CTEs": "prose: SQL common table expressions used by graph traversal",
     },
     ("sage_core", "update_lifecycles"): {
-        "cas": "example vault id in a worked example",
         "sage_vaults": (
             "the vault-scoped route prefix, in the endpoint paths this "
             "narrative names; a URL segment, not a contract node"

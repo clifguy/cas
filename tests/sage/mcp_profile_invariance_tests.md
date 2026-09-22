@@ -176,12 +176,13 @@ buffered `read_source` delivery round-trips the same bytes but fails the
 **Artifact:** `sage/sage_api_tools.py`, `sage/app_tools.py`
 **Category:** mcp_tool, self_documentation
 
-**Precondition:** None (static docstring inspection).
+**Precondition:** None (static inspection of the published tool).
 
-**Input:** `inspect.getdoc` over `ingest_document`, `bulk_ingest_document`,
+**Input:** the published text -- description plus parameter descriptions,
+as a client receives it -- of `ingest_document`, `bulk_ingest_document`,
 `get_document`, `read_projection`, `list_directory`.
 
-**Expected:** each docstring states that its path parameter (`source`,
+**Expected:** each tool states that its path parameter (`source`,
 `files[].file_path`, `write_to_path`, `directory`) resolves on the machine
 running the SAGE server process.
 

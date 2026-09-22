@@ -529,7 +529,10 @@ class Pin(NamedTuple):
 UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # doc_only fell from 16 once a qualified error-mode header ended the
     # prose body: its per-item code list had been read as a claim.
-    ("sage_core", "create_edges"): Pin(6, 14),
+    # Both counts fell again once the per-item and per-argument rules moved
+    # into the published parameter descriptions, which the whole-docstring
+    # side credits, in the wording the operation already used.
+    ("sage_core", "create_edges"): Pin(4, 5),
     ("sage_core", "create_vault"): Pin(4, 17),
     ("sage_core", "delete_edge"): Pin(6, 3),
     # doc_only fell from 2 as the 200 response declared the download recipe
@@ -557,7 +560,8 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     ("sage_core", "read_section"): Pin(2, 1),
     # doc_only fell from 20 once a qualified error-mode header ended the prose
     # body: its synchronous refusal list had been read as claims.
-    ("sage_core", "recompute_abstract"): Pin(3, 14),
+    # doc_only fell again, from 14, as its prose was condensed to the budget.
+    ("sage_core", "recompute_abstract"): Pin(3, 7),
     ("sage_core", "recompute_deferred_vault_abstracts"): Pin(5, 6),
     ("sage_core", "recompute_views"): Pin(4, 10),
     # doc_only fell from 10 as the operation gained the two-phase transfer
@@ -569,7 +573,10 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # the docstring now declares the boundary refusals, covering one claim
     # the contract was stating alone.
     ("sage_core", "traverse"): Pin(4, 1),
-    ("sage_core", "update_lifecycles"): Pin(7, 6),
+    # Both counts fell again once the per-item and per-argument rules moved
+    # into the published parameter descriptions, which the whole-docstring
+    # side credits, in the wording the operation already used.
+    ("sage_core", "update_lifecycles"): Pin(5, 3),
     # doc_only fell from 17 as the tool's batch-level list gained the per-item
     # document-id refusal its operation's 400 now declares: a claim the
     # docstring was making alone has a counterpart. A reconciliation, unlike
@@ -577,7 +584,10 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # doc_only fell from 16 once a qualified error-mode header ended the
     # prose body: its per-item and batch-level code lists had been read as
     # claims.
-    ("sage_core", "update_metadata"): Pin(7, 13),
+    # Both counts fell again once the per-item and per-argument rules moved
+    # into the published parameter descriptions, which the whole-docstring
+    # side credits, in the wording the operation already used.
+    ("sage_core", "update_metadata"): Pin(6, 5),
     ("sage_core", "update_vault_config"): Pin(7, 8),
     ("sage_core", "verify_hashes"): Pin(4, 5),
     # doc_only fell from 7 as the operation's 400 gained the boundary-refusal
@@ -595,7 +605,10 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # reconciliation, and the rule the added paragraph was written against is
     # that parallel sentence structure is what the coverage floor reads, not
     # parallel content -- the same claim split differently stays uncovered.
-    ("cas_app", "bulk_ingest_document"): Pin(9, 32),
+    # Both counts fell again once the per-item and per-argument rules moved
+    # into the published parameter descriptions, which the whole-docstring
+    # side credits, in the wording the operation already used.
+    ("cas_app", "bulk_ingest_document"): Pin(9, 9),
     ("cas_app", "list_directory"): Pin(6, 9),
 }
 

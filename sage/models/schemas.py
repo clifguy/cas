@@ -1790,7 +1790,7 @@ class BulkLifecycleRequest(BaseModel):
         description=(
             "Items processed in order. Each item runs in its own "
             "per-document lock and its own database transaction; the batch "
-            "as a whole is NOT atomic (CAS-ADR-029). A bad item does not "
+            "as a whole is NOT atomic. A bad item does not "
             "roll back earlier-or-later successful items."
         ),
     )
@@ -2276,7 +2276,7 @@ class BulkMetadataRequest(BaseModel):
         description=(
             "Items processed in order. Each item runs in its own "
             "per-document lock and its own database transaction; the batch "
-            "as a whole is NOT atomic (CAS-ADR-029). A bad item does not "
+            "as a whole is NOT atomic. A bad item does not "
             "roll back earlier-or-later successful items."
         ),
     )
@@ -2915,8 +2915,8 @@ class BulkLinkRequest(BaseModel):
     items: list[BulkLinkItem] = Field(
         description=(
             "Items processed in order. Each item runs under the process-"
-            "wide `_link_lock` and a per-item database transaction; the "
-            "batch as a whole is NOT atomic (CAS-ADR-029). A bad item "
+            "wide link lock and a per-item database transaction; the "
+            "batch as a whole is NOT atomic. A bad item "
             "does not roll back earlier-or-later successful items."
         ),
     )
@@ -5485,7 +5485,7 @@ class BatchIngestFileMetadata(BaseModel):
         description=(
             "Optional Tier-3 metadata for this file, validated against the "
             "`metadata_schema` the vault config declares for the file's "
-            "resolved doc_type (CAS-ADR-028). A payload the schema rejects, or "
+            "resolved doc_type. A payload the schema rejects, or "
             "any payload for a doc_type declaring no schema, is reported for "
             "that file as `tier3_schema_violation` and leaves the rest of the "
             "batch to run. A sibling of `parsed_metadata`, not a key in it: "
@@ -5516,8 +5516,8 @@ class BatchIngestUploadMetadata(BaseModel):
         default=True,
         description=(
             "When true (default), every document in the batch lands with "
-            "metadata_confirmed=false in the metadata-review queue "
-            "(CAS-ADR-021). When false, caller-supplied metadata is committed "
+            "metadata_confirmed=false in the metadata-review queue. "
+            "When false, caller-supplied metadata is committed "
             "as authoritative."
         ),
     )
