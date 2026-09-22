@@ -436,6 +436,9 @@ deployment would create a new empty server there and switch every consumer to it
 The deploy guard also refuses an empty generation whenever the last deployment
 served one; when a failed apply has left that deployment without outputs, it reads
 the servers in the resource group instead. The fence remains the primary control.
+That fallback cannot tell a retained replacement from a serving one: after a
+rollback that keeps the replacement, a failed apply leaves every later deploy
+refused until the replacement is removed, under its own explicit approval.
 
 ## Isolated restore verification
 

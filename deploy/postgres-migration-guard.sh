@@ -44,12 +44,14 @@ case "$purpose" in
       # A failed apply leaves the record without outputs. Only then read the servers
       # themselves: a record naming the original server is authoritative, because a
       # rollback before cutover keeps the replacement server in the group.
+      reason='serving generation is selected'
       if [ -z "$selected" ]; then
         selected="$(az postgres flexible-server list --resource-group "$group" --query "[?starts_with(name, 'psql-${ENVIRONMENT_NAME}-')].name" -o tsv)"
+        reason='the deployment record has no outputs and the resource group holds a generation-suffixed server'
       fi
       for server in $selected; do
         case "${server#psql-"$ENVIRONMENT_NAME"-}" in
-          *-*) echo 'serving generation is selected; an empty generation would create a new server' >&2; exit 1 ;;
+          *-*) echo "$reason; an empty generation would create a new server" >&2; exit 1 ;;
         esac
       done
     fi ;;

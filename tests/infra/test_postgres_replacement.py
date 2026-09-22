@@ -166,7 +166,28 @@ def test_empty_generation_guard_falls_back_to_the_server_roster(
     result = _run_deploy_guard(tmp_path, "true", "", "", serving, 0, servers=servers)
     assert (result.returncode == 0) is allowed, result.stderr
     if not allowed:
+        # The refusal names what it read: a roster, not a serving deployment.
+        assert "deployment record has no outputs" in result.stderr
         assert "empty generation would create a new server" in result.stderr
+
+
+def test_roster_fallback_reads_every_server_past_a_hyphenated_environment(
+    tmp_path: Path,
+) -> None:
+    # The suffixed server listed first, under a hyphenated environment: inspecting
+    # only the last roster line, or counting hyphens across the roster, passes here.
+    result = _run_deploy_guard(
+        tmp_path,
+        "true",
+        "",
+        "",
+        "",
+        0,
+        environment="cor-prod",
+        servers="psql-cor-prod-old-pg17\npsql-cor-prod-old",
+    )
+    assert result.returncode != 0
+    assert "deployment record has no outputs" in result.stderr
 
 
 def test_empty_generation_guard_fails_closed_when_servers_cannot_be_read(
