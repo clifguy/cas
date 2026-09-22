@@ -31,6 +31,7 @@ from sage.mcp_init import SAGEServices
 from sage.models.enums import FacetField, RetrievalMode, SourceType
 from sage.models.legacy_form import detect_legacy_form
 from sage.models.schemas import (
+    BATCH_ITEM_MODELS,
     BulkLifecycleItem,
     BulkLifecycleRequest,
     BulkLinkItem,
@@ -263,6 +264,8 @@ def _validated_items(model: type[BaseModel], items: list) -> list:
                     recognized=envelope.detail["recognized"],
                     elsewhere=envelope.elsewhere
                     or any(_carries_undeclared_key(model, later) for later in items[index + 1 :]),
+                    aliases=envelope.detail.get("aliases"),
+                    see_also=envelope.detail.get("see_also"),
                 ) from exc
             raise
     return validated
@@ -1124,7 +1127,10 @@ def register_sage_tools(
           names a key its schema does not declare. ``detail.parameter``
           locates the object, ``detail.keys`` names every undeclared key in
           it, sorted (``detail.key`` is the first), and
-          ``detail.recognized`` lists the names that object accepts. A
+          ``detail.recognized`` lists the names that object accepts;
+          ``detail.aliases`` maps an accepted alias to its canonical name,
+          and ``detail.see_also`` names a sibling tool that accepts an
+          undeclared key and where it goes there, each when present. A
           batch-boundary refusal raised before any per-item work.
         - ``invalid_document_id`` (400): a document id a per-item request
           names is not well-formed.
@@ -1173,7 +1179,7 @@ def register_sage_tools(
             # envelope without committing any partial state. The
             # ``response_mode`` ValueError from Pydantic enum validation
             # rides this same up-front rejection path.
-            validated_items = _validated_items(BulkLifecycleItem, items)
+            validated_items = _validated_items(BATCH_ITEM_MODELS["update_lifecycles"], items)
             v = get_vault(vault_id)
             request = BulkLifecycleRequest(
                 items=validated_items,
@@ -1301,7 +1307,10 @@ def register_sage_tools(
           names a key its schema does not declare. ``detail.parameter``
           locates the object, ``detail.keys`` names every undeclared key in
           it, sorted (``detail.key`` is the first), and
-          ``detail.recognized`` lists the names that object accepts. A
+          ``detail.recognized`` lists the names that object accepts;
+          ``detail.aliases`` maps an accepted alias to its canonical name,
+          and ``detail.see_also`` names a sibling tool that accepts an
+          undeclared key and where it goes there, each when present. A
           batch-boundary refusal raised before any per-item work.
         - ``invalid_sha256`` (400): a per-item ``synced_from_content_hash``
           is not a well-formed hash.
@@ -1348,7 +1357,7 @@ def register_sage_tools(
             # envelope without committing any partial state. The
             # ``response_mode`` ValueError from Pydantic enum validation
             # rides this same up-front rejection path.
-            validated_items = _validated_items(BulkLinkItem, items)
+            validated_items = _validated_items(BATCH_ITEM_MODELS["create_edges"], items)
             v = get_vault(vault_id)
             request = BulkLinkRequest(
                 items=validated_items,
@@ -1455,8 +1464,12 @@ def register_sage_tools(
         YYYY-MM-DD calendar date), ``undeclared_key`` (400, an item or an
         object nested inside one such as ``tags`` or ``tier3_metadata`` names
         a key its schema does not declare; ``detail.parameter`` locates the
-        object, ``detail.keys`` names every undeclared key in it, sorted, and
-        ``detail.recognized`` lists the names that object accepts),
+        object, ``detail.keys`` names every undeclared key in it, sorted,
+        ``detail.recognized`` lists the names that object accepts,
+        ``detail.aliases`` maps an accepted alias to its canonical name, and
+        ``detail.see_also`` names a sibling tool that accepts an undeclared
+        key and where it goes there -- ``lifecycle_status`` points at
+        ``update_lifecycles``),
         ``vault_not_found`` (404, no vault is registered with that id), and
         ``internal_error`` (a malformed
         ``items`` shape or invalid ``response_mode``).
@@ -1514,7 +1527,7 @@ def register_sage_tools(
             # envelope without committing any partial state. The
             # ``response_mode`` ValueError from Pydantic enum validation
             # rides this same up-front rejection path.
-            validated_items = _validated_items(BulkMetadataItem, items)
+            validated_items = _validated_items(BATCH_ITEM_MODELS["update_metadata"], items)
             v = get_vault(vault_id)
             request = BulkMetadataRequest(
                 items=validated_items,

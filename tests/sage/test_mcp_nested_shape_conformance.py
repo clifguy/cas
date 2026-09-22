@@ -585,6 +585,7 @@ async def test_refusal_names_the_published_set(vault_services, tool, arguments, 
     assert envelope["error"] == "undeclared_key", envelope
     assert envelope["detail"]["parameter"] == parameter, envelope
     assert envelope["detail"]["key"] == "fabricated_key", envelope
-    assert sorted(envelope["detail"]["recognized"]) == sorted(
-        _published_at(tool, path)["properties"]
-    ), envelope
+    # The refusal accounts for every published name: canonical names in
+    # ``recognized``, and any declared alias of one in ``aliases``.
+    named = [*envelope["detail"]["recognized"], *envelope["detail"].get("aliases", {})]
+    assert sorted(named) == sorted(_published_at(tool, path)["properties"]), envelope

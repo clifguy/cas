@@ -6,6 +6,7 @@ extensions like 'filed' that aren't in the base enum.
 
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Annotated, Any, Literal, Union
 
@@ -1634,6 +1635,59 @@ class SetLifecycleResponse(BaseModel):
     )
 
 
+@dataclass(frozen=True)
+class AliasOf:
+    """Field marker: this field is an accepted alias of ``canonical``.
+
+    The declaration a refusal reads to report the alias beside the canonical
+    name, rather than listing the two as though they were different fields.
+    Carried as ``Annotated`` metadata, so it renders nothing in a published
+    schema.
+    """
+
+    canonical: str
+
+
+@dataclass(frozen=True)
+class Sets:
+    """Field marker: this field is how the operation changes ``attribute``.
+
+    Declared where a document attribute is set through a field of another
+    name -- a lifecycle state through a transition ``action`` -- so a refusal
+    elsewhere can point a caller who named the attribute at the field that
+    sets it. Carried as ``Annotated`` metadata, so it renders nothing in a
+    published schema.
+    """
+
+    attribute: str
+
+
+def field_aliases(model: type[BaseModel]) -> dict[str, str]:
+    """Map each alias field ``model`` declares to its canonical field name."""
+    return {
+        name: marker.canonical
+        for name, info in model.model_fields.items()
+        for marker in info.metadata
+        if isinstance(marker, AliasOf)
+    }
+
+
+def canonical_fields(model: type[BaseModel]) -> list[str]:
+    """The fields ``model`` declares, less those declared as aliases of another."""
+    aliases = field_aliases(model)
+    return [name for name in model.model_fields if name not in aliases]
+
+
+def field_sets(model: type[BaseModel]) -> dict[str, str]:
+    """Map each attribute a field of ``model`` declares it sets to that field's name."""
+    return {
+        marker.attribute: name
+        for name, info in model.model_fields.items()
+        for marker in info.metadata
+        if isinstance(marker, Sets)
+    }
+
+
 class BulkLifecycleItem(BaseModel):
     """One lifecycle transition request inside a bulk batch.
 
@@ -1652,14 +1706,14 @@ class BulkLifecycleItem(BaseModel):
             "`doc_id` per item."
         ),
     )
-    doc_id: DocumentIdStr | None = Field(
+    doc_id: Annotated[DocumentIdStr | None, AliasOf("document_id")] = Field(
         default=None,
         description=(
             "Back-compatible alias for the per-item `document_id`; supply "
             "exactly one of `document_id` or `doc_id` per item."
         ),
     )
-    action: str = Field(
+    action: Annotated[str, Sets("lifecycle_status")] = Field(
         description=(
             "Lifecycle transition action. The action vocabulary is "
             "vault-config-defined; see `lifecycle.transitions` in the vault config for"
@@ -2088,7 +2142,7 @@ class BulkMetadataItem(BaseModel):
             "`doc_id` per item."
         ),
     )
-    doc_id: DocumentIdStr | None = Field(
+    doc_id: Annotated[DocumentIdStr | None, AliasOf("document_id")] = Field(
         default=None,
         description=(
             "Back-compatible alias for the per-item `document_id`; supply "
@@ -2804,6 +2858,17 @@ class BulkLinkItem(BaseModel):
             "unset = explicit null."
         ),
     )
+
+
+#: The item model each batch operation validates its ``items`` against, keyed
+#: by the operation name both surfaces share (the MCP tool and the REST
+#: operationId). The one binding: the tools read their item model from it, and
+#: a refused key is redirected to a sibling operation through it.
+BATCH_ITEM_MODELS: dict[str, type[BaseModel]] = {
+    "update_lifecycles": BulkLifecycleItem,
+    "update_metadata": BulkMetadataItem,
+    "create_edges": BulkLinkItem,
+}
 
 
 class BulkLinkRequest(BaseModel):
