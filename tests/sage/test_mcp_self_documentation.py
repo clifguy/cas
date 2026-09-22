@@ -47,7 +47,12 @@ from sage.models.enums import (
 from sage.sage_api_tools import _INGEST_METADATA_KEYS, _SEARCH_FILTER_KEYS
 from sage.services.retrieval import DEFAULT_MCP_INLINE_BUDGET_BYTES
 from tests.helpers.adapter_claims import ENABLEMENT_CLAIM_MARKERS
-from tests.helpers.published_tool import published_text, tool_name_of
+from tests.helpers.published_tool import (
+    parameter_descriptions,
+    published_text,
+    published_tool,
+    tool_name_of,
+)
 
 #: How the inline budget is spelled on the tool surface. Derived, so that
 #: recalibrating the budget either carries the docstrings with it or
@@ -768,21 +773,56 @@ def test_search_docstring_documents_count_only_limit():
 def test_search_publishes_the_sort_vocabularies():
     """``sort_by`` and ``sort_order`` publish the values they accept.
 
+    Read from each parameter's own description rather than from the whole
+    published text, because the values are ordinary words: a whole-text
+    search for ``asc`` and ``desc`` is satisfied by "ascending" and
+    "descending" in unrelated prose, and three of the four sort keys are
+    named by the filter documentation. Measured -- the whole-text form of
+    this pin stayed green with the ``sort_order`` vocabulary deleted.
+
     Enum-driven, so a value added to either enum without reaching the tool
     fails here. Both vocabularies are closed and neither is expressible in
-    the published schema, which types the two parameters as bare strings:
-    a caller who cannot read the accepted set has to learn it from a
-    refusal. The sibling ``source_type`` pin below covers the filter key
-    that is closed the same way, and this one was written after the move
-    into the input schema dropped these two.
+    the published schema, which types the two parameters as bare strings.
     """
-    doc = _docstring(search)
-    for enum in (CatalogSortBy, SortOrder):
+    params = parameter_descriptions(published_tool("search").parameters)
+    for name, enum in (("sort_by", CatalogSortBy), ("sort_order", SortOrder)):
+        description = params.get(name, "")
         for member in enum:
-            assert member.value in doc, (
-                f"search must publish {enum.__name__} value {member.value!r}; "
-                "the vocabulary is closed and the schema cannot carry it."
+            assert member.value in description, (
+                f"search.{name} must publish {enum.__name__} value "
+                f"{member.value!r} on its own description; got: {description!r}"
             )
+
+
+def test_ingest_document_publishes_the_registered_source_types():
+    """``source_type`` names every format an adapter is registered for.
+
+    Derived from the adapter registry rather than from a list written here,
+    so a newly registered adapter that never reaches the tool's text fails
+    this. Read from the parameter's own description: the format names are
+    common words that appear elsewhere in the published text.
+    """
+    from sage.source_adapters.registry import build_source_adapter_registry
+
+    params = parameter_descriptions(published_tool("ingest_document").parameters)
+    description = params.get("source_type", "")
+    for source_type in build_source_adapter_registry():
+        assert source_type.value in description, (
+            f"ingest_document.source_type must name the registered format "
+            f"{source_type.value!r}; got: {description!r}"
+        )
+
+
+def test_ingest_document_publishes_the_failed_status_side_effect():
+    """The ``failed`` terminal status names the field carrying the reason.
+
+    A caller waiting on the pipeline learns the status and then has to know
+    where the cause sits; the sibling statuses carry no such field, so this
+    one sentence is the whole of that disclosure.
+    """
+    assert "pipeline_error" in _docstring(ingest_document), (
+        "ingest_document must state that the failed status sets pipeline_error"
+    )
 
 
 def test_discover_docstring_documents_source_type_vocabulary():
