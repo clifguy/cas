@@ -305,7 +305,7 @@ class DocumentsService:
             success=True,
             body_present=response.content is not None,
             body_length=response.content_size if response.content is not None else None,
-        )
+        ).stamped(self._config.fingerprint())
         # Positive body-form signal on every delivered response. A
         # binary-container source only reaches here when content was not
         # requested (the refusal above gates include_content); a default or

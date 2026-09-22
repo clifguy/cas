@@ -4501,14 +4501,27 @@ SCHEMAS = json.loads(
           "null"
         ]
       },
+      "server_build": {
+        "description": "Release version and build identity of the SAGE server that produced this response, in the form the MCP initialize handshake advertises as serverInfo.version (for example 2.5.31+d0026c6). A value different from one recorded earlier means the server now runs different code. It does not refresh tool schemas a client cached at session start; re-reading those remains the client's job.",
+        "type": "string"
+      },
       "success": {
         "description": "True on a delivered success response; the complete sub-object's presence distinguishes a real response from a transport-truncated fragment.",
         "type": "boolean"
+      },
+      "vault_config_fingerprint": {
+        "description": "Fingerprint (sha256:<hex>) of the effective vault configuration the response was computed under: every section, with defaults filled in. It moves whenever a configured rule moves -- lifecycle transitions, dependency-satisfying states, document types -- and is unchanged by a write that leaves the configuration as it was. Engine defaults that live in code are covered by server_build, so compare both. Omitted where the response was not computed under a vault's configuration, as on the error envelope. Like server_build, it signals a change and does not refresh client-cached tool schemas.",
+        "pattern": "^sha256:[0-9a-f]{64}$",
+        "type": [
+          "string",
+          "null"
+        ]
       }
     },
     "required": [
       "success",
-      "body_present"
+      "body_present",
+      "server_build"
     ],
     "type": "object"
   },

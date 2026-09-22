@@ -11,6 +11,7 @@ import yaml
 from pydantic import ValidationError
 
 from sage.api.errors import InvalidLifecycleTransitionError, InvalidParameterError
+from sage.build_info import VERSION_WITH_BUILD
 from sage.models.schemas import ErrorResponse
 from sage.models.wire import to_wire
 
@@ -201,7 +202,11 @@ def test_every_emitted_family_round_trips_and_is_reachable(error: Any) -> None:
     expected = {
         "code": error.code,
         "message": error.message,
-        "read_meta": {"success": False, "body_present": False},
+        "read_meta": {
+            "success": False,
+            "body_present": False,
+            "server_build": VERSION_WITH_BUILD,
+        },
     }
     if error.detail is not None:
         expected["detail"] = error.detail

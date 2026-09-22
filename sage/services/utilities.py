@@ -362,7 +362,9 @@ class UtilitiesService:
         doc, projection_text = await self._get_projection_text(document_id)
 
         if not spill_to_disk:
-            return ReadProjectionResponse.from_document(doc, projection_text=projection_text)
+            response = ReadProjectionResponse.from_document(doc, projection_text=projection_text)
+            response.read_meta = response.read_meta.stamped(self._config.fingerprint())
+            return response
 
         # write-to-disk delivery: the path was validated above, before the read.
         # The exclusive-create mode is what actually enforces the
@@ -400,7 +402,7 @@ class UtilitiesService:
             body_present=False,
             projection_status=response.read_meta.projection_status,
             projection_recovery=response.read_meta.projection_recovery,
-        )
+        ).stamped(self._config.fingerprint())
         return response
 
     # ------------------------------------------------------------------
@@ -447,12 +449,14 @@ class UtilitiesService:
         # divided a long one.
         section_text = join_passages(chunks)
 
-        return ReadSectionResponse.from_document(
+        response = ReadSectionResponse.from_document(
             doc,
             heading_path=heading_path,
             chunk_count=len(group_sections(chunks)),
             section_text=section_text,
         )
+        response.read_meta = response.read_meta.stamped(self._config.fingerprint())
+        return response
 
     # ------------------------------------------------------------------
     # list_headings

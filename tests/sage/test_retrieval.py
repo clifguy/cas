@@ -4448,7 +4448,7 @@ async def test_budget_hint_accounts_for_tier3_metadata(
     monkeypatch,
 ):
     """tier3_metadata projection growth pushes recommended_limit lower."""
-    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "2048")
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "4096")
 
     ids_yes = await _seed_portfolio(graph_store, 40, with_tier3=True, id_prefix="t0091_t3_yes")
     with_t3 = await retrieval_service.discover(

@@ -5,6 +5,8 @@ transition table used by LifecycleService for state machine validation.
 """
 
 import functools
+import hashlib
+import json
 import logging
 import re
 from collections.abc import Iterable, Mapping
@@ -1947,6 +1949,19 @@ class VaultConfig(BaseModel):
         the config rather than a type.
         """
         return {state.value for state in self.lifecycle.states}
+
+    def fingerprint(self) -> str:
+        """Fingerprint of the effective configuration, as ``sha256:<hex>``.
+
+        Covers every section, with defaults filled in, so one effective
+        configuration has one fingerprint however it was spelled. It covers
+        the whole configuration rather than the sections reads consult today:
+        a curated list would be a second record of what reads depend on, and
+        its drift would produce an unchanged fingerprint over changed rules,
+        the one outcome the stamp exists to rule out (CAS-ADR-055).
+        """
+        canonical = json.dumps(self.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+        return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
 
     def build_tier3_validators(self) -> None:
         """Construct and cache a jsonschema Validator per doc_type that
