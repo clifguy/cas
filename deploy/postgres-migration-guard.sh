@@ -41,9 +41,17 @@ case "$purpose" in
       # the last deployment served a generation. Listing rather than showing keeps
       # an absent deployment (a first deploy) empty while an Azure error still fails.
       selected="$(az deployment sub list --query "[?name=='${ENVIRONMENT_NAME:?}'].properties.outputs.postgresServerName.value | [0]" -o tsv)"
-      case "${selected#psql-"$ENVIRONMENT_NAME"-}" in
-        *-*) echo 'serving generation is selected; an empty generation would create a new server' >&2; exit 1 ;;
-      esac
+      # A failed apply leaves the record without outputs. Only then read the servers
+      # themselves: a record naming the original server is authoritative, because a
+      # rollback before cutover keeps the replacement server in the group.
+      if [ -z "$selected" ]; then
+        selected="$(az postgres flexible-server list --resource-group "$group" --query "[?starts_with(name, 'psql-${ENVIRONMENT_NAME}-')].name" -o tsv)"
+      fi
+      for server in $selected; do
+        case "${server#psql-"$ENVIRONMENT_NAME"-}" in
+          *-*) echo 'serving generation is selected; an empty generation would create a new server' >&2; exit 1 ;;
+        esac
+      done
     fi ;;
   migration)
     [[ "$generation" =~ ^[a-z][a-z0-9-]{0,11}$ ]] || { echo 'invalid generation' >&2; exit 2; }

@@ -434,7 +434,8 @@ After retirement, never clear the `serving:<generation>` fence or the persistent
 generation selection. An empty generation selects the original server name, and
 deployment would create a new empty server there and switch every consumer to it.
 The deploy guard also refuses an empty generation whenever the last deployment
-served one, but the fence remains the primary control.
+served one; when a failed apply has left that deployment without outputs, it reads
+the servers in the resource group instead. The fence remains the primary control.
 
 ## Isolated restore verification
 

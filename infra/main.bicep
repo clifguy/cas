@@ -56,7 +56,7 @@ param baseDomain string
 param postgresAadAdminObjectId string = ''
 
 @maxLength(12)
-@description('Serving database generation. Empty preserves the incumbent. Select a prepared replacement only after verified migration.')
+@description('Serving database generation. Empty selects the original server name, and deployment refuses it once a generation has served. Select a prepared replacement only after verified migration.')
 param postgresGeneration string = ''
 
 var postgresMajor = empty(postgresGeneration)

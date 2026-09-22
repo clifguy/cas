@@ -111,6 +111,7 @@ def test_migration_client_covers_both_declared_majors() -> None:
         ("true", "", "", "", 1, False),
         ("true", "", "", "psql-prod-old-g17", 0, False),
         ("true", "", "", "psql-prod-old", 0, True),
+        ("true", "", "", "psql-prod-old-pg17", 0, False),
     ],
 )
 def test_deployment_guard(
@@ -118,7 +119,7 @@ def test_deployment_guard(
 ) -> None:
     result = _run_deploy_guard(tmp_path, exists, state, generation, serving, code)
     assert (result.returncode == 0) is allowed, result.stderr
-    if serving.endswith("-g17") and not generation:
+    if serving.startswith("psql-prod-old-") and not generation:
         # Refused by the generation check itself, not by an unexpected az call.
         assert "empty generation would create a new server" in result.stderr
 
@@ -144,6 +145,37 @@ def test_empty_generation_guard_fails_closed_when_deployments_cannot_be_read(
     assert result.returncode != 0
 
 
+@pytest.mark.parametrize(
+    "serving,servers,allowed",
+    [
+        # A failed apply leaves the record without outputs; the roster still shows
+        # the generation that serves.
+        ("", "psql-prod-old\npsql-prod-old-pg17", False),
+        ("", "psql-prod-old-pg17", False),
+        # A failed first deploy, and a genuine first deploy.
+        ("", "psql-prod-old", True),
+        ("", "", True),
+        # A rollback before cutover keeps the replacement server, but the record
+        # still names the original, so the roster must not be consulted.
+        ("psql-prod-old", "psql-prod-old\npsql-prod-old-pg17", True),
+    ],
+)
+def test_empty_generation_guard_falls_back_to_the_server_roster(
+    tmp_path: Path, serving: str, servers: str, allowed: bool
+) -> None:
+    result = _run_deploy_guard(tmp_path, "true", "", "", serving, 0, servers=servers)
+    assert (result.returncode == 0) is allowed, result.stderr
+    if not allowed:
+        assert "empty generation would create a new server" in result.stderr
+
+
+def test_empty_generation_guard_fails_closed_when_servers_cannot_be_read(
+    tmp_path: Path,
+) -> None:
+    result = _run_deploy_guard(tmp_path, "true", "", "", "", 0, roster_code=1)
+    assert result.returncode != 0
+
+
 def _run_deploy_guard(
     tmp_path: Path,
     exists: str,
@@ -153,6 +185,8 @@ def _run_deploy_guard(
     code: int,
     environment: str = "prod",
     list_code: int = 0,
+    servers: str = "",
+    roster_code: int = 0,
 ) -> subprocess.CompletedProcess[str]:
     az = tmp_path / "az"
     az.write_text("""#!/bin/sh
@@ -163,6 +197,8 @@ case "$*" in
   "group show "*) [ "$EXISTS" = true ] || exit 1; printf '%s' "$STATE" ;;
   "deployment sub show "*) printf '%s' "$SERVING" ;;
   "deployment sub list "*) [ "$LIST_CODE" = 0 ] || exit "$LIST_CODE"; printf '%s' "$SERVING" ;;
+  "postgres flexible-server list "*)
+    [ "$ROSTER_CODE" = 0 ] || exit "$ROSTER_CODE"; printf '%s' "$SERVERS" ;;
   *) exit 99 ;;
 esac
 """)
@@ -178,6 +214,8 @@ esac
             "CODE": str(code),
             "ENVIRONMENT_NAME": environment,
             "LIST_CODE": str(list_code),
+            "SERVERS": servers,
+            "ROSTER_CODE": str(roster_code),
         },
         capture_output=True,
         text=True,
