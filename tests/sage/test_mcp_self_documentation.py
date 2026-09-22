@@ -1719,6 +1719,15 @@ _MAINTENANCE_REQUEST_FIELDS: Final[dict[tuple[str, str], tuple[type, str]]] = {
     ("verify_vault_source_files", "document_ids"): (SourceFileIntegrityRequest, "document_ids"),
 }
 
+#: A phrase each MCP-only supplement carries, by parameter. A supplement the
+#: prefix match cannot see: dropping one leaves the field's text intact.
+_MCP_SUPPLEMENT_MARKERS: Final[dict[tuple[str, str], str]] = {
+    ("create_vault", "config"): "get_default_vault_config",
+    ("restore_vault_source_file", "source"): "refused deliveries",
+    ("restore_vault_source_file", "transfer_token"): "no second upload",
+    ("restore_vault_source_file", "sha256"): "completion call",
+}
+
 #: Maintenance-surface parameters with no request-body field to derive from,
 #: each with the reason. A path or query parameter is described on its own.
 _MAINTENANCE_AUTHORED_PARAMETERS: Final[dict[tuple[str, str], str]] = {
@@ -1737,7 +1746,9 @@ def test_maintenance_parameters_publish_their_request_field(tool_name: str, para
     an MCP-only supplement.
 
     Anti-coincidental-pass: this is a prefix match on the field's text, not a
-    similarity, so a hand-written paraphrase of the field fails.
+    similarity, so a hand-written paraphrase of the field fails. A supplement is
+    held by its marker, read only after the field's text, so a supplement
+    dropped while the field's text survives fails too.
     """
     model, field = _MAINTENANCE_REQUEST_FIELDS[(tool_name, parameter)]
     tool = published_tools_on("sage_maint")[tool_name]
@@ -1747,6 +1758,13 @@ def test_maintenance_parameters_publish_their_request_field(tool_name: str, para
     assert published.startswith(expected), (
         f"{tool_name}.{parameter} does not publish {model.__name__}.{field}'s description"
     )
+    marker = _MCP_SUPPLEMENT_MARKERS.get((tool_name, parameter))
+    if marker is not None:
+        supplement = published[len(expected) :]
+        assert marker in supplement, (
+            f"{tool_name}.{parameter} lost its MCP-only supplement ({marker!r})"
+        )
+        assert marker not in expected, f"{marker!r} would be found in the field's own text"
 
 
 def test_maintenance_parameter_classification_is_exhaustive():
@@ -1763,6 +1781,17 @@ def test_maintenance_parameter_classification_is_exhaustive():
         if parameter != "vault_id" or name == "get_default_vault_config"
     }
     assert live, "the maintenance surface publishes no parameters"
+    tools = published_tools_on("sage_maint")
+    supplemented = {
+        (name, parameter)
+        for (name, parameter), (model, field) in _MAINTENANCE_REQUEST_FIELDS.items()
+        if parameter_descriptions(tools[name].parameters)[parameter]
+        != model.model_fields[field].description
+    }
+    assert supplemented == set(_MCP_SUPPLEMENT_MARKERS), (
+        f"supplements without a marker: {sorted(supplemented - set(_MCP_SUPPLEMENT_MARKERS))}; "
+        f"markers without a supplement: {sorted(set(_MCP_SUPPLEMENT_MARKERS) - supplemented)}"
+    )
     both = set(_MAINTENANCE_REQUEST_FIELDS) & set(_MAINTENANCE_AUTHORED_PARAMETERS)
     assert not both, f"classified as both derived and authored: {sorted(both)}"
     classified = set(_MAINTENANCE_REQUEST_FIELDS) | set(_MAINTENANCE_AUTHORED_PARAMETERS)

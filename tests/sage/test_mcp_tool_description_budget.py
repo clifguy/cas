@@ -72,9 +72,13 @@ def test_tool_fits_the_description_budget(name: str) -> None:
     assert not violations, f"{name}: " + "; ".join(violations)
 
 
-#: A listed error-mode entry: a bullet opening with a code in double backticks,
-#: or a bullet grouping several codes under one status (``- 400: ``a``, ``b````).
-_ERROR_ENTRY_RE: Final[re.Pattern[str]] = re.compile(r"^\s*- ``([a-z0-9_]+)``", re.MULTILINE)
+#: A listed error-mode entry: a bullet opening with one or more comma-separated
+#: codes in double backticks (``- ``a``, ``b`` (400)``), or a bullet grouping
+#: several codes under one status (``- 400: ``a``, ``b````). Only the opening run
+#: counts: a code named later, in the condition text, is a cross-reference.
+_ERROR_ENTRY_RE: Final[re.Pattern[str]] = re.compile(
+    r"^\s*- (``[a-z0-9_]+``(?:, ``[a-z0-9_]+``)*)", re.MULTILINE
+)
 _GROUPED_ENTRY_RE: Final[re.Pattern[str]] = re.compile(r"^\s*- \d{3}: (.*)$", re.MULTILINE)
 _CODE_RE: Final[re.Pattern[str]] = re.compile(r"``([a-z0-9_]+)``")
 
@@ -91,7 +95,28 @@ def _listed_error_codes(description: str) -> set[str]:
     if not sep:
         return set()
     grouped = {c for line in _GROUPED_ENTRY_RE.findall(block) for c in _CODE_RE.findall(line)}
-    return set(_ERROR_ENTRY_RE.findall(block)) | grouped
+    leading = {c for run in _ERROR_ENTRY_RE.findall(block) for c in _CODE_RE.findall(run)}
+    return leading | grouped
+
+
+@pytest.mark.parametrize(
+    ("bullet", "expected"),
+    [
+        ("- ``first_code`` (400)", {"first_code"}),
+        ("- ``first_code``, ``second_code`` (400): why", {"first_code", "second_code"}),
+        ("- 400: ``first_code``, ``second_code``", {"first_code", "second_code"}),
+        ("- ``first_code`` (409): another ``some_tool`` is running", {"first_code"}),
+    ],
+    ids=["single", "comma-run", "grouped-by-status", "condition-names-a-tool"],
+)
+def test_error_list_parser_reads_every_listed_code(bullet: str, expected: set[str]) -> None:
+    """Every code a bullet lists is read, and a name in its condition is not.
+
+    Reading only a bullet's first code would hide a phantom in second position
+    from the gate below; reading every backticked name would report a tool the
+    condition merely mentions.
+    """
+    assert _listed_error_codes(f"Error modes:\n{bullet}\n") == expected
 
 
 @pytest.mark.parametrize("name", sorted(EXPECTED_SURFACE))
