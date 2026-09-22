@@ -585,15 +585,14 @@ async def test_mixed_identifier_forms_resolve_independently(seeded_mcp_vault):
 
 
 def test_update_metadata_docstring_documents_doc_id_alias():
-    """M7 -- The tool docstring documents ``doc_id`` as a per-item alias
-    for ``document_id``. Anchored to the same line as ``document_id`` to
-    defeat a loose ``"doc_id" in doc`` coincidental pass."""
+    """M7 -- The published tool documents ``doc_id`` as a per-item alias
+    for ``document_id``. Read from what a client receives, where the alias
+    rides the item's ``document_id`` description, and anchored to that one
+    line to defeat a loose ``"doc_id" in doc`` coincidental pass."""
     import re
-    import textwrap
 
-    doc = mcp_server.update_metadata.__doc__
-    assert doc is not None
-    dedented = textwrap.dedent(doc)
-    assert re.search(r"document_id[^\n]*doc_id", dedented), (
-        "update_metadata docstring must document `doc_id` as a per-item alias for `document_id`"
+    from tests.helpers.published_tool import published_text
+
+    assert re.search(r"items\.document_id:[^\n]*doc_id", published_text("update_metadata")), (
+        "update_metadata must document `doc_id` as a per-item alias for `document_id`"
     )

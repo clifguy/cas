@@ -3295,38 +3295,27 @@ paths:
       summary: Re-run the full ingestion pipeline against an existing document.
       description: >-
         Operator repair for a document stuck at
-        `pipeline_status=projection_complete` with no chunks -- the
-        silent-loss state left when background indexing is lost or its host
-        process dies mid-execution. Projection re-runs from the document's
-        `source_path` within this call, so a source or adapter failure is
-        refused here rather than stamped on the document as `failed`. Indexing
-        and abstraction then dispatch as a background task, and the call
-        returns without waiting for them.
+        `pipeline_status=projection_complete` with no chunks, the state left
+        when background indexing is lost. Projection re-runs from the
+        document's `source_path` within this call, so a source or adapter
+        failure is refused here. Indexing and abstraction then run as a
+        background task, and the call returns without waiting for them.
 
 
-        Fire-and-forget: the background task re-indexes the chunks,
-        regenerates the abstract, and moves `pipeline_status` to
-        `abstraction_complete` or `abstraction_skipped` on success, to
-        `failed` when indexing or abstraction errors, or to
-        `abstraction_interrupted` when the queue draining the work was stopped
-        before it ran, in which case the next server start re-runs it. To
-        observe the outcome, wait for a terminal `pipeline_status` with
-        `get_document`, as a single bounded wait rather than one status read
-        per unit of caller work. Bound the wait: a document left in
-        `indexing_in_progress` or `abstraction_in_progress` with no work in
-        flight, because the process restarted mid-job, never reaches a
-        terminal status on its own. A failure in the background task is not
-        returned by this call; it appears as `pipeline_status=failed` with
-        `pipeline_error` populated.
+        To observe the outcome, wait for a terminal `pipeline_status` with
+        `get_document`, as one bounded wait: `abstraction_complete` or
+        `abstraction_skipped` on success, `failed` with `pipeline_error`
+        populated, or `abstraction_interrupted`, which the next server start
+        re-runs. A document left in `indexing_in_progress` or
+        `abstraction_in_progress` after a process restart never reaches a
+        terminal status on its own.
 
 
-        One recompute runs per document at a time: a concurrent call against
-        the same document is refused rather than dispatching a parallel task,
-        while calls against different documents run in parallel. After a
-        process-level kill interrupted a recompute or an ingest, enumerate the
-        stuck documents with a catalog `search` filtered on
-        `pipeline_status=projection_complete`, and re-issue this call against
-        each.
+        One recompute runs per document at a time, while calls against
+        different documents run in parallel. After a process-level kill,
+        enumerate the stuck documents with a catalog `search` filtered on
+        `pipeline_status=projection_complete`, and re-issue this call
+        against each.
       tags: [Document Metadata]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -7038,7 +7027,7 @@ components:
           description: >-
             Items processed in order. Each item runs in its own
             per-document lock and its own database transaction; the batch
-            as a whole is NOT atomic (CAS-ADR-029). A bad item does not
+            as a whole is NOT atomic. A bad item does not
             roll back earlier-or-later successful items.
         response_mode:
           anyOf:
@@ -7268,8 +7257,8 @@ components:
             $ref: "#/components/schemas/BulkLinkItem"
           description: >-
             Items processed in order. Each item runs under the
-            process-wide `_link_lock` and a per-item database transaction;
-            the batch as a whole is NOT atomic (CAS-ADR-029). A bad
+            process-wide link lock and a per-item database transaction;
+            the batch as a whole is NOT atomic. A bad
             item does not roll back earlier-or-later successful items.
         response_mode:
           anyOf:
@@ -7491,7 +7480,7 @@ components:
           description: >-
             Items processed in order. Each item runs in its own
             per-document lock and its own database transaction; the batch
-            as a whole is NOT atomic (CAS-ADR-029). A bad item does not
+            as a whole is NOT atomic. A bad item does not
             roll back earlier-or-later successful items.
         response_mode:
           anyOf:
@@ -9957,7 +9946,7 @@ components:
           description: >-
             Optional Tier-3 metadata for this file, validated against the
             `metadata_schema` the vault config declares for the file's
-            resolved doc_type (CAS-ADR-028). A payload the schema rejects, or
+            resolved doc_type. A payload the schema rejects, or
             any payload for a doc_type declaring no schema, is reported for
             that file as `tier3_schema_violation` and leaves the rest of the
             batch to run. A sibling of `parsed_metadata`, not a key in it:
@@ -10025,8 +10014,8 @@ components:
           type: boolean
           description: >-
             When true (default), every document in the batch lands with
-            metadata_confirmed=false in the metadata-review queue
-            (CAS-ADR-021). When false, caller-supplied metadata is committed
+            metadata_confirmed=false in the metadata-review queue.
+            When false, caller-supplied metadata is committed
             as authoritative.
         dry_run:
           type: boolean

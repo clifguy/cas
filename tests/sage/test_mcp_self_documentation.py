@@ -41,10 +41,15 @@ from sage.models.enums import (
     EdgeType,
     PipelineStatus,
     RationaleKind,
+    ResponseMode,
     RetrievalMode,
     SortOrder,
 )
-from sage.sage_api_tools import _INGEST_METADATA_KEYS, _SEARCH_FILTER_KEYS
+from sage.sage_api_tools import (
+    _INGEST_METADATA_KEYS,
+    _SEARCH_FILTER_KEYS,
+    STAGING_EDGE_ACTIONS,
+)
 from sage.services.retrieval import DEFAULT_MCP_INLINE_BUDGET_BYTES
 from tests.helpers.adapter_claims import ENABLEMENT_CLAIM_MARKERS
 from tests.helpers.published_tool import (
@@ -381,7 +386,12 @@ def test_set_lifecycle_signature_exposes_dry_run():
         "the wrapper must expose dry_run to close the T-0152 rollout gap."
     )
     param = sig.parameters["dry_run"]
-    assert param.annotation is bool, (
+    # A published description wraps the type in ``Annotated``; the type
+    # itself is what this pins.
+    annotation = param.annotation
+    if get_origin(annotation) is Annotated:
+        annotation = get_args(annotation)[0]
+    assert annotation is bool, (
         f"update_lifecycle.dry_run annotation is {param.annotation!r}; "
         "expected ``bool``. Every other mutation MCP wrapper uses ``bool = False``."
     )
@@ -795,6 +805,14 @@ def test_search_publishes_the_sort_vocabularies():
 
 
 def test_ingest_document_publishes_the_registered_source_types():
+    _assert_publishes_registered_source_types("ingest_document", "source_type")
+
+
+def test_bulk_ingest_document_publishes_the_registered_source_types():
+    _assert_publishes_registered_source_types("bulk_ingest_document", "files.source_type")
+
+
+def _assert_publishes_registered_source_types(tool_name: str, path: str) -> None:
     """``source_type`` names every format an adapter is registered for.
 
     Derived from the adapter registry rather than from a list written here,
@@ -804,12 +822,46 @@ def test_ingest_document_publishes_the_registered_source_types():
     """
     from sage.source_adapters.registry import build_source_adapter_registry
 
-    params = parameter_descriptions(published_tool("ingest_document").parameters)
-    description = params.get("source_type", "")
+    params = parameter_descriptions(published_tool(tool_name).parameters)
+    description = params.get(path, "")
     for source_type in build_source_adapter_registry():
         assert source_type.value in description, (
-            f"ingest_document.source_type must name the registered format "
+            f"{tool_name}.{path} must name the registered format "
             f"{source_type.value!r}; got: {description!r}"
+        )
+
+
+@pytest.mark.parametrize("tool_name", ["create_edges", "update_lifecycles", "update_metadata"])
+def test_batch_tools_publish_the_response_mode_vocabulary(tool_name: str):
+    """``response_mode`` names every value it accepts, on its own description.
+
+    The parameter is published as a bare string, so the schema cannot carry
+    the closed set. ``light`` and ``full`` are ordinary words the rest of the
+    published text uses, so the whole-text form of this pin would stay green
+    with the vocabulary deleted. Enum-driven, so a mode added to
+    ``ResponseMode`` that never reaches the tool fails here.
+    """
+    params = parameter_descriptions(published_tool(tool_name).parameters)
+    description = params.get("response_mode", "")
+    for member in ResponseMode:
+        assert f'"{member.value}"' in description, (
+            f"{tool_name}.response_mode must publish {member.value!r}; got: {description!r}"
+        )
+
+
+def test_update_staging_edge_publishes_the_action_vocabulary():
+    """``action`` names every verb the tool accepts, from the set it refuses against.
+
+    ``confirm`` and ``dismiss`` recur in the tool's prose, so the pin reads
+    the parameter's own description. Derived from the constant the runtime
+    check uses, so the published set and the refused set cannot diverge.
+    """
+    params = parameter_descriptions(published_tool("update_staging_edge").parameters)
+    description = params.get("action", "")
+    assert STAGING_EDGE_ACTIONS
+    for action in STAGING_EDGE_ACTIONS:
+        assert f'"{action}"' in description, (
+            f"update_staging_edge.action must publish {action!r}; got: {description!r}"
         )
 
 

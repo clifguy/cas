@@ -8,12 +8,13 @@ this module only adapts the dict-shaped MCP arguments to those services.
 
 from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Annotated
 
 from mcp.server.fastmcp import FastMCP
-from pydantic import TypeAdapter, ValidationError
+from pydantic import Field, TypeAdapter, ValidationError
 
 from sage._mcp_item_schema import published_item_list
+from sage._mcp_param import VaultIdParam, model_param
 from sage._tool_annotations import READ_ONLY, WRITE_DESTRUCTIVE
 from sage.api.errors import (
     InvalidParameterError,
@@ -25,7 +26,12 @@ from sage.api.errors import (
 )
 from sage.mcp_init import SAGEServices, require_caller_local_filesystem
 from sage.models.mcp_items import BulkIngestFileEntry
-from sage.models.schemas import BatchIngestParsedMetadata, Sha256Str, VaultIdStr
+from sage.models.schemas import (
+    BatchIngestParsedMetadata,
+    BatchIngestUploadMetadata,
+    Sha256Str,
+    VaultIdStr,
+)
 from sage.services.caller_paths import caller_basename
 from sage.services.transfer import DeliveryDeclaration, caller_local_delivery
 
@@ -44,8 +50,129 @@ _SHA256_ADAPTER: TypeAdapter[str] = TypeAdapter(Sha256Str)
 # tool publishes as the entry's shape, and the parsed-metadata names are those
 # of the Core API's batch upload model, so the two batch surfaces close on one set.
 _FILE_ENTRY_FIELDS = frozenset(BulkIngestFileEntry.model_fields)
-_FILE_ENTRIES = published_item_list(BulkIngestFileEntry)
+_FILE_ENTRIES = published_item_list(
+    BulkIngestFileEntry,
+    description=(
+        "The files to ingest, one entry each. Each carries a source by exactly "
+        "one delivery shape: ``file_path``, read directly only when the "
+        "caller's machine is the machine running the SAGE server process (the "
+        "retained copy lands on the vault's configured source store), or "
+        "``transfer_token``, the one-time token from a previously returned "
+        "upload recipe, redeemed after the recipe's byte leg delivered that "
+        "file to the upload endpoint. A recipe's tokens lapse 900 seconds "
+        "after issue by default, and the whole exchange -- every leg's byte "
+        "delivery plus the completion call -- must finish inside that window; "
+        "the recipe's own ``expires_at`` is authoritative where a deployment "
+        "has tuned the lifetime. A leg's token is also reclaimed once 3 "
+        "refused deliveries have been made against it by default -- a body "
+        "over the ceiling, bytes not matching its bound digest, or a body "
+        "abandoned mid-stream; earlier refusals leave it retryable. A lapsed "
+        "recipe cannot be resumed, and its staged bytes are gone: re-issue "
+        "this call for a fresh one. When ``parsed_metadata`` is omitted, the "
+        "stem of the source filename is used as the title and the vault's "
+        "filename parsing still runs on the remaining fields. An entry's "
+        "``sha256`` binds that leg of an upload recipe, so the upload endpoint "
+        "refuses any other bytes for that leg without spending its token "
+        "(short of its refusal limit) or touching the other legs; pass it "
+        "again on the completion entry."
+    ),
+)
 _PARSED_METADATA_FIELDS = frozenset(BatchIngestParsedMetadata.model_fields)
+
+_INFER_EDGES = model_param(
+    bool,
+    BatchIngestUploadMetadata,
+    "infer_edges",
+    mcp=(
+        "Tier 1 edges land as production edges; Tier 2 candidates are deposited "
+        "in the staging-edge table for review via ``list_staging_edges``. When inference creates a "
+        "Tier-1 ``supersedes`` edge, the target transitions as part of edge "
+        'execution -- no explicit ``update_lifecycles(action="supersede")`` '
+        "is required. Both the states the transition may be taken from and the "
+        "state it lands in come from the vault's lifecycle table (in the "
+        "create-vault scaffold, from ``active`` or ``completed``, landing in "
+        "``archived``). A target already holding a state a supersession lands "
+        "in gets the edge and no write. A target in any other state is not "
+        "superseded at all: no edge is created, ``edges_dropped`` advances, and "
+        "a ``supersede_target_not_transitionable`` entry in "
+        "``summary.edge_warnings`` names the observed and permitted states (an "
+        "absent or unreadable target refuses the edge the same way, under "
+        "``supersede_target_missing`` and ``supersede_target_read_failed``). "
+        "Because the refusal is settled before anything is written, a chain "
+        "repair whose replacement add is refused withholds its removals as "
+        "well, under ``chain_repair_withheld``, rather than severing the chain "
+        "it was repairing. Replacement adds are written before the removals "
+        "they replace, and a replacement that fails on write "
+        "(``edge_creation_failed``) withholds its group's removals the same "
+        "way, so a repair never leaves the graph holding fewer supersedes "
+        "edges than it found. A transition-carrying supersession commits its "
+        "edge and its lifecycle write as one database transaction, under the "
+        "same per-predecessor lock ``update_lifecycles`` and single-document "
+        "supersede ingest take. Only the single-row write that converges a "
+        "pre-existing edge's outstanding transition can still fail with the "
+        "edge standing, reported as ``lifecycle_transition_failed``; a "
+        "chunk-store lifecycle sync failure is reported as a "
+        "``chunk_lifecycle_sync_failed`` entry while the document write "
+        "stands. None of these raise. Tier-1 ``supersedes`` adds are gated on "
+        "provenance: if any existing edge in a candidate version chain has a "
+        "non-``version_chain`` rationale, the entire group's Tier-1 adds are "
+        "downgraded to Tier-2 (staged for review; the predecessor "
+        "auto-transition does NOT fire on a downgraded group). A batch's "
+        "production-vs-staging outcome is therefore rule-dependent on the "
+        "vault's prior edge graph, not deterministic from the input files "
+        "alone."
+    ),
+)
+
+_NEEDS_REVIEW = model_param(
+    bool,
+    BatchIngestUploadMetadata,
+    "needs_review",
+    mcp=(
+        "``list_pending_metadata`` finds a queued document and "
+        "``update_metadata`` confirms it. The default is ``True`` here and "
+        "``False`` on ``ingest_document``, so a batch is a confirmation-queue "
+        "feeder unless the caller says otherwise. The value is the caller's on "
+        "both, and only the default differs: the batch flow exists to surface "
+        "inferred values for review, so callers curate metadata up-front and a "
+        "human or follow-up agent confirms each record via ``update_metadata``. "
+        "A caller holding metadata it already "
+        "trusts passes ``needs_review=False`` and the documents land at "
+        "``metadata_confirmed=True`` with no queue entry and no second call. "
+        "While ``needs_review=True``, the vault's filename parsing runs and may "
+        "populate ``date``, ``project``, ``codes``, ``version``, and "
+        "``doc_type`` from the filename when the caller omits them from "
+        "``parsed_metadata`` (the exact fields are vault-config-defined under "
+        "``metadata_extraction.filename_extraction.segment_fields``; see "
+        "``get_vault_config``). Call ``get_filename_metadata`` first to "
+        "preview the parser's output."
+    ),
+)
+
+# Authored here rather than taken from ``BatchIngestUploadMetadata.dry_run``:
+# that text describes the multipart upload channel, whose bytes are staged per
+# request, while this tool also reads ``file_path`` entries in place.
+_DRY_RUN = Field(
+    description=(
+        "Report what each file would do and persist nothing. No source is read "
+        "into the vault, no projection, indexing or abstraction runs, no record "
+        "is written, and edge inference does not run whatever ``infer_edges`` "
+        "says. The summary comes back with every count at zero, a ``previews`` "
+        "list carrying one entry per file that would succeed, and ``errors`` "
+        "carrying one entry per file that would be refused -- together "
+        "accounting for the batch. Each preview names the resolved doc_type, "
+        "the content hash, the duplicate verdict, and the doc_type's declared "
+        "requirement set. Files are evaluated against committed state as it "
+        "stood at batch start, so two entries carrying identical bytes each "
+        "report no duplicate where a real run would refuse the second. A "
+        "``transfer_token`` is read but not spent. Where the call returns an "
+        "upload recipe instead, each leg's file is first checked by the "
+        "validators that read no bytes: the leg carries ``dry_run_validated`` "
+        "naming the checks it passed, or ``dry_run_error`` carrying the refusal "
+        "it would get, in the shape of a ``summary.errors[]`` entry whose "
+        "``file_index`` is the entry's position in ``files``. Default false."
+    ),
+)
 
 
 def _refuse_undeclared_entry_fields(files: list[dict]) -> None:
@@ -332,279 +459,55 @@ def register_app_tools(
 
     @mcp.tool(annotations=WRITE_DESTRUCTIVE)
     async def bulk_ingest_document(
-        vault_id: str,
+        vault_id: VaultIdParam,
         files: _FILE_ENTRIES,
-        infer_edges: bool = True,
-        needs_review: bool = True,
-        dry_run: bool = False,
+        infer_edges: _INFER_EDGES = True,
+        needs_review: _NEEDS_REVIEW = True,
+        dry_run: Annotated[bool, _DRY_RUN] = False,
     ) -> dict:
         """Ingest multiple files with optional edge inference. Returns a
         summary when complete.
 
-        Companion to ``list_directory``: the caller decides which scanned
-        files to ingest, optionally adjusts the parsed metadata, and submits
-        the curated list here. Per-file ingest applies the same precedence
-        chain as ``ingest_document`` (caller-supplied metadata wins over
-        filename inference). Unlike ``ingest_document``, the pipeline
-        (projection, indexing, abstraction) is awaited inline for each file
-        in turn, which bounds peak memory to one document at a time: the
-        documents have reached a terminal ``pipeline_status`` by the time
-        the summary returns, and ``abstracts_generated`` /
-        ``abstracts_deferred`` report the Stage-3 outcome. No caller-side
-        wait is needed. The cost is duration -- a large batch can exceed a
-        client's RPC timeout.
+        Companion to ``list_directory``: the caller submits the scanned files
+        it chose. Per-file ingest
+        applies the same precedence chain as ``ingest_document``. Unlike
+        ``ingest_document``, the pipeline is awaited inline for each file in
+        turn: the documents have reached a terminal ``pipeline_status`` by
+        the time the summary returns, so no caller-side wait is needed. The
+        cost is duration -- a large batch can exceed a client's RPC timeout.
 
-        When ``infer_edges=True``, two-phase edge inference runs across the
-        whole batch after all documents are inserted: Tier 1 edges (e.g.
-        supersedes via version_chain) land as production edges; Tier 2
-        candidates are deposited in the staging-edge table for review via
-        ``list_staging_edges``.
+        ``needs_review`` defaults to ``True`` here, unlike ``ingest_document``.
 
-        Divergence from ``ingest_document``: ``needs_review`` defaults to
-        ``True`` here and ``False`` there, so a batch is a confirmation-queue
-        feeder unless the caller says otherwise. The value is the caller's on
-        both, and only the default differs: the batch flow exists to surface
-        inferred values for review, so callers curate metadata up-front and a
-        human or follow-up agent confirms each record via ``update_metadata``.
-        A caller holding metadata it already trusts passes
-        ``needs_review=False`` and the documents land at
-        ``metadata_confirmed=True`` with no queue entry and no second call.
+        The batch is NOT atomic: a per-file failure lands in
+        ``summary.errors[]`` carrying its ``code`` and ``detail``, and the
+        batch continues.
 
-        While ``needs_review=True``, the vault's filename parsing runs and may
-        populate ``date``, ``project``, ``codes``, ``version``, and
-        ``doc_type`` from the filename when the caller omits them from
-        ``parsed_metadata`` (the exact fields are vault-config-defined under
-        ``metadata_extraction.filename_extraction.segment_fields``; see
-        ``get_vault_config``). Call ``get_filename_metadata`` first to preview
-        the parser's output.
-
-        Per-file failure isolation: the batch is NOT atomic. Per-file
-        exceptions are caught into ``summary.errors[]`` (with
-        ``summary.error_count`` advancing); the batch continues and
-        post-ingest edge inference still runs across whatever inserted.
-        Earlier or later items are not rolled back — mirrors the
-        ``create_edges`` / ``update_lifecycles`` / ``update_metadata``
-        atomicity contract. Each entry names the staged ``filename``, the
-        file as the caller named it (``source_path``: the ``file_path``
-        sent, or the path a redeemed upload was minted from), and the
-        error's ``message``; a typed SAGE error additionally carries its
-        ``code`` and ``detail`` — the same envelope ``ingest_document``
-        returns for that error — so a caller can branch on the code rather
-        than parse prose.
-
-        Predecessor auto-transition on Tier-1 supersedes inference: when
-        ``infer_edges=True`` and inference creates a Tier-1 ``supersedes``
-        edge via version chain, the target transitions as part of edge
-        execution — no explicit ``update_lifecycles(action="supersede")``
-        is required. Both the states the transition may be taken from and
-        the state it lands in come from the vault's lifecycle table (in
-        the create-vault scaffold, from ``active`` or ``completed``,
-        landing in ``archived``). A target already
-        holding a state a supersession lands in gets the edge and no write.
-        A target in any other state is not superseded at all: no edge is
-        created, ``edges_dropped`` advances, and a
-        ``supersede_target_not_transitionable`` entry in
-        ``summary.edge_warnings`` names the observed and permitted states
-        (an absent or unreadable target refuses the edge the same way,
-        under ``supersede_target_missing`` and
-        ``supersede_target_read_failed``). Because the refusal is settled
-        before anything is written, a chain repair whose replacement add is
-        refused withholds its removals as well, under
-        ``chain_repair_withheld``, rather than severing the chain it was
-        repairing. Replacement adds are written before the removals they
-        replace, and a replacement that fails on write
-        (``edge_creation_failed``) withholds its group's removals the same
-        way, so a repair never leaves the graph holding fewer supersedes
-        edges than it found.
-
-        A transition-carrying supersession commits its edge and its
-        lifecycle write as one database transaction, under the same
-        per-predecessor lock ``update_lifecycles`` and single-document
-        supersede ingest take — a failed commit leaves neither half
-        behind, and a concurrent state change refuses the edge instead of
-        forking the chain. Only the single-row write that converges a
-        pre-existing edge's outstanding transition can still fail with the
-        edge standing, reported as ``lifecycle_transition_failed``. The
-        follow-up chunk-store lifecycle sync that mirrors
-        ``update_lifecycles`` is likewise best-effort: a sync failure is
-        reported as a ``chunk_lifecycle_sync_failed`` entry while the
-        document write stands. None of these raise.
-
-        Tier-1 provenance-gate downgrade: Tier-1 ``supersedes`` adds are
-        gated on provenance — if any existing edge in a candidate version
-        chain has a non-``version_chain`` rationale (e.g. a human-curated
-        edge in the same chain), the entire group's Tier-1 adds are silently
-        downgraded to Tier-2 (staged for review rather than landing as
-        production edges; the predecessor auto-transition above does NOT fire on
-        a downgraded group). A batch's production-vs-staging outcome is
-        therefore rule-dependent on the vault's prior edge graph, not
-        deterministic from the input files alone.
+        When the server cannot read the caller's filesystem and an entry
+        names an absolute ``file_path``, the call returns an upload recipe
+        (``status: upload_required``): deliver each file to its URL, then
+        repeat the call with ``transfer_token`` in place of ``file_path``.
 
         Per-file precondition surface: every per-file ingest runs the full
-        ``ingest_document`` precondition pipeline. Failures surface as
-        ``summary.errors[]`` entries carrying the code ``ingest_document``
-        returns for the same failure. Each file's request carries only its
-        source, source type, parsed metadata and declared ``sha256`` -- never a
-        predecessor, a force re-ingest, a chain-head token or a relocation
-        pointer -- so the codes an entry can carry are ``adapter_config_invalid``,
-        ``adapter_not_found``, ``duplicate_content``, ``invalid_doc_type``,
+        ``ingest_document`` precondition pipeline, so a ``summary.errors[]``
+        entry can carry ``adapter_config_invalid``, ``adapter_not_found``,
+        ``duplicate_content``, ``invalid_doc_type``,
         ``invalid_document_date``, ``reserved_transition``,
         ``source_digest_mismatch``, ``source_file_not_found``,
         ``source_type_unresolved``, ``source_unreadable``,
-        ``tier3_schema_violation``,
-        ``tier3_unique_constraint_violation``, ``vault_migration_in_flight``,
-        ``vault_source_path_refused``, ``vault_source_store_refused`` and
-        ``vault_source_store_unavailable``.
-        Each such entry carries that error's ``code`` and ``detail``; a
-        ``vault_source_path_refused`` entry's ``detail.source_path`` names
-        the caller's own file, never the staging location a redeemed upload
-        was written to.
+        ``tier3_schema_violation``, ``tier3_unique_constraint_violation``,
+        ``vault_migration_in_flight``, ``vault_source_path_refused``,
+        ``vault_source_store_refused`` and ``vault_source_store_unavailable``.
 
         Error modes:
-        - ``invalid_vault_id`` (400): the supplied vault_id is not a
-          well-formed vault id.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
-        - ``empty_file_list`` (string in response): ``files`` was empty.
-        - ``invalid_document_date`` (per-file, in ``summary.errors[]``, not a
-          call-level envelope): an entry's parsed ``date`` is not a well-formed
-          calendar date. The ingest of that one file fails and the call still
-          returns its summary, so a caller checking only the envelope sees a
-          success.
-        - ``undeclared_key`` (400): a file entry, or the ``parsed_metadata``
-          it carries, names a key the tool does not declare.
-          ``detail.parameter`` locates the object (``files.<n>`` or
-          ``files.<n>.parsed_metadata``), ``detail.keys`` names every
-          undeclared key in it, sorted (``detail.key`` is the first), and
-          ``detail.recognized`` lists the names that object accepts, so the
-          call is repairable on first read. With several objects, the one
-          reported is at the lowest file index, then the lowest depth, and the
-          message says the others follow once it is repaired. Names are
-          refused before any value is checked, so this wins over a malformed
-          value in the same call. A batch-boundary refusal raised before any
-          file is delivered or ingested.
-        - ``invalid_parameter`` (422): an entry's ``parsed_metadata`` or
-          ``tier3_metadata`` is not a mapping, or the ``parsed_metadata``
-          carries a value of the wrong type; or one entry's
-          ``parsed_metadata`` supplies both ``codes`` and ``tags``, which set
-          the same field. ``detail.parameter`` locates it
-          (``files.<n>.parsed_metadata``,
-          ``files.<n>.parsed_metadata.<key>``,
-          ``files.<n>.parsed_metadata.<key>.<index>`` for one item of a list
-          such as ``codes``, or ``files.<n>.tier3_metadata``). A
-          batch-boundary refusal raised before any file is delivered or
-          ingested.
-        - ``invalid_sha256`` (400): a file entry's ``sha256`` is not a
-          well-formed sha256 digest; the detail is keyed by its location,
-          ``files.<n>.sha256``. A batch-boundary refusal raised before any
-          file is delivered or ingested.
-        - ``ambiguous_ingest_source`` / ``missing_ingest_source`` (400): a
-          file entry set both ``file_path`` and ``transfer_token``, or
-          neither; each entry needs exactly one.
-        - ``transfer_token_invalid`` (410) / ``transfer_not_staged`` (409):
-          an entry's ``transfer_token`` was unredeemable, or its bytes have
-          not been delivered to the upload endpoint yet. These are
-          batch-boundary refusals raised before any per-file work, not
-          per-file ``summary.errors[]`` entries.
-        - ``transfer_endpoint_not_configured`` (500): the batch needs the
-          transfer channel but the deployment declares no public transfer
-          endpoint, so no recipe can be minted.
-
-        When the server cannot read the caller's filesystem and any entry
-        names an absolute ``file_path``, the call returns one upload recipe
-        (``status: upload_required``) covering those entries instead of
-        ingesting: deliver each file to its own URL with its own token, then
-        repeat the call with each such entry carrying ``transfer_token``
-        instead of ``file_path``. On a dry run, each leg's file is first
-        checked by the validators that read no bytes: the leg carries
-        ``dry_run_validated`` naming the checks it passed, or
-        ``dry_run_error`` carrying the refusal it would get, in the shape of
-        a ``summary.errors[]`` entry whose ``file_index`` is the entry's
-        position in ``files``. The checks that need the bytes run when the
-        call is repeated with the tokens.
-
-        Args:
-            vault_id: Target vault identifier.
-            files: List of file objects. Each carries a source by exactly one
-                delivery shape: ``file_path`` (str, a path to the source
-                file, read directly only when the caller's machine is the
-                machine running the SAGE server process; the retained copy
-                lands on the vault's configured source store) or
-                ``transfer_token`` (str, the one-time token from a
-                previously returned upload recipe, redeemed after the
-                recipe's byte leg delivered that file to the upload
-                endpoint). A recipe's tokens lapse 900 seconds after issue
-                by default, and the whole exchange -- every leg's byte
-                delivery plus the completion call -- must finish inside that
-                window; the recipe's own ``expires_at`` is authoritative
-                where a deployment has tuned the lifetime. A leg's token is
-                also reclaimed once 3 refused deliveries have been made
-                against it by default -- a body over the ceiling, bytes not
-                matching its bound digest, or a body abandoned mid-stream;
-                earlier refusals leave it retryable. A lapsed recipe
-                cannot be resumed, and its staged bytes are gone: re-issue
-                this call for a fresh one. Each entry may also carry
-                ``source_type`` (str — closed ``SourceType`` vocabulary:
-                ``markdown``, ``docx``, ``xlsx``, ``pptx``, ``pdf`` — the source
-                types with a registered adapter; when omitted it is inferred
-                from the file's extension, and an extension no registered
-                adapter claims is reported for that file as
-                ``source_type_unresolved``),
-                and optional ``parsed_metadata`` (dict with ``title``,
-                ``date``, ``project``, ``codes``, ``version``, ``doc_type``,
-                ``tags``).
-                When ``parsed_metadata`` is omitted, the stem of the source
-                filename is used as the title and the vault's
-                filename parsing still runs on the remaining fields (see
-                the divergence note above; ``get_filename_metadata`` to
-                preview). ``tags`` is a list carried whole, so a tag
-                containing a comma stays one tag; ``codes`` sets the same
-                field, so an entry supplying both is refused. An entry may
-                also carry ``tier3_metadata`` (dict), the Tier-3 payload for
-                that file, validated against the ``metadata_schema`` the
-                vault declares for the file's resolved doc_type on the same
-                terms ``ingest_document`` applies -- a payload that schema
-                rejects is that file's ``tier3_schema_violation`` and the
-                rest of the batch still runs. It sits beside
-                ``parsed_metadata`` rather than inside it, because
-                ``parsed_metadata`` carries the fields a filename parser can
-                supply and Tier-3 metadata never comes from a filename. An
-                entry may also carry ``sha256`` (str, bare hex
-                or ``sha256:``-prefixed), the digest of that file: a file
-                whose bytes have another digest is that file's
-                ``source_digest_mismatch`` error, and where the call returns
-                an upload recipe, that entry's token is bound to it, so the
-                upload endpoint refuses any other bytes for that leg without
-                spending its token (short of its refusal limit) or touching
-                the other legs. Pass it again on the completion entry.
-            infer_edges: When True (default), run two-phase edge inference
-                across the batch after ingestion. When False, ingest
-                documents only with no edge creation or lifecycle
-                transitions.
-            needs_review: When True (default), every document in the batch
-                lands with ``metadata_confirmed=False`` in the
-                metadata-review queue (CAS-ADR-021), where
-                ``list_pending_metadata`` finds it and ``update_metadata``
-                confirms it. When False, the caller's metadata is committed
-                as authoritative and no queue entry is made. See the
-                divergence note above for why the default is the opposite of
-                ``ingest_document``'s.
-            dry_run: Report what each file would do and persist nothing.
-                No source is read into the vault, no projection, indexing
-                or abstraction runs, no record is written, and edge
-                inference does not run whatever ``infer_edges`` says. The
-                summary comes back with every count at zero, a
-                ``previews`` list carrying one entry per file that would
-                succeed, and ``errors`` carrying one entry per file that
-                would be refused -- together accounting for the batch.
-                Each preview names the resolved doc_type, the content
-                hash, the duplicate verdict, and the doc_type's declared
-                requirement set, so a batch can be checked against a
-                vault's typed-metadata rules before any of it lands.
-                Files are evaluated against committed state as it stood
-                at batch start, so two entries carrying identical bytes
-                each report no duplicate where a real run would refuse
-                the second. A ``transfer_token`` is read but not spent.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
+        - ``empty_file_list`` (string in response)
+        - ``invalid_document_date``: per file, in ``summary.errors[]``
+        - 400: ``undeclared_key``, ``invalid_sha256``, ``ambiguous_ingest_source``,
+          ``missing_ingest_source``
+        - ``invalid_parameter`` (422)
+        - ``transfer_token_invalid`` (410) / ``transfer_not_staged`` (409)
+        - ``transfer_endpoint_not_configured`` (500)
         """
         try:
             from sage.services.batch_ingest import BatchIngestService
