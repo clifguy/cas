@@ -43,6 +43,13 @@
 #   PREFLIGHT_VAULT_SOURCE     asserted vault_source_backend (e.g. document_store)
 #   PREFLIGHT_CHECKS           comma-list allowlist of check ids to run
 #   PREFLIGHT_SKIP             comma-list denylist of check ids to skip
+#                              (a control character in any of these, in the
+#                              hosts and URLs, the CNAME suffixes,
+#                              PREFLIGHT_RESOURCE_GROUP or
+#                              PREFLIGHT_EXPECTED_PG_MAJOR is refused before any
+#                              check runs, as is a PREFLIGHT_CHECKS or
+#                              PREFLIGHT_SKIP entry naming no registered check,
+#                              and a selection that leaves no check to run)
 #   PREFLIGHT_RESOLVE_CMD      DNS resolver invoked as `<cmd> <name> <type>`
 #                              (default: dig +short)
 #   PREFLIGHT_TLS_PROBE_CMD    TLS cert probe invoked as `<cmd> <host>`, prints
@@ -1516,8 +1523,84 @@ Optional: CAS_FQDN, SAGE_BASE_URL, CAS_BASE_URL, PREFLIGHT_EXPECTED_VAULTS,
 PREFLIGHT_EXPECTED_ASUID, PREFLIGHT_VAULT_SOURCE, PREFLIGHT_CHECKS,
 PREFLIGHT_SKIP, PREFLIGHT_RESOLVE_CMD, PREFLIGHT_TLS_PROBE_CMD. See the header
 of this script for the full reference.
+
+A control character in PREFLIGHT_EXPECTED_VAULTS, the check lists,
+PREFLIGHT_VAULT_SOURCE, PREFLIGHT_EXPECTED_ASUID, the hosts and URLs, the CNAME
+suffixes, PREFLIGHT_RESOURCE_GROUP or PREFLIGHT_EXPECTED_PG_MAJOR is refused
+before any check runs, as is a PREFLIGHT_CHECKS or PREFLIGHT_SKIP entry that
+names no registered check (--dry-run lists them) and a selection that leaves no
+check to run.
 EOF
   exit "$code"
+}
+
+# The tenant parameters refused below hold ids, lists of ids, a backend name,
+# a token, hosts, URLs and host suffixes, so a value carrying a control character is
+# malformed rather than exotic: none of them can contain one. It is refused
+# here, before any network call, rather than left to a check -- where a newline
+# splits the banner or a matrix row, is read by grep -F as a second pattern,
+# makes a check id match nothing, or turns every probe into an opaque curl
+# failure. AUTH_TOKEN is deliberately not among them: the refusal echoes the
+# value, and a bearer token is never printed. The refusal is scoped to control
+# characters alone: a space, a dot, a glob character or an empty element is
+# left for the checks to compare literally.
+#
+# A comma-list is reported entry by entry, split exactly as its consumers split
+# it, so a two-line entry reads as one; a single-valued variable is reported
+# whole. Either way the value is shown %q-escaped.
+refuse_control_characters_in_lists() { # var...
+  local name value v bad
+  for name in "$@"; do
+    value="${!name:-}"
+    case "$value" in
+      *[[:cntrl:]]*) : ;;
+      *) continue ;;
+    esac
+    bad=""
+    local IFS=','
+    set -f
+    for v in $value; do
+      case "$v" in
+        *[[:cntrl:]]*) bad="$bad $(printf '%q' "$v")" ;;
+      esac
+    done
+    set +f
+    usage_and_exit 2 "$name carries a control character in entry(ies):$bad -- the value is malformed"
+  done
+}
+
+refuse_control_characters_in_values() { # var...
+  local name value
+  for name in "$@"; do
+    value="${!name:-}"
+    case "$value" in
+      *[[:cntrl:]]*)
+        usage_and_exit 2 "$name carries a control character: $(printf '%q' "$value") -- the value is malformed"
+        ;;
+    esac
+  done
+}
+
+# An allowlist naming no registered check selects nothing, and the run would
+# pass on an empty matrix; a denylist entry naming nothing skips nothing while
+# reading as a skip. Both are refused, naming each unknown entry. An empty
+# element is no id at all, so it is skipped rather than refused.
+refuse_unknown_check_ids() { # var...
+  local name value v bad
+  for name in "$@"; do
+    value="${!name:-}"
+    bad=""
+    local IFS=','
+    set -f
+    for v in $value; do
+      [ -z "$v" ] && continue
+      in_csv "$v" "$(IFS=','; printf '%s' "${IDS[*]}")" || bad="$bad $(printf '%q' "$v")"
+    done
+    set +f
+    if [ -n "$bad" ]; then
+      usage_and_exit 2 "$name names no registered check:$bad -- see --dry-run for the check ids"
+    fi
+  done
 }
 
 do_dry_run() {
@@ -1638,6 +1721,12 @@ fi
 if [ -z "${SAGE_FQDN:-}" ] && [ -z "${BASE_DOMAIN:-}" ]; then
   usage_and_exit 2 "SAGE_FQDN or BASE_DOMAIN is required"
 fi
+refuse_control_characters_in_lists PREFLIGHT_EXPECTED_VAULTS PREFLIGHT_CHECKS PREFLIGHT_SKIP
+refuse_control_characters_in_values PREFLIGHT_VAULT_SOURCE PREFLIGHT_EXPECTED_ASUID \
+  BASE_DOMAIN SAGE_FQDN CAS_FQDN SAGE_BASE_URL CAS_BASE_URL \
+  PREFLIGHT_RESOURCE_GROUP PREFLIGHT_EXPECTED_PG_MAJOR \
+  EXPECTED_SAGE_CNAME_SUFFIX EXPECTED_CAS_CNAME_SUFFIX
+refuse_unknown_check_ids PREFLIGHT_CHECKS PREFLIGHT_SKIP
 
 # Derive endpoints and apply tenant-parameter / seam defaults.
 BASE_DOMAIN="${BASE_DOMAIN:-}"
@@ -1665,6 +1754,16 @@ PREFLIGHT_WARMUP_MAX_ATTEMPTS="${PREFLIGHT_WARMUP_MAX_ATTEMPTS:-36}"
 PREFLIGHT_WARMUP_INTERVAL_SECONDS="${PREFLIGHT_WARMUP_INTERVAL_SECONDS:-5}"
 EXPECTED_SAGE_CNAME_SUFFIX="${EXPECTED_SAGE_CNAME_SUFFIX:-azure-api.net}"
 EXPECTED_CAS_CNAME_SUFFIX="${EXPECTED_CAS_CNAME_SUFFIX:-azurecontainerapps.io}"
+
+# A selection that leaves no check to run would pass on an empty matrix: an
+# allowlist of empty elements, or a denylist covering the whole allowlist.
+selected=0
+for i in "${!IDS[@]}"; do
+  is_selected "${IDS[$i]}" && selected=$((selected + 1))
+done
+if [ "$selected" -eq 0 ]; then
+  usage_and_exit 2 "PREFLIGHT_CHECKS and PREFLIGHT_SKIP together select no check -- the run would pass on an empty matrix"
+fi
 
 WORKDIR="$(mktemp -d 2>/dev/null || mktemp -d -t cas-preflight)"
 trap 'rm -rf "$WORKDIR"' EXIT

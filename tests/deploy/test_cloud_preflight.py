@@ -2017,6 +2017,10 @@ def test_kv_anthropic_skips_when_vault_load_fails() -> None:
 # host offers, because the split's semantics are a property of the shell rather
 # than of the script.
 #
+# One input never reaches the split: a control character anywhere in the list
+# is refused at required-input validation, since no entry carrying one can be an
+# id SAGE advertises, and the scenario that pins it runs under the same matrix.
+#
 # The stub advertises two vaults (``_VAULTS_BODY``), so a multi-id expectation is
 # satisfiable without a bespoke responder.
 # --------------------------------------------------------------------------- #
@@ -2368,50 +2372,290 @@ def test_vault_load_treats_a_metacharacter_id_as_a_literal(expected: str, bash_b
 
 @_NEEDS_RUNTIME
 @pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
-@pytest.mark.parametrize("expected", ["zzz\ncas", "cas\nzzz"], ids=["match-second", "match-first"])
+@pytest.mark.parametrize(
+    ("expected", "escaped_entries"),
+    [
+        ("zzz\ncas", ("$'zzz\\ncas'",)),
+        ("cas\nzzz", ("$'cas\\nzzz'",)),
+        ("zzz\rcas", ("$'zzz\\rcas'",)),
+        ("zzz\tcas", ("$'zzz\\tcas'",)),
+        ("cas\n", ("$'cas\\n'",)),
+        ("cas,zzz\ncas", ("$'zzz\\ncas'",)),
+        ("zzz\ncas,te\rst", ("$'zzz\\ncas'", "$'te\\rst'")),
+    ],
+    ids=[
+        "match-second",
+        "match-first",
+        "carriage-return",
+        "tab",
+        "trailing-newline",
+        "second-entry",
+        "two-entries",
+    ],
+)
 def test_vault_load_does_not_credit_a_multi_line_id_by_one_of_its_lines(
-    expected: str, bash_bin: str
+    expected: str, escaped_entries: tuple[str, ...], bash_bin: str
 ) -> None:
-    """An id spanning two lines is one id, and is not satisfied by either line.
+    """A control character in the expected list is refused before any check runs.
 
-    The sibling scenario above pins that the comparison is not a *pattern*
-    match. This pins the narrower thing a pattern-free comparison can still get
-    wrong: a matcher fed the id as a pattern *list* rather than a pattern reads
-    a newline as a separator between entries, so a two-line value is credited
-    whenever any one of its lines names an advertised vault. The value stops
-    being compared and starts being enumerated.
+    A vault id is a lowercase slug, so an entry carrying a newline, carriage
+    return, tab, or any other control character is not an unusual id but a
+    malformed list: no such entry can equal an id SAGE advertises. ``IFS=','``
+    keeps a newline inside its field, and the variable is supplied by a GitHub
+    Actions repository variable, which admits multi-line values -- so the shape
+    is reachable, and a trailing newline is the one it most often takes.
 
-    ``IFS=','`` makes this reachable rather than theoretical -- a newline is not
-    a delimiter there, so it stays inside a field -- and the variable is
-    supplied by a GitHub Actions repository variable, which admits multi-line
-    values. The direction of error is the gate's worst one: `zzz` is credited
-    because `cas`, sharing its value, loaded.
+    Refusal rather than rendering, because rendering has no legible form. A
+    comparison that let the entry through would print it across as many matrix
+    lines as it has, and collapsing the newline to a space would read as two
+    missing ids -- the misreading that a whole-value comparison exists to
+    prevent. Refusing at the required-input stage also spends no network call
+    on a value that could never pass.
 
-    Both orderings are carried because they fail differently under a matcher
-    that stops at its first entry: ``cas\\nzzz`` is credited by the leading
-    line, ``zzz\\ncas`` only by a matcher that reads on past it. Either alone
-    leaves half of the enumeration unproven.
+    What each assertion excludes:
+
+    * the usage exit code, no banner, no matrix row, and no request reaching
+      the stub -- a refusal raised from inside ``check_vault_load``, or after the
+      checks start, fails all four; the stub is served so that a run which got
+      past validation would have something to call, which is what makes its
+      silence evidence;
+    * the message anchored on the ``preflight:`` prefix -- the usage text itself
+      lists the variable, so a bare containment check is met by the boilerplate;
+    * the escaped entry whole on that one line -- an unescaped entry splits
+      across lines and a two-line value reads as two ids;
+    * ``second-entry`` showing no ``cas,`` -- the message names the offending
+      entry, not the whole value;
+    * ``two-entries`` naming both -- a refusal that stops at the first offending
+      entry passes every single-entry case;
+    * ``carriage-return`` and ``tab`` -- a refusal keyed on the newline alone
+      passes the first two cases and neither of these.
+
+    The refusal's other boundary -- that a space, a dot, a glob character, or an
+    empty element is *not* refused -- is held by the sibling scenarios, each of
+    which needs ``check_vault_load`` to return a verdict.
     """
-    with serve(_green) as url:
+    requested: list[str] = []
+
+    def _recording(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        requested.append(path)
+        return _green(method, path, body)
+
+    with serve(_recording) as url:
         proc = _run(
             _base_env(url, PREFLIGHT_EXPECTED_VAULTS=expected, PREFLIGHT_CHECKS="vault_load"),
             bash_bin=bash_bin,
         )
-    verdicts = _verdicts(proc.stdout)
-    assert proc.returncode != 0, (
-        f"a multi-line id must not be credited by one of its lines:\n{proc.stdout}"
+    assert not requested, f"the refusal must precede every network call: {requested}"
+    assert proc.returncode == 2, (
+        f"a control character must exit through the usage path:\n{proc.stdout}{proc.stderr}"
     )
-    assert verdicts.get("vault_load") == "FAIL", verdicts
-    # Asserted against the whole of stdout rather than the parsed detail: the id
-    # carries a newline, so the missing list it renders into spans two output
-    # lines and ``_detail`` is single-line by construction. Both of the id's
-    # lines must be reported -- an assertion on ``zzz`` alone is also satisfied
-    # by a run that credited ``cas`` and reported only the remainder, which is
-    # the defect this scenario exists to exclude.
-    assert "missing expected id(s):" in proc.stdout, proc.stdout
-    assert "zzz" in proc.stdout and "cas" in proc.stdout, (
-        f"both lines of the id must be reported missing:\n{proc.stdout}"
+    assert not _verdicts(proc.stdout) and not _verdicts(proc.stderr), proc.stdout
+    assert "=== CAS cloud preflight" not in proc.stderr, "the checks must not have started"
+    messages = [
+        line
+        for line in proc.stderr.splitlines()
+        if line.startswith("preflight: PREFLIGHT_EXPECTED_VAULTS")
+    ]
+    assert len(messages) == 1, proc.stderr
+    for entry in escaped_entries:
+        assert entry in messages[0], messages[0]
+    assert "cas," not in messages[0], f"only the offending entry is shown: {messages[0]!r}"
+
+
+@_NEEDS_BASH
+def test_usage_states_expected_vaults_refuses_control_characters() -> None:
+    """The usage text states that a control character in the list is refused, so
+    an operator reading ``--help`` learns the rule before a deploy meets it.
+    """
+    proc = _run({}, "--help")
+    assert proc.returncode == 0, proc.stderr
+    lines = [line for line in proc.stderr.splitlines() if "control character" in line]
+    assert any("PREFLIGHT_EXPECTED_VAULTS" in line for line in lines), proc.stderr
+
+
+def _refusal_message(variable: str, bash_bin: str, **overrides: str) -> str:
+    """Run the harness against a recording stub, assert the run was refused at
+    required-input validation, and return the one ``preflight: <variable>`` line.
+
+    Refused means: the usage exit code, no banner, no matrix row on either
+    stream, and no request reaching the stub. The stub is served so that a run
+    which got past validation would have something to call, which is what makes
+    its silence evidence rather than an absence of opportunity.
+    """
+    requested: list[str] = []
+
+    def _recording(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        requested.append(path)
+        return _green(method, path, body)
+
+    with serve(_recording) as url:
+        proc = _run(_base_env(url, **overrides), bash_bin=bash_bin)
+    assert not requested, f"the refusal must precede every network call: {requested}"
+    assert proc.returncode == 2, f"expected the usage path:\n{proc.stdout}{proc.stderr}"
+    assert not _verdicts(proc.stdout) and not _verdicts(proc.stderr), proc.stdout
+    assert "=== CAS cloud preflight" not in proc.stderr, "the checks must not have started"
+    messages = [
+        line for line in proc.stderr.splitlines() if line.startswith(f"preflight: {variable} ")
+    ]
+    assert len(messages) == 1, proc.stderr
+    return messages[0]
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
+@pytest.mark.parametrize(
+    ("variable", "value", "escaped_entry"),
+    [
+        ("PREFLIGHT_VAULT_SOURCE", "document_store\n", "$'document_store\\n'"),
+        ("PREFLIGHT_EXPECTED_ASUID", "zzz\nabc", "$'zzz\\nabc'"),
+        ("PREFLIGHT_CHECKS", "vault_load\n", "$'vault_load\\n'"),
+        ("PREFLIGHT_SKIP", "vault_load\r", "$'vault_load\\r'"),
+        ("PREFLIGHT_EXPECTED_ASUID", "a,b\nc", "$'a,b\\nc'"),
+        ("BASE_DOMAIN", "test.invalid\n", "$'test.invalid\\n'"),
+        ("SAGE_FQDN", "sage.test.invalid\n", "$'sage.test.invalid\\n'"),
+        ("CAS_FQDN", "cas.test\tinvalid", "$'cas.test\\tinvalid'"),
+        ("SAGE_BASE_URL", "https://sage.test.invalid\n", "$'https://sage.test.invalid\\n'"),
+        ("CAS_BASE_URL", "https://cas.test.invalid\r", "$'https://cas.test.invalid\\r'"),
+        ("PREFLIGHT_RESOURCE_GROUP", "rg-cas\n", "$'rg-cas\\n'"),
+        ("PREFLIGHT_EXPECTED_PG_MAJOR", "16\n", "$'16\\n'"),
+        ("EXPECTED_SAGE_CNAME_SUFFIX", "azure-api.net\n", "$'azure-api.net\\n'"),
+        ("EXPECTED_CAS_CNAME_SUFFIX", "azurecontainerapps.io\r", "$'azurecontainerapps.io\\r'"),
+    ],
+    ids=[
+        "vault-source",
+        "expected-asuid",
+        "checks",
+        "skip",
+        "scalar-with-comma",
+        "base-domain",
+        "sage-fqdn",
+        "cas-fqdn",
+        "sage-base-url",
+        "cas-base-url",
+        "resource-group",
+        "pg-major",
+        "sage-cname-suffix",
+        "cas-cname-suffix",
+    ],
+)
+def test_a_control_character_in_any_operator_input_is_refused(
+    variable: str, value: str, escaped_entry: str, bash_bin: str
+) -> None:
+    """A control character is refused in each tenant parameter parametrised
+    here -- ids, lists, a backend name, a token, hosts and URLs -- not only in
+    the expected-vaults list.
+
+    Each variable fails differently when one is let through, which is why each
+    is carried rather than one standing for the rest:
+
+    * ``PREFLIGHT_VAULT_SOURCE`` is supplied by a repository variable and
+      interpolated into a matrix detail, so a trailing newline splits a row;
+    * ``PREFLIGHT_EXPECTED_ASUID`` is compared with ``grep -F``, which reads a
+      multi-line value as one pattern per line and credits it by any one line;
+    * ``PREFLIGHT_CHECKS`` compared whole selects no check at all, and the run
+      passes on an empty matrix;
+    * ``PREFLIGHT_SKIP`` compared whole is silently not honoured;
+    * the hosts and URLs build every probe and the banner, so a trailing newline
+      splits the banner and fails each check with an opaque curl exit after the
+      warm-up budget; ``PREFLIGHT_RESOURCE_GROUP`` and
+      ``PREFLIGHT_EXPECTED_PG_MAJOR`` are rendered into detail rows, and the
+      CNAME suffixes are compared against every resolved target.
+
+    ``scalar-with-comma`` holds the other half of the message contract: a
+    single-valued variable is shown whole, so a refusal that split it on commas
+    as it does the lists would report the fragment ``$'b\\nc'`` as the entry.
+
+    A refusal applied only to the expected-vaults list passes the sibling
+    scenario and fails the vault-source and asuid cases. The two check-list
+    cases are held by this refusal and by the unknown-id refusal alike, since an
+    entry carrying a control character names no registered check either; which
+    one answers changes the message's wording, not the escaped entry it shows.
+    """
+    message = _refusal_message(variable, bash_bin, **{variable: value})
+    assert escaped_entry in message, message
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
+@pytest.mark.parametrize("variable", ["PREFLIGHT_CHECKS", "PREFLIGHT_SKIP"])
+@pytest.mark.parametrize(
+    ("value", "unknown"),
+    [("nosuch", "nosuch"), ("vault_load,nosuch", "nosuch"), ("vault_loa", "vault_loa")],
+    ids=["alone", "mixed", "prefix"],
+)
+def test_a_check_list_naming_no_registered_check_is_refused(
+    variable: str, value: str, unknown: str, bash_bin: str
+) -> None:
+    """An allowlist or denylist entry naming no registered check is refused.
+
+    Unrefused, an allowlist of unknown ids selects nothing and the preflight
+    exits 0 on an empty matrix -- a gate passing vacuously -- and a denylist
+    entry that names nothing skips nothing while reading as a skip.
+
+    What each shape excludes:
+
+    * ``alone`` -- the vacuous pass itself;
+    * ``mixed`` -- a guard that fails only when *zero* checks are selected, which
+      the registered ``vault_load`` would satisfy while ``nosuch`` goes unnoticed;
+    * ``prefix`` -- a lookup matching a substring of the registered ids rather
+      than a whole id, which credits ``vault_loa`` through ``vault_load``;
+    * ``vault_load`` absent from the message -- the refusal names the unknown
+      entry, not the whole value.
+    """
+    message = _refusal_message(variable, bash_bin, **{variable: value})
+    assert unknown in message, message
+    assert "vault_load" not in message, f"only the unknown entry is named: {message!r}"
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
+@pytest.mark.parametrize(
+    ("checks", "skip"),
+    [("vault_load,,", ""), ("vault_load", ",")],
+    ids=["allowlist", "denylist"],
+)
+def test_empty_elements_in_the_check_lists_are_not_unknown_ids(
+    checks: str, skip: str, bash_bin: str
+) -> None:
+    """An empty element in either check list is not refused.
+
+    The guard against the refusal over-reaching: an operator-edited list
+    acquires stray commas, and an empty field is no id at all rather than an
+    unknown one. A refusal that looked up every field would fail this run while
+    passing every refusal scenario above.
+    """
+    with serve(_green) as url:
+        proc = _run(
+            _base_env(url, PREFLIGHT_CHECKS=checks, PREFLIGHT_SKIP=skip),
+            bash_bin=bash_bin,
+        )
+    assert proc.returncode == 0, f"{proc.stdout}{proc.stderr}"
+    assert _verdicts(proc.stdout) == {"vault_load": "PASS"}, proc.stdout
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
+@pytest.mark.parametrize(
+    ("checks", "skip"),
+    [(",", ""), ("vault_load", "vault_load")],
+    ids=["empty-elements-only", "skip-covers-allowlist"],
+)
+def test_a_selection_leaving_no_check_to_run_is_refused(
+    checks: str, skip: str, bash_bin: str
+) -> None:
+    """A selection that leaves no check to run is refused rather than passed.
+
+    Neither shape names an unknown id, so the unknown-id refusal admits both,
+    and both would otherwise reach an empty matrix and exit 0. ``,`` is an
+    allowlist of empty elements -- set, so it filters, yet naming nothing;
+    ``vault_load`` skipped from an allowlist of ``vault_load`` is a denylist
+    covering the whole selection. The guard above holds the other boundary: an
+    allowlist with stray commas that still names a check runs it.
+    """
+    message = _refusal_message(
+        "PREFLIGHT_CHECKS", bash_bin, PREFLIGHT_CHECKS=checks, PREFLIGHT_SKIP=skip
     )
+    assert "select no check" in message, message
 
 
 @_NEEDS_RUNTIME
@@ -2949,28 +3193,38 @@ def _synthetic_jwt(**claims: object) -> str:
     return f"{_seg({'alg': 'none', 'typ': 'JWT'})}.{_seg(dict(claims))}.signature"
 
 
-def _diag_env(**overrides: str) -> dict[str, str]:
-    """Minimal env that runs main() with no checks selected -- diagnostic only."""
+def _diag_env(tmp_path: Path, **overrides: str) -> dict[str, str]:
+    """Minimal env that runs main() with one offline check -- diagnostic only.
+
+    A selection must leave at least one check to run, so the run selects the
+    asuid TXT check against a stub resolver that answers the real name and not
+    the negative control: main() emits the diagnostic, the check passes without
+    a network call, and the run exits 0.
+    """
+    resolver = _write_stub_cmd(
+        tmp_path,
+        "resolve",
+        'case "$1" in *nxdomain-control*) ;; *) echo \'"verification-token"\' ;; esac\n',
+    )
     env = {
         "SAGE_FQDN": "sage.test.invalid",
         "BASE_DOMAIN": "test.invalid",
         "AUTH_TOKEN": "test-token",
-        # Select a non-existent check id: main() emits the diagnostic, then the
-        # check loop matches nothing -> no network, exit 0.
-        "PREFLIGHT_CHECKS": "__none__",
+        "PREFLIGHT_CHECKS": "dns_asuid_txt",
+        "PREFLIGHT_RESOLVE_CMD": resolver,
     }
     env.update(overrides)
     return env
 
 
 @_NEEDS_BASH
-def test_diagnostic_decodes_jwt_iss_aud_ver() -> None:
+def test_diagnostic_decodes_jwt_iss_aud_ver(tmp_path: Path) -> None:
     # A real (synthetic) JWT: the diagnostic reports the *decoded* claim values,
     # which only appear if the payload segment was actually base64url-decoded.
     token = _synthetic_jwt(
         iss="https://login.microsoftonline.com/tid/v2.0", aud=_DIAG_GUID, ver="2.0"
     )
-    proc = _run(_diag_env(AUTH_TOKEN=token))
+    proc = _run(_diag_env(tmp_path, AUTH_TOKEN=token))
     assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
     assert f"aud={_DIAG_GUID}" in proc.stderr, proc.stderr
     assert "iss=https://login.microsoftonline.com/tid/v2.0" in proc.stderr, proc.stderr
@@ -2978,21 +3232,21 @@ def test_diagnostic_decodes_jwt_iss_aud_ver() -> None:
 
 
 @_NEEDS_BASH
-def test_diagnostic_degrades_on_non_jwt_token() -> None:
+def test_diagnostic_degrades_on_non_jwt_token(tmp_path: Path) -> None:
     # The default AUTH_TOKEN is not a 3-segment JWT; the decoder must degrade
     # gracefully (not crash under `set -euo pipefail`) and the run must complete.
-    proc = _run(_diag_env())  # AUTH_TOKEN="test-token"
+    proc = _run(_diag_env(tmp_path))  # AUTH_TOKEN="test-token"
     assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
     assert "token-claims: unavailable" in proc.stderr, proc.stderr
     assert "=== preflight complete" in proc.stderr, "the run must reach completion"
 
 
 @_NEEDS_BASH
-def test_diagnostic_never_prints_raw_token() -> None:
+def test_diagnostic_never_prints_raw_token(tmp_path: Path) -> None:
     token = _synthetic_jwt(
         iss="https://login.microsoftonline.com/tid/v2.0", aud=_DIAG_GUID, ver="2.0"
     )
-    proc = _run(_diag_env(AUTH_TOKEN=token))
+    proc = _run(_diag_env(tmp_path, AUTH_TOKEN=token))
     assert token not in (proc.stdout + proc.stderr), "the raw bearer token must never be logged"
 
 
