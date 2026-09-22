@@ -20,9 +20,16 @@ from fastapi.routing import APIRoute
 from pydantic import BaseModel, ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from sage._tool_naming import SERVER_ASSIGNMENT
 from sage.config import render_state_set
 from sage.models.enums import EdgeType, SourceType
-from sage.models.schemas import ErrorResponse
+from sage.models.schemas import (
+    BATCH_ITEM_MODELS,
+    ErrorResponse,
+    canonical_fields,
+    field_aliases,
+    field_sets,
+)
 from sage.models.wire import to_wire
 
 
@@ -1053,6 +1060,37 @@ def _undeclared_key_example(parameter: str, recognized: list[str]) -> str:
     return f"{parameter}={obj}" if parameter else obj
 
 
+def key_owners(key: str, *, refusing: type[BaseModel]) -> list[dict[str, str]]:
+    """Sibling operations that accept ``key``, and where it goes in each.
+
+    Derived from the batch item models' declared fields, their ``AliasOf``
+    markers and their ``Sets`` markers, so the redirect cannot name a field
+    a model does not declare; an alias redirects to the canonical field it
+    names. Only operations on the refusing operation's surface are named,
+    and never the refusing operation itself; a model outside the batch-item
+    registry has no siblings to name. The match is by name alone, so a name
+    several siblings declare -- the per-item ``document_id`` -- is redirected
+    to each of them, whatever role the caller meant it for.
+    """
+    refusing_operation = next(
+        (name for name, model in BATCH_ITEM_MODELS.items() if model is refusing), None
+    )
+    if refusing_operation is None:
+        return []
+    surface = SERVER_ASSIGNMENT.get(refusing_operation)
+    owners = []
+    for operation, model in sorted(BATCH_ITEM_MODELS.items()):
+        if operation == refusing_operation or SERVER_ASSIGNMENT.get(operation) != surface:
+            continue
+        if key in canonical_fields(model):
+            field = key
+        else:
+            field = field_aliases(model).get(key) or field_sets(model).get(key)
+        if field is not None:
+            owners.append({"key": key, "operation": operation, "location": f"items[].{field}"})
+    return owners
+
+
 class UndeclaredKeyError(SAGEError):
     """400: a key nested inside a request parameter is not one the model declares.
 
@@ -1077,6 +1115,12 @@ class UndeclaredKeyError(SAGEError):
     are left to a later refusal rather than folded in, because ``parameter``
     and ``recognized`` describe one object; ``elsewhere`` says so in the
     message, so a caller who repairs this object is not surprised by the next.
+
+    ``recognized`` lists canonical names only; an alias the model declares is
+    reported beside it in ``aliases``, so two names for one field do not read
+    as two fields. A key a sibling operation accepts is named in ``see_also``
+    with the operation and where the key goes in it. Both are emitted only
+    when non-empty.
     """
 
     def __init__(
@@ -1086,6 +1130,8 @@ class UndeclaredKeyError(SAGEError):
         recognized: list[str],
         example: str | None = None,
         elsewhere: bool = False,
+        aliases: dict[str, str] | None = None,
+        see_also: list[dict[str, str]] | None = None,
     ) -> None:
         named = sorted(set(keys))
         if not named:
@@ -1100,23 +1146,35 @@ class UndeclaredKeyError(SAGEError):
             if len(located) == 1
             else f"{', '.join(repr(name) for name in located)} are not declared keys."
         )
-        message = f"{subject} Accepted: {accepted!r}. Example: {example}"
+        message = f"{subject} Accepted: {accepted!r}."
+        if aliases:
+            message += (
+                " Aliases: "
+                + ", ".join(
+                    f"{alias} -> {canonical}" for alias, canonical in sorted(aliases.items())
+                )
+                + "."
+            )
+        message += f" Example: {example}"
+        for owner in see_also or ():
+            located_key = f"{parameter}.{owner['key']}" if parameter else owner["key"]
+            message += f" {located_key!r} belongs to {owner['operation']} at {owner['location']}."
         if elsewhere:
             message += (
                 " Undeclared keys at other locations are reported once this object is repaired."
             )
-        super().__init__(
-            "undeclared_key",
-            message,
-            400,
-            {
-                "parameter": parameter,
-                "key": named[0],
-                "keys": named,
-                "recognized": accepted,
-                "example": example,
-            },
-        )
+        detail = {
+            "parameter": parameter,
+            "key": named[0],
+            "keys": named,
+            "recognized": accepted,
+            "example": example,
+        }
+        if aliases:
+            detail["aliases"] = dict(sorted(aliases.items()))
+        if see_also:
+            detail["see_also"] = list(see_also)
+        super().__init__("undeclared_key", message, 400, detail)
 
 
 class InvalidFilterShapeError(SAGEError):
@@ -3029,11 +3087,18 @@ def translate_validation_error(
             refusing = _model_for_loc(root_model, loc)
             if refusing is not None and loc:
                 by_object = _undeclared_keys_by_object(exc, root_model)
+                keys = by_object[loc[:-1]]
                 return UndeclaredKeyError(
                     parameter=".".join(str(segment) for segment in loc[:-1]),
-                    keys=by_object[loc[:-1]],
-                    recognized=list(refusing.model_fields),
+                    keys=keys,
+                    recognized=canonical_fields(refusing),
                     elsewhere=len(by_object) > 1,
+                    aliases=field_aliases(refusing),
+                    see_also=[
+                        owner
+                        for key in sorted(set(keys))
+                        for owner in key_owners(key, refusing=refusing)
+                    ],
                 )
 
     return None

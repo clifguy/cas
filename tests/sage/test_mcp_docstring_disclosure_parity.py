@@ -529,7 +529,7 @@ class Pin(NamedTuple):
 UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # doc_only fell from 16 once a qualified error-mode header ended the
     # prose body: its per-item code list had been read as a claim.
-    ("sage_core", "create_edges"): Pin(6, 15),
+    ("sage_core", "create_edges"): Pin(6, 14),
     ("sage_core", "create_vault"): Pin(4, 17),
     ("sage_core", "delete_edge"): Pin(6, 3),
     # doc_only fell from 2 as the 200 response declared the download recipe

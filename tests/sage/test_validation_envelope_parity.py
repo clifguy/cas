@@ -42,7 +42,7 @@ from sage.app import create_app
 from sage.config import VaultConfig
 from sage.mcp_server import _vaults as _mcp_vaults
 from sage.mcp_server import mcp
-from sage.models.schemas import BulkLifecycleItem
+from sage.models.schemas import BulkLifecycleItem, canonical_fields, field_aliases
 from tests.sage.conftest import initialize_services_for_test
 
 VAULT_ID = "test_vault"
@@ -386,7 +386,8 @@ async def test_undeclared_item_field_parity_between_surfaces(vault_services, htt
     assert mcp_envelope["detail"] == http_body["detail"]
     assert http_body["detail"]["parameter"] == "items.0"
     assert http_body["detail"]["key"] == "bogus"
-    assert http_body["detail"]["recognized"] == sorted(BulkLifecycleItem.model_fields)
+    assert http_body["detail"]["recognized"] == sorted(canonical_fields(BulkLifecycleItem))
+    assert http_body["detail"]["aliases"] == field_aliases(BulkLifecycleItem)
 
 
 async def test_every_undeclared_item_field_is_named_alike_on_both_surfaces(
@@ -869,9 +870,13 @@ async def test_every_tool_building_a_nesting_model_names_the_accepted_keys(vault
 
         assert envelope["error"] == "undeclared_key", (tool_name, expected_model, envelope)
         assert envelope["detail"]["key"] == "bogus_field_x", (tool_name, envelope)
-        assert envelope["detail"]["recognized"] == sorted(
-            getattr(schemas, expected_model).model_fields
-        ), (tool_name, expected_model, envelope)
+        model = getattr(schemas, expected_model)
+        assert envelope["detail"]["recognized"] == sorted(canonical_fields(model)), (
+            tool_name,
+            expected_model,
+            envelope,
+        )
+        assert envelope["detail"].get("aliases", {}) == field_aliases(model), envelope
 
         # The tool publishes an error schema through ``tools/list``; a code it
         # can raise has to be in that tool's family table or the schema it
@@ -980,9 +985,13 @@ async def test_every_http_operation_with_a_nested_model_refuses_its_undeclared_k
         assert resp.status_code == 400, (operation, expected_model, resp.text)
         assert envelope["code"] == "undeclared_key", (operation, expected_model, envelope)
         assert envelope["detail"]["key"] == "bogus_field_x", (operation, envelope)
-        assert envelope["detail"]["recognized"] == sorted(
-            getattr(schemas, expected_model).model_fields
-        ), (operation, expected_model, envelope)
+        model = getattr(schemas, expected_model)
+        assert envelope["detail"]["recognized"] == sorted(canonical_fields(model)), (
+            operation,
+            expected_model,
+            envelope,
+        )
+        assert envelope["detail"].get("aliases", {}) == field_aliases(model), envelope
 
 
 async def test_both_surfaces_locate_a_nested_key_at_the_same_parameter(vault_services, http_client):

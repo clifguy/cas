@@ -2927,6 +2927,31 @@ components:
         example:
           type: string
           description: Example.
+        aliases:
+          type: object
+          additionalProperties:
+            type: string
+          description: Aliases.
+        see_also:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - key
+            - operation
+            - location
+            properties:
+              key:
+                type: string
+                description: Key.
+              operation:
+                type: string
+                description: Operation.
+              location:
+                type: string
+                description: Location.
+          description: See also.
       description: Additional context for this refusal.
     UndeclaredKeyError:
       type: object

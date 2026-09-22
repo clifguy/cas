@@ -57,8 +57,11 @@ REQUEST_400_SENTENCES: dict[str, str] = {
         "schema does not declare. `detail.parameter` locates the object, "
         "`detail.keys` names every undeclared key in it, sorted, with `detail.key` "
         "the first, and `detail.recognized` lists the names that object does "
-        "accept. Undeclared keys in another object are reported once this one "
-        "is repaired."
+        "accept; `detail.aliases`, when present, maps an accepted alias to its "
+        "canonical name, and `detail.see_also`, when present, names a sibling "
+        "operation that accepts an undeclared key and where it goes there. "
+        "Undeclared keys in another object are reported once this one is "
+        "repaired."
     ),
 }
 

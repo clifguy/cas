@@ -121,6 +121,9 @@ def emitted_errors() -> Iterator[Any]:
         if origin in (list, set, Iterable):
             values = [sample(typing.get_args(annotation)[0])]
             return set(values) if origin is set else values
+        if origin is dict:
+            key_type, value_type = typing.get_args(annotation)
+            return {sample(key_type): sample(value_type)}
         return {
             str: "value",
             bool: True,
@@ -157,6 +160,10 @@ def emitted_errors() -> Iterator[Any]:
                 args["field"] = "relocated_to"
             if name in ("ListFieldAddConflictError", "ListFieldRemoveConflictError"):
                 args["field"] = "tags"
+            if name == "UndeclaredKeyError" and "see_also" in args:
+                args["see_also"] = [
+                    {"key": "value", "operation": "update_lifecycles", "location": "items[].action"}
+                ]
             if name == "ModeParameterMismatchError":
                 args["detail"] = {
                     "mode": "catalog",

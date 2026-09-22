@@ -332,7 +332,8 @@ async def test_unknown_item_field_is_not_an_unknown_parameter(client):
     assert body["code"] == "undeclared_key"
     assert body["detail"]["parameter"] == "items.0"
     assert body["detail"]["key"] == BOGUS_FIELD
-    assert body["detail"]["recognized"] == sorted(BulkLifecycleItem.model_fields)
+    assert body["detail"]["recognized"] == sorted(schemas.canonical_fields(BulkLifecycleItem))
+    assert body["detail"]["aliases"] == {"doc_id": "document_id"}
 
 
 async def test_open_mapping_fields_accept_any_key(client):

@@ -6424,6 +6424,13 @@ SCHEMAS = json.loads(
     "additionalProperties": false,
     "description": "Additional context for this refusal.",
     "properties": {
+      "aliases": {
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Aliases.",
+        "type": "object"
+      },
       "example": {
         "description": "Example.",
         "type": "string"
@@ -6447,6 +6454,33 @@ SCHEMAS = json.loads(
         "description": "Recognized.",
         "items": {
           "type": "string"
+        },
+        "type": "array"
+      },
+      "see_also": {
+        "description": "See also.",
+        "items": {
+          "additionalProperties": false,
+          "properties": {
+            "key": {
+              "description": "Key.",
+              "type": "string"
+            },
+            "location": {
+              "description": "Location.",
+              "type": "string"
+            },
+            "operation": {
+              "description": "Operation.",
+              "type": "string"
+            }
+          },
+          "required": [
+            "key",
+            "operation",
+            "location"
+          ],
+          "type": "object"
         },
         "type": "array"
       }
