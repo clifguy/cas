@@ -171,23 +171,24 @@ def test_empty_generation_guard_falls_back_to_the_server_roster(
         assert "empty generation would create a new server" in result.stderr
 
 
+@pytest.mark.parametrize(
+    "servers,allowed",
+    [
+        # The suffixed server listed first: inspecting only the last line allows it.
+        ("psql-cor-prod-old-pg17\npsql-cor-prod-old", False),
+        # The original alone: counting hyphens instead of stripping the prefix refuses it.
+        ("psql-cor-prod-old", True),
+    ],
+)
 def test_roster_fallback_reads_every_server_past_a_hyphenated_environment(
-    tmp_path: Path,
+    tmp_path: Path, servers: str, allowed: bool
 ) -> None:
-    # The suffixed server listed first, under a hyphenated environment: inspecting
-    # only the last roster line, or counting hyphens across the roster, passes here.
     result = _run_deploy_guard(
-        tmp_path,
-        "true",
-        "",
-        "",
-        "",
-        0,
-        environment="cor-prod",
-        servers="psql-cor-prod-old-pg17\npsql-cor-prod-old",
+        tmp_path, "true", "", "", "", 0, environment="cor-prod", servers=servers
     )
-    assert result.returncode != 0
-    assert "deployment record has no outputs" in result.stderr
+    assert (result.returncode == 0) is allowed, result.stderr
+    if not allowed:
+        assert "deployment record has no outputs" in result.stderr
 
 
 def test_empty_generation_guard_fails_closed_when_servers_cannot_be_read(
