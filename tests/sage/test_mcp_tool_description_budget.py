@@ -99,9 +99,9 @@ def test_tool_fits_the_description_budget(name: str) -> None:
 
 #: A listed error-mode entry: a bullet opening with a code in double backticks,
 #: or a bullet grouping several codes under one status (``- 400: ``a``, ``b````).
-_ERROR_ENTRY_RE: Final[re.Pattern[str]] = re.compile(r"^\s*- ``([a-z_]+)``", re.MULTILINE)
+_ERROR_ENTRY_RE: Final[re.Pattern[str]] = re.compile(r"^\s*- ``([a-z0-9_]+)``", re.MULTILINE)
 _GROUPED_ENTRY_RE: Final[re.Pattern[str]] = re.compile(r"^\s*- \d{3}: (.*)$", re.MULTILINE)
-_CODE_RE: Final[re.Pattern[str]] = re.compile(r"``([a-z_]+)``")
+_CODE_RE: Final[re.Pattern[str]] = re.compile(r"``([a-z0-9_]+)``")
 
 #: Codes an error-mode list may name that the tool never refuses with, by tool.
 #: Each names a condition the tool reports in its successful response.

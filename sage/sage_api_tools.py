@@ -248,22 +248,24 @@ _BATCH_RESPONSE_MODE_NOTE = (
     "invalid_parameter before any per-item work."
 )
 
-#: What a download-capable ``write_to_path`` does where the server cannot
-#: reach the caller's filesystem, shared by the tools that can mint a
-#: download recipe. The first sentence is each tool's own.
+#: How a download-capable ``write_to_path`` behaves on each delivery arm,
+#: shared by the tools that can mint a download recipe. The sentence before
+#: it, naming what the local arm writes, is each tool's own.
 _WRITE_TO_PATH_RECIPE = (
-    "Where the server does not share the caller's filesystem, the response is "
-    "a download recipe carrying this path for the caller's own environment to "
-    "write, and the path is read with that environment's conventions -- a "
-    "Windows drive-letter or UNC spelling is accepted on that arm. The path "
-    "must be absolute either way, and is checked before the {subject} is read, "
-    "so a malformed path reports write_path_invalid {regardless}; a later "
-    "failure to open the target for exclusive creation can also report it. "
-    "The target must not exist (write_path_exists) and its parent must exist "
-    "and be writable. A minted recipe's token lapses 900 seconds after issue "
-    "by default and the fetch must finish inside that window; the recipe's "
-    "own `expires_at` is authoritative where a deployment has tuned the "
-    "lifetime, and a lapsed recipe is re-issued rather than resumed."
+    "Where the server shares the caller's filesystem, the target must not "
+    "exist (write_path_exists) and its parent must exist and be "
+    "writable, and a failure to open the target for exclusive creation "
+    "reports write_path_invalid. Where the server does not share the caller's "
+    "filesystem, the response is a download recipe carrying this path for the "
+    "caller's own environment to write, and the path is read with that "
+    "environment's conventions -- a Windows drive-letter or UNC spelling is "
+    "accepted on that arm. The path must be absolute either way, and is "
+    "checked before the {subject} is read, so a malformed path reports "
+    "write_path_invalid {regardless}. A minted recipe's token lapses 900 "
+    "seconds after issue by default and the fetch must finish inside that "
+    "window; the recipe's own `expires_at` is authoritative where a "
+    "deployment has tuned the lifetime, and a lapsed recipe is re-issued "
+    "rather than resumed."
 )
 
 _GET_DOCUMENT_WRITE_TO_PATH = (
@@ -542,11 +544,16 @@ _INGEST_SOURCE = _ingest_param(
     ),
 )
 
+#: The source formats an adapter is registered for, as the parameter
+#: descriptions name them. Held equal to the adapter registry by test rather
+#: than read from it, so loading the tool module instantiates no adapter.
+_REGISTERED_SOURCE_FORMATS = "markdown, docx, xlsx, pptx and pdf"
+
 _INGEST_SOURCE_TYPE = _ingest_param(
     str | None,
     "source_type",
     mcp=(
-        "The registered formats are markdown, docx, xlsx, pptx and pdf; a "
+        f"The registered formats are {_REGISTERED_SOURCE_FORMATS}; a "
         "refusal names them in ``registered_source_types``. Inference reads "
         "the extension: ``.md`` and ``.markdown`` map to markdown, "
         "``.docx``/``.dotx`` to docx."
@@ -922,18 +929,13 @@ def register_sage_tools(
     @mcp.tool(annotations=READ_ONLY)
     async def get_filename_metadata(
         vault_id: VaultIdParam,
-        filename: model_param(
-            str,
-            ParseFilenameRequest,
-            "filename",
-            mcp="Directory components are stripped.",
-        ),
+        filename: model_param(str, ParseFilenameRequest, "filename"),
         source_type: model_param(
             str,
             ParseFilenameRequest,
             "source_type",
             mcp=(
-                "The registered formats are markdown, docx, xlsx, pptx and pdf "
+                f"The registered formats are {_REGISTERED_SOURCE_FORMATS} "
                 "-- the same set `ingest_document` accepts, so a filename that "
                 "parses here is one that can go on to be ingested."
             ),
