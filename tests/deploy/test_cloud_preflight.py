@@ -2017,6 +2017,10 @@ def test_kv_anthropic_skips_when_vault_load_fails() -> None:
 # host offers, because the split's semantics are a property of the shell rather
 # than of the script.
 #
+# One input never reaches the split: a control character anywhere in the list
+# is refused at required-input validation, since no entry carrying one can be an
+# id SAGE advertises, and the scenario that pins it runs under the same matrix.
+#
 # The stub advertises two vaults (``_VAULTS_BODY``), so a multi-id expectation is
 # satisfiable without a bespoke responder.
 # --------------------------------------------------------------------------- #
@@ -2368,50 +2372,105 @@ def test_vault_load_treats_a_metacharacter_id_as_a_literal(expected: str, bash_b
 
 @_NEEDS_RUNTIME
 @pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
-@pytest.mark.parametrize("expected", ["zzz\ncas", "cas\nzzz"], ids=["match-second", "match-first"])
+@pytest.mark.parametrize(
+    ("expected", "escaped_entries"),
+    [
+        ("zzz\ncas", ("$'zzz\\ncas'",)),
+        ("cas\nzzz", ("$'cas\\nzzz'",)),
+        ("zzz\rcas", ("$'zzz\\rcas'",)),
+        ("zzz\tcas", ("$'zzz\\tcas'",)),
+        ("cas\n", ("$'cas\\n'",)),
+        ("cas,zzz\ncas", ("$'zzz\\ncas'",)),
+        ("zzz\ncas,te\rst", ("$'zzz\\ncas'", "$'te\\rst'")),
+    ],
+    ids=[
+        "match-second",
+        "match-first",
+        "carriage-return",
+        "tab",
+        "trailing-newline",
+        "second-entry",
+        "two-entries",
+    ],
+)
 def test_vault_load_does_not_credit_a_multi_line_id_by_one_of_its_lines(
-    expected: str, bash_bin: str
+    expected: str, escaped_entries: tuple[str, ...], bash_bin: str
 ) -> None:
-    """An id spanning two lines is one id, and is not satisfied by either line.
+    """A control character in the expected list is refused before any check runs.
 
-    The sibling scenario above pins that the comparison is not a *pattern*
-    match. This pins the narrower thing a pattern-free comparison can still get
-    wrong: a matcher fed the id as a pattern *list* rather than a pattern reads
-    a newline as a separator between entries, so a two-line value is credited
-    whenever any one of its lines names an advertised vault. The value stops
-    being compared and starts being enumerated.
+    A vault id is a lowercase slug, so an entry carrying a newline, carriage
+    return, tab, or any other control character is not an unusual id but a
+    malformed list: no such entry can equal an id SAGE advertises. ``IFS=','``
+    keeps a newline inside its field, and the variable is supplied by a GitHub
+    Actions repository variable, which admits multi-line values -- so the shape
+    is reachable, and a trailing newline is the one it most often takes.
 
-    ``IFS=','`` makes this reachable rather than theoretical -- a newline is not
-    a delimiter there, so it stays inside a field -- and the variable is
-    supplied by a GitHub Actions repository variable, which admits multi-line
-    values. The direction of error is the gate's worst one: `zzz` is credited
-    because `cas`, sharing its value, loaded.
+    Refusal rather than rendering, because rendering has no legible form. A
+    comparison that let the entry through would print it across as many matrix
+    lines as it has, and collapsing the newline to a space would read as two
+    missing ids -- the misreading that a whole-value comparison exists to
+    prevent. Refusing at the required-input stage also spends no network call
+    on a value that could never pass.
 
-    Both orderings are carried because they fail differently under a matcher
-    that stops at its first entry: ``cas\\nzzz`` is credited by the leading
-    line, ``zzz\\ncas`` only by a matcher that reads on past it. Either alone
-    leaves half of the enumeration unproven.
+    What each assertion excludes:
+
+    * the usage exit code, no banner, no matrix row, and no request reaching
+      the stub -- a refusal raised from inside ``check_vault_load``, or after the
+      checks start, fails all four; the stub is served so that a run which got
+      past validation would have something to call, which is what makes its
+      silence evidence;
+    * the message anchored on the ``preflight:`` prefix -- the usage text itself
+      lists the variable, so a bare containment check is met by the boilerplate;
+    * the escaped entry whole on that one line -- an unescaped entry splits
+      across lines and a two-line value reads as two ids;
+    * ``second-entry`` showing no ``cas,`` -- the message names the offending
+      entry, not the whole value;
+    * ``two-entries`` naming both -- a refusal that stops at the first offending
+      entry passes every single-entry case;
+    * ``carriage-return`` and ``tab`` -- a refusal keyed on the newline alone
+      passes the first two cases and neither of these.
+
+    The refusal's other boundary -- that a space, a dot, a glob character, or an
+    empty element is *not* refused -- is held by the sibling scenarios, each of
+    which needs ``check_vault_load`` to return a verdict.
     """
-    with serve(_green) as url:
+    requested: list[str] = []
+
+    def _recording(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        requested.append(path)
+        return _green(method, path, body)
+
+    with serve(_recording) as url:
         proc = _run(
             _base_env(url, PREFLIGHT_EXPECTED_VAULTS=expected, PREFLIGHT_CHECKS="vault_load"),
             bash_bin=bash_bin,
         )
-    verdicts = _verdicts(proc.stdout)
-    assert proc.returncode != 0, (
-        f"a multi-line id must not be credited by one of its lines:\n{proc.stdout}"
+    assert not requested, f"the refusal must precede every network call: {requested}"
+    assert proc.returncode == 2, (
+        f"a control character must exit through the usage path:\n{proc.stdout}{proc.stderr}"
     )
-    assert verdicts.get("vault_load") == "FAIL", verdicts
-    # Asserted against the whole of stdout rather than the parsed detail: the id
-    # carries a newline, so the missing list it renders into spans two output
-    # lines and ``_detail`` is single-line by construction. Both of the id's
-    # lines must be reported -- an assertion on ``zzz`` alone is also satisfied
-    # by a run that credited ``cas`` and reported only the remainder, which is
-    # the defect this scenario exists to exclude.
-    assert "missing expected id(s):" in proc.stdout, proc.stdout
-    assert "zzz" in proc.stdout and "cas" in proc.stdout, (
-        f"both lines of the id must be reported missing:\n{proc.stdout}"
-    )
+    assert not _verdicts(proc.stdout) and not _verdicts(proc.stderr), proc.stdout
+    assert "=== CAS cloud preflight" not in proc.stderr, "the checks must not have started"
+    messages = [
+        line
+        for line in proc.stderr.splitlines()
+        if line.startswith("preflight: PREFLIGHT_EXPECTED_VAULTS")
+    ]
+    assert len(messages) == 1, proc.stderr
+    for entry in escaped_entries:
+        assert entry in messages[0], messages[0]
+    assert "cas," not in messages[0], f"only the offending entry is shown: {messages[0]!r}"
+
+
+@_NEEDS_BASH
+def test_usage_states_expected_vaults_refuses_control_characters() -> None:
+    """The usage text states that a control character in the list is refused, so
+    an operator reading ``--help`` learns the rule before a deploy meets it.
+    """
+    proc = _run({}, "--help")
+    assert proc.returncode == 0, proc.stderr
+    lines = [line for line in proc.stderr.splitlines() if "control character" in line]
+    assert any("PREFLIGHT_EXPECTED_VAULTS" in line for line in lines), proc.stderr
 
 
 @_NEEDS_RUNTIME
