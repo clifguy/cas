@@ -556,7 +556,9 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # its operation already declares.
     ("sage_core", "migrate_vault"): Pin(6, 9),
     ("sage_core", "optimize_vault_content_store"): Pin(2, 2),
-    ("sage_core", "read_projection"): Pin(2, 10),
+    # doc_only fell from 10 as the delivery and write_to_path rules moved into
+    # the published parameter descriptions, out of the prose body.
+    ("sage_core", "read_projection"): Pin(2, 5),
     ("sage_core", "read_section"): Pin(2, 1),
     # doc_only fell from 20 once a qualified error-mode header ended the prose
     # body: its synchronous refusal list had been read as claims.
@@ -572,7 +574,9 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # spec_only fell from 5 for the same reason as get_filename_metadata:
     # the docstring now declares the boundary refusals, covering one claim
     # the contract was stating alone.
-    ("sage_core", "traverse"): Pin(4, 1),
+    # doc_only fell from 1 as the supersedes exemption took the operation's
+    # wording: "not subject to this dedup".
+    ("sage_core", "traverse"): Pin(4, 0),
     # Both counts fell again once the per-item and per-argument rules moved
     # into the published parameter descriptions, which the whole-docstring
     # side credits, in the wording the operation already used.

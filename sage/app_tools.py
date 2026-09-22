@@ -364,9 +364,32 @@ def register_app_tools(
 
     @mcp.tool(annotations=READ_ONLY)
     async def list_directory(
-        vault_id: str,
-        directory: str,
-        max_depth: int | None = None,
+        vault_id: VaultIdParam,
+        directory: Annotated[
+            str,
+            Field(
+                description=(
+                    "Absolute path to the directory to scan, resolved on the "
+                    "machine running the SAGE server process; the "
+                    "already-in-vault check goes through the vault's stores, so "
+                    "results are identical whether those are local or "
+                    "cloud-hosted. Single and double quote wrappers are "
+                    "stripped, so paths round-tripped from shell pasting are "
+                    "accepted."
+                )
+            ),
+        ],
+        max_depth: Annotated[
+            int | None,
+            Field(
+                description=(
+                    "Max recursion depth (null = the server's default depth "
+                    "ceiling, 0 = scan only the named directory with no "
+                    "descent). A walk cut by the default ceiling is reported as "
+                    "truncated; an explicit depth prunes silently."
+                )
+            ),
+        ] = None,
     ) -> dict:
         """Scan a filesystem directory for pre-ingest discovery: walk the
         path, match files against vault adapters, hash files, parse
@@ -394,32 +417,15 @@ def register_app_tools(
         the directory or scan subdirectories separately.
 
         Error modes:
-        - ``invalid_vault_id`` (400): the supplied vault_id is not a
-          well-formed vault id.
-        - ``vault_not_found`` (404): no vault is registered with that id.
-          ``detail.available_vaults`` lists the registered vaults.
+        - ``invalid_vault_id`` (400)
+        - ``vault_not_found`` (404)
         - ``invalid_directory`` (string in response, not a SAGE error):
           ``directory`` does not exist or is not readable.
         - ``caller_filesystem_unavailable`` (501): under the cloud profile the
-          server cannot see the caller's filesystem, so directory discovery is
-          refused rather than walking the container's own tree. Enumerate the
-          directory in the caller's environment instead, then ingest each file
-          by its absolute path -- the upload recipe the ingest tools return
-          carries the rest of the exchange.
-
-        Args:
-            vault_id: Target vault identifier.
-            directory: Absolute path to the directory to scan, resolved
-                on the machine running the SAGE server process; the
-                already-in-vault check goes through the vault's stores, so
-                results are identical whether those are local or
-                cloud-hosted. Single and double quote wrappers are
-                stripped, so paths round-tripped from shell pasting are
-                accepted.
-            max_depth: Max recursion depth (null = the server's default
-                depth ceiling, 0 = scan only the named directory with no
-                descent). A walk cut by the default ceiling is reported
-                as truncated; an explicit depth prunes silently.
+          server cannot see the caller's filesystem. Enumerate the directory
+          in the caller's environment instead, then ingest each file by its
+          absolute path -- the upload recipe the ingest tools return carries
+          the rest of the exchange.
         """
         from sage.services.scan import build_extension_map, scan_directory
 

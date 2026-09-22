@@ -3515,7 +3515,7 @@
             },
             "edge_type": {
               "default": "supersedes",
-              "description": "Edge type to follow. Defaults to `supersedes`, the version history of the document. The chain walk follows only this edge type in both directions.",
+              "description": "Edge type to follow. Defaults to `supersedes`, the version history of the document. The chain walk follows only this edge type in both directions. One of \"supersedes\", \"derived_from\", \"instantiated_from\", \"covers\", \"references\", \"bundles_with\", \"authoritative_for\", \"depends_on\", \"sync_target\", \"retracts\", \"merged_from\".",
               "title": "Edge Type",
               "type": "string"
             },
@@ -6068,7 +6068,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Retrieve a document record with all metadata, lifecycle state, and\npipeline status. Optional delivery of the vault-local source file\nbytes supports the agentic read-modify-reingest round-trip.\n\nTwo mutually-exclusive delivery modes:\n- include_content=true: inline base64 bytes in the response.\n  Fails with 413 ``content_too_large`` if the file exceeds the\n  inline ceiling (default 100 MB; override via\n  SAGE_MAX_INLINE_CONTENT_BYTES). Best for small files.\n- write_to_path=/abs/path: SAGE writes the bytes to the\n  filesystem path; response carries only metadata (written_to,\n  content_size, content_hash). Preferred for files that would\n  exceed MCP tool-result size ceilings.\n\nError modes:\n- ``invalid_vault_id`` (400): the supplied vault_id is not a\n  well-formed vault id.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n- ``invalid_document_id`` (400): the supplied document_id is not a\n  well-formed id; rejected at the boundary before any lookup.\n- ``document_not_found`` (404): no document with that id.\n- ``content_file_missing`` (404): only when bytes are\n  requested (either delivery mode); the document record\n  exists but the vault-local file is absent.\n- ``content_too_large`` (413): include_content=true but the\n  file exceeds the inline ceiling. Use ``write_to_path`` instead.\n- ``content_delivery_conflict`` (400): both ``include_content``\n  and ``write_to_path`` were set; choose one.\n- ``write_path_exists`` (409): ``write_to_path`` target\n  already exists.\n- ``write_path_invalid`` (400): ``write_to_path`` is not absolute,\n  its parent is missing or not writable, or the target cannot be\n  opened for exclusive creation after validation. An existing target\n  instead returns ``write_path_exists`` (409); errors after opening\n  are not translated into ``write_path_invalid``.\n- ``vault_source_store_refused`` (502): the store declined the operation\n  on its merits -- quota, a permission it withdrew, a reply that could\n  not be used. Resolve it at the store before retrying;\n  ``detail.store_status`` carries the status it declined with.\n- ``vault_source_store_unavailable`` (503): the store declined to serve\n  the operation just now -- throttling, or a transient backend signal.\n  The same call may succeed later.\n  Both only when bytes are requested; a metadata-only read touches\n  the store not at all.\n\nArgs:\n    vault_id: Target vault identifier.\n    document_id: The document's unique identifier. Alias: ``doc_id``.\n        Supply exactly one of ``document_id`` or ``doc_id``.\n    doc_id: Alias for ``document_id``; supply exactly one.\n    include_content: When true, add `content` (base64) and\n        `content_size` to the response. Default: false.\n    write_to_path: Absolute filesystem path, resolved on the\n        machine running the SAGE server process where that machine\n        shares the caller's filesystem: SAGE streams the retained\n        source bytes there (from the vault's configured source\n        store, unbounded by the inline-content ceiling) and\n        populates `written_to`, `content_size`, and `content_hash`\n        in the response, the target must not exist, and its parent\n        must exist and be writable. Where it does not, the response\n        is a download recipe carrying this path for the caller's\n        own environment to write, and the path is read with that\n        environment's conventions -- a Windows drive-letter or UNC\n        spelling is accepted on that arm, since it is absolute on\n        the machine that will write it. The path must be absolute\n        either way, and is checked before the document is read, so\n        a malformed path reports ``write_path_invalid`` whether or\n        not the document exists. A later failure to open the target\n        for exclusive creation can also report ``write_path_invalid``.\n        A minted recipe's token lapses 900 seconds after issue by\n        default and the fetch must finish inside that window; the\n        recipe's own ``expires_at`` is authoritative where a\n        deployment has tuned the lifetime, and a lapsed recipe is\n        re-issued rather than resumed.\n        Mutually exclusive with `include_content`.\n",
+        "description": "Retrieve a document record with all metadata, lifecycle state, and\npipeline status. Optional delivery of the vault-local source file\nbytes supports the agentic read-modify-reingest round-trip.\n\nTwo mutually-exclusive delivery modes:\n- include_content=true: inline base64 bytes in the response.\n  Best for small files.\n- write_to_path=/abs/path: SAGE writes the bytes to the\n  filesystem path; response carries only metadata (written_to,\n  content_size, content_hash). Preferred for files that would\n  exceed MCP tool-result size ceilings.\n\nError modes (the two store codes only when bytes are requested):\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``invalid_document_id`` (400)\n- ``document_not_found`` (404): no document with that id.\n- ``content_file_missing`` (404): bytes requested; the vault-local\n  file is absent.\n- ``content_too_large`` (413)\n- ``content_delivery_conflict`` (400): both delivery modes set.\n- ``write_path_exists`` (409)\n- ``write_path_invalid`` (400)\n- ``vault_source_store_refused`` (502): resolve it at the store before\n  retrying; ``detail.store_status`` carries its status.\n- ``vault_source_store_unavailable`` (503): the same call may succeed\n  later.\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -6082,6 +6082,7 @@
                 }
               ],
               "default": null,
+              "description": "Alias for `document_id`; supply exactly one of the two.",
               "title": "Doc Id"
             },
             "document_id": {
@@ -6094,14 +6095,17 @@
                 }
               ],
               "default": null,
+              "description": "The document's unique identifier. Alias: `doc_id`; supply exactly one of the two.",
               "title": "Document Id"
             },
             "include_content": {
               "default": false,
+              "description": "When true, add `content` (base64) and `content_size` to the response. Fails with content_too_large (413) past the inline ceiling (default 100 MB; override via SAGE_MAX_INLINE_CONTENT_BYTES): use `write_to_path` instead. Mutually exclusive with `write_to_path`.",
               "title": "Include Content",
               "type": "boolean"
             },
             "vault_id": {
+              "description": "Target vault identifier. `list_vaults` names the registered vaults.",
               "title": "Vault Id",
               "type": "string"
             },
@@ -6115,6 +6119,7 @@
                 }
               ],
               "default": null,
+              "description": "Absolute filesystem path, resolved on the machine running the SAGE server process: SAGE streams the retained source bytes there (from the vault's configured source store, unbounded by the inline-content ceiling) and populates `written_to`, `content_size` and `content_hash`. Where the server does not share the caller's filesystem, the response is a download recipe carrying this path for the caller's own environment to write, and the path is read with that environment's conventions -- a Windows drive-letter or UNC spelling is accepted on that arm. The path must be absolute either way, and is checked before the document is read, so a malformed path reports write_path_invalid whether or not the document exists; a later failure to open the target for exclusive creation can also report it. The target must not exist (write_path_exists) and its parent must exist and be writable. A minted recipe's token lapses 900 seconds after issue by default and the fetch must finish inside that window; the recipe's own `expires_at` is authoritative where a deployment has tuned the lifetime, and a lapsed recipe is re-issued rather than resumed. Mutually exclusive with `include_content`.",
               "title": "Write To Path"
             }
           },
@@ -6420,19 +6425,22 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Parse a filename's basename through the vault's filename parsing and\nreturn the extracted metadata. Side-effect free: no document is\ncreated and vault state is unchanged.\n\nThis is the companion to ``ingest_document``'s caller-authoritative\nmetadata flow: call it first for filename-derived suggestions, decide\nwhich fields to keep, then call ``ingest_document`` with\n``metadata=...``. Fields the parser could not extract come back null;\nwhen the vault has no ``filename_extraction.pattern`` configured, all\nfields are null.\n\nWhich fields the parser extracts is vault-config-defined; see\n``metadata_extraction.filename_extraction.segment_fields`` in\n``get_vault_config``. In the ``cas`` vault the pattern is\n``{date}_{project}_{code}_{title}_{version}``, so the parser returns\n``doc_date``, ``project``, ``doc_code``, ``title``, and ``version``.\n\nError modes:\n- ``invalid_vault_id`` (400): the supplied vault_id is not a\n  well-formed vault id.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n- ``adapter_not_found`` (400): no source adapter is registered for\n  ``source_type``.\n\nArgs:\n    vault_id: Target vault identifier.\n    filename: Filename to parse; the basename is used (directory\n        components are stripped).\n    source_type: Source artifact format (markdown, docx, xlsx, pptx,\n        pdf, email, onenote, teams_chat). Must be one SAGE has a\n        registered adapter for -- the same set ``ingest_document``\n        accepts, so a filename that parses here is one that can go\n        on to be ingested.\n",
+        "description": "Parse a filename's basename through the vault's filename parsing and\nreturn the metadata fields the parser extracts from the supplied\nfilename under the named adapter. Side-effect free: no document is\ncreated and vault state is unchanged.\n\nThis is the companion to ``ingest_document``'s caller-authoritative\nmetadata flow: call it first for filename-derived suggestions, decide\nwhich fields to keep, then call ``ingest_document`` with\n``metadata=...``. Fields the parser could not extract come back null;\nwhen the vault has no ``filename_extraction.pattern`` configured, all\nfields are null.\n\nWhich fields the parser extracts is vault-config-defined; see\n``metadata_extraction.filename_extraction.segment_fields`` in\n``get_vault_config``. In the ``cas`` vault the pattern is\n``{date}_{project}_{code}_{title}_{version}``, so the parser returns\n``doc_date``, ``project``, ``doc_code``, ``title``, and ``version``.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``adapter_not_found`` (400): no source adapter is registered for\n  ``source_type``.\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
             "filename": {
+              "description": "Filename to parse. Should be the basename of the source file; the parser does not consume directory components. Directory components are stripped.",
               "title": "Filename",
               "type": "string"
             },
             "source_type": {
+              "description": "Source artifact format whose filename_extraction configuration governs the parse. Must be a source type with a registered adapter. The registered formats are markdown, docx, xlsx, pptx and pdf -- the same set `ingest_document` accepts, so a filename that parses here is one that can go on to be ingested.",
               "title": "Source Type",
               "type": "string"
             },
             "vault_id": {
+              "description": "Target vault identifier. `list_vaults` names the registered vaults.",
               "title": "Vault Id",
               "type": "string"
             }
@@ -10017,11 +10025,12 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Scan a filesystem directory for pre-ingest discovery: walk the\npath, match files against vault adapters, hash files, parse\nfilenames, and check the hashes against the SAGE vault.\n\nTo enumerate documents already in a vault (not files on disk), this\nis the wrong tool — use ``search(mode=\"catalog\",\nresponse_mode=\"light\")`` instead, the canonical vault-document\nenumerator. ``list_directory`` only inspects the filesystem and\nrequires a ``directory`` argument.\n\nSide-effect free with respect to the vault: no documents are\ncreated, no metadata is written. Intended as the discovery\nstep before ``bulk_ingest_document``. The response is a list of\nper-file objects with hash, matched adapter, parsed filename\nmetadata, and a ``sage_status`` telling whether the vault\nalready holds the file (``new`` / ``modified`` / ``unchanged`` /\n``no_adapter``). Warnings list unreadable entries and any scan\nceiling that fired.\n\nThe scan is scope-bound: server-side ceilings on file count and\nhashed bytes always apply, and omitting ``max_depth`` applies a\ndefault depth ceiling. A scan cut by any ceiling returns\n``truncated: true`` plus a warning naming the ceiling — narrow\nthe directory or scan subdirectories separately.\n\nError modes:\n- ``invalid_vault_id`` (400): the supplied vault_id is not a\n  well-formed vault id.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n- ``invalid_directory`` (string in response, not a SAGE error):\n  ``directory`` does not exist or is not readable.\n- ``caller_filesystem_unavailable`` (501): under the cloud profile the\n  server cannot see the caller's filesystem, so directory discovery is\n  refused rather than walking the container's own tree. Enumerate the\n  directory in the caller's environment instead, then ingest each file\n  by its absolute path -- the upload recipe the ingest tools return\n  carries the rest of the exchange.\n\nArgs:\n    vault_id: Target vault identifier.\n    directory: Absolute path to the directory to scan, resolved\n        on the machine running the SAGE server process; the\n        already-in-vault check goes through the vault's stores, so\n        results are identical whether those are local or\n        cloud-hosted. Single and double quote wrappers are\n        stripped, so paths round-tripped from shell pasting are\n        accepted.\n    max_depth: Max recursion depth (null = the server's default\n        depth ceiling, 0 = scan only the named directory with no\n        descent). A walk cut by the default ceiling is reported\n        as truncated; an explicit depth prunes silently.\n",
+        "description": "Scan a filesystem directory for pre-ingest discovery: walk the\npath, match files against vault adapters, hash files, parse\nfilenames, and check the hashes against the SAGE vault.\n\nTo enumerate documents already in a vault (not files on disk), this\nis the wrong tool — use ``search(mode=\"catalog\",\nresponse_mode=\"light\")`` instead, the canonical vault-document\nenumerator. ``list_directory`` only inspects the filesystem and\nrequires a ``directory`` argument.\n\nSide-effect free with respect to the vault: no documents are\ncreated, no metadata is written. Intended as the discovery\nstep before ``bulk_ingest_document``. The response is a list of\nper-file objects with hash, matched adapter, parsed filename\nmetadata, and a ``sage_status`` telling whether the vault\nalready holds the file (``new`` / ``modified`` / ``unchanged`` /\n``no_adapter``). Warnings list unreadable entries and any scan\nceiling that fired.\n\nThe scan is scope-bound: server-side ceilings on file count and\nhashed bytes always apply, and omitting ``max_depth`` applies a\ndefault depth ceiling. A scan cut by any ceiling returns\n``truncated: true`` plus a warning naming the ceiling — narrow\nthe directory or scan subdirectories separately.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``invalid_directory`` (string in response, not a SAGE error):\n  ``directory`` does not exist or is not readable.\n- ``caller_filesystem_unavailable`` (501): under the cloud profile the\n  server cannot see the caller's filesystem. Enumerate the directory\n  in the caller's environment instead, then ingest each file by its\n  absolute path -- the upload recipe the ingest tools return carries\n  the rest of the exchange.\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
             "directory": {
+              "description": "Absolute path to the directory to scan, resolved on the machine running the SAGE server process; the already-in-vault check goes through the vault's stores, so results are identical whether those are local or cloud-hosted. Single and double quote wrappers are stripped, so paths round-tripped from shell pasting are accepted.",
               "title": "Directory",
               "type": "string"
             },
@@ -10035,9 +10044,11 @@
                 }
               ],
               "default": null,
+              "description": "Max recursion depth (null = the server's default depth ceiling, 0 = scan only the named directory with no descent). A walk cut by the default ceiling is reported as truncated; an explicit depth prunes silently.",
               "title": "Max Depth"
             },
             "vault_id": {
+              "description": "Target vault identifier. `list_vaults` names the registered vaults.",
               "title": "Vault Id",
               "type": "string"
             }
@@ -10570,7 +10581,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "List all heading paths for a document in document order.\n\nReturns the distinct heading paths present in a document, ordered\nby their position in the source -- the structural table of\ncontents. Body content is not read. Use this to verify a\ndocument's structure or pick a heading path before calling\nread_section.\n\nReplaces the antipattern of calling read_section with a\ndeliberately wrong heading path to harvest ``available_headings``\nfrom the resulting ``heading_not_found`` error response.\nEvery returned path is one a caller may pass to read_section.\nAn authored heading is listed by its path. A heading with no text is\nnot a heading and is not listed: the text under it is read in the\nsection before it. The empty path, first\nwhere present, addresses the text under no heading: the text\nbefore the document's first heading, or the whole of a document\nthat has none.\n\nError modes:\n- ``invalid_vault_id`` (400): the supplied vault_id is not a\n  well-formed vault id.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n- ``invalid_document_id`` (400): a document id the call names is not\n  well-formed.\n\nArgs:\n    vault_id: Target vault identifier.\n    document_id: The document's unique identifier. Alias: ``doc_id``.\n        Supply exactly one of ``document_id`` or ``doc_id``.\n    doc_id: Alias for ``document_id``; supply exactly one.\n",
+        "description": "List all heading paths for a document in document order.\n\nReturns the distinct heading paths present in a document, ordered\nby their position in the source -- the structural table of\ncontents. Body content is not read. Use this to verify a\ndocument's structure or pick a heading path before calling\nread_section.\n\nReplaces the antipattern of calling read_section with a\ndeliberately wrong heading path to harvest ``available_headings``\nfrom the resulting ``heading_not_found`` error response.\nEvery returned path is one a caller may pass to read_section.\nAn authored heading is listed by its path. A heading with no text is\nnot a heading and is not listed: the text under it is read in the\nsection before it. The empty path, first\nwhere present, addresses the text under no heading: the text\nbefore the document's first heading, or the whole of a document\nthat has none.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``invalid_document_id`` (400)\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -10584,6 +10595,7 @@
                 }
               ],
               "default": null,
+              "description": "Alias for `document_id`; supply exactly one of the two.",
               "title": "Doc Id"
             },
             "document_id": {
@@ -10596,9 +10608,11 @@
                 }
               ],
               "default": null,
+              "description": "The document's unique identifier. Alias: `doc_id`; supply exactly one of the two.",
               "title": "Document Id"
             },
             "vault_id": {
+              "description": "Target vault identifier. `list_vaults` names the registered vaults.",
               "title": "Vault Id",
               "type": "string"
             }
@@ -10873,17 +10887,19 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "List documents with unconfirmed metadata.\n\nA document is \"pending\" when its ``metadata_confirmed`` flag is\nfalse. This typically arises from ``ingest_document(needs_review=true)``:\nthe caller deferred metadata to filename inference, which populated\nomitted fields and held the document for review. The pending state is\ncleared on any ``update_metadata`` call against the document (even a\nsingle-field update).\n\nFor the default ``ingest_document`` path (``needs_review=false``),\ndocuments land with ``metadata_confirmed=true`` and never appear\nhere.\n\nThis queue is deliberately not filtered by lifecycle state.\nReviewing a retired document's metadata is legitimate, and this\nis the only surface that reaches it. ``pending_metadata_count``\non ``get_vault_stats`` excludes documents in a terminal\nlifecycle state, so this list can be longer than that count.\n\nThe queue is paged in document-id order with ``limit`` and\n``offset``, and ``total_available`` counts the whole queue. Under\n``response_mode=light`` each row is a ``DocumentSummaryLight``\nrather than a ``PendingMetadataItem``; when ``response_mode`` is\nomitted, a page of more than five rows is light and a smaller\none is full.\n\nError modes:\n- ``invalid_vault_id`` (400): the supplied vault_id is not a\n  well-formed vault id.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n- ``invalid_parameter`` (422): ``limit`` is outside 0..100,\n  ``offset`` is negative, or ``response_mode`` is neither\n  ``light`` nor ``full``.\n\nArgs:\n    vault_id: Target vault identifier.\n    limit: Page size, 0..100. Default 10. ``0`` returns\n        ``total_available`` with no rows.\n    offset: Number of queue documents to skip before the page.\n    response_mode: ``light`` or ``full``. Omitted, a page of more\n        than five rows is light and a smaller one is full.\n",
+        "description": "List documents with unconfirmed metadata.\n\nA document is \"pending\" when its ``metadata_confirmed`` flag is\nfalse. This typically arises from ``ingest_document(needs_review=true)``:\nthe caller deferred metadata to filename inference, which populated\nomitted fields and held the document for review. The pending state is\ncleared on any ``update_metadata`` call against the document (even a\nsingle-field update).\n\nFor the default ``ingest_document`` path (``needs_review=false``),\ndocuments land with ``metadata_confirmed=true`` and never appear\nhere.\n\nThis queue is deliberately not filtered by lifecycle state.\nReviewing a retired document's metadata is legitimate, and this\nis the only surface that reaches it. ``pending_metadata_count``\non ``get_vault_stats`` excludes documents in a terminal\nlifecycle state, so this list can be longer than that count.\n\nThe queue is paged in document-id order with ``limit`` and\n``offset``, and ``total_available`` counts the whole queue. Under\n``response_mode=light`` each row is a ``DocumentSummaryLight``\nrather than a ``PendingMetadataItem``; when ``response_mode`` is\nomitted, a page of more than five rows is light and a smaller\none is full.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``invalid_parameter`` (422): ``limit``, ``offset`` or\n  ``response_mode`` out of range.\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
             "limit": {
               "default": 10,
+              "description": "Page size, 0..100. Default 10. `0` returns `total_available` with no rows.",
               "title": "Limit",
               "type": "integer"
             },
             "offset": {
               "default": 0,
+              "description": "Number of queue documents to skip before the page.",
               "title": "Offset",
               "type": "integer"
             },
@@ -10897,9 +10913,11 @@
                 }
               ],
               "default": null,
+              "description": "One of \"light\" or \"full\". Omitted, a page of more than five rows is light and a smaller one is full.",
               "title": "Response Mode"
             },
             "vault_id": {
+              "description": "Target vault identifier. `list_vaults` names the registered vaults.",
               "title": "Vault Id",
               "type": "string"
             }
@@ -11174,11 +11192,12 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "List Tier 2 suggested edges awaiting review.\n\nSAGE's edge-inference subsystem runs edges through tiers\ndefined in ``edge_inference.tier_assignments``:\n\n- **Tier 1** (e.g. ``supersedes`` via version_chain, ``sync_target``\n  via re_ingestion): high-confidence inferences. Created\n  directly as production edges; do not appear here.\n- **Tier 2** (e.g. ``references`` via identifier_mention or the\n  superseded content_reference placeholder, ``covers`` via\n  filename_code_match): inferred edges that require human review.\n  Land in the staging-edge table; surfaced by this tool until\n  confirmed or dismissed.\n- **Tier 3**: agent-supplied edges (``derived_from``,\n  ``depends_on``); not inferred, so do not pass through staging.\n\nEach staging edge carries the source/target ids, edge_type,\nand the inference rule + evidence that produced it. The result\nlist groups by source document\n(``staging_review_grouping=by_source_document``) so a reviewer\ncan sweep all candidate edges from one document together.\n\nError modes:\n- ``invalid_vault_id`` (400): the supplied vault_id is not a\n  well-formed vault id.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n\nArgs:\n    vault_id: Target vault identifier.\n",
+        "description": "List Tier 2 suggested edges awaiting review.\n\nSAGE's edge-inference subsystem runs edges through tiers\ndefined in ``edge_inference.tier_assignments``:\n\n- **Tier 1** (e.g. ``supersedes`` via version_chain, ``sync_target``\n  via re_ingestion): high-confidence inferences. Created\n  directly as production edges; do not appear here.\n- **Tier 2** (e.g. ``references`` via identifier_mention or the\n  superseded content_reference placeholder, ``covers`` via\n  filename_code_match): inferred edges that require human review.\n  Land in the staging-edge table; surfaced by this tool until\n  confirmed or dismissed.\n- **Tier 3**: agent-supplied edges (``derived_from``,\n  ``depends_on``); not inferred, so do not pass through staging.\n\nEach staging edge carries the source/target ids, edge_type,\nand the inference rule + evidence that produced it. The result\nlist groups by source document\n(``staging_review_grouping=by_source_document``) so a reviewer\ncan sweep all candidate edges from one document together.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
             "vault_id": {
+              "description": "Target vault identifier. `list_vaults` names the registered vaults.",
               "title": "Vault Id",
               "type": "string"
             }
@@ -12155,12 +12174,13 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Read a document's full text into context with metadata header.\n\nTwo delivery modes:\n- inline (default): returns the complete projection (reconstructed\n  from stored chunks) inline as ``projection_text``, equivalent to\n  uploading the document. Use this instead of ``search``\n  when you need the whole document.\n- ``write_to_path=/abs/path``: SAGE writes the projection text\n  to the given absolute path. The response carries ``written_to``\n  and ``content_size``; ``projection_text`` is null. Preferred\n  for large projections that would exceed the MCP tool-result\n  inline budget. Mirrors ``get_document(write_to_path=...)``.\n\n``delivery`` pins which shape you get instead of leaving it implicit\nin whether ``write_to_path`` was supplied:\n- ``auto`` (default): spill to disk when ``write_to_path`` is given,\n  inline otherwise — the prior behavior.\n- ``inline``: force the inline body. Supplying ``write_to_path``\n  alongside it is contradictory and returns ``delivery_conflict``.\n- ``spill``: force write-to-disk delivery; it requires\n  ``write_to_path`` and returns ``delivery_conflict`` without one.\nDecide up front with ``read_meta.body_length`` (the inline body\nsize on a prior or auto read) before forcing ``inline`` on a large\ndocument.\n\nError modes:\n- ``invalid_vault_id`` (400): the supplied vault_id is not a\n  well-formed vault id.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n- ``invalid_document_id`` (400): the supplied document_id is not a\n  well-formed id; rejected at the boundary before any lookup.\n- ``document_not_found`` (404): no document with that id.\n- ``no_projection`` (404): the document exists but has no\n  stored projection (e.g. ingestion failed mid-pipeline or\n  the document is awaiting reabstraction). Inspect\n  ``pipeline_status`` via ``get_document``; if recoverable,\n  ``recompute_abstract`` may restore the projection.\n- ``delivery_conflict`` (400): ``delivery`` contradicts\n  ``write_to_path`` (``inline`` with a path, or ``spill``\n  without one).\n- ``write_path_exists`` (409): ``write_to_path`` target already\n  exists.\n- ``write_path_invalid`` (400): ``write_to_path`` is not absolute,\n  its parent is missing or not writable, or the target cannot be\n  opened for exclusive creation after validation. An existing target\n  instead returns ``write_path_exists`` (409); errors after opening\n  are not translated into ``write_path_invalid``.\n\nArgs:\n    vault_id: Target vault identifier.\n    document_id: The document's unique identifier. Alias: ``doc_id``.\n        Supply exactly one of ``document_id`` or ``doc_id``.\n    doc_id: Alias for ``document_id``; supply exactly one.\n    write_to_path: Absolute filesystem path, resolved on the\n        machine running the SAGE server process where that machine\n        shares the caller's filesystem: SAGE writes the projection\n        text there and returns metadata only, the target must not\n        exist, and its parent must exist and be writable. Where it\n        does not, the response is a download recipe carrying this\n        path for the caller's own environment to write, and the\n        path is read with that environment's conventions -- a\n        Windows drive-letter or UNC spelling is accepted on that\n        arm, since it is absolute on the machine that will write\n        it. The path must be absolute either way, and is checked\n        before the projection is read, so a malformed path reports\n        ``write_path_invalid`` whatever the document's pipeline\n        state. A later failure to open the target for exclusive\n        creation can also report ``write_path_invalid``. A minted\n        recipe's token lapses 900 seconds after issue by default and\n        the fetch must finish inside that window; the recipe's own\n        ``expires_at`` is authoritative where a deployment has tuned\n        the lifetime, and a lapsed recipe is re-issued rather than\n        resumed.\n    delivery: Inline-vs-spill selector (``inline | spill | auto``).\n        ``auto`` keeps the write_to_path-driven default.\n",
+        "description": "Read a document's full text into context with metadata header.\n\nTwo delivery modes:\n- inline (default): returns the complete projection (reconstructed\n  from stored chunks) inline as ``projection_text``, equivalent to\n  uploading the document. Use this instead of ``search``\n  when you need the whole document.\n- ``write_to_path=/abs/path``: SAGE writes the projection text\n  to the given absolute path. Preferred for large projections that\n  would exceed the MCP tool-result inline budget. Mirrors\n  ``get_document(write_to_path=...)``.\n\n``no_projection`` means the document exists but has no stored\nprojection (e.g. ingestion failed mid-pipeline or the document is\nawaiting reabstraction). Inspect ``pipeline_status`` via\n``get_document``; if recoverable, ``recompute_abstract`` may restore\nthe projection.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``invalid_document_id`` (400)\n- ``document_not_found`` (404)\n- ``no_projection`` (404)\n- ``delivery_conflict`` (400): ``delivery`` contradicts\n  ``write_to_path``.\n- ``write_path_exists`` (409)\n- ``write_path_invalid`` (400)\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
             "delivery": {
               "default": "auto",
+              "description": "Pins the delivery shape instead of leaving it implicit in whether `write_to_path` was supplied. `auto` (default): spill to disk when `write_to_path` is given, inline otherwise. `inline`: force the inline body; supplying `write_to_path` alongside it returns delivery_conflict. `spill`: force write-to-disk delivery; it requires `write_to_path` and returns delivery_conflict without one. Decide up front with `read_meta.body_length` (the inline body size on a prior or auto read) before forcing `inline` on a large document.",
               "enum": [
                 "inline",
                 "spill",
@@ -12179,6 +12199,7 @@
                 }
               ],
               "default": null,
+              "description": "Alias for `document_id`; supply exactly one of the two.",
               "title": "Doc Id"
             },
             "document_id": {
@@ -12191,9 +12212,11 @@
                 }
               ],
               "default": null,
+              "description": "The document's unique identifier. Alias: `doc_id`; supply exactly one of the two.",
               "title": "Document Id"
             },
             "vault_id": {
+              "description": "Target vault identifier. `list_vaults` names the registered vaults.",
               "title": "Vault Id",
               "type": "string"
             },
@@ -12207,6 +12230,7 @@
                 }
               ],
               "default": null,
+              "description": "Absolute filesystem path, resolved on the machine running the SAGE server process: SAGE writes the projection text there and returns metadata only (`written_to`, `content_size`; `projection_text` is null). Where the server does not share the caller's filesystem, the response is a download recipe carrying this path for the caller's own environment to write, and the path is read with that environment's conventions -- a Windows drive-letter or UNC spelling is accepted on that arm. The path must be absolute either way, and is checked before the projection is read, so a malformed path reports write_path_invalid whatever the document's pipeline state; a later failure to open the target for exclusive creation can also report it. The target must not exist (write_path_exists) and its parent must exist and be writable. A minted recipe's token lapses 900 seconds after issue by default and the fetch must finish inside that window; the recipe's own `expires_at` is authoritative where a deployment has tuned the lifetime, and a lapsed recipe is re-issued rather than resumed.",
               "title": "Write To Path"
             }
           },
@@ -12798,7 +12822,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Read a section of a document by heading path.\n\nReturns clean readable text for a heading subtree without loading\nthe full document. Uses structural prefix matching from the\ndocument root: requesting \"Technical Description\" returns that\nheading plus all children (e.g.\n\"Technical Description > Composite Claim Binding\"). Bare-text\nqueries that match the *tail* of a stored path (e.g. \"CLAIMS\"\nagainst a stored \"CLAIMS -- Remove Before Filing\") will not match\n— when this happens, the heading_not_found error includes a\n``candidate_matches`` field listing stored paths that contain the\nquery as a substring, so you can retry with the exact path.\n\nFor free-text \"find this section by name regardless of path\nposition,\" prefer search semantic or keyword mode — both\nindex heading_path text alongside content.\n\nError modes:\n- ``invalid_vault_id`` (400): the supplied vault_id is not a\n  well-formed vault id.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n- ``invalid_document_id`` (400): a document id the call names is not\n  well-formed.\n\nArgs:\n    vault_id: Target vault identifier.\n    document_id: The document's unique identifier. Alias: ``doc_id``.\n        Supply exactly one of ``document_id`` or ``doc_id``.\n    doc_id: Alias for ``document_id``; supply exactly one.\n    heading_path: Heading path prefix\n        (e.g. \"Technical Description > Composite Claim Binding\").\n        The empty string addresses the text under no heading.\n",
+        "description": "Read a section of a document by heading path.\n\nReturns clean readable text for a heading subtree without loading\nthe full document. Uses structural prefix matching from the\ndocument root: requesting \"Technical Description\" returns that\nheading plus all children (e.g.\n\"Technical Description > Composite Claim Binding\"). Bare-text\nqueries that match the *tail* of a stored path (e.g. \"CLAIMS\"\nagainst a stored \"CLAIMS -- Remove Before Filing\") will not match\n— when this happens, the heading_not_found error includes a\n``candidate_matches`` field listing stored paths that contain the\nquery as a substring, so you can retry with the exact path.\n\nFor free-text \"find this section by name regardless of path\nposition,\" prefer search semantic or keyword mode — both\nindex heading_path text alongside content.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``invalid_document_id`` (400)\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -12812,6 +12836,7 @@
                 }
               ],
               "default": null,
+              "description": "Alias for `document_id`; supply exactly one of the two.",
               "title": "Doc Id"
             },
             "document_id": {
@@ -12824,13 +12849,16 @@
                 }
               ],
               "default": null,
+              "description": "The document's unique identifier. Alias: `doc_id`; supply exactly one of the two.",
               "title": "Document Id"
             },
             "heading_path": {
+              "description": "Heading path prefix (e.g. \"Technical Description > Composite Claim Binding\"). The empty string addresses the text under no heading.",
               "title": "Heading Path",
               "type": "string"
             },
             "vault_id": {
+              "description": "Target vault identifier. `list_vaults` names the registered vaults.",
               "title": "Vault Id",
               "type": "string"
             }
@@ -17127,22 +17155,25 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Walk the document graph from a starting document.\n\nTraversal honors chain-scoped edge resolution: anchor fields\ndetermine which edges are visible from the query version's lineage;\n`retracts` edges can suppress downstream edges; `merged_from`\ntombstones suppress predecessor-chain edges downstream of the\ntermination point.\n\n**Outbound dedup on ``transitive_both`` edges.** For\n``transitive_both`` edge types (``covers``, ``references``,\n``bundles_with``, ``depends_on``, ``instantiated_from``), outbound\ntraversal deduplicates by target document: at most one\nrepresentative edge per (source-chain, target) pair is returned,\nchain-scoped resolution selecting the winner from the query\nposition's lineage. Distinct edges from different chain members\npointing at the same target are masked. To enumerate every edge into\na target chain, traverse **inbound** from the target instead.\n``edge_counts.{edge_type}`` reflects total visible edges from the\nquery position including masked ones; if ``edge_counts >\nlen(nodes)`` the result has masked siblings. ``supersedes`` is\npoint-to-point and exempt; the rule applies only to the five\n``transitive_both`` types.\n\nError modes:\n- ``invalid_vault_id`` (400): the supplied vault_id is not a\n  well-formed vault id.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n- ``invalid_document_id`` (400): a document id the call names is not\n  well-formed.\n\nArgs:\n    vault_id: Target vault identifier.\n    start_id: Starting document identifier. Alias: ``document_id``.\n        Supply exactly one of ``start_id`` or ``document_id``. The\n        response key remains ``start_id`` regardless of which input\n        form was used.\n    edge_type: Filter by edge type (optional). When omitted,\n        traversal returns edges of all types.\n    direction: Traversal direction (outbound, inbound, both). Default: outbound.\n    depth: Maximum traversal depth (1-1000). Default: 3.\n    debug: When true, populate `resolution_path` on the response\n        with per-event entries (`anchor_hit`, `anchor_miss`,\n        `retracts_applied`, `tombstone_applied`) explaining why\n        each candidate edge was surfaced or suppressed. Default:\n        false (zero overhead when disabled).\n    document_id: Alias for ``start_id``. Either parameter\n        is accepted; supply exactly one. Supplying both — even with\n        equal values — returns ``ambiguous_document_identifier``.\n",
+        "description": "Walk the document graph from a starting document.\n\nTraversal honors chain-scoped edge resolution: anchor fields\ndetermine which edges are visible from the query version's lineage;\n`retracts` edges can suppress downstream edges; `merged_from`\ntombstones suppress predecessor-chain edges downstream of the\ntermination point.\n\n**Outbound dedup on ``transitive_both`` edges.** For\n``transitive_both`` edge types (``covers``, ``references``,\n``bundles_with``, ``depends_on``, ``instantiated_from``), outbound\ntraversal deduplicates by target document: at most one\nrepresentative edge per (source-chain, target) pair is returned,\nchain-scoped resolution selecting the winner from the query\nposition's lineage. Distinct edges from different chain members\npointing at the same target are masked. To enumerate every edge into\na target chain, traverse **inbound** from the target instead.\n``edge_counts.{edge_type}`` reflects total visible edges from the\nquery position including masked ones; if ``edge_counts >\nlen(nodes)`` the result has masked siblings. ``supersedes`` is\npoint-to-point and not subject to this dedup; the rule applies only\nto the five ``transitive_both`` types.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``invalid_document_id`` (400)\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
             "debug": {
               "default": false,
+              "description": "When true, the response populates `resolution_path` with a per-event trace of chain-scoped resolution decisions (anchor hits and misses, retractions applied, tombstones applied). Opt-in; response is unchanged when false. Entries are `anchor_hit`, `anchor_miss`, `retracts_applied` and `tombstone_applied`.",
               "title": "Debug",
               "type": "boolean"
             },
             "depth": {
               "default": 3,
+              "description": "Maximum traversal depth. Range 1-1000.",
               "title": "Depth",
               "type": "integer"
             },
             "direction": {
               "default": "outbound",
+              "description": "Traversal direction relative to the starting document. One of \"outbound\", \"inbound\", \"both\".",
               "title": "Direction",
               "type": "string"
             },
@@ -17156,6 +17187,7 @@
                 }
               ],
               "default": null,
+              "description": "Alias for `start_id`; supply exactly one of the two. Supplying both, even with equal values, returns ambiguous_document_identifier.",
               "title": "Document Id"
             },
             "edge_type": {
@@ -17168,6 +17200,7 @@
                 }
               ],
               "default": null,
+              "description": "Edge type to follow. If omitted, all edge types are traversed. One of \"supersedes\", \"derived_from\", \"instantiated_from\", \"covers\", \"references\", \"bundles_with\", \"authoritative_for\", \"depends_on\", \"sync_target\", \"retracts\", \"merged_from\".",
               "title": "Edge Type"
             },
             "start_id": {
@@ -17180,9 +17213,11 @@
                 }
               ],
               "default": null,
+              "description": "Document ID to start traversal from. Alias: `document_id`; supply exactly one of the two. The response key remains `start_id` whichever form was used.",
               "title": "Start Id"
             },
             "vault_id": {
+              "description": "Target vault identifier. `list_vaults` names the registered vaults.",
               "title": "Vault Id",
               "type": "string"
             }
@@ -20951,11 +20986,12 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Bulk hash existence check against the graph store.\n\nFor each input hash, returns whether an existing document in the\nvault carries that content hash and, if so, the matching document's\n``document_id``. Used by the scan-and-batch-ingest flow to identify\nalready-ingested files without re-hashing on the SAGE side. Where\nseveral documents carry one hash, the one named is a version a\nsupersession has not retired, lowest document id among equals, so\nthe same request names the same document every time.\n\nMatches on provenance: a document's ``source_content_hash`` is the\nSHA-256 of the bytes that were delivered at ingest, so the digest a\ncaller computes over its own local file is the right thing to send\nhere. That holds however the vault retains its copy -- a store that\nrewrites what it keeps records the rewritten digest separately, and\nthis lookup does not consult it.\n\nHash format: every hash is normalized to the canonical\n``sha256:<64 lowercase hex>`` before lookup, so the canonical form,\nbare hex, and either with the digest uppercased all resolve to the\nsame stored document. An uppercase algorithm prefix, a\nwhitespace-padded value, a wrong-length digest, and a non-hex digest\nare rejected rather than normalized.\n\nResult shape: one entry per distinct *canonical* hash, carrying\n``exists`` and, when matched, ``document_id``. No input is omitted —\nan unmatched hash is present with ``exists=false``. Because keys are\ncanonical, two spellings of one digest in a single request collapse\nto a single entry, and a caller that submitted bare hex must read the\nresult back under the canonical key.\n\nEmpty-list short-circuit: ``hashes=[]`` returns ``{}`` without\nconsulting the graph store. Since every non-empty input yields at\nleast one entry, an empty result means the input was empty; it never\nmeans \"nothing matched\".\n\nError modes:\n- ``invalid_sha256`` (400): a hash could not be normalized to the\n  canonical form. The envelope names the offending value as the\n  caller supplied it.\n- ``invalid_vault_id`` (400): malformed ``vault_id``.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n\nArgs:\n    vault_id: Target vault identifier.\n    hashes: Content hashes, canonical or bare, digest in either case.\n        An empty list short-circuits; a hash that cannot be\n        normalized rejects the whole call with ``invalid_sha256``.\n",
+        "description": "Bulk hash existence check against the graph store.\n\nFor each input hash, returns whether an existing document in the\nvault carries that content hash and, if so, the matching document's\n``document_id``. Used by the scan-and-batch-ingest flow to identify\nalready-ingested files without re-hashing on the SAGE side. Where\nseveral documents carry one hash, the one named is a version a\nsupersession has not retired, lowest document id among equals, so\nthe same request names the same document every time.\n\nMatches on provenance: a document's ``source_content_hash`` is the\nSHA-256 of the bytes that were delivered at ingest, so the digest a\ncaller computes over its own local file is the right thing to send\nhere. That holds however the vault retains its copy -- a store that\nrewrites what it keeps records the rewritten digest separately, and\nthis lookup does not consult it.\n\nHash format: every hash is normalized to the canonical\n``sha256:<64 lowercase hex>`` before lookup, so the canonical form,\nbare hex, and either with the digest uppercased all resolve to the\nsame stored document. An uppercase algorithm prefix, a\nwhitespace-padded value, a wrong-length digest, and a non-hex digest\nare rejected rather than normalized.\n\nResult shape: one entry per distinct *canonical* hash, carrying\n``exists`` and, when matched, ``document_id``. No input is omitted —\nan unmatched hash is present with ``exists=false``. Because keys are\ncanonical, two spellings of one digest in a single request collapse\nto a single entry, and a caller that submitted bare hex must read the\nresult back under the canonical key.\n\nEmpty-list short-circuit: ``hashes=[]`` returns ``{}`` without\nconsulting the graph store. Since every non-empty input yields at\nleast one entry, an empty result means the input was empty; it never\nmeans \"nothing matched\".\n\nError modes:\n- ``invalid_sha256`` (400): names the offending value as supplied.\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
             "hashes": {
+              "description": "SHA-256 hex digests to check for existence. Canonical `sha256:<hex>` or bare hex, digest in either case. An empty list short-circuits; a hash that cannot be normalized rejects the whole call with invalid_sha256.",
               "items": {
                 "type": "string"
               },
@@ -20963,6 +20999,7 @@
               "type": "array"
             },
             "vault_id": {
+              "description": "Target vault identifier. `list_vaults` names the registered vaults.",
               "title": "Vault Id",
               "type": "string"
             }
@@ -21353,15 +21390,17 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Check whether all depends_on targets for a document are\nsatisfied (dependency-satisfying lifecycle, pipeline not failed).\n\nIterates the document's outbound ``depends_on`` edges; for each\ntarget, verifies the lifecycle status is one the vault's\nconfiguration declares dependency-satisfying and pipeline_status\nnot ``failed`` — a target still mid-pipeline is not rejected. A\ntarget the vault does not hold is reported unsatisfied with\n``actual`` of \"not found\" rather than raising. Each row names its\ntarget by ``title`` and ``doc_type`` as well as ``target_id``, both\nnull when the target is not found.\nReturns ``satisfied`` boolean plus a\nper-edge breakdown of failing reasons (e.g. predecessor still\nin projection, target archived) so the caller can act on the\ngap rather than re-querying each dependency.\n\nWith no configuration the dependency-satisfying set is the engine\ndefault, ``active`` and ``completed``, so a target that is still\nopen satisfies the dependency: ``depends_on`` means the target\nexists and is live, not that it is finished. A vault opts a base\nstate out by declaring ``satisfies_dependency: false`` on it in its\nlifecycle configuration, and opts a domain state in with\n``satisfies_dependency: true``. To make ``depends_on`` mean blocked\nuntil the target is complete, declare ``satisfies_dependency:\nfalse`` on ``active``; ``completed`` then remains the only\nsatisfying base state. Satisfaction belongs to the state alone: a\nstate whose ``doc_types`` scopes it to some doc_types satisfies,\nor not, exactly as it would unscoped, whatever the doc_type of\nthe document that depends on it.\n\nThis is not a mutation preview. A ``dry_run`` on a mutation\nanswers what that one call would do to committed state; this\nanswers whether a document's dependencies are in a state that\npermits work to proceed, aggregated across every outbound\n``depends_on`` edge. The ingest preview's declared requirement\nset is the nearest a ``dry_run`` comes to reporting on the\nvault rather than on the request, and it is still scoped to\nthe single document the call names.\n\nError modes:\n- ``invalid_vault_id`` (400): ``vault_id`` failed typed-alias\n  validation at the boundary.\n- ``vault_not_found`` (404): no vault is registered with that id.\n  ``detail.available_vaults`` lists the registered vaults.\n- ``invalid_document_id`` (400): ``document_id`` is not a well-formed\n  document id.\n- ``document_not_found`` (404): no document with ``document_id``.\n\nArgs:\n    vault_id: Target vault identifier.\n    document_id: Identifier of the document whose preconditions\n        to check. Any document with outbound ``depends_on``\n        edges is valid.\n",
+        "description": "Check whether all depends_on targets for a document are\nsatisfied (dependency-satisfying lifecycle, pipeline not failed).\n\nIterates the document's outbound ``depends_on`` edges; for each\ntarget, verifies the lifecycle status is one the vault's\nconfiguration declares dependency-satisfying and pipeline_status\nnot ``failed`` — a target still mid-pipeline is not rejected. A\ntarget the vault does not hold is reported unsatisfied with\n``actual`` of \"not found\" rather than raising. Each row names its\ntarget by ``title`` and ``doc_type`` as well as ``target_id``, both\nnull when the target is not found.\nReturns ``satisfied`` boolean plus a\nper-edge breakdown of failing reasons (e.g. predecessor still\nin projection, target archived) so the caller can act on the\ngap rather than re-querying each dependency.\n\nWith no configuration the dependency-satisfying set is the engine\ndefault, ``active`` and ``completed``, so a target that is still\nopen satisfies the dependency: ``depends_on`` means the target\nexists and is live, not that it is finished. A vault opts a base\nstate out by declaring ``satisfies_dependency: false`` on it in its\nlifecycle configuration, and opts a domain state in with\n``satisfies_dependency: true``. To make ``depends_on`` mean blocked\nuntil the target is complete, declare ``satisfies_dependency:\nfalse`` on ``active``; ``completed`` then remains the only\nsatisfying base state. Satisfaction belongs to the state alone: a\nstate whose ``doc_types`` scopes it to some doc_types satisfies,\nor not, exactly as it would unscoped, whatever the doc_type of\nthe document that depends on it.\n\nThis is not a mutation preview. A ``dry_run`` on a mutation\nanswers what that one call would do to committed state; this\nanswers whether a document's dependencies are in a state that\npermits work to proceed, aggregated across every outbound\n``depends_on`` edge.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``invalid_document_id`` (400)\n- ``document_not_found`` (404)\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
             "document_id": {
+              "description": "Identifier of the document whose preconditions to check. Any document with outbound `depends_on` edges is valid.",
               "title": "Document Id",
               "type": "string"
             },
             "vault_id": {
+              "description": "Target vault identifier. `list_vaults` names the registered vaults.",
               "title": "Vault Id",
               "type": "string"
             }

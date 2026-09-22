@@ -44,6 +44,7 @@ from sage.models.enums import (
     ResponseMode,
     RetrievalMode,
     SortOrder,
+    TraversalDirection,
 )
 from sage.sage_api_tools import (
     _INGEST_METADATA_KEYS,
@@ -812,6 +813,10 @@ def test_bulk_ingest_document_publishes_the_registered_source_types():
     _assert_publishes_registered_source_types("bulk_ingest_document", "files.source_type")
 
 
+def test_get_filename_metadata_publishes_the_registered_source_types():
+    _assert_publishes_registered_source_types("get_filename_metadata", "source_type")
+
+
 def _assert_publishes_registered_source_types(tool_name: str, path: str) -> None:
     """``source_type`` names every format an adapter is registered for.
 
@@ -831,6 +836,10 @@ def _assert_publishes_registered_source_types(tool_name: str, path: str) -> None
         )
 
 
+def test_list_pending_metadata_publishes_the_response_mode_vocabulary():
+    test_batch_tools_publish_the_response_mode_vocabulary("list_pending_metadata")
+
+
 @pytest.mark.parametrize("tool_name", ["create_edges", "update_lifecycles", "update_metadata"])
 def test_batch_tools_publish_the_response_mode_vocabulary(tool_name: str):
     """``response_mode`` names every value it accepts, on its own description.
@@ -846,6 +855,39 @@ def test_batch_tools_publish_the_response_mode_vocabulary(tool_name: str):
     for member in ResponseMode:
         assert f'"{member.value}"' in description, (
             f"{tool_name}.response_mode must publish {member.value!r}; got: {description!r}"
+        )
+
+
+def test_traverse_publishes_the_direction_vocabulary():
+    """``direction`` names every value ``TraversalDirection`` accepts.
+
+    Published as a bare string, so the schema cannot carry the closed set, and
+    ``outbound``/``inbound`` recur in the tool's prose: the pin reads the
+    parameter's own description. Enum-driven, so a direction added to the enum
+    that never reaches the tool fails here.
+    """
+    params = parameter_descriptions(published_tool("traverse").parameters)
+    description = params.get("direction", "")
+    for member in TraversalDirection:
+        assert f'"{member.value}"' in description, (
+            f"traverse.direction must publish {member.value!r}; got: {description!r}"
+        )
+
+
+@pytest.mark.parametrize("tool_name", ["chain", "traverse"])
+def test_edge_walking_tools_publish_the_edge_type_vocabulary(tool_name: str):
+    """``edge_type`` names every ``EdgeType`` value, on its own description.
+
+    Published as a bare string, so the schema cannot carry the closed set, and
+    several values (``supersedes``, ``depends_on``) recur in the prose: the pin
+    reads the parameter's own description. Enum-driven, so an edge type added
+    to ``EdgeType`` that never reaches the tool fails here.
+    """
+    params = parameter_descriptions(published_tool(tool_name).parameters)
+    description = params.get("edge_type", "")
+    for member in EdgeType:
+        assert f'"{member.value}"' in description, (
+            f"{tool_name}.edge_type must publish {member.value!r}; got: {description!r}"
         )
 
 

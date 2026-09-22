@@ -17,6 +17,10 @@ Three rules, held for every registered tool on every surface:
 ``KNOWN_UNCONVERTED`` names the tools not yet brought under the rules. It only
 shrinks: a tool that now satisfies all three must leave it, and a tool added to
 the roster is held to the rules from registration.
+
+A compact error-mode list is a curated subset of the tool's published error
+table, so every tool, converted or not, is also held to naming only codes that
+table carries. That check is only as accurate as the table.
 """
 
 from __future__ import annotations
@@ -47,26 +51,15 @@ KNOWN_UNCONVERTED: Final[frozenset[str]] = frozenset(
         "create_vault",
         "export_projection",
         "get_default_vault_config",
-        "get_document",
-        "get_filename_metadata",
         "get_vault_config",
         "get_vault_stats",
-        "list_directory",
-        "list_headings",
-        "list_pending_metadata",
-        "list_staging_edges",
         "migrate_vault",
         "optimize_vault_content_store",
-        "read_projection",
-        "read_section",
         "recompute_deferred_vault_abstracts",
         "recompute_views",
         "reload_vault",
         "restore_vault_source_file",
-        "traverse",
         "update_vault_config",
-        "verify_hashes",
-        "verify_preconditions",
         "verify_vault_drift",
         "verify_vault_retrieval",
         "verify_vault_source_files",
@@ -102,6 +95,56 @@ def test_tool_fits_the_description_budget(name: str) -> None:
         pytest.skip("not yet converted; listed in KNOWN_UNCONVERTED")
     violations = _violations(published_tools()[name])
     assert not violations, f"{name}: " + "; ".join(violations)
+
+
+#: A listed error-mode entry: a bullet opening with a code in double backticks,
+#: or a bullet grouping several codes under one status (``- 400: ``a``, ``b````).
+_ERROR_ENTRY_RE: Final[re.Pattern[str]] = re.compile(r"^\s*- ``([a-z_]+)``", re.MULTILINE)
+_GROUPED_ENTRY_RE: Final[re.Pattern[str]] = re.compile(r"^\s*- \d{3}: (.*)$", re.MULTILINE)
+_CODE_RE: Final[re.Pattern[str]] = re.compile(r"``([a-z_]+)``")
+
+#: Codes an error-mode list may name that the tool never refuses with, by tool.
+#: Each names a condition the tool reports in its successful response.
+REPORTED_NOT_REFUSED: Final[dict[str, frozenset[str]]] = {
+    # A forked supersedes chain is a drift finding row, not a refusal.
+    "verify_vault_drift": frozenset({"chain_nonlinear"}),
+}
+
+
+def _listed_error_codes(description: str) -> set[str]:
+    _, sep, block = description.partition("Error modes")
+    if not sep:
+        return set()
+    grouped = {c for line in _GROUPED_ENTRY_RE.findall(block) for c in _CODE_RE.findall(line)}
+    return set(_ERROR_ENTRY_RE.findall(block)) | grouped
+
+
+@pytest.mark.parametrize("name", sorted(EXPECTED_SURFACE))
+def test_listed_error_codes_are_ones_the_tool_can_refuse(name: str) -> None:
+    """Every code a description lists is in the tool's published error table.
+
+    A compact list is a curated subset of the table, which the typed error
+    schema publishes whole; a listed code the tool cannot return sends a caller
+    branching on it after a refusal that never comes.
+    """
+    from sage.models.error_contract import SCHEMAS
+
+    table = set(SCHEMAS["ErrorResponse"]["x-mcp-tool-errors"].get(name, ()))
+    listed = _listed_error_codes(published_tools()[name].description or "")
+    phantom = sorted(listed - table - REPORTED_NOT_REFUSED.get(name, frozenset()))
+    assert not phantom, f"{name} lists codes it cannot refuse with: {phantom}"
+
+
+def test_reported_not_refused_is_not_stale() -> None:
+    """Each exemption is still listed by its tool and still absent from its table."""
+    from sage.models.error_contract import SCHEMAS
+
+    table = SCHEMAS["ErrorResponse"]["x-mcp-tool-errors"]
+    tools = published_tools()
+    for name, codes in REPORTED_NOT_REFUSED.items():
+        listed = _listed_error_codes(tools[name].description or "")
+        assert codes <= listed, f"{name}: exemption names unlisted codes {sorted(codes - listed)}"
+        assert not codes & set(table.get(name, ())), f"{name}: exempted code is now refusable"
 
 
 def test_known_unconverted_is_not_stale() -> None:

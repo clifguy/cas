@@ -297,15 +297,15 @@ def test_mcp_tool_signature_has_vault_id_document_id_and_doc_id_alias():
 
 
 def test_mcp_tool_docstring_retires_wrong_path_trick():
-    """The docstring must name the antipattern it replaces, so future
-    readers do not re-invent it."""
-    from sage import mcp_server
+    """The published tool must name the antipattern it replaces, so callers
+    do not re-invent it. Read from what a client receives, not the Python
+    docstring, which a client may truncate."""
+    from tests.helpers.published_tool import published_text
 
-    tool = mcp_server._sage_tools["list_headings"]
-    doc = (tool.__doc__ or "").lower()
+    doc = published_text("list_headings").lower()
 
     # Reference to the antipattern: either 'wrong' or 'deliberately wrong' or
     # 'available_headings' from the error response.
     assert "wrong" in doc or "available_headings" in doc, (
-        f"docstring should mention the wrong-path trick it retires; got: {tool.__doc__!r}"
+        f"published text should mention the wrong-path trick it retires; got: {doc!r}"
     )
