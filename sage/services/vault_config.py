@@ -1,10 +1,10 @@
 """Per-vault administration: stats, hash-check, config get/update.
 
 Owns the work behind the four vault-scoped administration routes:
-- GET /sage_vaults/{vault_id}/stats -- dashboard aggregation.
-- POST /sage_vaults/{vault_id}/hash-check -- bulk hash existence check.
-- GET /sage_vaults/{vault_id}/config -- read full config as JSON.
-- PUT /sage_vaults/{vault_id}/config -- update sections (with destructive
+- GET  /sage_vaults/{vault_id}/stats       -- dashboard aggregation.
+- POST /sage_vaults/{vault_id}/hash-check  -- bulk hash existence check.
+- GET  /sage_vaults/{vault_id}/config      -- read full config as JSON.
+- PUT  /sage_vaults/{vault_id}/config      -- update sections (with destructive
                                               -change detection and reload).
 
 Update orchestration: validation, destructive-change detection, and YAML

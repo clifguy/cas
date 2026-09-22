@@ -17,7 +17,7 @@ binding factories stay the sole owners of any environment-specific import.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 
 from sage.config import SageCoreConfig
@@ -110,7 +110,7 @@ class _LazyBindings(Mapping[str, object]):
             self._built[seam] = self._factories[seam](self._stack_config)
         return self._built[seam]
 
-    def __iter__(self):
+    def __iter__(self) -> Iterator[str]:
         return iter(self._factories)
 
     def __len__(self) -> int:

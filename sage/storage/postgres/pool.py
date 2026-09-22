@@ -18,6 +18,10 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from psycopg_pool import AsyncConnectionPool
 
 # Environment variable carrying the Postgres password for a TCP/hosted endpoint.
 # A local unix-socket connection authenticates the OS user by peer and needs no
@@ -85,7 +89,9 @@ async def configure_connection(conn) -> None:
     await register_vector_async(conn)
 
 
-def _build_pool(conninfo: str, *, min_size: int, max_size: int, connection_class=None):
+def _build_pool(
+    conninfo: str, *, min_size: int, max_size: int, connection_class=None
+) -> AsyncConnectionPool:
     from psycopg_pool import AsyncConnectionPool
 
     # A custom ``connection_class`` is how the cloud binding injects a fresh
@@ -104,7 +110,9 @@ def _build_pool(conninfo: str, *, min_size: int, max_size: int, connection_class
     )
 
 
-def create_pool(params: PostgresConnectionParams, *, connection_class=None, environ=None):
+def create_pool(
+    params: PostgresConnectionParams, *, connection_class=None, environ=None
+) -> AsyncConnectionPool:
     """Build (unopened) an ``AsyncConnectionPool`` from connection parameters.
 
     The configuration-driven factory the store adapters use. The returned pool
@@ -130,7 +138,7 @@ def pool_from_conninfo(
     search_path: str | None = None,
     min_size: int = 1,
     max_size: int = 10,
-):
+) -> AsyncConnectionPool:
     """Build (unopened) an ``AsyncConnectionPool`` from a raw libpq conninfo/URL.
 
     The DSN-driven factory the storage test harness uses: it preserves any

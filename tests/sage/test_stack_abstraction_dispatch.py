@@ -5,10 +5,10 @@ The factory dispatch that used to live inside `initialize_services`
 (per-vault) is re-anchored at stack scope by ADR-030. The helper under
 test is `sage.mcp_init.build_stack_abstraction_provider`. It implements:
 
-    1. SAGE_TEST_STUB_PROVIDERS=1 -> Stub (env override)
-    2. stack.abstraction.provider == "stub" -> Stub (explicit opt-out)
+    1. SAGE_TEST_STUB_PROVIDERS=1               -> Stub (env override)
+    2. stack.abstraction.provider == "stub"      -> Stub (explicit opt-out)
     3. stack.abstraction.provider == "local-mlx"
-       and stack.abstraction.model is None -> raise ConfigError
+       and stack.abstraction.model is None       -> raise ConfigError
     4. stack.abstraction.provider == "local-mlx"
        and stack.abstraction.model is not None -> local MLX provider (factory)
     5. stack.abstraction.provider == "anthropic"

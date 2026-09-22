@@ -235,9 +235,9 @@ async def test_a6_mcp_tool_invalid_response_mode_rejected_up_front(seeded_mcp_va
 # For each error code, the test seeds the documents and edge state
 # needed to trigger it, includes the offending item alongside one valid
 # item, and asserts:
-# (1) the offending item's `error.error` code matches the named code,
-# (2) the valid item committed (proves the batch did not short-circuit),
-# (3) the offending item's edge did NOT commit.
+#   (1) the offending item's `error.error` code matches the named code,
+#   (2) the valid item committed (proves the batch did not short-circuit),
+#   (3) the offending item's edge did NOT commit.
 # ---------------------------------------------------------------------------
 
 

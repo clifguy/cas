@@ -45,6 +45,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 
 from sage.maintenance._cloud_env import config_from_env as _config_from_env
@@ -101,7 +102,7 @@ async def _cloud_dump_password() -> str:
     return token.token
 
 
-def _build_dump_runner(password: str):
+def _build_dump_runner(password: str) -> Callable[[list[str]], None]:
     def run(argv: list[str]) -> None:
         # argv is the fixed list ``build_schema_dump_argv`` builds (no shell, no
         # untrusted interpolation); PGPASSWORD carries the Entra token so pg_dump

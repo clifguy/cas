@@ -8,7 +8,7 @@ each kwarg listed in the canonical set. Four call sites are surveyed:
   Transport lifespans / one-shot entrypoints
   ------------------------------------------
   - ``sage/sage_api_tools.py:reload_vault`` -- MCP reload tool
-  - ``sage/app.py:_initialize_vault`` -- FastAPI lifespan
+  - ``sage/app.py:_initialize_vault``        -- FastAPI lifespan
 
   Feature-operation call sites (reachable via FastAPI routers + MCP tools)
   -----------------------------------------------------------------------

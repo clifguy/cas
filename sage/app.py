@@ -9,7 +9,7 @@ correct services via the vault_id path parameter.
 import logging
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import AsyncIterator, Callable
 from contextlib import AsyncExitStack, asynccontextmanager
 from functools import cache
 from pathlib import Path
@@ -655,7 +655,7 @@ def create_app(
     stack_cfg = stack_config if stack_config is not None else load_stack_config_or_default()
 
     @asynccontextmanager
-    async def lifespan(app: FastAPI):
+    async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         # Use the MCP server's _vaults dict as the canonical registry so
         # both the REST API and MCP HTTP transport share the same services.
         from sage.mcp_init import (

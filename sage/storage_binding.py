@@ -21,11 +21,14 @@ from abc import ABC, abstractmethod
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.config import SageCoreConfig, StackPostgresConfig
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
+
+if TYPE_CHECKING:
+    from sage.storage.postgres.pool import PostgresConnectionParams
 
 # A vault whose Postgres server is reachable opens its pool well inside this
 # bound; an unreachable server fails the vault's load loudly at startup
@@ -164,7 +167,7 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
         self._conn_environ = None if read_env_password else {}
         self._create_extensions = create_extensions
 
-    def _connection_params(self, search_path: str | None = None):
+    def _connection_params(self, search_path: str | None = None) -> PostgresConnectionParams:
         from sage.storage.postgres.pool import PostgresConnectionParams
 
         pg = self.postgres_config

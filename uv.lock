@@ -259,6 +259,7 @@ test = [
     { name = "pyyaml" },
     { name = "referencing" },
     { name = "reportlab" },
+    { name = "ruff" },
 ]
 
 [package.metadata]
@@ -299,6 +300,7 @@ requires-dist = [
     { name = "referencing", marker = "extra == 'test'", specifier = ">=0.35" },
     { name = "reportlab", marker = "extra == 'test'", specifier = ">=4.0" },
     { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.12" },
+    { name = "ruff", marker = "extra == 'test'", specifier = "==0.15.12" },
     { name = "sentence-transformers", specifier = ">=5.5.1" },
     { name = "torch", marker = "sys_platform != 'linux'", specifier = ">=2.11.0" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.11.0", index = "https://download.pytorch.org/whl/cpu" },

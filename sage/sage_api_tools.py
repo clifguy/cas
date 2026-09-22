@@ -3261,20 +3261,20 @@ def register_sage_tools(
     # Family-shared preconditions for every maintenance-family tool below:
     #
     # 1. ``vault_id`` is validated through the ``VaultIdStr`` typed alias
-    # (``_VAULT_ID_ADAPTER.validate_python``) before any vault lookup.
-    # Inputs that violate the typed-alias shape raise a structured
-    # ``ValueError`` rather than reaching the registry. See the CAS
-    # Typed-Alias Boundary Conventions for the shared validation
-    # contract.
+    #    (``_VAULT_ID_ADAPTER.validate_python``) before any vault lookup.
+    #    Inputs that violate the typed-alias shape raise a structured
+    #    ``ValueError`` rather than reaching the registry. See the CAS
+    #    Typed-Alias Boundary Conventions for the shared validation
+    #    contract.
     #
     # 2. The targeted vault must have been initialized with a
-    # ``registry_service``; otherwise ``v.maintenance_service`` is
-    # ``None`` and the tool raises ``RuntimeError``. This is primarily
-    # a test-fixture concern (production vault construction wires
-    # ``registry_service`` by default), but agents and integration
-    # tests that build vaults directly without the registry will hit
-    # this error rather than a silent no-op. The maintenance
-    # API surface is governed by CAS-ADR-029.
+    #    ``registry_service``; otherwise ``v.maintenance_service`` is
+    #    ``None`` and the tool raises ``RuntimeError``. This is primarily
+    #    a test-fixture concern (production vault construction wires
+    #    ``registry_service`` by default), but agents and integration
+    #    tests that build vaults directly without the registry will hit
+    #    this error rather than a silent no-op. The maintenance
+    #    API surface is governed by CAS-ADR-029.
     #
     # These two preconditions apply to every maintenance-family tool below;
     # the per-tool docstrings surface only the caller-facing error codes

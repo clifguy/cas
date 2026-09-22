@@ -10,6 +10,10 @@ same coordinates the same way.
 from __future__ import annotations
 
 from collections.abc import Mapping
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sage.config import SageCoreConfig
 
 
 def truthy(value: str | None, *, default: bool) -> bool:
@@ -19,7 +23,7 @@ def truthy(value: str | None, *, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def config_from_env(env: Mapping[str, str]):
+def config_from_env(env: Mapping[str, str]) -> SageCoreConfig:
     """Build the cloud stack config from the baked job environment.
 
     A lifespan-less ``python -m`` job never populates the stack-config singleton, so

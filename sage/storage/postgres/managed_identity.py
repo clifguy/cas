@@ -12,6 +12,12 @@ deferred to call time, so an on-box local-profile process never loads them.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING, Self
+
+if TYPE_CHECKING:
+    from azure.identity.aio import DefaultAzureCredential
+    from psycopg import AsyncConnection
+
 # OAuth scope for an Azure Database for PostgreSQL Entra access token. The token
 # minted for this scope is presented to libpq as the connection password.
 POSTGRES_AAD_SCOPE = "https://ossrdbms-aad.database.windows.net/.default"
@@ -19,7 +25,7 @@ POSTGRES_AAD_SCOPE = "https://ossrdbms-aad.database.windows.net/.default"
 _credential = None
 
 
-def get_postgres_credential():
+def get_postgres_credential() -> DefaultAzureCredential:
     """Return a process-wide aio managed-identity credential (cached).
 
     One credential instance is reused across every connection so its internal
@@ -50,7 +56,9 @@ async def close_postgres_credential() -> None:
         _credential = None
 
 
-def make_token_auth_connection_class(credential, *, scope: str = POSTGRES_AAD_SCOPE):
+def make_token_auth_connection_class(
+    credential, *, scope: str = POSTGRES_AAD_SCOPE
+) -> type[AsyncConnection]:
     """Build an ``AsyncConnection`` subclass that authenticates with an Entra token.
 
     The returned class overrides ``connect`` to acquire a fresh access token from
@@ -62,7 +70,7 @@ def make_token_auth_connection_class(credential, *, scope: str = POSTGRES_AAD_SC
 
     class _ManagedIdentityAsyncConnection(psycopg.AsyncConnection):
         @classmethod
-        async def connect(cls, conninfo: str = "", **kwargs):
+        async def connect(cls, conninfo: str = "", **kwargs) -> Self:
             from azure.core.exceptions import AzureError
 
             try:
