@@ -54,7 +54,6 @@ async def list_vaults(
 @router.get(
     "/sage_vaults/default-config",
     operation_id="get_default_vault_config",
-    summary="Return the default configuration a new vault would be created with.",
     responses={
         400: boundary_400(request=("invalid_vault_id", "unknown_parameter")),
         422: invalid_parameter_422(),

@@ -34,28 +34,6 @@ router = APIRouter(route_class=WireRoute, tags=["Graph Operations"])
     "/edges",
     response_model=BulkLinkResponse,
     status_code=200,
-    description=(
-        "Create one or more typed edges in a single call (CAS-ADR-029 v4 "
-        "plural-noun convention). Accepts an `items` array of N>=1 per-item "
-        "edge specifications; length-1 is fully supported. Each item is "
-        "dispatched through the idempotent variant: a duplicate natural-key "
-        "triple (source_id, target_id, edge_type) returns the existing edge "
-        "with `created=false` rather than raising. Items are processed in "
-        "order under the process-wide link lock and per-item database "
-        "transactions. The batch is NOT atomic: a per-item SAGEError "
-        "surfaces in the per-item error envelope while earlier-or-later "
-        "successful items remain committed. The endpoint returns 200 even "
-        "when some items fail; check `success_count` / `error_count` on "
-        "the response. Request body accepts an optional `response_mode` "
-        "(`light` | `full`): `light` drops the per-item `edge` body from "
-        "success entries to stay within the inline-output budget; failure "
-        "entries always carry the full structured error envelope. The "
-        "`created` and `existing_rationale` fields are preserved under "
-        "`light` because they are the only signals callers have for the "
-        "natural-key idempotency outcome. When unset, batches with more "
-        "than 5 items default to `light`, smaller batches default to "
-        "`full`."
-    ),
     responses={
         400: boundary_400(
             path=("invalid_vault_id",),

@@ -28,7 +28,10 @@ from pathlib import Path
 
 import pytest
 import yaml
+from fastapi import APIRouter
+from fastapi.routing import APIRoute
 
+from sage.api.wire_route import WireRoute
 from sage.app import build_openapi_document, create_app
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -331,6 +334,147 @@ def test_overlay_requires_the_committed_specs(attribute: str, monkeypatch: pytes
             sage_app._load_published_prose()
     finally:
         sage_app._load_published_prose.cache_clear()
+
+
+# ---------------------------------------------------------------------------
+# Route decorators carry no prose the specification supplies
+# ---------------------------------------------------------------------------
+
+
+_ROUTER_MODULE_PREFIX = "sage.api.routers."
+
+
+def _decorator_prose(route: APIRoute) -> set[str]:
+    """The prose keywords a route's decorator passed explicitly.
+
+    FastAPI leaves ``summary`` as ``None`` unless the decorator supplies one,
+    and derives ``description`` from the handler's docstring otherwise. The
+    route is compared against the description FastAPI itself derives for the
+    same endpoint with no keyword, so its own docstring handling -- such as
+    truncating at a form feed -- is never mistaken for decorator prose.
+    """
+    passed: set[str] = set()
+    if route.summary is not None:
+        passed.add("summary")
+    if route.description != APIRoute(route.path, route.endpoint).description:
+        passed.add("description")
+    return passed
+
+
+def _overridden_decorator_prose(
+    routes: list[APIRoute], operations: dict[tuple[str, str], dict]
+) -> tuple[int, list[str]]:
+    """Decorator prose the published document replaces with the spec's.
+
+    The overlay writes only the prose fields a spec operation carries, so a
+    decorator field is overridden only where the spec supplies that same
+    field. Returns how many documented operations were inspected, and one
+    line per operation whose decorator carries an overridden field.
+    """
+    inspected = 0
+    offenders: list[str] = []
+    for route in routes:
+        for method in sorted(route.methods):
+            operation = operations.get((route.path, method.lower())) or {}
+            supplied = {field for field in ("summary", "description") if operation.get(field)}
+            if not supplied:
+                continue
+            inspected += 1
+            passed = _decorator_prose(route) & supplied
+            if passed:
+                offenders.append(
+                    f"{method} {route.path} ({route.endpoint.__module__}): {sorted(passed)}"
+                )
+    return inspected, offenders
+
+
+def test_route_decorators_carry_no_prose_the_specification_supplies(
+    committed_operations: dict[tuple[str, str], dict],
+):
+    """A router route documented by a committed spec declares no prose of its own.
+
+    The published document takes each prose field a documented operation
+    carries from the spec, so a ``summary=`` or ``description=`` on the
+    decorator for a field the spec supplies is never served. It is read only
+    by contributors, who take it for the contract, and it drifts from the text
+    a caller actually sees.
+    """
+    routes = [
+        route
+        for route in create_app().routes
+        if isinstance(route, APIRoute)
+        and route.endpoint.__module__.startswith(_ROUTER_MODULE_PREFIX)
+    ]
+    inspected, offenders = _overridden_decorator_prose(routes, committed_operations)
+
+    assert inspected, "no router route matched a documented operation; the scan is vacuous"
+    assert not offenders, (
+        "route decorators carry prose the published document overrides; author it in "
+        "docs/fs/sage/sage_core_api.openapi.yaml instead:\n  " + "\n  ".join(offenders)
+    )
+
+
+def test_route_prose_gate_detects_decorator_keywords():
+    """The detector sees each keyword through the route class the routers use,
+    and does not mistake a handler docstring for decorator prose."""
+    router = APIRouter(route_class=WireRoute)
+
+    @router.get("/with-summary", summary="s")
+    async def with_summary() -> dict:
+        """Docstring."""
+        return {}
+
+    @router.get("/with-description", description="d")
+    async def with_description() -> dict:
+        """Docstring."""
+        return {}
+
+    @router.get("/docstring-only")
+    async def docstring_only() -> dict:
+        """Docstring."""
+        return {}
+
+    # FastAPI publishes a docstring only up to a form feed.
+    @router.get("/truncated-docstring")
+    async def truncated_docstring() -> dict:
+        """Published part.
+        \f
+        Contributor-only part.
+        """
+        return {}
+
+    detected = {route.path: _decorator_prose(route) for route in router.routes}
+    assert detected == {
+        "/with-summary": {"summary"},
+        "/with-description": {"description"},
+        "/docstring-only": set(),
+        "/truncated-docstring": set(),
+    }
+
+
+def test_route_prose_gate_flags_only_fields_the_specification_supplies():
+    """A decorator field the spec leaves unset is served, so it is not flagged;
+    the same field is flagged where the spec supplies it."""
+    router = APIRouter(route_class=WireRoute)
+
+    @router.get("/spec-summary-only", description="d")
+    async def spec_summary_only() -> dict:
+        """Docstring."""
+        return {}
+
+    @router.get("/spec-both", description="d")
+    async def spec_both() -> dict:
+        """Docstring."""
+        return {}
+
+    operations = {
+        ("/spec-summary-only", "get"): {"summary": "S"},
+        ("/spec-both", "get"): {"summary": "S", "description": "D"},
+    }
+    inspected, offenders = _overridden_decorator_prose(list(router.routes), operations)
+
+    assert inspected == 2
+    assert offenders == [f"GET /spec-both ({__name__}): ['description']"]
 
 
 # ---------------------------------------------------------------------------
