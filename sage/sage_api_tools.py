@@ -35,7 +35,7 @@ from sage.api.errors import (
     validation_error_envelope,
 )
 from sage.mcp_init import SAGEServices
-from sage.models.enums import FacetField, RetrievalMode, SourceType
+from sage.models.enums import CatalogSortBy, FacetField, RetrievalMode, SortOrder, SourceType
 from sage.models.legacy_form import detect_legacy_form
 from sage.models.schemas import (
     BATCH_ITEM_MODELS,
@@ -276,6 +276,18 @@ _SEARCH_SCOPE = _discover_param(
     ),
 )
 
+_SEARCH_SORT_BY = _discover_param(
+    str | None,
+    "sort_by",
+    mcp=f"One of: {', '.join(m.value for m in CatalogSortBy)}.",
+)
+
+_SEARCH_SORT_ORDER = _discover_param(
+    str | None,
+    "sort_order",
+    mcp=f"One of: {', '.join(m.value for m in SortOrder)}.",
+)
+
 _SEARCH_FACET_VALUE_LIMIT = _discover_param(
     int | None,
     "facet_value_limit",
@@ -310,8 +322,8 @@ _INGEST_SOURCE = _ingest_param(
     str | None,
     "source",
     mcp=(
-        "An absolute path is read directly only when the caller's machine is "
-        "the machine running the SAGE server process; the retained copy is "
+        "An absolute path is read only where the caller's machine is the "
+        "machine running the SAGE server process; the retained copy is "
         "authoritative after ingest, and the path passed here is temporary. "
         "An upload recipe's tokens lapse 900 seconds after issue by default "
         "(its expires_at is authoritative), and the byte delivery and the "
@@ -324,7 +336,12 @@ _INGEST_SOURCE = _ingest_param(
 _INGEST_SOURCE_TYPE = _ingest_param(
     str | None,
     "source_type",
-    mcp="For example ``.md`` and ``.markdown`` map to markdown, ``.docx``/``.dotx`` to docx.",
+    mcp=(
+        "The registered formats are markdown, docx, xlsx, pptx and pdf; a "
+        "refusal names them in ``registered_source_types``. Inference reads "
+        "the extension: ``.md`` and ``.markdown`` map to markdown, "
+        "``.docx``/``.dotx`` to docx."
+    ),
 )
 
 _INGEST_CONFIG = _ingest_param(
@@ -434,8 +451,7 @@ _INGEST_DRY_RUN = _ingest_param(
         "for a source resident in the store with no prior document record, "
         "which has no hash to judge the pin against. A clean preview is not a "
         "promise that the real run commits. For an upload, the checks that "
-        "need the bytes wait for the call repeated with the transfer token, "
-        "which a dry run reads but does not spend."
+        "need the bytes wait for the call repeated with the transfer token."
     ),
 )
 
@@ -589,7 +605,8 @@ def register_sage_tools(
         requested supersede runs synchronously, so the version chain is
         complete on return. To observe the outcome, wait for a terminal
         ``pipeline_status`` on the document: ``abstraction_complete``,
-        ``abstraction_skipped``, or ``failed``. A wait must also accept
+        ``abstraction_skipped``, or ``failed`` (which sets ``pipeline_error``).
+        A wait must also accept
         ``abstraction_interrupted``: the work was stopped before it finished
         and the next server start re-runs it. Run one bounded wait on the
         caller's side, not a status request per unit of work.
@@ -1712,8 +1729,8 @@ def register_sage_tools(
         min_relevance: _discover_param(float | None, "min_relevance") = None,
         target: _discover_param(str, "target") = "documents",
         response_mode: _SEARCH_RESPONSE_MODE = None,
-        sort_by: _discover_param(str | None, "sort_by") = None,
-        sort_order: _discover_param(str | None, "sort_order") = None,
+        sort_by: _SEARCH_SORT_BY = None,
+        sort_order: _SEARCH_SORT_ORDER = None,
         facet_fields: _discover_param(list[FacetField] | None, "facet_fields") = None,
         facet_value_limit: _SEARCH_FACET_VALUE_LIMIT = None,
         # Tripwires, not functional arguments. These are the ``filters``

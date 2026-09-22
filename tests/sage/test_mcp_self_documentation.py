@@ -37,10 +37,12 @@ from sage.mcp_server import (
 )
 from sage.models.enums import (
     TERMINAL_PIPELINE_STATUSES,
+    CatalogSortBy,
     EdgeType,
     PipelineStatus,
     RationaleKind,
     RetrievalMode,
+    SortOrder,
 )
 from sage.sage_api_tools import _INGEST_METADATA_KEYS, _SEARCH_FILTER_KEYS
 from sage.services.retrieval import DEFAULT_MCP_INLINE_BUDGET_BYTES
@@ -761,6 +763,26 @@ def test_search_docstring_documents_count_only_limit():
     entry = limit_arg.group(1)
     assert "0-100" in entry
     assert "catalog" in entry
+
+
+def test_search_publishes_the_sort_vocabularies():
+    """``sort_by`` and ``sort_order`` publish the values they accept.
+
+    Enum-driven, so a value added to either enum without reaching the tool
+    fails here. Both vocabularies are closed and neither is expressible in
+    the published schema, which types the two parameters as bare strings:
+    a caller who cannot read the accepted set has to learn it from a
+    refusal. The sibling ``source_type`` pin below covers the filter key
+    that is closed the same way, and this one was written after the move
+    into the input schema dropped these two.
+    """
+    doc = _docstring(search)
+    for enum in (CatalogSortBy, SortOrder):
+        for member in enum:
+            assert member.value in doc, (
+                f"search must publish {enum.__name__} value {member.value!r}; "
+                "the vocabulary is closed and the schema cannot carry it."
+            )
 
 
 def test_discover_docstring_documents_source_type_vocabulary():

@@ -18,12 +18,27 @@ from sage._tool_naming import MCP_HTTP_MOUNTS
 
 
 @cache
+def published_tools_on(surface: str) -> dict[str, Any]:
+    """Registered tools on one partitioned surface, keyed by name.
+
+    The FastMCP ``Tool`` models rather than the raw callables, because
+    ``annotations``, ``description`` and ``parameters`` live on the ``Tool``
+    and not on the function it wraps.
+    """
+    server = mcp_server.build_partitioned_server(surface)
+    return {t.name: t for t in server._tool_manager.list_tools()}  # noqa: SLF001
+
+
+def published_surfaces() -> tuple[str, ...]:
+    """Each partitioned surface, in mount-table order."""
+    return tuple(dict.fromkeys(surface for _, surface in MCP_HTTP_MOUNTS))
+
+
 def published_tools() -> dict[str, Any]:
     """Every registered tool across the partitioned surfaces, keyed by name."""
     tools: dict[str, Any] = {}
-    for surface in dict.fromkeys(surface for _, surface in MCP_HTTP_MOUNTS):
-        server = mcp_server.build_partitioned_server(surface)
-        tools.update({t.name: t for t in server._tool_manager.list_tools()})  # noqa: SLF001
+    for surface in published_surfaces():
+        tools.update(published_tools_on(surface))
     return tools
 
 
@@ -38,8 +53,6 @@ def tool_name_of(fn: object) -> str:
     Tool functions are re-exported under legacy aliases, so a function's
     ``__name__`` need not be the name its surface registers.
     """
-    from sage import mcp_server
-
     for attr in ("_sage_tools", "_app_tools"):
         for name, registered in getattr(mcp_server, attr).items():
             if registered is fn:

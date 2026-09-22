@@ -11,7 +11,7 @@ reaches it, and the description keeps a prose body and a compact error list.
 Three rules, held for every registered tool on every surface:
 
 - the description is at most ``DESCRIPTION_BUDGET`` characters;
-- it carries no ``Args:`` block;
+- it carries no parameter block (``Args:`` and its aliases);
 - every top-level parameter carries a schema ``description``.
 
 ``KNOWN_UNCONVERTED`` names the tools not yet brought under the rules. It only
@@ -33,7 +33,13 @@ from tests.sage.mcp_surface_pin import EXPECTED_SURFACE
 #: first 2,048 characters of a tool description and discards the rest.
 DESCRIPTION_BUDGET: Final[int] = 2048
 
-_ARGS_HEADER_RE: Final[re.Pattern[str]] = re.compile(r"^[ \t]*Args:[ \t]*$", re.MULTILINE)
+#: A parameter block by any of the names the common docstring styles give it.
+#: Keying on ``Args:`` alone would let the same block back in under another
+#: heading, which is the rule's purpose rather than its spelling.
+_ARGS_HEADER_RE: Final[re.Pattern[str]] = re.compile(
+    r"^[ \t]*(?:Args|Arguments|Parameters|Params|Keyword Args|Kwargs):?[ \t]*$",
+    re.MULTILINE,
+)
 
 #: Tools that do not yet satisfy the three rules. Remove a tool when it does.
 KNOWN_UNCONVERTED: Final[frozenset[str]] = frozenset(
@@ -82,7 +88,7 @@ def _violations(tool: object) -> list[str]:
     if len(description) > DESCRIPTION_BUDGET:
         found.append(f"description is {len(description)} chars (budget {DESCRIPTION_BUDGET})")
     if _ARGS_HEADER_RE.search(description):
-        found.append("description carries an Args: block")
+        found.append("description carries a parameter block")
     schema = tool.parameters  # type: ignore[attr-defined]
     described = parameter_descriptions(schema)
     undescribed = sorted(

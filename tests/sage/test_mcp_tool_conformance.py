@@ -60,6 +60,7 @@ from typing import Any, Callable, Final, NamedTuple
 import pytest
 import yaml
 
+from tests.helpers.published_tool import published_tools, published_tools_on
 from tests.sage.surface_divergences import (
     MCP_ONLY_ARGUMENTS,
     MCP_ONLY_TOOLS,
@@ -1164,23 +1165,16 @@ EXPECTED_ANNOTATIONS: dict[str, tuple[bool, bool | None, bool]] = {
 }
 
 
-@functools.lru_cache(maxsize=None)
-def _registered_tools(surface: str) -> dict[str, Any]:
-    """Registered tool objects on a freshly built partitioned server.
-
-    Returns the FastMCP ``Tool`` models rather than the raw callables
-    that ``_surface_registry`` yields, because ``annotations`` lives on
-    the ``Tool`` and not on the function it wraps.
-    """
-    from sage import mcp_server
-
-    server = mcp_server.build_partitioned_server(surface)
-    return {t.name: t for t in server._tool_manager.list_tools()}  # noqa: SLF001
+#: Registered tool objects on a freshly built partitioned server, keyed by
+#: tool name. One enumeration serves this module and the disclosure gates:
+#: two roster walks reconciled against the same pin can still answer
+#: differently while both pass it.
+_registered_tools = published_tools_on
 
 
 def _all_registered_tools() -> dict[str, Any]:
     """Every tool across both partitioned surfaces, keyed by tool name."""
-    return {**_registered_tools("sage"), **_registered_tools("sage_maint")}
+    return published_tools()
 
 
 def test_registered_tool_enumeration_is_nonempty():
