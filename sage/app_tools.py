@@ -149,6 +149,9 @@ _NEEDS_REVIEW = model_param(
     ),
 )
 
+# Authored here rather than taken from ``BatchIngestUploadMetadata.dry_run``:
+# that text describes the multipart upload channel, whose bytes are staged per
+# request, while this tool also reads ``file_path`` entries in place.
 _DRY_RUN = Field(
     description=(
         "Report what each file would do and persist nothing. No source is read "

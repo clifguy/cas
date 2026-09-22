@@ -1151,7 +1151,7 @@ def register_sage_tools(
         - ``vault_not_found`` (404)
         - 400: ``invalid_vault_id``, ``undeclared_key``, ``invalid_sha256``,
           ``invalid_document_id``, ``invalid_edge_id``
-        - ``invalid_parameter`` (422): a malformed ``items`` or ``response_mode``
+        - ``invalid_parameter`` (422): a malformed item or ``response_mode``
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -1223,7 +1223,7 @@ def register_sage_tools(
         - ``vault_not_found`` (404)
         - 400: ``legacy_form``, ``invalid_document_id``, ``invalid_document_date``
         - ``undeclared_key`` (400): ``lifecycle_status`` is set with ``update_lifecycles``
-        - ``invalid_parameter`` (422): a malformed ``items`` or ``response_mode``
+        - ``invalid_parameter`` (422): a malformed item or ``response_mode``
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2416,8 +2416,10 @@ def register_sage_tools(
         Confirm is idempotent on the natural-key triple ``(source_id,
         target_id, edge_type)``: if production already holds that edge,
         confirm returns the existing production edge's id and consumes the
-        staging row either way. Treat confirm as at-least-once and retry
-        freely.
+        staging row either way. Treat confirm as at-least-once: a retry that
+        finds the staging row gone returns ``staging_edge_not_found``;
+        ``search`` with ``target="edges"`` shows whether the production edge
+        landed.
 
         Error modes:
         - ``invalid_vault_id`` (400)
