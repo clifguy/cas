@@ -357,6 +357,29 @@ KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
         "parametrized by specification when the gate began reading a second one; the same "
         "check runs as [core]"
     ),
+    **{
+        f"tests/sage/test_mcp_heavy_parameter_descriptions.py::{test_id}": (
+            "superseded by the per-tool presented-size ceiling in "
+            "test_mcp_presented_size_budget, which bounds each parameter's text as part of "
+            "its tool's whole presented size"
+        )
+        for test_id in (
+            "test_heavy_parameter_ceilings_name_published_parameters",
+            *(
+                f"test_heavy_parameter_description_within_ceiling[{key}]"
+                for key in (
+                    "bulk_ingest_document.files",
+                    "bulk_ingest_document.infer_edges",
+                    "create_edges.items",
+                    "ingest_document.dry_run",
+                    "search.query",
+                    "search.response_mode",
+                    "update_lifecycles.items",
+                    "update_metadata.items",
+                )
+            ),
+        )
+    },
 }
 
 
