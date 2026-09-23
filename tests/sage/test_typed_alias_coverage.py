@@ -308,7 +308,9 @@ def _walk_annotation(annotation) -> tuple[bool, bool]:
         if origin in _SEQUENCE_ORIGINS:
             stack.extend(typing.get_args(node))
             continue
-        if node is str:
+        # ``Any`` admits a string as surely as ``str`` does; an untyped
+        # parameter is enumerated rather than silently exempt.
+        if node is str or node is typing.Any:
             has_str = True
     return has_str, has_typed
 
@@ -1185,6 +1187,17 @@ def test_walk_annotation_descends_into_collection_element_types():
     assert _walk_annotation(dict[str, DocumentIdStr]) == (False, False)
     # The overshoot boundary: a boolean flag has no ``str`` arm at any depth.
     assert _walk_annotation(bool) == (False, False)
+
+
+def test_walk_annotation_treats_an_untyped_parameter_as_admitting_str():
+    """``Any`` admits a string, so a shape-named ``Any`` site is enumerated.
+
+    Without this an untyped parameter would be invisible to the gate: a
+    ``*_id: Any`` site would carry no alias and fail nothing, because
+    discovery would never offer it for checking.
+    """
+    assert _walk_annotation(typing.Any) == (True, False)
+    assert _walk_annotation(typing.Annotated[typing.Any, "marking"]) == (True, False)
 
 
 def test_registry_enumerates_plural_collection_sites():

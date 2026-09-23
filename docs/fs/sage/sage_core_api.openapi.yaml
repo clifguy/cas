@@ -304,8 +304,7 @@ paths:
         Accepts N>=1 per-item transition requests per CAS-ADR-029 v4
         plural-noun convention. Each item carries `document_id`,
         `action`, and optional `successor_id` or `relocated_to`. Items
-        are processed in order, each holding the per-document lock and a
-        per-item database transaction. Length-1 is fully supported.
+        are processed in order. Length-1 is fully supported.
 
 
         **The action vocabulary is vault-config-defined**, not a fixed
@@ -443,8 +442,7 @@ paths:
       summary: Patch mutable metadata fields on one or more documents.
       description: >-
         Accepts N>=1 per-item patch requests per CAS-ADR-029 v4
-        plural-noun convention. Items are processed in order, each holding
-        the per-document lock and a per-item database transaction.
+        plural-noun convention. Items are processed in order.
         Length-1 is fully supported.
 
 
@@ -1356,8 +1354,7 @@ paths:
         idempotent variant: a duplicate natural-key triple
         (`source_id`, `target_id`, `edge_type`) returns the existing
         edge with `created=false` rather than raising. Items are
-        processed in order under the process-wide link lock and
-        per-item database transactions. Length-1 is fully supported.
+        processed in order. Length-1 is fully supported.
 
 
         **A `depends_on` edge is evaluated later, not when it is
@@ -4858,7 +4855,6 @@ components:
       type: string
       enum: [light, full]
       description: >-
-        Canonical payload-depth selector across SAGE surfaces.
         "light" omits large per-item fields and returns only
         identity/status; "full" returns the complete envelope. When
         unset, surfaces that honor this parameter apply their own
@@ -6846,10 +6842,8 @@ components:
           items:
             $ref: "#/components/schemas/BulkLifecycleItem"
           description: >-
-            Items processed in order. Each item runs in its own
-            per-document lock and its own database transaction; the batch
-            as a whole is NOT atomic. A bad item does not
-            roll back earlier-or-later successful items.
+            Items processed in order. A failed item does not roll back
+            earlier-or-later successful items.
         response_mode:
           anyOf:
             - $ref: "#/components/schemas/ResponseMode"
@@ -7077,10 +7071,8 @@ components:
           items:
             $ref: "#/components/schemas/BulkLinkItem"
           description: >-
-            Items processed in order. Each item runs under the
-            process-wide link lock and a per-item database transaction;
-            the batch as a whole is NOT atomic. A bad
-            item does not roll back earlier-or-later successful items.
+            Items processed in order. A failed item does not roll back
+            earlier-or-later successful items.
         response_mode:
           anyOf:
             - $ref: "#/components/schemas/ResponseMode"
@@ -7299,10 +7291,8 @@ components:
           items:
             $ref: "#/components/schemas/BulkMetadataItem"
           description: >-
-            Items processed in order. Each item runs in its own
-            per-document lock and its own database transaction; the batch
-            as a whole is NOT atomic. A bad item does not
-            roll back earlier-or-later successful items.
+            Items processed in order. A failed item does not roll back
+            earlier-or-later successful items.
         response_mode:
           anyOf:
             - $ref: "#/components/schemas/ResponseMode"

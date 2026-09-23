@@ -4589,7 +4589,7 @@
               "type": "boolean"
             },
             "items": {
-              "description": "Items processed in order. Each item runs under the process-wide link lock and a per-item database transaction; the batch as a whole is NOT atomic. A bad item does not roll back earlier-or-later successful items. Shape validation runs up front: one malformed item refuses the whole batch before any per-item work. A per-item error surfaces in the response's per-item error envelope rather than as a batch-level 400. Per-item anchor fields by edge_type policy bucket: ``none`` (supersedes, retracts, merged_from) takes no anchor fields, except that ``retracts`` takes a one-sided ``source_valid_from_version`` and ``retracted_edge_id`` (no ``target_id``); ``transitive_source`` (derived_from) requires ``source_valid_from_version`` only; ``transitive_both`` (covers, references, bundles_with, depends_on, instantiated_from) requires both ``source_valid_from_version`` and ``target_valid_from_version``. An anchor field takes a document id, not a version label: each anchor must name a document in its endpoint's ``supersedes`` lineage. To link whole documents, pass the endpoint's own id as its anchor. For example: edge_type=\"derived_from\", source_id=\"<deliverable_id>\", target_id=\"<template_id>\", source_valid_from_version=\"<deliverable_id>\"; and edge_type=\"references\", source_id=\"<source_id>\", target_id=\"<target_id>\", source_valid_from_version=\"<source_id>\", target_valid_from_version=\"<target_id>\". ``merged_from`` chain-head precondition: neither endpoint may have an outbound ``supersedes`` edge, or the item returns merged_from_validation; for content reuse from a mid-chain source, use ``derived_from``, whose anchor carries the chain visibility ``merged_from`` lacks.",
+              "description": "Items processed in order. A failed item does not roll back earlier-or-later successful items. Shape validation runs up front: one malformed item refuses the whole batch before any per-item work. A per-item error surfaces in the response's per-item error envelope rather than as a batch-level 400. Per-item anchor fields by edge_type policy bucket: ``none`` (supersedes, retracts, merged_from) takes no anchor fields, except that ``retracts`` takes a one-sided ``source_valid_from_version`` and ``retracted_edge_id`` (no ``target_id``); ``transitive_source`` (derived_from) requires ``source_valid_from_version`` only; ``transitive_both`` (covers, references, bundles_with, depends_on, instantiated_from) requires both ``source_valid_from_version`` and ``target_valid_from_version``. An anchor field takes a document id, not a version label: each anchor must name a document in its endpoint's ``supersedes`` lineage. To link whole documents, pass the endpoint's own id as its anchor. For example: edge_type=\"derived_from\", source_id=\"<deliverable_id>\", target_id=\"<template_id>\", source_valid_from_version=\"<deliverable_id>\"; and edge_type=\"references\", source_id=\"<source_id>\", target_id=\"<target_id>\", source_valid_from_version=\"<source_id>\", target_valid_from_version=\"<target_id>\". ``merged_from`` chain-head precondition: neither endpoint may have an outbound ``supersedes`` edge, or the item returns merged_from_validation; for content reuse from a mid-chain source, use ``derived_from``, whose anchor carries the chain visibility ``merged_from`` lacks.",
               "items": {
                 "additionalProperties": true,
                 "properties": {
@@ -9280,22 +9280,6 @@
           "additionalProperties": false,
           "properties": {
             "authority_scope": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {},
-                  "type": "array"
-                },
-                {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "default": null,
               "description": "Tripwire, not a functional argument; use metadata={...} (misplaced_metadata)."
             },
@@ -9325,42 +9309,10 @@
               "description": "User ID of the actor initiating ingestion. Used for provenance tracking. Defaults to vault owner."
             },
             "doc_type": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {},
-                  "type": "array"
-                },
-                {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "default": null,
               "description": "Tripwire, not a functional argument; use metadata={...} (misplaced_metadata)."
             },
             "document_date": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {},
-                  "type": "array"
-                },
-                {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "default": null,
               "description": "Tripwire, not a functional argument; use metadata={...} (misplaced_metadata)."
             },
@@ -9429,22 +9381,6 @@
               "description": "When provided, the ingested document is treated as a new version that supersedes the named predecessor. After successful ingestion, SAGE applies the `supersede` lifecycle transition on the predecessor: creates a `supersedes` edge from the new document to the predecessor and moves the predecessor to the state the vault's transition table lands `supersede` in (`archived` in the create-vault scaffold). Predecessor validation (exists + the vault's transition table permits `supersede` from its current state + different content hash) runs before projection; failures return 404/409 before any pipeline work begins. An omitted ``doc_type``, ``project`` or ``authority_scope`` inherits the predecessor's value. A ``supersede_target_not_active`` refusal carries the ``allowed_states``; move the predecessor to one with ``update_lifecycles`` (``reactivate`` from ``completed``) rather than archiving it first."
             },
             "project": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {},
-                  "type": "array"
-                },
-                {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "default": null,
               "description": "Tripwire, not a functional argument; use metadata={...} (misplaced_metadata)."
             },
@@ -9498,22 +9434,6 @@
               "description": "Source artifact format. Determines which source adapter processes the artifact. Must be a source type with a registered adapter. Optional: when omitted, it is inferred from the extension of the source being ingested against the registered adapters' declared extensions -- for a `transfer_token` completion, the staged file, which carries the caller's own basename. An explicit value is never overridden, even where it disagrees with the extension. An omitted value whose extension no registered adapter claims is refused with `source_type_unresolved`. The registered formats are markdown, docx, xlsx, pptx and pdf; a refusal names them in ``registered_source_types``. Inference reads the extension: ``.md`` and ``.markdown`` map to markdown, ``.docx``/``.dotx`` to docx."
             },
             "tags": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {},
-                  "type": "array"
-                },
-                {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "default": null,
               "description": "Tripwire, not a functional argument; use metadata={...} (misplaced_metadata)."
             },
@@ -9531,22 +9451,6 @@
               "description": "Caller-authoritative tier-3 typed metadata applied at create time. Validated against the doc_type's `metadata_schema` declared in vault config (`document_types.{doc_type}.metadata_schema`); if the doc_type has no schema declared, the ingest fails with 400 `tier3_schema_violation`. Bare-dict form: the entire object is the tier-3 metadata for the new document, whereas `update_metadata` takes a `set`/`unset` ops-object. Tier3 uniqueness: a doc_type declaring a unique constraint on a tier3 field enforces per-vault uniqueness on it at ingest time, checked in the same transaction as the row insert so the existing document is never disturbed; force does not override it. Call with dry_run=true to read which fields a doc_type declares unique, under requirements.unique_tier3_fields, and which it requires. Queryable via ``search`` as filters={\"tier3_metadata\": {...}}."
             },
             "title": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {},
-                  "type": "array"
-                },
-                {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "default": null,
               "description": "Tripwire, not a functional argument; use metadata={...} (misplaced_metadata)."
             },
@@ -9567,22 +9471,6 @@
               "type": "string"
             },
             "version_label": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {},
-                  "type": "array"
-                },
-                {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "default": null,
               "description": "Tripwire, not a functional argument; use metadata={...} (misplaced_metadata)."
             }
@@ -16035,25 +15923,6 @@
           "additionalProperties": false,
           "properties": {
             "doc_type": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {},
-                  "type": "array"
-                },
-                {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "default": null,
               "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters)."
             },
@@ -16070,71 +15939,14 @@
               "description": "Target document for deterministic extraction. Required for deterministic mode."
             },
             "document_ids": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {},
-                  "type": "array"
-                },
-                {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "default": null,
               "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters)."
             },
             "edge_type": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {},
-                  "type": "array"
-                },
-                {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "default": null,
               "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters)."
             },
             "exclude_terminal_lifecycle": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {},
-                  "type": "array"
-                },
-                {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "default": null,
               "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters)."
             },
@@ -16196,25 +16008,6 @@
               "type": "boolean"
             },
             "lifecycle_status": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {},
-                  "type": "array"
-                },
-                {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "default": null,
               "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters)."
             },
@@ -16253,48 +16046,10 @@
               "type": "integer"
             },
             "pipeline_status": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {},
-                  "type": "array"
-                },
-                {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "default": null,
               "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters)."
             },
             "project": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {},
-                  "type": "array"
-                },
-                {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "default": null,
               "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters)."
             },
@@ -16352,71 +16107,14 @@
               "description": "Sort direction for catalog mode results. Optional. Defaults to ascending when sort_by is specified. Ignored by other modes. One of: asc, desc."
             },
             "source_id": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {},
-                  "type": "array"
-                },
-                {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "default": null,
               "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters)."
             },
             "source_type": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {},
-                  "type": "array"
-                },
-                {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "default": null,
               "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters)."
             },
             "tags": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {},
-                  "type": "array"
-                },
-                {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "default": null,
               "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters)."
             },
@@ -16426,48 +16124,10 @@
               "type": "string"
             },
             "target_id": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {},
-                  "type": "array"
-                },
-                {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "default": null,
               "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters)."
             },
             "tier3_metadata": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "items": {},
-                  "type": "array"
-                },
-                {
-                  "additionalProperties": true,
-                  "type": "object"
-                },
-                {
-                  "type": "boolean"
-                },
-                {
-                  "type": "null"
-                }
-              ],
               "default": null,
               "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters)."
             },
@@ -18359,7 +18019,7 @@
               "type": "boolean"
             },
             "items": {
-              "description": "Items processed in order. Each item runs in its own per-document lock and its own database transaction; the batch as a whole is NOT atomic. A bad item does not roll back earlier-or-later successful items. Shape validation runs up front: one malformed item refuses the whole batch before any per-item work. Each item carries ``document_id``, ``action``, and optional ``successor_id`` or ``relocated_to``. A state or transition listing ``doc_types`` applies only to those doc_types. ``supersede`` is admitted from whichever ``from_state`` rows the vault's table declares for it and lands the predecessor in that row's ``to_state``, so a vault declaring ``completed --supersede--> archived`` supersedes a completed predecessor directly; an already-superseded predecessor refuses with ``invalid_lifecycle_transition``. To repair an archived predecessor missing its supersedes edge, add the edge with ``create_edges``, which transitions no lifecycle. ``relocate`` moves the chain head to the terminal ``relocated`` state, which no action leaves; perform the destination half first, as an ``ingest_document`` carrying ``relocated_from``. A ``relocated_to`` whose ``source_content_hash`` matches neither the document's provenance digest nor its as-stored digest refuses with ``relocated_to_provenance_mismatch``, its detail naming them as ``document_content_hash`` and ``also_accounted_content_hash``. A per-item error surfaces in the response's per-item error envelope rather than as a batch-level 400/409.",
+              "description": "Items processed in order. A failed item does not roll back earlier-or-later successful items. Shape validation runs up front: one malformed item refuses the whole batch before any per-item work. Each item carries ``document_id``, ``action``, and optional ``successor_id`` or ``relocated_to``. A state or transition listing ``doc_types`` applies only to those doc_types. ``supersede`` is admitted from whichever ``from_state`` rows the vault's table declares for it and lands the predecessor in that row's ``to_state``, so a vault declaring ``completed --supersede--> archived`` supersedes a completed predecessor directly; an already-superseded predecessor refuses with ``invalid_lifecycle_transition``. To repair an archived predecessor missing its supersedes edge, add the edge with ``create_edges``, which transitions no lifecycle. ``relocate`` moves the chain head to the terminal ``relocated`` state, which no action leaves; perform the destination half first, as an ``ingest_document`` carrying ``relocated_from``. A ``relocated_to`` whose ``source_content_hash`` matches neither the document's provenance digest nor its as-stored digest refuses with ``relocated_to_provenance_mismatch``, its detail naming them as ``document_content_hash`` and ``also_accounted_content_hash``. A per-item error surfaces in the response's per-item error envelope rather than as a batch-level 400/409.",
               "items": {
                 "additionalProperties": true,
                 "properties": {
@@ -19831,7 +19491,7 @@
               "type": "boolean"
             },
             "items": {
-              "description": "Items processed in order. Each item runs in its own per-document lock and its own database transaction; the batch as a whole is NOT atomic. A bad item does not roll back earlier-or-later successful items. Shape validation runs up front: one malformed item refuses the whole batch before any per-item work. ``tags`` takes a ``ListFieldPatch`` ops-object, {\"add\": [\"x\"], \"remove\": [\"y\"]} -- at least one key, ``add`` values absent and ``remove`` values present; ``tier3_metadata`` takes a ``Tier3Patch``, {\"set\": {\"key\": \"value\"}, \"unset\": [\"other_key\"]}, the merged result validated against the resolved doc_type's ``metadata_schema``. The bare-list / bare-dict forms are rejected with ``legacy_form``. ``lifecycle_state_not_applicable`` refuses a ``doc_type`` change while the document holds a lifecycle state the new doc_type cannot hold; transition it first.",
+              "description": "Items processed in order. A failed item does not roll back earlier-or-later successful items. Shape validation runs up front: one malformed item refuses the whole batch before any per-item work. ``tags`` takes a ``ListFieldPatch`` ops-object, {\"add\": [\"x\"], \"remove\": [\"y\"]} -- at least one key, ``add`` values absent and ``remove`` values present; ``tier3_metadata`` takes a ``Tier3Patch``, {\"set\": {\"key\": \"value\"}, \"unset\": [\"other_key\"]}, the merged result validated against the resolved doc_type's ``metadata_schema``. The bare-list / bare-dict forms are rejected with ``legacy_form``. ``lifecycle_state_not_applicable`` refuses a ``doc_type`` change while the document holds a lifecycle state the new doc_type cannot hold; transition it first.",
               "items": {
                 "additionalProperties": true,
                 "properties": {
