@@ -3,7 +3,7 @@ summary: >-
   Publish the ingest_document and search tripwire parameters untyped: each
   keeps its marking description and null default and drops its permissive
   union, so a client presenting the raw schema to its model no longer pays
-  for five union arms per tripwire. Drop the lock and transaction detail
+  for four or five union arms per tripwire. Drop the lock and transaction detail
   from the items description of the bulk lifecycle, metadata and link
   requests, keeping what a caller reads -- in-order processing and that a
   failed item rolls back no other -- and drop the matching clause from the
