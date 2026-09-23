@@ -5228,6 +5228,7 @@ class SourceFileRestoreReport(BaseModel):
         )
     )
     provenance_verified: bool = Field(
+        json_schema_extra={"x-qualifies-success": "status"},
         description=(
             "Whether the delivered bytes were confirmed to be the target "
             "document's. True whenever the target was resolved from their "
@@ -5236,17 +5237,18 @@ class SourceFileRestoreReport(BaseModel):
             "carrying no stored digest: its recorded provenance describes its "
             "stored copy rather than the delivered bytes, so nothing on the "
             "record can confirm the file handed over is the right one."
-        )
+        ),
     )
     record_refreshed: bool = Field(
+        json_schema_extra={"x-qualifies-success": "status"},
         description=(
             "Whether stored_content_hash was updated on the document record. "
             "True only where the store demonstrably rewrote the bytes it was "
             "given, which is the sole reason the recorded digest may move. "
             "False leaves any recorded mismatch reported rather than adopted — "
-            "so a restore can report `restored` with this false, meaning the "
-            "bytes were written but the record still describes a different copy."
-        )
+            "so a restore can report `restored` with this false, which may mean "
+            "the bytes were written but the record still describes a different copy."
+        ),
     )
     expected_content_hash: Sha256Str = Field(
         description=(

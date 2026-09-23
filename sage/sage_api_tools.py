@@ -2744,22 +2744,24 @@ def register_sage_tools(
         """Repair a document's retained source file by writing delivered bytes back over it.
 
         The repair counterpart of ``verify_vault_source_files``. Re-ingesting
-        cannot stand in: retention sees only that the offered bytes differ
-        from what sits at its target, so it homes the document at a second
-        path and leaves the damaged copy in place. This writes to the path the
-        document record already names, so the document does not move. The
-        target is resolved from the delivered bytes' digest, which is why
-        ``document_id`` is normally unnecessary.
+        cannot stand in: it would home the document at a second path and
+        leave the damaged copy in place. This writes to the path the document
+        record already names. The target is resolved from the delivered
+        bytes' digest, so ``document_id`` is normally unnecessary.
 
         Writes nothing when the retained copy already hashes to its recorded
         digest, returning ``status: already_intact``. A recorded path that is
         a *link*, or that resolves *outside* the vault's source tree, is
         never reported that way: the write is refused
         (``vault_source_path_refused``). Remove the link or re-point the path,
-        then re-run. Where a write does happen, the record's
-        ``stored_content_hash`` follows the store's digest only where the
-        store demonstrably rewrote the bytes; the provenance digest is never
-        touched.
+        then re-run.
+
+        ``status: restored`` does not by itself mean the record matches: it
+        matches when ``stored_content_hash`` equals ``expected_content_hash``.
+        ``record_refreshed`` false means the recorded digest was left alone:
+        it follows the store only where the store demonstrably rewrote the
+        bytes. ``provenance_verified`` false means nothing on the record could
+        confirm the delivered bytes.
 
         Two-phase when the server cannot read the caller's filesystem: an
         absolute ``source`` returns an upload recipe (``status:
@@ -2817,8 +2819,10 @@ def register_sage_tools(
         ``abstraction_interrupted``, or ``failed``).
 
         Returns a ReabstractReport with per-document outcomes and aggregate
-        counts. Every outcome beyond ``success`` and ``skipped_pdf`` counts
-        toward ``failed_count``.
+        counts. Each entry's outcome is one of ``success``, ``skipped_pdf``,
+        ``llm_failure``, ``still_skipped``, ``timeout``, ``interrupted`` or
+        ``dispatch_failed``. Every outcome beyond ``success`` and
+        ``skipped_pdf`` counts toward ``failed_count``.
 
         The per-document poll is bounded: a document that has not settled
         within the server's wait ceiling is recorded with outcome ``timeout``,
