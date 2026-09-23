@@ -1,7 +1,0 @@
-classification: patch
-summary: >-
-  The dry_run description of the edge-creation request says "the process-wide
-  link lock" rather than naming a private implementation symbol. The model
-  and the specification change together; the guarantee it states, that a
-  preview is consistent with concurrent link writes, is unchanged.
-for_callers: ""

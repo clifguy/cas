@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Inventory and version tracking for the CAS Formal Substrate (CAS-ADR-008). Each artifact's version is the release MAJOR.MINOR in which it last changed, or null until a release first publishes it; no counter is assigned when a change is authored. revision_history is assembled per release: a change adds a numberless change record under changes/unreleased/, and the release step folds every unreleased record into one entry for the new release, newest first. Entries written before this scheme, which carry a substrate counter in their version field, follow the release entries and are kept verbatim.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-09-22",
+  "manifest_date": "2026-09-23",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -84,7 +84,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "2.6",
+      "version": "2.7",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -92,7 +92,7 @@
       "path": "cas_app_api.openapi.yaml",
       "title": "CAS Application API",
       "status": "draft",
-      "version": "2.6",
+      "version": "2.7",
       "role": "OpenAPI 3.1.0 specification for the CAS Application backend HTTP surface (mounted at the /app prefix). Defines directory scan and batch-ingest endpoints used by the CAS Application UI. Architecturally distinct from the SAGE Core API; the two specs are validated together by tests/sage/test_openapi_conformance.py and must respect URL-prefix boundaries (sage_core_api owns /sage_vaults/*, cas_app_api owns /app/*).",
       "instantiation_checklist_items": []
     },
@@ -100,7 +100,7 @@
       "path": "sage/sage_mcp_tools.catalog.json",
       "title": "SAGE MCP Tool Catalog",
       "status": "draft",
-      "version": "2.6",
+      "version": "2.7",
       "role": "The tools the SAGE MCP surfaces publish through tools/list: name, input and output schemas, annotations, and description, for the ordinary surface (/mcp) and the maintenance surface (/mcp_maint). Generated from the servers by scripts/dump_mcp_catalog.py and held to them by a test gate; the contract comparison reads it as the MCP half of the published contract.",
       "instantiation_checklist_items": []
     },
@@ -189,6 +189,69 @@
   ],
   "deferred": [],
   "revision_history": [
+    {
+      "release": "2.7",
+      "date": "2026-09-23",
+      "changes": [
+        {
+          "classification": "patch",
+          "summary": "Shorten the heaviest MCP parameter descriptions to the text that changes how a caller builds a call or reads its result: update_lifecycles.items, create_edges.items, update_metadata.items, bulk_ingest_document.files and infer_edges, ingest_document.dry_run, and search.query and response_mode. Implementation detail and design rationale leave the published text; the specification's paired operation descriptions for search, create_edges, update_lifecycles, update_metadata and ingest_document are cut to match, and DiscoverRequest.response_mode drops its opening framing sentence in the request model and the specification alike. The MCP tool catalog is regenerated. Documentation only; no parameter, type, default or behaviour changes.",
+          "for_callers": ""
+        },
+        {
+          "classification": "patch",
+          "summary": "Publish per-parameter documentation in the MCP input schema for the maintenance tools -- create_vault, export_projection, get_default_vault_config, get_vault_config, get_vault_stats, migrate_vault, optimize_vault_content_store, recompute_deferred_vault_abstracts, recompute_views, reload_vault, restore_vault_source_file, update_vault_config, verify_vault_drift, verify_vault_retrieval and verify_vault_source_files -- and cut each tool description to 2,048 characters or fewer: no Args block and compact error-mode lists. Every registered tool now fits the description budget. The migrate_vault, restore_vault_source_file, recompute_deferred_vault_abstracts and verify_vault_source_files operation descriptions are condensed with their tool descriptions. The migrate_vault operation no longer claims to apply ALTER TABLE migrations or to need other server sessions restarted, and the source-file integrity descriptions name the digest the audit compares -- the retained copy's stored_content_hash, falling back to source_content_hash -- in the request model and the specification alike. The MCP tool catalog is regenerated. Documentation only; no parameter, type, default or behaviour changes.",
+          "for_callers": ""
+        },
+        {
+          "classification": "patch",
+          "summary": "Publish per-parameter documentation in the MCP input schema for chain, search and ingest_document, taken from the matching request-model field descriptions, and cut each tool description to 2,048 characters or fewer: no Args block, a shorter prose body, and error modes reduced to their codes. The tripwire parameter descriptions on search and ingest_document are shortened. Rationale citations are dropped from the use_abstract_prefilter field and from five IngestRequest field descriptions, on the OpenAPI specification and the request models alike. The MCP tool catalog is regenerated. Documentation only; no parameter, type, default or behaviour changes.",
+          "for_callers": ""
+        },
+        {
+          "classification": "patch",
+          "summary": "Publish per-parameter documentation in the MCP input schema for the read tools -- get_document, get_filename_metadata, list_directory, list_headings, list_pending_metadata, list_staging_edges, read_projection, read_section, traverse, verify_hashes and verify_preconditions -- and cut each tool description to 2,048 characters or fewer: no Args block and compact error-mode lists. get_filename_metadata now names the registered source types rather than formats with no adapter. traverse and chain now name the edge types their edge_type parameter accepts. The verify_preconditions operation description is condensed with its tool description, and a rationale citation is dropped from the TraverseRequest debug field description, on the OpenAPI specification and the request model alike. The MCP tool catalog is regenerated. Documentation only; no parameter, type, default or behaviour changes.",
+          "for_callers": ""
+        },
+        {
+          "classification": "patch",
+          "summary": "The restore_vault_source_file description again says what record_refreshed and provenance_verified false mean, and names the pair that tells whether the record matches (stored_content_hash equal to expected_content_hash), so status restored no longer reads as a record that matches its copy; the recompute_deferred_vault_abstracts description names every per-document outcome value; the paired operation descriptions carry the same text. The record_refreshed property no longer states one of the two cases its false value covers as its only meaning. The two SourceFileRestoreReport properties that qualify its status declare so with an x-qualifies-success extension naming the status field, in the specification and the response model alike. The restore description drops the internal account of why re-ingesting cannot stand in. The MCP tool catalog is regenerated. Documentation and annotation only; no parameter, type, default or behaviour changes.",
+          "for_callers": ""
+        },
+        {
+          "classification": "patch",
+          "summary": "Publish the MCP input schemas without the framework-generated title on each schema node, and remove text each tool published twice about the same parameter: ingest_document.source and ingest_document.dry_run no longer restate the shared-machine rule and the no-projection rule, bulk_ingest_document.dry_run, search.target and the search misplaced_filters error entry are reworded, and the list_pending_metadata, read_section, update_metadata and verify_vault_source_files descriptions drop a sentence their parameter already carries. The BulkLifecycleItem action and SourceFileRestoreRequest document_id descriptions are shortened in the request model and the specification alike. The MCP tool catalog is regenerated. Documentation only; no parameter, type, default or behaviour changes.",
+          "for_callers": ""
+        },
+        {
+          "classification": "patch",
+          "summary": "Publish the ingest_document and search tripwire parameters untyped: each keeps its marking description and null default and drops its permissive union, so a client presenting the raw schema to its model no longer pays for four or five union arms per tripwire. Drop the lock and transaction detail from the items description of the bulk lifecycle, metadata and link requests, keeping what a caller reads -- in-order processing and that a failed item rolls back no other -- and drop the matching clause from the update_lifecycles, update_metadata and create_edges operation descriptions. The ResponseMode component drops its opening framing sentence. The MCP tool catalog is regenerated.",
+          "for_callers": "A numeric value passed at a tripwire parameter now earns the misplaced_metadata or misplaced_filters refusal naming its nested home, where it previously earned a framework argument-type error; so does a boolean at an ingest_document tripwire.",
+          "detector_override": {
+            "reason": "The comparison reads the removed union branches as a narrowing, but the schema widens to unconstrained. A tripwire is never consumed: every non-null value was refused before this change and is refused after it, so nothing a caller could do before is now refused and no call changes meaning. The only visible difference is which refusal a numeric (or, at ingest_document, boolean) value earns -- the misplaced-field message in place of an argument-type error."
+          }
+        },
+        {
+          "classification": "patch",
+          "summary": "Publish per-parameter documentation in the MCP input schema for the write tools -- bulk_ingest_document, create_edges, delete_edge, recompute_abstract, recompute_pipeline, update_lifecycles, update_metadata and update_staging_edge -- and cut each tool description to 2,048 characters or fewer: no Args block, a shorter prose body, and compact error-mode lists. The batch tools' items argument now carries its own description. The recompute_pipeline operation description is condensed with its tool description. Rationale citations are dropped from five request-model field descriptions, on the OpenAPI specification and the request models alike. The MCP tool catalog is regenerated. Documentation only; no parameter, type, default or behaviour changes.",
+          "for_callers": ""
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation"
+          ],
+          "summary": "Every remaining read response on the ordinary surface now carries read_meta stamped with server_build and vault_config_fingerprint: verify_preconditions (PreconditionResult), traverse (TraverseResponse), chain (ChainResponse), list_headings (ListHeadingsResponse), list_pending_metadata (PendingMetadataPage), get_filename_metadata (ParseFilenameResponse), list_staging_edges, verify_hashes, and the MCP list_directory scan. list_vaults, which spans every vault, carries the build and no fingerprint. Three REST responses that were a bare array or map become objects so they can carry the markers: GET /sage_vaults returns VaultListResponse ({vaults, count, read_meta}), GET /sage_vaults/{vault_id}/staging-edges returns StagingEdgeListResponse ({items, count, read_meta}), and POST /sage_vaults/{vault_id}/hash-check returns HashCheckResponse ({matches, read_meta}). The MCP verify_hashes result moves to the same {matches, read_meta} shape.",
+          "for_callers": "Read the vault list from `vaults`, the staging edges from `items`, and the per-hash records from `matches` (REST and the MCP verify_hashes tool alike); the bare array and map shapes are gone. Every read that is computed under a vault's configuration -- including verify_preconditions, whose `required` set follows the vault's satisfies_dependency rules -- now reports the configuration fingerprint, so compare it with the value recorded earlier to learn that an identical answer may now mean something different."
+        },
+        {
+          "classification": "patch",
+          "summary": "The dry_run description of the edge-creation request says \"the process-wide link lock\" rather than naming a private implementation symbol. The model and the specification change together; the guarantee it states, that a preview is consistent with concurrent link writes, is unchanged.",
+          "for_callers": ""
+        }
+      ]
+    },
     {
       "release": "2.6",
       "date": "2026-09-22",
