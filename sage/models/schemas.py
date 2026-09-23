@@ -3734,8 +3734,7 @@ class DiscoverRequest(BaseModel):
     response_mode: ResponseMode | None = Field(
         default=None,
         description=(
-            "Canonical payload-depth selector across SAGE surfaces. "
-            "Semantics by target and "
+            "Payload depth by target and "
             "mode: (edges) `light` returns identity columns only "
             "(edge_id, endpoints, edge_type); `full` carries the "
             "complete envelope; default obeys a >5-results threshold "
