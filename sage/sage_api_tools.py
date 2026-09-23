@@ -111,69 +111,24 @@ _LIFECYCLE_ITEMS = published_item_list(
         mcp=(
             f"{_BATCH_SHAPE_NOTE} Each item carries ``document_id``, ``action``, "
             "and optional ``successor_id`` or ``relocated_to``. A state or "
-            "transition that lists ``doc_types`` applies only to documents of "
-            "those doc_types; one without the key applies to every doc_type. "
-            "The predecessor's ``supersede`` transition is the one the vault's "
-            "table declares, not a fixed pair: the gate admits ``supersede`` "
-            "from whichever ``from_state`` rows the table carries for it and "
-            "moves the predecessor to that row's ``to_state``. A vault "
-            "declaring ``completed --supersede--> archived`` admits a completed "
-            "predecessor directly, with no walk-back to ``active`` first. The "
-            "alternative two-step pattern -- ``create_edges`` with "
-            '``edge_type="supersedes"`` followed by ``update_lifecycles`` with '
-            '``action="archive"`` -- ends in the same state but is required '
-            "only when patching up an already-archived predecessor whose "
-            "supersedes edge is missing (``create_edges`` does NOT "
-            "auto-transition the predecessor's lifecycle). "
-            "The ``relocate`` action transitions the chain head to a terminal "
-            "``relocated`` state and records ``relocated_to`` -- naming the "
-            "counterpart -- in the same statement, so the state and the "
-            "pointer cannot disagree. Without it the item refuses with "
-            "``missing_relocated_to`` and nothing is written. The pointer's "
-            "``source_content_hash`` names the bytes that travelled, and this "
-            "half accounts for either digest it records -- the document's "
-            "source provenance digest or its as-stored digest, which differ "
-            "where the vault's store rewrites its copy at rest. A pointer "
-            "matching neither refuses with ``relocated_to_provenance_mismatch`` "
-            "before anything is written, its detail naming the document's "
-            "provenance digest as ``document_content_hash`` and, where the two "
-            "differ, its as-stored digest as ``also_accounted_content_hash``. "
-            "Neither side reads the other to check it. The destination half is "
-            "an ordinary ``ingest_document`` carrying ``relocated_from``, and it "
-            "is performed first, so an interrupted move leaves its evidence on "
-            "the document a reader is most likely to hold. Nothing in the "
-            "engine follows either pointer: a ``depends_on`` edge whose target "
-            "has relocated stays unsatisfied inside the origin rather than "
-            "resolving across the boundary, and no action leaves the "
-            "``relocated`` state -- reactivating it would restore a second live "
-            "head for the same document. "
-            "Per-item error codes: ``missing_document_identifier`` and "
-            "``ambiguous_document_identifier`` (neither or both of "
-            "``document_id`` and ``doc_id`` supplied — resolved per item, "
-            "before any mutation), ``document_not_found`` (the item's own "
-            "document, or a ``supersede`` successor that does not exist), "
-            "``invalid_action``, ``invalid_lifecycle_transition`` (carrying the ``valid_actions`` "
-            "for the state the document is in), ``missing_successor_id``, "
-            "``missing_relocated_to``, ``unexpected_successor_id``, "
-            "``unexpected_relocated_to`` (a qualifier supplied with an action "
-            "that does not take it), ``relocated_to_provenance_mismatch`` (the "
-            "pointer names a source content hash the document does not "
-            "carry), and ``reserved_transition`` (the vault declares a "
-            "transition into or out of ``relocated`` that the engine reserves; "
-            "possible only on a configuration that loaded leniently). Each "
-            "appears as a per-item error envelope rather than as a batch-level "
-            "400/409. "
-            "Two codes that belong to ingest do not appear here. "
-            "``supersede_target_not_active`` is the ingest surface's code for a "
-            "predecessor whose state does not permit ``supersede``; on this "
-            "surface the same condition is ``invalid_lifecycle_transition``, "
-            "which is also what catches an already-superseded predecessor, "
-            "through the absent ``archived --supersede-->`` row rather than a "
-            "separate chain-head check. ``identical_content_supersede`` "
-            "compares content hashes, which this surface never reads. Waiting "
-            "for a terminal ``pipeline_status`` is a judgement about whether to "
-            "record a resting state on a document whose abstraction may still "
-            "fail — not a way to avoid a refusal, because none is raised."
+            "transition listing ``doc_types`` applies only to those doc_types. "
+            "``supersede`` is admitted from whichever ``from_state`` rows the "
+            "vault's table declares for it and lands the predecessor in that "
+            "row's ``to_state``, so a vault declaring ``completed --supersede--> "
+            "archived`` supersedes a completed predecessor directly; an "
+            "already-superseded predecessor refuses with "
+            "``invalid_lifecycle_transition``. To repair an "
+            "archived predecessor missing its supersedes edge, add the edge with "
+            "``create_edges``, which transitions no lifecycle. ``relocate`` moves "
+            "the chain head to the terminal ``relocated`` state, which no action "
+            "leaves; perform the destination half first, as an "
+            "``ingest_document`` carrying ``relocated_from``. A ``relocated_to`` "
+            "whose ``source_content_hash`` matches neither the document's "
+            "provenance digest nor its as-stored digest refuses with "
+            "``relocated_to_provenance_mismatch``, its detail naming them as "
+            "``document_content_hash`` and ``also_accounted_content_hash``. "
+            "A per-item error surfaces in the response's per-item error "
+            "envelope rather than as a batch-level 400/409."
         ),
     ),
 )
@@ -183,12 +138,9 @@ _LINK_ITEMS = published_item_list(
         BulkLinkRequest,
         "items",
         mcp=(
-            f"{_BATCH_SHAPE_NOTE} Each item carries ``source_id``, "
-            "``target_id``, ``edge_type``, anchor fields, ``retracted_edge_id``, "
-            "``rationale``, ``rationale_kind``, ``notes``, and ``synced_from_*`` "
-            "fields. A per-item error surfaces in that item's error envelope "
-            "without rolling back other items, rather than as a batch-level "
-            "400. Per-item anchor fields by edge_type policy "
+            f"{_BATCH_SHAPE_NOTE} A per-item error surfaces in the response's "
+            "per-item error envelope rather than as a batch-level 400. "
+            "Per-item anchor fields by edge_type policy "
             "bucket: ``none`` (supersedes, retracts, merged_from) takes no "
             "anchor fields, except that ``retracts`` takes a one-sided "
             "``source_valid_from_version`` and ``retracted_edge_id`` (no "
@@ -206,12 +158,10 @@ _LINK_ITEMS = published_item_list(
             'edge_type="references", source_id="<source_id>", '
             'target_id="<target_id>", source_valid_from_version="<source_id>", '
             'target_valid_from_version="<target_id>". ``merged_from`` '
-            "chain-head precondition: neither ``source_id`` nor ``target_id`` "
-            "may have an outbound ``supersedes`` edge, or the item returns "
-            "merged_from_validation; when the source is mid-chain and content "
-            "reuse is what is wanted, use ``derived_from``, whose "
-            "``source_valid_from_version`` anchor carries the chain visibility "
-            "``merged_from`` lacks."
+            "chain-head precondition: neither endpoint may have an outbound "
+            "``supersedes`` edge, or the item returns merged_from_validation; "
+            "for content reuse from a mid-chain source, use ``derived_from``, "
+            "whose anchor carries the chain visibility ``merged_from`` lacks."
         ),
     ),
 )
@@ -221,27 +171,16 @@ _METADATA_ITEMS = published_item_list(
         BulkMetadataRequest,
         "items",
         mcp=(
-            f"{_BATCH_SHAPE_NOTE} Each item carries ``document_id`` plus any "
-            "subset of the patchable fields (``title``, ``version_label``, "
-            "``project``, ``tags``, ``doc_type``, ``authority_scope``, "
-            "``document_date``, ``tier3_metadata``, ``expected_version``). "
-            "List-valued fields (today: ``tags``) take a ``ListFieldPatch`` "
-            "ops-object (``{add, remove}``); ``tier3_metadata`` takes a "
-            "``Tier3Patch`` ops-object (``{set, unset}``). The ops-object shape "
-            "is the concurrency-safety contract: parallel adds of distinct values "
-            "to the same list-valued field commute. The bare-list / bare-dict "
-            "forms are rejected with ``legacy_form``. "
-            "``lifecycle_state_not_applicable`` refuses a ``doc_type`` change "
-            "while the document holds a lifecycle state whose ``doc_types`` "
-            "excludes the new doc_type; transition it to a state the new "
-            "doc_type holds first. Each per-item error appears as a per-item "
-            "error envelope rather than as a batch-level 400/409. "
-            "Patch shapes: ``tags`` takes "
-            '{"add": ["x"], "remove": ["y"]} -- at least one key, ``add`` '
-            "values must be absent and ``remove`` values present; "
-            '``tier3_metadata`` takes {"set": {"key": "value"}, "unset": '
-            '["other_key"]}, the merged result validated against the resolved '
-            "doc_type's ``metadata_schema``."
+            f"{_BATCH_SHAPE_NOTE} ``tags`` takes a ``ListFieldPatch`` "
+            'ops-object, {"add": ["x"], "remove": ["y"]} -- at least one key, '
+            "``add`` values absent and ``remove`` values present; "
+            "``tier3_metadata`` takes a ``Tier3Patch``, "
+            '{"set": {"key": "value"}, "unset": ["other_key"]}, the merged '
+            "result validated against the resolved doc_type's "
+            "``metadata_schema``. The bare-list / bare-dict forms are rejected "
+            "with ``legacy_form``. ``lifecycle_state_not_applicable`` refuses a "
+            "``doc_type`` change while the document holds a lifecycle state the "
+            "new doc_type cannot hold; transition it first."
         ),
     ),
 )
@@ -439,24 +378,18 @@ _SEARCH_QUERY = _discover_param(
     mcp=(
         "In keyword mode, terms are conjunctive: a document matches only if it "
         "carries every term, so each term added narrows the result and can "
-        "empty it. The terms need not appear together in one passage -- a "
-        "document developing a subject across its sections matches -- but the "
+        "empty it. The terms need not appear together in one passage, but the "
         "document is ranked by its best-matching passage, which is the excerpt "
-        "returned. A quoted phrase is the exception and must be satisfied "
-        "within a single passage, since adjacency across a passage boundary is "
-        "not meaningful. Terms joined by or admit either, and each alternative "
-        "is satisfied across the document as a bare term is, so adding an "
-        'alternative widens. A term prefixed with "-" is excluded, and '
-        "excluding one narrows the scope of the whole query: a query carrying "
-        "an exclusion is satisfied within a single passage, terms and "
-        "alternatives alike, so appending an excluded term can drop a document "
-        "the same query without it matched. When a query of bare terms returns "
-        "nothing, hints.warnings names the terms the query parsed to -- "
-        "stopwords are dropped and the rest stemmed, so they are not the words "
-        "typed. The other forms carry their own advisory or, where every term "
-        'is optional, none. Use query="*" in keyword mode for a filter-only '
-        "listing. In catalog mode a query is refused rather than ignored, "
-        "since nothing would consume it."
+        "returned. A quoted phrase must match inside one passage. "
+        "Terms joined by or admit either, each satisfied across the document "
+        "as a bare term is, so adding an alternative widens. A term prefixed "
+        'with "-" is excluded, and a query carrying an exclusion is satisfied '
+        "within a single passage, terms and alternatives alike, so appending "
+        "an excluded term can drop a document the same query without it "
+        "matched. When a query of bare terms returns nothing, hints.warnings "
+        "names the terms the query parsed to: stopwords are dropped and the "
+        'rest stemmed. Use query="*" in keyword mode for a filter-only '
+        "listing."
     ),
 )
 
@@ -528,14 +461,13 @@ _SEARCH_RESPONSE_MODE = _discover_param(
     str | None,
     "response_mode",
     mcp=(
-        "Left unset, a documents-target response that would overrun the MCP "
-        "inline budget is fitted and says so in hints: catalog returns the "
-        "light shape (catalog_response_degraded_to_light); semantic and "
-        "keyword cut each long chunk_content to one shared excerpt length, "
-        "never fewer than 200 characters (scored_response_excerpted) -- read a "
-        'cut passage whole with mode="deterministic" and its heading_path. '
-        "Where neither fits, hints.recommended_limit (for facets, "
-        "recommended_facet_value_limit) names a size that does. An explicit "
+        "Left unset, a documents-target response over the MCP inline budget is "
+        "fitted and says so in hints: catalog returns the light shape "
+        "(catalog_response_degraded_to_light); semantic and keyword cut each "
+        "long chunk_content to one excerpt length, never fewer than 200 "
+        "characters (scored_response_excerpted) -- read a cut passage whole "
+        'with mode="deterministic". Where neither fits, '
+        "hints.recommended_limit names a size that does. An explicit "
         "response_mode suppresses both. The budget is 45,000 bytes, set per "
         "process by SAGE_MCP_INLINE_BUDGET_BYTES."
     ),
@@ -668,22 +600,15 @@ _INGEST_DRY_RUN = _ingest_param(
     "dry_run",
     mcp=(
         "The source is located and hashed where it stands. Every validator "
-        "that runs raises the error a real run would, with one deliberate "
-        "exception: a duplicate comes back as would_create: false rather "
-        "than as duplicate_content, because reporting it is what a preview "
-        "is for. Three further refusals sit "
-        "below the branch point and are neither checked nor reported, each "
-        "turning on state the preview does not reach: "
-        "tier3_unique_constraint_violation, which the insert transaction "
-        "raises and which cannot be settled outside it -- a preview reporting "
-        "no collision could still collide before the real call arrives; "
-        "force_reingest_path_mismatch, which turns on the colliding record's "
-        "own source path; and stale_chain_head on an expected_head_version "
-        "that no longer matches. A force_reingest_pin_mismatch goes unchecked "
-        "for a source resident in the store with no prior document record, "
-        "which has no hash to judge the pin against. A clean preview is not a "
-        "promise that the real run commits. For an upload, the checks that "
-        "need the bytes wait for the call repeated with the transfer token."
+        "that runs raises the error a real run would, except "
+        "that a duplicate comes back as would_create: false rather than as "
+        "duplicate_content. Unchecked, because each turns on state only the "
+        "real write reaches: tier3_unique_constraint_violation, "
+        "force_reingest_path_mismatch, stale_chain_head, and a "
+        "force_reingest_pin_mismatch for a store-resident source with no "
+        "prior document record. A clean preview is not a promise that the "
+        "real run commits. For an upload, the checks that need the bytes "
+        "wait for the call repeated with the transfer token."
     ),
 )
 

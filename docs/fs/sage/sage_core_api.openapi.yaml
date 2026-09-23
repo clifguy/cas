@@ -196,26 +196,21 @@ paths:
         - **keyword**: BM25-only search. No embedding required. Terms are
           conjunctive: a document matches only if it carries every term, so
           each term added narrows the result and can empty it. The terms need
-          not appear together in one passage -- a document developing a subject
-          across its sections matches -- but the document is ranked by its
-          best-matching passage, which is the excerpt returned. A quoted phrase
-          is the exception and must be satisfied within a single passage, since
-          adjacency across a passage boundary is not meaningful. Terms joined
-          by or admit either, and each alternative is satisfied across the
-          document as a bare term is, so adding an alternative widens. A term
-          prefixed with `-` is excluded, and excluding one narrows the scope of
-          the whole query: a query carrying an exclusion is satisfied within a
+          not appear together in one passage, but the document is ranked by
+          its best-matching passage, which is the excerpt returned. A quoted
+          phrase must match inside one passage. Terms joined by or
+          admit either, each satisfied across the document as a bare term is,
+          so adding an alternative widens. A term prefixed with `-` is
+          excluded, and a query carrying an exclusion is satisfied within a
           single passage, terms and alternatives alike, so appending an
           excluded term can drop a document the same query without it matched.
-          When
-          a query of bare terms returns nothing, `hints.warnings` names the
-          terms the query parsed to -- stopwords are dropped and the rest
-          stemmed, so they are not the words typed. The other forms carry their
-          own advisory or, where every term is optional, none.
+          When a query of bare terms returns nothing, `hints.warnings` names
+          the terms the query parsed to: stopwords are dropped and the rest
+          stemmed.
 
         - **catalog**: Filter-only document enumeration via SQL. No vector
-          search, no chunk content. A query is refused rather than ignored,
-          since nothing would consume it. Supports pagination via limit +
+          search, no chunk content. A query is refused, since catalog
+          enumerates by filter. Supports pagination via limit +
           offset. Pass `limit=0` to receive `total_available` alone, with no
           results, as an existence or count check. It is also the only mode
           the `edges` and `facets` targets accept, so a request naming one of
@@ -332,44 +327,24 @@ paths:
         **The `supersede` action is the canonical atomic form for
         replacing one document with another.** It both transitions the
         predecessor AND creates the `supersedes` edge (new → old) in a
-        single operation. The predecessor's transition is the one the
-        vault's table declares, not a fixed pair: the gate admits
-        `supersede` from whichever `from_state` rows the table carries
-        for it and moves the predecessor to that row's `to_state`. A
-        vault declaring `completed --supersede--> archived` admits a
-        completed predecessor directly, with no walk-back to `active`
-        first. The alternative two-step pattern -- `POST /edges` with
-        `edge_type=supersedes` followed by `POST /lifecycles` with
-        `action=archive` -- ends in the same state but is required only
-        when patching up an already-archived predecessor whose
-        supersedes edge is missing.
+        single operation. `supersede` is admitted from whichever
+        `from_state` rows the vault's table declares for it and lands the
+        predecessor in that row's `to_state`, so a vault declaring
+        `completed --supersede--> archived` supersedes a completed
+        predecessor directly; an already-superseded predecessor refuses
+        with `invalid_lifecycle_transition`. To repair an archived
+        predecessor missing its supersedes edge, add the edge with
+        `POST /edges`, which transitions no lifecycle.
 
 
         **The `relocate` action is the origin half of a move to another
-        vault.** It transitions the chain head to a terminal `relocated`
-        state and records `relocated_to` -- `{vault_id, document_id,
-        server_address, source_content_hash, relocated_at}` naming the
-        counterpart -- in the same statement, so the state and the
-        pointer cannot disagree. Without it the item refuses with
-        `missing_relocated_to` and nothing is written. The pointer's
-        `source_content_hash` names the bytes that travelled, and this
-        half accounts for either digest it records -- the document's
-        source provenance digest or its as-stored digest, which differ
-        where the vault's store rewrites its copy at rest. A pointer
-        matching neither refuses with
-        `relocated_to_provenance_mismatch` before anything is written,
-        its detail naming the document's provenance digest as
-        `document_content_hash` and, where the two differ, its as-stored
-        digest as `also_accounted_content_hash`.
-        Neither side reads the other to check it. The destination
-        half is an ordinary ingest carrying `relocated_from`, and it is
-        performed first, so an interrupted move leaves its evidence on
-        the document a reader is most likely to hold. Nothing in the
-        engine follows either pointer: a `depends_on` edge whose target
-        has relocated stays unsatisfied inside the origin rather than
-        resolving across the boundary, and no action leaves the
-        `relocated` state -- reactivating it would restore a second live
-        head for the same document.
+        vault.** `relocate` moves the chain head to the terminal
+        `relocated` state, which no action leaves; perform the
+        destination half first, as an ingest carrying `relocated_from`.
+        A `relocated_to` whose `source_content_hash` matches neither the
+        document's provenance digest nor its as-stored digest refuses
+        with `relocated_to_provenance_mismatch`, its detail naming them
+        as `document_content_hash` and `also_accounted_content_hash`.
 
 
         **The batch is NOT atomic.** A per-item error surfaces in
@@ -382,38 +357,15 @@ paths:
         validation.
 
 
-        Per-item error codes: `missing_document_identifier` and
-        `ambiguous_document_identifier` (neither or both of
-        `document_id` and `doc_id` supplied — resolved per item, before
-        any mutation), `document_not_found` (the item's own document, or
-        a `supersede` successor that does not exist), `invalid_action`,
-        `invalid_lifecycle_transition` (carrying the `valid_actions` for
-        the state the document is in), `missing_successor_id`, `missing_relocated_to`,
-        `unexpected_successor_id`, `unexpected_relocated_to` (a
-        qualifier supplied with an action that does not take it),
-        `relocated_to_provenance_mismatch` (the pointer names a source
-        content hash the document does not carry), and
-        `reserved_transition` (the vault declares a transition into or
-        out of `relocated` that the engine reserves; possible only on a
-        configuration that loaded leniently). Each appears as a per-item
-        error envelope rather than as a batch-level 400/409.
-
-
-        Two codes that belong to ingest do not appear here.
-        `supersede_target_not_active` is the ingest surface's code for a
-        predecessor whose state does not permit `supersede`; on this
-        surface the same condition is `invalid_lifecycle_transition`,
-        which is also what catches an already-superseded predecessor,
-        through the absent `archived --supersede-->` row rather than a
-        separate chain-head check. `identical_content_supersede`
-        compares content hashes, which this surface never reads. A
-        non-terminal `pipeline_status` is not among them either, on
-        `complete` or on any other action: the transition applies and
-        the item's `warnings` carries the pipeline-still-in-progress
-        advisory. Waiting for a terminal `pipeline_status` is a
-        judgement about whether to record a resting state on a document
-        whose abstraction may still fail -- not a way to avoid a
-        refusal, because none is raised.
+        Per-item error codes: `missing_document_identifier`,
+        `ambiguous_document_identifier`, `document_not_found`,
+        `invalid_action`, `invalid_lifecycle_transition`,
+        `missing_successor_id`, `missing_relocated_to`,
+        `unexpected_successor_id`, `unexpected_relocated_to`,
+        `relocated_to_provenance_mismatch`, `reserved_transition`. A
+        non-terminal `pipeline_status` is not a refusal, on `complete`
+        or on any other action: the transition applies and the item's
+        `warnings` carries the pipeline-still-in-progress advisory.
 
 
         Empty `items` is valid: the response carries an empty `results`
@@ -491,21 +443,15 @@ paths:
       summary: Patch mutable metadata fields on one or more documents.
       description: >-
         Accepts N>=1 per-item patch requests per CAS-ADR-029 v4
-        plural-noun convention. Each item carries `document_id` plus
-        any subset of the patchable metadata fields (`title`,
-        `version_label`, `project`, `tags`, `doc_type`,
-        `authority_scope`, `document_date`, `tier3_metadata`,
-        `expected_version`). Items are processed in order, each holding
+        plural-noun convention. Items are processed in order, each holding
         the per-document lock and a per-item database transaction.
         Length-1 is fully supported.
 
 
-        Scalars use set-or-omit semantics per item; list-valued fields
-        (today: `tags`) take a `ListFieldPatch` ops-object
-        (`{add, remove}`); `tier3_metadata` takes a `Tier3Patch`
-        ops-object (`{set, unset}`). The ops-object shape is the
-        substrate's concurrency-safety contract (CAS-ADR-038). The
-        bare-list / bare-dict forms are no longer accepted.
+        Scalars use set-or-omit semantics per item; `tags` takes a
+        `ListFieldPatch` ops-object and `tier3_metadata` takes a
+        `Tier3Patch`. The bare-list / bare-dict forms are rejected with
+        `legacy_form`.
 
 
         Per CAS-ADR-021, every successful per-item patch sets
@@ -538,9 +484,8 @@ paths:
         `lifecycle_state_not_applicable`, `stale_read`. Each appears as
         a per-item error envelope rather than as a batch-level 400/409.
         `lifecycle_state_not_applicable` refuses a `doc_type` change
-        while the document holds a lifecycle state whose `doc_types`
-        excludes the new doc_type; transition it to a state the new
-        doc_type holds first.
+        while the document holds a lifecycle state the new doc_type
+        cannot hold; transition it first.
 
 
         Empty `items` is valid: the response carries an empty `results`
@@ -715,26 +660,18 @@ paths:
         duplicate verdict naming the document already holding those
         bytes, whether the ingest would supersede, and the doc_type's
         declared requirement set. Every validator that runs raises the
-        error a real run would, with one deliberate exception: a
-        duplicate comes back as `would_create: false` rather than as
-        `duplicate_content`, because reporting it is what a preview is
-        for. Because nothing is projected, an adapter-extracted
+        error a real run would, except that a duplicate comes back as
+        `would_create: false` rather than as `duplicate_content`.
+        Because nothing is projected, an adapter-extracted
         `tier3_metadata` cannot be evaluated -- `tier3_validated` is
         false when the caller supplied none, and a real run may still
-        refuse. Three further refusals sit below the branch point and
-        are neither checked nor reported, each turning on state the
-        preview does not reach: `tier3_unique_constraint_violation`,
-        which the insert transaction raises and which cannot be settled
-        outside it -- a preview reporting no collision could still
-        collide before the real call arrives;
-        `force_reingest_path_mismatch`, which turns on the colliding
-        record's own source path; and `stale_chain_head` on an
-        `expected_head_version` that no longer matches. A
-        `force_reingest_pin_mismatch` is checked only where the preview
-        holds the content hash; it goes unchecked for a source resident in
-        the store with no prior document record, which has no hash to judge
-        the pin against. A clean preview is not a promise that the real run
-        commits. When `source` is an absolute path the server cannot read,
+        refuse. Unchecked, because each turns on state only the real
+        write reaches: `tier3_unique_constraint_violation`,
+        `force_reingest_path_mismatch`, `stale_chain_head`, and a
+        `force_reingest_pin_mismatch` for a store-resident source with
+        no prior document record. A clean preview is not a promise
+        that the real run commits. When `source` is an absolute path the
+        server cannot read,
         a dry run first runs every validator that reads no bytes and then
         returns the upload recipe, whose leg's `dry_run_validated` names
         the validators that ran; the checks that need the bytes wait for the
@@ -1415,11 +1352,8 @@ paths:
       summary: Create one or more typed graph edges between documents.
       description: >-
         Creates N>=1 edges in a single call per CAS-ADR-029 v4
-        plural-noun convention. Each item carries the same fields as a
-        single edge specification (`source_id`, `target_id`,
-        `edge_type`, anchor fields, `retracted_edge_id`, `rationale`,
-        `rationale_kind`, `notes`, `synced_from_*`) and is dispatched
-        through the idempotent variant: a duplicate natural-key triple
+        plural-noun convention. Each item is dispatched through the
+        idempotent variant: a duplicate natural-key triple
         (`source_id`, `target_id`, `edge_type`) returns the existing
         edge with `created=false` rather than raising. Items are
         processed in order under the process-wide link lock and
@@ -1463,8 +1397,7 @@ paths:
         `retract_target_not_edge`, `document_not_found`,
         `tbd_policy_edge`, `merged_from_validation`,
         `synced_from_inapplicable_edge_type`,
-        `synced_from_version_not_in_source_chain`. Each appears as a
-        per-item error envelope rather than as a batch-level 400.
+        `synced_from_version_not_in_source_chain`.
 
 
         Empty `items` is valid: the response carries an empty `results`
@@ -5677,8 +5610,7 @@ components:
             - $ref: "#/components/schemas/ResponseMode"
             - type: "null"
           description: >-
-            Canonical payload-depth selector across SAGE surfaces.
-            Semantics by target and
+            Payload depth by target and
             mode: (edges) `light` returns identity columns only
             (edge_id, endpoints, edge_type); `full` carries the
             complete envelope; default obeys a >5-results threshold
