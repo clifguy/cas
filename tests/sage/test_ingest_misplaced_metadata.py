@@ -37,7 +37,6 @@ import json
 
 import pytest
 from mcp.types import TextContent
-from pydantic import TypeAdapter
 
 from sage.adapters.stubs import (
     StubAbstractionProvider,
@@ -66,8 +65,7 @@ MISPLACED_KEYS = (
 )
 
 # Representative wrong-level values, one per key. Shapes vary deliberately
-# across all three arms of the permissive tripwire annotation -- scalar,
-# list, and dict -- because the property under test is that *any*
+# -- scalar, list, and dict -- because the property under test is that *any*
 # well-formed value in the wrong place earns the misplaced-field message
 # rather than a shape complaint. A table of scalars plus one list leaves
 # the dict arm unobserved, and a narrowing that rejects only dicts would
@@ -172,18 +170,13 @@ def test_misplaced_metadata_keys_are_published_in_the_tool_schema():
     assert schema.get("additionalProperties") is False
 
 
-#: What a bare, wholly unconstrained ``str | list | dict | None`` renders as.
 #: A tripwire's marking is published once per misplaceable key, so every
 #: character is paid for many times over in each tool listing.
 TRIPWIRE_DESCRIPTION_MAX = 80
 
-#: Written here as the literal union rather than read back from the tripwire
-#: annotation, so the comparison is against an independent statement of the
-#: permissive shape rather than against whatever the annotation happens to
-#: publish. Rendered rather than hand-listed: a hand-listed key set can only
-#: reject a constraint at the arm's own level, and the element and value
-#: schemas nest one level below it.
-_PERMISSIVE_ARMS = TypeAdapter(str | list | dict | None).json_schema()["anyOf"]
+#: One well-formed value of every JSON shape. A tripwire admits them all, so
+#: each must earn the misplaced-field message rather than a type complaint.
+JSON_SHAPES: tuple[object, ...] = ("x", ["x"], {"k": "v"}, True, 7, 1.5)
 
 
 def test_published_tripwires_are_marked_as_tripwires():
@@ -201,21 +194,19 @@ def test_published_tripwires_are_marked_as_tripwires():
     ``metadata`` itself -- the functional parameter the tripwires point at
     -- is asserted to carry the request model's description and no tripwire
     text, so a builder that described every property alike could not carry
-    this test either. And the arms are
-    compared whole against an independently rendered permissive union, so
-    a narrowing *the schema renders* passes at no depth: reading arm
-    ``type`` values alone admits a ``pattern`` on the string arm, and
-    rejecting unexpected arm *keys* still admits ``list[str]`` and
-    ``dict[str, str]``, which narrow through the two keys a bare union
-    already carries.
+    this test either. And each tripwire's whole published schema is
+    compared against the untyped form, so a narrowing *the schema renders*
+    passes at no depth: asserting only that no union is published admits
+    a ``type``, and asserting only that no ``type`` is published admits an
+    ``enum`` or a ``pattern``.
 
     That scope is the whole of what this test can claim. A narrowing
     applied as a *wrap* validator -- an ``AfterValidator`` on the alias,
-    or a constraint on the outer ``Field`` -- publishes ``anyOf``
-    byte-identical to the bare union and still rejects at call time, so
-    no schema-level assertion can see it. The transport tests below are
-    that half: they send a value of every arm's shape at every key and
-    require the misplaced-field message, which a wrap validator breaks.
+    or a constraint on the outer ``Field`` -- publishes the same untyped
+    schema and still rejects at call time, so no schema-level assertion
+    can see it. ``test_every_tripwire_refuses_every_json_shape`` is that
+    half: it sends a value of every JSON shape at every key and requires
+    the misplaced-field message, which a wrap validator breaks.
     """
     tool = mcp._tool_manager.get_tool("ingest_document")  # noqa: SLF001
     props = tool.parameters.get("properties", {})
@@ -257,24 +248,19 @@ def test_published_tripwires_are_marked_as_tripwires():
     )
     assert "not a functional argument" not in metadata_description
 
-    # The permissive annotation the guard depends on is unchanged: any
-    # well-formed shape must still arrive and earn the misplaced-field
-    # message rather than a framework type error. Both halves are needed.
-    # The arm set alone would pass against an annotation that keeps four
-    # arms of the right types and narrows one from within -- a ``pattern``
-    # on the string arm, an ``enum``, a ``minLength`` -- and equally against
-    # one nested a level below it, since ``list[str]`` and ``dict[str, str]``
-    # narrow through the ``items`` and ``additionalProperties`` schemas the
-    # bare union already carries. Comparing the whole arm list against the
-    # rendered permissive shape catches a constraint at any depth, and stays
-    # calibrated to the installed Pydantic rather than to a hand-listed set.
+    # The tripwire is published untyped: its whole schema is the marking and
+    # a null default. A client that forwards arguments forwards every JSON
+    # value unchanged against it, and a client presenting the raw schema to
+    # its model pays for no union. Comparing the whole schema catches a
+    # constraint at any depth -- a ``type``, an ``anyOf``, an ``enum``, a
+    # ``pattern`` -- where a check for any one keyword admits the others.
     for key in MISPLACED_KEYS:
-        assert props[key].get("anyOf") == _PERMISSIVE_ARMS, (
-            f"ingest_document.{key} must stay permissively annotated. Its "
-            f"published arms are {props[key].get('anyOf')!r}, which differ "
-            f"from an unconstrained union's {_PERMISSIVE_ARMS!r}. A tripwire "
-            f"is never consumed, so shape validation would replace the "
-            f"actionable misplaced-field message with a format complaint."
+        expected = {"default": None, "description": props[key].get("description")}
+        assert props[key] == expected, (
+            f"ingest_document.{key} must be published untyped, as {expected!r}; "
+            f"got {props[key]!r}. A tripwire is never consumed, so shape "
+            f"validation would replace the actionable misplaced-field message "
+            f"with a format complaint."
         )
 
 
@@ -333,6 +319,55 @@ async def test_every_recognized_metadata_key_is_guarded(vault_services, key):
     envelope = _decode_envelope(result)
     assert envelope["error"] == "misplaced_metadata", f"{key} was not guarded"
     assert envelope["detail"]["fields"] == [key]
+
+
+@pytest.mark.parametrize("value", JSON_SHAPES, ids=lambda v: type(v).__name__)
+@pytest.mark.parametrize("key", MISPLACED_KEYS)
+async def test_every_tripwire_refuses_every_json_shape(vault_services, key, value):
+    """Any well-formed value at a tripwire earns the misplaced-field message.
+
+    Anti-coincidental-pass: the number shapes are what a typed union of
+    string, list and object rejected at the framework's argument model,
+    before the guard ran, so this test fails against that annotation. It
+    also fails against a wrap validator that narrows the tripwire without
+    changing its published schema, which the schema pin above cannot see.
+    """
+    result = await mcp.call_tool(
+        "ingest_document",
+        {
+            "vault_id": "test_vault",
+            "source": "test/sample.md",
+            "source_type": "markdown",
+            key: value,
+        },
+    )
+    envelope = _decode_envelope(result)
+    assert envelope["error"] == "misplaced_metadata", (
+        f"{key}={value!r} earned {envelope!r} rather than the misplaced-field message"
+    )
+    assert envelope["detail"]["fields"] == [key]
+
+
+async def test_explicit_null_at_every_tripwire_is_accepted(vault_services):
+    """A client sending every declared parameter as null is not refused.
+
+    Some clients dispatch each declared parameter explicitly, as null when
+    the caller left it unset. Anti-coincidental-pass: the refusal tests
+    above all pass against a guard that refuses null as well, which would
+    reject every such call; this test does not.
+    """
+    result = await mcp.call_tool(
+        "ingest_document",
+        {
+            "vault_id": "test_vault",
+            "source": "test/sample.md",
+            "source_type": "markdown",
+            **dict.fromkeys(MISPLACED_KEYS),
+        },
+    )
+    envelope = _decode_envelope(result)
+    assert "error" not in envelope, f"explicit nulls were refused: {envelope!r}"
+    assert envelope.get("id"), f"ingest did not return a document: {envelope!r}"
 
 
 async def test_multiple_misplaced_fields_are_reported_together(vault_services):

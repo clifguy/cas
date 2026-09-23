@@ -1,0 +1,27 @@
+classification: patch
+summary: >-
+  Publish the ingest_document and search tripwire parameters untyped: each
+  keeps its marking description and null default and drops its permissive
+  union, so a client presenting the raw schema to its model no longer pays
+  for five union arms per tripwire. Drop the lock and transaction detail
+  from the items description of the bulk lifecycle, metadata and link
+  requests, keeping what a caller reads -- in-order processing and that a
+  failed item rolls back no other -- and drop the matching clause from the
+  update_lifecycles, update_metadata and create_edges operation
+  descriptions. The ResponseMode
+  component drops its opening framing sentence. The MCP tool catalog is
+  regenerated.
+for_callers: >-
+  A numeric value passed at a tripwire parameter now earns the
+  misplaced_metadata or misplaced_filters refusal naming its nested home,
+  where it previously earned a framework argument-type error; so does a
+  boolean at an ingest_document tripwire.
+detector_override:
+  reason: >-
+    The comparison reads the removed union branches as a narrowing, but the
+    schema widens to unconstrained. A tripwire is never consumed: every
+    non-null value was refused before this change and is refused after it,
+    so nothing a caller could do before is now refused and no call changes
+    meaning. The only visible difference is which refusal a numeric (or, at
+    ingest_document, boolean) value earns -- the misplaced-field message in
+    place of an argument-type error.

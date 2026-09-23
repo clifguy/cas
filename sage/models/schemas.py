@@ -1784,10 +1784,8 @@ class BulkLifecycleRequest(BaseModel):
 
     items: list[BulkLifecycleItem] = Field(
         description=(
-            "Items processed in order. Each item runs in its own "
-            "per-document lock and its own database transaction; the batch "
-            "as a whole is NOT atomic. A bad item does not "
-            "roll back earlier-or-later successful items."
+            "Items processed in order. A failed item does not roll back "
+            "earlier-or-later successful items."
         ),
     )
     response_mode: ResponseMode | None = Field(
@@ -2270,10 +2268,8 @@ class BulkMetadataRequest(BaseModel):
 
     items: list[BulkMetadataItem] = Field(
         description=(
-            "Items processed in order. Each item runs in its own "
-            "per-document lock and its own database transaction; the batch "
-            "as a whole is NOT atomic. A bad item does not "
-            "roll back earlier-or-later successful items."
+            "Items processed in order. A failed item does not roll back "
+            "earlier-or-later successful items."
         ),
     )
     response_mode: ResponseMode | None = Field(
@@ -2910,10 +2906,8 @@ class BulkLinkRequest(BaseModel):
 
     items: list[BulkLinkItem] = Field(
         description=(
-            "Items processed in order. Each item runs under the process-"
-            "wide link lock and a per-item database transaction; the "
-            "batch as a whole is NOT atomic. A bad item "
-            "does not roll back earlier-or-later successful items."
+            "Items processed in order. A failed item does not roll back "
+            "earlier-or-later successful items."
         ),
     )
     response_mode: ResponseMode | None = Field(

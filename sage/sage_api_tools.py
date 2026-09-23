@@ -8,7 +8,7 @@ staging edges, pending metadata).
 
 import logging
 from collections.abc import Callable
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from mcp.server.fastmcp import FastMCP
 from pydantic import BaseModel, Field, TypeAdapter, ValidationError
@@ -314,23 +314,25 @@ _MISPLACED_FILTERS_EXAMPLE = 'filters={"doc_type": "adr", "lifecycle_status": "a
 # The annotation every tripwire parameter carries. Two things are load-bearing
 # and neither may be narrowed independently of the other.
 #
-# The union is deliberately permissive. A tripwire is never consumed -- any
+# The type is deliberately absent. A tripwire is never consumed -- any
 # non-null value is refused outright -- so validating its shape would replace
 # the actionable misplaced-field message with a format complaint about a value
-# that was well-formed and merely in the wrong place.
+# that was well-formed and merely in the wrong place. Untyped, the published
+# schema is the description and a null default alone: a client forwards every
+# JSON value against it unchanged, and a client that presents the raw schema
+# to its model pays for no union.
 #
 # The description is what a caller reading the published schema sees. Without
 # it the tripwires are indistinguishable from functional arguments, and the
 # publication that makes a wrong-level spelling rejectable also invites the
-# spelling in the first place. It changes no coercion or rejection behaviour:
-# the published union arms are identical with and without it.
+# spelling in the first place. It changes no coercion or rejection behaviour.
 #
 # It points at the structured error code rather than at CAS-ADR-037, which
 # governs the rejection this marking describes. The description ships in the
 # tool catalog, where a reader cannot resolve an ADR id; the rationale anchor
 # belongs on this surface instead, which is durable and not published.
 _INGEST_TRIPWIRE = Annotated[
-    str | list | dict | None,
+    Any,
     Field(
         description=(
             "Tripwire, not a functional argument; use metadata={...} (misplaced_metadata)."
@@ -339,7 +341,7 @@ _INGEST_TRIPWIRE = Annotated[
 ]
 
 _SEARCH_TRIPWIRE = Annotated[
-    str | list | dict | bool | None,
+    Any,
     Field(
         description=("Tripwire, not a functional argument; use filters={...} (misplaced_filters).")
     ),
