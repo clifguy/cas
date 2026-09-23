@@ -12,8 +12,11 @@ Ceilings are set from the measurement, not guessed: each named ceiling sits a
 few percent above the tool's current size, and one more than
 ``SLACK_TOLERANCE`` above it fails as slack, so a cut lowers its ceiling in the
 same change. A tool without a named ceiling is held to
-``DEFAULT_TOOL_CEILING`` from registration. The surface totals bind growth
-spread thinly across many tools, which no per-tool ceiling sees.
+``DEFAULT_TOOL_CEILING`` from registration, and its surface's ceiling is
+raised by its measured size in the same change that adds it. The surface
+totals bind growth spread thinly across many tools, which no per-tool ceiling
+sees. A surface total sums each tool's larger form, so it is an upper bound on
+what any one client presents, not a figure a particular client pays.
 
 Text earns a place in a published description only if it changes how a caller
 builds a call or reads its result; the governing steering document or ADR holds
@@ -71,6 +74,7 @@ def _tool_rows(report: dict[str, dict[str, Any]]) -> dict[str, dict[str, int]]:
 
 
 def _surface_total(report: dict[str, dict[str, Any]], surface: str) -> int:
+    """The sum of each tool's larger form: a bound on what any client presents."""
     return sum(_presented(row) for row in report[surface]["tools"].values())
 
 
@@ -94,7 +98,9 @@ def test_tool_within_presented_size_ceiling(name: str, report: dict[str, dict[st
 def test_surface_within_total_ceiling(surface: str, report: dict[str, dict[str, Any]]) -> None:
     total = _surface_total(report, surface)
     assert total <= SURFACE_CEILINGS[surface], (
-        f"{surface} presents {total} chars in total; ceiling {SURFACE_CEILINGS[surface]}"
+        f"{surface} presents {total} chars in total; ceiling {SURFACE_CEILINGS[surface]}. "
+        f"Cut first; a new tool raises this ceiling by its measured size in the same "
+        f"change, and a cut lowers it."
     )
 
 
