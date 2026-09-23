@@ -555,10 +555,9 @@ _INGEST_SOURCE = _ingest_param(
     str | None,
     "source",
     mcp=(
-        "An absolute path is read only where the caller's machine is the "
-        "machine running the SAGE server process; the retained copy is "
-        "authoritative after ingest, and the path passed here is temporary. "
-        + _UPLOAD_RECIPE_LIFETIME
+        "Sharing a machine means the caller's machine is the machine running "
+        "the SAGE server process. The retained copy is authoritative after "
+        "ingest, and the path passed here is temporary. " + _UPLOAD_RECIPE_LIFETIME
     ),
 )
 
@@ -668,12 +667,11 @@ _INGEST_DRY_RUN = _ingest_param(
     bool,
     "dry_run",
     mcp=(
-        "The source is located and hashed where it stands but never read into "
-        "the vault, so no projection, indexing or abstraction runs and the "
-        "import area is untouched. Every validator that runs raises the error "
-        "a real run would, with one deliberate exception: a duplicate comes "
-        "back as would_create: false rather than as duplicate_content, because "
-        "reporting it is what a preview is for. Three further refusals sit "
+        "The source is located and hashed where it stands. Every validator "
+        "that runs raises the error a real run would, with one deliberate "
+        "exception: a duplicate comes back as would_create: false rather "
+        "than as duplicate_content, because reporting it is what a preview "
+        "is for. Three further refusals sit "
         "below the branch point and are neither checked nor reported, each "
         "turning on state the preview does not reach: "
         "tier3_unique_constraint_violation, which the insert transaction "
@@ -1305,10 +1303,7 @@ def register_sage_tools(
         entry point for metadata patching.
 
         Scalars use set-or-omit semantics: pass to set, omit to leave
-        unchanged. ``tags`` takes a ``ListFieldPatch`` ops-object
-        (``{add, remove}``) and ``tier3_metadata`` a ``Tier3Patch``
-        ops-object (``{set, unset}``); bare-list / bare-dict forms are
-        refused with ``legacy_form``.
+        unchanged.
 
         Each successful per-item patch sets ``metadata_confirmed=true``; an
         item carrying only ``document_id`` is a pure-confirmation flip, not a
@@ -1751,7 +1746,7 @@ def register_sage_tools(
         Error modes:
         - ``invalid_vault_id`` (400)
         - ``vault_not_found`` (404)
-        - ``misplaced_filters`` (400): a ``filters`` key passed at the top level
+        - ``misplaced_filters`` (400): a filter key given as a top-level argument
         - ``invalid_mode`` (400)
         - ``unknown_filter_key`` (400): a ``filters`` key that is not declared
         - ``invalid_filter_value`` (400): a value outside a closed vocabulary
@@ -1915,9 +1910,8 @@ def register_sage_tools(
             str,
             Field(
                 description=(
-                    'Heading path prefix (e.g. "Technical Description > '
-                    'Composite Claim Binding"). The empty string addresses the '
-                    "text under no heading."
+                    'Heading path prefix, its headings joined by " > ". The '
+                    "empty string addresses the text under no heading."
                 )
             ),
         ],
@@ -2503,9 +2497,7 @@ def register_sage_tools(
         The queue is paged in document-id order with ``limit`` and
         ``offset``, and ``total_available`` counts the whole queue. Under
         ``response_mode=light`` each row is a ``DocumentSummaryLight``
-        rather than a ``PendingMetadataItem``; when ``response_mode`` is
-        omitted, a page of more than five rows is light and a smaller
-        one is full.
+        rather than a ``PendingMetadataItem``.
 
         Error modes:
         - ``invalid_vault_id`` (400)
@@ -2774,11 +2766,8 @@ def register_sage_tools(
         the store refuses to write at either path, so repairing the document
         is refused until the link is removed or the path re-pointed.
 
-        With ``check_hashes``, a present file whose SHA-256 differs from the
-        digest recorded for the *retained* copy -- ``stored_content_hash``,
-        or ``source_content_hash`` when that is null -- surfaces as a
-        ``hash_mismatch`` entry. This is an integrity check on the stored
-        copy, not a provenance check.
+        The ``hash_mismatch`` entries ``check_hashes`` adds are an integrity
+        check on the stored copy, not a provenance check.
 
         This audits the vault-local source files (the ``imports/`` copies
         that ``get_document`` delivers), distinct from the content store

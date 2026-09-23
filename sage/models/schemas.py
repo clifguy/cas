@@ -1746,11 +1746,7 @@ class BulkLifecycleItem(BaseModel):
         ),
     )
     action: Annotated[str, Sets("lifecycle_status")] = Field(
-        description=(
-            "Lifecycle transition action. The action vocabulary is "
-            "vault-config-defined; see `lifecycle.transitions` in the vault config for"
-            " the authoritative list."
-        )
+        description="Lifecycle transition action, from the vault's configured vocabulary."
     )
     successor_id: DocumentIdStr | None = Field(
         default=None,
@@ -3725,14 +3721,14 @@ class DiscoverRequest(BaseModel):
         default=RetrievalTarget.DOCUMENTS,
         description=(
             "Selects what the query enumerates: documents (default), "
-            'edges, or facets. "edges" is valid only with mode=catalog '
-            "and with edge-only filter keys (source_id, target_id, "
-            'edge_type). "facets" is valid only with mode=catalog and '
-            "document-only filter keys, and rejects non-default "
-            "pagination and payload-shape parameters (limit, offset, "
-            "sort_by, sort_order, response_mode). Both supply that mode "
-            "themselves when no mode is given. Other mode/parameter "
-            "combinations are rejected via mode_parameter_mismatch."
+            'edges, or facets. "edges" and "facets" both require '
+            "mode=catalog, and supply it themselves when no mode is "
+            'given. "edges" takes only edge filter keys (source_id, '
+            'target_id, edge_type); "facets" takes only document filter '
+            "keys and rejects non-default pagination and payload-shape "
+            "parameters (limit, offset, sort_by, sort_order, "
+            "response_mode). Other mode/parameter combinations are "
+            "rejected via mode_parameter_mismatch."
         ),
     )
     response_mode: ResponseMode | None = Field(
@@ -5184,9 +5180,8 @@ class SourceFileRestoreRequest(BaseModel):
     document_id: DocumentIdStr | None = Field(
         default=None,
         description=(
-            "Optional pin naming the document to restore. Not required: the "
-            "target is normally resolved from the delivered bytes' digest. "
-            "Supply it when that resolution is ambiguous (several documents "
+            "Optional pin naming the document to restore, for when resolving "
+            "the target from the delivered digest is ambiguous (several documents "
             "share a provenance hash) or impossible (a document ingested "
             "before delivered and stored digests were recorded separately, "
             "whose provenance hash describes the stored copy rather than the "
