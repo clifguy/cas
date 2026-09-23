@@ -684,13 +684,15 @@ class MetadataService:
             )
             for doc in docs
         ]
-        return PendingMetadataPage(
+        response = PendingMetadataPage(
             items=items,
             total_available=total,
             limit=paging.limit,
             offset=paging.offset,
             response_mode=mode,
         )
+        response.read_meta = response.read_meta.stamped(self._config.fingerprint())
+        return response
 
     @staticmethod
     def _build_extracted_fields(doc: Document) -> dict[str, ExtractedField]:

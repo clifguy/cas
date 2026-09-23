@@ -513,7 +513,9 @@ def rest_stub(mode: str, audit_requests: list[Any] | None = None) -> Iterator[st
         def do_GET(self) -> None:  # noqa: N802
             path = self.path.split("?", 1)[0]
             if path.endswith("/sage_vaults"):
-                self._json([{"id": "test", "name": "Stub", "document_count": 0}])  # type: ignore[arg-type]
+                self._json(
+                    {"vaults": [{"id": "test", "name": "Stub", "document_count": 0}], "count": 1}
+                )
                 return
             if path.endswith("/content") and "/documents/" in path:
                 # The raw byte channel a binary container is read through: it

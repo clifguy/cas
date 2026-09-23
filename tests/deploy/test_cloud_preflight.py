@@ -578,7 +578,7 @@ _DISCOVERY_BODY = (
     '{"resource":"https://sage.test.invalid","authorization_servers":'
     '["https://login.microsoftonline.com/t/v2.0"],"scopes_supported":["Sage.Access"]}'
 )
-_VAULTS_BODY = '[{"id":"cas","name":"CAS"},{"id":"test","name":"Test"}]'
+_VAULTS_BODY = '{"vaults":[{"id":"cas","name":"CAS"},{"id":"test","name":"Test"}],"count":2}'
 _HEALTH_BODY = (
     '{"status":"ok","version":"2.0.0","ocr":{"ocrmypdf":true,"tesseract":true,"ghostscript":true}}'
 )
@@ -674,7 +674,7 @@ def _core_api_green(p: str, body: bytes) -> tuple[int, str, dict[str, str]] | No
     if rest == "/pending-metadata":
         return 200, _PENDING_METADATA_BODY, {}
     if rest == "/staging-edges":
-        return 200, "[]", {}
+        return 200, '{"items":[],"count":0}', {}
     if rest == "/parse-filename":
         # An unknown source_type is rejected at the request boundary (the field is
         # a SourceType enum), which is the check's request-validation control.
@@ -1988,7 +1988,7 @@ def test_kv_anthropic_skips_when_vault_load_fails() -> None:
 
     def empty_vaults(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
         if path.split("?", 1)[0] == "/sage_vaults":
-            return 200, "[]", {}
+            return 200, '{"vaults":[],"count":0}', {}
         return _green(method, path, body)
 
     checks = "liveness,vault_load,kv_anthropic,sharepoint_discovery"
@@ -2051,7 +2051,7 @@ def _green_one_vault(method: str, path: str, body: bytes) -> tuple[int, str, dic
     trailing id is genuinely consulted rather than carried along.
     """
     if path.split("?", 1)[0] == "/sage_vaults":
-        return 200, '[{"id":"cas","name":"CAS"}]', {}
+        return 200, '{"vaults":[{"id":"cas","name":"CAS"}],"count":1}', {}
     return _green(method, path, body)
 
 
@@ -2065,7 +2065,11 @@ def _green_metacharacter_vault(
     compare a metacharacter-bearing one at all.
     """
     if path.split("?", 1)[0] == "/sage_vaults":
-        return 200, '[{"id":"c.s","name":"CAS"},{"id":"test","name":"Test"}]', {}
+        return (
+            200,
+            '{"vaults":[{"id":"c.s","name":"CAS"},{"id":"test","name":"Test"}],"count":2}',
+            {},
+        )
     return _green(method, path, body)
 
 
@@ -3807,10 +3811,6 @@ _STUB_BODY_AUTHORITY: Final[dict[str, tuple[str, str]]] = {
     "_DISCOVER_OK": ("post", "/sage_vaults/{vault_id}/discover"),
 }
 
-#: The marker the sweep uses where a response is a bare JSON array rather than
-#: an object with a named field.
-_ARRAY_MARKER: Final[str] = r"^[[:space:]]*\["
-
 _SPEC_CACHE: dict[str, dict] = {}
 
 
@@ -3933,15 +3933,11 @@ def test_sweep_marker_resolves_against_its_response_schema(label: str, marker: s
     """Each shape marker names something the operation's 200 response is
     guaranteed to carry.
 
-    Three marker forms, one rule each: a JSON field marker must be a *required*
-    property (an optional one would let a healthy response miss it); the array
-    marker must front an array-typed response; and the echoed-document-id marker
-    must have a required ``id`` to echo.
+    Two marker forms, one rule each: a JSON field marker must be a *required*
+    property (an optional one would let a healthy response miss it); and the
+    echoed-document-id marker must have a required ``id`` to echo.
     """
-    required, _, schema = _authority_for(label)
-    if marker == _ARRAY_MARKER:
-        assert schema.get("type") == "array", f"{label}: array marker on a non-array response"
-        return
+    required, _, _ = _authority_for(label)
     if "$DOC_FIRST_ID" in marker:
         assert "id" in required, f"{label}: the echoed id is not a required response property"
         return
@@ -4182,6 +4178,37 @@ def test_core_api_vault_reads_fails_on_endpoint_404(endpoint: str) -> None:
 
 
 @_NEEDS_RUNTIME
+def test_core_api_vault_reads_fails_on_a_bare_staging_edges_array() -> None:
+    """The staging queue answers with an envelope carrying its read markers, so
+    a bare array is a deployment still serving the previous contract."""
+
+    def bare_array(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0].endswith("/staging-edges"):
+            return 200, "[]", {}
+        return _green(method, path, body)
+
+    with serve(bare_array) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="core_api_vault_reads"))
+    assert _verdicts(proc.stdout).get("core_api_vault_reads") == "FAIL", proc.stdout
+    assert "/staging-edges" in _detail(proc.stdout, "core_api_vault_reads")
+
+
+@_NEEDS_RUNTIME
+def test_edge_authn_backend_fails_on_a_bare_vault_array() -> None:
+    """The vault list is an envelope now, so a bare array is not credited as
+    the backend answering."""
+
+    def bare_array(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0] == "/sage_vaults":
+            return 200, '[{"id":"cas","name":"CAS"}]', {}
+        return _green(method, path, body)
+
+    with serve(bare_array) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="edge_authn_backend"))
+    assert _verdicts(proc.stdout).get("edge_authn_backend") == "FAIL", proc.stdout
+
+
+@_NEEDS_RUNTIME
 def test_core_api_vault_reads_fails_on_a_bare_pending_metadata_array() -> None:
     """The queue answers with a page, so the bare array it once returned is a
     deployment still serving the previous contract, and the sweep says so."""
@@ -4239,7 +4266,7 @@ def test_core_api_vault_reads_skips_when_no_vault_available() -> None:
 
     def empty_vaults(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
         if path.split("?", 1)[0] == "/sage_vaults":
-            return 200, "[]", {}
+            return 200, '{"vaults":[],"count":0}', {}
         return _green(method, path, body)
 
     with serve(empty_vaults) as url:

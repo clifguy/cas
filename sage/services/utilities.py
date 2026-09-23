@@ -486,7 +486,9 @@ class UtilitiesService:
         doc, _ = await self._get_projection_text(document_id)
         headings = await self._content.get_heading_paths(document_id)
 
-        return ListHeadingsResponse.from_document(doc, headings=headings)
+        response = ListHeadingsResponse.from_document(doc, headings=headings)
+        response.read_meta = response.read_meta.stamped(self._config.fingerprint())
+        return response
 
     # ------------------------------------------------------------------
     # eval_retrieval (BH-041, BH-042)

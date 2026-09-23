@@ -13,9 +13,9 @@ from sage.api.wire_route import WireRoute
 from sage.models.schemas import (
     EdgeIdStr,
     ErrorResponse,
-    StagingEdge,
     StagingEdgeConfirmResponse,
     StagingEdgeDismissResponse,
+    StagingEdgeListResponse,
     VaultIdStr,
 )
 from sage.services.staging_edges import StagingEdgesService
@@ -25,7 +25,7 @@ router = APIRouter(route_class=WireRoute, tags=["staging_edges"])
 
 @router.get(
     "/staging-edges",
-    response_model=list[StagingEdge],
+    response_model=StagingEdgeListResponse,
     responses={
         400: boundary_400(path=("invalid_vault_id",), request=("unknown_parameter",)),
         404: {
@@ -40,7 +40,7 @@ router = APIRouter(route_class=WireRoute, tags=["staging_edges"])
 async def list_staging_edges(
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: StagingEdgesService = Depends(get_staging_edges_service),
-) -> list[StagingEdge]:
+) -> StagingEdgeListResponse:
     """Return all Tier 2 suggested edges awaiting review."""
     return await service.list_staging_edges()
 

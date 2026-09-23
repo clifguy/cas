@@ -13,6 +13,14 @@ export interface VaultSummary {
   projects: string[];
 }
 
+export interface VaultListResponse {
+  vaults: VaultSummary[];
+  count: number;
+  // Names the build that answered; no configuration fingerprint, since the
+  // list spans every vault.
+  read_meta?: ReadMeta;
+}
+
 export interface DocTypeEntry {
   value: string;
   label: string;
@@ -215,6 +223,12 @@ export interface StagingEdge {
   created_at: string;
 }
 
+export interface StagingEdgeListResponse {
+  items: StagingEdge[];
+  count: number;
+  read_meta?: ReadMeta;
+}
+
 // --- Search / Discover ---
 
 export interface DiscoverHit {
@@ -322,6 +336,7 @@ export interface ChainResponse {
   // Other edge types on the queried document, when the requested one
   // produced no chain.
   available_edge_types?: string[] | null;
+  read_meta?: ReadMeta;
 }
 
 export interface TraverseRequest {
@@ -338,6 +353,7 @@ export interface TraverseResponse {
   nodes: TraversalNode[];
   // Populated only when the request set `debug: true`.
   resolution_path?: ResolutionPathEntry[] | null;
+  read_meta?: ReadMeta;
 }
 
 // One decision event from the chain-scoped edge resolver (CAS-ADR-017).
@@ -379,6 +395,7 @@ export interface PendingMetadataPage {
   limit: number;
   offset: number;
   response_mode: 'light' | 'full';
+  read_meta?: ReadMeta;
 }
 
 // --- Ingest (app backend) ---

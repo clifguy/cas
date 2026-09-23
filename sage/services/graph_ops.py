@@ -887,11 +887,13 @@ class GraphOpsService:
                 )
             )
 
-        return PreconditionResult(
+        response = PreconditionResult(
             document_id=document_id,
             satisfied=all(c.satisfied for c in checks),
             checks=checks,
         )
+        response.read_meta = response.read_meta.stamped(self._config.fingerprint())
+        return response
 
     # ------------------------------------------------------------------
     # Traverse (BH-037)
@@ -1056,11 +1058,13 @@ class GraphOpsService:
                 )
             )
 
-        return TraverseResponse(
+        response = TraverseResponse(
             start_id=request.start_id,
             nodes=nodes,
             resolution_path=recorder.entries if recorder is not None else None,
         )
+        response.read_meta = response.read_meta.stamped(self._config.fingerprint())
+        return response
 
     async def _apply_retracts(
         self,
@@ -1509,7 +1513,7 @@ class GraphOpsService:
         elif request.offset > 0:
             chain_entries = chain_entries[request.offset :]
 
-        return ChainResponse(
+        response = ChainResponse(
             chain=chain_entries,
             head_id=head_id,
             tail_id=tail_id,
@@ -1519,6 +1523,8 @@ class GraphOpsService:
             is_linear=is_linear,
             available_edge_types=available_edge_types,
         )
+        response.read_meta = response.read_meta.stamped(self._config.fingerprint())
+        return response
 
     # ------------------------------------------------------------------
     # Minimal discover stub for BH-021

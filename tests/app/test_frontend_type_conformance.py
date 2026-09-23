@@ -229,6 +229,7 @@ ENROLLED: Final[Enrollment] = {
         "ReadMeta": "ReadMeta",
         "ResolutionPathEntry": "ResolutionPathEntry",
         "StagingEdge": "StagingEdge",
+        "StagingEdgeListResponse": "StagingEdgeListResponse",
         "StagingEdgeConfirmResponse": "StagingEdgeConfirmResponse",
         "StagingEdgeDismissResponse": "StagingEdgeDismissResponse",
         "TraversalNode": "TraversalNode",
@@ -236,6 +237,7 @@ ENROLLED: Final[Enrollment] = {
         "UpdateConfigResponse": "UpdateVaultConfigResponse",
         "VaultConfigPreview": "VaultConfigPreview",
         "VaultStats": "VaultStatsResponse",
+        "VaultListResponse": "VaultListResponse",
         "VaultSummary": "VaultSummary",
     },
     "app": {

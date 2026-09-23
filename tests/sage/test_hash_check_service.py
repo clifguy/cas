@@ -166,6 +166,11 @@ async def _service(
     return VaultConfigService(store, None, config, None), store
 
 
+async def _matches(service: VaultConfigService, body: HashCheckRequest) -> dict:
+    """The per-hash records of a hash check, without its read markers."""
+    return (await service.hash_check(body)).matches
+
+
 async def test_bare_hex_resolves_to_a_document_stored_under_the_canonical_form():
     """A non-canonical spelling must reach the document stored under the canonical one.
 
@@ -178,7 +183,7 @@ async def test_bare_hex_resolves_to_a_document_stored_under_the_canonical_form()
     assert await store.get_document(_STORED_DOC_ID) is not None
     assert (await store.get_document(_STORED_DOC_ID)).source_content_hash == _CANONICAL
 
-    result = await service.hash_check(HashCheckRequest(hashes=[_DIGEST]))
+    result = await _matches(service, HashCheckRequest(hashes=[_DIGEST]))
 
     assert result[_CANONICAL].exists is True
     assert result[_CANONICAL].document_id == _STORED_DOC_ID
@@ -189,7 +194,7 @@ async def test_bare_hex_resolves_to_a_document_stored_under_the_canonical_form()
 async def test_uppercase_hex_resolves_to_the_same_document():
     service, _ = await _service(_CANONICAL)
 
-    result = await service.hash_check(HashCheckRequest(hashes=[_DIGEST.upper()]))
+    result = await _matches(service, HashCheckRequest(hashes=[_DIGEST.upper()]))
 
     assert result[_CANONICAL].exists is True
     assert result[_CANONICAL].document_id == _STORED_DOC_ID
@@ -199,8 +204,8 @@ async def test_variant_spellings_of_one_digest_collapse_to_a_single_entry():
     """Keys are canonical, so two spellings cannot produce two disagreeing rows."""
     service, _ = await _service(_CANONICAL)
 
-    result = await service.hash_check(
-        HashCheckRequest(hashes=[_DIGEST, _CANONICAL, _DIGEST.upper()])
+    result = await _matches(
+        service, HashCheckRequest(hashes=[_DIGEST, _CANONICAL, _DIGEST.upper()])
     )
 
     assert len(result) == 1
@@ -213,7 +218,7 @@ async def test_unmatched_hash_is_present_with_exists_false_not_omitted():
     absent = "sha256:" + "b" * 64
     service, _ = await _service(_CANONICAL)
 
-    result = await service.hash_check(HashCheckRequest(hashes=[_CANONICAL, absent]))
+    result = await _matches(service, HashCheckRequest(hashes=[_CANONICAL, absent]))
 
     assert set(result) == {_CANONICAL, absent}
     assert result[_CANONICAL].exists is True
@@ -227,7 +232,7 @@ async def test_all_unknown_returns_a_full_dict_not_an_empty_one():
     b = "sha256:" + "b" * 64
     service, _ = await _service()
 
-    result = await service.hash_check(HashCheckRequest(hashes=[a, b]))
+    result = await _matches(service, HashCheckRequest(hashes=[a, b]))
 
     assert result != {}
     assert len(result) == 2
@@ -237,7 +242,7 @@ async def test_all_unknown_returns_a_full_dict_not_an_empty_one():
 async def test_empty_list_short_circuits_without_consulting_the_store():
     service, store = await _service(_CANONICAL)
 
-    result = await service.hash_check(HashCheckRequest(hashes=[]))
+    result = await _matches(service, HashCheckRequest(hashes=[]))
 
     assert result == {}
     # The load-bearing half: empty result *because* nothing was asked, not
@@ -259,7 +264,7 @@ async def test_hash_check_names_the_surviving_document_when_several_carry_the_ha
     await store.insert_document(retired)
     await store.insert_document(surviving)
 
-    result = await service.hash_check(HashCheckRequest(hashes=[_CANONICAL]))
+    result = await _matches(service, HashCheckRequest(hashes=[_CANONICAL]))
 
     assert result[_CANONICAL].exists is True
     assert result[_CANONICAL].document_id == surviving.id
@@ -345,8 +350,8 @@ async def test_tool_normalizes_bare_hex_before_the_lookup():
     result = await tool(vault_id="test_vault", hashes=[_DIGEST])
 
     assert store.calls == [[_CANONICAL]], "bare hex must be canonicalized before lookup"
-    assert result[_CANONICAL]["exists"] is True
-    assert result[_CANONICAL]["document_id"] == _STORED_DOC_ID
+    assert result["matches"][_CANONICAL]["exists"] is True
+    assert result["matches"][_CANONICAL]["document_id"] == _STORED_DOC_ID
 
 
 async def test_tool_rejects_malformed_hash_with_the_invalid_sha256_envelope():

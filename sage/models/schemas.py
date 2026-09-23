@@ -1339,50 +1339,13 @@ class ParseFilenameRequest(BaseModel):
     )
 
 
-class ParseFilenameResponse(BaseModel):
-    """Metadata fields extracted from the supplied filename.
-
-    All fields are nullable; a field is null when the parser could not
-    extract it (no pattern configured, pattern did not match, or the
-    captured segment was empty). No document is created and vault state
-    is unchanged.
-    """
-
-    title: str | None = Field(
-        default=None,
-        description="Title segment extracted from the filename; null when no title was captured.",
-    )
-    project: str | None = Field(
-        default=None,
-        description=(
-            "Project code extracted from the filename via "
-            "project_identifier; null when none captured."
-        ),
-    )
-    version_label: str | None = Field(
-        default=None,
-        description="Version label extracted from the filename; null when none captured.",
-    )
-    document_date: DocumentDateStr = Field(
-        default=None, description="ISO-8601 date string when extractable."
-    )
-    doc_type: str | None = Field(
-        default=None,
-        description=(
-            "Resolved doc_type after applying the vault's "
-            "keyword_to_doc_type and code_to_doc_type maps over the parsed "
-            "segments. Null when no mapping fires."
-        ),
-    )
-    codes: list[str] | None = Field(
-        default=None,
-        description=(
-            "Code segments extracted from the filename via "
-            "known_code_patterns or the configured filename pattern. Null "
-            "when the parser has no pattern; empty list when the pattern "
-            "ran but matched no codes."
-        ),
-    )
+#: Description of ``read_meta`` on a response computed under one vault's
+#: configuration, which the answering service stamps (CAS-ADR-055).
+_STAMPED_READ_META_DESCRIPTION = (
+    "Self-describing read markers (CAS-ADR-039), carrying the build that "
+    "answered and the fingerprint of the vault configuration the answer was "
+    "computed under (CAS-ADR-055)."
+)
 
 
 class ReadMeta(BaseModel):
@@ -1454,6 +1417,17 @@ class ReadMeta(BaseModel):
         ),
     )
 
+    @classmethod
+    def bodiless(cls, vault_config_fingerprint: str | None = None) -> "ReadMeta":
+        """Markers for a successful answer that delivers no document body.
+
+        Server-built, never from caller input. With a fingerprint the answer
+        was computed under that vault configuration; without one it spans
+        vaults and names the build alone (CAS-ADR-055).
+        """
+        meta = cls(success=True, body_present=False)
+        return meta if vault_config_fingerprint is None else meta.stamped(vault_config_fingerprint)
+
     def stamped(self, vault_config_fingerprint: str) -> "ReadMeta":
         """Return a copy naming the vault configuration the answer was computed under.
 
@@ -1491,6 +1465,56 @@ class ReadMeta(BaseModel):
         ):
             return "stale", "recompute_abstract"
         return "current", None
+
+
+class ParseFilenameResponse(BaseModel):
+    """Metadata fields extracted from the supplied filename.
+
+    All fields are nullable; a field is null when the parser could not
+    extract it (no pattern configured, pattern did not match, or the
+    captured segment was empty). No document is created and vault state
+    is unchanged.
+    """
+
+    title: str | None = Field(
+        default=None,
+        description="Title segment extracted from the filename; null when no title was captured.",
+    )
+    project: str | None = Field(
+        default=None,
+        description=(
+            "Project code extracted from the filename via "
+            "project_identifier; null when none captured."
+        ),
+    )
+    version_label: str | None = Field(
+        default=None,
+        description="Version label extracted from the filename; null when none captured.",
+    )
+    document_date: DocumentDateStr = Field(
+        default=None, description="ISO-8601 date string when extractable."
+    )
+    doc_type: str | None = Field(
+        default=None,
+        description=(
+            "Resolved doc_type after applying the vault's "
+            "keyword_to_doc_type and code_to_doc_type maps over the parsed "
+            "segments. Null when no mapping fires."
+        ),
+    )
+    codes: list[str] | None = Field(
+        default=None,
+        description=(
+            "Code segments extracted from the filename via "
+            "known_code_patterns or the configured filename pattern. Null "
+            "when the parser has no pattern; empty list when the pattern "
+            "ran but matched no codes."
+        ),
+    )
+    read_meta: ReadMeta = Field(
+        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        description=_STAMPED_READ_META_DESCRIPTION,
+    )
 
 
 class DocumentWithContent(Document):
@@ -3207,6 +3231,10 @@ class TraverseResponse(BaseModel):
             "suppressed or why an unexpected edge surfaced."
         ),
     )
+    read_meta: ReadMeta = Field(
+        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        description=_STAMPED_READ_META_DESCRIPTION,
+    )
 
 
 class ChainRequest(BaseModel):
@@ -3331,6 +3359,10 @@ class ChainResponse(BaseModel):
             "a hint when the requested edge_type produced no chain."
         ),
     )
+    read_meta: ReadMeta = Field(
+        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        description=_STAMPED_READ_META_DESCRIPTION,
+    )
 
 
 class PreconditionCheck(BaseModel):
@@ -3374,6 +3406,10 @@ class PreconditionResult(BaseModel):
     satisfied: bool = Field(description="True if all dependencies are satisfied.")
     checks: list[PreconditionCheck] = Field(
         description="Per-target check results making up this precondition evaluation."
+    )
+    read_meta: ReadMeta = Field(
+        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        description=_STAMPED_READ_META_DESCRIPTION,
     )
 
 
@@ -4542,6 +4578,10 @@ class ListHeadingsResponse(BaseModel):
         description=(
             "Distinct heading paths in document order, suitable for passing to read_section."
         )
+    )
+    read_meta: ReadMeta = Field(
+        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        description=_STAMPED_READ_META_DESCRIPTION,
     )
 
     @classmethod
@@ -5870,6 +5910,22 @@ class VaultSummary(BaseModel):
     )
 
 
+class VaultListResponse(BaseModel):
+    """The vaults registered with the running server."""
+
+    vaults: list[VaultSummary] = Field(description="Every registered vault.")
+    count: int = Field(description="Number of vaults in `vaults`.")
+    read_meta: ReadMeta = Field(
+        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        description=(
+            "Self-describing read markers (CAS-ADR-039), carrying the build "
+            "that answered. No vault-configuration fingerprint: the answer "
+            "spans every vault rather than being computed under one "
+            "vault's configuration (CAS-ADR-055)."
+        ),
+    )
+
+
 class HealthIndicators(BaseModel):
     pending_metadata_count: int = Field(
         description=(
@@ -5989,6 +6045,22 @@ class HashCheckMatch(BaseModel):
             "documents carry the hash, the one named is a version a "
             "supersession has not retired, lowest document id among equals."
         ),
+    )
+
+
+class HashCheckResponse(BaseModel):
+    """Result of a bulk hash existence check."""
+
+    matches: dict[Sha256Str, HashCheckMatch] = Field(
+        description=(
+            "One entry per distinct canonical hash (`sha256:<64 lowercase "
+            "hex>`) in the request, carrying `exists` and, when matched, "
+            "`document_id`. Empty only when the request's `hashes` was empty."
+        )
+    )
+    read_meta: ReadMeta = Field(
+        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        description=_STAMPED_READ_META_DESCRIPTION,
     )
 
 
@@ -6195,6 +6267,17 @@ class StagingEdge(BaseModel):
     created_at: datetime = Field(description="Timestamp when this staging edge was created.")
 
 
+class StagingEdgeListResponse(BaseModel):
+    """The suggested edges awaiting review."""
+
+    items: list[StagingEdge] = Field(description="Staging edges awaiting review.")
+    count: int = Field(description="Number of staging edges in `items`.")
+    read_meta: ReadMeta = Field(
+        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        description=_STAMPED_READ_META_DESCRIPTION,
+    )
+
+
 class StagingEdgeConfirmResponse(BaseModel):
     """Returned after promoting a staging edge to a production edge."""
 
@@ -6264,6 +6347,10 @@ class PendingMetadataPage(BaseModel):
             "the request named none, `light` if the page holds more than five "
             "rows and `full` otherwise."
         )
+    )
+    read_meta: ReadMeta = Field(
+        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        description=_STAMPED_READ_META_DESCRIPTION,
     )
 
 

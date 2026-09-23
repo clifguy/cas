@@ -4,6 +4,7 @@ import type {
   StagingEdge,
   StagingEdgeConfirmResponse,
   StagingEdgeDismissResponse,
+  StagingEdgeListResponse,
 } from './types';
 
 // The largest page the queue serves.
@@ -28,7 +29,7 @@ export async function listPendingMetadata(vaultId: string): Promise<PendingMetad
 }
 
 export async function listStagingEdges(vaultId: string): Promise<StagingEdge[]> {
-  return apiGet<StagingEdge[]>(`/sage_vaults/${vaultId}/staging-edges`);
+  return (await apiGet<StagingEdgeListResponse>(`/sage_vaults/${vaultId}/staging-edges`)).items;
 }
 
 export async function confirmStagingEdge(

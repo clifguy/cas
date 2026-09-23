@@ -1,5 +1,6 @@
 import { apiGet, apiPost, apiPut } from './client';
 import type {
+  VaultListResponse,
   VaultSummary,
   VaultStats,
   VaultConfig,
@@ -10,7 +11,7 @@ import type {
 } from './types';
 
 export async function listVaults(): Promise<VaultSummary[]> {
-  return apiGet<VaultSummary[]>('/sage_vaults');
+  return (await apiGet<VaultListResponse>('/sage_vaults')).vaults;
 }
 
 export async function getVaultStats(vaultId: string): Promise<VaultStats> {

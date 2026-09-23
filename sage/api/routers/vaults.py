@@ -22,11 +22,12 @@ from sage.api.wire_route import WireRoute
 from sage.models.schemas import (
     CreateVaultRequest,
     ErrorResponse,
-    HashCheckMatch,
     HashCheckRequest,
+    HashCheckResponse,
     UpdateVaultConfigRequest,
     UpdateVaultConfigResponse,
     VaultIdStr,
+    VaultListResponse,
     VaultStatsResponse,
     VaultSummary,
 )
@@ -39,14 +40,14 @@ router = APIRouter(route_class=WireRoute, tags=["vaults"])
 
 @router.get(
     "/sage_vaults",
-    response_model=list[VaultSummary],
+    response_model=VaultListResponse,
     responses={400: boundary_400(request=("unknown_parameter",))},
 )
 async def list_vaults(
     service: VaultRegistryService = Depends(get_vault_registry_service),
-) -> list[VaultSummary]:
+) -> VaultListResponse:
     """Return all vaults registered with the running SAGE instance."""
-    return await service.list_vaults()
+    return await service.vault_list()
 
 
 # Declared ahead of the vault-scoped routes: the literal segment must be
@@ -111,7 +112,7 @@ async def vault_stats(
 
 @router.post(
     "/sage_vaults/{vault_id}/hash-check",
-    response_model=dict[str, HashCheckMatch],
+    response_model=HashCheckResponse,
     responses={
         400: boundary_400(
             path=("invalid_vault_id",), request=("invalid_sha256", "unknown_parameter")
@@ -130,7 +131,7 @@ async def hash_check(
     body: HashCheckRequest,
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: VaultConfigService = Depends(get_vault_config_service),
-) -> dict[str, HashCheckMatch]:
+) -> HashCheckResponse:
     """Bulk hash existence check against the graph store."""
     return await service.hash_check(body)
 

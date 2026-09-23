@@ -455,7 +455,7 @@ class TestSageHashCheck:
         # see test_mcp_006c.
         absent = "sha256:" + "0" * 64
 
-        result = _parse(await verify_hash("test_vault", [doc_hash, absent]))
+        result = _parse(await verify_hash("test_vault", [doc_hash, absent]))["matches"]
         assert result[doc_hash]["exists"] is True
         assert result[doc_hash]["document_id"] == doc_result["id"]
         assert result[absent]["exists"] is False
@@ -471,7 +471,7 @@ class TestSageHashCheck:
         await _await_document_idle(services, doc_result["id"])
         bare = doc_hash.removeprefix("sha256:")
 
-        result = _parse(await verify_hash("test_vault", [bare]))
+        result = _parse(await verify_hash("test_vault", [bare]))["matches"]
         assert result[doc_hash]["exists"] is True
         assert result[doc_hash]["document_id"] == doc_result["id"]
         assert bare not in result
@@ -493,9 +493,9 @@ class TestSageHashCheck:
         assert result["detail"]["sha256"] == "unknown"
 
     async def test_mcp_007_empty_list(self, single_vault):
-        """verify_hash with empty list returns empty object."""
+        """verify_hash with empty list returns empty matches."""
         result = _parse(await verify_hash("test_vault", []))
-        assert result == {}
+        assert result["matches"] == {}
 
 
 # ---------------------------------------------------------------------------

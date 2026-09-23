@@ -3300,18 +3300,21 @@ class IngestionService:
         if self._adapters.get(adapter) is None:
             raise AdapterNotFoundError(adapter)
         if self._filename_parser is None:
-            return ParseFilenameResponse()
-        adapter_value = adapter.value if isinstance(adapter, SourceType) else str(adapter)
-        stem = Path(filename).stem
-        parsed = self._filename_parser.parse(stem, adapter=adapter_value)
-        return ParseFilenameResponse(
-            title=parsed.title,
-            project=parsed.project,
-            version_label=parsed.version,
-            document_date=parsed.date,
-            doc_type=parsed.doc_type,
-            codes=list(parsed.codes),
-        )
+            response = ParseFilenameResponse()
+        else:
+            adapter_value = adapter.value if isinstance(adapter, SourceType) else str(adapter)
+            stem = Path(filename).stem
+            parsed = self._filename_parser.parse(stem, adapter=adapter_value)
+            response = ParseFilenameResponse(
+                title=parsed.title,
+                project=parsed.project,
+                version_label=parsed.version,
+                document_date=parsed.date,
+                doc_type=parsed.doc_type,
+                codes=list(parsed.codes),
+            )
+        response.read_meta = response.read_meta.stamped(self._config.fingerprint())
+        return response
 
     @staticmethod
     def _build_metadata_updates_from_parsed(parsed: ParsedMetadata) -> dict:
