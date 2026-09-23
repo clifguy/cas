@@ -2752,7 +2752,7 @@ class LinkRequest(BaseModel):
             "and `dry_run=true`. Note: link is an edge mutation, not a "
             "document field mutation, so the change surface is the "
             "existing `edge` field rather than a separate `changes` "
-            "block. The process-wide `_link_lock` is still "
+            "block. The process-wide link lock is still "
             "acquired so the preview is consistent with concurrent link "
             "writes."
         ),
