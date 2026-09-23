@@ -9,9 +9,7 @@ ADR instead. Each ceiling holds the cut, so rationale that drifts back in is
 refused here rather than noticed in a later measurement.
 
 The ceilings bound one parameter's own ``description``, not its nested item
-fields, which are shared with the REST request models. A per-tool and
-per-surface ceiling on the whole presented size supersedes this gate once it
-exists.
+fields, which are shared with the REST request models.
 """
 
 from __future__ import annotations
