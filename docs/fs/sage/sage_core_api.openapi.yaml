@@ -8210,6 +8210,7 @@ components:
           description: Every registered vault.
         count:
           type: integer
+          minimum: 0
           description: Number of vaults in `vaults`.
         read_meta:
           $ref: "#/components/schemas/ReadMeta"
@@ -8606,6 +8607,7 @@ components:
           description: Staging edges awaiting review.
         count:
           type: integer
+          minimum: 0
           description: Number of staging edges in `items`.
         read_meta:
           $ref: "#/components/schemas/ReadMeta"

@@ -1512,7 +1512,7 @@ class ParseFilenameResponse(BaseModel):
         ),
     )
     read_meta: ReadMeta = Field(
-        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        default_factory=ReadMeta.bodiless,
         description=_STAMPED_READ_META_DESCRIPTION,
     )
 
@@ -1563,7 +1563,7 @@ class DocumentWithContent(Document):
         ),
     )
     read_meta: ReadMeta = Field(
-        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        default_factory=ReadMeta.bodiless,
         description=(
             "Self-describing read markers (CAS-ADR-039). The service overwrites "
             "the default to reflect the delivered content state."
@@ -3232,7 +3232,7 @@ class TraverseResponse(BaseModel):
         ),
     )
     read_meta: ReadMeta = Field(
-        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        default_factory=ReadMeta.bodiless,
         description=_STAMPED_READ_META_DESCRIPTION,
     )
 
@@ -3360,7 +3360,7 @@ class ChainResponse(BaseModel):
         ),
     )
     read_meta: ReadMeta = Field(
-        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        default_factory=ReadMeta.bodiless,
         description=_STAMPED_READ_META_DESCRIPTION,
     )
 
@@ -3408,7 +3408,7 @@ class PreconditionResult(BaseModel):
         description="Per-target check results making up this precondition evaluation."
     )
     read_meta: ReadMeta = Field(
-        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        default_factory=ReadMeta.bodiless,
         description=_STAMPED_READ_META_DESCRIPTION,
     )
 
@@ -4418,7 +4418,7 @@ class DiscoverResponse(BaseModel):
         ),
     )
     read_meta: ReadMeta = Field(
-        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        default_factory=ReadMeta.bodiless,
         description="Self-describing read markers (CAS-ADR-039).",
     )
 
@@ -4484,7 +4484,7 @@ class ReadProjectionResponse(BaseModel):
         ),
     )
     read_meta: ReadMeta = Field(
-        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        default_factory=ReadMeta.bodiless,
         description="Self-describing read markers (CAS-ADR-039).",
     )
 
@@ -4533,7 +4533,7 @@ class ReadSectionResponse(BaseModel):
     )
     section_text: str = Field(description="Concatenated text of all chunks under the heading path.")
     read_meta: ReadMeta = Field(
-        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        default_factory=ReadMeta.bodiless,
         description="Self-describing read markers (CAS-ADR-039).",
     )
 
@@ -4580,7 +4580,7 @@ class ListHeadingsResponse(BaseModel):
         )
     )
     read_meta: ReadMeta = Field(
-        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        default_factory=ReadMeta.bodiless,
         description=_STAMPED_READ_META_DESCRIPTION,
     )
 
@@ -5914,9 +5914,9 @@ class VaultListResponse(BaseModel):
     """The vaults registered with the running server."""
 
     vaults: list[VaultSummary] = Field(description="Every registered vault.")
-    count: int = Field(description="Number of vaults in `vaults`.")
+    count: int = Field(ge=0, description="Number of vaults in `vaults`.")
     read_meta: ReadMeta = Field(
-        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        default_factory=ReadMeta.bodiless,
         description=(
             "Self-describing read markers (CAS-ADR-039), carrying the build "
             "that answered. No vault-configuration fingerprint: the answer "
@@ -6059,7 +6059,7 @@ class HashCheckResponse(BaseModel):
         )
     )
     read_meta: ReadMeta = Field(
-        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        default_factory=ReadMeta.bodiless,
         description=_STAMPED_READ_META_DESCRIPTION,
     )
 
@@ -6271,9 +6271,9 @@ class StagingEdgeListResponse(BaseModel):
     """The suggested edges awaiting review."""
 
     items: list[StagingEdge] = Field(description="Staging edges awaiting review.")
-    count: int = Field(description="Number of staging edges in `items`.")
+    count: int = Field(ge=0, description="Number of staging edges in `items`.")
     read_meta: ReadMeta = Field(
-        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        default_factory=ReadMeta.bodiless,
         description=_STAMPED_READ_META_DESCRIPTION,
     )
 
@@ -6349,7 +6349,7 @@ class PendingMetadataPage(BaseModel):
         )
     )
     read_meta: ReadMeta = Field(
-        default_factory=lambda: ReadMeta(success=True, body_present=False),
+        default_factory=ReadMeta.bodiless,
         description=_STAMPED_READ_META_DESCRIPTION,
     )
 

@@ -480,6 +480,64 @@ async def test_every_ordinary_read_tool_is_stamped(app, client, tool_payload, tm
         assert read_meta["vault_config_fingerprint"] == _live_fingerprint(app)
 
 
+async def _second_vault(app, client, monkeypatch, tmp_path) -> tuple[str, str]:
+    """Register a second vault with a different configuration and a document in it.
+
+    The vault config is written under ``tmp_path``, never the real vault root.
+    """
+    from sage.services.vault_registry import VaultRegistryService
+
+    monkeypatch.setattr("sage.vault_management._VAULTS_ROOT", tmp_path / "sage_vaults")
+    config = VaultRegistryService.get_default_config("other_vault", "Other", "testuser")
+    config["vault"]["storage_root"] = str(tmp_path / "other_vault" / "sources")
+    config["vault"]["brain_root"] = str(tmp_path / "other_vault" / "brain")
+    created = await client.post("/sage_vaults", json={"config": config})
+    assert created.status_code == 201, created.text
+
+    sources = tmp_path / "other_vault" / "sources" / "notes"
+    sources.mkdir(parents=True, exist_ok=True)
+    (sources / "other.md").write_text("# Other Document\n\nOther content.")
+    resp = await client.post(
+        "/sage_vaults/other_vault/documents",
+        json={"source": "notes/other.md", "source_type": "markdown"},
+    )
+    assert resp.status_code == 201, resp.text
+    doc_id = resp.json()["document"]["id"]
+
+    async def fetch():
+        return (await client.get(f"/sage_vaults/other_vault/documents/{doc_id}")).json()
+
+    await await_tool_idle(
+        fetch, doc_id, service=app.state.vault_registry["other_vault"].ingestion_service
+    )
+    return "other_vault", doc_id
+
+
+@pytest.mark.parametrize("tool", sorted(set(_MCP_READ_CALLS) - set(_MCP_NOT_VAULT_SCOPED)))
+async def test_every_ordinary_read_tool_stamps_the_answering_vault(
+    app, client, tool_payload, tmp_path, monkeypatch, tool
+):
+    """The fingerprint is the configuration of the vault addressed, not of some vault."""
+    await _ingest(app, client)
+    vault_id, doc_id = await _second_vault(app, client, monkeypatch, tmp_path)
+    answering = app.state.vault_registry[vault_id].config.fingerprint()
+    # Two configurations that fingerprint alike could not tell the vaults apart.
+    assert answering != _live_fingerprint(app)
+    args = {
+        k: (v.replace("{doc}", doc_id).replace("{dir}", str(tmp_path)) if isinstance(v, str) else v)
+        for k, v in _MCP_READ_CALLS[tool].items()
+    }
+    if tool == "read_section":
+        args["heading_path"] = "Other Document"
+    args["vault_id"] = vault_id
+    server = app.state.mcp_mounts["/mcp"]
+
+    payload = tool_payload(await server.call_tool(tool, args))
+
+    assert "error" not in payload, payload
+    assert payload["read_meta"]["vault_config_fingerprint"] == answering
+
+
 # ---------------------------------------------------------------------------
 # The build matches the one advertised at the handshake
 # ---------------------------------------------------------------------------
