@@ -34,8 +34,10 @@ def _titled_nodes(node: Any, path: str = "$") -> list[str]:
     found = [path] if "title" in node else []
     for key in _SUBSCHEMA_KEYS:
         found += _titled_nodes(node.get(key), f"{path}.{key}")
-    for key in _SUBSCHEMA_LISTS:
-        for i, sub in enumerate(node.get(key) or ()):
+    # ``items`` may also be a list: the tuple form of older drafts.
+    for key in (*_SUBSCHEMA_LISTS, "items"):
+        value = node.get(key)
+        for i, sub in enumerate(value if isinstance(value, list) else ()):
             found += _titled_nodes(sub, f"{path}.{key}[{i}]")
     for key in _SUBSCHEMA_MAPS:
         for name, sub in (node.get(key) or {}).items():
@@ -59,6 +61,7 @@ def _seeded() -> dict[str, Any]:
                 },
             },
             "mode": {"title": "Mode", "default": {"title": "a default value"}},
+            "pair": {"type": "array", "items": [{"title": "First"}, {"type": "string"}]},
         },
     }
 
@@ -74,6 +77,7 @@ def test_walker_finds_every_seeded_title() -> None:
             "$.properties.items.items.properties.x.anyOf[0]",
             "$.properties.items.items.additionalProperties",
             "$.properties.mode",
+            "$.properties.pair.items[0]",
         ]
     )
 

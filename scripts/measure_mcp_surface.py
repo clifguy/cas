@@ -14,7 +14,8 @@ script reports each tool in two presented forms:
     definitions its model receives: every ``title`` keyword and every
     ``anyOf`` / ``oneOf`` union is removed (the node keeps its
     ``description`` and ``default``), definitions the removed unions
-    referenced are dropped, ``additionalProperties: false`` is dropped and
+    referenced are dropped (every published reference sits inside a union,
+    which the test suite holds), ``additionalProperties: false`` is dropped and
     ``true`` becomes ``{}``, ``integer`` is shown as ``number``, and a
     ``$schema`` declaration is added. ``required``, ``type``, ``enum`` and
     ``default`` are kept. Claude Code was also seen omitting ``vault_id``

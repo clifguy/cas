@@ -21,7 +21,8 @@ from typing import Any, Final
 _SUBSCHEMA_KEYS: Final[frozenset[str]] = frozenset(
     {"items", "additionalProperties", "not", "contains", "propertyNames"}
 )
-#: Keys whose value is a list of subschemas.
+#: Keys whose value is a list of subschemas. ``items`` also takes this form
+#: (the tuple form of older drafts) and is walked as a list when it does.
 _SUBSCHEMA_LIST_KEYS: Final[frozenset[str]] = frozenset({"anyOf", "oneOf", "allOf", "prefixItems"})
 #: Keys whose value maps names to subschemas; the names are not keywords.
 _SUBSCHEMA_MAP_KEYS: Final[frozenset[str]] = frozenset(
@@ -42,9 +43,9 @@ def strip_schema_titles(schema: Any) -> Any:
     for key, value in schema.items():
         if key == "title":
             continue
-        if key in _SUBSCHEMA_KEYS:
+        if key in _SUBSCHEMA_KEYS and not isinstance(value, list):
             out[key] = strip_schema_titles(value)
-        elif key in _SUBSCHEMA_LIST_KEYS and isinstance(value, list):
+        elif key in (_SUBSCHEMA_LIST_KEYS | {"items"}) and isinstance(value, list):
             out[key] = [strip_schema_titles(sub) for sub in value]
         elif key in _SUBSCHEMA_MAP_KEYS and isinstance(value, dict):
             out[key] = {name: strip_schema_titles(sub) for name, sub in value.items()}

@@ -148,6 +148,52 @@ def test_size_is_description_plus_compact_schema() -> None:
     assert presented_size("", schema, "claude_code") == len(presented)
 
 
+def _refs_outside_unions(node: Any, in_union: bool = False, path: str = "$") -> list[str]:
+    """Paths of every ``$ref`` in ``node`` not nested under an ``anyOf``/``oneOf`` arm."""
+    if isinstance(node, list):
+        return [
+            p
+            for i, sub in enumerate(node)
+            for p in _refs_outside_unions(sub, in_union, f"{path}[{i}]")
+        ]
+    if not isinstance(node, dict):
+        return []
+    found = [path] if "$ref" in node and not in_union else []
+    for key, value in node.items():
+        if key in ("$defs", "definitions"):
+            continue
+        found += _refs_outside_unions(value, in_union or key in ("anyOf", "oneOf"), f"{path}.{key}")
+    return found
+
+
+def test_ref_walker_distinguishes_union_arms() -> None:
+    schema = {
+        "properties": {
+            "a": {"anyOf": [{"$ref": "#/$defs/M"}, {"type": "null"}]},
+            "b": {"$ref": "#/$defs/M"},
+        }
+    }
+    assert _refs_outside_unions(schema) == ["$.properties.b"]
+
+
+def test_every_published_ref_sits_inside_a_union() -> None:
+    """The Claude Code form drops ``$defs`` because it drops the unions that use them.
+
+    That holds only while every reference sits inside a union arm. A reference
+    outside one would be presented dangling and mis-sized, so its appearance on
+    either surface fails here rather than skewing the measurement silently.
+    """
+    from scripts.dump_mcp_catalog import build_catalog
+
+    outside = {
+        tool["name"]: refs
+        for tools in build_catalog()["surfaces"].values()
+        for tool in tools
+        if (refs := _refs_outside_unions(tool["inputSchema"]))
+    }
+    assert not outside, f"references outside a union: {outside}"
+
+
 def test_report_covers_every_rostered_tool() -> None:
     """Every tool on every surface is measured, and the totals are their sums."""
     from scripts.dump_mcp_catalog import build_catalog
