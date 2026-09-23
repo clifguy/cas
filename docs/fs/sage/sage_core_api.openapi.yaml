@@ -4017,12 +4017,12 @@ paths:
         path, then re-run.
 
 
-        ``status: restored`` does not by itself mean the record matches.
-        ``record_refreshed`` false means the bytes were written but the
-        recorded digest was left alone: it follows the store only where the
-        store demonstrably rewrote the bytes. ``provenance_verified`` false
-        means nothing on the record could confirm the delivered bytes. The
-        provenance digest is never touched.
+        ``status: restored`` does not by itself mean the record matches: it
+        matches when ``stored_content_hash`` equals ``expected_content_hash``.
+        ``record_refreshed`` false means the recorded digest was left alone:
+        it follows the store only where the store demonstrably rewrote the
+        bytes. ``provenance_verified`` false means nothing on the record could
+        confirm the delivered bytes.
 
 
         Two-phase when the server cannot read the caller's filesystem: an
@@ -9445,8 +9445,8 @@ components:
             True only where the store demonstrably rewrote the bytes it was
             given, which is the sole reason the recorded digest may move.
             False leaves any recorded mismatch reported rather than adopted
-            — so a restore can report `restored` with this false, meaning
-            the bytes were written but the record still describes a
+            — so a restore can report `restored` with this false, which may
+            mean the bytes were written but the record still describes a
             different copy.
         expected_content_hash:
           type: string

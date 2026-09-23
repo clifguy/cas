@@ -2756,12 +2756,12 @@ def register_sage_tools(
         (``vault_source_path_refused``). Remove the link or re-point the path,
         then re-run.
 
-        ``status: restored`` does not by itself mean the record matches.
-        ``record_refreshed`` false means the bytes were written but the
-        recorded digest was left alone: it follows the store only where the
-        store demonstrably rewrote the bytes. ``provenance_verified`` false
-        means nothing on the record could confirm the delivered bytes. The
-        provenance digest is never touched.
+        ``status: restored`` does not by itself mean the record matches: it
+        matches when ``stored_content_hash`` equals ``expected_content_hash``.
+        ``record_refreshed`` false means the recorded digest was left alone:
+        it follows the store only where the store demonstrably rewrote the
+        bytes. ``provenance_verified`` false means nothing on the record could
+        confirm the delivered bytes.
 
         Two-phase when the server cannot read the caller's filesystem: an
         absolute ``source`` returns an upload recipe (``status:

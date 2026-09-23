@@ -5246,8 +5246,8 @@ class SourceFileRestoreReport(BaseModel):
             "True only where the store demonstrably rewrote the bytes it was "
             "given, which is the sole reason the recorded digest may move. "
             "False leaves any recorded mismatch reported rather than adopted — "
-            "so a restore can report `restored` with this false, meaning the "
-            "bytes were written but the record still describes a different copy."
+            "so a restore can report `restored` with this false, which may mean "
+            "the bytes were written but the record still describes a different copy."
         ),
     )
     expected_content_hash: Sha256Str = Field(
