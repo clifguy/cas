@@ -158,9 +158,10 @@ async def test_ad021_012_parse_no_pattern_returns_nulls(no_pattern_client):
     assert resp.status_code == 200
     body = resp.json()
 
-    # Every field is optional and null, so the wire omits every key: a REST
-    # body applies the same per-field null rule as the MCP surface.
-    assert body == {}
+    # Every parsed field is optional and null, so the wire omits every one: a
+    # REST body applies the same per-field null rule as the MCP surface. Only
+    # the read markers remain.
+    assert set(body) == {"read_meta"}
 
 
 # ---------------------------------------------------------------------------

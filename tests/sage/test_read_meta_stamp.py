@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 from pydantic import BaseModel, ValidationError
 
 from sage import build_info
+from sage._tool_naming import SERVER_ASSIGNMENT
 from sage.adapters.stubs import (
     StubAbstractionProvider,
     StubContentStore,
@@ -46,6 +47,7 @@ async def app(minimal_vault_config_dict, tmp_vault_dir):
     test_dir = tmp_vault_dir / "sources" / "test"
     test_dir.mkdir(parents=True, exist_ok=True)
     (test_dir / "sample.md").write_text("# Sample Document\n\nSample content.")
+    (test_dir / "dependency.md").write_text("# Dependency\n\nDependency content.")
     yield app
     await asyncio.sleep(0.5)
     for services in app.state.vault_registry.values():
@@ -60,11 +62,11 @@ async def client(app):
         yield c
 
 
-async def _ingest(app, client) -> str:
-    """Ingest the sample and wait until every read path can serve it."""
+async def _ingest(app, client, source: str = "test/sample.md") -> str:
+    """Ingest a source and wait until every read path can serve it."""
     resp = await client.post(
         "/sage_vaults/test_vault/documents",
-        json={"source": "test/sample.md", "source_type": "markdown"},
+        json={"source": source, "source_type": "markdown"},
     )
     assert resp.status_code == 201, resp.text
     doc_id = resp.json()["document"]["id"]
@@ -197,12 +199,56 @@ _READ_CALLS: dict[str, list[tuple[str, str, str, dict | None]]] = {
             {"mode": "deterministic", "document_id": "{doc}", "heading_path": "Sample Document"},
         ),
     ],
+    "PreconditionResult": [
+        ("verify_preconditions", "GET", "/sage_vaults/test_vault/preconditions/{doc}", None),
+    ],
+    "TraverseResponse": [
+        ("traverse", "POST", "/sage_vaults/test_vault/traverse", {"start_id": "{doc}"}),
+    ],
+    "ChainResponse": [
+        ("chain", "POST", "/sage_vaults/test_vault/chain", {"document_id": "{doc}"}),
+    ],
+    "ListHeadingsResponse": [
+        ("list_headings", "GET", "/sage_vaults/test_vault/documents/{doc}/headings", None),
+    ],
+    "PendingMetadataPage": [
+        ("list_pending_metadata", "GET", "/sage_vaults/test_vault/pending-metadata", None),
+    ],
+    "ParseFilenameResponse": [
+        (
+            "get_filename_metadata",
+            "POST",
+            "/sage_vaults/test_vault/parse-filename",
+            {"filename": "sample.md", "source_type": "markdown"},
+        ),
+    ],
+    "StagingEdgeListResponse": [
+        ("list_staging_edges", "GET", "/sage_vaults/test_vault/staging-edges", None),
+    ],
+    "HashCheckResponse": [
+        (
+            "verify_hashes",
+            "POST",
+            "/sage_vaults/test_vault/hash-check",
+            {"hashes": ["sha256:" + "0" * 64]},
+        ),
+        # The empty-input short-circuit answers without the store, and is
+        # stamped all the same.
+        ("verify_hashes-empty", "POST", "/sage_vaults/test_vault/hash-check", {"hashes": []}),
+    ],
+}
+
+
+# Read models answered without reference to any one vault's configuration.
+# They carry the build and omit the fingerprint (CAS-ADR-055).
+_BUILD_ONLY_CALLS: dict[str, list[tuple[str, str, str, dict | None]]] = {
+    "VaultListResponse": [("list_vaults", "GET", "/sage_vaults", None)],
 }
 
 
 def test_every_read_model_has_a_stamp_case():
     """A read model added later cannot ship without a case below."""
-    assert _read_models() == set(_READ_CALLS)
+    assert _read_models() == set(_READ_CALLS) | set(_BUILD_ONLY_CALLS)
 
 
 _CASES = [
@@ -229,6 +275,24 @@ async def test_every_read_response_is_stamped(app, client, method, path, body):
     assert read_meta["server_build"] == build_info.VERSION_WITH_BUILD
     assert read_meta["vault_config_fingerprint"] == _live_fingerprint(app)
     assert _FINGERPRINT.match(read_meta["vault_config_fingerprint"])
+
+
+_BUILD_ONLY_CASES = [
+    pytest.param(method, path, body, id=f"{model}:{case}")
+    for model, calls in _BUILD_ONLY_CALLS.items()
+    for case, method, path, body in calls
+]
+
+
+@pytest.mark.parametrize(("method", "path", "body"), _BUILD_ONLY_CASES)
+async def test_build_only_read_response_omits_fingerprint(app, client, method, path, body):
+    """A read spanning vaults names the build and no one vault's configuration."""
+    resp = await client.request(method, path, json=body)
+    assert resp.status_code == 200, resp.text
+    read_meta = resp.json()["read_meta"]
+    assert read_meta["success"] is True
+    assert read_meta["server_build"] == build_info.VERSION_WITH_BUILD
+    assert "vault_config_fingerprint" not in read_meta
 
 
 async def test_error_envelope_carries_build_and_omits_fingerprint(client):
@@ -283,6 +347,195 @@ async def test_noop_config_write_leaves_fingerprint_unchanged(app, client):
     after = _live_fingerprint(app)
     assert after != before
     assert set((await _read_fingerprints(client, doc_id)).values()) == {after}
+
+
+async def _link_depends_on(client, source_id: str, target_id: str) -> None:
+    resp = await client.post(
+        "/sage_vaults/test_vault/edges",
+        json={
+            "items": [
+                {
+                    "source_id": source_id,
+                    "target_id": target_id,
+                    "edge_type": "depends_on",
+                    "source_valid_from_version": source_id,
+                    "target_valid_from_version": target_id,
+                }
+            ]
+        },
+    )
+    assert resp.json()["success_count"] == 1, resp.text
+
+
+async def test_preconditions_fingerprint_tracks_satisfies_dependency(app, client):
+    """The rule behind ``required`` moves the fingerprint; a no-op write does not."""
+    doc_id = await _ingest(app, client)
+    dep_id = await _ingest(app, client, "test/dependency.md")
+    await _link_depends_on(client, doc_id, dep_id)
+
+    async def check() -> dict:
+        resp = await client.get(f"/sage_vaults/test_vault/preconditions/{doc_id}")
+        assert resp.status_code == 200, resp.text
+        return resp.json()
+
+    before = await check()
+    assert before["satisfied"] is True
+    assert [c["target_id"] for c in before["checks"]] == [dep_id]
+    assert before["read_meta"]["vault_config_fingerprint"] == _live_fingerprint(app)
+    config_before = app.state.vault_registry["test_vault"].config
+
+    current = (await client.get("/sage_vaults/test_vault/config")).json()
+    rewrite = await client.put(
+        "/sage_vaults/test_vault/config", json={"lifecycle": current["lifecycle"]}
+    )
+    assert rewrite.status_code == 200, rewrite.text
+    assert app.state.vault_registry["test_vault"].config is not config_before
+    assert await check() == before
+
+    # Opt ``active`` out of satisfying a dependency: the same call now means
+    # something else, and the stamp says so.
+    lifecycle = copy.deepcopy(current["lifecycle"])
+    (active,) = [s for s in lifecycle["states"] if s["value"] == "active"]
+    active["satisfies_dependency"] = False
+    edit = await client.put("/sage_vaults/test_vault/config", json={"lifecycle": lifecycle})
+    assert edit.status_code == 200, edit.text
+
+    after = await check()
+    assert after["satisfied"] is False
+    assert after["read_meta"]["vault_config_fingerprint"] == _live_fingerprint(app)
+    assert (
+        after["read_meta"]["vault_config_fingerprint"]
+        != before["read_meta"]["vault_config_fingerprint"]
+    )
+
+
+# ---------------------------------------------------------------------------
+# Every read tool on the ordinary MCP surface carries the stamp
+# ---------------------------------------------------------------------------
+
+# Ordinary read tools answered without reference to any one vault's
+# configuration, with the reason. They carry the build only.
+_MCP_NOT_VAULT_SCOPED: dict[str, str] = {
+    "list_vaults": "enumerates every registered vault rather than reading one",
+}
+
+# tool name -> arguments; "{doc}" and "{dir}" are filled per test.
+_MCP_READ_CALLS: dict[str, dict] = {
+    "list_vaults": {},
+    "search": {"mode": "keyword", "query": "sample"},
+    "get_document": {"document_id": "{doc}"},
+    "read_section": {"document_id": "{doc}", "heading_path": "Sample Document"},
+    "read_projection": {"document_id": "{doc}"},
+    "list_headings": {"document_id": "{doc}"},
+    "traverse": {"start_id": "{doc}"},
+    "chain": {"document_id": "{doc}"},
+    "list_staging_edges": {},
+    "verify_preconditions": {"document_id": "{doc}"},
+    "verify_hashes": {"hashes": ["sha256:" + "0" * 64]},
+    "list_pending_metadata": {},
+    "get_filename_metadata": {"filename": "sample.md", "source_type": "markdown"},
+    "list_directory": {"directory": "{dir}"},
+}
+
+
+async def _ordinary_read_tools(server) -> set[str]:
+    """Read tools the ordinary surface registers, per the assignment table."""
+    return {
+        tool.name
+        for tool in await server.list_tools()
+        if SERVER_ASSIGNMENT.get(tool.name) == "sage"
+        and tool.annotations is not None
+        and tool.annotations.readOnlyHint is True
+    }
+
+
+async def test_every_ordinary_read_tool_has_a_stamp_case(app):
+    """A read tool added to the ordinary surface cannot ship without a case."""
+    server = app.state.mcp_mounts["/mcp"]
+    assert await _ordinary_read_tools(server) == set(_MCP_READ_CALLS)
+    assert set(_MCP_NOT_VAULT_SCOPED) <= set(_MCP_READ_CALLS)
+
+
+@pytest.mark.parametrize("tool", sorted(_MCP_READ_CALLS))
+async def test_every_ordinary_read_tool_is_stamped(app, client, tool_payload, tmp_path, tool):
+    doc_id = await _ingest(app, client)
+    args = {
+        k: (v.replace("{doc}", doc_id).replace("{dir}", str(tmp_path)) if isinstance(v, str) else v)
+        for k, v in _MCP_READ_CALLS[tool].items()
+    }
+    if tool not in _MCP_NOT_VAULT_SCOPED:
+        args["vault_id"] = "test_vault"
+    server = app.state.mcp_mounts["/mcp"]
+
+    payload = tool_payload(await server.call_tool(tool, args))
+
+    # An error envelope carries the build too, so a refusal must not pass here.
+    assert "error" not in payload, payload
+    read_meta = payload["read_meta"]
+    assert read_meta["success"] is True
+    assert read_meta["server_build"] == build_info.VERSION_WITH_BUILD
+    if tool in _MCP_NOT_VAULT_SCOPED:
+        assert "vault_config_fingerprint" not in read_meta
+    else:
+        assert read_meta["vault_config_fingerprint"] == _live_fingerprint(app)
+
+
+async def _second_vault(app, client, monkeypatch, tmp_path) -> tuple[str, str]:
+    """Register a second vault with a different configuration and a document in it.
+
+    The vault config is written under ``tmp_path``, never the real vault root.
+    """
+    from sage.services.vault_registry import VaultRegistryService
+
+    monkeypatch.setattr("sage.vault_management._VAULTS_ROOT", tmp_path / "sage_vaults")
+    config = VaultRegistryService.get_default_config("other_vault", "Other", "testuser")
+    config["vault"]["storage_root"] = str(tmp_path / "other_vault" / "sources")
+    config["vault"]["brain_root"] = str(tmp_path / "other_vault" / "brain")
+    created = await client.post("/sage_vaults", json={"config": config})
+    assert created.status_code == 201, created.text
+
+    sources = tmp_path / "other_vault" / "sources" / "notes"
+    sources.mkdir(parents=True, exist_ok=True)
+    (sources / "other.md").write_text("# Other Document\n\nOther content.")
+    resp = await client.post(
+        "/sage_vaults/other_vault/documents",
+        json={"source": "notes/other.md", "source_type": "markdown"},
+    )
+    assert resp.status_code == 201, resp.text
+    doc_id = resp.json()["document"]["id"]
+
+    async def fetch():
+        return (await client.get(f"/sage_vaults/other_vault/documents/{doc_id}")).json()
+
+    await await_tool_idle(
+        fetch, doc_id, service=app.state.vault_registry["other_vault"].ingestion_service
+    )
+    return "other_vault", doc_id
+
+
+@pytest.mark.parametrize("tool", sorted(set(_MCP_READ_CALLS) - set(_MCP_NOT_VAULT_SCOPED)))
+async def test_every_ordinary_read_tool_stamps_the_answering_vault(
+    app, client, tool_payload, tmp_path, monkeypatch, tool
+):
+    """The fingerprint is the configuration of the vault addressed, not of some vault."""
+    await _ingest(app, client)
+    vault_id, doc_id = await _second_vault(app, client, monkeypatch, tmp_path)
+    answering = app.state.vault_registry[vault_id].config.fingerprint()
+    # Two configurations that fingerprint alike could not tell the vaults apart.
+    assert answering != _live_fingerprint(app)
+    args = {
+        k: (v.replace("{doc}", doc_id).replace("{dir}", str(tmp_path)) if isinstance(v, str) else v)
+        for k, v in _MCP_READ_CALLS[tool].items()
+    }
+    if tool == "read_section":
+        args["heading_path"] = "Other Document"
+    args["vault_id"] = vault_id
+    server = app.state.mcp_mounts["/mcp"]
+
+    payload = tool_payload(await server.call_tool(tool, args))
+
+    assert "error" not in payload, payload
+    assert payload["read_meta"]["vault_config_fingerprint"] == answering
 
 
 # ---------------------------------------------------------------------------

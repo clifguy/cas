@@ -2008,7 +2008,7 @@ def register_sage_tools(
         zero is empty and not worth a further call.
         """
         try:
-            summaries = await get_vault_registry_service().list_vaults()
+            listing = await get_vault_registry_service().vault_list()
             return {
                 "vaults": [
                     {
@@ -2017,9 +2017,10 @@ def register_sage_tools(
                         "description": s.description,
                         "document_count": s.document_count,
                     }
-                    for s in summaries
+                    for s in listing.vaults
                 ],
-                "count": len(summaries),
+                "count": listing.count,
+                "read_meta": serialize(listing.read_meta),
             }
         except (SAGEError, ValueError) as e:
             return error_response(e)
@@ -2249,17 +2250,16 @@ def register_sage_tools(
         whitespace-padded value, a wrong-length digest, and a non-hex digest
         are rejected rather than normalized.
 
-        Result shape: one entry per distinct *canonical* hash, carrying
-        ``exists`` and, when matched, ``document_id``. No input is omitted —
-        an unmatched hash is present with ``exists=false``. Because keys are
-        canonical, two spellings of one digest in a single request collapse
-        to a single entry, and a caller that submitted bare hex must read the
-        result back under the canonical key.
+        Result shape: ``matches`` holds one entry per distinct *canonical*
+        hash, carrying ``exists`` and, when matched, ``document_id``. No
+        input is omitted — an unmatched hash is present with
+        ``exists=false``. Because keys are canonical, two spellings of one
+        digest collapse to a single entry, read back under the canonical key.
 
-        Empty-list short-circuit: ``hashes=[]`` returns ``{}`` without
-        consulting the graph store. Since every non-empty input yields at
-        least one entry, an empty result means the input was empty; it never
-        means "nothing matched".
+        Empty-list short-circuit: ``hashes=[]`` returns empty ``matches``
+        without consulting the graph store. Since every non-empty input
+        yields at least one entry, empty ``matches`` means the input was
+        empty; it never means "nothing matched".
 
         Error modes:
         - ``invalid_sha256`` (400): names the offending value as supplied.
@@ -2271,8 +2271,7 @@ def register_sage_tools(
             hashes = _SHA256_LIST_ADAPTER.validate_python(hashes)
             services = get_vault(vault_id)
             body = HashCheckRequest(hashes=hashes)
-            matches = await services.vault_config_service.hash_check(body)
-            return {h: serialize(m) for h, m in matches.items()}
+            return serialize(await services.vault_config_service.hash_check(body))
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
@@ -2307,13 +2306,11 @@ def register_sage_tools(
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
             v = get_vault(vault_id)
-            edges = await v.staging_edges_service.list_staging_edges()
-            items = [serialize(e) for e in edges]
+            response = serialize(await v.staging_edges_service.list_staging_edges())
             return {
-                "items": items,
-                "count": len(items),
+                **response,
                 "vault_id": vault_id,
-                "status": "awaiting_review" if items else "no_staging_edges",
+                "status": "awaiting_review" if response["items"] else "no_staging_edges",
             }
         except (SAGEError, ValueError) as e:
             return error_response(e)

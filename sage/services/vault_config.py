@@ -27,6 +27,7 @@ from sage.config import VaultConfig
 from sage.models.schemas import (
     HashCheckMatch,
     HashCheckRequest,
+    HashCheckResponse,
     HealthIndicators,
     UpdateVaultConfigRequest,
     UpdateVaultConfigResponse,
@@ -140,14 +141,16 @@ class VaultConfigService:
             ),
         )
 
-    async def hash_check(self, body: HashCheckRequest) -> dict[str, HashCheckMatch]:
+    async def hash_check(self, body: HashCheckRequest) -> HashCheckResponse:
         """Bulk hash existence check against the graph store.
 
-        Returns a dict keyed by each hash in ``body.hashes``, carrying a
-        ``HashCheckMatch`` envelope with ``exists`` and (when matched)
+        Returns ``matches``, a dict keyed by each hash in ``body.hashes``,
+        carrying a ``HashCheckMatch`` with ``exists`` and (when matched)
         the ``document_id`` of the storing document. One entry per
         distinct key; an unmatched hash is present with ``exists=False``
-        rather than omitted.
+        rather than omitted. The answer names the configuration it was
+        computed under (CAS-ADR-055), since the surviving lifecycle states
+        decide which version a shared hash names.
 
         Canonical keys:
         ``HashCheckRequest.hashes`` carries the normalize-flavor
@@ -159,11 +162,11 @@ class VaultConfigService:
         digest collapse to a single entry.
 
         Empty-list short-circuit:
-        ``body.hashes == []`` short-circuits to an empty result dict
-        without consulting the graph store (the early return below).
-        Every non-empty input yields at least one entry, so an empty
-        result means the input was empty. It is not the "nothing matched"
-        case, which returns a full dict of ``exists=False`` entries.
+        ``body.hashes == []`` short-circuits to empty ``matches``
+        without consulting the graph store. Every non-empty input yields
+        at least one entry, so empty ``matches`` means the input was
+        empty. It is not the "nothing matched" case, which returns a full
+        dict of ``exists=False`` entries.
 
         Malformed hashes:
         Rejected at the request boundary by the alias, not here. A value
@@ -172,6 +175,11 @@ class VaultConfigService:
         value reaches the store to masquerade as a miss. ``exists=False``
         therefore means exactly one thing: well-formed and absent.
         """
+        response = HashCheckResponse(matches=await self._matches(body))
+        response.read_meta = response.read_meta.stamped(self._config.fingerprint())
+        return response
+
+    async def _matches(self, body: HashCheckRequest) -> dict[str, HashCheckMatch]:
         if not body.hashes:
             return {}
 

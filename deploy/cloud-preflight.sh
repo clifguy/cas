@@ -854,12 +854,14 @@ check_edge_authn_backend() {
   local body
   body="$(printf '%s' "$HTTP_BODY" | sed -e 's/^[[:space:]]*//')"
   case "$body" in
-    \[*)
-      DETAIL_MSG="authenticated request reached backend: 200 + JSON array (backend-shaped, not a canned edge 200)"
-      return 0
+    \{*)
+      if printf '%s' "$body" | grep -q '"vaults"'; then
+        DETAIL_MSG="authenticated request reached backend: 200 + vault list (backend-shaped, not a canned edge 200)"
+        return 0
+      fi
       ;;
   esac
-  DETAIL_MSG="200 but body is not a JSON array (possible canned edge response)"
+  DETAIL_MSG="200 but body is not a vault list (possible canned edge response)"
   return 1
 }
 
@@ -1153,7 +1155,7 @@ check_core_api_vault_reads() {
   sweep_get "$base/stats" "/stats" '"total_documents"' "total_documents (not a VaultStatsResponse)"
   sweep_get "$base/config" "/config" '"edge_inference"' "edge_inference (not a vault config)"
   sweep_get "$base/pending-metadata" "/pending-metadata" '"total_available"' "total_available (not a PendingMetadataPage)"
-  sweep_get "$base/staging-edges" "/staging-edges" '^[[:space:]]*\[' "a JSON array"
+  sweep_get "$base/staging-edges" "/staging-edges" '"items"' "items (not a StagingEdgeListResponse)"
   if [ -n "$SWEEP_FAILURES" ]; then
     DETAIL_MSG="vault-scoped read(s) failed:$SWEEP_FAILURES"
     return 1
@@ -1440,8 +1442,8 @@ register mcp_roundtrip check_mcp_roundtrip \
   "/mcp completes a JSON-RPC initialize + tools/list returning a well-formed result" \
   "an unknown method must come back a JSON-RPC error (requests are processed, not blanket-statused); credited only with discovery-200 held"
 register edge_authn_backend check_edge_authn_backend \
-  "authenticated /sage_vaults 200 with a JSON-array body" \
-  "a backend-shaped array distinguishes a real backend from a canned edge 200"
+  "authenticated /sage_vaults 200 with a vault-list body" \
+  "a backend-shaped vault list distinguishes a real backend from a canned edge 200"
 register liveness check_liveness \
   "/health 200 status=ok" \
   "store-free endpoint; credited only as process-up, not store/vault readiness"

@@ -26,6 +26,7 @@ from sage.models.schemas import (
     VaultAdapterInfo,
     VaultDocTypeEntry,
     VaultLifecycleState,
+    VaultListResponse,
     VaultSummary,
 )
 from sage.vault_management import (
@@ -205,6 +206,15 @@ class VaultRegistryService:
             except Exception:
                 logger.exception("Registry reconcile for vault %s failed; left in place", vault_id)
         return results
+
+    async def vault_list(self) -> VaultListResponse:
+        """Return the registered vaults as a read response.
+
+        The answer spans every vault, so its read markers name the build that
+        answered and no one vault's configuration (CAS-ADR-055).
+        """
+        vaults = await self.list_vaults()
+        return VaultListResponse(vaults=vaults, count=len(vaults))
 
     def _discovered_vault_ids(self) -> set[str]:
         """Ids of the vaults the active profile's vault-source store currently holds.

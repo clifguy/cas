@@ -666,7 +666,7 @@ async def test_create_vault_201(client, tmp_path):
 
     # Verify it appears in the vault list
     list_resp = await client.get("/sage_vaults")
-    vault_ids = [v["id"] for v in list_resp.json()]
+    vault_ids = [v["id"] for v in list_resp.json()["vaults"]]
     assert "new_vault" in vault_ids
 
 
@@ -743,7 +743,7 @@ async def test_write_surfaces_refuse_an_adapter_default_its_adapter_cannot_use(
     resp = await client.post("/sage_vaults", json={"config": config})
     assert resp.status_code == 400
     assert resp.json()["code"] == "vault_config_validation_error"
-    vault_ids = [v["id"] for v in (await client.get("/sage_vaults")).json()]
+    vault_ids = [v["id"] for v in (await client.get("/sage_vaults")).json()["vaults"]]
     assert "typed_default" not in vault_ids
     assert not (isolated_root / "typed_default").exists()
 

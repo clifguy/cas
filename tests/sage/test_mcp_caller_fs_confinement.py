@@ -757,7 +757,7 @@ async def test_l_local_profile_allows_path_forms(confined_vault, tmp_path):
     assert "error" not in ingest, ingest
     assert "status" not in ingest or ingest.get("status") != "upload_required"
     assert ingest["source_path"] == "imports/local_ok.md"
-    assert set(listing) == {"files", "warnings", "truncated"}, listing
+    assert set(listing) == {"files", "warnings", "truncated", "read_meta"}, listing
 
 
 async def test_b7_restore_source_file_recipe_and_completion(confined_vault, tmp_path):

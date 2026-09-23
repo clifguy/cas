@@ -159,6 +159,13 @@ _CONFORMANCE_STREAMS: Final[str] = (
 
 KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
     (
+        "tests/deploy/test_cloud_preflight.py::"
+        "test_sweep_marker_resolves_against_its_response_schema[/staging-edges-^[[:space:]]*\\\\[]"
+    ): (
+        "the staging-edges response became an object carrying read markers, so the "
+        "sweep's marker is the required `items` field and the case runs under that id"
+    ),
+    (
         "tests/sage/test_mcp_docstring_disclosure_parity.py::"
         "test_unenrolled_pins_are_not_stale[sage_core-restore_vault_source_file]"
     ): (

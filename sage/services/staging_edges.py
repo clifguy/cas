@@ -13,21 +13,31 @@ from datetime import datetime, timezone
 
 from sage.adapters.interfaces import GraphStore
 from sage.api.errors import StagingEdgeNotFoundError
+from sage.config import VaultConfig
 from sage.models.schemas import (
     Edge,
-    StagingEdge,
     StagingEdgeConfirmResponse,
     StagingEdgeDismissResponse,
+    StagingEdgeListResponse,
 )
 
 
 class StagingEdgesService:
-    def __init__(self, graph_store: GraphStore) -> None:
+    def __init__(self, graph_store: GraphStore, config: VaultConfig) -> None:
         self._store = graph_store
+        self._config = config
 
-    async def list_staging_edges(self) -> list[StagingEdge]:
-        """Return all Tier 2 suggested edges awaiting review."""
-        return await self._store.list_staging_edges()
+    async def list_staging_edges(self) -> StagingEdgeListResponse:
+        """Return all Tier 2 suggested edges awaiting review.
+
+        Which edges are staged is decided by the vault's edge-inference
+        tiers, so the answer names the configuration it was computed under
+        (CAS-ADR-055).
+        """
+        edges = await self._store.list_staging_edges()
+        response = StagingEdgeListResponse(items=edges, count=len(edges))
+        response.read_meta = response.read_meta.stamped(self._config.fingerprint())
+        return response
 
     async def confirm_staging_edge(self, edge_id: str) -> StagingEdgeConfirmResponse:
         """Promote a staging edge to the production edge table.

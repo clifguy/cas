@@ -1,7 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as client from '../client';
-import { listPendingMetadata } from '../review';
-import type { PendingMetadata, PendingMetadataPage } from '../types';
+import { listPendingMetadata, listStagingEdges } from '../review';
+import type {
+  PendingMetadata,
+  PendingMetadataPage,
+  StagingEdge,
+  StagingEdgeListResponse,
+} from '../types';
 
 vi.mock('../client', async () => {
   const actual = await vi.importActual<typeof import('../client')>('../client');
@@ -66,5 +71,26 @@ describe('listPendingMetadata', () => {
 
     expect(apiGetMock).toHaveBeenCalledTimes(2);
     expect(result.items).toHaveLength(1);
+  });
+});
+
+describe('listStagingEdges', () => {
+  beforeEach(() => {
+    apiGetMock.mockReset();
+  });
+
+  it('returns the edges carried in the list envelope', async () => {
+    const items = [{ id: 'e1' }] as unknown as StagingEdge[];
+    const served: StagingEdgeListResponse = {
+      items,
+      count: 1,
+      read_meta: { success: true, body_present: false, server_build: '1.0.0+abc' },
+    };
+    apiGetMock.mockResolvedValue(served);
+
+    const result = await listStagingEdges('my_vault');
+
+    expect(apiGetMock).toHaveBeenCalledWith('/sage_vaults/my_vault/staging-edges');
+    expect(result).toBe(items);
   });
 });

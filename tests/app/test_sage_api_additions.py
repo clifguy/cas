@@ -378,11 +378,13 @@ class TestVaultListing:
         resp = await multi_client.get("/sage_vaults")
         assert resp.status_code == 200
         body = resp.json()
-        assert isinstance(body, list)
-        assert len(body) == 2
-        ids = {v["id"] for v in body}
+        vaults = body["vaults"]
+        assert isinstance(vaults, list)
+        assert len(vaults) == 2
+        assert body["count"] == 2
+        ids = {v["id"] for v in vaults}
         assert ids == {"example_vault", "personal_notes"}
-        for v in body:
+        for v in vaults:
             assert "id" in v
             assert "name" in v
             assert "description" in v
@@ -390,10 +392,12 @@ class TestVaultListing:
             assert "storage_root" not in v
 
     async def test_be_002_empty_vaults_returns_empty_array(self, empty_client):
-        """GET /sage_vaults returns empty array when no vaults configured."""
+        """GET /sage_vaults returns an empty vault list when no vaults configured."""
         resp = await empty_client.get("/sage_vaults")
         assert resp.status_code == 200
-        assert resp.json() == []
+        body = resp.json()
+        assert body["vaults"] == []
+        assert body["count"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -770,8 +774,9 @@ class TestHashCheck:
             },
         )
         assert resp.status_code == 200
-        body = resp.json()
+        body = resp.json()["matches"]
 
+        assert set(body) == {HASH_DOC1, HASH_UNKNOWN, HASH_DOC3}
         assert body[HASH_DOC1]["exists"] is True
         assert body[HASH_DOC1]["document_id"] == DOC1_ID
         assert body[HASH_UNKNOWN]["exists"] is False
@@ -786,7 +791,7 @@ class TestHashCheck:
             json={"hashes": []},
         )
         assert resp.status_code == 200
-        assert resp.json() == {}
+        assert resp.json()["matches"] == {}
 
     async def test_be_009_hash_check_nonexistent_vault(self, multi_client):
         """Hash check against non-existent vault returns 404."""
@@ -825,10 +830,11 @@ class TestStagingEdges:
         resp = await multi_client.get("/sage_vaults/example_vault/staging-edges")
         assert resp.status_code == 200
         body = resp.json()
-        assert isinstance(body, list)
-        assert len(body) >= 1
+        assert isinstance(body["items"], list)
+        assert len(body["items"]) >= 1
+        assert body["count"] == len(body["items"])
 
-        edge = body[0]
+        edge = body["items"][0]
         assert "id" in edge
         assert "source_id" in edge
         assert "target_id" in edge

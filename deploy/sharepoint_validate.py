@@ -651,7 +651,7 @@ def _check_rediscover(ctx: _Context) -> tuple[str, str]:
     status, raw = _http(ctx, "GET", f"{ctx.base_url}/sage_vaults")
     if status != 200:
         return _FAIL, f"list_status={status}"
-    vaults = json.loads(raw)
+    vaults = json.loads(raw).get("vaults", [])
     ids = {v.get("id") for v in vaults}
     if ctx.vault_id not in ids:
         return _FAIL, f"vault_absent vaults={len(ids)}"

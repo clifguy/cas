@@ -29,19 +29,20 @@ personal_notes).
 
 **Expected:**
 - 200 response
-- Body is an array of vault summary objects
-- Each object includes: `id`, `name`, `description`, `document_count`; no `storage_root`
-- Array contains exactly 2 entries
+- Body is an object whose `vaults` is an array of vault summary objects and
+  whose `count` is its length
+- Each summary includes: `id`, `name`, `description`, `document_count`; no `storage_root`
+- `vaults` contains exactly 2 entries
 
 **Rationale:** The vault selector in the sidebar needs to enumerate available
 vaults. Without this endpoint the frontend would need to hardcode vault IDs.
 
-### TEST-APP-BE-002: GET /sage_vaults returns empty array when no vaults configured
+### TEST-APP-BE-002: GET /sage_vaults returns an empty vault list when no vaults configured
 
 **Artifact:** App Spec v0.4, Section 4
 **Category:** sage_api
 
-**Decision:** An empty SAGE instance returns an empty array, not an error.
+**Decision:** An empty SAGE instance returns an empty vault list, not an error.
 
 **Precondition:** SAGE instance running with no vaults.
 
@@ -49,10 +50,10 @@ vaults. Without this endpoint the frontend would need to hardcode vault IDs.
 
 **Expected:**
 - 200 response
-- Body is an empty array `[]`
+- Body's `vaults` is `[]` and `count` is 0
 
 **Rationale:** No vaults is a valid startup state (e.g., first-run setup).
-Returning an empty array lets the frontend display a "no vaults configured"
+Returning an empty list lets the frontend display a "no vaults configured"
 message rather than an error.
 
 ---
@@ -185,7 +186,7 @@ POST /sage_vaults/example_vault/hash-check
 
 **Expected:**
 - 200 response
-- Body is an object mapping hashes to results:
+- Body's `matches` is an object mapping hashes to results:
   - `"sha256:0000000000000000000000000000000000000000000000000000000000000000"`: `{ "exists": true, "document_id": "doc-001" }`
   - `"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`: `{ "exists": false }`
   - `"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"`: `{ "exists": true, "document_id": "doc-003" }`
@@ -202,7 +203,7 @@ directory scan. The endpoint is read-only (no side effects).
 **Artifact:** Project tracker
 **Category:** sage_api
 
-**Decision:** An empty input array returns an empty result object.
+**Decision:** An empty input array returns empty `matches`.
 
 **Precondition:** SAGE vault initialized.
 
@@ -214,7 +215,7 @@ POST /sage_vaults/example_vault/hash-check
 
 **Expected:**
 - 200 response
-- Body: `{}`
+- Body's `matches` is `{}`
 
 **Rationale:** Empty input is a valid edge case (e.g., empty directory scan).
 Returning empty rather than erroring avoids special-casing in the caller.
@@ -253,7 +254,7 @@ target_id, edge_type, inference_evidence, and confidence_tier.
 
 **Expected:**
 - 200 response
-- Body is an array of staging edge objects
+- Body's `items` is an array of staging edge objects, and `count` its length
 - Each object includes: id, source_id, target_id, edge_type,
   inference_evidence, confidence_tier, created_at
 - Only Tier 2 edges present (covers, derived_from, bundles_with)

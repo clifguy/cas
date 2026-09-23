@@ -1088,7 +1088,7 @@ async def initialize_services(
             embedding_provider=embedding_provider,
             config=config,
         )
-        staging_edges_service = StagingEdgesService(graph_store)
+        staging_edges_service = StagingEdgesService(graph_store, config)
         vault_config_service = VaultConfigService(
             graph_store, content_store, config, registry_service
         )

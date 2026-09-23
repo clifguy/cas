@@ -29,6 +29,7 @@ from sage.models.mcp_items import BulkIngestFileEntry
 from sage.models.schemas import (
     BatchIngestParsedMetadata,
     BatchIngestUploadMetadata,
+    ReadMeta,
     Sha256Str,
     VaultIdStr,
 )
@@ -435,7 +436,12 @@ def register_app_tools(
             files = []
             for r in results:
                 files.append(r.to_dict())
-            return {"files": files, "warnings": warnings, "truncated": truncated}
+            return {
+                "files": files,
+                "warnings": warnings,
+                "truncated": truncated,
+                "read_meta": serialize(ReadMeta.bodiless(v.config.fingerprint())),
+            }
         except (SAGEError, ValueError) as e:
             return error_response(e)
 

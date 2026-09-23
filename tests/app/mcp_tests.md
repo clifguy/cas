@@ -29,8 +29,10 @@ Design decisions encoded here:
 **Category:** mcp_tool, sage_api
 
 **Decision:** `list_vaults` takes no parameters (no vault_id -- it operates
-across vaults). Returns a JSON array of vault summary objects. This is the only
-SAGE MCP tool without a vault_id parameter.
+across vaults). Returns an object whose `vaults` lists the vault summaries,
+with `count` and `read_meta` naming the build that answered (no configuration
+fingerprint, since the answer spans vaults). This is the only SAGE MCP tool
+without a vault_id parameter.
 
 **Precondition:** MCP server running with two vaults registered (test_vault,
 example_vault).
@@ -39,7 +41,7 @@ example_vault).
 
 **Expected:**
 - Returns valid JSON string
-- Parsed result is an array of 2 objects
+- Parsed result's `vaults` holds 2 objects
 - Each object includes exactly: `id`, `name`, `description`, `document_count`
   (the count spans every lifecycle state; the server-side `storage_root` is
   not carried, since it describes layout a caller choosing a vault cannot use)
@@ -48,12 +50,12 @@ example_vault).
 **Rationale:** The vault selector in the CAS Application sidebar and any MCP
 client need to discover available vaults without knowing their IDs in advance.
 
-### TEST-APP-MCP-002: list_vaults with no vaults returns empty array
+### TEST-APP-MCP-002: list_vaults with no vaults returns an empty vault list
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-002
 **Category:** mcp_tool, sage_api
 
-**Decision:** When no vaults are registered, returns `"[]"` (JSON empty array),
+**Decision:** When no vaults are registered, returns an empty `vaults` list,
 not an error.
 
 **Precondition:** MCP server running with empty vault registry.
@@ -61,9 +63,9 @@ not an error.
 **Input:** Call `list_vaults()`.
 
 **Expected:**
-- Returns `"[]"` (valid JSON empty array)
+- Parsed result's `vaults` is `[]` and `count` is 0
 
-**Rationale:** No vaults is a valid startup state. Returning an empty array
+**Rationale:** No vaults is a valid startup state. Returning an empty list
 lets callers display a "no vaults configured" message.
 
 ---
@@ -150,7 +152,7 @@ let the caller present a meaningful message.
 **Category:** mcp_tool, sage_api
 
 **Decision:** `verify_hash(vault_id, hashes)` accepts a list of hash strings
-and returns a JSON object mapping each hash to its match result.
+and returns an object whose `matches` maps each hash to its match result.
 
 **Precondition:** Vault with one document having `source_content_hash` = "sha256:0000000000000000000000000000000000000000000000000000000000000000".
 
@@ -158,7 +160,7 @@ and returns a JSON object mapping each hash to its match result.
 
 **Expected:**
 - Returns valid JSON string
-- Parsed result maps:
+- Parsed result's `matches` maps:
   - `"sha256:0000000000000000000000000000000000000000000000000000000000000000"`: `{ "exists": true, "document_id": "<doc-id>" }`
   - `"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"`: `{ "exists": false }`
 
@@ -170,19 +172,19 @@ for "absent" (e.g. `"sha256:unknown"`) rejects the whole call with
 **Rationale:** MCP clients performing scan-like operations need the same hash
 check capability as the application backend.
 
-### TEST-APP-MCP-007: verify_hash with empty list returns empty object
+### TEST-APP-MCP-007: verify_hash with empty list returns empty matches
 
 **Artifact:** `sage/mcp_server.py`, TEST-APP-BE-008
 **Category:** mcp_tool, sage_api
 
-**Decision:** Empty input returns `"{}"` (JSON empty object).
+**Decision:** Empty input returns empty `matches`.
 
 **Precondition:** Vault initialized.
 
 **Input:** Call `verify_hash("test_vault", [])`.
 
 **Expected:**
-- Returns `"{}"` (valid JSON empty object)
+- Parsed result's `matches` is `{}`
 
 **Rationale:** Empty input is a valid edge case. No special handling needed.
 
@@ -205,26 +207,26 @@ inference_evidence, confidence_tier, and created_at.
 
 **Expected:**
 - Returns valid JSON string
-- Parsed result is an array of staging edge objects
+- Parsed result's `items` is an array of staging edge objects
 - Each object includes all required fields
 - Only Tier 2 edge types present
 
 **Rationale:** MCP clients need to list staging edges for review workflows,
 identical to the Edge Review tab in the CAS Application.
 
-### TEST-APP-MCP-009: list_staging_edges returns empty array when none exist
+### TEST-APP-MCP-009: list_staging_edges returns an empty list when none exist
 
 **Artifact:** `sage/mcp_server.py`
 **Category:** mcp_tool, sage_api
 
-**Decision:** When no staging edges exist, returns an empty array.
+**Decision:** When no staging edges exist, returns an empty `items` list.
 
 **Precondition:** Vault with no staging edges.
 
 **Input:** Call `list_staging_edges("test_vault")`.
 
 **Expected:**
-- Returns `"[]"` (valid JSON empty array)
+- Parsed result's `items` is `[]`, `count` is 0, `status` is `no_staging_edges`
 
 **Rationale:** Empty staging is the common case after a full review pass.
 

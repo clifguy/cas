@@ -95,6 +95,7 @@ from fastapi import Response
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from sage.build_info import VERSION_WITH_BUILD
 from sage.mcp_server import _serialize
 from sage.models.schemas import BatchIngestFileError, TraverseResponse
 from sage.models.wire import to_wire
@@ -103,6 +104,14 @@ from sage.services.batch_ingest import IngestSummary
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 SAGE_CORE_SPEC_PATH = _REPO_ROOT / "docs" / "fs" / "sage" / "sage_core_api.openapi.yaml"
 CAS_APP_SPEC_PATH = _REPO_ROOT / "docs" / "fs" / "cas_app_api.openapi.yaml"
+
+# The sentinel response the route probes below return, as it reaches the wire:
+# its unstamped read markers carry the build and no fingerprint.
+_SENTINEL_TRAVERSE_BODY: Final[dict] = {
+    "start_id": "0123abcd_sentinel",
+    "nodes": [],
+    "read_meta": {"success": True, "body_present": False, "server_build": VERSION_WITH_BUILD},
+}
 
 # Vacuity floor for W1/W2. Seventy-six components are reachable from a
 # declared response and backed by a same-named model today, across both
@@ -1360,14 +1369,14 @@ async def test_rest_route_keeps_status_sync_endpoints_and_returned_responses():
         inferred = await client.get("/inferred")
 
     assert created.status_code == 201
-    assert created.json() == {"start_id": "0123abcd_sentinel", "nodes": []}
+    assert created.json() == _SENTINEL_TRAVERSE_BODY
     # A sync endpoint runs in the threadpool, not on the event loop serving
     # every other request: a route class calling it inline returns the same body.
     assert sync_threads and sync_threads[0] != threading.get_ident()
 
     # A model declared only by the return annotation is the route's response
     # model too; a route class reading the keyword alone would keep its nulls.
-    assert inferred.json() == {"start_id": "0123abcd_sentinel", "nodes": []}
+    assert inferred.json() == _SENTINEL_TRAVERSE_BODY
 
     assert raw.status_code == 202 and raw.text == "verbatim"
 
@@ -1375,7 +1384,7 @@ async def test_rest_route_keeps_status_sync_endpoints_and_returned_responses():
     # FastAPI applies them to the response it builds itself.
     assert injected.status_code == 203
     assert injected.headers["x-wire-probe"] == "kept"
-    assert injected.json() == {"start_id": "0123abcd_sentinel", "nodes": []}
+    assert injected.json() == _SENTINEL_TRAVERSE_BODY
 
 
 def _stamp_response(response: Response) -> None:
@@ -1409,7 +1418,7 @@ async def test_rest_route_keeps_what_a_dependency_sets_on_the_response():
     assert response.status_code == 203
     assert response.headers["x-dependency-probe"] == "set-by-dependency"
     assert "probe=1" in response.headers["set-cookie"]
-    assert response.json() == {"start_id": "0123abcd_sentinel", "nodes": []}
+    assert response.json() == _SENTINEL_TRAVERSE_BODY
 
 
 async def test_rest_route_reads_a_response_declared_through_annotated():
@@ -1478,7 +1487,7 @@ async def test_rest_route_renders_through_a_json_response_subclass():
             assert response.headers["content-type"].startswith("application/vnd.probe+json"), path
             # The class's own rendering ran, not a plain body under its media type.
             assert response.text.endswith("\n"), path
-            assert response.json() == {"start_id": "0123abcd_sentinel", "nodes": []}
+            assert response.json() == _SENTINEL_TRAVERSE_BODY
             content = app.openapi()["paths"][path]["get"]["responses"]["200"]["content"]
             assert set(content) == {"application/vnd.probe+json"}, path
 
