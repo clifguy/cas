@@ -3,7 +3,7 @@ category: [capability, caller-adaptation]
 summary: >-
   The MCP tool catalog publishes each optional top-level parameter as its
   non-null form alone -- a bare type, or the inlined enum definition for a
-  $ref arm -- instead of anyOf with a null arm, and drops the null default.
+  $ref -- instead of anyOf with a null arm, keeping its null default.
   Some MCP clients discard anyOf and presented these parameters with no type.
   Nested item schemas keep their null arms, and the server still accepts an
   explicit null. The free-text search.query, search.heading_path and

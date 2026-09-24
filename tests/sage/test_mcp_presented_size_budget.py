@@ -46,7 +46,7 @@ TOOL_CEILINGS: Final[dict[str, int]] = {
     "update_lifecycles": 8_750,
     "update_metadata": 7_750,
     "restore_vault_source_file": 4_750,
-    "update_vault_config": 4_250,
+    "update_vault_config": 4_500,
 }
 
 #: Ceiling on the summed presented size of every tool a surface registers.

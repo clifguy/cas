@@ -87,8 +87,8 @@ through the wire route class.
 **The MCP tool input schemas are the one declared exception.** The rule governs
 the specifications' components. An MCP tool's published input schema carries an
 optional parameter as its non-null form alone: `type: string` rather than
-`anyOf: [{type: string}, {type: null}]`, with the null default dropped and a
-`$ref` arm inlined. Some MCP clients discard `anyOf` when they load a tool, and
+`anyOf: [{type: string}, {type: null}]`, its null default kept and any `$ref`
+inside it inlined. Some MCP clients discard `anyOf` when they load a tool, and
 the parameter then reaches the model with no type at all. Leaving the parameter
 out is the advertised way to send no value; a null is still accepted and still
 means the same as omission, so only the declaration narrows, never what the

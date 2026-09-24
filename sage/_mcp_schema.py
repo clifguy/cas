@@ -13,10 +13,11 @@ Pydantic also publishes every optional parameter as a union with null,
 they load a tool, and the parameter reaches the model with a description and
 no type -- free, then, to send an all-digit string as a JSON number, which the
 argument model refuses. So each top-level parameter of that shape is published
-as its non-null arm alone, with the null default dropped: leaving the
-parameter out is how a caller sends no value. Each ``$ref`` within the arm is
-inlined, because the same clients resolve no references and an enum reached
-only through one reaches the model with no values. Item schemas nested inside
+as its non-null arm alone. Its null default is kept: a description saying what
+a null value does still reads true of the parameter left out, and a null sent
+explicitly is still accepted. Each ``$ref`` within the arm is inlined, because
+the same clients resolve no references and an enum reached only through one
+reaches the model with no values. Item schemas nested inside
 a parameter keep their null arms; a client that reads nested structure at all
 reads the union.
 
@@ -98,9 +99,11 @@ def _reachable(schema: dict[str, Any], defs: dict[str, Any]) -> set[str]:
 def _inline_refs(node: Any, defs: dict[str, Any], expanding: frozenset[str]) -> Any:
     """``node`` with each local ``$ref`` replaced by the definition it names.
 
-    A reference node's own keywords are kept over the definition's. A
-    definition already being expanded on this path is left as its reference,
-    so a recursive definition terminates.
+    A reference node's own keywords are kept over the definition's, and the
+    definition's ``description`` is dropped: it describes the type, and the
+    property that referenced it carries its own. A definition already being
+    expanded on this path is left as its reference, so a recursive definition
+    terminates.
     """
     if isinstance(node, list):
         return [_inline_refs(item, defs, expanding) for item in node]
@@ -111,8 +114,9 @@ def _inline_refs(node: Any, defs: dict[str, Any], expanding: frozenset[str]) -> 
         name = ref.removeprefix(_DEFS_PREFIX)
         target = defs.get(name)
         if isinstance(target, dict) and name not in expanding:
+            body = {k: v for k, v in target.items() if k != "description"}
             rest = {k: v for k, v in node.items() if k != "$ref"}
-            return _inline_refs({**target, **rest}, defs, expanding | {name})
+            return _inline_refs({**body, **rest}, defs, expanding | {name})
     return {key: _inline_refs(value, defs, expanding) for key, value in node.items()}
 
 
@@ -126,22 +130,17 @@ def _non_null_arm(prop: dict[str, Any], defs: dict[str, Any]) -> dict[str, Any] 
     if not isinstance(arms, list) or len(arms) != 2 or _NULL_ARM not in arms:
         return None
     arm = arms[0] if arms[1] == _NULL_ARM else arms[1]
-    inlined = _inline_refs(arm, defs, frozenset())
-    if set(arm) == {"$ref"}:
-        # A definition's description describes its type; the property's own
-        # description describes the parameter, and is the one kept.
-        inlined.pop("description", None)
-    return inlined
+    return _inline_refs(arm, defs, frozenset())
 
 
 def flatten_optional_parameters(schema: Any) -> Any:
     """``schema`` with each top-level ``anyOf: [<arm>, null]`` published as ``<arm>``.
 
-    The property keeps its other keywords, except a ``null`` default, which
-    described the arm that is gone. Each ``$ref`` within the arm is replaced
-    by the definition it names, and a definition that inlining leaves
-    unreferenced is dropped. Unions of any other shape, and anything below the
-    top level, are unchanged. Returns a new structure; ``schema`` is unchanged.
+    The property keeps its other keywords, its default included. Each ``$ref``
+    within the arm is replaced by the definition it names, and a definition
+    that inlining leaves unreferenced is dropped. Unions of any other shape,
+    and anything below the top level, are unchanged. Returns a new structure;
+    ``schema`` is unchanged.
     """
     if not isinstance(schema, dict) or not isinstance(schema.get("properties"), dict):
         return schema
@@ -153,8 +152,6 @@ def flatten_optional_parameters(schema: Any) -> Any:
             properties[name] = prop
             continue
         rest = {k: v for k, v in prop.items() if k != "anyOf"}
-        if "default" in rest and rest["default"] is None:
-            del rest["default"]
         properties[name] = {**arm, **rest}
     out = {**schema, "properties": properties}
     if "$defs" in out:

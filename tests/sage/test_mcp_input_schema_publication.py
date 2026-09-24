@@ -71,7 +71,7 @@ def _fixture_schema() -> dict[str, Any]:
         },
         "$defs": {
             "Mode": {"type": "string", "enum": ["a", "b"]},
-            "Name": {"type": "string", "enum": ["x"]},
+            "Name": {"type": "string", "enum": ["x"], "description": "The type, not the field."},
             "Kept": {"type": "string", "enum": ["k"]},
             "Item": {
                 "type": "object",
@@ -82,15 +82,19 @@ def _fixture_schema() -> dict[str, Any]:
 
 
 def test_transform_flattens_top_level_nullable_unions() -> None:
-    """Each two-arm union with a null arm becomes its other arm, default dropped."""
+    """Each two-arm union with a null arm becomes its other arm; the default stays."""
     out = flatten_optional_parameters(_fixture_schema())
     props = out["properties"]
 
-    assert props["text"] == {"type": "string", "description": "d"}
-    assert props["mode"] == {"type": "string", "enum": ["a", "b"]}
-    # A reference nested inside the arm is inlined too.
-    assert props["names"] == {"type": "array", "items": {"type": "string", "enum": ["x"]}}
-    # A non-null default is a value, not the absence the null arm spelled.
+    # The null default stays: descriptions say what a null (or omitted) value does.
+    assert props["text"] == {"type": "string", "description": "d", "default": None}
+    assert props["mode"] == {"type": "string", "enum": ["a", "b"], "default": None}
+    # A reference nested inside the arm is inlined too, without the type's description.
+    assert props["names"] == {
+        "type": "array",
+        "items": {"type": "string", "enum": ["x"]},
+        "default": None,
+    }
     assert props["count"] == {"type": "integer", "default": 5}
 
 
@@ -190,7 +194,9 @@ def test_flattened_forms(tool: str, param: str, expected_type: str) -> None:
 
     assert prop["type"] == expected_type
     assert "anyOf" not in prop
-    assert "default" not in prop
+    # Kept, so a description reading "Null (default) ..." matches its schema.
+    assert "default" in prop
+    assert prop["default"] is None
     assert prop["description"]
 
 
@@ -198,6 +204,8 @@ def test_flattened_array_keeps_its_items_inlined() -> None:
     prop = published_tool("search").parameters["properties"]["facet_fields"]
     assert prop["items"]["enum"] == [f.value for f in FacetField]
     assert "$ref" not in prop["items"]
+    # The inlined definition's description describes the type, not this parameter.
+    assert "description" not in prop["items"]
 
 
 def test_enum_parameter_publishes_its_values() -> None:
