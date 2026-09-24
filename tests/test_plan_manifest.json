@@ -94,7 +94,7 @@
         "sage/adapters/interfaces.py",
         "docs/fs/sage/vault_config.schema.json"
       ],
-      "test_count": 188,
+      "test_count": 190,
       "decision_date": "2026-04-06",
       "notes": "Active adapter specification headings across embedding, abstraction and source formats; retired embedded-storage headings are excluded. Counts are enforced by tests/test_plan_manifest.py."
     },

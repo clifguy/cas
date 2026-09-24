@@ -17,8 +17,8 @@ scalar member is a record's own body and stays together.
 Parsing the projection yields the data parsing the source does. JSON is
 re-emitted, since it carries no comments to lose, which also gives minified
 JSON the line structure a division needs. YAML and TOML keep their text,
-comments included, and gain only blank lines; the result is re-parsed, and if a
-blank line would change the data the source text is kept as written.
+comments included, and gain only blank lines; the result is re-parsed, and a
+blank line that would change the data is not made, while the others stand.
 
 Computes SHA-256 of source file bytes for content_hash.
 """
@@ -27,6 +27,7 @@ import hashlib
 import json
 import re
 import tomllib
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -166,8 +167,8 @@ def _yaml_text(source: str) -> str:
         pending.extend(members)
         if all(isinstance(member, (yaml.MappingNode, yaml.SequenceNode)) for member in members):
             starts.update(line for previous, line in zip(anchors, anchors[1:]) if line > previous)
-    separated = _insert_blank_lines(lines, starts, indent_bound=True)
-    return separated if _yaml_events(separated) == _yaml_events(source) else source
+    expected = _yaml_events(source)
+    return _separate(lines, starts, True, lambda text: _yaml_events(text) == expected, source)
 
 
 def _yaml_events(text: str) -> list[tuple]:
@@ -193,12 +194,40 @@ def _toml_text(source: str, data: dict) -> str:
     """``source`` with a blank line above each table header."""
     lines = source.split("\n")
     starts = {index for index, line in enumerate(lines) if _TOML_HEADER.fullmatch(line)}
-    separated = _insert_blank_lines(lines, starts, indent_bound=False)
-    return separated if tomllib.loads(separated) == data else source
+    return _separate(lines, starts, False, lambda text: tomllib.loads(text) == data, source)
 
 
-def _insert_blank_lines(lines: list[str], starts: set[int], *, indent_bound: bool) -> str:
-    """``lines`` joined, with a blank line above each line in ``starts``.
+def _separate(
+    lines: list[str],
+    starts: set[int],
+    indent_bound: bool,
+    agrees: Callable[[str], bool],
+    source: str,
+) -> str:
+    """``lines`` with a blank line above each start, keeping only those ``agrees`` accepts.
+
+    ``agrees`` re-parses a candidate text and reports whether it holds the
+    source's data. The whole set is tried first; where it is refused, the set is
+    halved until each refused insertion stands alone and is dropped, so one
+    insertion that would change the data costs only itself. The kept set is
+    checked once more as a whole, and the source is returned if even that fails.
+    """
+
+    def accepted(candidates: list[int]) -> list[int]:
+        if not candidates or agrees(_render(lines, candidates)):
+            return candidates
+        if len(candidates) == 1:
+            return []
+        middle = len(candidates) // 2
+        return accepted(candidates[:middle]) + accepted(candidates[middle:])
+
+    kept = accepted(sorted(_insertion_points(lines, starts, indent_bound)))
+    text = _render(lines, kept)
+    return text if agrees(text) else source
+
+
+def _insertion_points(lines: list[str], starts: set[int], indent_bound: bool) -> set[int]:
+    """The line indices a blank line goes above, one for each line in ``starts``.
 
     The blank line goes above any comment lines immediately preceding the start,
     so a comment stays with what it describes. Where indentation is structure
@@ -220,9 +249,15 @@ def _insert_blank_lines(lines: list[str], starts: set[int], *, indent_bound: boo
             index -= 1
         if index > 0 and lines[index - 1].strip():
             targets.add(index)
+    return targets
+
+
+def _render(lines: list[str], targets: list[int]) -> str:
+    """``lines`` joined, with a blank line above each index in ``targets``."""
+    targets_set = set(targets)
     out: list[str] = []
     for index, line in enumerate(lines):
-        if index in targets:
+        if index in targets_set:
             out.append("\r" if lines[index - 1].endswith("\r") else "")
         out.append(line)
     return "\n".join(out)

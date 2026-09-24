@@ -1,4 +1,4 @@
-"""SAGE adapter tests (TEST-SAGE-AD-001 through AD-205).
+"""SAGE adapter tests (TEST-SAGE-AD-001 through AD-207).
 
 Production adapter tests for nomic-embed-text EmbeddingProvider, Qwen3
 AbstractionProvider (with lazy loading), and Markdown source adapter
@@ -5571,9 +5571,9 @@ def _ledger(count: int = 13) -> dict:
                 "title": f"Record title {i}",
                 "date_proposed": "2026-09-17",
                 "status": "opened" if i % 2 else "closed",
-                "digest_date": "2026-09-17",
-                "cycle_item": f"Cycle item {i}",
-                "ticket_number": str(104187000 + i),
+                "reviewed": "2026-09-17",
+                "category": f"Category {i}",
+                "serial": str(731187000 + i),
                 "note": f"Distinct note number {i} explaining the record in prose.",
                 "reconciled": bool(i % 3),
             }
@@ -5760,6 +5760,21 @@ class TestStructuredDataAdapter:
         assert list(yaml.safe_load_all(result.text)) == list(yaml.safe_load_all(source))
         assert result.text == source
 
+    async def test_ad_207_one_refused_yaml_insertion_leaves_the_others(self, tmp_path):
+        """AD-207: Only the insertion that would change the data is dropped.
+
+        The blank line after the kept-chomping scalar would lengthen it, so the
+        record after it stays joined; every later record is still separated.
+        """
+        import yaml
+
+        source = "- id: A\n  text: |+\n    line\n- id: B\n- id: C\n- id: D\n"
+        _, result = await self._project(tmp_path, "some.yaml", source)
+
+        assert list(yaml.safe_load_all(result.text)) == list(yaml.safe_load_all(source))
+        assert "    line\n- id: B\n" in result.text
+        assert "- id: B\n\n- id: C\n\n- id: D" in result.text
+
     async def test_ad_197_toml_separates_tables_and_keeps_comments(self, tmp_path):
         """AD-197: TOML keeps its text and comments, with a blank line before each table."""
         import tomllib
@@ -5771,13 +5786,19 @@ class TestStructuredDataAdapter:
         assert result.text.count("\n\n[[entries]]") == 2
 
     async def test_ad_198_a_toml_insertion_that_would_change_the_data_is_not_made(self, tmp_path):
-        """AD-198: A header-shaped line inside a multi-line string is not separated."""
+        """AD-198: A header-shaped line inside a multi-line string is not separated.
+
+        The table after the string still is: an insertion that would change the
+        data is dropped on its own, not with every other one in the file.
+        """
         import tomllib
 
         source = '[[entries]]\nid = "A"\nnote = """\n[not a header]\n"""\n[[entries]]\nid = "B"\n'
         _, result = await self._project(tmp_path, "string.toml", source)
 
         assert tomllib.loads(result.text) == tomllib.loads(source)
+        assert '"""\n[not a header]' in result.text
+        assert '"""\n\n[[entries]]\nid = "B"' in result.text
 
     @pytest.mark.parametrize("suffix", [".json", ".jsonl", ".yaml", ".yml", ".toml"])
     async def test_ad_199_the_projection_parses_to_the_source_data(self, tmp_path, suffix):
@@ -5796,7 +5817,7 @@ class TestStructuredDataAdapter:
             ("broken.yaml", b"a: [1, 2\n"),
             ("broken.toml", b"a = \n"),
             ("latin1.json", b'{"a": "caf\xe9"}'),
-            ("data.txt", b"a = 1\n"),
+            ("data.txt", b'{"a": 1}'),
         ],
         ids=["json", "jsonl", "yaml", "toml", "not-utf8", "unclaimed-extension"],
     )
@@ -5812,6 +5833,22 @@ class TestStructuredDataAdapter:
             await self._project(tmp_path, name, body)
 
         assert str(tmp_path / name) in str(caught.value)
+
+    async def test_ad_206_an_unclaimed_extension_is_refused_rather_than_guessed(self, tmp_path):
+        """AD-206: The refusal of an unclaimed extension names the extensions that select a parser.
+
+        The body parses as JSON and the file name is its only defect, so an
+        adapter that guessed a parser would either succeed or fail with that
+        parser's own complaint; neither names the extensions.
+        """
+        from sage.source_adapters.base import SourceReadError
+        from sage.source_adapters.structured_data_adapter import StructuredDataAdapter
+
+        with pytest.raises(SourceReadError) as caught:
+            await self._project(tmp_path, "data.txt", b'{"a": 1}')
+
+        for extension in StructuredDataAdapter.EXTENSIONS:
+            assert extension in str(caught.value), extension
 
     async def test_ad_201_yaml_is_read_without_constructing_objects(self, tmp_path):
         """AD-201: A YAML tag naming a Python object is refused, not constructed."""

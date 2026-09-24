@@ -3769,8 +3769,8 @@ async def test_record_identifiers_in_a_data_passage_are_keyword_searchable(store
     from sage.source_adapters.structured_data_adapter import StructuredDataAdapter
 
     records = [
-        {"id": "SWP-20260917-02", "ticket_number": "104188062", "note": "first"},
-        {"id": "SWP-20260917-03", "ticket_number": "104188063", "note": "second"},
+        {"id": "REC-20260917-02", "serial": "731188062", "note": "first"},
+        {"id": "REC-20260917-03", "serial": "731188063", "note": "second"},
     ]
     for record in records:
         path = tmp_path / f"{record['id']}.json"
@@ -3782,9 +3782,9 @@ async def test_record_identifiers_in_a_data_passage_are_keyword_searchable(store
 
     assert await store.search_bm25("quetzalcoatl", limit=10) == []
     for identifier, expected in (
-        ("SWP-20260917-02", "SWP-20260917-02"),
-        ("104188062", "SWP-20260917-02"),
-        ("SWP-20260917-03", "SWP-20260917-03"),
+        ("REC-20260917-02", "REC-20260917-02"),
+        ("731188062", "REC-20260917-02"),
+        ("REC-20260917-03", "REC-20260917-03"),
     ):
         results = await store.search_bm25(identifier, limit=10)
         assert [r.document_id for r in results] == [expected], identifier

@@ -3214,8 +3214,8 @@ above each record after the first, and none above the first.
 **Category:** self-check
 **Precondition:** A kept-chomping block scalar (`|+`) directly above a record.
 
-**Expected:** The projection is the source text unchanged, because a blank line
-there would become part of the scalar.
+**Expected:** The projection is the source text unchanged, because the file's one
+blank line would become part of the scalar.
 
 ### TEST-SAGE-AD-197: TOML separates tables and keeps comments
 
@@ -3228,9 +3228,11 @@ table header.
 
 **Artifact:** StructuredDataAdapter.project
 **Category:** self-check
-**Precondition:** A header-shaped line inside a multi-line string.
+**Precondition:** A header-shaped line inside a multi-line string, followed by
+another table.
 
-**Expected:** Parsed data unchanged.
+**Expected:** Parsed data unchanged; no blank line inside the string; the table
+after it is still separated.
 
 ### TEST-SAGE-AD-199: The projection parses to the source data
 
@@ -3284,3 +3286,22 @@ is not a binary container, so its content is returned as text.
 
 **Expected:** More than one passage; no record's id in two passages; the
 passages join back to the projection exactly.
+
+### TEST-SAGE-AD-206: An unclaimed extension is refused rather than guessed
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** refusal
+**Precondition:** A `.txt` file whose body parses as JSON.
+
+**Expected:** `SourceReadError` whose message names every declared extension, so
+an adapter that guessed a parser -- succeeding, or failing with that parser's own
+complaint -- fails the test.
+
+### TEST-SAGE-AD-207: One refused YAML insertion leaves the others
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** self-check
+**Precondition:** A kept-chomping block scalar followed by three records.
+
+**Expected:** Parsed data unchanged; the record after the scalar stays joined to
+it; every later record is separated.
