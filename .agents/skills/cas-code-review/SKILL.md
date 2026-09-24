@@ -1,6 +1,6 @@
 ---
 name: cas-code-review
-description: This skill should be used when the user asks to review a CAS commit, branch, or diff for the documented failure modes (F1-F5), the gate-integrity check (G1), and the public-posture gate (P1) catalogued in the skill's own section list. Trigger phrases include "cas code review", "review for CAS failure modes", "audit cas changes", "check this commit for cas drift", "run cas-code-review", and similar. The skill is tuned to the CAS repository specifically; do not invoke it on unrelated codebases.
+description: This skill should be used when the user asks to review a CAS commit, branch, or diff for the documented failure modes (F1-F5), the gate-integrity check (G1), the claims, surface-parity and stored-data checks (C1, S1, R1), and the public-posture gate (P1) catalogued in the skill's own section list. Trigger phrases include "cas code review", "review for CAS failure modes", "audit cas changes", "check this commit for cas drift", "run cas-code-review", and similar. The skill is tuned to the CAS repository specifically; do not invoke it on unrelated codebases.
 ---
 
 # CAS code review
