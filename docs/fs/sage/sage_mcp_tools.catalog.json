@@ -1576,6 +1576,16 @@
                     ],
                     "description": "Extension."
                   },
+                  "registered_extensions": {
+                    "additionalProperties": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "description": "The extensions each registered source type is inferred from, keyed by source type.",
+                    "type": "object"
+                  },
                   "registered_source_types": {
                     "description": "Registered source types.",
                     "items": {
@@ -1586,7 +1596,8 @@
                 },
                 "required": [
                   "extension",
-                  "registered_source_types"
+                  "registered_source_types",
+                  "registered_extensions"
                 ],
                 "type": "object"
               },
@@ -2933,7 +2944,7 @@
                       }
                     ],
                     "default": null,
-                    "description": "Source artifact format for this file (closed SourceType vocabulary: markdown, docx, xlsx, pptx, pdf). Must be a source type with a registered adapter. Optional: when omitted, it is inferred from the uploaded file's extension, and an extension no registered adapter claims is reported for that file as `source_type_unresolved`."
+                    "description": "Source artifact format for this file: markdown (.md, .markdown), docx (.docx, .dotx), xlsx (.xlsx), pptx (.pptx, .potx), pdf (.pdf) or structured_data (.json, .jsonl, .yaml, .yml, .toml). Must be a source type with a registered adapter. Optional: when omitted, it is inferred from the uploaded file's extension using the extensions listed with each format, and an extension no registered adapter claims is reported for that file as `source_type_unresolved`."
                   },
                   "tier3_metadata": {
                     "anyOf": [
@@ -6385,7 +6396,7 @@
               "type": "string"
             },
             "source_type": {
-              "description": "Source artifact format whose filename_extraction configuration governs the parse. Must be a source type with a registered adapter. The registered formats are markdown, docx, xlsx, pptx and pdf -- the same set `ingest_document` accepts, so a filename that parses here is one that can go on to be ingested.",
+              "description": "Source artifact format whose filename_extraction configuration governs the parse. Must be a source type with a registered adapter. The registered formats are markdown (.md, .markdown), docx (.docx, .dotx), xlsx (.xlsx), pptx (.pptx, .potx), pdf (.pdf) and structured_data (.json, .jsonl, .yaml, .yml, .toml) -- the same set `ingest_document` accepts, so a filename that parses here is one that can go on to be ingested.",
               "type": "string"
             },
             "vault_id": {
@@ -8067,6 +8078,16 @@
                     ],
                     "description": "Extension."
                   },
+                  "registered_extensions": {
+                    "additionalProperties": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "description": "The extensions each registered source type is inferred from, keyed by source type.",
+                    "type": "object"
+                  },
                   "registered_source_types": {
                     "description": "Registered source types.",
                     "items": {
@@ -8077,7 +8098,8 @@
                 },
                 "required": [
                   "extension",
-                  "registered_source_types"
+                  "registered_source_types",
+                  "registered_extensions"
                 ],
                 "type": "object"
               },
@@ -9431,7 +9453,7 @@
                 }
               ],
               "default": null,
-              "description": "Source artifact format. Determines which source adapter processes the artifact. Must be a source type with a registered adapter. Optional: when omitted, it is inferred from the extension of the source being ingested against the registered adapters' declared extensions -- for a `transfer_token` completion, the staged file, which carries the caller's own basename. An explicit value is never overridden, even where it disagrees with the extension. An omitted value whose extension no registered adapter claims is refused with `source_type_unresolved`. The registered formats are markdown, docx, xlsx, pptx and pdf; a refusal names them in ``registered_source_types``. Inference reads the extension: ``.md`` and ``.markdown`` map to markdown, ``.docx``/``.dotx`` to docx."
+              "description": "Source artifact format. Determines which source adapter processes the artifact. Must be a source type with a registered adapter. Optional: when omitted, it is inferred from the extension of the source being ingested against the registered adapters' declared extensions -- for a `transfer_token` completion, the staged file, which carries the caller's own basename. An explicit value is never overridden, even where it disagrees with the extension. An omitted value whose extension no registered adapter claims is refused with `source_type_unresolved`. The registered formats are markdown (.md, .markdown), docx (.docx, .dotx), xlsx (.xlsx), pptx (.pptx, .potx), pdf (.pdf) and structured_data (.json, .jsonl, .yaml, .yml, .toml). An omitted type is inferred from the extensions listed with each format; a refusal names the formats in ``registered_source_types`` and their extensions in ``registered_extensions``."
             },
             "tags": {
               "default": null,
@@ -15988,7 +16010,7 @@
                 }
               ],
               "default": null,
-              "description": "Metadata filters applied before retrieval. Document-target keys: ``doc_type``, ``project``, ``lifecycle_status``, ``exclude_terminal_lifecycle``, ``tags``, ``document_ids``, ``pipeline_status``, ``source_type``, ``tier3_metadata`` (these also narrow the faceted slice). Edge-target keys (target=\"edges\"): ``source_id``, ``target_id``, ``edge_type``; mixing the two sets is refused. Every key belongs nested here, e.g. filters={\"doc_type\": \"adr\", \"lifecycle_status\": \"active\"}; a key passed at the top level is refused with misplaced_filters rather than dropped. ``source_type`` takes one of markdown, docx, pdf, email, onenote, teams_chat, xlsx, pptx, and ``edge_type`` is closed the same way; anything else is refused with invalid_filter_value. ``exclude_terminal_lifecycle`` drops documents in a state the vault declares terminal. ``tier3_metadata`` takes field-to-value pairs that must all match exactly; null matches a null or absent field."
+              "description": "Metadata filters applied before retrieval. Document-target keys: ``doc_type``, ``project``, ``lifecycle_status``, ``exclude_terminal_lifecycle``, ``tags``, ``document_ids``, ``pipeline_status``, ``source_type``, ``tier3_metadata`` (these also narrow the faceted slice). Edge-target keys (target=\"edges\"): ``source_id``, ``target_id``, ``edge_type``; mixing the two sets is refused. Every key belongs nested here, e.g. filters={\"doc_type\": \"adr\", \"lifecycle_status\": \"active\"}; a key passed at the top level is refused with misplaced_filters rather than dropped. ``source_type`` takes one of markdown, docx, pdf, email, onenote, teams_chat, xlsx, pptx, structured_data, and ``edge_type`` is closed the same way; anything else is refused with invalid_filter_value. ``exclude_terminal_lifecycle`` drops documents in a state the vault declares terminal. ``tier3_metadata`` takes field-to-value pairs that must all match exactly; null matches a null or absent field."
             },
             "heading_path": {
               "anyOf": [

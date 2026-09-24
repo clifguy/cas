@@ -37,6 +37,7 @@ from sage.source_adapters.docx_adapter import DocxAdapter
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.source_adapters.pdf_adapter import PdfAdapter
 from sage.source_adapters.pptx_adapter import PptxAdapter
+from sage.source_adapters.structured_data_adapter import StructuredDataAdapter
 from sage.source_adapters.xlsx_adapter import XlsxAdapter
 from tests.helpers.pipeline_wait import await_tool_idle, drain_vaults
 
@@ -137,8 +138,19 @@ async def _document_count() -> int:
         (XlsxAdapter, "broken.xlsx", _CORRUPT_ZIP),
         (XlsxAdapter, "plain.xlsx", b"plain text, no package magic\n"),
         (MarkdownAdapter, "latin1.md", b"# Caf\xe9\n"),
+        (StructuredDataAdapter, "broken.json", b'{"a": '),
     ],
-    ids=["pdf", "docx", "dotx", "pptx-package", "pptx-magic", "xlsx-package", "xlsx-plain", "md"],
+    ids=[
+        "pdf",
+        "docx",
+        "dotx",
+        "pptx-package",
+        "pptx-magic",
+        "xlsx-package",
+        "xlsx-plain",
+        "md",
+        "structured-data",
+    ],
 )
 async def test_each_adapter_reports_an_unreadable_source_as_a_read_error(
     tmp_path, adapter, name, body

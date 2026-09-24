@@ -3746,3 +3746,45 @@ async def test_a_query_with_nothing_to_fold_renders_only_the_raw_form(store, mon
     assert [h.document_id for h in hits] == ["routed"], (
         "positive control: the measured search must be one that reaches a document"
     )
+
+
+# ---------------------------------------------------------------------------
+# Record identifiers in structured-data passages
+# ---------------------------------------------------------------------------
+
+
+async def test_record_identifiers_in_a_data_passage_are_keyword_searchable(store, tmp_path):
+    """A hyphenated record id and a long numeric id each find their own record.
+
+    The passages are the structured-data adapter's projection of a record set,
+    so the identifiers sit inside JSON punctuation the way they do on ingest.
+    Each record is stored as its own document, and its sibling's identifiers
+    differ only in their last digits, so a match on a shared fragment (the
+    prefix, the date) returns both and fails. A word the fixture never contains
+    is searched first as the control: a store answering every query would
+    otherwise pass.
+    """
+    import json
+
+    from sage.source_adapters.structured_data_adapter import StructuredDataAdapter
+
+    records = [
+        {"id": "REC-20260917-02", "serial": "731188062", "note": "first"},
+        {"id": "REC-20260917-03", "serial": "731188063", "note": "second"},
+    ]
+    for record in records:
+        path = tmp_path / f"{record['id']}.json"
+        path.write_text(json.dumps({"entries": [record]}))
+        projection = await StructuredDataAdapter().project(path)
+        await store.index_chunks(
+            record["id"], [_chunk(record["id"], content=projection.text, heading_path="")]
+        )
+
+    assert await store.search_bm25("quetzalcoatl", limit=10) == []
+    for identifier, expected in (
+        ("REC-20260917-02", "REC-20260917-02"),
+        ("731188062", "REC-20260917-02"),
+        ("REC-20260917-03", "REC-20260917-03"),
+    ):
+        results = await store.search_bm25(identifier, limit=10)
+        assert [r.document_id for r in results] == [expected], identifier

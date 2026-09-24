@@ -37,6 +37,7 @@ from sage.source_adapters.docx_adapter import DocxAdapter
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.source_adapters.pdf_adapter import PdfAdapter
 from sage.source_adapters.pptx_adapter import PptxAdapter
+from sage.source_adapters.structured_data_adapter import StructuredDataAdapter
 from sage.source_adapters.xlsx_adapter import XlsxAdapter
 from sage.storage_binding import PostgresVaultStorageProvisioner, VaultStorageProvisioner
 from tests.helpers.seam_signatures import (
@@ -53,7 +54,14 @@ _PORT_BINDINGS: dict[type, list[type]] = {
         Qwen3AbstractionProvider,
         StubAbstractionProvider,
     ],
-    SourceAdapter: [DocxAdapter, MarkdownAdapter, PdfAdapter, PptxAdapter, XlsxAdapter],
+    SourceAdapter: [
+        DocxAdapter,
+        MarkdownAdapter,
+        PdfAdapter,
+        PptxAdapter,
+        StructuredDataAdapter,
+        XlsxAdapter,
+    ],
     VaultStorageProvisioner: [PostgresVaultStorageProvisioner],
 }
 

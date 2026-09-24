@@ -495,6 +495,12 @@ async def test_rejection_is_consistent_across_create_and_supersession(vault_serv
         ("book.xlsx", SourceType.XLSX),
         ("deck.pptx", SourceType.PPTX),
         ("deck.potx", SourceType.PPTX),
+        ("ledger.json", SourceType.STRUCTURED_DATA),
+        ("ledger.jsonl", SourceType.STRUCTURED_DATA),
+        ("config.yaml", SourceType.STRUCTURED_DATA),
+        ("config.yml", SourceType.STRUCTURED_DATA),
+        ("pyproject.toml", SourceType.STRUCTURED_DATA),
+        ("LEDGER.JSON", SourceType.STRUCTURED_DATA),
         # Case-insensitive: callers paste paths from Finder and Windows alike.
         ("NOTES.MD", SourceType.MARKDOWN),
     ],

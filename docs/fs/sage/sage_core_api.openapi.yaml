@@ -729,8 +729,10 @@ paths:
 
             `source_type_unresolved`: `source_type` was omitted and no
             registered adapter claims the source's extension. The detail
-            carries `extension` (null when the source has none) and
-            `registered_source_types`.
+            carries `extension` (null when the source has none),
+            `registered_source_types`, and `registered_extensions`, which maps
+            each registered source type to the extensions it is inferred
+            from.
 
             `source_unreadable`: the source adapter could not read the source
             -- malformed, truncated, encrypted, or not in the format its source
@@ -4681,7 +4683,7 @@ components:
 
     SourceType:
       type: string
-      enum: [markdown, docx, xlsx, pptx, pdf, email, onenote, teams_chat]
+      enum: [markdown, docx, xlsx, pptx, pdf, email, onenote, teams_chat, structured_data]
       description: >-
         Source artifact format. Determines which source adapter processes
         the file during ingestion.
@@ -9792,10 +9794,12 @@ components:
         source_type:
           type: [string, "null"]
           description: >-
-            Source artifact format for this file (closed SourceType
-            vocabulary: markdown, docx, xlsx, pptx, pdf). Must be a source
-            type with a registered adapter. Optional: when omitted, it is
-            inferred from the uploaded file's extension, and an extension no
+            Source artifact format for this file: markdown (.md, .markdown),
+            docx (.docx, .dotx), xlsx (.xlsx), pptx (.pptx, .potx), pdf (.pdf)
+            or structured_data (.json, .jsonl, .yaml, .yml, .toml). Must be a
+            source type with a registered adapter. Optional: when omitted, it
+            is inferred from the uploaded file's extension using the
+            extensions listed with each format, and an extension no
             registered adapter claims is reported for that file as
             `source_type_unresolved`.
         sha256:
@@ -13340,6 +13344,7 @@ components:
       required:
       - extension
       - registered_source_types
+      - registered_extensions
       properties:
         extension:
           anyOf:
@@ -13351,6 +13356,13 @@ components:
           items:
             type: string
           description: Registered source types.
+        registered_extensions:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              type: string
+          description: The extensions each registered source type is inferred from, keyed by source type.
       description: Additional context for this refusal.
     SourceTypeUnresolvedError:
       type: object

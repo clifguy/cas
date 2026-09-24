@@ -5485,10 +5485,12 @@ class BatchIngestFileMetadata(BaseModel):
     source_type: str | None = Field(
         default=None,
         description=(
-            "Source artifact format for this file (closed SourceType "
-            "vocabulary: markdown, docx, xlsx, pptx, pdf). Must be a source "
-            "type with a registered adapter. Optional: when omitted, it is "
-            "inferred from the uploaded file's extension, and an extension no "
+            "Source artifact format for this file: markdown (.md, .markdown), "
+            "docx (.docx, .dotx), xlsx (.xlsx), pptx (.pptx, .potx), pdf (.pdf) "
+            "or structured_data (.json, .jsonl, .yaml, .yml, .toml). Must be a "
+            "source type with a registered adapter. Optional: when omitted, it "
+            "is inferred from the uploaded file's extension using the "
+            "extensions listed with each format, and an extension no "
             "registered adapter claims is reported for that file as "
             "`source_type_unresolved`."
         ),

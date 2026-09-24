@@ -327,7 +327,7 @@ export default function Ingest() {
               onChange={e => { if (e.target.files) handleFilesSelected(e.target.files); }}
             />
             <div style={{ marginTop: 8, color: '#999', fontSize: 12 }}>
-              Supported types: markdown (.md), docx, xlsx, pptx, pdf
+              Supported types: markdown (.md), docx, xlsx, pptx, pdf, data files (.json, .jsonl, .yaml, .yml, .toml)
             </div>
           </div>
         </div>

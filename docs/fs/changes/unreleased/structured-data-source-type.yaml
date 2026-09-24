@@ -1,0 +1,15 @@
+classification: minor
+category: [capability, caller-adaptation]
+summary: >-
+  Adds the structured_data source type (JSON, JSON Lines, YAML and TOML) to the
+  SourceType enum in the Core API spec and to the adapter_defaults key set in
+  the vault config schema. The source_type_unresolved refusal detail gains a
+  required registered_extensions field mapping each registered source type to
+  the extensions it is inferred from, in the Core API spec, its application API
+  mirror and the packaged error contract. The ingest and batch-upload
+  source_type descriptions now list each format with its extensions.
+for_callers: >-
+  JSON, JSON Lines, YAML and TOML files now ingest directly as source type
+  structured_data, inferred from .json, .jsonl, .yaml, .yml and .toml. A
+  source_type_unresolved refusal now also carries registered_extensions, the
+  extensions each registered source type is inferred from.

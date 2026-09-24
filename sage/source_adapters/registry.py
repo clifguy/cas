@@ -6,6 +6,7 @@ from sage.source_adapters.docx_adapter import DocxAdapter
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.source_adapters.pdf_adapter import PdfAdapter
 from sage.source_adapters.pptx_adapter import PptxAdapter
+from sage.source_adapters.structured_data_adapter import StructuredDataAdapter
 from sage.source_adapters.xlsx_adapter import XlsxAdapter
 
 
@@ -23,4 +24,5 @@ def build_source_adapter_registry() -> dict[SourceType, SourceAdapter]:
         SourceType.XLSX: XlsxAdapter(),
         SourceType.PDF: PdfAdapter(),
         SourceType.PPTX: PptxAdapter(),
+        SourceType.STRUCTURED_DATA: StructuredDataAdapter(),
     }

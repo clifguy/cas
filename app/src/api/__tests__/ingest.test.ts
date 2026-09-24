@@ -35,6 +35,16 @@ describe('sourceTypeForFilename', () => {
     expect(sourceTypeForFilename('sheet.xlsx')).toBe('xlsx');
     expect(sourceTypeForFilename('Deck.PPTX')).toBe('pptx');
     expect(sourceTypeForFilename('scan.PDF')).toBe('pdf');
+    expect(sourceTypeForFilename('letterhead.dotx')).toBe('docx');
+    expect(sourceTypeForFilename('Theme.POTX')).toBe('pptx');
+  });
+
+  it('A3: maps data-file extensions to the structured_data source type', () => {
+    expect(sourceTypeForFilename('ledger.json')).toBe('structured_data');
+    expect(sourceTypeForFilename('events.JSONL')).toBe('structured_data');
+    expect(sourceTypeForFilename('config.yaml')).toBe('structured_data');
+    expect(sourceTypeForFilename('config.yml')).toBe('structured_data');
+    expect(sourceTypeForFilename('pyproject.toml')).toBe('structured_data');
   });
 
   it('A2: returns null for unknown or extension-less names', () => {

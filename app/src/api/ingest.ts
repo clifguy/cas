@@ -57,8 +57,9 @@ export async function startIngestion(
 /**
  * Map a filename to its SAGE source_type by extension, or null when no enabled
  * adapter handles it. The closed SourceType vocabulary is markdown / docx /
- * xlsx / pptx / pdf; the browser must supply source_type per file because, unlike the
- * directory scan, there is no server-side adapter detection on an upload.
+ * xlsx / pptx / pdf / structured_data; the browser must supply source_type per
+ * file because, unlike the directory scan, there is no server-side adapter
+ * detection on an upload.
  */
 export function sourceTypeForFilename(name: string): string | null {
   const dot = name.lastIndexOf('.');
@@ -68,13 +69,21 @@ export function sourceTypeForFilename(name: string): string | null {
     case 'markdown':
       return 'markdown';
     case 'docx':
+    case 'dotx':
       return 'docx';
     case 'xlsx':
       return 'xlsx';
     case 'pptx':
+    case 'potx':
       return 'pptx';
     case 'pdf':
       return 'pdf';
+    case 'json':
+    case 'jsonl':
+    case 'yaml':
+    case 'yml':
+    case 'toml':
+      return 'structured_data';
     default:
       return null;
   }
