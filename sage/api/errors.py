@@ -1385,10 +1385,16 @@ class SourceTypeUnresolvedError(SAGEError):
     when none claims it, because routing bytes to the wrong adapter is worse
     than an explicit failure. The detail names only the extension -- never the
     path, which for a two-phase delivery is a server-side staging location --
-    and the source types the caller may supply instead.
+    the source types the caller may supply instead, and the extensions each is
+    inferred from, so a caller can see which extension it should have used.
     """
 
-    def __init__(self, extension: str | None, registered_source_types: list[str]) -> None:
+    def __init__(
+        self,
+        extension: str | None,
+        registered_source_types: list[str],
+        registered_extensions: dict[str, list[str]],
+    ) -> None:
         subject = (
             f"extension {extension!r} is not claimed by any registered adapter"
             if extension
@@ -1399,7 +1405,11 @@ class SourceTypeUnresolvedError(SAGEError):
             f"source_type was not supplied and could not be inferred: {subject}. "
             f"Supply source_type as one of: {', '.join(registered_source_types)}.",
             400,
-            {"extension": extension, "registered_source_types": registered_source_types},
+            {
+                "extension": extension,
+                "registered_source_types": registered_source_types,
+                "registered_extensions": registered_extensions,
+            },
         )
 
 

@@ -5258,6 +5258,16 @@ SCHEMAS = json.loads(
         ],
         "description": "Extension."
       },
+      "registered_extensions": {
+        "additionalProperties": {
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
+        "description": "The extensions each registered source type is inferred from, keyed by source type.",
+        "type": "object"
+      },
       "registered_source_types": {
         "description": "Registered source types.",
         "items": {
@@ -5268,7 +5278,8 @@ SCHEMAS = json.loads(
     },
     "required": [
       "extension",
-      "registered_source_types"
+      "registered_source_types",
+      "registered_extensions"
     ],
     "type": "object"
   },

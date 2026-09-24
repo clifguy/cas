@@ -909,6 +909,10 @@ class IngestionService:
             raise SourceTypeUnresolvedError(
                 Path(request.source or "").suffix.lower() or None,
                 sorted(source_type.value for source_type in self._adapters),
+                {
+                    source_type.value: list(adapter.EXTENSIONS)
+                    for source_type, adapter in self._adapters.items()
+                },
             )
         return request.model_copy(update={"source_type": inferred})
 

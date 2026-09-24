@@ -1,4 +1,4 @@
-"""SAGE adapter tests (TEST-SAGE-AD-001 through AD-199).
+"""SAGE adapter tests (TEST-SAGE-AD-001 through AD-205).
 
 Production adapter tests for nomic-embed-text EmbeddingProvider, Qwen3
 AbstractionProvider (with lazy loading), and Markdown source adapter
@@ -5429,6 +5429,12 @@ def _config_source(kind: str, tmp_path: Path) -> tuple[object, Path]:
         path = tmp_path / "config.docx"
         doc.save(str(path))
         return DocxAdapter(), path
+    if kind == "structured_data":
+        from sage.source_adapters.structured_data_adapter import StructuredDataAdapter
+
+        path = tmp_path / "config.json"
+        path.write_text('{"entries": [{"id": "A"}, {"id": "B"}]}')
+        return StructuredDataAdapter(), path
     raise AssertionError(kind)
 
 
@@ -5516,7 +5522,7 @@ class TestAdapterConfigRefusal:
         ]:
             adapter.check_config(config)
 
-    @pytest.mark.parametrize("kind", ["markdown", "pdf", "pptx", "xlsx", "docx"])
+    @pytest.mark.parametrize("kind", ["markdown", "pdf", "pptx", "xlsx", "docx", "structured_data"])
     async def test_ad_179_an_unrecognized_config_key_is_ignored_not_refused(self, tmp_path, kind):
         """AD-179: An unrecognized config key is ignored, not refused."""
         adapter, path = _config_source(kind, tmp_path)
@@ -5549,3 +5555,347 @@ class TestAdapterConfigRefusal:
 
         assert type(failed.value) is SourceReadError
         assert not isinstance(failed.value, AdapterConfigError)
+
+
+# ── Structured-data source adapter (AD-190 to AD-205) ───────────────
+
+
+def _ledger(count: int = 13) -> dict:
+    """An envelope holding an array of flat records: the common data-file shape."""
+    return {
+        "schema": 2,
+        "updated": "2026-09-24",
+        "entries": [
+            {
+                "id": f"REC-{i:04d}",
+                "title": f"Record title {i}",
+                "date_proposed": "2026-09-17",
+                "status": "opened" if i % 2 else "closed",
+                "digest_date": "2026-09-17",
+                "cycle_item": f"Cycle item {i}",
+                "ticket_number": str(104187000 + i),
+                "note": f"Distinct note number {i} explaining the record in prose.",
+                "reconciled": bool(i % 3),
+            }
+            for i in range(1, count + 1)
+        ],
+    }
+
+
+_YAML_LEDGER = """\
+# A ledger of records
+schema: 2
+entries:
+  # the first record
+  - id: A
+    note: one
+  # the second record
+  - id: B
+    note: two
+  - id: C
+    note: three
+"""
+
+_TOML_LEDGER = """\
+# A ledger of records
+schema = 2
+[[entries]]
+id = "A"
+note = "one"
+[[entries]]
+id = "B"
+note = "two"
+"""
+
+
+def _parse_structured(suffix: str, text: str) -> object:
+    import json
+    import tomllib
+
+    import yaml
+
+    if suffix == ".json":
+        return json.loads(text)
+    if suffix == ".jsonl":
+        return [json.loads(line) for line in text.splitlines() if line.strip()]
+    if suffix in (".yaml", ".yml"):
+        return list(yaml.safe_load_all(text))
+    return tomllib.loads(text)
+
+
+def _structured_source(suffix: str) -> str:
+    import json
+
+    if suffix == ".json":
+        return json.dumps(_ledger(3), separators=(",", ":"))
+    if suffix == ".jsonl":
+        return "\n".join(json.dumps(record) for record in _ledger(3)["entries"]) + "\n"
+    if suffix in (".yaml", ".yml"):
+        return _YAML_LEDGER
+    return _TOML_LEDGER
+
+
+class TestStructuredDataAdapter:
+    """AD-190 to AD-205: JSON, JSON Lines, YAML and TOML projected without headings."""
+
+    async def _project(self, tmp_path, name: str, body: str | bytes):
+        from sage.source_adapters.structured_data_adapter import StructuredDataAdapter
+
+        path = tmp_path / name
+        if isinstance(body, bytes):
+            path.write_bytes(body)
+        else:
+            path.write_text(body, encoding="utf-8")
+        return path, await StructuredDataAdapter().project(path)
+
+    async def test_ad_190_each_record_is_one_paragraph(self, tmp_path):
+        """AD-190: A record set projects one blank-line paragraph per record, no headings."""
+        import json
+
+        data = _ledger()
+        _, result = await self._project(tmp_path, "ledger.json", json.dumps(data, indent=4))
+
+        assert result.headings == []
+        assert result.preamble == ""
+        assert json.loads(result.text) == data
+        units = result.text.split("\n\n")
+        assert len(units) == len(data["entries"])
+        for record in data["entries"]:
+            holding = [unit for unit in units if record["id"] in unit]
+            assert len(holding) == 1, (record["id"], holding)
+            assert record["note"] in holding[0]
+        assert '"schema": 2' in units[0], "the envelope travels with the first record"
+
+    async def test_ad_191_minified_json_projects_as_the_indented_form_does(self, tmp_path):
+        """AD-191: The projection is independent of the source's formatting."""
+        import json
+
+        data = _ledger()
+        _, indented = await self._project(tmp_path, "a.json", json.dumps(data, indent=4))
+        _, minified = await self._project(
+            tmp_path, "b.json", json.dumps(data, separators=(",", ":"))
+        )
+
+        assert minified.text == indented.text
+        assert minified.text.count("\n") > len(data["entries"])
+
+    async def test_ad_192_only_a_container_of_containers_is_separated(self, tmp_path):
+        """AD-192: A record with scalar fields keeps its fields together.
+
+        Its nested list of objects is separated, because every member of that
+        list is a container; the record itself is not, because its members are
+        mixed.
+        """
+        import json
+
+        data = {
+            "items": [
+                {"id": "A", "kind": "x", "parts": [{"p": 1}, {"p": 2}]},
+                {"id": "B", "kind": "y", "parts": [{"p": 3}]},
+            ]
+        }
+        _, result = await self._project(tmp_path, "nested.json", json.dumps(data))
+
+        assert json.loads(result.text) == data
+        assert '"id": "A",\n' in result.text
+        assert '"id": "A",\n\n' not in result.text, "a mixed record's fields stay together"
+        assert '"p": 1\n' in result.text
+        between_parts = result.text.split('"p": 1', 1)[1].split('"p": 2', 1)[0]
+        assert "\n\n" in between_parts, "a list of objects is separated"
+        between_records = result.text.split('"id": "A"', 1)[1].split('"id": "B"', 1)[0]
+        assert "\n\n" in between_records
+
+    async def test_ad_193_json_lines_project_one_paragraph_per_line(self, tmp_path):
+        """AD-193: Each JSON Lines record is its own paragraph."""
+        import json
+
+        records = _ledger(3)["entries"]
+        source = "\n".join(json.dumps(record) for record in records) + "\n"
+        _, result = await self._project(tmp_path, "ledger.jsonl", source)
+
+        assert result.headings == []
+        units = [unit for unit in result.text.split("\n\n") if unit.strip()]
+        assert [json.loads(unit) for unit in units] == records
+
+    async def test_ad_194_yaml_keeps_comments_and_separates_records(self, tmp_path):
+        """AD-194: YAML keeps its text and comments, with a blank line between records.
+
+        The blank line goes above a record's leading comment, so the comment
+        stays with the record it describes.
+        """
+        import yaml
+
+        _, result = await self._project(tmp_path, "ledger.yaml", _YAML_LEDGER)
+
+        assert list(yaml.safe_load_all(result.text)) == list(yaml.safe_load_all(_YAML_LEDGER))
+        for line in _YAML_LEDGER.splitlines():
+            assert line in result.text.splitlines()
+        assert "\n\n  # the second record\n  - id: B" in result.text
+        assert "\n\n  - id: C" in result.text
+        assert "  # the first record\n  - id: A" in result.text
+        assert "entries:\n\n" not in result.text, "no blank line before the first record"
+
+    async def test_ad_195_yaml_separates_records_in_every_document_of_a_stream(self, tmp_path):
+        """AD-195: A multi-document stream is separated document by document."""
+        import yaml
+
+        source = "- id: A\n- id: B\n---\n- id: C\n- id: D\n"
+        _, result = await self._project(tmp_path, "stream.yml", source)
+
+        assert list(yaml.safe_load_all(result.text)) == list(yaml.safe_load_all(source))
+        assert "- id: A\n\n- id: B" in result.text
+        assert "- id: C\n\n- id: D" in result.text
+
+    async def test_ad_196_a_yaml_insertion_that_would_change_the_data_is_not_made(self, tmp_path):
+        """AD-196: A blank line that would change the data leaves the source as written.
+
+        A kept-chomping block scalar (``|+``) holds trailing blank lines as
+        content, so a separating blank line after it would lengthen the string.
+        """
+        import yaml
+
+        source = "- id: A\n  text: |+\n    line\n- id: B\n"
+        _, result = await self._project(tmp_path, "keep.yaml", source)
+
+        assert list(yaml.safe_load_all(result.text)) == list(yaml.safe_load_all(source))
+        assert result.text == source
+
+    async def test_ad_197_toml_separates_tables_and_keeps_comments(self, tmp_path):
+        """AD-197: TOML keeps its text and comments, with a blank line before each table."""
+        import tomllib
+
+        _, result = await self._project(tmp_path, "ledger.toml", _TOML_LEDGER)
+
+        assert tomllib.loads(result.text) == tomllib.loads(_TOML_LEDGER)
+        assert "# A ledger of records" in result.text
+        assert result.text.count("\n\n[[entries]]") == 2
+
+    async def test_ad_198_a_toml_insertion_that_would_change_the_data_is_not_made(self, tmp_path):
+        """AD-198: A header-shaped line inside a multi-line string is not separated."""
+        import tomllib
+
+        source = '[[entries]]\nid = "A"\nnote = """\n[not a header]\n"""\n[[entries]]\nid = "B"\n'
+        _, result = await self._project(tmp_path, "string.toml", source)
+
+        assert tomllib.loads(result.text) == tomllib.loads(source)
+
+    @pytest.mark.parametrize("suffix", [".json", ".jsonl", ".yaml", ".yml", ".toml"])
+    async def test_ad_199_the_projection_parses_to_the_source_data(self, tmp_path, suffix):
+        """AD-199: Parsing the projection yields the data parsing the source does."""
+        source = _structured_source(suffix)
+        _, result = await self._project(tmp_path, f"data{suffix}", source)
+
+        assert _parse_structured(suffix, result.text) == _parse_structured(suffix, source)
+        assert result.headings == []
+
+    @pytest.mark.parametrize(
+        ("name", "body"),
+        [
+            ("broken.json", b'{"a": '),
+            ("broken.jsonl", b'{"a": 1}\n{"a": \n'),
+            ("broken.yaml", b"a: [1, 2\n"),
+            ("broken.toml", b"a = \n"),
+            ("latin1.json", b'{"a": "caf\xe9"}'),
+            ("data.txt", b"a = 1\n"),
+        ],
+        ids=["json", "jsonl", "yaml", "toml", "not-utf8", "unclaimed-extension"],
+    )
+    async def test_ad_200_an_unparseable_source_is_a_read_error(self, tmp_path, name, body):
+        """AD-200: An unparseable, non-UTF-8 or unclaimed-extension source is a read error.
+
+        The extension selects the parser, so a file ingested as structured data
+        under an extension none of the formats uses is refused rather than guessed.
+        """
+        from sage.source_adapters.base import SourceReadError
+
+        with pytest.raises(SourceReadError) as caught:
+            await self._project(tmp_path, name, body)
+
+        assert str(tmp_path / name) in str(caught.value)
+
+    async def test_ad_201_yaml_is_read_without_constructing_objects(self, tmp_path):
+        """AD-201: A YAML tag naming a Python object is refused, not constructed."""
+        from sage.source_adapters.base import SourceReadError
+
+        marker = tmp_path / "constructed"
+        source = f'!!python/object/apply:os.system ["touch {marker}"]\n'
+
+        with pytest.raises(SourceReadError):
+            await self._project(tmp_path, "unsafe.yaml", source)
+
+        assert not marker.exists()
+
+    @pytest.mark.parametrize(
+        ("data", "title"),
+        [
+            ({"title": "Named by title", "name": "Not this"}, "Named by title"),
+            ({"name": "Named by name"}, "Named by name"),
+            ({"info": {"title": "Named by info"}}, "Named by info"),
+            ([{"title": "Inside a list"}], "fallback"),
+            ({"title": 5}, "fallback"),
+            ({"title": "  "}, "fallback"),
+        ],
+        ids=["title", "name", "info-title", "root-array", "non-string", "blank"],
+    )
+    async def test_ad_202_title_comes_from_the_data_or_the_filename(self, tmp_path, data, title):
+        """AD-202: The title is a top-level title, name or info.title, else the stem."""
+        import json
+
+        _, result = await self._project(tmp_path, "fallback.json", json.dumps(data))
+
+        assert result.title == title
+
+    async def test_ad_203_an_adr_filename_contributes_its_id(self, tmp_path):
+        """AD-203: The ADR filename convention applies as it does to other adapters."""
+        _, result = await self._project(tmp_path, "cas-adr-012_example.json", "{}")
+
+        assert result.metadata["adapter_tier3_metadata"] == {"adr_id": "012"}
+        assert "source_modified_at" in result.metadata
+
+    async def test_ad_204_structured_data_is_a_registered_text_source(self):
+        """AD-204: The adapter is registered, and its type is not a binary container."""
+        from sage.mcp_init import build_source_adapter_registry
+        from sage.models.enums import BINARY_CONTAINER_SOURCE_TYPES, SourceType
+        from sage.source_adapters.structured_data_adapter import StructuredDataAdapter
+
+        registry = build_source_adapter_registry()
+
+        assert isinstance(registry[SourceType.STRUCTURED_DATA], StructuredDataAdapter)
+        assert SourceType.STRUCTURED_DATA not in BINARY_CONTAINER_SOURCE_TYPES
+
+    async def test_ad_205_records_are_not_divided_across_passages(
+        self, tmp_path, ingestion_service
+    ):
+        """AD-205: A record set longer than the embedder bound divides between records.
+
+        The bound admits a few records but not the whole set, so the section is
+        divided; each record's id and note share one passage, and the passages
+        join back to the projection exactly.
+        """
+        import json
+
+        from sage.adapters.stubs import StubEmbeddingProvider
+        from sage.services.passage_split import join_passages
+
+        data = _ledger()
+        _, result = await self._project(tmp_path, "ledger.json", json.dumps(data))
+        record_bytes = len(result.text.encode("utf-8")) // len(data["entries"])
+        ingestion_service._embedding = StubEmbeddingProvider(max_input_tokens=record_bytes * 3)
+
+        chunks = ingestion_service._chunk_projection("doc_ledger", result)
+
+        assert len(chunks) > 1
+        for record in data["entries"]:
+            holding = [chunk for chunk in chunks if record["id"] in chunk.content]
+            assert len(holding) == 1, (record["id"], [c.chunk_index for c in holding])
+            # The id opens the record and the note closes it but for one field, so
+            # a cut inside the record leaves them in different passages.
+            assert record["note"] in holding[0].content, record["id"]
+        # The bound, not a default, sets how many records a passage packs.
+        assert (
+            max(
+                sum(record["id"] in chunk.content for record in data["entries"]) for chunk in chunks
+            )
+            <= 3
+        )
+        assert join_passages(chunks) == result.text

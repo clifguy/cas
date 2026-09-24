@@ -24,6 +24,7 @@ class SourceType(StrEnum):
     TEAMS_CHAT = "teams_chat"
     XLSX = "xlsx"
     PPTX = "pptx"
+    STRUCTURED_DATA = "structured_data"
 
 
 # Source types whose authoritative file is a binary container (a zipped OPC

@@ -120,6 +120,15 @@ def _registered_types(vault) -> list[str]:
     return sorted(source_type.value for source_type in service._adapters)  # noqa: SLF001
 
 
+def _registered_extensions(vault) -> dict[str, list[str]]:
+    application, _root = vault
+    service = application.state.vault_registry[_VAULT_ID].ingestion_service
+    return {
+        source_type.value: list(adapter.EXTENSIONS)
+        for source_type, adapter in service._adapters.items()  # noqa: SLF001
+    }
+
+
 def _write(root: Path, relative: str, body: bytes) -> str:
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -266,6 +275,7 @@ async def test_unresolvable_type_is_refused_identically_on_both_surfaces(
     assert envelope["detail"] == {
         "extension": extension,
         "registered_source_types": _registered_types(vault),
+        "registered_extensions": _registered_extensions(vault),
     }
     assert mcp.get("error") == envelope["code"], mcp
     assert mcp["message"] == envelope["message"]

@@ -828,22 +828,32 @@ def test_get_filename_metadata_publishes_the_registered_source_types():
 
 
 def _assert_publishes_registered_source_types(tool_name: str, path: str) -> None:
-    """``source_type`` names every format an adapter is registered for.
+    """``source_type`` names every registered format with the extensions it is inferred from.
 
-    Derived from the adapter registry rather than from a list written here,
-    so a newly registered adapter that never reaches the tool's text fails
-    this. Read from the parameter's own description: the format names are
-    common words that appear elsewhere in the published text.
+    Derived from the adapter registry rather than from a list written here, and
+    compared both ways: a registered format or extension the text omits fails,
+    and so does one the text names that no adapter is registered for. Each
+    format is written ``name (.ext, .ext)``, so the published map is read back
+    out of the description and compared whole. Read from the parameter's own
+    description: the format names are common words that appear elsewhere in the
+    published text.
     """
     from sage.source_adapters.registry import build_source_adapter_registry
 
     params = parameter_descriptions(published_tool(tool_name).parameters)
     description = params.get(path, "")
-    for source_type in build_source_adapter_registry():
-        assert source_type.value in description, (
-            f"{tool_name}.{path} must name the registered format "
-            f"{source_type.value!r}; got: {description!r}"
-        )
+    published = {
+        name: [ext.strip() for ext in extensions.split(",")]
+        for name, extensions in re.findall(r"(\w+) \((\.[^)]*)\)", description)
+    }
+    registered = {
+        source_type.value: list(adapter.EXTENSIONS)
+        for source_type, adapter in build_source_adapter_registry().items()
+    }
+    assert published == registered, (
+        f"{tool_name}.{path} must publish each registered format with its "
+        f"extensions; published {published!r}, registered {registered!r}"
+    )
 
 
 def test_list_pending_metadata_publishes_the_response_mode_vocabulary():
@@ -937,7 +947,7 @@ def test_discover_docstring_documents_source_type_vocabulary():
     only useful if the caller can read the accepted set without a probe
     round-trip.
 
-    Anti-coincidental-pass: requires (a) every one of the eight source
+    Anti-coincidental-pass: requires (a) every one of the nine source
     types by name, AND (b) the ``invalid_filter_value`` envelope that
     names the rejection path. Listing the key alone -- which the closed
     key-set test already checks -- would not satisfy this.
@@ -952,6 +962,7 @@ def test_discover_docstring_documents_source_type_vocabulary():
         "teams_chat",
         "xlsx",
         "pptx",
+        "structured_data",
     ):
         assert value in doc, (
             f"search docstring is missing source_type value {value!r}. "

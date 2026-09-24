@@ -2583,3 +2583,23 @@ def test_alias_roster_reads_the_annotation_not_the_parameter_name():
     assert _alias_validators(str) == []
     assert _alias_validators(DocumentIdStr) != []
     assert _provoked_code(_alias_validators(DocumentIdStr)[0]) == "invalid_document_id"
+
+
+def test_published_source_type_vocabularies_match_the_enum():
+    """The spec's ``SourceType`` enum and the vault config's adapter_defaults keys
+    name exactly the members of the Python ``SourceType`` enum.
+
+    Both are hand-written copies of one closed vocabulary. ``SourceType`` has no
+    Pydantic model for the class-parity checks to reach, so without this a value
+    added on one side only would publish a vocabulary the server does not accept,
+    or refuse one it does.
+    """
+    from sage.models.enums import SourceType
+
+    members = sorted(member.value for member in SourceType)
+    spec = load_yaml(SAGE_CORE_SPEC_PATH)
+    vault_config = json.loads((SUBSTRATE_ROOT / "sage" / "vault_config.schema.json").read_text())
+
+    assert sorted(spec["components"]["schemas"]["SourceType"]["enum"]) == members
+    adapter_defaults = vault_config["properties"]["adapter_defaults"]
+    assert sorted(adapter_defaults["propertyNames"]["enum"]) == members

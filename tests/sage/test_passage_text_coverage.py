@@ -26,6 +26,7 @@ from sage.source_adapters.docx_adapter import DocxAdapter
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.source_adapters.pdf_adapter import PdfAdapter
 from sage.source_adapters.pptx_adapter import PptxAdapter
+from sage.source_adapters.structured_data_adapter import StructuredDataAdapter
 from sage.source_adapters.xlsx_adapter import XlsxAdapter
 from tests.helpers.pipeline_wait import await_pipeline_idle
 from tests.sage.test_adapters import (
@@ -134,6 +135,14 @@ def _xlsx(directory: Path) -> Path:
     )
 
 
+def _structured_data(directory: Path) -> Path:
+    path = directory / "lead.json"
+    path.write_text(
+        '{"entries": [{"id": "omicron", "note": "sigma record"}, {"id": "tau", "note": "upsilon"}]}'
+    )
+    return path
+
+
 # Each case names words its fixture places before the first heading. The words
 # checked are drawn from the adapter's own text, so these are the control that the
 # text still carries them: an adapter dropping them from its text and its headings
@@ -155,6 +164,9 @@ CASES = [
     ),
     pytest.param(SourceType.PPTX, _pptx, {"untitled_slide_body"}, id="pptx", marks=requires_pptx),
     pytest.param(SourceType.XLSX, _xlsx, {"first_cell"}, id="xlsx", marks=requires_openpyxl),
+    pytest.param(
+        SourceType.STRUCTURED_DATA, _structured_data, {"omicron", "upsilon"}, id="structured-data"
+    ),
 ]
 
 ADAPTERS = {
@@ -163,6 +175,7 @@ ADAPTERS = {
     SourceType.PDF: PdfAdapter(),
     SourceType.PPTX: PptxAdapter(),
     SourceType.XLSX: XlsxAdapter(),
+    SourceType.STRUCTURED_DATA: StructuredDataAdapter(),
 }
 
 

@@ -1777,6 +1777,7 @@ async def test_discover_invalid_source_type_value_rejected(vault_services):
         "teams_chat",
         "xlsx",
         "pptx",
+        "structured_data",
     }
 
 

@@ -408,7 +408,8 @@ _SEARCH_FILTERS = _discover_param(
         'filters={"doc_type": "adr", "lifecycle_status": "active"}; a key '
         "passed at the top level is refused with misplaced_filters rather than "
         "dropped. ``source_type`` takes one of markdown, docx, pdf, email, "
-        "onenote, teams_chat, xlsx, pptx, and ``edge_type`` is closed the same "
+        "onenote, teams_chat, xlsx, pptx, structured_data, and ``edge_type`` is "
+        "closed the same "
         "way; anything else is refused with invalid_filter_value. "
         "``exclude_terminal_lifecycle`` drops documents in a state the vault "
         "declares terminal. ``tier3_metadata`` takes field-to-value pairs that "
@@ -495,19 +496,24 @@ _INGEST_SOURCE = _ingest_param(
     ),
 )
 
-#: The source formats an adapter is registered for, as the parameter
-#: descriptions name them. Held equal to the adapter registry by test rather
-#: than read from it, so loading the tool module instantiates no adapter.
-_REGISTERED_SOURCE_FORMATS = "markdown, docx, xlsx, pptx and pdf"
+#: The source formats an adapter is registered for, each with the extensions it
+#: is inferred from, as the parameter descriptions name them. Held equal to the
+#: adapter registry by test rather than read from it, so loading the tool module
+#: instantiates no adapter.
+_REGISTERED_SOURCE_FORMATS = (
+    "markdown (.md, .markdown), docx (.docx, .dotx), xlsx (.xlsx), "
+    "pptx (.pptx, .potx), pdf (.pdf) and "
+    "structured_data (.json, .jsonl, .yaml, .yml, .toml)"
+)
 
 _INGEST_SOURCE_TYPE = _ingest_param(
     str | None,
     "source_type",
     mcp=(
-        f"The registered formats are {_REGISTERED_SOURCE_FORMATS}; a "
-        "refusal names them in ``registered_source_types``. Inference reads "
-        "the extension: ``.md`` and ``.markdown`` map to markdown, "
-        "``.docx``/``.dotx`` to docx."
+        f"The registered formats are {_REGISTERED_SOURCE_FORMATS}. An omitted "
+        "type is inferred from the extensions listed with each format; a "
+        "refusal names the formats in ``registered_source_types`` and their "
+        "extensions in ``registered_extensions``."
     ),
 )
 

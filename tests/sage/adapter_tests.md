@@ -3145,3 +3145,142 @@ same mapping validated directly is refused.
 AD-183 and AD-184 hold their refused vault default the one way it still reaches a
 running vault after AD-188: stored before the refusal existed and loaded under
 `STORED_CONFIG_CONTEXT`, each arm first confirming that the write path refuses it.
+
+---
+
+## 12. Structured-Data Source Adapter
+
+Covers `sage/source_adapters/structured_data_adapter.py`, which reads JSON,
+JSON Lines, YAML and TOML, choosing the parser by extension. A data file's keys
+are not a document's sections, so the projection has no headings; the whole
+file is one section, which the ingestion service divides at blank lines first.
+The adapter puts a blank line between records -- the members of a container
+whose members are all containers -- so a division falls between records.
+Implemented by `TestStructuredDataAdapter` in `tests/sage/test_adapters.py`.
+
+### TEST-SAGE-AD-190: Each record is one paragraph
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** happy path
+**Precondition:** A JSON envelope holding an array of thirteen flat records.
+
+**Expected:** No headings and no preamble; the projection parses to the source
+data; splitting it at blank lines gives one unit per record, each record's id
+and note in exactly one unit, with the envelope in the first.
+
+### TEST-SAGE-AD-191: Minified JSON projects as the indented form does
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** normalization
+**Expected:** The same data written indented and minified projects to identical
+text, so a minified source gains the line structure a division needs.
+
+### TEST-SAGE-AD-192: Only a container of containers is separated
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** record boundary
+**Decision:** A container is separated only when every member is a container. A
+record with scalar fields keeps its fields together; its nested list of objects
+is separated.
+
+**Expected:** No blank line between a record's scalar fields; a blank line
+between the objects of its nested list and between the records.
+
+### TEST-SAGE-AD-193: JSON Lines project one paragraph per line
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** happy path
+**Expected:** Each blank-line unit parses to the corresponding record.
+
+### TEST-SAGE-AD-194: YAML keeps comments and separates records
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** comment preservation
+**Decision:** YAML keeps its source text and gains only blank lines, placed
+above a record's leading comment so the comment stays with its record.
+
+**Expected:** Parsed data unchanged; every source line present; a blank line
+above each record after the first, and none above the first.
+
+### TEST-SAGE-AD-195: YAML separates records in every document of a stream
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** multi-document
+**Expected:** Records are separated within each document of a `---` stream.
+
+### TEST-SAGE-AD-196: A YAML insertion that would change the data is not made
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** self-check
+**Precondition:** A kept-chomping block scalar (`|+`) directly above a record.
+
+**Expected:** The projection is the source text unchanged, because a blank line
+there would become part of the scalar.
+
+### TEST-SAGE-AD-197: TOML separates tables and keeps comments
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** comment preservation
+**Expected:** Parsed data unchanged; comments kept; a blank line above each
+table header.
+
+### TEST-SAGE-AD-198: A TOML insertion that would change the data is not made
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** self-check
+**Precondition:** A header-shaped line inside a multi-line string.
+
+**Expected:** Parsed data unchanged.
+
+### TEST-SAGE-AD-199: The projection parses to the source data
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** round trip
+**Expected:** For each of `.json`, `.jsonl`, `.yaml`, `.yml` and `.toml`, parsing
+the projection yields the data parsing the source does, with no headings.
+
+### TEST-SAGE-AD-200: An unparseable source is a read error
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** refusal
+**Expected:** Malformed JSON, JSON Lines, YAML or TOML, bytes that are not UTF-8,
+and an extension none of the formats uses each raise `SourceReadError` naming
+the source.
+
+### TEST-SAGE-AD-201: YAML is read without constructing objects
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** safety
+**Expected:** A tag naming a Python object is refused as a read error and
+nothing is constructed.
+
+### TEST-SAGE-AD-202: The title comes from the data or the filename
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** title
+**Expected:** A top-level `title`, then `name`, then `info.title` string; a
+root that is not a mapping, a non-string or a blank value falls back to the
+filename stem.
+
+### TEST-SAGE-AD-203: An ADR filename contributes its id
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** tier3 extraction
+**Expected:** `cas-adr-012_example.json` carries `{"adr_id": "012"}` in
+`adapter_tier3_metadata`.
+
+### TEST-SAGE-AD-204: Structured data is a registered text source
+
+**Artifact:** `sage/source_adapters/registry.py`, `BINARY_CONTAINER_SOURCE_TYPES`
+**Category:** registration
+**Expected:** The registry maps `structured_data` to the adapter, and the type
+is not a binary container, so its content is returned as text.
+
+### TEST-SAGE-AD-205: Records are not divided across passages
+
+**Artifact:** `IngestionService._chunk_projection`
+**Category:** passage division
+**Precondition:** An embedder bound admitting about three records.
+
+**Expected:** More than one passage; no record's id in two passages; the
+passages join back to the projection exactly.

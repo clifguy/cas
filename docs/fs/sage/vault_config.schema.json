@@ -90,7 +90,7 @@
       "type": "object",
       "description": "Per-adapter projection parameters, keyed by source type. Each entry is the vault-level base for that adapter; a per-request `config` deep-merges over it, request keys winning on collision. Adapter availability is not declared here: it is a process-wide capability fixed by the installed adapter implementations (CAS-ADR-046).",
       "propertyNames": {
-        "enum": ["markdown", "docx", "xlsx", "pptx", "pdf", "email", "onenote", "teams_chat"]
+        "enum": ["markdown", "docx", "xlsx", "pptx", "pdf", "email", "onenote", "teams_chat", "structured_data"]
       },
       "additionalProperties": {
         "type": "object",
