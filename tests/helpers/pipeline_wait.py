@@ -180,6 +180,8 @@ def _vault_label(service: Any) -> str:
 
 def _pending_description(service: Any) -> str:
     queue = service._abstraction_queue
+    # ``_unfinished_tasks`` is CPython-private: asyncio.Queue exposes no public
+    # count of jobs taken but not yet marked done (``qsize()`` omits them).
     unfinished = 0 if queue is None else queue._unfinished_tasks
     claims = sorted(service._inflight)
     return f"{unfinished} unfinished abstraction job(s); claims held on {claims}"
