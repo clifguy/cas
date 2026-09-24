@@ -28,7 +28,7 @@ async def app(minimal_vault_config_dict, tmp_vault_dir):
     finally:
         for services in app.state.vault_registry.values():
             services.close_timing()
-            await services.graph_store.close()
+            await services.close_storage()
 
 
 @pytest.fixture
@@ -386,7 +386,7 @@ async def isolated_vault_client(monkeypatch, tmp_path, minimal_vault_config_dict
     finally:
         for services in app.state.vault_registry.values():
             services.close_timing()
-            await services.graph_store.close()
+            await services.close_storage()
 
 
 async def _seed_initial_yaml(client, tmp_vault_dir, name: str = "Initial Name") -> None:

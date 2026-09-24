@@ -95,7 +95,7 @@ async def http_app(minimal_vault_config_dict, monkeypatch, tmp_vault_dir):
     finally:
         if vault_id in app.state.vault_registry:
             app.state.vault_registry[vault_id].close_timing()
-            await app.state.vault_registry[vault_id].graph_store.close()
+            await app.state.vault_registry[vault_id].close_storage()
         _mcp._vaults.clear()
 
 

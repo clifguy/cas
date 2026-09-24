@@ -6,10 +6,12 @@ caused N model loads at server startup for N discovered vaults, with
 N copies of the model resident in memory and N HuggingFace INFO dumps
 on the console.
 
-Identity-reuse and divergence-rejection tests for nomic load the real
-~270 MB model and are gated by ``@requires_embedding``. Qwen3 ``__init__``
-is cheap (config only; MLX loads on first generate_abstract), so its
-singleton tests run unconditionally when mlx-lm is importable. The
+The nomic factory's caching, divergence rejection and reset are exercised
+against a cheap stand-in for the provider class, so they run everywhere; the
+real ~270 MB model is loaded only by the ``initialize_services`` test below and
+by the adapter's own tests, gated by ``@requires_embedding``. Qwen3
+``__init__`` is cheap (config only; MLX loads on first generate_abstract), so
+its singleton tests run unconditionally when mlx-lm is installed. The
 integration test against ``initialize_services`` clears
 ``SAGE_TEST_STUB_PROVIDERS`` to force the production-provider branch
 (parallels ``test_di_005`` in test_mcp_init.py).
@@ -19,8 +21,11 @@ of the implementation surfaces as a collection error (fail-fast), not
 as skipped tests.
 """
 
+import importlib.util
+
 import pytest
 
+import sage.adapters.embedding_nomic as embedding_nomic
 from sage.adapters.abstraction_qwen3 import (
     Qwen3AbstractionProvider,
     _reset_qwen3_singleton,
@@ -37,19 +42,10 @@ from tests.sage.conftest import initialize_services_for_test
 
 # ── Capability gates (whether the underlying model packages are available) ──
 
-try:
-    import sentence_transformers  # noqa: F401
-
-    _HAS_EMBEDDING = True
-except ImportError:
-    _HAS_EMBEDDING = False
-
-try:
-    import mlx_lm  # noqa: F401
-
-    _HAS_MLX = True
-except ImportError:
-    _HAS_MLX = False
+# Presence, not import: importing either package costs seconds at collection,
+# and nothing here needs it loaded to decide whether a test can run.
+_HAS_EMBEDDING = importlib.util.find_spec("sentence_transformers") is not None
+_HAS_MLX = importlib.util.find_spec("mlx_lm") is not None
 
 
 requires_embedding = pytest.mark.skipif(
@@ -79,9 +75,33 @@ def reset_singletons():
 # ══════════════════════════════════════════════════════════════════════
 
 
-@requires_embedding
+class _StandInNomicProvider:
+    """Takes the provider class's place in the factory, loading nothing.
+
+    The factory's own logic -- cache, reject a divergent name, reset -- is
+    what these tests hold; the model the real class loads is not. Every
+    construction is counted, so a test can tell a cache hit from a rebuild.
+    """
+
+    constructed: list["_StandInNomicProvider"] = []
+
+    def __init__(self, model_name: str) -> None:
+        self._model_name = model_name
+        _StandInNomicProvider.constructed.append(self)
+
+
 class TestNomicSingleton:
     """Process-level singleton for NomicEmbeddingProvider."""
+
+    @pytest.fixture(autouse=True)
+    def stand_in_provider(self, monkeypatch):
+        """Route the factory's construction to the stand-in.
+
+        Patched on the module the factory resolves the class from, so it is
+        the factory's own lookup that lands on the stand-in.
+        """
+        _StandInNomicProvider.constructed = []
+        monkeypatch.setattr(embedding_nomic, "NomicEmbeddingProvider", _StandInNomicProvider)
 
     def test_factory_returns_same_instance_on_repeated_calls(self):
         """Two get_nomic_embedding_provider() calls return identical objects.
@@ -92,6 +112,8 @@ class TestNomicSingleton:
         first = get_nomic_embedding_provider()
         second = get_nomic_embedding_provider()
         assert first is second
+        assert isinstance(first, _StandInNomicProvider)
+        assert _StandInNomicProvider.constructed == [first]
 
     def test_factory_rejects_divergent_model_name(self):
         """Requesting a different model_name after the singleton is set raises.
@@ -99,9 +121,10 @@ class TestNomicSingleton:
         Silently loading a second model under a different name would defeat
         the singleton; fail fast instead.
         """
-        get_nomic_embedding_provider()
+        first = get_nomic_embedding_provider()
         with pytest.raises(RuntimeError, match="nomic"):
             get_nomic_embedding_provider(model_name="some-other-embedding-model")
+        assert _StandInNomicProvider.constructed == [first]
 
     def test_reset_allows_fresh_construction(self):
         """After _reset_nomic_singleton(), the next call constructs anew."""
@@ -109,6 +132,7 @@ class TestNomicSingleton:
         _reset_nomic_singleton()
         second = get_nomic_embedding_provider()
         assert first is not second
+        assert _StandInNomicProvider.constructed == [first, second]
 
 
 # ══════════════════════════════════════════════════════════════════════

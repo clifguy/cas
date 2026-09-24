@@ -54,7 +54,7 @@ async def pim_app(tmp_vault_dir):
     yield app
     for services in app.state.vault_registry.values():
         services.close_timing()
-        await services.graph_store.close()
+        await services.close_storage()
 
 
 @pytest.fixture
@@ -67,7 +67,7 @@ async def no_pattern_app(tmp_vault_dir):
     yield app
     for services in app.state.vault_registry.values():
         services.close_timing()
-        await services.graph_store.close()
+        await services.close_storage()
 
 
 @pytest.fixture

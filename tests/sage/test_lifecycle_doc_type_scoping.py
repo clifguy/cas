@@ -615,7 +615,7 @@ async def scoped_app(minimal_vault_config_dict, monkeypatch, _mcp_registry):
         await drain_abstraction_queue(services.ingestion_service)
     finally:
         services.close_timing()
-        await services.graph_store.close()
+        await services.close_storage()
 
 
 async def _rest(app, path: str, body: dict) -> dict:

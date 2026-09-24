@@ -76,7 +76,7 @@ async def app_and_config(tmp_path: Path) -> AsyncIterator[tuple[FastAPI, VaultCo
     finally:
         for services in app.state.vault_registry.values():
             services.close_timing()
-            await services.graph_store.close()
+            await services.close_storage()
 
 
 @pytest.fixture

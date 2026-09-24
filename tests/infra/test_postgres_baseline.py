@@ -11,6 +11,7 @@ import pytest
 import yaml
 
 from scripts.check_ruleset_drift import extract_captured_ruleset
+from tests.helpers.bicep import UNAVAILABLE_REASON, bicep_command, bicep_unavailable
 from tests.infra.test_postgres_migration_driver import Azure, driver
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -84,14 +85,17 @@ def test_ci_coverage_guard_rejects_narrowed_workflows(
         test_converged_ci_preserves_required_coverage()
 
 
+@pytest.mark.skipif(bicep_unavailable(), reason=UNAVAILABLE_REASON)
 def test_compiled_serving_major_ignores_development_bump(tmp_path: Path) -> None:
     dev_major = "18"
     shutil.copytree(ROOT / "infra", tmp_path / "infra")
     manifest = json.loads((ROOT / "versions.json").read_text())
     manifest["postgres"]["dev_major"] = dev_major
     (tmp_path / "versions.json").write_text(json.dumps(manifest))
+    command = bicep_command("build", tmp_path / "infra/main.bicep", None)
+    assert command is not None
     result = subprocess.run(
-        ["az", "bicep", "build", "--file", str(tmp_path / "infra/main.bicep"), "--stdout"],
+        command,
         capture_output=True,
         text=True,
         check=True,

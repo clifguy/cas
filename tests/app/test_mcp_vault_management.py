@@ -101,7 +101,7 @@ async def empty_registry():
     for services in list(_mcp._vaults.values()):
         try:
             services.close_timing()
-            await services.graph_store.close()
+            await services.close_storage()
         except Exception:  # noqa: S110 -- teardown cleanup; close errors must not fail the test
             pass
     _mcp._vaults.clear()

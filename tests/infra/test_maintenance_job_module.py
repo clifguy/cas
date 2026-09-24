@@ -21,12 +21,13 @@ skipped when neither CLI is present.
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Final
 
 import pytest
+
+from tests.helpers.bicep import UNAVAILABLE_REASON, bicep_command, bicep_unavailable
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 INFRA_DIR: Final[Path] = REPO_ROOT / "infra"
@@ -285,18 +286,13 @@ def test_main_wires_maintenance_module() -> None:
     )
 
 
-@pytest.mark.skipif(
-    shutil.which("bicep") is None and shutil.which("az") is None,
-    reason="bicep/az CLI absent; the infra workflow validate job is authoritative",
-)
+@pytest.mark.skipif(bicep_unavailable(), reason=UNAVAILABLE_REASON)
 def test_module_compiles(tmp_path: Path) -> None:
     """The module compiles to ARM JSON with no error (local fast check; the infra
     workflow validate job is the authoritative gate)."""
     outfile = tmp_path / "maintenance-job.json"
-    if shutil.which("bicep") is not None:
-        cmd = ["bicep", "build", str(MODULE), "--outfile", str(outfile)]
-    else:
-        cmd = ["az", "bicep", "build", "--file", str(MODULE), "--outfile", str(outfile)]
+    cmd = bicep_command("build", MODULE, outfile)
+    assert cmd is not None
     proc = subprocess.run(cmd, capture_output=True, text=True)
     assert proc.returncode == 0, f"bicep build failed:\n{proc.stderr}"
 

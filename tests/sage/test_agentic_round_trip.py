@@ -57,6 +57,11 @@ def _id(name: str) -> str:
 # Slow stub for BH-130
 # ---------------------------------------------------------------------------
 
+#: The slow provider's delay, and the line both BH-130 arms are measured
+#: against: a call that waits for abstraction takes at least this long, and one
+#: that does not returns within half of it.
+_BH130_DELAY_S = 1.0
+
 
 class _SlowStubAbstractionProvider(AbstractionProvider):
     """Abstraction provider that sleeps for `delay_s` before returning.
@@ -65,7 +70,7 @@ class _SlowStubAbstractionProvider(AbstractionProvider):
     `wait_for_pipeline=False` call durations without involving a real LLM.
     """
 
-    def __init__(self, delay_s: float = 3.0) -> None:
+    def __init__(self, delay_s: float = _BH130_DELAY_S) -> None:
         self._delay_s = delay_s
 
     async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
@@ -128,7 +133,7 @@ async def app(minimal_vault_config_dict, tmp_vault_dir):
     finally:
         for services in app.state.vault_registry.values():
             services.close_timing()
-            await services.graph_store.close()
+            await services.close_storage()
 
 
 @pytest.fixture
@@ -535,7 +540,7 @@ def slow_ingestion_service(
         lock_manager=lock_manager,
         content_store=stub_content_store,
         embedding_provider=stub_embedding_provider,
-        abstraction_provider=_SlowStubAbstractionProvider(delay_s=3.0),
+        abstraction_provider=_SlowStubAbstractionProvider(),
         config=minimal_config,
         source_adapters={_SourceType.MARKDOWN: MarkdownAdapter()},
         lifecycle_service=lifecycle_service,
@@ -554,8 +559,11 @@ async def test_bh_130_fire_and_forget_returns_fast(
     )
     elapsed = time.monotonic() - start
 
-    # Must return well before the 3s artificial abstraction delay.
-    assert elapsed < 2.0, f"fire-and-forget ingest took {elapsed:.2f}s"
+    # Returns well inside the abstraction delay, and the status read there shows
+    # abstraction unfinished. Within the delay a completed status could only have
+    # come from waiting for it, which is what the timing bound keeps true.
+    assert elapsed < _BH130_DELAY_S / 2, f"fire-and-forget ingest took {elapsed:.2f}s"
+    assert result.document.pipeline_status != PipelineStatus.ABSTRACTION_COMPLETE
     # Background task will finish the pipeline eventually.
     terminal = await await_pipeline_terminal(
         graph_store, slow_ingestion_service, result.document.id, timeout_s=10.0
@@ -576,7 +584,7 @@ async def test_bh_130_sync_path_waits_for_pipeline(
     elapsed = time.monotonic() - start
 
     # wait_for_pipeline=True must block until abstraction completes.
-    assert elapsed >= 3.0, f"sync ingest returned too fast: {elapsed:.2f}s"
+    assert elapsed >= _BH130_DELAY_S, f"sync ingest returned too fast: {elapsed:.2f}s"
     assert result.document.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
 
 

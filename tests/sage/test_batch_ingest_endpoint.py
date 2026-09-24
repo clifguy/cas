@@ -87,7 +87,7 @@ async def batch_app(minimal_vault_config_dict, monkeypatch):
         registry: dict[str, SAGEServices] = app.state.vault_registry
         if vault_id in registry:
             registry[vault_id].close_timing()
-            await registry[vault_id].graph_store.close()
+            await registry[vault_id].close_storage()
         mcp_server._vaults.clear()
 
 
@@ -1813,7 +1813,7 @@ async def tier3_batch_app(minimal_vault_config_dict, monkeypatch):
         registry: dict[str, SAGEServices] = app.state.vault_registry
         if vault_id in registry:
             registry[vault_id].close_timing()
-            await registry[vault_id].graph_store.close()
+            await registry[vault_id].close_storage()
         mcp_server._vaults.clear()
 
 

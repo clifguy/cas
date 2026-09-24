@@ -56,7 +56,7 @@ async def seeded_app(minimal_vault_config_dict, monkeypatch):
     finally:
         if vault_id in app.state.vault_registry:
             app.state.vault_registry[vault_id].close_timing()
-            await app.state.vault_registry[vault_id].graph_store.close()
+            await app.state.vault_registry[vault_id].close_storage()
         mcp_server._vaults.clear()
 
 

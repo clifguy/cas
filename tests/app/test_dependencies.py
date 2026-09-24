@@ -51,7 +51,7 @@ async def app_with_vault(tmp_path):
     finally:
         for services in app.state.vault_registry.values():
             services.close_timing()
-            await services.graph_store.close()
+            await services.close_storage()
 
 
 @pytest.fixture

@@ -16,7 +16,7 @@ into unrelated tests downstream.
 
 The remedy at a leaking site is to build services through
 ``initialize_services_for_test`` or to call ``services.close_timing()`` before
-``graph_store.close()`` on teardown.
+``services.close_storage()`` on teardown.
 """
 
 from __future__ import annotations
@@ -119,6 +119,6 @@ def check_and_reap_timing_leaks(handlers_before: set[str], threads_before: set[i
             f"{len(leaked_handlers)} timing.log handler(s), "
             f"{len(leaked_threads)} VaultTimingThread(s). Tear services down via "
             "initialize_services_for_test or call services.close_timing() before "
-            "graph_store.close().",
+            "services.close_storage().",
             pytrace=False,
         )

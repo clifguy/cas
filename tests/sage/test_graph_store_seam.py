@@ -226,7 +226,7 @@ async def _init_with_stubs(config: VaultConfig, **graph_kwargs):
 
 async def _teardown(services) -> None:
     services.close_timing()
-    await services.graph_store.close()
+    await services.close_storage()
 
 
 async def test_substitutability_instance_injection(minimal_vault_config_dict):

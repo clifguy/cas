@@ -54,7 +54,7 @@ async def seeded_mcp_vault(minimal_vault_config_dict, monkeypatch, empty_registr
     yield vault_id, seeded_ids
 
     services.close_timing()
-    await services.graph_store.close()
+    await services.close_storage()
 
 
 async def test_mcp_tool_round_trip_returns_dict_matching_response_model(seeded_mcp_vault):
@@ -224,7 +224,7 @@ async def seeded_six_with_abstracts(minimal_vault_config_dict, monkeypatch, empt
     yield vault_id, seeded_ids
 
     services.close_timing()
-    await services.graph_store.close()
+    await services.close_storage()
 
 
 async def test_light_strips_document_and_semantic_abstract(

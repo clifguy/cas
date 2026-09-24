@@ -13,6 +13,7 @@ import pytest
 import yaml
 
 ROOT = Path(__file__).resolve().parents[2]
+FAKE_AZ = Path(__file__).resolve().with_name("_fake_az.py")
 
 
 def initial_state() -> dict:
@@ -81,56 +82,6 @@ def initial_state() -> dict:
     }
 
 
-def fake_azure() -> None:
-    path = Path(os.environ["AZURE_STATE"])
-    state = json.loads(path.read_text())
-    args = sys.argv[1:]
-    with Path(os.environ["AZURE_CALLS"]).open("a") as stream:
-        stream.write(json.dumps(args) + "\n")
-
-    def arg(name: str) -> str:
-        return args[args.index(name) + 1]
-
-    if state.get("read_failure") and args[:3] == ["containerapp", "revision", "list"]:
-        sys.exit(7)
-    if args[:3] == ["deployment", "sub", "show"]:
-        result = state["deployment"]
-        if "--query" in args:
-            result = result["properties"]["outputs"][arg("--query").split(".")[2]]["value"]
-    elif args[:2] == ["group", "show"]:
-        result = {"tags": {"casPostgresMigration": state["fence"]}}
-    elif args[:2] == ["containerapp", "show"]:
-        result = {"name": arg("--name"), "properties": state["apps"][arg("--name")]["properties"]}
-    elif args[:3] == ["containerapp", "secret", "list"]:
-        result = state["apps"][arg("--name")]["secrets"]
-        if "--show-values" not in args:
-            result = [{"name": s["name"]} for s in result]
-    elif args[:3] == ["containerapp", "revision", "list"]:
-        result = state["apps"][arg("--name")]["revisions"]
-        if "--all" not in args:
-            result = [r for r in result if r["properties"]["active"]]
-        if "--query" in args:
-            result = next((r["name"] for r in result if r["properties"]["active"]), "")
-    elif args[:3] in (
-        ["containerapp", "revision", "restart"],
-        ["containerapp", "revision", "activate"],
-    ):
-        revisions = state["apps"][arg("--name")]["revisions"]
-        revision = next((r for r in revisions if r["name"] == arg("--revision")), None)
-        if revision is None or (args[2] == "restart" and not revision["properties"]["active"]):
-            print("revision does not exist or is inactive", file=sys.stderr)
-            sys.exit(8)
-        if state.get("fail_app") == arg("--name"):
-            sys.exit(9)
-        if not state.get("no_effect"):
-            revision["properties"]["active"] = True
-        result = {}
-        path.write_text(json.dumps(state))
-    else:
-        raise AssertionError(args)
-    print(result if isinstance(result, str) else json.dumps(result))
-
-
 def run_step(
     tmp_path: Path, state: dict, generation: str = "pg17"
 ) -> tuple[subprocess.CompletedProcess, list[list[str]], dict]:
@@ -139,10 +90,7 @@ def run_step(
     calls_path = tmp_path / "calls.jsonl"
     calls_path.write_text("")
     az = tmp_path / "az"
-    az.write_text(
-        f"#!{sys.executable}\nimport runpy\n"
-        f'runpy.run_path({str(Path(__file__).resolve())!r}, run_name="__main__")\n'
-    )
+    az.write_text(f"#!{sys.executable} -IS\n" + FAKE_AZ.read_text())
     az.chmod(0o755)
     python = tmp_path / "python3"
     if not python.exists():
@@ -353,5 +301,33 @@ def test_convergence_failure_cannot_release_fence() -> None:
         assert not steps[i].get("continue-on-error", False)
 
 
-if __name__ == "__main__":
-    fake_azure()
+def test_fake_az_is_a_standalone_script(tmp_path: Path) -> None:
+    """The stubbed ``az`` answers from its state file with site-packages disabled.
+
+    The behavioral tests above read the stub's calls and state back, so they
+    prove what it does but not what it costs: a stub that loaded this test
+    module on every call would pass them all. Running it without site-packages
+    is what separates the two, since pytest and PyYAML are not in the standard
+    library.
+    """
+    run_step(tmp_path, initial_state())
+    az = tmp_path / "az"
+    text = az.read_text()
+    assert text.startswith(f"#!{sys.executable} -IS\n"), text.splitlines()[0]
+    assert "runpy" not in text
+    assert Path(__file__).name not in text
+
+    (tmp_path / "state.json").write_text(json.dumps(initial_state()))
+    result = subprocess.run(
+        [str(az), "group", "show", "--name", "group"],
+        env={
+            "PATH": os.environ["PATH"],
+            "AZURE_STATE": str(tmp_path / "state.json"),
+            "AZURE_CALLS": str(tmp_path / "isolated-calls.jsonl"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {"tags": {"casPostgresMigration": "cutover:pg17"}}

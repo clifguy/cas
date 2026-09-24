@@ -216,7 +216,7 @@ async def vault_services(minimal_vault_config_dict, tmp_vault_dir):
                     await drain_abstraction_queue(current.ingestion_service)
                 finally:
                     current.close_timing()
-                    await current.graph_store.close()
+                    await current.close_storage()
 
 
 def _parse(result: str | dict) -> dict:
@@ -2448,7 +2448,7 @@ async def test_reload_vault_preserves_content_store_factory_across_two_reloads(
             current = _mcp._vaults.get("factory_vault")
             if current is not None and current is not services:
                 current.close_timing()
-                await current.graph_store.close()
+                await current.close_storage()
             _mcp._vaults.pop("factory_vault", None)
 
 
@@ -2502,7 +2502,7 @@ async def test_reload_vault_picks_up_yaml_edits(minimal_vault_config_dict, tmp_v
             current = _mcp._vaults.get("yaml_reload_vault")
             if current is not None and current is not services:
                 current.close_timing()
-                await current.graph_store.close()
+                await current.close_storage()
             _mcp._vaults.pop("yaml_reload_vault", None)
 
 
@@ -2555,7 +2555,7 @@ async def vault_services_with_registry(minimal_vault_config_dict, tmp_vault_dir,
                     await drain_abstraction_queue(current.ingestion_service)
                 finally:
                     current.close_timing()
-                    await current.graph_store.close()
+                    await current.close_storage()
             _mcp._vaults.pop("test_vault", None)
 
 

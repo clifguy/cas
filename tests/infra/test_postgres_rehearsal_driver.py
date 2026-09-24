@@ -1,28 +1,26 @@
 """Admission and compiled-deployment tests for the real migration driver."""
 
 import json
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
 
 import pytest
 
+from tests.helpers.bicep import UNAVAILABLE_REASON, bicep_command, bicep_unavailable
 from tests.infra.test_postgres_migration_driver import ROOT, Azure, driver
 
 
+@pytest.mark.skipif(bicep_unavailable(), reason=UNAVAILABLE_REASON)
 def test_nested_deployment_cannot_overwrite_driver_parent(tmp_path: Path) -> None:
     az = Azure()
     driver().prepare(az, "prod", "group", "g17")
     call = next(c for c in az.calls if "infra/postgres-replacement.bicep" in c)
     parent = call[call.index("--name") + 1]
     output = tmp_path / "replacement.json"
-    command = ["bicep", "build"] if shutil.which("bicep") else ["az", "bicep", "build", "--file"]
-    subprocess.run(
-        [*command, str(ROOT / "infra/postgres-replacement.bicep"), "--outfile", str(output)],
-        check=True,
-        capture_output=True,
-    )
+    command = bicep_command("build", ROOT / "infra/postgres-replacement.bicep", output)
+    assert command is not None
+    subprocess.run(command, check=True, capture_output=True)
     template = json.loads(output.read_text())
     nested = [r for r in template["resources"] if r["type"] == "Microsoft.Resources/deployments"]
     assert nested, "must inspect the compiled nested deployment"

@@ -28,7 +28,6 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import subprocess
 import tomllib
 from pathlib import Path
@@ -37,6 +36,7 @@ from typing import Any, Final
 import pytest
 import yaml
 
+from tests.helpers.bicep import UNAVAILABLE_REASON, bicep_command, bicep_unavailable
 from tests.helpers.versions import (
     REPO_ROOT,
     VERSIONS_MANIFEST,
@@ -296,10 +296,7 @@ def test_bicep_reads_the_manifest_for_the_deploy_major() -> None:
     )
 
 
-@pytest.mark.skipif(
-    shutil.which("bicep") is None and shutil.which("az") is None,
-    reason="bicep/az CLI absent; the infra workflow validate job is authoritative",
-)
+@pytest.mark.skipif(bicep_unavailable(), reason=UNAVAILABLE_REASON)
 def test_bicep_compiles_with_the_loaded_default(tmp_path: Path) -> None:
     """The compiled ARM resolves the server version from the loaded manifest.
 
@@ -317,10 +314,8 @@ def test_bicep_compiles_with_the_loaded_default(tmp_path: Path) -> None:
     loaded variable, and that variable carries the declared major.
     """
     outfile = tmp_path / "main.json"
-    if shutil.which("bicep") is not None:
-        cmd = ["bicep", "build", str(MAIN_BICEP), "--outfile", str(outfile)]
-    else:
-        cmd = ["az", "bicep", "build", "--file", str(MAIN_BICEP), "--outfile", str(outfile)]
+    cmd = bicep_command("build", MAIN_BICEP, outfile)
+    assert cmd is not None
     proc = subprocess.run(cmd, capture_output=True, text=True)
     assert proc.returncode == 0, f"bicep build failed:\n{proc.stderr}"
 
