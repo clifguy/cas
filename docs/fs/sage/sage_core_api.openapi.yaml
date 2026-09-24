@@ -4168,8 +4168,9 @@ paths:
         documents a backfill rewrites are re-embedded.
 
 
-        Idempotent: a re-call with nothing left to repair reports empty
-        columns_added and backfills_applied lists and no error.
+        Idempotent: a re-call with nothing left to repair reports no error
+        and empty lists, except tier3_uniqueness_activations, which re-lists
+        each clean declaration.
 
 
         The last backfill is expensive and exclusive, and runs once. It
@@ -8889,7 +8890,7 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/MigrationReportEntry"
-          description: Per-column entries for every ALTER TABLE that was applied. Empty when no schema work was pending.
+          description: "Always empty: the store's schema is provisioned externally, so the migration applies no column changes. Retained for response shape."
         backfills_applied:
           type: array
           items:
@@ -8912,8 +8913,9 @@ components:
           description: >-
             Per-(doc_type, field) entries for each `unique_keys` declaration
             whose underlying partial UNIQUE index was created or confirmed by
-            this migration. Empty when no `unique_keys` are declared
-            or all were already active.
+            this migration. Every clean declaration is listed on every call,
+            including a re-call that changes nothing; empty only when no
+            `unique_keys` are declared or every declaration collides.
         tier3_uniqueness_collisions:
           type: array
           items:

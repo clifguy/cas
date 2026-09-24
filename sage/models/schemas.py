@@ -4698,8 +4698,8 @@ class MigrationReport(BaseModel):
     vault_id: VaultIdStr = Field(description="Identifier of the vault whose schema was inspected.")
     columns_added: list[MigrationReportEntry] = Field(
         description=(
-            "Per-column entries for every ALTER TABLE that was applied. "
-            "Empty when no schema work was pending."
+            "Always empty: the store's schema is provisioned externally, so the "
+            "migration applies no column changes. Retained for response shape."
         )
     )
     backfills_applied: list[str] = Field(
@@ -4723,8 +4723,9 @@ class MigrationReport(BaseModel):
         description=(
             "Per-(doc_type, field) entries for each `unique_keys` declaration "
             "whose underlying partial UNIQUE index was created or confirmed by "
-            "this migration. Empty when no `unique_keys` are declared "
-            "or all were already active."
+            "this migration. Every clean declaration is listed on every call, "
+            "including a re-call that changes nothing; empty only when no "
+            "`unique_keys` are declared or every declaration collides."
         ),
     )
     tier3_uniqueness_collisions: list[Tier3UniquenessCollision] = Field(
