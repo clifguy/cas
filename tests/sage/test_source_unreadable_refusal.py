@@ -15,7 +15,6 @@ server fault is never presented to a caller as something to fix in the file.
 
 from __future__ import annotations
 
-import asyncio
 import io
 import json
 import zipfile
@@ -39,7 +38,7 @@ from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.source_adapters.pdf_adapter import PdfAdapter
 from sage.source_adapters.pptx_adapter import PptxAdapter
 from sage.source_adapters.xlsx_adapter import XlsxAdapter
-from tests.helpers.pipeline_wait import await_tool_idle
+from tests.helpers.pipeline_wait import await_tool_idle, drain_vaults
 
 _VAULT_ID = "test_vault"
 _INGEST = f"/sage_vaults/{_VAULT_ID}/documents"
@@ -95,11 +94,13 @@ async def vault(minimal_vault_config_dict):
     try:
         yield application, Path(config.vault.storage_root)
     finally:
-        await asyncio.sleep(0.3)
-        for services in application.state.vault_registry.values():
-            services.close_timing()
-            await services.graph_store.close()
-        _mcp._vaults.pop(_VAULT_ID, None)
+        try:
+            await drain_vaults(application.state.vault_registry)
+        finally:
+            for services in application.state.vault_registry.values():
+                services.close_timing()
+                await services.graph_store.close()
+            _mcp._vaults.pop(_VAULT_ID, None)
 
 
 @pytest.fixture

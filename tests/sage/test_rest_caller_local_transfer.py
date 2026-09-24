@@ -14,7 +14,6 @@ signal. The delivery-shape refusals are compared whole against the literals
 the MCP suite pins, so the two surfaces cannot drift apart in wording.
 """
 
-import asyncio
 import contextlib
 import hashlib
 import json
@@ -36,6 +35,7 @@ from sage.config import SageCoreConfig, VaultConfig
 from sage.mcp_server import ingest_document, restore_vault_source_file
 from sage.models.schemas import IngestRequest
 from sage.services.transfer import get_transfer_store, reset_transfer_store
+from tests.helpers.pipeline_wait import drain_vaults
 from tests.sage.test_mcp_caller_fs_confinement import (
     _AMBIGUOUS_NAMING_SOURCE,
     _MISSING_NAMING_SOURCE,
@@ -87,11 +87,13 @@ async def vault(minimal_vault_config_dict):
     try:
         yield application, Path(config.vault.storage_root)
     finally:
-        await asyncio.sleep(0.3)
-        for services in application.state.vault_registry.values():
-            services.close_timing()
-            await services.graph_store.close()
-        _mcp._vaults.pop(_VAULT_ID, None)
+        try:
+            await drain_vaults(application.state.vault_registry)
+        finally:
+            for services in application.state.vault_registry.values():
+                services.close_timing()
+                await services.graph_store.close()
+            _mcp._vaults.pop(_VAULT_ID, None)
 
 
 @pytest.fixture

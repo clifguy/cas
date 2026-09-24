@@ -9,7 +9,6 @@ Covers:
   - Batch ingest with SSE (BE-022 through BE-028, BE-031 through BE-033)
 """
 
-import asyncio
 import json
 from pathlib import Path
 
@@ -24,6 +23,7 @@ from sage.adapters.stubs import (
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from sage.services.filename_parser import FilenameParser, normalize_version
+from tests.helpers.pipeline_wait import drain_vaults
 
 # ---------------------------------------------------------------------------
 # Shared helpers
@@ -564,10 +564,12 @@ async def scan_app(tmp_path):
 
     yield app, config
 
-    await asyncio.sleep(0.1)
-    for services in app.state.vault_registry.values():
-        services.close_timing()
-        await services.graph_store.close()
+    try:
+        await drain_vaults(app.state.vault_registry)
+    finally:
+        for services in app.state.vault_registry.values():
+            services.close_timing()
+            await services.graph_store.close()
 
 
 @pytest.fixture
@@ -771,10 +773,12 @@ async def ingest_app(tmp_path):
 
     yield app, config
 
-    await asyncio.sleep(0.3)
-    for services in app.state.vault_registry.values():
-        services.close_timing()
-        await services.graph_store.close()
+    try:
+        await drain_vaults(app.state.vault_registry)
+    finally:
+        for services in app.state.vault_registry.values():
+            services.close_timing()
+            await services.graph_store.close()
 
 
 @pytest.fixture

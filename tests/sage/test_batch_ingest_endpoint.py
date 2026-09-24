@@ -44,6 +44,7 @@ from sage.services import batch_ingest_stream
 from sage.services.batch_ingest import BatchIngestService, FileDescriptor
 from sage.services.batch_ingest_stream import UploadedFile, stream_uploaded_batch_ingest
 from tests.helpers.bff_session import StubOidc, bff_settings, live_session, sessioned_client
+from tests.helpers.pipeline_wait import drain_vaults
 from tests.sage._dry_run_helpers import assert_state_unchanged, state_snapshot
 
 
@@ -80,12 +81,14 @@ async def batch_app(minimal_vault_config_dict, monkeypatch):
     vault_id = config.vault.id
     yield app, vault_id, config
 
-    await asyncio.sleep(0.05)
-    registry: dict[str, SAGEServices] = app.state.vault_registry
-    if vault_id in registry:
-        registry[vault_id].close_timing()
-        await registry[vault_id].graph_store.close()
-    mcp_server._vaults.clear()
+    try:
+        await drain_vaults(app.state.vault_registry, [vault_id])
+    finally:
+        registry: dict[str, SAGEServices] = app.state.vault_registry
+        if vault_id in registry:
+            registry[vault_id].close_timing()
+            await registry[vault_id].graph_store.close()
+        mcp_server._vaults.clear()
 
 
 def _client(app) -> AsyncClient:
@@ -1804,12 +1807,14 @@ async def tier3_batch_app(minimal_vault_config_dict, monkeypatch):
     vault_id = config.vault.id
     yield app, vault_id, config
 
-    await asyncio.sleep(0.05)
-    registry: dict[str, SAGEServices] = app.state.vault_registry
-    if vault_id in registry:
-        registry[vault_id].close_timing()
-        await registry[vault_id].graph_store.close()
-    mcp_server._vaults.clear()
+    try:
+        await drain_vaults(app.state.vault_registry, [vault_id])
+    finally:
+        registry: dict[str, SAGEServices] = app.state.vault_registry
+        if vault_id in registry:
+            registry[vault_id].close_timing()
+            await registry[vault_id].graph_store.close()
+        mcp_server._vaults.clear()
 
 
 async def test_b32_needs_review_false_commits_metadata_as_authoritative(batch_app):

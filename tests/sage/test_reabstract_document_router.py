@@ -26,7 +26,7 @@ from sage.config import VaultConfig
 from sage.mcp_init import SAGEServices
 from sage.models.enums import PipelineStatus
 from sage.models.schemas import ReabstractStartedResponse
-from tests.helpers.pipeline_wait import await_pipeline_idle
+from tests.helpers.pipeline_wait import await_pipeline_idle, drain_vaults
 from tests.sage.test_graph_ops import _make_doc
 from tests.sage.test_lifecycle import _id
 from tests.sage.test_reabstract_deferred_service import _GatedAbstractionProvider
@@ -103,12 +103,14 @@ async def document_app(minimal_vault_config_dict, monkeypatch):
     vault_id = config.vault.id
     yield app, vault_id
 
-    await asyncio.sleep(0.1)
-    registry: dict[str, SAGEServices] = app.state.vault_registry
-    if vault_id in registry:
-        registry[vault_id].close_timing()
-        await registry[vault_id].graph_store.close()
-    mcp_server._vaults.clear()
+    try:
+        await drain_vaults(app.state.vault_registry, [vault_id])
+    finally:
+        registry: dict[str, SAGEServices] = app.state.vault_registry
+        if vault_id in registry:
+            registry[vault_id].close_timing()
+            await registry[vault_id].graph_store.close()
+        mcp_server._vaults.clear()
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +305,9 @@ async def test_post_reabstract_document_concurrent_returns_409(
                 await _poll_pipeline_status(services, doc_id) == PipelineStatus.ABSTRACTION_COMPLETE
             )
     finally:
-        await asyncio.sleep(0.1)
-        app.state.vault_registry[vault_id].close_timing()
-        await app.state.vault_registry[vault_id].graph_store.close()
-        mcp_server._vaults.clear()
+        try:
+            await drain_vaults(app.state.vault_registry, [vault_id])
+        finally:
+            app.state.vault_registry[vault_id].close_timing()
+            await app.state.vault_registry[vault_id].graph_store.close()
+            mcp_server._vaults.clear()

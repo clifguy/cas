@@ -10,7 +10,6 @@ three thin ``Document`` → response-model projections in
 Projection-Point Audit Conventions* steering document.
 """
 
-import asyncio
 import hashlib
 import re
 from datetime import datetime, timezone
@@ -40,6 +39,7 @@ from sage.models.schemas import (
 from sage.services.ingestion import IngestionService
 from sage.services.utilities import UtilitiesService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
+from tests.helpers.pipeline_wait import await_pipeline_idle
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 
@@ -120,9 +120,7 @@ async def ingested_doc(
     result = await ingestion.ingest(
         IngestRequest(source="test/sample.md", source_type=SourceType.MARKDOWN),
     )
-
-    # Wait for background pipeline to complete
-    await asyncio.sleep(0.5)
+    await await_pipeline_idle(graph_store, result.document.id, service=ingestion)
 
     return result.document
 
@@ -694,8 +692,6 @@ async def test_bh041_retrieval_assertions_from_yaml(
         IngestRequest(source="test/beta.md", source_type=SourceType.MARKDOWN),
     )
     doc_beta = result_beta.document
-
-    await asyncio.sleep(0.5)
 
     # Create assertions YAML referencing the actual document IDs
     assertions = {

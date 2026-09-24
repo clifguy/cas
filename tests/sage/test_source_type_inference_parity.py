@@ -12,7 +12,6 @@ completion that is the staged file, which carries the caller's own basename, so
 a completion naming no type infers exactly as the co-located call would have.
 """
 
-import asyncio
 import contextlib
 import io
 import json
@@ -35,6 +34,7 @@ from sage.config import SageCoreConfig, VaultConfig
 from sage.mcp_server import bulk_ingest_document, ingest_document, search
 from sage.models.schemas import BatchIngestFileMetadata, IngestRequest
 from sage.services.transfer import get_transfer_store, reset_transfer_store
+from tests.helpers.pipeline_wait import drain_vaults
 
 _VAULT_ID = "test_vault"
 _BASE = "https://sage.test.example"
@@ -98,11 +98,13 @@ async def vault(minimal_vault_config_dict):
     try:
         yield application, Path(config.vault.storage_root)
     finally:
-        await asyncio.sleep(0.3)
-        for services in application.state.vault_registry.values():
-            services.close_timing()
-            await services.graph_store.close()
-        _mcp._vaults.pop(_VAULT_ID, None)
+        try:
+            await drain_vaults(application.state.vault_registry)
+        finally:
+            for services in application.state.vault_registry.values():
+                services.close_timing()
+                await services.graph_store.close()
+            _mcp._vaults.pop(_VAULT_ID, None)
 
 
 @pytest.fixture

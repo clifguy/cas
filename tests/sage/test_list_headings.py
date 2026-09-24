@@ -19,7 +19,6 @@ Test cases:
     argument names, and intent-carrying docstring.
 """
 
-import asyncio
 import hashlib
 import inspect
 import re
@@ -36,6 +35,7 @@ from sage.models.schemas import IngestRequest
 from sage.services.ingestion import IngestionService
 from sage.services.utilities import UtilitiesService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
+from tests.helpers.pipeline_wait import await_pipeline_idle
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 
@@ -104,7 +104,7 @@ def listing_services(
 
 
 @pytest.fixture
-async def multi_section_doc(listing_services, tmp_vault_dir):
+async def multi_section_doc(listing_services, graph_store, tmp_vault_dir):
     _, ingestion = listing_services
 
     sources = tmp_vault_dir / "sources"
@@ -115,7 +115,7 @@ async def multi_section_doc(listing_services, tmp_vault_dir):
     result = await ingestion.ingest(
         IngestRequest(source="test/multi.md", source_type=SourceType.MARKDOWN),
     )
-    await asyncio.sleep(0.5)
+    await await_pipeline_idle(graph_store, result.document.id, service=ingestion)
     return result.document
 
 

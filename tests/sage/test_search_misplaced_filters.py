@@ -34,7 +34,6 @@ that reproduces the original silent-wrong-data symptom.
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import json
 
@@ -133,10 +132,6 @@ async def vault_services(minimal_vault_config_dict, tmp_vault_dir):
         try:
             yield services
         finally:
-            # Teardown drain, not a wait on either ingested document: it lets
-            # background work unwind before the registry slot is dropped. There
-            # is no document to poll for here -- the tests have already run.
-            await asyncio.sleep(0.5)
             _mcp_vaults.pop("test_vault", None)
 
 

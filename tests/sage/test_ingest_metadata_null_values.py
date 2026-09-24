@@ -15,7 +15,6 @@ and a test against the service alone would never meet it.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 
@@ -35,7 +34,7 @@ from sage.config import VaultConfig
 from sage.mcp_server import _vaults as _mcp_vaults
 from sage.mcp_server import get_document, mcp
 from sage.models.schemas import IngestRequest
-from tests.helpers.pipeline_wait import await_tool_idle
+from tests.helpers.pipeline_wait import await_tool_idle, drain_vaults
 from tests.sage.conftest import initialize_services_for_test
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -71,7 +70,6 @@ async def vault_services(minimal_vault_config_dict, tmp_vault_dir):
         try:
             yield services
         finally:
-            await asyncio.sleep(0.5)
             _mcp_vaults.pop("test_vault", None)
 
 
@@ -92,11 +90,13 @@ async def http_app(minimal_vault_config_dict, monkeypatch, tmp_vault_dir):
 
     yield app, vault_id, test_dir
 
-    await asyncio.sleep(0.1)
-    if vault_id in app.state.vault_registry:
-        app.state.vault_registry[vault_id].close_timing()
-        await app.state.vault_registry[vault_id].graph_store.close()
-    _mcp._vaults.clear()
+    try:
+        await drain_vaults(app.state.vault_registry, [vault_id])
+    finally:
+        if vault_id in app.state.vault_registry:
+            app.state.vault_registry[vault_id].close_timing()
+            await app.state.vault_registry[vault_id].graph_store.close()
+        _mcp._vaults.clear()
 
 
 def _decode_envelope(result) -> dict:

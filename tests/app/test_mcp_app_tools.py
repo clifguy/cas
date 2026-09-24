@@ -5,7 +5,6 @@ Direct function calls bypassing MCP transport, matching the existing
 MCP test pattern in tests/sage/test_mcp_server.py.
 """
 
-import asyncio
 import hashlib
 import inspect
 import json
@@ -212,7 +211,6 @@ async def two_vaults(tmp_path):
         try:
             yield s1, s2
         finally:
-            await asyncio.sleep(0.1)
             _mcp._vaults.pop("test_vault", None)
             _mcp._vaults.pop("second_vault", None)
 
@@ -238,7 +236,6 @@ async def single_vault(tmp_path):
         try:
             yield services, config
         finally:
-            await asyncio.sleep(0.3)
             _mcp._vaults.pop("test_vault", None)
 
 
@@ -287,7 +284,6 @@ async def tier3_vault(tmp_path):
         try:
             yield services, config
         finally:
-            await asyncio.sleep(0.3)
             _mcp._vaults.pop("tier3_vault", None)
 
 
@@ -774,7 +770,6 @@ class TestSagePendingMetadata:
                 assert result["status"] == "pending_review"
                 assert "document" in result["items"][0]
             finally:
-                await asyncio.sleep(0.3)
                 _mcp._vaults.pop("review_vault", None)
             _mcp._vaults.pop("review_vault", None)
 

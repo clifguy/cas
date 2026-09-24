@@ -23,7 +23,6 @@ Three boundaries are held alongside the refusal:
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -42,6 +41,7 @@ from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from tests.app.test_app_backend import _make_vault_config_dict
 from tests.helpers.bff_session import auth_app, sessioned_client
+from tests.helpers.pipeline_wait import drain_vaults
 
 VAULT_ID = "example_vault"
 BOGUS_FIELD = "bogus_field_x"
@@ -71,10 +71,12 @@ async def app_and_config(tmp_path: Path) -> AsyncIterator[tuple[FastAPI, VaultCo
 
     yield app, config
 
-    await asyncio.sleep(0.3)
-    for services in app.state.vault_registry.values():
-        services.close_timing()
-        await services.graph_store.close()
+    try:
+        await drain_vaults(app.state.vault_registry)
+    finally:
+        for services in app.state.vault_registry.values():
+            services.close_timing()
+            await services.graph_store.close()
 
 
 @pytest.fixture

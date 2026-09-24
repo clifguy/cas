@@ -16,14 +16,13 @@ H. Destructive-change case — dry-run on a destructive update NEVER
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from sage.vault_management import config_path_for_vault
+from tests.helpers.pipeline_wait import drain_vaults
 
 
 @pytest.fixture
@@ -33,10 +32,12 @@ async def app(minimal_vault_config_dict, tmp_vault_dir):
     app = create_app(config=config)
     await _initialize_services(app, config)
     yield app
-    await asyncio.sleep(0.1)
-    for services in app.state.vault_registry.values():
-        services.close_timing()
-        await services.graph_store.close()
+    try:
+        await drain_vaults(app.state.vault_registry)
+    finally:
+        for services in app.state.vault_registry.values():
+            services.close_timing()
+            await services.graph_store.close()
 
 
 @pytest.fixture

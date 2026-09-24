@@ -9,7 +9,6 @@ Covers TEST-APP-BE-001 through TEST-APP-BE-016:
   - Pipeline status filter on discover (BE-016)
 """
 
-import asyncio
 import contextlib
 import hashlib
 import re
@@ -29,6 +28,7 @@ from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from sage.models.enums import EdgeType, PipelineStatus, SourceType
 from sage.models.schemas import Document, StagingEdge
+from tests.helpers.pipeline_wait import drain_vaults
 from tests.sage.conftest import initialize_services_for_test
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
@@ -264,10 +264,12 @@ async def single_vault_app(tmp_path):
 
     yield app
 
-    await asyncio.sleep(0.3)
-    for services in app.state.vault_registry.values():
-        services.close_timing()
-        await services.graph_store.close()
+    try:
+        await drain_vaults(app.state.vault_registry)
+    finally:
+        for services in app.state.vault_registry.values():
+            services.close_timing()
+            await services.graph_store.close()
 
 
 @pytest.fixture

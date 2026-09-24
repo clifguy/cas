@@ -26,6 +26,7 @@ from sage.config import VaultConfig
 from sage.mcp_init import SAGEServices
 from sage.models.enums import PipelineStatus
 from sage.models.schemas import ReabstractReport
+from tests.helpers.pipeline_wait import drain_abstraction_queue, drain_vaults
 from tests.sage.test_lifecycle import _id
 from tests.sage.test_reabstract_deferred_service import (
     _GatedAbstractionProvider,
@@ -82,12 +83,14 @@ async def maintenance_app(minimal_vault_config_dict, monkeypatch):
     vault_id = config.vault.id
     yield app, vault_id, config
 
-    await asyncio.sleep(0.1)
-    registry: dict[str, SAGEServices] = app.state.vault_registry
-    if vault_id in registry:
-        registry[vault_id].close_timing()
-        await registry[vault_id].graph_store.close()
-    mcp_server._vaults.clear()
+    try:
+        await drain_vaults(app.state.vault_registry, [vault_id])
+    finally:
+        registry: dict[str, SAGEServices] = app.state.vault_registry
+        if vault_id in registry:
+            registry[vault_id].close_timing()
+            await registry[vault_id].graph_store.close()
+        mcp_server._vaults.clear()
 
 
 async def test_post_reabstract_deferred_streams_sse_events(maintenance_app):
@@ -207,10 +210,12 @@ async def test_post_reabstract_deferred_streams_failure_without_aborting(
         assert report.reabstracted_count == 1
         assert report.failed_count == 1
     finally:
-        await asyncio.sleep(0.1)
-        services.close_timing()
-        await services.graph_store.close()
-        mcp_server._vaults.clear()
+        try:
+            await drain_abstraction_queue(services.ingestion_service)
+        finally:
+            services.close_timing()
+            await services.graph_store.close()
+            mcp_server._vaults.clear()
 
 
 async def test_post_reabstract_deferred_404_for_unknown_vault(maintenance_app):
@@ -310,10 +315,12 @@ async def test_post_reabstract_deferred_409_when_already_in_flight(
             )
             assert doc.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE.value
     finally:
-        await asyncio.sleep(0.1)
-        app.state.vault_registry[vault_id].close_timing()
-        await app.state.vault_registry[vault_id].graph_store.close()
-        mcp_server._vaults.clear()
+        try:
+            await drain_vaults(app.state.vault_registry, [vault_id])
+        finally:
+            app.state.vault_registry[vault_id].close_timing()
+            await app.state.vault_registry[vault_id].graph_store.close()
+            mcp_server._vaults.clear()
 
 
 async def test_dispatch_failure_survives_sse_boundary(maintenance_app):

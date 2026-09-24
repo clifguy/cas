@@ -15,7 +15,6 @@ running vault: stored, and loaded leniently (CAS-ADR-047).
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import io
 import json
@@ -38,7 +37,7 @@ from sage.app import _initialize_services, create_app
 from sage.config import STORED_CONFIG_CONTEXT, VaultConfig
 from sage.mcp_init import SAGEServices
 from sage.mcp_server import get_document, ingest_document, recompute_pipeline, search
-from tests.helpers.pipeline_wait import await_tool_idle
+from tests.helpers.pipeline_wait import await_tool_idle, drain_vaults
 from tests.sage.conftest import initialize_services_for_test
 
 _VAULT = "test_vault"
@@ -114,7 +113,6 @@ async def _mcp_vault(config_dict: dict) -> AsyncIterator[SAGEServices]:
         try:
             yield services
         finally:
-            await asyncio.sleep(0.1)
             _mcp._vaults.pop(_VAULT, None)
 
 
@@ -127,12 +125,14 @@ async def _http_app(config_dict: dict, monkeypatch) -> AsyncIterator[object]:
     try:
         yield app
     finally:
-        await asyncio.sleep(0.05)
-        registry: dict[str, SAGEServices] = app.state.vault_registry
-        if _VAULT in registry:
-            registry[_VAULT].close_timing()
-            await registry[_VAULT].graph_store.close()
-        _mcp._vaults.clear()
+        try:
+            await drain_vaults(app.state.vault_registry, [_VAULT])
+        finally:
+            registry: dict[str, SAGEServices] = app.state.vault_registry
+            if _VAULT in registry:
+                registry[_VAULT].close_timing()
+                await registry[_VAULT].graph_store.close()
+            _mcp._vaults.clear()
 
 
 def _client(app) -> AsyncClient:

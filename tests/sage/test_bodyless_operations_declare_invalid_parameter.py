@@ -24,7 +24,6 @@ operation answering 400 as the paired control.
 
 from __future__ import annotations
 
-import asyncio
 import re
 import types
 import typing
@@ -301,7 +300,6 @@ async def client(app_with_one_vault) -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=app_with_one_vault)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
-    await asyncio.sleep(0.2)
 
 
 @pytest.mark.parametrize(

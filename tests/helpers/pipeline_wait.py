@@ -29,12 +29,19 @@ state outside the default set -- ``abstraction_interrupted``, say, which is
 settled but is not one of the three states the claim release is keyed to.
 Widening it cannot reintroduce the race the module exists to prevent, because
 the claim arm is unconditional.
+
+``drain_abstraction_queue`` is the same predicate at vault scope, for teardown:
+it waits until no dispatched abstraction job is unfinished and no claim is
+held, so a fixture can release its storage without cutting work off mid-write.
+It waits on the work itself rather than guessing how long the work takes, so
+teardown costs what the pending work costs, and a stall fails loudly instead of
+racing the close.
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Iterable, Mapping
 from typing import Any, Final, Protocol
 
 from sage.models.enums import PipelineStatus
@@ -157,3 +164,95 @@ async def await_tool_idle(
         attempts=attempts,
         delay=delay,
     )
+
+
+# Generous next to what a stub provider needs, and still a bound: a drain that
+# reaches it is reporting work that will not finish, not work that is slow.
+DEFAULT_DRAIN_TIMEOUT: Final[float] = 30.0
+
+
+def _vault_label(service: Any) -> str:
+    """The vault id a service belongs to, for failure messages."""
+    config = getattr(service, "_config", None)
+    vault = getattr(config, "vault", None)
+    return str(getattr(vault, "id", "<unknown vault>"))
+
+
+def _pending_description(service: Any) -> str:
+    queue = service._abstraction_queue
+    # ``_unfinished_tasks`` is CPython-private: asyncio.Queue exposes no public
+    # count of jobs taken but not yet marked done (``qsize()`` omits them).
+    unfinished = 0 if queue is None else queue._unfinished_tasks
+    claims = sorted(service._inflight)
+    return f"{unfinished} unfinished abstraction job(s); claims held on {claims}"
+
+
+async def drain_abstraction_queue(
+    service: Any,
+    *,
+    timeout: float | None = None,
+    delay: float = DEFAULT_DELAY,
+) -> None:
+    """Wait until the service's abstraction work is finished and its claims released.
+
+    Two arms, both required. ``queue.join()`` returns once every dispatched
+    job has run to completion -- the worker marks a job done only after the
+    job has released its claim. A claim can also be held with no job queued
+    yet: re-abstraction and pipeline recompute claim a document before they
+    enqueue, and await in between. So after the join the claim registry is
+    polled until empty.
+
+    A service whose queue was never created has dispatched nothing and is
+    drained as it stands; the queue is not created here. A queue holding
+    unfinished jobs with no live worker can never drain, and is reported at
+    once rather than after the timeout.
+
+    ``timeout`` defaults to ``DEFAULT_DRAIN_TIMEOUT``, read at call time.
+    Raises AssertionError naming the vault and the pending work when the
+    bound is reached.
+    """
+    if timeout is None:
+        timeout = DEFAULT_DRAIN_TIMEOUT
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    queue = service._abstraction_queue
+    if queue is not None and queue._unfinished_tasks:
+        worker = service._worker_task
+        if worker is None or worker.done():
+            raise AssertionError(
+                f"vault {_vault_label(service)}: abstraction worker not running with "
+                f"{_pending_description(service)}; the queue cannot drain"
+            )
+        try:
+            await asyncio.wait_for(queue.join(), timeout)
+        except TimeoutError:
+            raise AssertionError(
+                f"vault {_vault_label(service)} did not drain within {timeout}s: "
+                f"{_pending_description(service)}"
+            ) from None
+    while service._inflight:
+        if loop.time() >= deadline:
+            raise AssertionError(
+                f"vault {_vault_label(service)} did not drain within {timeout}s: "
+                f"{_pending_description(service)}"
+            )
+        await asyncio.sleep(delay)
+
+
+async def drain_vaults(
+    registry: Mapping[str, Any],
+    vault_ids: Iterable[str] | None = None,
+    *,
+    timeout: float | None = None,
+) -> None:
+    """Drain the abstraction work of each named vault in a services registry.
+
+    ``registry`` maps a vault id to its services bundle, as the app's vault
+    registry does. ``vault_ids`` defaults to every entry; an id no longer in
+    the registry is skipped, since there is nothing left to drain under it.
+    """
+    ids = list(registry) if vault_ids is None else list(vault_ids)
+    for vault_id in ids:
+        services = registry.get(vault_id)
+        if services is not None:
+            await drain_abstraction_queue(services.ingestion_service, timeout=timeout)

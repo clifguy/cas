@@ -21,7 +21,6 @@ the strict-on-write, lenient-on-load split of CAS-ADR-047:
 
 from __future__ import annotations
 
-import asyncio
 import copy
 import logging
 from datetime import datetime, timezone
@@ -61,6 +60,7 @@ from sage.services.metadata import MetadataService
 from sage.services.vault_registry import VaultRegistryService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.vault_management import _validate_config
+from tests.helpers.pipeline_wait import drain_abstraction_queue
 from tests.sage.test_lifecycle import _id, _sha
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -611,9 +611,11 @@ async def scoped_app(minimal_vault_config_dict, monkeypatch, _mcp_registry):
     services = app.state.vault_registry[config.vault.id]
     mcp_server._vaults[config.vault.id] = services
     yield app, config.vault.id, services
-    await asyncio.sleep(0.1)
-    services.close_timing()
-    await services.graph_store.close()
+    try:
+        await drain_abstraction_queue(services.ingestion_service)
+    finally:
+        services.close_timing()
+        await services.graph_store.close()
 
 
 async def _rest(app, path: str, body: dict) -> dict:

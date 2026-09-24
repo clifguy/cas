@@ -13,8 +13,6 @@ response_mode branch.
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -23,6 +21,7 @@ from sage.adapters.stubs import StubContentStore
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from sage.models.schemas import BulkLinkResponse
+from tests.helpers.pipeline_wait import drain_vaults
 from tests.sage.test_lifecycle import _id, _make_doc
 
 
@@ -52,11 +51,13 @@ async def seeded_app(minimal_vault_config_dict, monkeypatch):
 
     yield app, vault_id, seeded_ids
 
-    await asyncio.sleep(0.1)
-    if vault_id in app.state.vault_registry:
-        app.state.vault_registry[vault_id].close_timing()
-        await app.state.vault_registry[vault_id].graph_store.close()
-    mcp_server._vaults.clear()
+    try:
+        await drain_vaults(app.state.vault_registry, [vault_id])
+    finally:
+        if vault_id in app.state.vault_registry:
+            app.state.vault_registry[vault_id].close_timing()
+            await app.state.vault_registry[vault_id].graph_store.close()
+        mcp_server._vaults.clear()
 
 
 def _ref_item(source: str, target: str) -> dict:

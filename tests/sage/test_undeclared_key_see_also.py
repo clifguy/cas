@@ -14,7 +14,6 @@ caller receives, and the REST arm asserts the two surfaces agree.
 from __future__ import annotations
 
 import ast
-import asyncio
 import json
 from pathlib import Path
 
@@ -59,7 +58,6 @@ async def vault_services(minimal_vault_config_dict, tmp_vault_dir):
         try:
             yield services
         finally:
-            await asyncio.sleep(0.1)
             _mcp_vaults.pop(VAULT_ID, None)
 
 

@@ -9,7 +9,6 @@ lets curl present only the transfer token while sibling routes still demand a
 bearer.
 """
 
-import asyncio
 import contextlib
 import hashlib
 import json
@@ -33,7 +32,7 @@ from sage.config import StackTransferConfig as _StackTransferConfig
 from sage.mcp_server import bulk_ingest_document, get_document, ingest_document, read_projection
 from sage.services.transfer import TransferStore, get_transfer_store, reset_transfer_store
 from sage.vault_source_binding import FilesystemVaultSourceStore
-from tests.helpers.pipeline_wait import await_pipeline_idle
+from tests.helpers.pipeline_wait import await_pipeline_idle, drain_vaults
 from tests.helpers.store_refusal import STORE_BODY, store_refusal
 
 _VAULT_ID = "test_vault"
@@ -104,11 +103,13 @@ async def app(minimal_vault_config_dict):
     try:
         yield application
     finally:
-        await asyncio.sleep(0.3)
-        for services in application.state.vault_registry.values():
-            services.close_timing()
-            await services.graph_store.close()
-        _mcp._vaults.pop(_VAULT_ID, None)
+        try:
+            await drain_vaults(application.state.vault_registry)
+        finally:
+            for services in application.state.vault_registry.values():
+                services.close_timing()
+                await services.graph_store.close()
+            _mcp._vaults.pop(_VAULT_ID, None)
 
 
 @pytest.fixture

@@ -5,7 +5,6 @@ the vaults router. Uses the same app/client fixture pattern as
 test_api_integration.py.
 """
 
-import asyncio
 import copy
 
 import pytest
@@ -14,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from sage.services.vault_registry import VaultRegistryService
+from tests.helpers.pipeline_wait import drain_vaults
 
 
 @pytest.fixture
@@ -23,10 +23,12 @@ async def app(minimal_vault_config_dict, tmp_vault_dir):
     app = create_app(config=config)
     await _initialize_services(app, config)
     yield app
-    await asyncio.sleep(0.1)
-    for services in app.state.vault_registry.values():
-        services.close_timing()
-        await services.graph_store.close()
+    try:
+        await drain_vaults(app.state.vault_registry)
+    finally:
+        for services in app.state.vault_registry.values():
+            services.close_timing()
+            await services.graph_store.close()
 
 
 @pytest.fixture
@@ -379,10 +381,12 @@ async def isolated_vault_client(monkeypatch, tmp_path, minimal_vault_config_dict
     async with AsyncClient(transport=transport, base_url="http://test") as client:
         yield client, app, isolated_root
 
-    await asyncio.sleep(0.1)
-    for services in app.state.vault_registry.values():
-        services.close_timing()
-        await services.graph_store.close()
+    try:
+        await drain_vaults(app.state.vault_registry)
+    finally:
+        for services in app.state.vault_registry.values():
+            services.close_timing()
+            await services.graph_store.close()
 
 
 async def _seed_initial_yaml(client, tmp_vault_dir, name: str = "Initial Name") -> None:

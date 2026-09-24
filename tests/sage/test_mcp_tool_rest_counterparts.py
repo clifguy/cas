@@ -14,7 +14,6 @@ the process vault registry, and requires equivalent results for the same input.
 
 from __future__ import annotations
 
-import asyncio
 import json
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime
@@ -34,7 +33,7 @@ from sage.config import SageCoreConfig, VaultConfig
 from sage.mcp_init import SAGEServices
 from sage.models.enums import SourceType
 from sage.models.schemas import IngestRequest
-from tests.helpers.pipeline_wait import await_pipeline_idle
+from tests.helpers.pipeline_wait import await_pipeline_idle, drain_vaults
 
 
 @pytest.fixture
@@ -67,11 +66,13 @@ async def yaml_app(
     try:
         yield app, config.vault.id, config_path
     finally:
-        await asyncio.sleep(0.1)
-        for vault_id in set(registry) - before:
-            services = registry.pop(vault_id)
-            services.close_timing()
-            await services.close_storage()
+        try:
+            await drain_vaults(registry, set(registry) - before)
+        finally:
+            for vault_id in set(registry) - before:
+                services = registry.pop(vault_id)
+                services.close_timing()
+                await services.close_storage()
 
 
 def _client(app: FastAPI) -> AsyncClient:

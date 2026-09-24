@@ -59,7 +59,7 @@ from sage.mcp_server import (
 from sage.models.enums import EdgeType as _EdgeType
 from sage.models.enums import PipelineStatus
 from sage.services._dry_run import DRY_RUN_SENTINEL_EDGE_ID as _DRY_RUN_SENTINEL_EDGE_ID
-from tests.helpers.pipeline_wait import await_tool_idle
+from tests.helpers.pipeline_wait import await_tool_idle, drain_abstraction_queue
 from tests.helpers.published_tool import published_text
 from tests.sage.conftest import initialize_services_for_test
 from tests.sage.test_ingestion_metadata_extraction import _pim_vault_config_dict
@@ -206,14 +206,17 @@ async def vault_services(minimal_vault_config_dict, tmp_vault_dir):
         try:
             yield services
         finally:
-            await asyncio.sleep(0.5)
             # A reload swaps the registry slot for a fresh bundle; the helper's
-            # exit only closes the original ``services``. Release the post-swap
-            # bundle's timing + graph store here so neither leaks.
+            # exit only drains and closes the original ``services``. Drain the
+            # post-swap bundle and release its timing + graph store here so
+            # neither its work nor its handles leak.
             current = _mcp._vaults.pop("test_vault", None)
             if current is not None and current is not services:
-                current.close_timing()
-                await current.graph_store.close()
+                try:
+                    await drain_abstraction_queue(current.ingestion_service)
+                finally:
+                    current.close_timing()
+                    await current.graph_store.close()
 
 
 def _parse(result: str | dict) -> dict:
@@ -471,7 +474,6 @@ async def pim_vault_services(tmp_vault_dir):
         try:
             yield services
         finally:
-            await asyncio.sleep(0.5)
             _mcp._vaults.pop("test_metadata_vault", None)
 
 
@@ -2541,17 +2543,19 @@ async def vault_services_with_registry(minimal_vault_config_dict, tmp_vault_dir,
         try:
             yield services
         finally:
-            await asyncio.sleep(0.1)
             # Re-read the registry at teardown -- a successful migrate or
             # reload swaps the slot, and the local ``services`` binding
             # becomes stale. If the slot was swapped, the post-swap bundle
-            # needs an explicit close here; the helper's exit only closes
-            # the original ``services.graph_store`` (idempotent if reload
-            # already closed it).
+            # needs an explicit drain and close here; the helper's exit only
+            # drains and closes the original ``services`` (idempotent if
+            # reload already closed it).
             current = _mcp._vaults.get("test_vault")
             if current is not None and current is not services:
-                current.close_timing()
-                await current.graph_store.close()
+                try:
+                    await drain_abstraction_queue(current.ingestion_service)
+                finally:
+                    current.close_timing()
+                    await current.graph_store.close()
             _mcp._vaults.pop("test_vault", None)
 
 

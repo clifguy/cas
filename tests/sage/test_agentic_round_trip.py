@@ -38,7 +38,7 @@ from sage.models.schemas import Document, IngestRequest, SetLifecycleRequest
 from sage.services.documents import DocumentsService
 from sage.services.ingestion import IngestionService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
-from tests.helpers.pipeline_wait import await_pipeline_idle
+from tests.helpers.pipeline_wait import await_pipeline_idle, drain_vaults
 
 
 def _id(name: str) -> str:
@@ -123,10 +123,12 @@ async def app(minimal_vault_config_dict, tmp_vault_dir):
         abstraction_provider=StubAbstractionProvider(),
     )
     yield app
-    await asyncio.sleep(0.5)
-    for services in app.state.vault_registry.values():
-        services.close_timing()
-        await services.graph_store.close()
+    try:
+        await drain_vaults(app.state.vault_registry)
+    finally:
+        for services in app.state.vault_registry.values():
+            services.close_timing()
+            await services.graph_store.close()
 
 
 @pytest.fixture

@@ -13,7 +13,6 @@ content-store test modules.
 
 from __future__ import annotations
 
-import asyncio
 import json
 
 import pytest
@@ -22,6 +21,7 @@ from httpx import ASGITransport, AsyncClient
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from sage.models.schemas import MigrationReport, OptimizeContentStoreReport
+from tests.helpers.pipeline_wait import drain_vaults
 from tests.sage.test_maintenance_service import _SnapshotContentStore
 
 
@@ -52,11 +52,13 @@ async def maintenance_app(minimal_vault_config_dict, tmp_path):
     try:
         yield app, vault_id, content_store, tmp_path
     finally:
-        await asyncio.sleep(0.1)
-        current = registry.pop(vault_id, None)
-        if current is not None:
-            current.close_timing()
-            await current.close_storage()
+        try:
+            await drain_vaults(registry, [vault_id])
+        finally:
+            current = registry.pop(vault_id, None)
+            if current is not None:
+                current.close_timing()
+                await current.close_storage()
 
 
 async def test_post_maintenance_migrate_returns_200_noop_report_and_is_idempotent(

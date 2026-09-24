@@ -4,7 +4,6 @@ Verifies the HTTP layer: routing, status codes, error response format,
 and end-to-end request/response contract.
 """
 
-import asyncio
 from pathlib import Path
 
 import pytest
@@ -19,6 +18,7 @@ from sage.app import _initialize_services, create_app
 from sage.config import SageCoreConfig, VaultConfig
 from sage.models.schemas import IngestResponse
 from sage.models.wire import to_wire
+from tests.helpers.pipeline_wait import drain_vaults
 
 
 @pytest.fixture
@@ -43,11 +43,12 @@ async def app(minimal_vault_config_dict, tmp_vault_dir):
     (test_dir / "sample.md").write_text("# Sample Document\n\nSample content.")
 
     yield app
-    # Wait for any background pipeline tasks to finish before closing
-    await asyncio.sleep(0.5)
-    for services in app.state.vault_registry.values():
-        services.close_timing()
-        await services.graph_store.close()
+    try:
+        await drain_vaults(app.state.vault_registry)
+    finally:
+        for services in app.state.vault_registry.values():
+            services.close_timing()
+            await services.graph_store.close()
 
 
 @pytest.fixture
@@ -104,8 +105,6 @@ async def test_ingest_duplicate_409(client):
         json={"source": "test/sample.md", "source_type": "markdown"},
     )
     assert resp1.status_code == 201
-
-    await asyncio.sleep(0.1)
 
     # Duplicate ingest
     resp2 = await client.post(
@@ -585,9 +584,6 @@ async def test_discover_semantic_200(client):
     )
     assert resp1.status_code == 201
 
-    # Wait for background pipeline
-    await asyncio.sleep(0.5)
-
     resp2 = await client.post(
         "/sage_vaults/test_vault/discover",
         json={"mode": "semantic", "query": "sample content"},
@@ -606,9 +602,6 @@ async def test_discover_deterministic_200(app, client):
     )
     assert resp1.status_code == 201
     doc_id = resp1.json()["document"]["id"]
-
-    # Wait for background pipeline to index chunks
-    await asyncio.sleep(0.5)
 
     resp2 = await client.post(
         "/sage_vaults/test_vault/discover",
@@ -681,9 +674,6 @@ async def test_discover_facets_200(client):
         json={"source": "test/sample.md", "source_type": "markdown"},
     )
     assert resp1.status_code == 201
-
-    # Wait for background pipeline
-    await asyncio.sleep(0.5)
 
     resp2 = await client.post(
         "/sage_vaults/test_vault/discover",
@@ -797,9 +787,6 @@ async def test_export_projection_200(app, client):
     assert resp1.status_code == 201
     doc_id = resp1.json()["document"]["id"]
 
-    # Wait for pipeline to index chunks
-    await asyncio.sleep(0.5)
-
     resp2 = await client.post(
         f"/sage_vaults/test_vault/documents/{doc_id}/export",
         json={"output_path": "exports/test_export.md"},
@@ -819,8 +806,6 @@ async def test_export_projection_path_traversal_400(client):
     )
     doc_id = resp1.json()["document"]["id"]
 
-    await asyncio.sleep(0.5)
-
     resp2 = await client.post(
         f"/sage_vaults/test_vault/documents/{doc_id}/export",
         json={"output_path": "../../etc/passwd"},
@@ -837,8 +822,6 @@ async def test_read_projection_200(app, client):
     )
     assert resp1.status_code == 201
     doc_id = resp1.json()["document"]["id"]
-
-    await asyncio.sleep(0.5)
 
     resp2 = await client.get(
         f"/sage_vaults/test_vault/documents/{doc_id}/projection",
