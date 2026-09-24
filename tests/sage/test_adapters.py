@@ -35,7 +35,6 @@ from tests.helpers.real_models import (
     real_model_lock,
     real_models_enabled,
     release_provider,
-    requires_real_models,
 )
 
 # ── Skip if dependencies unavailable ────────────────────────────────
@@ -364,7 +363,6 @@ def qwen3_provider_factory() -> Iterator[Callable[..., Awaitable[Qwen3Abstractio
         _assert_released(provider)
 
 
-@requires_real_models
 @requires_qwen3
 class TestQwen3AbstractionProvider:
     """Tests AD-026 through AD-033."""
@@ -456,7 +454,6 @@ class TestQwen3AbstractionProvider:
             await qwen3_provider.generate_abstract(SAMPLE_TEXT, 200, None)
 
 
-@requires_real_models
 @requires_qwen3
 class TestQwen3LazyLoading:
     """Tests AD-095 through AD-097: lazy model loading behavior."""

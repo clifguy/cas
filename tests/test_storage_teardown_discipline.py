@@ -19,6 +19,11 @@ receiver is a fake services object implementing ``close_storage`` itself, which
 is the one place closing the graph store alone is correct. A file that closes
 the store deliberately and releases the pool on its own is exempted in
 ``KNOWN_BARE_GRAPH_STORE_CLOSES`` with its reason.
+
+The gate matches that spelling, not the leak. A fixture that builds services
+and closes nothing, or one that closes the graph store through an alias
+(``store = services.graph_store``), leaks the same pool and passes it; a green
+run here is not evidence that no pool leaks.
 """
 
 from __future__ import annotations
