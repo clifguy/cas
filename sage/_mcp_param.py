@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, BeforeValidator, Field
 
 
 def param_doc(model: type[BaseModel], field: str, *, mcp: str | None = None) -> str:
@@ -51,3 +51,24 @@ DocIdAliasParam = Annotated[
 
 #: Appended to a ``document_id`` description that admits the ``doc_id`` alias.
 DOC_ID_ALIAS_NOTE = "Alias: `doc_id`; supply exactly one of the two."
+
+
+def _number_as_text(value: object) -> object:
+    """An int or float as the digits it spells; any other value unchanged.
+
+    ``bool`` is an ``int`` subclass and is excluded: ``True`` is not text a
+    caller meant to send.
+    """
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return str(value)
+    return value
+
+
+#: Marks a free-text parameter that reads a JSON number as its string form.
+#:
+#: A client that ignores the published schema can send an all-digit string as
+#: a number, and a lax ``str`` refuses it. Only free text takes this: an
+#: identifier does not. A document id always carries an underscore, so a
+#: number can never be one; and ``vault_id`` is required and published with a
+#: bare type, which no client loses. The published schema is unaffected.
+NumericText = BeforeValidator(_number_as_text)

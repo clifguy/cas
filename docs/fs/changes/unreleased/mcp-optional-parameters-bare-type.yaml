@@ -1,0 +1,18 @@
+classification: minor
+category: [capability, caller-adaptation]
+summary: >-
+  The MCP tool catalog publishes each optional top-level parameter as its
+  non-null form alone -- a bare type, or the inlined enum definition for a
+  $ref -- instead of anyOf with a null arm, keeping its null default.
+  Some MCP clients discard anyOf and presented these parameters with no type.
+  Nested item schemas keep their null arms, and the server still accepts an
+  explicit null. The free-text search.query, search.heading_path and
+  read_section.heading_path parameters now read a JSON number as its string
+  form. docs/fs/CLAUDE.md records the MCP input schema as the declared
+  exception to the request null rule; the OpenAPI specifications are unchanged.
+for_callers: >-
+  Optional MCP tool parameters now publish their type directly (for example
+  search.query is type string), so leave a parameter out rather than sending
+  null to mean no value; an explicit null is still accepted. An all-digit
+  search query or heading path sent as a JSON number is now read as text
+  instead of being refused.

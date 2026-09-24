@@ -49,7 +49,7 @@ from pydantic import BaseModel, ValidationError
 # decision: CAS-ADR-037.
 import sage._fastmcp_strict_args  # noqa: F401 -- substrate side-effect import
 import sage.app  # noqa: F401 -- import side-effect: installs root-logger filter
-from sage._mcp_schema import publish_without_titles
+from sage._mcp_schema import publish_input_schemas
 from sage._tool_naming import SERVER_ASSIGNMENT, SURFACE_MOUNT_PATHS, TOOL_ALIASES
 from sage.api.errors import (
     SAGEError,
@@ -411,7 +411,7 @@ _sage_tools = register_sage_tools(
     mcp, _get_vault, _serialize, _error_response, get_vault_registry_service
 )
 _app_tools = register_app_tools(mcp, _get_vault, _serialize, _error_response)
-publish_without_titles(mcp)
+publish_input_schemas(mcp)
 
 # ---------------------------------------------------------------------------
 # Re-export tool functions for backward-compatible imports
@@ -521,5 +521,5 @@ def build_partitioned_server(surface: str) -> _LoggingFastMCP:
     for name in registered:
         if SERVER_ASSIGNMENT[name] != surface:
             server.remove_tool(name)
-    publish_without_titles(server)
+    publish_input_schemas(server)
     return server
