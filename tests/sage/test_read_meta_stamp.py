@@ -7,7 +7,6 @@ under, so a caller comparing stamps across calls learns that the server or
 its rules changed without re-reading the configuration.
 """
 
-import asyncio
 import copy
 import inspect
 import re
@@ -26,7 +25,7 @@ from sage.adapters.stubs import (
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from sage.models import schemas
-from tests.helpers.pipeline_wait import await_tool_idle
+from tests.helpers.pipeline_wait import await_tool_idle, drain_vaults
 
 _FINGERPRINT = re.compile(r"^sha256:[0-9a-f]{64}$")
 
@@ -49,10 +48,12 @@ async def app(minimal_vault_config_dict, tmp_vault_dir):
     (test_dir / "sample.md").write_text("# Sample Document\n\nSample content.")
     (test_dir / "dependency.md").write_text("# Dependency\n\nDependency content.")
     yield app
-    await asyncio.sleep(0.5)
-    for services in app.state.vault_registry.values():
-        services.close_timing()
-        await services.graph_store.close()
+    try:
+        await drain_vaults(app.state.vault_registry)
+    finally:
+        for services in app.state.vault_registry.values():
+            services.close_timing()
+            await services.graph_store.close()
 
 
 @pytest.fixture

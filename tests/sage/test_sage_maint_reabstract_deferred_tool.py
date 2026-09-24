@@ -84,18 +84,15 @@ async def test_sage_maint_reabstract_deferred_vault_happy_path(minimal_vault_con
     seeded document's outcome recorded."""
     async with _publish_vault(minimal_vault_config_dict) as (vault_id, services):
         doc_id = await _seed_one_skipped(services, doc_id_label="tool_happy")
-        try:
-            result = await mcp_server.recompute_deferred_vault_abstracts(vault_id=vault_id)
+        result = await mcp_server.recompute_deferred_vault_abstracts(vault_id=vault_id)
 
-            assert isinstance(result, dict)
-            assert "error" not in result, f"expected report dict, got {result!r}"
-            report = ReabstractReport.model_validate(result)
-            assert report.vault_id == vault_id
-            assert report.reabstracted_count == 1
-            assert report.failed_count == 0
-            assert any(entry.document_id == doc_id for entry in report.entries)
-        finally:
-            await asyncio.sleep(0.1)
+        assert isinstance(result, dict)
+        assert "error" not in result, f"expected report dict, got {result!r}"
+        report = ReabstractReport.model_validate(result)
+        assert report.vault_id == vault_id
+        assert report.reabstracted_count == 1
+        assert report.failed_count == 0
+        assert any(entry.document_id == doc_id for entry in report.entries)
 
 
 async def test_sage_maint_reabstract_deferred_vault_returns_structured_409(
@@ -112,30 +109,27 @@ async def test_sage_maint_reabstract_deferred_vault_returns_structured_409(
         services,
     ):
         await _seed_one_skipped(services, doc_id_label="tool_gated")
-        try:
-            before = datetime.now(timezone.utc)
-            task_a = asyncio.create_task(
-                mcp_server.recompute_deferred_vault_abstracts(vault_id=vault_id)
-            )
-            await asyncio.wait_for(gated.entered.wait(), timeout=5.0)
-            after = datetime.now(timezone.utc)
+        before = datetime.now(timezone.utc)
+        task_a = asyncio.create_task(
+            mcp_server.recompute_deferred_vault_abstracts(vault_id=vault_id)
+        )
+        await asyncio.wait_for(gated.entered.wait(), timeout=5.0)
+        after = datetime.now(timezone.utc)
 
-            result_b = await mcp_server.recompute_deferred_vault_abstracts(vault_id=vault_id)
-            assert isinstance(result_b, dict)
-            assert result_b.get("error") == "reabstract_already_in_flight", (
-                f"expected reabstract_already_in_flight envelope, got {result_b!r}"
-            )
-            assert result_b["detail"]["vault_id"] == vault_id
-            start_time = datetime.fromisoformat(result_b["detail"]["start_time"])
-            assert before <= start_time <= after
+        result_b = await mcp_server.recompute_deferred_vault_abstracts(vault_id=vault_id)
+        assert isinstance(result_b, dict)
+        assert result_b.get("error") == "reabstract_already_in_flight", (
+            f"expected reabstract_already_in_flight envelope, got {result_b!r}"
+        )
+        assert result_b["detail"]["vault_id"] == vault_id
+        start_time = datetime.fromisoformat(result_b["detail"]["start_time"])
+        assert before <= start_time <= after
 
-            gated.gate.set()
-            result_a = await asyncio.wait_for(task_a, timeout=5.0)
-            assert "error" not in result_a, f"expected report dict, got {result_a!r}"
-            report_a = ReabstractReport.model_validate(result_a)
-            assert report_a.reabstracted_count == 1
-        finally:
-            await asyncio.sleep(0.1)
+        gated.gate.set()
+        result_a = await asyncio.wait_for(task_a, timeout=5.0)
+        assert "error" not in result_a, f"expected report dict, got {result_a!r}"
+        report_a = ReabstractReport.model_validate(result_a)
+        assert report_a.reabstracted_count == 1
 
 
 async def test_sage_maint_reabstract_deferred_vault_unknown_vault_returns_error_envelope():
@@ -198,24 +192,21 @@ async def test_sage_maint_reabstract_deferred_vault_aggregates_streaming_events(
                 ],
             )
 
-        try:
-            result = await mcp_server.recompute_deferred_vault_abstracts(vault_id=vault_id)
+        result = await mcp_server.recompute_deferred_vault_abstracts(vault_id=vault_id)
 
-            assert isinstance(result, dict)
-            assert "error" not in result, f"expected report dict, got {result!r}"
-            report = ReabstractReport.model_validate(result)
-            assert report.vault_id == vault_id
-            assert report.reabstracted_count == 1
-            assert report.skipped_pdf_count == 1
-            assert report.failed_count == 1
-            assert len(report.entries) == 3
+        assert isinstance(result, dict)
+        assert "error" not in result, f"expected report dict, got {result!r}"
+        report = ReabstractReport.model_validate(result)
+        assert report.vault_id == vault_id
+        assert report.reabstracted_count == 1
+        assert report.skipped_pdf_count == 1
+        assert report.failed_count == 1
+        assert len(report.entries) == 3
 
-            outcomes_by_id = {entry.document_id: entry.outcome for entry in report.entries}
-            assert outcomes_by_id[fail_doc.id] == ReabstractOutcome.LLM_FAILURE
-            assert outcomes_by_id[ok_doc.id] == ReabstractOutcome.SUCCESS
-            assert outcomes_by_id[pdf_doc.id] == ReabstractOutcome.SKIPPED_PDF
-        finally:
-            await asyncio.sleep(0.1)
+        outcomes_by_id = {entry.document_id: entry.outcome for entry in report.entries}
+        assert outcomes_by_id[fail_doc.id] == ReabstractOutcome.LLM_FAILURE
+        assert outcomes_by_id[ok_doc.id] == ReabstractOutcome.SUCCESS
+        assert outcomes_by_id[pdf_doc.id] == ReabstractOutcome.SKIPPED_PDF
 
 
 async def test_dispatch_failure_survives_mcp_boundary(minimal_vault_config_dict):

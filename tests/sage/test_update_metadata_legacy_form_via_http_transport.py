@@ -45,8 +45,6 @@ contract.
 
 from __future__ import annotations
 
-import asyncio
-
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -57,6 +55,7 @@ from sage.adapters.stubs import (
 )
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
+from tests.helpers.pipeline_wait import drain_vaults
 
 
 @pytest.fixture
@@ -82,10 +81,12 @@ async def app(minimal_vault_config_dict, tmp_vault_dir):
     test_dir.mkdir(parents=True, exist_ok=True)
     (test_dir / "sample.md").write_text("# Sample Document\n\nSample content.")
     yield app
-    await asyncio.sleep(0.5)
-    for services in app.state.vault_registry.values():
-        services.close_timing()
-        await services.graph_store.close()
+    try:
+        await drain_vaults(app.state.vault_registry)
+    finally:
+        for services in app.state.vault_registry.values():
+            services.close_timing()
+            await services.graph_store.close()
 
 
 @pytest.fixture

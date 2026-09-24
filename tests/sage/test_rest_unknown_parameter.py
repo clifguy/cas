@@ -19,7 +19,6 @@ mapping keeps accepting any key.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
 from typing import Any
 
@@ -43,7 +42,6 @@ async def client(app_with_one_vault) -> AsyncIterator[AsyncClient]:
     transport = ASGITransport(app=app_with_one_vault)
     async with AsyncClient(transport=transport, base_url="http://test") as c:
         yield c
-    await asyncio.sleep(0.2)
 
 
 def _assert_unknown_parameter(

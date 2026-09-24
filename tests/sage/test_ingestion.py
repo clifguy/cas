@@ -29,7 +29,7 @@ from sage.models.schemas import Document, IngestRequest
 from sage.services.document_surface import compose_document_surface
 from sage.source_adapters.base import SourceAdapter
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
-from tests.helpers.pipeline_wait import await_pipeline_idle
+from tests.helpers.pipeline_wait import await_pipeline_idle, drain_abstraction_queue
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 
@@ -1825,7 +1825,6 @@ async def test_reabstract_background_updates_abstract_on_success(
 ):
     """BH-118: The background task should update semantic_abstract and set
     pipeline_status to abstraction_complete when abstraction succeeds."""
-    import asyncio
 
     _create_test_file(tmp_vault_dir, "reports/bgok.md", "# BG OK\n\nOriginal content.")
 
@@ -1843,10 +1842,7 @@ async def test_reabstract_background_updates_abstract_on_success(
     response = await ingestion_service.reabstract(doc_id)
     assert response["status"] == "reabstract_started"
 
-    # Allow the background task to complete (0.1s yield + work)
-    await asyncio.sleep(0.5)
-
-    doc = await graph_store.get_document(doc_id)
+    doc = await await_pipeline_idle(graph_store, doc_id, service=ingestion_service)
     assert doc.semantic_abstract == "Regenerated abstract from new model."
     assert doc.semantic_abstract != original_abstract
     assert doc.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
@@ -1975,10 +1971,10 @@ async def test_reabstract_second_concurrent_call_raises_in_flight_error(
         observed_start = datetime.fromisoformat(err.detail["start_time"])
         assert window_before <= observed_start <= window_after
     finally:
-        # Release the gate so the background task can clean up its
-        # reservation and not leak into the next test in the session.
+        # Release the gate and wait out the job, so its reservation is
+        # released rather than leaking into the next test in the session.
         gate.set()
-        await asyncio.sleep(0.3)
+        await drain_abstraction_queue(ingestion_service)
 
 
 async def test_reabstract_parallel_calls_different_documents_both_succeed(
@@ -2329,7 +2325,7 @@ async def test_recompute_pipeline_single_flight_409(
         assert window_before <= observed_start <= window_after
     finally:
         gate.set()
-        await asyncio.sleep(0.3)
+        await drain_abstraction_queue(ingestion_service)
 
 
 async def test_recompute_pipeline_source_path_missing_raises(

@@ -230,11 +230,28 @@ BARE_SLEEP_WAIT_ALLOWLIST: Final[dict[str, list[str]]] = {
     # reloads to see is written straight to the store already terminal, so it
     # never enters the pipeline and there is nothing to poll for.
     "tests/sage/test_mcp_server.py": ["test_reload_vault_sees_external_changes"],
-    # Fixture teardown drains: they let background work unwind before the
-    # registry slot is dropped, after the tests using the documents have run.
-    "tests/sage/test_search_misplaced_filters.py": ["vault_services"],
-    "tests/sage/test_storage_query_error_envelope.py": ["vault_services"],
+    # An absence window, not a wait on a document: it gives work that should
+    # never have been enqueued a chance to run, so the assertion that nothing
+    # ran is meaningful. There is no state to poll for the absence of work.
+    "tests/sage/test_abstraction_queue.py": ["test_recover_skips_terminal_documents"],
 }
+
+
+# ---------------------------------------------------------------------------
+# Teardown-sleep allowlist
+#
+# path (relative to repo root) -> names of the functions holding a fixed sleep
+# in teardown position -- below their own ``yield``, or in a ``finally`` --
+# where that sleep is nonetheless correct. Empty by default: background work a
+# teardown has to outlast is waited on with ``drain_abstraction_queue`` or
+# ``drain_vaults`` from tests/helpers/pipeline_wait.py, which wait on the work
+# itself. Every entry requires a one-line rationale naming what the sleep waits
+# for and why a drain cannot replace it.
+#
+# Keyed by function name, for the reason the allowlists above give.
+# ---------------------------------------------------------------------------
+
+TEARDOWN_SLEEP_ALLOWLIST: Final[dict[str, list[str]]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -257,9 +274,13 @@ UNWAITED_FIXTURE_HANDOFF_ALLOWLIST: Final[dict[str, list[str]]] = {}
 # The ingestion entry points. A function that calls one of these has put a
 # document into the background pipeline, so a fixed sleep after that call is
 # standing in for a wait on it. Matched on the bare name by ``_called_name``,
-# so the tool and a directly-imported service method both count.
+# so the tool and a directly-imported service method both count, and so does
+# the service's own ``ingest``. That one runs the pipeline inline by default,
+# where a sleep after it waits for nothing; reporting it costs a line that was
+# never doing anything, and not reporting it lets the background form through.
 INGEST_CALLS: Final[frozenset[str]] = frozenset(
     {
+        "ingest",
         "ingest_document",
         "bulk_ingest_document",
     }
@@ -899,6 +920,10 @@ def _bare_sleep_waits(tree: ast.AST) -> list[tuple[int, str]]:
       the name a finding carries is the one a reader has to go and open, while
       the ingest that makes the sleep a race can live further out.
 
+    ``sleep(0)`` is not reported: it yields to the event loop once, so a
+    worker can reach a point the test is about to observe, and it guesses no
+    duration.
+
     Delegation is invisible by construction, as in the arm above: a function
     that waits through the shared helper has no bare sleep for this walk to
     anchor on. A function that does both keeps its sleep and needs an
@@ -926,6 +951,7 @@ def _bare_sleep_waits(tree: ast.AST) -> list[tuple[int, str]]:
                 and not nested
                 and isinstance(child, ast.Call)
                 and _called_name(child.func) == "sleep"
+                and not _is_zero_sleep(child)
             ):
                 findings.append((child.lineno, func, outermost))
             visit(child, func, outermost, nested)
@@ -968,6 +994,130 @@ def _format_bare_sleep_violations(violations: list[tuple[str, int, str]]) -> str
         "its own next call rejects. Delegate to await_pipeline_idle / "
         "await_tool_idle in tests/helpers/pipeline_wait.py, which poll the "
         "terminal status and the in-flight claim together."
+    )
+
+
+def _is_zero_sleep(call: ast.Call) -> bool:
+    """Whether a sleep call is ``sleep(0)`` -- a bare yield to the loop, not a wait."""
+    return (
+        len(call.args) == 1
+        and isinstance(call.args[0], ast.Constant)
+        and not isinstance(call.args[0].value, bool)
+        and call.args[0].value == 0
+    )
+
+
+def _teardown_sleeps(tree: ast.AST) -> list[tuple[int, str]]:
+    """Return ``(sleep lineno, function name)`` for every fixed sleep in teardown position.
+
+    A sleep is in teardown position when it follows its function's first
+    ``yield`` -- the code a fixture or an ``asynccontextmanager`` runs once the
+    body it served has finished -- or when it sits in a ``finally`` clause,
+    where a test body cleans up after itself. A fixed sleep there is guessing
+    how long background work takes to unwind before the vault closes: long
+    enough on a workstation, too short under load, and a fixed cost on every
+    use when there is no work at all.
+
+    The bare-sleep arm above cannot see this shape. It keys on an ingestion
+    call in the sleeping function's own chain, and a fixture's teardown serves
+    documents its *tests* ingested, so the fixture itself usually ingests
+    nothing.
+
+    Conditions, each narrowing toward that shape:
+
+    * **Outside a loop.** A sleeping loop is a poll, which waits on something
+      it reads; that is the other arms' subject.
+    * **Not ``sleep(0)``.** Yielding to the event loop waits for nothing.
+    * **The function's own scope, and only that.** A nested ``def`` is judged
+      under its own name, with its own ``yield`` and ``finally`` clauses. Calls
+      are not followed: a teardown that calls a helper which sleeps is not
+      reported. That is a stated bound rather than an oversight -- resolving
+      calls would need the module-local helper resolution the bare-sleep arm
+      carries, and every observed instance of this shape wrote the sleep
+      inline.
+    """
+    findings: list[tuple[int, str]] = []
+
+    def scan(
+        node: ast.AST,
+        func: ast.FunctionDef | ast.AsyncFunctionDef,
+        first_yield: int | None,
+        in_loop: bool,
+        in_finally: bool,
+    ) -> None:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            judge(node)
+            return
+        if isinstance(node, (ast.Lambda, ast.ClassDef)):
+            return
+        if (
+            not in_loop
+            and isinstance(node, ast.Call)
+            and _called_name(node.func) == "sleep"
+            and not _is_zero_sleep(node)
+            and (in_finally or (first_yield is not None and node.lineno > first_yield))
+        ):
+            findings.append((node.lineno, func.name))
+        loop = in_loop or isinstance(node, (ast.For, ast.AsyncFor, ast.While))
+        if isinstance(node, (ast.Try, ast.TryStar)):
+            for child in [*node.body, *node.handlers, *node.orelse]:
+                scan(child, func, first_yield, loop, in_finally)
+            for child in node.finalbody:
+                scan(child, func, first_yield, loop, True)
+            return
+        for child in ast.iter_child_nodes(node):
+            scan(child, func, first_yield, loop, in_finally)
+
+    def judge(func: ast.FunctionDef | ast.AsyncFunctionDef) -> None:
+        yields = [
+            node.lineno
+            for node in _own_scope_nodes(func)
+            if isinstance(node, (ast.Yield, ast.YieldFrom))
+        ]
+        first_yield = min(yields) if yields else None
+        for stmt in func.body:
+            scan(stmt, func, first_yield, False, False)
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and not any(
+            isinstance(parent, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for parent in _enclosing(tree, node)
+        ):
+            judge(node)
+    return sorted(findings)
+
+
+def _enclosing(tree: ast.AST, target: ast.AST) -> list[ast.AST]:
+    """The chain of nodes enclosing ``target`` in ``tree``, outermost first."""
+    path: list[ast.AST] = []
+
+    def walk(node: ast.AST) -> bool:
+        for child in ast.iter_child_nodes(node):
+            if child is target:
+                return True
+            path.append(child)
+            if walk(child):
+                return True
+            path.pop()
+        return False
+
+    walk(tree)
+    return path
+
+
+def _format_teardown_sleep_violations(violations: list[tuple[str, int, str]]) -> str:
+    """Render a teardown-sleep violation list as a pytest.fail message."""
+    head = violations[:_MAX_REPORTED]
+    body = "\n".join(f"  {path}:{line} → in {name}()" for path, line, name in head)
+    overflow = len(violations) - len(head)
+    tail = f"\n  ... and {overflow} more" if overflow > 0 else ""
+    return (
+        f"Fixed sleeps used as teardown drains ({len(violations)} found):\n{body}{tail}\n"
+        "A fixed sleep in teardown guesses how long background work takes to "
+        "unwind before the vault closes, and costs that guess on every use. "
+        "Wait on the work instead: drain_abstraction_queue / drain_vaults in "
+        "tests/helpers/pipeline_wait.py, which initialize_services_for_test "
+        "already runs on exit."
     )
 
 
@@ -1329,6 +1479,20 @@ def test_no_bare_sleep_waits_on_ingested_documents() -> None:
 
     if violations:
         pytest.fail(_format_bare_sleep_violations(violations))
+
+
+def test_no_fixed_sleep_teardown_drains() -> None:
+    """No tracked test module may drain background work at teardown with a fixed sleep."""
+    violations: list[tuple[str, int, str]] = []
+    for rel, tree in _parsed_modules(_tracked_test_modules()):
+        allowed = set(TEARDOWN_SLEEP_ALLOWLIST.get(rel, []))
+        for lineno, name in _teardown_sleeps(tree):
+            if name in allowed:
+                continue
+            violations.append((rel, lineno, name))
+
+    if violations:
+        pytest.fail(_format_teardown_sleep_violations(violations))
 
 
 def test_no_fixture_hands_off_an_unsettled_document() -> None:
@@ -1889,6 +2053,7 @@ _SYNTHETIC_LOOPED_SLEEP_SOURCE: Final[str] = textwrap.dedent(
 # A fixed sleep in a function that ingests nothing. It waits for something this
 # walk has no opinion about -- a worker unwinding, a thread joining, a registry
 # slot swapping at teardown -- and reporting it would bury the real findings.
+# In teardown position it is the teardown-sleep arm's finding instead.
 _SYNTHETIC_SLEEP_WITHOUT_INGEST_SOURCE: Final[str] = textwrap.dedent(
     """
     async def vault_services(tmp_vault_dir):
@@ -1955,6 +2120,36 @@ def test_bare_sleep_detector_ignores_a_sleep_without_an_ingest() -> None:
 def test_bare_sleep_detector_ignores_a_delegated_wait() -> None:
     """The sanctioned form is invisible because it has no sleep of its own."""
     assert _bare_sleep_waits(ast.parse(_SYNTHETIC_DELEGATED_WAIT_SOURCE)) == []
+
+
+_SYNTHETIC_SERVICE_INGEST_SLEEP_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def test_reabstracts(ingestion_service):
+        result = await ingestion_service.ingest(request, wait_for_pipeline=False)
+        await asyncio.sleep(0.5)
+        return result.document
+    """
+)
+
+_SYNTHETIC_ZERO_SLEEP_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def test_worker_reaches_the_gate(ingestion_service):
+        await ingestion_service.ingest(request, wait_for_pipeline=False)
+        await asyncio.sleep(0)
+    """
+)
+
+
+def test_bare_sleep_detector_flags_a_service_ingest_then_sleep() -> None:
+    """The service's own ``ingest`` is an ingestion entry point like the tool."""
+    assert _bare_sleep_waits(ast.parse(_SYNTHETIC_SERVICE_INGEST_SLEEP_SOURCE)) == [
+        (4, "test_reabstracts")
+    ]
+
+
+def test_bare_sleep_detector_ignores_a_zero_sleep() -> None:
+    """``sleep(0)`` yields once and guesses no duration, so it is not a wait."""
+    assert _bare_sleep_waits(ast.parse(_SYNTHETIC_ZERO_SLEEP_SOURCE)) == []
 
 
 def test_bare_sleep_detector_ignores_a_sleep_before_the_ingest() -> None:
@@ -2902,7 +3097,7 @@ def test_tracked_enumeration_reaches_every_tracked_conftest() -> None:
 
 
 def test_every_gate_scans_the_shared_enumeration() -> None:
-    """Each of the five gate tests iterates ``_parsed_modules(_tracked_test_modules())``.
+    """Each of the six gate tests iterates ``_parsed_modules(_tracked_test_modules())``.
 
     The two tests above prove the shared enumeration reaches ``conftest.py``;
     neither proves a gate uses it. A gate rewritten to loop over some other
@@ -2919,7 +3114,7 @@ def test_every_gate_scans_the_shared_enumeration() -> None:
         for node in ast.iter_child_nodes(tree)
         if isinstance(node, ast.FunctionDef) and node.name.startswith("test_no_")
     ]
-    assert len(gates) == 5, [gate.name for gate in gates]
+    assert len(gates) == 6, [gate.name for gate in gates]
 
     def scans_shared_enumeration(gate: ast.FunctionDef) -> bool:
         return any(
@@ -3147,3 +3342,115 @@ def test_helper_detector_invalidates_assignment_in_exit_predicate() -> None:
 """
     assert _status_only_poll_helpers(ast.parse(source)) == [(3, "wait")]
     assert _status_only_poll_helpers(ast.parse(source.replace("inflight :=", "other :="))) == []
+
+
+# ---------------------------------------------------------------------------
+# Teardown-sleep arm self-tests
+# ---------------------------------------------------------------------------
+
+# The defective shape: a fixture guessing how long background work takes to
+# unwind once its tests are done.
+_SYNTHETIC_TEARDOWN_SLEEP_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def vault_services(config):
+        async with initialize_services_for_test(config) as services:
+            yield services
+            await asyncio.sleep(0.5)
+    """
+)
+
+# The same guess at the end of a test body, in the ``finally`` that cleans up.
+_SYNTHETIC_FINALLY_SLEEP_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def test_refuses_a_second_call(ingestion_service):
+        try:
+            await ingestion_service.reabstract("d")
+        finally:
+            gate.set()
+            await asyncio.sleep(0.1)
+    """
+)
+
+# Setup-side sleeps, yields to the loop, and teardown polls. The first belongs
+# to the arms that judge what a fixture hands off; the second waits for
+# nothing; the third reads what it waits on each time round, which makes it a
+# poll rather than a guess.
+_SYNTHETIC_NON_TEARDOWN_SLEEP_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def seeded(config):
+        await asyncio.sleep(0.5)
+        yield config
+        await asyncio.sleep(0)
+        while services._inflight:
+            await asyncio.sleep(0.01)
+    """
+)
+
+# The stated bound. A teardown that calls a sleeping helper is not reported,
+# because calls are not followed; a nested helper that itself sleeps after its
+# own yield is reported under its own name.
+_SYNTHETIC_TEARDOWN_HELPER_SOURCE: Final[str] = textwrap.dedent(
+    """
+    async def _settle():
+        await asyncio.sleep(0.5)
+
+    async def vault_services(config):
+        yield config
+        await _settle()
+
+    async def outer(config):
+        async def inner():
+            yield config
+            await asyncio.sleep(0.5)
+        return inner
+    """
+)
+
+
+def test_teardown_sleep_detector_flags_a_sleep_after_yield() -> None:
+    """The arm has teeth: a sleep below the yield is reported under the fixture's name."""
+    assert _teardown_sleeps(ast.parse(_SYNTHETIC_TEARDOWN_SLEEP_SOURCE)) == [(5, "vault_services")]
+
+
+def test_teardown_sleep_detector_flags_a_sleep_in_a_finally() -> None:
+    """A test body's cleanup is teardown position too, with no yield in sight."""
+    assert _teardown_sleeps(ast.parse(_SYNTHETIC_FINALLY_SLEEP_SOURCE)) == [
+        (7, "test_refuses_a_second_call")
+    ]
+
+
+def test_teardown_sleep_detector_ignores_a_sleep_before_the_yield_or_zero() -> None:
+    """Only a nonzero, unlooped sleep after the yield is teardown; the rest is not this arm's."""
+    assert _teardown_sleeps(ast.parse(_SYNTHETIC_NON_TEARDOWN_SLEEP_SOURCE)) == []
+
+
+def test_teardown_sleep_detector_does_not_follow_calls() -> None:
+    """Pins the stated bound: own scope only, calls unresolved, nested defs under their own name.
+
+    The sleeping helper ``_settle`` has no yield and no ``finally``, so it is
+    not in teardown position, and ``vault_services`` itself holds no sleep.
+    """
+    assert _teardown_sleeps(ast.parse(_SYNTHETIC_TEARDOWN_HELPER_SOURCE)) == [(12, "inner")]
+
+
+def test_teardown_sleep_allowlist_has_no_stale_entries() -> None:
+    """Every teardown-sleep allowlist entry names a function the walk still reports.
+
+    Carried for the reason ``test_bare_sleep_allowlist_has_no_stale_entries``
+    gives.
+    """
+    stale: list[str] = []
+    for rel, names in TEARDOWN_SLEEP_ALLOWLIST.items():
+        path = REPO_ROOT / rel
+        reported = (
+            {name for _, name in _teardown_sleeps(ast.parse(path.read_bytes()))}
+            if path.exists()
+            else set()
+        )
+        stale.extend(f"{rel}: {name}" for name in names if name not in reported)
+
+    assert not stale, (
+        "TEARDOWN_SLEEP_ALLOWLIST entries that the walk no longer reports "
+        f"({len(stale)}): {', '.join(stale)}. Drop each one — the sleep it "
+        "exempted is gone, so the entry now waives nothing."
+    )

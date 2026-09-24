@@ -14,7 +14,6 @@ Test cases:
   - NoProjectionError: document exists but has no chunks.
 """
 
-import asyncio
 import hashlib
 import re
 from datetime import datetime, timezone
@@ -27,6 +26,7 @@ from sage.models.schemas import Document, IngestRequest
 from sage.services.ingestion import IngestionService
 from sage.services.utilities import UtilitiesService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
+from tests.helpers.pipeline_wait import await_pipeline_idle
 
 _DOC_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
 
@@ -125,7 +125,7 @@ def multi_section_service(
 
 
 @pytest.fixture
-async def multi_section_doc(multi_section_service, tmp_vault_dir):
+async def multi_section_doc(multi_section_service, graph_store, tmp_vault_dir):
     """Ingest a multi-section markdown document."""
     utilities, ingestion = multi_section_service
 
@@ -137,7 +137,7 @@ async def multi_section_doc(multi_section_service, tmp_vault_dir):
     result = await ingestion.ingest(
         IngestRequest(source="test/multi.md", source_type=SourceType.MARKDOWN),
     )
-    await asyncio.sleep(0.5)
+    await await_pipeline_idle(graph_store, result.document.id, service=ingestion)
     return result.document
 
 

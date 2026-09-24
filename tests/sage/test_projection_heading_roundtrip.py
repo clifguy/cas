@@ -9,8 +9,6 @@ the ticket (TC-1..TC-6 from the acceptance criteria plus a read_section
 symmetry guard).
 """
 
-import asyncio
-
 import pytest
 
 from sage.models.enums import SourceType
@@ -31,8 +29,8 @@ def utilities_service(graph_store, stub_content_store, stub_embedding_provider, 
 async def _ingest_markdown(ingestion_service, tmp_vault_dir, rel_path: str, source_text: str):
     """Write `source_text` to `tmp_vault_dir/sources/<rel_path>` and ingest it.
 
-    Returns the ingested Document. Waits for the background pipeline to
-    quiesce so subsequent reads see all chunks.
+    Returns the ingested Document. The ingest runs the whole pipeline
+    inline, so every chunk is written by the time it returns.
     """
     target = tmp_vault_dir / "sources" / rel_path
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -41,7 +39,6 @@ async def _ingest_markdown(ingestion_service, tmp_vault_dir, rel_path: str, sour
     result = await ingestion_service.ingest(
         IngestRequest(source=rel_path, source_type=SourceType.MARKDOWN),
     )
-    await asyncio.sleep(0.5)
     return result.document
 
 

@@ -4,7 +4,6 @@ Verifies type consistency, import hygiene, schema annotations, naming,
 and the IngestResult dataclass after cleanup.
 """
 
-import asyncio
 import json
 from pathlib import Path
 
@@ -116,7 +115,6 @@ async def vault(tmp_path):
         try:
             yield services, config
         finally:
-            await asyncio.sleep(0.3)
             _mcp._vaults.pop("test_vault", None)
 
 
@@ -296,7 +294,6 @@ class TestIngestResult:
         request = IngestRequest(source="simple.md", source_type=SourceType.MARKDOWN)
         # First ingest
         await services.ingestion_service.ingest(request)
-        await asyncio.sleep(0.2)
         # Force re-ingest
         force_request = IngestRequest(
             source="simple.md", source_type=SourceType.MARKDOWN, force=True

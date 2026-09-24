@@ -26,7 +26,6 @@ enumeration surfaces drift on the next test run.
 
 from __future__ import annotations
 
-import asyncio
 import json
 
 import pytest
@@ -104,7 +103,6 @@ async def vault_services(minimal_vault_config_dict, tmp_vault_dir):
         try:
             yield services
         finally:
-            await asyncio.sleep(0.5)
             _mcp._vaults.pop("test_vault", None)
 
 

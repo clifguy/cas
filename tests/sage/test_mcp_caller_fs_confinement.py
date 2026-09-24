@@ -25,7 +25,6 @@ builder's env override outranks the profile, so ``_profile("cloud")`` changes
 only the caller-visible behavior, not which store answers.
 """
 
-import asyncio
 import contextlib
 import hashlib
 import json
@@ -136,9 +135,6 @@ async def confined_vault(minimal_vault_config_dict, vault_source_backend):
         try:
             yield services, config, vault_source_backend
         finally:
-            # Drain the fire-and-forget pipeline tasks ingest dispatches before
-            # services tear down (same discipline as the profile-invariance fixture).
-            await asyncio.sleep(0.3)
             _mcp._vaults.pop(_VAULT_ID, None)
 
 

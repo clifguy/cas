@@ -514,7 +514,6 @@ async def vault_services(minimal_vault_config_dict, tmp_vault_dir):
         try:
             yield services
         finally:
-            await asyncio.sleep(0.5)
             _mcp_vaults.pop(VAULT_ID, None)
 
 

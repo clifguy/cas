@@ -16,7 +16,6 @@ the same request with the same code, status and detail. A well-formed
 
 from __future__ import annotations
 
-import asyncio
 import re
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
@@ -32,6 +31,7 @@ from sage.adapters.stubs import StubContentStore
 from sage.api.errors import VaultNotFoundError
 from sage.config import VaultConfig
 from tests.helpers.docstring_blocks import error_modes_block
+from tests.helpers.pipeline_wait import drain_vaults
 from tests.helpers.vault_addressed import NOT_REGISTRY_RESOLVED
 
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
@@ -72,12 +72,14 @@ async def shared_app(
     try:
         yield app, config.vault.id
     finally:
-        await asyncio.sleep(0.1)
-        registry.pop(_ALIAS_VAULT, None)
-        for vault_id in set(registry) - before:
-            services = registry.pop(vault_id)
-            services.close_timing()
-            await services.close_storage()
+        try:
+            await drain_vaults(registry, set(registry) - before)
+        finally:
+            registry.pop(_ALIAS_VAULT, None)
+            for vault_id in set(registry) - before:
+                services = registry.pop(vault_id)
+                services.close_timing()
+                await services.close_storage()
 
 
 def _client(app: FastAPI) -> AsyncClient:

@@ -19,6 +19,7 @@ from sage.app import _initialize_services, create_app
 from sage.config import SageCoreConfig, VaultConfig
 from sage.models.schemas import IngestResponse
 from sage.models.wire import to_wire
+from tests.helpers.pipeline_wait import drain_vaults
 
 
 @pytest.fixture
@@ -43,11 +44,12 @@ async def app(minimal_vault_config_dict, tmp_vault_dir):
     (test_dir / "sample.md").write_text("# Sample Document\n\nSample content.")
 
     yield app
-    # Wait for any background pipeline tasks to finish before closing
-    await asyncio.sleep(0.5)
-    for services in app.state.vault_registry.values():
-        services.close_timing()
-        await services.graph_store.close()
+    try:
+        await drain_vaults(app.state.vault_registry)
+    finally:
+        for services in app.state.vault_registry.values():
+            services.close_timing()
+            await services.graph_store.close()
 
 
 @pytest.fixture

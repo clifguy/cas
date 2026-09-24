@@ -30,7 +30,7 @@ from sage.mcp_server import (
 from sage.mcp_server import (
     update_metadata as _update_metadata_bulk,
 )
-from tests.helpers.pipeline_wait import await_tool_idle
+from tests.helpers.pipeline_wait import await_tool_idle, drain_vaults
 from tests.sage.conftest import initialize_services_for_test
 
 
@@ -100,7 +100,6 @@ async def vault_services(minimal_vault_config_dict, tmp_vault_dir):
         try:
             yield services
         finally:
-            await asyncio.sleep(0.5)
             _mcp._vaults.pop("test_vault", None)
 
 
@@ -476,11 +475,13 @@ async def seeded_http_app(minimal_vault_config_dict, monkeypatch):
 
     yield app, vault_id, doc_id, wire_v0
 
-    await asyncio.sleep(0.1)
-    if vault_id in app.state.vault_registry:
-        app.state.vault_registry[vault_id].close_timing()
-        await app.state.vault_registry[vault_id].graph_store.close()
-    _mcp._vaults.clear()
+    try:
+        await drain_vaults(app.state.vault_registry, [vault_id])
+    finally:
+        if vault_id in app.state.vault_registry:
+            app.state.vault_registry[vault_id].close_timing()
+            await app.state.vault_registry[vault_id].graph_store.close()
+        _mcp._vaults.clear()
 
 
 async def test_t10_http_post_stale_expected_version_returns_per_item_stale_read(

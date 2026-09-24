@@ -18,7 +18,6 @@ entry point requires that both arms reach it.
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 from typing import Any
@@ -37,7 +36,7 @@ from sage.models.enums import SourceType
 from sage.models.schemas import IngestRequest
 from sage.services.utilities import UtilitiesService
 from sage.services.vault_registry import VaultRegistryService
-from tests.helpers.pipeline_wait import await_pipeline_idle
+from tests.helpers.pipeline_wait import await_pipeline_idle, drain_vaults
 
 _MISSING_DOCUMENT_ID = "00000000_no_such_document"
 _HIT_ID = "aaaaaaaa_retrieval_hit"
@@ -64,11 +63,13 @@ async def _serve(config_dict: dict, tmp_vault_dir: Path) -> AsyncIterator[tuple[
     try:
         yield app, config.vault.id
     finally:
-        await asyncio.sleep(0.1)
-        for vault_id in set(registry) - before:
-            services = registry.pop(vault_id)
-            services.close_timing()
-            await services.close_storage()
+        try:
+            await drain_vaults(registry, set(registry) - before)
+        finally:
+            for vault_id in set(registry) - before:
+                services = registry.pop(vault_id)
+                services.close_timing()
+                await services.close_storage()
 
 
 @pytest.fixture

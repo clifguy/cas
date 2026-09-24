@@ -34,6 +34,7 @@ from sage.services.metadata import MetadataService
 from sage.services.user_service import UserService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.storage.locks import DocumentLockManager
+from tests.helpers.pipeline_wait import drain_abstraction_queue, drain_vaults
 
 
 @pytest.fixture(autouse=True)
@@ -80,10 +81,14 @@ async def app_with_one_vault(minimal_config: VaultConfig) -> AsyncIterator[FastA
     try:
         yield app
     finally:
-        for vault_id in set(registry) - before:
-            services = registry.pop(vault_id)
-            services.close_timing()
-            await services.close_storage()
+        added = set(registry) - before
+        try:
+            await drain_vaults(registry, added)
+        finally:
+            for vault_id in added:
+                services = registry.pop(vault_id)
+                services.close_timing()
+                await services.close_storage()
 
 
 @pytest.fixture
@@ -116,13 +121,21 @@ async def initialize_services_for_test(config, **kwargs):
     forgot to stop the timing thread and leaked it (and its log handle)
     into subsequent tests, polluting their caplog windows on the timing
     loggers.
+
+    Before either close, the vault's abstraction work is drained -- the
+    queue joined and every claim released -- so a fixture built on this
+    needs no fixed sleep of its own to let background work finish. A drain
+    that cannot finish raises, and the closes still run.
     """
     services = await initialize_services(config, **kwargs)
     try:
         yield services
     finally:
-        services.close_timing()
-        await services.close_storage()
+        try:
+            await drain_abstraction_queue(services.ingestion_service)
+        finally:
+            services.close_timing()
+            await services.close_storage()
 
 
 def stack_postgres_config_from_dsn(dsn: str, monkeypatch, extensions=("vector",)):

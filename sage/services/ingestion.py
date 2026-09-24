@@ -985,13 +985,14 @@ class IngestionService:
         mode the batch ingest service uses to preserve memory discipline
         during bulk runs.
 
-        When `wait_for_pipeline` is False, Stages 2-3 dispatch via
-        `asyncio.create_task` and the call returns after projection,
-        record insertion, metadata application, and the supersede
-        lifecycle transition (if requested) have committed. Used by the
-        MCP `ingest_document` tool to stay under the 60-second MCP client
-        timeout on documents whose abstraction latency would otherwise
-        exceed it. The supersede transition runs synchronously
+        When `wait_for_pipeline` is False, the document is claimed and
+        Stages 2-3 are handed to the vault's abstraction queue, whose
+        single worker runs them with bounded retry; the call returns after
+        projection, record insertion, metadata application, and the
+        supersede lifecycle transition (if requested) have committed.
+        Used by the MCP `ingest_document` tool to stay under the 60-second
+        MCP client timeout on documents whose abstraction latency would
+        otherwise exceed it. The supersede transition runs synchronously
         regardless of this flag (BH-129): the version chain must be
         complete when the call returns.
 

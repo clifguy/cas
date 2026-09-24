@@ -17,7 +17,6 @@ CAS-ADR-017.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 from datetime import datetime, timezone
 
@@ -38,6 +37,7 @@ from sage.models.enums import (
     TraversalDirection,
 )
 from sage.models.schemas import Document, LinkRequest, TraverseRequest
+from tests.helpers.pipeline_wait import drain_vaults
 
 # ── helpers (mirror test_rationale_kind.py) ────────────────────────────
 
@@ -265,10 +265,12 @@ async def app(minimal_vault_config_dict, tmp_vault_dir):
         abstraction_provider=StubAbstractionProvider(),
     )
     yield app
-    await asyncio.sleep(0.1)
-    for services in app.state.vault_registry.values():
-        services.close_timing()
-        await services.graph_store.close()
+    try:
+        await drain_vaults(app.state.vault_registry)
+    finally:
+        for services in app.state.vault_registry.values():
+            services.close_timing()
+            await services.graph_store.close()
 
 
 @pytest.fixture

@@ -15,7 +15,6 @@ The factories must:
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
@@ -29,6 +28,7 @@ from sage.adapters.stubs import (
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from tests.app.test_app_backend import _make_vault_config_dict
+from tests.helpers.pipeline_wait import drain_vaults
 
 
 @pytest.fixture
@@ -46,10 +46,12 @@ async def app_with_vault(tmp_path):
         abstraction_provider=StubAbstractionProvider(),
     )
     yield app, config
-    await asyncio.sleep(0.2)
-    for services in app.state.vault_registry.values():
-        services.close_timing()
-        await services.graph_store.close()
+    try:
+        await drain_vaults(app.state.vault_registry)
+    finally:
+        for services in app.state.vault_registry.values():
+            services.close_timing()
+            await services.graph_store.close()
 
 
 @pytest.fixture
