@@ -59,8 +59,8 @@ def _id(name: str) -> str:
 
 #: The slow provider's delay, and the line both BH-130 arms are measured
 #: against: a call that waits for abstraction takes at least this long, and one
-#: that does not returns sooner.
-_BH130_DELAY_S = 0.5
+#: that does not returns within half of it.
+_BH130_DELAY_S = 1.0
 
 
 class _SlowStubAbstractionProvider(AbstractionProvider):
@@ -133,7 +133,7 @@ async def app(minimal_vault_config_dict, tmp_vault_dir):
     finally:
         for services in app.state.vault_registry.values():
             services.close_timing()
-            await services.graph_store.close()
+            await services.close_storage()
 
 
 @pytest.fixture
@@ -559,9 +559,10 @@ async def test_bh_130_fire_and_forget_returns_fast(
     )
     elapsed = time.monotonic() - start
 
-    # Returns before the abstraction delay has elapsed, and before abstraction
-    # has finished -- the status says so independently of the clock.
-    assert elapsed < _BH130_DELAY_S, f"fire-and-forget ingest took {elapsed:.2f}s"
+    # Returns well inside the abstraction delay, and the status read there shows
+    # abstraction unfinished. Within the delay a completed status could only have
+    # come from waiting for it, which is what the timing bound keeps true.
+    assert elapsed < _BH130_DELAY_S / 2, f"fire-and-forget ingest took {elapsed:.2f}s"
     assert result.document.pipeline_status != PipelineStatus.ABSTRACTION_COMPLETE
     # Background task will finish the pipeline eventually.
     terminal = await await_pipeline_terminal(

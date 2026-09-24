@@ -418,7 +418,7 @@ def _fail_on_leaked_timing_resources():
 
     The remedy at a leaking site is to build services through
     ``initialize_services_for_test`` or to call ``services.close_timing()``
-    before ``graph_store.close()`` on teardown.
+    before ``services.close_storage()`` on teardown.
     """
     handlers_before = set(_timing_handlers)
     threads_before = alive_timing_thread_idents()

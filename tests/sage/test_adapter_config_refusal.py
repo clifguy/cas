@@ -131,7 +131,7 @@ async def _http_app(config_dict: dict, monkeypatch) -> AsyncIterator[object]:
             registry: dict[str, SAGEServices] = app.state.vault_registry
             if _VAULT in registry:
                 registry[_VAULT].close_timing()
-                await registry[_VAULT].graph_store.close()
+                await registry[_VAULT].close_storage()
             _mcp._vaults.clear()
 
 

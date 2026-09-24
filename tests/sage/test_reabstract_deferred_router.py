@@ -89,7 +89,7 @@ async def maintenance_app(minimal_vault_config_dict, monkeypatch):
         registry: dict[str, SAGEServices] = app.state.vault_registry
         if vault_id in registry:
             registry[vault_id].close_timing()
-            await registry[vault_id].graph_store.close()
+            await registry[vault_id].close_storage()
         mcp_server._vaults.clear()
 
 
@@ -214,7 +214,7 @@ async def test_post_reabstract_deferred_streams_failure_without_aborting(
             await drain_abstraction_queue(services.ingestion_service)
         finally:
             services.close_timing()
-            await services.graph_store.close()
+            await services.close_storage()
             mcp_server._vaults.clear()
 
 
@@ -319,7 +319,7 @@ async def test_post_reabstract_deferred_409_when_already_in_flight(
             await drain_vaults(app.state.vault_registry, [vault_id])
         finally:
             app.state.vault_registry[vault_id].close_timing()
-            await app.state.vault_registry[vault_id].graph_store.close()
+            await app.state.vault_registry[vault_id].close_storage()
             mcp_server._vaults.clear()
 
 

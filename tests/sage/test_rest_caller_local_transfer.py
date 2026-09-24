@@ -92,7 +92,7 @@ async def vault(minimal_vault_config_dict):
         finally:
             for services in application.state.vault_registry.values():
                 services.close_timing()
-                await services.graph_store.close()
+                await services.close_storage()
             _mcp._vaults.pop(_VAULT_ID, None)
 
 

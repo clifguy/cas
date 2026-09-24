@@ -30,6 +30,7 @@ from tests.helpers.adapter_scratch_fixtures import (
     retype_docx_main_part,
 )
 from tests.helpers.real_models import (
+    REAL_MODELS_SKIP_REASON,
     loaded_provider,
     real_model_lock,
     real_models_enabled,
@@ -58,19 +59,24 @@ def _mlx_lm_loads() -> bool:
 
 
 # Importing mlx-lm takes seconds, and only the opt-in real-model tier uses it, so
-# the probe runs only when that tier is enabled. Outside it every Qwen3 test is
-# already skipped by ``requires_real_models``.
+# the probe runs only when that tier is enabled.
 _HAS_QWEN3 = real_models_enabled() and _mlx_lm_loads()
 
 
 requires_embedding = pytest.mark.skipif(
     not _HAS_EMBEDDING, reason="sentence-transformers or nomic model not available"
 )
+# Skips on its own, naming whichever reason holds: the tier is not enabled, or it
+# is and mlx-lm is unavailable.
 requires_qwen3 = pytest.mark.skipif(
-    real_models_enabled() and not _HAS_QWEN3,
+    not _HAS_QWEN3,
     reason=(
-        "Qwen3 abstraction tests require mlx-lm (Apple Silicon only); "
-        "skipped on Linux CI runners by design"
+        (
+            "Qwen3 abstraction tests require mlx-lm (Apple Silicon only); "
+            "skipped on Linux CI runners by design"
+        )
+        if real_models_enabled()
+        else REAL_MODELS_SKIP_REASON
     ),
 )
 
