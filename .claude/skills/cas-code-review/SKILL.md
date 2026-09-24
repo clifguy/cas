@@ -14,7 +14,7 @@ This skill is single-tier: every section lives in this file. G1, F4, C1 and R1 n
 
 ## Section structure
 
-Full sections carry four parts: **What this catches**, **Already gated deterministically** (what CI catches without the skill, which the skill must not duplicate), **Review prompts**, and **What "correct" looks like**. Sections whose structural case a deterministic gate now owns, and where no recent record has landed, are collapsed to one line and walked as a one-line check.
+Full sections carry four parts: **What this catches**, **Already gated deterministically** (what CI catches without the skill, which the skill must not duplicate), **Review prompts**, and **What "correct" looks like**. A section is collapsed to one line, and walked as a one-line check, when a deterministic gate owns its structural case (F1, F5) or when no failure record in the analyzed window landed in it (F2, which no gate owns).
 
 Section families:
 
@@ -39,13 +39,13 @@ For each section that fired, emit: the section tag (F1–F5, G1, C1, S1, R1, P1)
 
 ## F1 — API convention drift
 
-Routers stay one service call (no storage, adapter or model construction in the handler body); `tests/sage/test_router_conformance.py` and the import-linter contracts gate the structure, so flag only a new router that lands allowlisted in `KNOWN_VIOLATIONS`, or a drained router whose `KNOWN_VIOLATIONS` entry and `ignore_imports` line were not dropped with it.
+Routers stay one service call (no storage, adapter or model construction in the handler body); `tests/sage/test_router_conformance.py` and the import-linter contracts gate the structure, so flag only a router that lands allowlisted in `KNOWN_VIOLATIONS`, or any import-linter exemption added for one.
 
 ---
 
 ## F2 — Tests-as-chronicle
 
-When the diff tightens a boundary validator and edits tests in the same change, name each test edit as a correction of a wrong assertion or a relaxation masking a semantic break, flag every widened fixture or weakened assertion, and require a negative test that the new validator rejects the previously permitted input (the pattern of commit `98c03f9`).
+When the diff tightens a boundary validator and edits tests in the same change, name each test edit as a correction of a wrong assertion or a relaxation masking a semantic break, flag every widened fixture or weakened assertion, and require a negative test that the new validator rejects the previously permitted input (the pattern of commit `98c03f9`); no gate owns this, and it is collapsed because no recent record landed here.
 
 ---
 
@@ -58,7 +58,7 @@ When the diff tightens a boundary validator and edits tests in the same change, 
 **Convention reference.** The *CAS Typed-Alias Boundary Conventions* steering document (vault: cas, `doc_type=steering_document`) says where typed aliases must apply (`BaseModel` fields, FastAPI route params, FastMCP entry points), where they need not, and the three boundary patterns (Pattern 1 alias on a route-param annotation; Pattern 2 module-scope `TypeAdapter` + in-body `validate_python` at an MCP entry point; Pattern 3 `BaseModel` field annotation). Cite it when surfacing a finding.
 
 **Review prompts.**
-- For every field or parameter added or modified at a boundary surface (`sage/models/schemas.py`, `root_harness/`, `*/models.py`, `*/schemas.py`, routes under `sage/api/routers/` and `app/backend/`, MCP entry points in `sage/sage_api_tools.py`/`sage/app_tools.py`): if it carries a known shape (date, id, hash, version label, path, URL, UUID, vault id, heading), does it use an existing typed alias (`DocumentIdStr`, `EdgeIdStr`, `Sha256Str`, `DocumentDateStr`, `VaultIdStr`, `UserIdStr`, …) rather than a bare type? A new shape adds its alias in the same diff; an inline `Annotated[str, AfterValidator(...)]` is a smell. Dict-shaped payloads walk their shape-bearing keys in a `model_validator`.
+- For every field or parameter added or modified at a boundary surface (`sage/models/schemas.py`, `*/models.py`, `*/schemas.py`, routes under `sage/api/routers/` and `app/backend/`, MCP entry points in `sage/sage_api_tools.py`/`sage/app_tools.py`): if it carries a known shape (date, id, hash, version label, path, URL, UUID, vault id, heading), does it use an existing typed alias (`DocumentIdStr`, `EdgeIdStr`, `Sha256Str`, `DocumentDateStr`, `VaultIdStr`, `UserIdStr`, …) rather than a bare type? A new shape adds its alias in the same diff; an inline `Annotated[str, AfterValidator(...)]` is a smell. Dict-shaped payloads walk their shape-bearing keys in a `model_validator`.
 - **Collapsing normalization.** Does the boundary normalize `{}`, `""` or `[]` to `None` (or otherwise merge two inputs) where downstream code branches on the difference (`is not None`, truthiness, key presence)? Check every such normalization against the branches it feeds, and against the other surfaces that accept the same payload, so one surface does not treat an empty value differently from the rest (recorded as F142).
 - **Raw input in `mode="before"`.** A `mode="before"` validator sees the input before any type check. Does it hash, test membership, call string methods on, or index raw input without first guarding its type? A list where a string was expected then raises `TypeError`, which escapes as a 500 instead of a 4xx (recorded as F118).
 - **Values reaching pattern consumers.** Does an operator-, config- or environment-supplied value reach `grep -E`, SQL `LIKE`, a glob, an unquoted shell expansion, or an `IFS` split? It must be escaped or compared as a literal (`grep -F -x`, quoted expansion, `LIKE … ESCAPE`, a newline-proof split). Otherwise metacharacters let a non-equal value match, and a gate built on it fails open (recorded as F86; F88 is the same shape at `LIKE`).
@@ -94,7 +94,7 @@ Every shape-bearing field carries its alias; `notes` is bare `str` because free 
   4. **Sibling branches** in the same file or class: the next method with the same shape, the other parameter reaching the same branch, the paired operation of a read/reclaim pair, the other axes of a multi-axis check (F82, F88, F95, F99, F119).
   5. **The other direction** of a channel: upload for download, write for read, request for response (F101 against F100).
   6. **Restatements** in other languages (TypeScript, shell, Bicep), runbook command blocks, and test-plan prose (F67, F79).
-  7. **Parallel directories**: `tests/sage/` ↔ `tests/app/` ↔ `tests/root_harness/`; per-module trees under `sage/services/`, `sage/api/routers/`, `sage/source_adapters/`; `sage/models/` ↔ `root_harness/models/`; `domains/<domain>/`.
+  7. **Parallel directories**: `tests/sage/` ↔ `tests/app/` ↔ `tests/root_harness/`; per-module trees under `sage/services/`, `sage/api/routers/`, `sage/source_adapters/`, `sage/models/`.
 - When a gate or check is *widened*, the code it newly admits is a site too: follow the newly admitted input to where it is consumed (recorded as F102).
 - For each site, the diff either covers it or the commit message or PR body declares it out of scope, with a rationale. A missed site judged unreachable or short-lived is still reported as a finding, with its reachability stated, so the author makes the scope call rather than the reviewer (recorded as F99, where a read tolerated a missing table and its paired reclaim did not). A completeness claim in the commit message ("every", "all paths", "none left") is also a C1 claim and is checked against the derived set.
 
@@ -241,4 +241,4 @@ The rule is: durable surfaces (code, docstrings, comments, and the names of the 
 - Test coverage measurement, performance regression, or dependency-policy review. These are Tier 1 surfaces from the SDLC survey and have their own tooling lanes.
 - Architectural-decision review. ADRs in the cas vault (`doc_type=adr`) are the substrate for that.
 
-The skill is tuned to the documented CAS failure modes. A pattern earns its place here when a failure record shows the commit-time review should have caught it: the defect was visible from the commit and its repository, and a review walking this file did not find it. Such a pattern is admitted. Its cost is controlled by consolidation, not refusal: widen an existing section before adding one, collapse a section once a deterministic gate owns its structural case, and keep every section's prompts executable rather than advisory. Prefer the framing that describes why a defect *survived review* over the one that describes how it was *written* — the first is what a review gate can act on.
+The skill is tuned to the documented CAS failure modes. A pattern earns its place here when a failure record shows the commit-time review should have caught it: the defect was visible from the commit and its repository, and a review walking this file did not find it. Such a pattern is admitted. Its cost is controlled by consolidation, not refusal: widen an existing section before adding one, collapse a section once a deterministic gate owns its structural case or the analyzed window shows no record landing in it, and keep every section's prompts executable rather than advisory. Prefer the framing that describes why a defect *survived review* over the one that describes how it was *written* — the first is what a review gate can act on.
