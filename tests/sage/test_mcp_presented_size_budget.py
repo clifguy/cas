@@ -40,13 +40,13 @@ DEFAULT_TOOL_CEILING: Final[int] = 4_000
 #: Ceilings for the tools whose presented size exceeds the default.
 TOOL_CEILINGS: Final[dict[str, int]] = {
     "ingest_document": 16_250,
-    "search": 14_750,
+    "search": 13_500,
     "bulk_ingest_document": 11_250,
     "create_edges": 9_000,
     "update_lifecycles": 8_750,
     "update_metadata": 7_750,
     "restore_vault_source_file": 4_750,
-    "update_vault_config": 4_750,
+    "update_vault_config": 4_250,
 }
 
 #: Ceiling on the summed presented size of every tool a surface registers.

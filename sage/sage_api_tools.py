@@ -17,6 +17,7 @@ from sage._mcp_item_schema import published_item_list
 from sage._mcp_param import (
     DOC_ID_ALIAS_NOTE,
     DocIdAliasParam,
+    NumericText,
     VaultIdParam,
     model_param,
     param_doc,
@@ -375,7 +376,7 @@ _SEARCH_MODE = _discover_param(
 )
 
 _SEARCH_QUERY = _discover_param(
-    str | None,
+    Annotated[str | None, NumericText],
     "query",
     mcp=(
         "In keyword mode, terms are conjunctive: a document matches only if it "
@@ -1619,7 +1620,7 @@ def register_sage_tools(
         scope: _SEARCH_SCOPE = "all",
         filters: _SEARCH_FILTERS = None,
         document_id: _discover_param(str | None, "document_id") = None,
-        heading_path: _discover_param(str | None, "heading_path") = None,
+        heading_path: _discover_param(Annotated[str | None, NumericText], "heading_path") = None,
         limit: _SEARCH_LIMIT = 10,
         offset: _discover_param(int, "offset") = 0,
         use_hybrid: _discover_param(bool, "use_hybrid") = True,
@@ -1841,6 +1842,7 @@ def register_sage_tools(
         vault_id: VaultIdParam,
         heading_path: Annotated[
             str,
+            NumericText,
             Field(
                 description=(
                     'Heading path prefix, its headings joined by " > ". The '

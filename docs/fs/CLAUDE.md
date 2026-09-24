@@ -84,6 +84,17 @@ component the spec declares for it, compares every model field's nullability
 with its property's, and checks that every route the applications serve renders
 through the wire route class.
 
+**The MCP tool input schemas are the one declared exception.** The rule governs
+the specifications' components. An MCP tool's published input schema carries an
+optional parameter as its non-null form alone: `type: string` rather than
+`anyOf: [{type: string}, {type: null}]`, with the null default dropped and a
+`$ref` arm inlined. Some MCP clients discard `anyOf` when they load a tool, and
+the parameter then reaches the model with no type at all. Leaving the parameter
+out is the advertised way to send no value; a null is still accepted and still
+means the same as omission, so only the declaration narrows, never what the
+surface serves. Item schemas nested inside a parameter keep their null arms.
+`tests/sage/test_mcp_input_schema_publication.py` enforces this form.
+
 ## Validation
 
 ```bash
