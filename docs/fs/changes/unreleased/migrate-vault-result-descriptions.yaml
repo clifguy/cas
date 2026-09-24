@@ -1,0 +1,9 @@
+classification: patch
+summary: >-
+  Corrects migrate_vault result-field descriptions that contradicted the
+  server's behaviour, in the Core API OpenAPI specification, the MigrationReport
+  model and the MCP tool catalog. columns_added is described as always empty,
+  retained for response shape. tier3_uniqueness_activations is described as
+  listing every clean unique_keys declaration on every call, and the
+  idempotence sentence on both surfaces now names it as the one list a no-op
+  re-call does not report empty. No behaviour changes.

@@ -2590,8 +2590,9 @@ def register_sage_tools(
         server log names each one. Nothing is re-abstracted, and only the
         documents a backfill rewrites are re-embedded.
 
-        Idempotent: a re-call with nothing left to repair reports empty lists
-        and no error.
+        Idempotent: a re-call with nothing left to repair reports no error
+        and empty lists, except ``tier3_uniqueness_activations``, which
+        re-lists each clean declaration.
 
         **The last backfill is expensive and exclusive, and runs once.** It
         rebuilds every index over the passage table, including the vector

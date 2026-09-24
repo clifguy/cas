@@ -3,9 +3,10 @@
 A document indexed before that text had a passage holds none of it, and its
 stored passages cannot supply it. The migration re-projects the source, and when
 the projection carries such text it adds that text as the document's first
-passage. The passages already stored are kept exactly as they read, so every
-heading path, section read and cached address resolves as before, and nothing is
-re-abstracted.
+passage. A stored passage the current adapter shapes the same way is kept as it
+reads, so its heading path, section read and cached address resolve as before;
+one an older adapter shaped differently is replaced by the current shape. Nothing
+is re-abstracted.
 
 Each document here is ingested through an adapter that withholds the preamble --
 which is how the passage builder stored every document before -- and the

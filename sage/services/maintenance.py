@@ -366,9 +366,10 @@ class MaintenanceService:
         A later backfill stores the text a document carries before its first
         heading, which a vault indexed before that text had a passage lacks. It
         re-projects the candidates' sources and adds the text ahead of the stored
-        passages, leaving those as they read. It also moves text an older adapter
-        stored under a heading with no text into the section before it, so the
-        empty heading path addresses only text under no heading (see
+        passages, replacing any stored passage the current adapter shapes
+        differently. It also moves text an older adapter stored under a heading
+        with no text into the section before it, so the empty heading path
+        addresses only text under no heading (see
         ``_store_text_before_first_heading``).
 
         The other three reshape stored passages without reading a source: moving
@@ -386,7 +387,8 @@ class MaintenanceService:
         existing index state for a colliding declaration is preserved
         (no implicit DROP) so a previously-clean activation is not silently
         torn down. The returned MigrationReport carries both
-        ``tier3_uniqueness_activations`` (successful installs) and
+        ``tier3_uniqueness_activations`` (every clean declaration, its index
+        created or confirmed on each call) and
         ``tier3_uniqueness_collisions`` (refused activations).
 
         The backfills have no per-document concurrency control, so the migration

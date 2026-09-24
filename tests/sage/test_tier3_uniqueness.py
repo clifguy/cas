@@ -838,6 +838,28 @@ async def test_t16_migration_is_idempotent(unique_keys_maintenance_service):
     }
 
 
+async def test_t16_migration_no_op_recall_shape(unique_keys_maintenance_service):
+    """A re-call with nothing left to repair reports every list empty except
+    `tier3_uniqueness_activations`, which re-lists each clean declaration
+    because every call confirms its index. Anti-coincidental: beyond the
+    activation-set agreement `test_t16_migration_is_idempotent` already
+    holds, this pins every other list empty on the re-call and the exact
+    activation count, so a backfill that named itself on every call, or a
+    duplicated activation entry, fails here and nowhere else in the module."""
+    await unique_keys_maintenance_service.migrate_vault()
+    second = await unique_keys_maintenance_service.migrate_vault()
+
+    assert second.columns_added == []
+    assert second.backfills_applied == []
+    assert second.source_paths_normalized == []
+    assert second.tier3_uniqueness_collisions == []
+    assert {(a.doc_type, a.field) for a in second.tier3_uniqueness_activations} == {
+        ("ticket", "ticket_id"),
+        ("failure_record", "failure_id"),
+    }
+    assert len(second.tier3_uniqueness_activations) == 2
+
+
 # ---------------------------------------------------------------------------
 # Defensive: GraphStore validation fences on tier3 identifiers
 # ---------------------------------------------------------------------------
