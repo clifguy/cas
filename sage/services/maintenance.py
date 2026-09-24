@@ -367,9 +367,9 @@ class MaintenanceService:
         heading, which a vault indexed before that text had a passage lacks. It
         re-projects the candidates' sources and adds the text ahead of the stored
         passages, replacing any stored passage the current adapter shapes
-        differently. It also moves text an older adapter
-        stored under a heading with no text into the section before it, so the
-        empty heading path addresses only text under no heading (see
+        differently. It also moves text an older adapter stored under a heading
+        with no text into the section before it, so the empty heading path
+        addresses only text under no heading (see
         ``_store_text_before_first_heading``).
 
         The other three reshape stored passages without reading a source: moving
