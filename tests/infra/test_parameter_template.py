@@ -22,12 +22,13 @@ from __future__ import annotations
 
 import os
 import re
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Final
 
 import pytest
+
+from tests.helpers.bicep import UNAVAILABLE_REASON, bicep_command, bicep_unavailable
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 INFRA_DIR: Final[Path] = REPO_ROOT / "infra"
@@ -160,10 +161,7 @@ def test_template_documents_out_of_band_inputs() -> None:
     )
 
 
-@pytest.mark.skipif(
-    shutil.which("bicep") is None and shutil.which("az") is None,
-    reason="bicep/az CLI absent; the infra workflow validate job is authoritative",
-)
+@pytest.mark.skipif(bicep_unavailable(), reason=UNAVAILABLE_REASON)
 def test_template_compiles(tmp_path: Path) -> None:
     """The template compiles against the orchestrator with no error (local fast
     check). Built from a copy under ``tmp_path`` whose ``using`` line is
@@ -179,9 +177,7 @@ def test_template_compiles(tmp_path: Path) -> None:
     tmp = tmp_path / "main.bicepparam"
     tmp.write_text(text, encoding="utf-8")
     outfile = tmp_path / "params.json"
-    if shutil.which("bicep") is not None:
-        cmd = ["bicep", "build-params", str(tmp), "--outfile", str(outfile)]
-    else:
-        cmd = ["az", "bicep", "build-params", "--file", str(tmp), "--outfile", str(outfile)]
+    cmd = bicep_command("build-params", tmp, outfile)
+    assert cmd is not None
     proc = subprocess.run(cmd, capture_output=True, text=True)
     assert proc.returncode == 0, f"bicep build-params failed:\n{proc.stderr}\n{proc.stdout}"

@@ -22,7 +22,6 @@ from pathlib import Path
 from typing import Any, Final
 
 import pytest
-import yaml
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
@@ -32,6 +31,7 @@ from sage.api.errors import VaultNotFoundError
 from sage.config import VaultConfig
 from tests.helpers.docstring_blocks import error_modes_block
 from tests.helpers.pipeline_wait import drain_vaults
+from tests.helpers.spec_loading import load_yaml
 from tests.helpers.vault_addressed import NOT_REGISTRY_RESOLVED
 
 _REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
@@ -326,7 +326,7 @@ def _vault_scoped_operations() -> list[tuple[str, str, dict[str, Any]]]:
     """Every operation that resolves a vault: by path, or by a request-body ``vault_id``."""
     found: list[tuple[str, str, dict[str, Any]]] = []
     for surface, path in _SPECS.items():
-        spec = yaml.safe_load(path.read_text())
+        spec = load_yaml(path)
         schemas = (spec.get("components") or {}).get("schemas") or {}
         for route, item in spec["paths"].items():
             for method, op in item.items():

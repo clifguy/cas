@@ -23,13 +23,14 @@ from __future__ import annotations
 
 import importlib.util
 import re
-import shutil
 import subprocess
 from pathlib import Path
 from types import ModuleType
 from typing import Final
 
 import pytest
+
+from tests.helpers.bicep import bicep_command, bicep_unavailable
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 MAIN_BICEP: Final[Path] = REPO_ROOT / "infra" / "main.bicep"
@@ -174,15 +175,13 @@ def test_module_is_not_wired_into_the_serving_template() -> None:
 
 
 @pytest.mark.skipif(
-    shutil.which("bicep") is None and shutil.which("az") is None,
+    bicep_unavailable(),
     reason="requires the Bicep CLI or the Azure CLI's bicep extension",
 )
 def test_module_compiles(tmp_path: Path) -> None:
     outfile = tmp_path / "postgres-geo-drill-footprint.json"
-    if shutil.which("bicep") is not None:
-        cmd = ["bicep", "build", str(MODULE), "--outfile", str(outfile)]
-    else:
-        cmd = ["az", "bicep", "build", "--file", str(MODULE), "--outfile", str(outfile)]
+    cmd = bicep_command("build", MODULE, outfile)
+    assert cmd is not None
     proc = subprocess.run(cmd, capture_output=True, text=True)
     assert proc.returncode == 0, f"bicep build failed:\n{proc.stderr}"
 

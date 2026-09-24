@@ -58,9 +58,9 @@ from pathlib import Path
 from typing import Any, Callable, Final, NamedTuple
 
 import pytest
-import yaml
 
 from tests.helpers.published_tool import published_tools, published_tools_on
+from tests.helpers.spec_loading import load_yaml
 from tests.sage.surface_divergences import (
     MCP_ONLY_ARGUMENTS,
     MCP_ONLY_TOOLS,
@@ -155,8 +155,7 @@ OPERATION_RENAMES: dict[tuple[str, str], str] = {}
 
 @functools.lru_cache(maxsize=None)
 def _load_spec(path: Path) -> dict[str, Any]:
-    with path.open() as f:
-        return yaml.safe_load(f)
+    return load_yaml(path)
 
 
 def _resolve_ref(spec: dict[str, Any], ref: str) -> dict[str, Any]:

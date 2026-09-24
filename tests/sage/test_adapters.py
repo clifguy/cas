@@ -22,6 +22,7 @@ from pathlib import Path
 
 import pytest
 
+from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
 from sage.config import load_sage_core_config
 from tests.helpers.adapter_scratch_fixtures import (
     decoy_potx_package,
@@ -31,6 +32,7 @@ from tests.helpers.adapter_scratch_fixtures import (
 from tests.helpers.real_models import (
     loaded_provider,
     real_model_lock,
+    real_models_enabled,
     release_provider,
     requires_real_models,
 )
@@ -44,21 +46,28 @@ try:
 except ImportError, RuntimeError:
     _HAS_EMBEDDING = False
 
-try:
-    import mlx_lm  # noqa: F401 # gate fires on missing runtime dep, not just module shape
 
-    from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
+def _mlx_lm_loads() -> bool:
+    """Whether mlx-lm imports -- a missing runtime dependency, not just a
+    missing module, has to read as unavailable."""
+    try:
+        import mlx_lm  # noqa: F401
+    except ImportError, RuntimeError:
+        return False
+    return True
 
-    _HAS_QWEN3 = True
-except ImportError, RuntimeError:
-    _HAS_QWEN3 = False
+
+# Importing mlx-lm takes seconds, and only the opt-in real-model tier uses it, so
+# the probe runs only when that tier is enabled. Outside it every Qwen3 test is
+# already skipped by ``requires_real_models``.
+_HAS_QWEN3 = real_models_enabled() and _mlx_lm_loads()
 
 
 requires_embedding = pytest.mark.skipif(
     not _HAS_EMBEDDING, reason="sentence-transformers or nomic model not available"
 )
 requires_qwen3 = pytest.mark.skipif(
-    not _HAS_QWEN3,
+    real_models_enabled() and not _HAS_QWEN3,
     reason=(
         "Qwen3 abstraction tests require mlx-lm (Apple Silicon only); "
         "skipped on Linux CI runners by design"

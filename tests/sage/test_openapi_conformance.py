@@ -39,6 +39,7 @@ from sage.app import create_app
 from sage.models.schemas import DocumentIdStr
 from scripts.substrate_changes import contract_version_ok, head_release, tag_exists
 from tests.helpers.adapter_claims import ENABLEMENT_CLAIM_MARKERS
+from tests.helpers.spec_loading import load_yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 SAGE_CORE_SPEC_PATH = _REPO_ROOT / "docs" / "fs" / "sage" / "sage_core_api.openapi.yaml"
@@ -179,8 +180,7 @@ def _load_spec(path: Path) -> dict | None:
     """
     if not path.exists():
         return None
-    with path.open() as f:
-        return yaml.safe_load(f)
+    return load_yaml(path)
 
 
 def _operations(spec: dict | None) -> set[tuple[str, str]]:

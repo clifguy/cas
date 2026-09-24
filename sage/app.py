@@ -365,6 +365,14 @@ _DOCS_FS_ROOT = Path(__file__).resolve().parents[1] / "docs" / "fs"
 _SAGE_CORE_SPEC_PATH = _DOCS_FS_ROOT / "sage" / "sage_core_api.openapi.yaml"
 _CAS_APP_SPEC_PATH = _DOCS_FS_ROOT / "cas_app_api.openapi.yaml"
 
+# The specifications are large enough that the pure-Python loader takes most of
+# a second over them. The C loader, present wherever PyYAML was built against
+# libyaml, builds the same objects in a fraction of that.
+try:
+    from yaml import CSafeLoader as _SpecLoader
+except ImportError:  # pragma: no cover - PyYAML built without libyaml
+    from yaml import SafeLoader as _SpecLoader
+
 # Operation fields the overlay is allowed to write. Everything else in the
 # published document -- parameters, request bodies, responses, component
 # schemas -- stays as the generator produced it, so the document keeps
@@ -395,8 +403,8 @@ def _load_published_prose() -> dict:
     than falling back to the generated text. The fallback document would look
     complete, carrying every path with every explanation silently absent.
     """
-    core_spec = yaml.safe_load(_SAGE_CORE_SPEC_PATH.read_text()) or {}
-    app_spec = yaml.safe_load(_CAS_APP_SPEC_PATH.read_text()) or {}
+    core_spec = yaml.load(_SAGE_CORE_SPEC_PATH.read_text(), Loader=_SpecLoader) or {}
+    app_spec = yaml.load(_CAS_APP_SPEC_PATH.read_text(), Loader=_SpecLoader) or {}
 
     operations: dict[tuple[str, str], dict] = {}
     tags: dict[str, str] = {}
@@ -437,7 +445,7 @@ def _load_operations_declaring_a_body() -> frozenset[tuple[str, str]]:
     the request-name refusal reads this to leave such a body uninspected.
     Unguarded for the reason ``_load_published_prose`` is.
     """
-    core_spec = yaml.safe_load(_SAGE_CORE_SPEC_PATH.read_text()) or {}
+    core_spec = yaml.load(_SAGE_CORE_SPEC_PATH.read_text(), Loader=_SpecLoader) or {}
     return frozenset(
         (path, method.lower())
         for path, path_item in (core_spec.get("paths") or {}).items()

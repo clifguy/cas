@@ -963,11 +963,12 @@ async def test_every_http_operation_with_a_nested_model_refuses_its_undeclared_k
     from sage.app import create_app
     from sage.models import schemas
 
+    nesting = _core_operations_with_a_nested_strict_model()
     roots = {
         route.name: get_flat_dependant(route.dependant).body_params[0].field_info.annotation
         for route in create_app().routes
         if isinstance(route, APIRoute)
-        and route.name in _core_operations_with_a_nested_strict_model()
+        and route.name in nesting
         and get_flat_dependant(route.dependant).body_params
     }
     pairs = _derived_nested_pairs(roots)

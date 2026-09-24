@@ -23,13 +23,14 @@ from __future__ import annotations
 
 import json
 import re
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Final
 from urllib.parse import urlparse
 
 import pytest
+
+from tests.helpers.bicep import UNAVAILABLE_REASON, bicep_command, bicep_unavailable
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 INFRA_DIR: Final[Path] = REPO_ROOT / "infra"
@@ -1510,19 +1511,14 @@ def test_apim_is_not_subscription_scoped() -> None:
     )
 
 
-@pytest.mark.skipif(
-    shutil.which("bicep") is None and shutil.which("az") is None,
-    reason="bicep/az CLI absent; the infra workflow validate job is authoritative",
-)
+@pytest.mark.skipif(bicep_unavailable(), reason=UNAVAILABLE_REASON)
 def test_apim_module_compiles(tmp_path: Path) -> None:
     """The APIM module compiles to ARM JSON with no error (local fast check; the
     infra workflow validate job is the authoritative gate).
     """
     outfile = tmp_path / "apim.json"
-    if shutil.which("bicep") is not None:
-        cmd = ["bicep", "build", str(APIM), "--outfile", str(outfile)]
-    else:
-        cmd = ["az", "bicep", "build", "--file", str(APIM), "--outfile", str(outfile)]
+    cmd = bicep_command("build", APIM, outfile)
+    assert cmd is not None
     proc = subprocess.run(cmd, capture_output=True, text=True)
     assert proc.returncode == 0, f"bicep build failed:\n{proc.stderr}"
 

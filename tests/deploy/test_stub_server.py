@@ -33,7 +33,7 @@ _TESTS_ROOT: Final[Path] = _DEPLOY_TESTS.parent
 
 #: The three stub modules the shared helper exists for.
 _STUB_MODULES: Final[tuple[str, ...]] = (
-    "test_cloud_preflight.py",
+    "_preflight_harness.py",
     "test_sharepoint_validate.py",
     "test_mcp_preflight_probe.py",
 )

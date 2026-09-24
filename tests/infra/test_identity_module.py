@@ -23,12 +23,13 @@ matchers fail on the regressions they target.
 from __future__ import annotations
 
 import re
-import shutil
 import subprocess
 from pathlib import Path
 from typing import Final
 
 import pytest
+
+from tests.helpers.bicep import UNAVAILABLE_REASON, bicep_command, bicep_unavailable
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 INFRA_DIR: Final[Path] = REPO_ROOT / "infra"
@@ -231,19 +232,14 @@ def test_main_bicep_wires_identity_module() -> None:
     assert re.search(r"scope:\s*rg\b", block), "the identity module must be scoped to rg"
 
 
-@pytest.mark.skipif(
-    shutil.which("bicep") is None and shutil.which("az") is None,
-    reason="bicep/az CLI absent; the infra workflow validate job is authoritative",
-)
+@pytest.mark.skipif(bicep_unavailable(), reason=UNAVAILABLE_REASON)
 def test_identity_module_compiles(tmp_path: Path) -> None:
     """The identity module compiles to ARM JSON with no error (local fast check;
     the infra workflow validate job is the authoritative gate).
     """
     outfile = tmp_path / "identity.json"
-    if shutil.which("bicep") is not None:
-        cmd = ["bicep", "build", str(IDENTITY), "--outfile", str(outfile)]
-    else:
-        cmd = ["az", "bicep", "build", "--file", str(IDENTITY), "--outfile", str(outfile)]
+    cmd = bicep_command("build", IDENTITY, outfile)
+    assert cmd is not None
     proc = subprocess.run(cmd, capture_output=True, text=True)
     assert proc.returncode == 0, f"bicep build failed:\n{proc.stderr}"
 

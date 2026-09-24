@@ -159,6 +159,13 @@ _CONFORMANCE_STREAMS: Final[str] = (
 
 KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
     (
+        "tests/deploy/test_stub_server.py::"
+        "test_stub_modules_import_the_shared_helper[test_cloud_preflight.py]"
+    ): (
+        "the preflight gate was split by theme and its stub server moved to "
+        "_preflight_harness.py, so the import guard runs under that module's id"
+    ),
+    (
         "tests/deploy/test_cloud_preflight.py::"
         "test_sweep_marker_resolves_against_its_response_schema[/staging-edges-^[[:space:]]*\\\\[]"
     ): (
