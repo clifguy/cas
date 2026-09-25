@@ -7,12 +7,14 @@ when no server is configured.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import dataclasses
 import inspect
 import math
 import os
 import re
+import textwrap
 import time
 from datetime import timedelta
 from pathlib import Path
@@ -23,6 +25,7 @@ import pytest
 from sage.adapters.content_store_postgres import (
     _CONTENT_STORE_SURFACES,
     PostgresContentStore,
+    _span_imposes_adjacency,
 )
 from sage.adapters.interfaces import (
     LEGACY_DOCUMENT_HEADER_CHUNK_INDEX,
@@ -1309,6 +1312,61 @@ async def test_parse_keyword_query_does_not_report_a_quoted_single_word_as_adjac
     )
 
 
+async def test_parse_keyword_query_does_not_report_a_phrase_that_rendered_one_lexeme_as_adjacent(
+    store,
+):
+    """A span is read by what it rendered to, not by how many words it holds.
+
+    ``"the retrieval"`` holds two words, but the stopword is discarded and the
+    span renders the single lexeme ``'retriev'``: there is nothing left for it
+    to be adjacent to. Beside a hyphenated compound, the rendered query still
+    carries adjacency -- the tokenizer's own, from the identifier -- so a
+    reading that counts the span's words and then looks for any adjacency
+    operator reports a phrase, and the empty-result advisory tells the caller
+    to unquote something that constrains nothing.
+    """
+    parse = await store.parse_keyword_query('"the retrieval" CAS-ADR-048')
+    assert "retriev" in parse.terms, "precondition: the span renders one lexeme"
+    assert "cas-adr" in parse.terms, "precondition: the compound splits, rendering adjacency"
+    assert not parse.adjacent, "a span that rendered one lexeme imposes no adjacency"
+
+
+async def test_parse_keyword_query_does_not_report_a_quoted_compound_as_adjacent(store):
+    """Quoting a lone compound adds nothing that unquoting it would remove.
+
+    The quoted identifier renders the tokenizer's adjacency whether or not it
+    is quoted, so the adjacency is not the caller's phrase. Counting the span's
+    lexemes would report one here; the question the advisory turns on is
+    whether the quotes changed what is required.
+    """
+    parse = await store.parse_keyword_query('"CAS-ADR-048" governance')
+    assert "cas-adr" in parse.terms, "precondition: the compound splits, rendering adjacency"
+    assert not parse.adjacent, "the adjacency is the identifier's, not the quotes'"
+
+
+@pytest.mark.parametrize(
+    ("quoted", "bare", "expected"),
+    [
+        ("'alphaword' <-> 'betaword'", "'alphaword' & 'betaword'", True),
+        ("'alphaword' <2> 'betaword'", "'alphaword' & 'betaword'", True),
+        ("'retriev'", "'retriev'", False),
+        # A rendering the quotes changed without an adjacency operator is not
+        # adjacency: difference alone is not the condition.
+        ("'alphaword' & 'betaword'", "'alphaword' | 'betaword'", False),
+        (
+            "'cas-adr' <-> 'cas' <-> 'adr' <-> '048'",
+            "'cas-adr' <-> 'cas' <-> 'adr' <-> '048'",
+            False,
+        ),
+        ("", "", False),
+    ],
+)
+def test_a_span_imposes_adjacency_only_where_its_quotes_changed_the_rendering(
+    quoted: str, bare: str, expected: bool
+) -> None:
+    assert _span_imposes_adjacency(quoted, bare) is expected
+
+
 async def test_parse_keyword_query_reports_an_unclosed_quote_as_adjacent(store):
     """An unclosed quote opens a phrase, and the search enforces one.
 
@@ -2402,6 +2460,53 @@ def test_the_passage_surface_scoping_is_expressed_once():
     )
 
 
+def _inline_surface_spellings(source: str) -> list[str]:
+    """The surfaces a function's source names inside its string literals.
+
+    Reads the literals rather than the text, because SQL lives only in string
+    literals and a table name inside SQL is a bare word, not a quoted token:
+    ``"SELECT count(*) FROM chunks"`` spells the table with no quote beside it.
+    The docstring is excluded, and comments never reach the tree, so prose
+    that mentions a surface is not mistaken for a statement over it. An
+    f-string's literal fragments are string constants of their own, so the
+    text around a placeholder is read and the placeholder is not.
+    """
+    function = ast.parse(textwrap.dedent(source)).body[0]
+    docstring = ast.get_docstring(function, clean=False)
+    literals = [
+        node.value
+        for node in ast.walk(function)
+        if isinstance(node, ast.Constant)
+        and isinstance(node.value, str)
+        and node.value != docstring
+    ]
+    return [
+        surface
+        for surface in _CONTENT_STORE_SURFACES
+        if any(re.search(rf"\b{re.escape(surface)}\b", literal) for literal in literals)
+    ]
+
+
+def test_the_surface_set_gate_reads_sql_text_rather_than_quoted_tokens():
+    """The matcher the gate below uses finds a bare table name inside a statement.
+
+    Each negative arm is a shape a gate over-reaching in the other direction
+    would flag -- a placeholder, a docstring, a comment -- and flagging any of
+    them would make the gate unusable on the members it scans.
+    """
+    unquoted = 'def f(self):\n    return f"SELECT count(*) FROM chunks"\n'
+    assert _inline_surface_spellings(unquoted) == ["chunks"]
+
+    interpolated = 'def f(self, surface):\n    return f"SELECT count(*) FROM {surface}"\n'
+    assert _inline_surface_spellings(interpolated) == []
+
+    described = (
+        'def f(self):\n    """Counts chunks and document_surface rows."""\n'
+        "    # every chunks row\n    return 0\n"
+    )
+    assert _inline_surface_spellings(described) == []
+
+
 def test_the_content_store_surface_set_is_expressed_once():
     """The accounting names its surfaces from one place rather than by literal.
 
@@ -2416,10 +2521,11 @@ def test_the_content_store_surface_set_is_expressed_once():
     unavoidably -- a module-wide scan would be satisfied by nothing and would
     catch nothing.
 
-    Matched on the quoted token, because that is the only form a table name can
-    take inside these statements: each is interpolated into SQL, so a literal
-    reintroduced here would be a quoted one. The constant's own definition is
-    excluded by construction -- it is not a member of the class.
+    Matched as a whole word inside any string literal, because a string literal
+    is the only place SQL text lives, and a surface reintroduced into a
+    statement is a bare word there rather than a quoted token. The constant's
+    own definition is excluded by construction -- it is not a member of the
+    class.
     """
     # Every member that builds a statement over the surfaces: none may spell one
     # inline. ``_present_surfaces`` is here for that assertion and not for the
@@ -2437,12 +2543,11 @@ def test_the_content_store_surface_set_is_expressed_once():
     reads_the_set = tuple(m for m in members if m is not PostgresContentStore._present_surfaces)
     for member in members:
         source = inspect.getsource(member)
-        for surface in _CONTENT_STORE_SURFACES:
-            spelled = re.search(rf"""['"]{re.escape(surface)}\b""", source)
-            assert spelled is None, (
-                f"{member.__name__} spells the surface {surface!r} inline; render it "
-                "from _CONTENT_STORE_SURFACES so the set stays named once"
-            )
+        spelled = _inline_surface_spellings(source)
+        assert not spelled, (
+            f"{member.__name__} spells the surface(s) {spelled!r} inline; render them "
+            "from _CONTENT_STORE_SURFACES so the set stays named once"
+        )
         if member not in reads_the_set:
             continue
         assert "_CONTENT_STORE_SURFACES" in source, (
