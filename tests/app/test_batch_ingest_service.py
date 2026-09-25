@@ -18,6 +18,7 @@ import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -149,10 +150,12 @@ def _make_services(
     # through ``prepare_supersede`` and serializes on the lock manager,
     # so mocks would hand the atomic commit a MagicMock edge and defeat
     # every lifecycle assertion below. ``prepare_supersede`` and the
-    # ``transition_table`` property touch only ``_table``, so bypassing
-    # ``__init__`` gives the real logic without a store or config.
+    # ``transition_table`` property touch only ``_table`` and the vault
+    # owner it attributes a transition to by default, so bypassing
+    # ``__init__`` gives the real logic without a store.
     lifecycle = LifecycleService.__new__(LifecycleService)
     lifecycle._table = _base_transition_table()
+    lifecycle._config = SimpleNamespace(vault=SimpleNamespace(owner="owner"))
     services.lifecycle_service = lifecycle
     services.lock_manager = DocumentLockManager()
 
@@ -1633,6 +1636,7 @@ def _make_chain_services(
     # manager.
     lifecycle = LifecycleService.__new__(LifecycleService)
     lifecycle._table = _base_transition_table()
+    lifecycle._config = SimpleNamespace(vault=SimpleNamespace(owner="owner"))
     services.lifecycle_service = lifecycle
     services.lock_manager = DocumentLockManager()
     services.config.abstraction.enabled = abstraction_enabled

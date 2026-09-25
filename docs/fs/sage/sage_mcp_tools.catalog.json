@@ -9264,7 +9264,7 @@
             },
             "created_by": {
               "default": null,
-              "description": "User ID of the actor initiating ingestion. Used for provenance tracking. Defaults to vault owner.",
+              "description": "User ID of the actor initiating ingestion. Used for provenance tracking. Where the request authenticated, the authenticated principal is recorded instead, and a differing value here is ignored and named in the response's warnings. Without authentication, defaults to vault owner.",
               "type": "string"
             },
             "doc_type": {

@@ -37,6 +37,7 @@ from sage.models.schemas import (
     UpdateMetadataRequest,
     UpdateMetadataResponse,
 )
+from sage.request_identity import current_actor
 from sage.services._bulk_envelope import resolve_item_document_id, sage_error_to_envelope
 from sage.services._dry_run import doc_type_requirements
 from sage.services.document_surface import compose_document_surface
@@ -181,7 +182,7 @@ class MetadataService:
         self,
         document_id: str,
         request: UpdateMetadataRequest,
-        modified_by: str,
+        modified_by: str | None = None,
     ) -> UpdateMetadataResponse:
         """Partial update of mutable metadata fields with patch semantics.
 
@@ -363,7 +364,9 @@ class MetadataService:
             # Mark metadata as confirmed on every update_metadata call,
             # even with an empty body (pure confirmation without edits).
             updates["metadata_confirmed"] = True
-            updates["last_modified_by"] = modified_by
+            # The authenticated principal where the request carries one,
+            # otherwise the supplied writer, otherwise the vault owner.
+            updates["last_modified_by"] = current_actor() or modified_by or self._config.vault.owner
             updates["updated_at"] = datetime.now(timezone.utc).isoformat()
             doc = await self._store.update_document(document_id, updates)
 
@@ -418,7 +421,7 @@ class MetadataService:
     async def bulk_update_metadata(
         self,
         request: BulkMetadataRequest,
-        modified_by: str,
+        modified_by: str | None = None,
     ) -> BulkMetadataResponse:
         """Apply one metadata patch per item; per-item lock and per-item transaction.
 

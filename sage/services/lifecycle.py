@@ -47,6 +47,7 @@ from sage.models.schemas import (
     SetLifecycleRequest,
     SetLifecycleResponse,
 )
+from sage.request_identity import current_actor
 from sage.services._bulk_envelope import resolve_item_document_id, sage_error_to_envelope
 from sage.services._dry_run import DRY_RUN_SENTINEL_EDGE_ID as _DRY_RUN_SENTINEL_EDGE_ID
 from sage.storage.locks import DocumentLockManager
@@ -83,8 +84,18 @@ class LifecycleService:
     def transition_table(self) -> TransitionTable:
         return self._table
 
+    def _writer(self, modified_by: str | None) -> str:
+        """Who a transition is attributed to: the authenticated
+        principal where the request carries one, otherwise the writer the
+        calling operation supplies, otherwise the vault owner."""
+        return current_actor() or modified_by or self._config.vault.owner
+
     async def _set_lifecycle(
-        self, document_id: str, request: SetLifecycleRequest
+        self,
+        document_id: str,
+        request: SetLifecycleRequest,
+        *,
+        modified_by: str | None = None,
     ) -> SetLifecycleResponse:
         """Execute a lifecycle state transition (or preview it on dry-run).
 
@@ -245,6 +256,7 @@ class LifecycleService:
                 predecessor_updates = {
                     "lifecycle_status": to_state,
                     "updated_at": now.isoformat(),
+                    "last_modified_by": self._writer(modified_by),
                 }
                 # On dry-run, build the would-be edge with a
                 # sentinel id so callers can never mistake it for a
@@ -274,7 +286,11 @@ class LifecycleService:
             else:
                 # Non-supersede actions: single-row update is naturally atomic.
                 now = datetime.now(timezone.utc)
-                updates: dict = {"lifecycle_status": to_state, "updated_at": now.isoformat()}
+                updates: dict = {
+                    "lifecycle_status": to_state,
+                    "updated_at": now.isoformat(),
+                    "last_modified_by": self._writer(modified_by),
+                }
                 if lands_in_relocated:
                     updates["relocated_to"] = request.relocated_to
                 if request.dry_run:
@@ -492,6 +508,7 @@ class LifecycleService:
         *,
         rationale: str | None = None,
         rationale_kind: RationaleKind = RationaleKind.MANUAL,
+        modified_by: str | None = None,
     ) -> SupersedeTransition:
         """Validate the supersede transition and build the writes for it
         without committing. Used by IngestionService to bundle the
@@ -533,6 +550,7 @@ class LifecycleService:
         predecessor_updates = {
             "lifecycle_status": to_state,
             "updated_at": now.isoformat(),
+            "last_modified_by": self._writer(modified_by),
         }
         edge = Edge(
             id=str(uuid.uuid4()),

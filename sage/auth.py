@@ -28,6 +28,7 @@ from jwt import PyJWKClient
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from sage.config import StackAuthConfig
+from sage.request_identity import request_principal
 
 logger = logging.getLogger(__name__)
 
@@ -343,4 +344,10 @@ class AuthMiddleware:
             await _send_challenge(send, exc)
             return
         scope[SCOPE_PRINCIPAL_KEY] = principal
-        await self.app(scope, receive, send)
+        # Bind the principal for the request's lifetime so writes beneath it,
+        # on any surface, are attributed to it (sage.request_identity).
+        binding = request_principal.set(principal)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            request_principal.reset(binding)

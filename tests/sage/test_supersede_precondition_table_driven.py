@@ -465,6 +465,7 @@ def test_prepare_supersede_carries_caller_edge_provenance():
             )
         ]
     )
+    svc._config = SimpleNamespace(vault=SimpleNamespace(owner="owner"))
     predecessor = SimpleNamespace(id="0000000b_pred", lifecycle_status="active", doc_type="note")
 
     stamped = svc.prepare_supersede(
@@ -530,7 +531,7 @@ async def test_force_reingest_supersede_surfaces_the_ingest_surface_code(
 
     calls: list[str] = []
 
-    async def _raise_as_racer(doc_id, request):
+    async def _raise_as_racer(doc_id, request, **_kwargs):
         calls.append(doc_id)
         raise InvalidLifecycleTransitionError(
             "archived", "supersede", ["reactivate"], pipeline_status=None

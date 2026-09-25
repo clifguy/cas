@@ -162,12 +162,13 @@ def _lifecycle_for(table: TransitionTable) -> LifecycleService:
     """A LifecycleService double whose only live part is the table.
 
     `prepare_supersede` and the `transition_table` property touch nothing
-    beyond `self._table`, so bypassing `__init__` gives these unit tests
-    the real validation and edge-building logic without a store, a lock
-    manager, or a vault config.
+    beyond `self._table` and the vault owner a transition is attributed to
+    by default, so bypassing `__init__` gives these unit tests the real
+    validation and edge-building logic without a store or a lock manager.
     """
     svc = LifecycleService.__new__(LifecycleService)
     svc._table = table
+    svc._config = SimpleNamespace(vault=SimpleNamespace(owner="owner"))
     return svc
 
 

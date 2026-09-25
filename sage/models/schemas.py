@@ -481,14 +481,22 @@ class Document(BaseModel):
         )
     )
     created_by: str = Field(
-        description="User ID of the actor (human or agent) that created this document."
+        description=(
+            "Who created this document. Where the creating request authenticated, "
+            "the authenticated principal: a user's preferred username, else their "
+            "object id, or app:<client id> for an application. Otherwise the "
+            "caller-supplied created_by, or the vault owner."
+        )
     )
     created_at: datetime = Field(description="Creation timestamp.")
     last_modified_by: str = Field(
         description=(
-            "User ID of the actor responsible for the most recent modification. "
-            "Set to created_by at document creation; updated on lifecycle "
-            "transitions and metadata changes."
+            "Who made the most recent modification, recorded the same way as "
+            "created_by: the authenticated principal where the request "
+            "authenticated, otherwise the writer the operation supplied, or the "
+            "vault owner. Set to created_by at document creation; updated on "
+            "metadata changes, lifecycle transitions including supersession, "
+            "and forced re-ingestion."
         )
     )
     updated_at: datetime = Field(description="Last modification timestamp.")
@@ -1090,7 +1098,12 @@ class IngestRequest(BaseModel):
     )
     created_by: str | None = Field(
         default=None,
-        description=("User ID of the actor initiating ingestion. Used for provenance tracking."),
+        description=(
+            "User ID of the actor initiating ingestion. Used for provenance "
+            "tracking. Where the request authenticated, the authenticated "
+            "principal is recorded instead, and a differing value here is "
+            "ignored and named in the response's warnings."
+        ),
     )
     force: bool = Field(
         default=False,
@@ -2504,6 +2517,13 @@ class IngestResponse(BaseModel):
     document: Document = Field(description="The ingested document record.")
     pipeline_status: PipelineStatus = Field(
         description="Terminal pipeline status reached during the synchronous ingest."
+    )
+    warnings: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Caller-facing warnings about the write. Names a created_by value that "
+            "was ignored because the request authenticated as a different principal."
+        ),
     )
 
 

@@ -55,4 +55,4 @@ async def update_metadata(
     vault_id: VaultIdStr = Depends(get_vault_id),
     metadata_service: MetadataService = Depends(get_metadata_service),
 ) -> BulkMetadataResponse:
-    return await metadata_service.bulk_update_metadata(request, modified_by="system")
+    return await metadata_service.bulk_update_metadata(request)

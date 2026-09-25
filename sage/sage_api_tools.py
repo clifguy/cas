@@ -806,7 +806,9 @@ def register_sage_tools(
         source: _INGEST_SOURCE = None,
         source_type: _INGEST_SOURCE_TYPE = None,
         config: _INGEST_CONFIG = None,
-        created_by: _ingest_param(str | None, "created_by", mcp="Defaults to vault owner.") = None,
+        created_by: _ingest_param(
+            str | None, "created_by", mcp="Without authentication, defaults to vault owner."
+        ) = None,
         force: _ingest_param(bool, "force") = False,
         predecessor_id: _INGEST_PREDECESSOR_ID = None,
         expected_head_version: _INGEST_EXPECTED_HEAD_VERSION = None,
@@ -942,7 +944,10 @@ def register_sage_tools(
             )
             if isinstance(result, (UploadRecipe, IngestPreview)):
                 return serialize(result)
-            return serialize(result.document)
+            payload = serialize(result.document)
+            if result.warnings:
+                payload["warnings"] = result.warnings
+            return payload
         except (SAGEError, ValueError) as e:
             return error_response(e)
 
@@ -1295,7 +1300,7 @@ def register_sage_tools(
                 response_mode=response_mode,
                 dry_run=dry_run,
             )
-            response = await v.metadata_service.bulk_update_metadata(request, v.config.vault.owner)
+            response = await v.metadata_service.bulk_update_metadata(request)
             return serialize(response)
         except (SAGEError, ValueError) as e:
             return error_response(e)

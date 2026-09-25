@@ -11,6 +11,8 @@ document at a time (BH-026, BH-068).
 
 import asyncio
 import contextlib
+import contextvars
+import dataclasses
 import hmac
 import json
 import logging
@@ -102,6 +104,7 @@ from sage.models.schemas import (
     UploadRecipe,
     canonicalize_sha256,
 )
+from sage.request_identity import attributed_writer, request_principal
 from sage.services._dry_run import doc_type_requirements
 from sage.services.caller_paths import caller_basename
 from sage.services.document_surface import compose_document_surface, embedding_text
@@ -191,6 +194,8 @@ class IngestResult:
 
     document: Document
     is_new: bool
+    #: Caller-facing warnings about how the write was attributed.
+    warnings: list[str] = dataclasses.field(default_factory=list)
 
 
 @contextlib.contextmanager
@@ -566,7 +571,11 @@ class IngestionService:
         if self._abstraction_queue is None:
             self._abstraction_queue = asyncio.Queue()
         if self._worker_task is None or self._worker_task.done():
-            self._worker_task = asyncio.create_task(self._abstraction_worker())
+            # The worker is started from inside whichever request first enqueues
+            # work and outlives it, so it runs without that request's identity.
+            context = contextvars.copy_context()
+            context.run(request_principal.set, None)
+            self._worker_task = asyncio.create_task(self._abstraction_worker(), context=context)
         return self._abstraction_queue
 
     async def _abstraction_worker(self) -> None:
@@ -1800,6 +1809,13 @@ class IngestionService:
             vault_timezone=self._config.vault.timezone,
         )
 
+        # The writer this call is attributed to: the
+        # authenticated principal where the request carries one, otherwise the
+        # caller's created_by, otherwise the vault owner.
+        writer, attribution_warnings = attributed_writer(
+            request.created_by, self._config.vault.owner
+        )
+
         if existing_doc is not None:
             self._refuse_retype_out_of_scope(
                 existing_doc, field_updates.get("doc_type", existing_doc.doc_type)
@@ -1819,6 +1835,7 @@ class IngestionService:
                 # Replaced rather than kept: the passages about to be written
                 # are shaped by this call's config, and by nothing else.
                 "adapter_config": request.config or None,
+                "last_modified_by": writer,
             }
             if retained:
                 # The record is reused because the delivered bytes matched, so
@@ -1886,6 +1903,7 @@ class IngestionService:
                     await self._lifecycle_service._set_lifecycle(
                         predecessor.id,
                         SetLifecycleRequest(action="supersede", successor_id=doc.id),
+                        modified_by=writer,
                     )
                 except InvalidLifecycleTransitionError as exc:
                     # `_set_lifecycle` serves the explicit lifecycle-action
@@ -1910,7 +1928,7 @@ class IngestionService:
             # predecessor it is a single-row insert. The pre-merged
             # field_updates carry the full metadata into the atomic
             # insert.
-            created_by = request.created_by or self._config.vault.owner
+            created_by = writer
             doc_id = generate_document_id(vault_relative, now.isoformat(), resolved_title)
             base = dict(
                 id=doc_id,
@@ -1967,7 +1985,9 @@ class IngestionService:
                                 current_head_id=fresh_pred.id,
                                 current_head_version=current_head_version,
                             )
-                    transition = self._lifecycle_service.prepare_supersede(fresh_pred, doc.id)
+                    transition = self._lifecycle_service.prepare_supersede(
+                        fresh_pred, doc.id, modified_by=writer
+                    )
                     try:
                         doc, _updated_pred = await self._store.insert_with_supersede_atomic(
                             doc,
@@ -2032,7 +2052,7 @@ class IngestionService:
                 _AbstractionJob(document_id=doc.id, projection=projection, doc_type=doc.doc_type)
             )
 
-        return IngestResult(document=doc, is_new=is_new)
+        return IngestResult(document=doc, is_new=is_new, warnings=attribution_warnings)
 
     async def _preview_ingest(
         self,
