@@ -249,6 +249,8 @@ allow_indirect_imports = "true"
 [[tool.importlinter.contracts]]
 # CAS-ADR-052: capability lives beneath both request surfaces, so the MCP tool
 # modules reach storage only through the service layer, as the routers do.
+# Module-granular: a storage or adapter name re-exported through another module
+# passes this contract; tests/sage/test_mcp_tool_import_boundary.py covers that.
 name = "MCP tool modules do not import storage or adapters directly"
 type = "forbidden"
 source_modules = ["sage.sage_api_tools", "sage.app_tools"]

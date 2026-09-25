@@ -4,9 +4,9 @@ Registers the directory-scan and batch-ingest tools that support the
 CAS application surface. The orchestration and scan logic live in the
 SAGE substrate (``sage.services.scan``, ``sage.services.batch_ingest``);
 this module only adapts the dict-shaped MCP arguments to those services.
-Beyond boundary shape validation and the protocol translation artifacts
-CAS-ADR-052 admits, new behavior belongs in those services, beneath both
-this surface and the REST routers, so the two answer alike.
+Beyond boundary shape validation and a divergence from the REST surface
+in a category CAS-ADR-052 admits, new behavior belongs in those services,
+beneath both this surface and the REST routers, so the two answer alike.
 """
 
 from collections.abc import Callable

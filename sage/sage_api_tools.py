@@ -4,12 +4,12 @@ Contains the protocol tools (ingest, get, update, lifecycle, link,
 traverse, discover, export, refresh) and API query tools (vault stats,
 hash check, staging edges, pending metadata) over the SAGE services.
 
-Each tool translates its MCP arguments into a service call and the
-result into the MCP envelope: boundary shape validation, and the
-protocol translation artifacts CAS-ADR-052 admits (tripwire parameters,
-argument aliases, string carriers), belong here. Every other behavior --
-semantic validation, defaulting, refusal -- lives in ``sage.services``,
-beneath both this surface and the REST routers, so the two answer alike.
+A tool translates its MCP arguments into a service call and the result
+into the MCP envelope. Boundary shape validation belongs here, as does a
+divergence from the REST surface in a category CAS-ADR-052 admits. New
+semantic validation, defaulting, refusal, or other behavior belongs in
+``sage.services``, beneath both this surface and the REST routers, so
+the two answer alike.
 """
 
 import logging
