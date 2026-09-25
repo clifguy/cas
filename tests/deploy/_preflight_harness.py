@@ -380,6 +380,14 @@ _OPENAPI_BODY = (
     '"paths":{"/sage_vaults":{"get":{}}},'
     '"components":{"securitySchemes":{"entraBearer":{"type":"http","scheme":"bearer"}}}}'
 )
+#: The stack configuration a cloud tenant loaded at start: the SharePoint
+#: (document-store) vault-source binding and the hosted abstraction provider,
+#: whose key is the one Key Vault fetch made at startup.
+_STACK_CONFIG_PATH = "/sage_vaults/maintenance/stack-config"
+_STACK_CONFIG_BODY = (
+    '{"profile":"cloud","storage_backend":"postgres","vault_source_backend":"document_store",'
+    '"abstraction":{"provider":"anthropic","model":"claude-probe","opener_constraint":false}}'
+)
 _HTTP_CHECKS = (
     "edge_discovery,edge_mcp_unauth,edge_authn_backend,liveness,"
     "ocr_capability,vault_load,retrieval_pg,edge_serves_openapi_spec,"
@@ -452,6 +460,10 @@ def _green(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str
         return 200, _LOGIN_BODY, {}
     if p == "/app/auth/me":
         return 200, '{"authenticated":false,"user":null}', {}
+    # Ahead of the Core API surface, whose vault-id pattern would read
+    # ``maintenance`` as a vault.
+    if p == _STACK_CONFIG_PATH:
+        return 200, _STACK_CONFIG_BODY, {}
     core = _core_api_green(p, body)
     if core is not None:
         return core

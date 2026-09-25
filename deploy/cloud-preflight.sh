@@ -40,7 +40,8 @@
 #   SAGE_BASE_URL/CAS_BASE_URL override scheme+host (default https://<fqdn>)
 #   PREFLIGHT_EXPECTED_VAULTS  comma-list of vault ids expected from discovery
 #   PREFLIGHT_EXPECTED_ASUID   expected asuid TXT verification token
-#   PREFLIGHT_VAULT_SOURCE     asserted vault_source_backend (e.g. document_store)
+#   PREFLIGHT_VAULT_SOURCE     asserted vault_source_backend (default document_store),
+#                              compared with the one the stack config serves
 #   PREFLIGHT_CHECKS           comma-list allowlist of check ids to run
 #   PREFLIGHT_SKIP             comma-list denylist of check ids to skip
 #                              (a control character in any of these, in the
@@ -130,6 +131,8 @@ HTTP_BODY=""
 HTTP_HEADERS=""
 HTTP_DIAG=""
 VAULT_FIRST_ID=""
+STACK_CONFIG_FETCHED=""
+STACK_CONFIG_BODY=""
 DETAIL_MSG=""
 MCP_PROBE_RC=""
 MCP_PROBE_OUT=""
@@ -868,8 +871,7 @@ check_edge_authn_backend() {
 check_liveness() {
   http_get "$SAGE_BASE_URL/health"
   if [ "$HTTP_CODE" = 200 ] \
-    && printf '%s' "$HTTP_BODY" | grep -q '"status"' \
-    && printf '%s' "$HTTP_BODY" | grep -q 'ok'; then
+    && printf '%s' "$HTTP_BODY" | grep -qE '"status"[[:space:]]*:[[:space:]]*"ok"'; then
     DETAIL_MSG="/health 200 status=ok (process up; store-free, not vault/store readiness)"
     return 0
   fi
@@ -949,6 +951,32 @@ check_transfer_download_gate() {
   fi
   DETAIL_MSG="expected 410 transfer_token_invalid from /download/{id}, got $HTTP_CODE"
   return 1
+}
+
+# The stack configuration the tenant loaded at start, fetched once per run and
+# shared by the checks that read it. Returns non-zero when it is not served.
+fetch_stack_config() {
+  if [ -z "$STACK_CONFIG_FETCHED" ]; then
+    http_get "$STACK_CONFIG_URL" "$AUTH_TOKEN"
+    STACK_CONFIG_FETCHED="$HTTP_CODE"
+    STACK_CONFIG_BODY=""
+    [ "$HTTP_CODE" = 200 ] && STACK_CONFIG_BODY="$HTTP_BODY"
+  fi
+  HTTP_CODE="$STACK_CONFIG_FETCHED"
+  [ "$STACK_CONFIG_FETCHED" = 200 ]
+}
+
+stack_config_vault_source_backend() {
+  printf '%s' "$STACK_CONFIG_BODY" \
+    | grep -oE '"vault_source_backend"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | head -1 | sed -E 's/.*"([^"]*)"$/\1/'
+}
+
+# The provider inside the abstraction section, not any key of that name.
+stack_config_abstraction_provider() {
+  printf '%s' "$STACK_CONFIG_BODY" \
+    | grep -oE '"abstraction"[[:space:]]*:[[:space:]]*\{[^}]*"provider"[[:space:]]*:[[:space:]]*"[^"]*"' \
+    | head -1 | sed -E 's/.*"([^"]*)"$/\1/'
 }
 
 check_vault_load() {
@@ -1269,7 +1297,9 @@ check_kv_wildcard_tls() {
     return 1
   fi
   esc="$(printf '%s' "$BASE_DOMAIN" | sed 's/[.[\*^$/]/\\&/g')"
-  if printf '%s' "$out" | grep -qE "\*\.$esc"; then
+  # Bounded on the right as well, so a SAN for a longer name that merely
+  # begins with the domain (*.<domain>.parked.net) is not credited.
+  if printf '%s' "$out" | grep -qE "\*\.$esc([^A-Za-z0-9.-]|\$)"; then
     DETAIL_MSG="leaf cert SAN covers *.$BASE_DOMAIN (Key Vault wildcard-tls resolved)"
     return 0
   fi
@@ -1278,12 +1308,36 @@ check_kv_wildcard_tls() {
 }
 
 check_kv_anthropic() {
+  # The key is fetched eagerly at startup, and only for the hosted provider, so
+  # registered vaults say something about it only when that provider is the one
+  # the tenant loaded. The provider is read from the stack configuration; the
+  # key itself is still inferred, never read.
   if [ "$(get_result vault_load)" != PASS ]; then
     DETAIL_MSG="skipped: inferred from vault load; vault_load did not pass before this check"
     return 2
   fi
-  DETAIL_MSG="inferred: vaults registered => the eager Key Vault anthropic-api-key fetch_secret succeeded at startup (not a direct KV read)"
-  return 0
+  local provider
+  if ! fetch_stack_config; then
+    DETAIL_MSG="stack config not readable ($STACK_CONFIG_URL returned $HTTP_CODE); the abstraction provider is unknown"
+    return 1
+  fi
+  provider="$(stack_config_abstraction_provider)"
+  case "$provider" in
+    anthropic)
+      DETAIL_MSG="inferred: provider=anthropic and vaults registered => the eager Key Vault anthropic-api-key fetch_secret succeeded at startup (not a direct KV read)"
+      return 0
+      ;;
+    stub)
+      DETAIL_MSG="skipped: provider=stub makes no Key Vault fetch at startup, so there is no key to infer"
+      return 2
+      ;;
+    "")
+      DETAIL_MSG="stack config carries no abstraction provider; the Key Vault fetch cannot be inferred"
+      return 1
+      ;;
+  esac
+  DETAIL_MSG="unexpected abstraction provider '$provider' for a cloud tenant (expected anthropic or stub)"
+  return 1
 }
 
 check_bff_liveness() {
@@ -1344,6 +1398,29 @@ check_bff_custom_domain_tls() {
   return 0
 }
 
+# Whether any resolved name ends with the expected suffix at a label boundary:
+# the name is the suffix itself, or ends with ".<suffix>". The trailing root dot
+# is dropped and case is ignored, since DNS names are case-insensitive. Compared
+# as strings, so no character of the suffix carries pattern meaning.
+cname_matches_suffix() { # records suffix
+  local records="$1" want line
+  want="$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')"
+  want="${want%.}"
+  [ -z "$want" ] && return 1
+  while IFS= read -r line; do
+    line="$(printf '%s' "$line" | tr '[:upper:]' '[:lower:]')"
+    line="${line%.}"
+    [ -z "$line" ] && continue
+    if [ "$line" = "$want" ]; then
+      return 0
+    fi
+    case "$line" in
+      *".$want") return 0 ;;
+    esac
+  done <<<"$records"
+  return 1
+}
+
 check_dns_cname() { # fqdn suffix
   local fqdn="$1" suffix="$2" got control
   got="$(resolve_record CNAME "$fqdn")"
@@ -1352,7 +1429,7 @@ check_dns_cname() { # fqdn suffix
     DETAIL_MSG="control failed: bogus name resolved ('$control') -> resolver is wildcarding; '$fqdn' not creditable"
     return 1
   fi
-  if printf '%s' "$got" | grep -qF "$suffix"; then
+  if cname_matches_suffix "$got" "$suffix"; then
     DETAIL_MSG="$fqdn CNAME -> '$got' (matches '$suffix'); NXDOMAIN control held"
     return 0
   fi
@@ -1376,10 +1453,17 @@ check_dns_asuid_txt() {
     return 1
   fi
   if [ -n "$PREFLIGHT_EXPECTED_ASUID" ]; then
-    if printf '%s' "$got" | grep -qF "$PREFLIGHT_EXPECTED_ASUID"; then
-      DETAIL_MSG="$name TXT matches the expected verification id"
-      return 0
-    fi
+    # Each record is compared whole, with its surrounding quotes removed, so a
+    # longer value that merely contains the expected id is not credited.
+    local record
+    while IFS= read -r record; do
+      record="${record#\"}"
+      record="${record%\"}"
+      if [ "$record" = "$PREFLIGHT_EXPECTED_ASUID" ]; then
+        DETAIL_MSG="$name TXT matches the expected verification id"
+        return 0
+      fi
+    done <<<"$got"
     DETAIL_MSG="$name TXT does not match the expected verification id"
     return 1
   fi
@@ -1388,11 +1472,34 @@ check_dns_asuid_txt() {
 }
 
 check_sharepoint_discovery() {
+  # Registered vaults prove discovery ran; the served stack configuration names
+  # the binding it ran against. A tenant still on the filesystem binding
+  # registers its vaults just the same, so the binding is compared, not assumed.
   if [ "$(get_result vault_load)" != PASS ]; then
     DETAIL_MSG="skipped: depends on vault_load (SharePoint discovery is a startup-time fact observed via /sage_vaults)"
     return 2
   fi
-  DETAIL_MSG="expected vaults present at last container start (asserted source: vault_source_backend=$PREFLIGHT_VAULT_SOURCE); startup-time fact via a request-time endpoint"
+  local served asserted
+  asserted="$PREFLIGHT_VAULT_SOURCE"
+  [ "$asserted" = unset ] && asserted=document_store
+  if ! fetch_stack_config; then
+    DETAIL_MSG="stack config not readable ($STACK_CONFIG_URL returned $HTTP_CODE); the vault-source binding is unknown"
+    return 1
+  fi
+  served="$(stack_config_vault_source_backend)"
+  if [ -z "$served" ]; then
+    DETAIL_MSG="stack config carries no vault_source_backend; the vault-source binding is unknown"
+    return 1
+  fi
+  if [ "$served" != "$asserted" ]; then
+    DETAIL_MSG="served vault_source_backend=$served but the tenant asserts $asserted"
+    return 1
+  fi
+  if [ "$served" != document_store ]; then
+    DETAIL_MSG="skipped: the tenant is on the $served binding, not SharePoint (vault_source_backend=$served served and asserted)"
+    return 2
+  fi
+  DETAIL_MSG="expected vaults present at last container start, discovered through the served vault_source_backend=document_store binding; startup-time fact via a request-time endpoint"
   return 0
 }
 
@@ -1478,8 +1585,8 @@ register kv_wildcard_tls check_kv_wildcard_tls \
   "leaf cert SAN covers the wildcard base domain" \
   "a wrong/parked cert subject fails even though the handshake succeeds"
 register kv_anthropic check_kv_anthropic \
-  "anthropic-api-key resolved (inferred from vault registration)" \
-  "rides vault_load not /health; SKIP if vault_load did not pass"
+  "anthropic-api-key resolved (inferred from vault registration under the served anthropic provider)" \
+  "rides vault_load not /health; SKIP if vault_load did not pass or the served provider is stub (no fetch); FAIL if the provider cannot be read"
 register bff_liveness check_bff_liveness \
   "BFF /health 200 status=ok" \
   "store-free; credited only as BFF process-up"
@@ -1500,7 +1607,7 @@ register dns_asuid_txt check_dns_asuid_txt \
   "a bogus control name must NXDOMAIN; value matched against the operator-supplied token"
 register sharepoint_discovery check_sharepoint_discovery \
   "expected vaults discovered from the SharePoint source at last start" \
-  "a startup-time fact via a request-time endpoint; SKIP if vault_load did not pass"
+  "the served vault_source_backend must be document_store and match PREFLIGHT_VAULT_SOURCE; SKIP if vault_load did not pass or the tenant asserts the filesystem binding"
 
 # --------------------------------------------------------------------------- #
 # Driver                                                                       #
@@ -1733,9 +1840,12 @@ refuse_unknown_check_ids PREFLIGHT_CHECKS PREFLIGHT_SKIP
 # Derive endpoints and apply tenant-parameter / seam defaults.
 BASE_DOMAIN="${BASE_DOMAIN:-}"
 SAGE_FQDN="${SAGE_FQDN:-sage.$BASE_DOMAIN}"
-CAS_FQDN="${CAS_FQDN:-cas.$BASE_DOMAIN}"
+# The base domain is derived before it seeds the CAS host, so a caller supplying
+# only SAGE_FQDN gets cas.<that domain>.
 [ -z "$BASE_DOMAIN" ] && BASE_DOMAIN="${SAGE_FQDN#*.}"
+CAS_FQDN="${CAS_FQDN:-cas.$BASE_DOMAIN}"
 SAGE_BASE_URL="${SAGE_BASE_URL:-https://$SAGE_FQDN}"
+STACK_CONFIG_URL="$SAGE_BASE_URL/sage_vaults/maintenance/stack-config"
 CAS_BASE_URL="${CAS_BASE_URL:-https://$CAS_FQDN}"
 PREFLIGHT_EXPECTED_VAULTS="${PREFLIGHT_EXPECTED_VAULTS:-}"
 PREFLIGHT_EXPECTED_ASUID="${PREFLIGHT_EXPECTED_ASUID:-}"

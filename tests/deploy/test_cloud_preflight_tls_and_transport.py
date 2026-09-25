@@ -821,3 +821,103 @@ def test_mcp_roundtrip_fails_when_discovery_broken(tmp_path: Path) -> None:
         f"round-trip success must not be credited on a dead edge: {proc.stdout}"
     )
     assert proc.returncode != 0
+
+
+# --------------------------------------------------------------------------- #
+# Host defaults, and matches anchored at their boundaries                     #
+# --------------------------------------------------------------------------- #
+@_NEEDS_RUNTIME
+def test_cas_host_defaults_from_the_base_domain_derived_from_sage_fqdn(tmp_path: Path) -> None:
+    """The header documents ``SAGE_FQDN or BASE_DOMAIN``; with only the former
+    set, the CAS host derives from the domain SAGE_FQDN names."""
+    asked = tmp_path / "asked"
+    resolver = _write_stub_cmd(tmp_path, "resolve", f'echo "$1" >> "{asked}"\n')
+    env = _base_env(
+        "http://127.0.0.1:1", PREFLIGHT_CHECKS="dns_cas_cname", PREFLIGHT_RESOLVE_CMD=resolver
+    )
+    env["SAGE_FQDN"] = "sage.example.test"
+    for unset in ("CAS_FQDN", "BASE_DOMAIN"):
+        del env[unset]
+    proc = _run(env)
+    names = asked.read_text(encoding="utf-8").split()
+    assert "cas.example.test" in names, names
+    assert not any(n == "cas." or n.endswith(".cas.") for n in names), names
+    assert "cas=cas.example.test" in proc.stderr, proc.stderr
+
+
+@pytest.mark.parametrize(
+    "san,expected",
+    [
+        ("DNS:*.test.invalid.parked.net", "FAIL"),
+        ("DNS:*.test.invalidity.example", "FAIL"),
+        ("DNS:*.test.invalid, DNS:test.invalid", "PASS"),
+    ],
+    ids=["suffixed-domain", "longer-label", "list-form"],
+)
+@_NEEDS_RUNTIME
+def test_wildcard_san_is_matched_to_the_whole_domain(
+    tmp_path: Path, san: str, expected: str
+) -> None:
+    tls = _write_stub_cmd(tmp_path, "tlsprobe", f'echo "{san}"\n')
+    env = _base_env(
+        "http://127.0.0.1:1", PREFLIGHT_CHECKS="kv_wildcard_tls", PREFLIGHT_TLS_PROBE_CMD=tls
+    )
+    proc = _run(env)
+    assert _verdicts(proc.stdout).get("kv_wildcard_tls") == expected, proc.stdout
+
+
+@pytest.mark.parametrize(
+    "target,expected",
+    [
+        ("apim.azure-api.net.evil.example.", "FAIL"),
+        ("notazure-api.net.", "FAIL"),
+        ("sage-apim.azure-api.net.", "PASS"),
+        ("Sage-APIM.Azure-API.net", "PASS"),
+    ],
+    ids=["suffix-mid-name", "no-label-boundary", "trailing-dot", "mixed-case"],
+)
+@_NEEDS_RUNTIME
+def test_cname_suffix_is_matched_as_a_label_suffix(
+    tmp_path: Path, target: str, expected: str
+) -> None:
+    resolver = _write_stub_cmd(
+        tmp_path,
+        "resolve",
+        f'case "$1" in\n  *nxdomain-control*) exit 0 ;;\n  *) echo "{target}" ;;\nesac\n',
+    )
+    env = _base_env(
+        "http://127.0.0.1:1",
+        PREFLIGHT_CHECKS="dns_sage_cname",
+        PREFLIGHT_RESOLVE_CMD=resolver,
+        EXPECTED_SAGE_CNAME_SUFFIX="azure-api.net",
+    )
+    proc = _run(env)
+    assert _verdicts(proc.stdout).get("dns_sage_cname") == expected, proc.stdout
+    assert target in _detail(proc.stdout, "dns_sage_cname"), proc.stdout
+
+
+@pytest.mark.parametrize(
+    "record,expected",
+    [
+        ('"verification-token-extra"', "FAIL"),
+        ('"prefix-verification-token"', "FAIL"),
+        ('"verification-token"', "PASS"),
+        ('"other"\n"verification-token"', "PASS"),
+    ],
+    ids=["longer-value", "prefixed-value", "exact", "one-of-several"],
+)
+@_NEEDS_RUNTIME
+def test_asuid_txt_is_matched_as_a_whole_record(tmp_path: Path, record: str, expected: str) -> None:
+    resolver = _write_stub_cmd(
+        tmp_path,
+        "resolve",
+        f"case \"$1\" in *nxdomain-control*) ;; *) printf '%s\\n' '{record}' ;; esac\n",
+    )
+    env = _base_env(
+        "http://127.0.0.1:1",
+        PREFLIGHT_CHECKS="dns_asuid_txt",
+        PREFLIGHT_RESOLVE_CMD=resolver,
+        PREFLIGHT_EXPECTED_ASUID="verification-token",
+    )
+    proc = _run(env)
+    assert _verdicts(proc.stdout).get("dns_asuid_txt") == expected, proc.stdout

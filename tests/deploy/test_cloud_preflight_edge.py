@@ -18,6 +18,8 @@ from tests.deploy._preflight_harness import (
     _DISCOVERY_BODY,
     _HTTP_CHECKS,
     _NEEDS_RUNTIME,
+    _STACK_CONFIG_BODY,
+    _STACK_CONFIG_PATH,
     _base_env,
     _detail,
     _green,
@@ -1304,3 +1306,162 @@ def test_kv_anthropic_skips_when_vault_load_fails() -> None:
     assert verdicts.get("vault_load") == "FAIL", verdicts
     assert verdicts.get("kv_anthropic") == "SKIP", "anthropic-key rides vault load, not /health"
     assert verdicts.get("sharepoint_discovery") == "SKIP", verdicts
+
+
+# --------------------------------------------------------------------------- #
+# The two startup-time checks read the stack configuration the tenant loaded  #
+# --------------------------------------------------------------------------- #
+def _stack_config(
+    status: int, body: str
+) -> Callable[[str, str, bytes], tuple[int, str, dict[str, str]]]:
+    """The green tenant, serving ``body`` with ``status`` as its stack config."""
+
+    def responder(method: str, path: str, raw: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0] == _STACK_CONFIG_PATH:
+            return status, body, {}
+        return _green(method, path, raw)
+
+    return responder
+
+
+_FILESYSTEM_STACK = _STACK_CONFIG_BODY.replace('"document_store"', '"filesystem"')
+_STUB_PROVIDER_STACK = _STACK_CONFIG_BODY.replace('"anthropic"', '"stub"')
+_STARTUP_CHECKS = "vault_load,kv_anthropic,sharepoint_discovery"
+
+
+def _startup_run(responder, **overrides: str) -> tuple[dict[str, str], str]:
+    with serve(responder) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS=_STARTUP_CHECKS, **overrides))
+    verdicts = _verdicts(proc.stdout)
+    # Both checks ride vault_load; every scenario here holds it green, so a
+    # verdict below is the check's own evidence, not the dependency's.
+    assert verdicts.get("vault_load") == "PASS", proc.stdout
+    return verdicts, proc.stdout
+
+
+@_NEEDS_RUNTIME
+def test_sharepoint_discovery_passes_on_the_document_store_binding() -> None:
+    verdicts, out = _startup_run(_green)
+    assert verdicts.get("sharepoint_discovery") == "PASS", out
+    assert "served" in _detail(out, "sharepoint_discovery"), out
+    assert "document_store" in _detail(out, "sharepoint_discovery"), out
+
+
+@_NEEDS_RUNTIME
+def test_sharepoint_discovery_fails_when_the_served_binding_is_filesystem() -> None:
+    """A tenant still on the filesystem binding registers its vaults just the
+    same, so vault_load alone cannot tell it apart from a SharePoint tenant."""
+    verdicts, out = _startup_run(_stack_config(200, _FILESYSTEM_STACK))
+    assert verdicts.get("sharepoint_discovery") == "FAIL", out
+    detail = _detail(out, "sharepoint_discovery")
+    assert "filesystem" in detail and "document_store" in detail, detail
+
+
+@pytest.mark.parametrize(
+    "status,body",
+    [(404, '{"error":"not_found"}'), (200, '{"profile":"cloud","abstraction":{}}')],
+    ids=["not-served", "field-absent"],
+)
+@_NEEDS_RUNTIME
+def test_sharepoint_discovery_fails_when_stack_config_is_unreadable(status: int, body: str) -> None:
+    verdicts, out = _startup_run(_stack_config(status, body))
+    assert verdicts.get("sharepoint_discovery") == "FAIL", out
+
+
+@_NEEDS_RUNTIME
+def test_sharepoint_discovery_is_not_applicable_to_an_asserted_filesystem_tenant() -> None:
+    verdicts, out = _startup_run(
+        _stack_config(200, _FILESYSTEM_STACK), PREFLIGHT_VAULT_SOURCE="filesystem"
+    )
+    assert verdicts.get("sharepoint_discovery") == "SKIP", out
+
+
+@_NEEDS_RUNTIME
+def test_kv_anthropic_passes_for_the_anthropic_provider() -> None:
+    verdicts, out = _startup_run(_green)
+    assert verdicts.get("kv_anthropic") == "PASS", out
+    detail = _detail(out, "kv_anthropic")
+    assert "inferred" in detail and "anthropic" in detail, detail
+
+
+@_NEEDS_RUNTIME
+def test_kv_anthropic_is_not_credited_for_a_stub_provider() -> None:
+    """A stub provider makes no Key Vault fetch, so vaults registering says
+    nothing about the key."""
+    verdicts, out = _startup_run(_stack_config(200, _STUB_PROVIDER_STACK))
+    assert verdicts.get("kv_anthropic") == "SKIP", out
+    assert "stub" in _detail(out, "kv_anthropic"), out
+
+
+@pytest.mark.parametrize(
+    "status,body",
+    [(404, '{"error":"not_found"}'), (200, '{"profile":"cloud","vault_source_backend":"x"}')],
+    ids=["not-served", "provider-absent"],
+)
+@_NEEDS_RUNTIME
+def test_kv_anthropic_fails_when_the_provider_is_unreadable(status: int, body: str) -> None:
+    verdicts, out = _startup_run(_stack_config(status, body))
+    assert verdicts.get("kv_anthropic") == "FAIL", out
+
+
+# --------------------------------------------------------------------------- #
+# Liveness is credited on the status value, not on the substring "ok"         #
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "health,expected",
+    [
+        ('{"status":"broken","token":"x"}', "FAIL"),
+        ('{"status":"booking"}', "FAIL"),
+        ('{"status":"ok"}', "PASS"),
+        ('{"status" : "ok","version":"2.0.0"}', "PASS"),
+    ],
+    ids=["broken-with-token", "value-containing-ok", "ok", "ok-spaced"],
+)
+@_NEEDS_RUNTIME
+def test_liveness_reads_the_status_value(health: str, expected: str) -> None:
+    def responder(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0] == "/health":
+            return 200, health, {}
+        return _green(method, path, body)
+
+    with serve(responder) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="liveness"))
+    assert _verdicts(proc.stdout).get("liveness") == expected, proc.stdout
+
+
+@pytest.mark.parametrize(
+    "stack,expected",
+    [(_STACK_CONFIG_BODY, "PASS"), (_FILESYSTEM_STACK, "FAIL")],
+    ids=["document-store", "filesystem"],
+)
+@_NEEDS_RUNTIME
+def test_sharepoint_discovery_asserts_document_store_when_no_binding_is_supplied(
+    stack: str, expected: str
+) -> None:
+    """With no asserted binding the check asserts the one it is named for."""
+
+    def responder(method: str, path: str, raw: bytes) -> tuple[int, str, dict[str, str]]:
+        return _stack_config(200, stack)(method, path, raw)
+
+    with serve(responder) as url:
+        env = _base_env(url, PREFLIGHT_CHECKS=_STARTUP_CHECKS)
+        del env["PREFLIGHT_VAULT_SOURCE"]
+        proc = _run(env)
+    verdicts = _verdicts(proc.stdout)
+    assert verdicts.get("vault_load") == "PASS", proc.stdout
+    assert verdicts.get("sharepoint_discovery") == expected, proc.stdout
+
+
+@_NEEDS_RUNTIME
+def test_the_stack_config_is_fetched_once_for_both_checks() -> None:
+    fetched: list[str] = []
+
+    def responder(method: str, path: str, raw: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0] == _STACK_CONFIG_PATH:
+            fetched.append(path)
+        return _green(method, path, raw)
+
+    verdicts, out = _startup_run(responder)
+    assert verdicts.get("kv_anthropic") == "PASS", out
+    assert verdicts.get("sharepoint_discovery") == "PASS", out
+    assert len(fetched) == 1, fetched
