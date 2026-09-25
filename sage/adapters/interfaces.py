@@ -1199,8 +1199,9 @@ class GraphStore(ABC):
         """Remove a document's recorded re-projection skip, if it has one.
 
         Called when something that could make the document repairable happens
-        -- its retained source is written back -- so the record does not
-        outlive the condition it describes.
+        -- its retained source is restored, or found already intact against
+        what the record expects -- so the record does not outlive the condition
+        it describes.
         """
 
     # --- Out-of-band removal / selection ---

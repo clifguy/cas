@@ -1142,6 +1142,53 @@ async def test_an_adapter_registered_later_re_examines_a_recorded_document(vault
     assert adapters[SourceType.MARKDOWN].projected == ["led.md"]
     assert BACKFILL_TEXT_BEFORE_FIRST_HEADING in report.backfills_applied
     assert (await vault.store.get_all_chunks(led))[0].content == LEAD
+    assert led not in await vault.graph_store.reprojection_skips(), (
+        "a document brought current keeps no record that it could not be"
+    )
+
+
+async def test_restoring_an_intact_copy_clears_a_projection_failure_record(vault, tmp_path):
+    """A projection that failed for a reason outside the file -- a format
+    dependency missing on the host, say -- is recorded against intact bytes.
+    Restoring those bytes writes nothing, and still clears the record, so the
+    next run tries again once the host can project them.
+
+    Anti-coincidental-pass: the record is confirmed to exclude the document, and
+    the restore is confirmed to have taken the no-write path, before the repair.
+    """
+    led = await _led(vault)
+    doc = await vault.graph_store.get_document(led)
+    original = (vault.root / "sources" / doc.source_path).read_bytes()
+    failing = vault.ship_adapters()
+
+    async def cannot_project(source_path, config=None):
+        raise ValueError("a dependency this host lacks")
+
+    failing[SourceType.MARKDOWN].project = cannot_project
+    assert "source not projected" in _not_repaired(await vault.migrate()).get(led, "")
+    excluded = vault.ship_adapters()
+    await vault.migrate()
+    assert excluded[SourceType.MARKDOWN].projected == [], "control: the record excludes it"
+
+    delivered = tmp_path / "original.md"
+    delivered.write_bytes(original)
+    restore = await MaintenanceService(
+        vault_id=vault.config.vault.id,
+        graph_store=vault.graph_store,
+        config=vault.config,
+        registry_service=None,
+        content_store=vault.store,
+        ingestion_service=vault.ingestion,
+        vault_dir=vault.root,
+    ).restore_vault_source_file(source=str(delivered), document_id=led)
+
+    assert restore.status == "already_intact", "control: the restore wrote nothing"
+    assert led not in await vault.graph_store.reprojection_skips()
+    adapters = vault.ship_adapters()
+    report = await vault.migrate()
+    assert adapters[SourceType.MARKDOWN].projected == ["led.md"]
+    assert BACKFILL_TEXT_BEFORE_FIRST_HEADING in report.backfills_applied
+    assert (await vault.store.get_all_chunks(led))[0].content == LEAD
 
 
 class _UnavailableSourceStore(FilesystemVaultSourceStore):

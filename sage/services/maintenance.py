@@ -1091,6 +1091,10 @@ class MaintenanceService:
         observed = observation.observed_hash
 
         if observation.intact:
+            # The retained bytes are the ones the passages were built from, so a
+            # re-projection that failed against them failed for a reason outside
+            # the file; the record of that failure no longer settles anything.
+            await self._graph_store.clear_reprojection_skip(doc.id)
             return SourceFileRestoreReport(
                 vault_id=self._vault_id,
                 document_id=doc.id,
