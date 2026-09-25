@@ -4762,8 +4762,9 @@ class MigrationReport(BaseModel):
             "Each is listed on the run that finds it and is not examined again until "
             "its retained source is restored with `restore_vault_source_file` or a "
             "different adapter would read it. A read the source store reported "
-            "unavailable, or one that raised an operating-system fault other than a "
-            "missing path, is listed and examined again on the next call; a fault "
+            "unavailable, or one that raised an operating-system fault the recorded "
+            "path does not itself cause (nothing there, or a directory), is listed and "
+            "examined again on the next call; a fault "
             "reported any other way is recorded, and restoring the source clears it. "
             "Empty when every examined document was brought current."
         ),

@@ -9,7 +9,8 @@ summary: >-
   restore_vault_source_file clears the record, whether it writes the source back
   or finds it already intact, so the next call re-examines the document. A read
   the source store reported unavailable, or one that raised an operating-system
-  fault other than a missing path, is not recorded. MigrationReport gains
+  fault the recorded path does not itself cause (nothing there, or a
+  directory), is not recorded. MigrationReport gains
   documents_not_repaired, listing each such document with its reason on the
   call that finds it, where the server log was the only record before. The
   migrate_vault descriptions in sage_core_api.openapi.yaml and the MCP tool
