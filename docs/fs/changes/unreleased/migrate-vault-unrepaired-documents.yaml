@@ -1,0 +1,20 @@
+classification: minor
+category: [capability]
+summary: >-
+  migrate_vault's heading backfill no longer re-reads, on every call, a document
+  it cannot bring current -- one whose retained source changed since it was
+  indexed, is missing or cannot be projected, or whose format no registered
+  adapter reads. It records such a document against the adapter that tried, and
+  a later call skips it while that is still the adapter for its format.
+  restore_vault_source_file clears the record when it writes the source back, so
+  the next call repairs the document; a read the source store declined as a
+  transient condition is not recorded. MigrationReport gains
+  documents_not_repaired, listing each such document with its reason on the
+  call that finds it, where the server log was the only record before. The
+  migrate_vault descriptions in sage_core_api.openapi.yaml and the MCP tool
+  catalog say so.
+for_callers: >-
+  migrate_vault now lists, in documents_not_repaired, each document whose
+  passages it could not bring current, with the reason, once; later calls do not
+  read it again until its retained source is restored with
+  restore_vault_source_file.

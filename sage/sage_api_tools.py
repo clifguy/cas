@@ -2575,20 +2575,20 @@ def register_sage_tools(
     async def migrate_vault(vault_id: VaultIdParam) -> dict:
         """Run the schema-migration surface's backfill and tier3-uniqueness scan.
 
-        The durable store provisions its schema externally, so there is no
-        pending schema work for this tool to apply and ``columns_added`` is
-        always empty.
+        The durable store provisions its schema externally, so
+        ``columns_added`` is always empty.
 
-        Six data backfills run, and ``backfills_applied`` names each one only
-        when it changed rows. They clear the ``pipeline_error`` a recovered
+        Six data backfills run; ``backfills_applied`` names each that changed
+        rows. They clear the ``pipeline_error`` a recovered
         failure left behind, reduce a stored ``source_path`` in a spelling
         ingest no longer records to its plain form (each rewrite reported in
         ``source_paths_normalized``; a path that walks out of the source tree
         is left as recorded), and bring stored passages to the current shape.
         Only the heading backfill reads sources: a document whose source
-        changed since it was indexed or cannot be read is skipped, and the
-        server log names each one. Nothing is re-abstracted, and only the
-        documents a backfill rewrites are re-embedded.
+        changed since it was indexed or cannot be read is listed once in
+        ``documents_not_repaired`` and not read again until its source is
+        restored. Nothing is re-abstracted, and only the documents a backfill
+        rewrites are re-embedded.
 
         Idempotent: a re-call with nothing left to repair reports no error
         and empty lists, except ``tier3_uniqueness_activations``, which

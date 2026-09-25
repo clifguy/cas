@@ -1172,6 +1172,37 @@ class GraphStore(ABC):
         to reduce. No lifecycle filtering is applied.
         """
 
+    @abstractmethod
+    async def record_reprojection_skip(
+        self, document_id: str, adapter_version: str | None, reason: str
+    ) -> None:
+        """Record that re-projecting a document could not bring its passages current.
+
+        ``adapter_version`` is the version of the adapter that tried, or null
+        when none was registered for the document's format, and ``reason`` says
+        why it could not. A later record replaces an earlier one. The record is
+        kept apart from the document's ``adapter_version``, which states whose
+        output the stored passages are: a failed attempt is not that.
+        """
+
+    @abstractmethod
+    async def reprojection_skips(self) -> dict[str, str | None]:
+        """Map each document with a recorded re-projection skip to its adapter version.
+
+        The value is the version :meth:`record_reprojection_skip` recorded, so a
+        caller can tell a skip the current adapter made from one an earlier
+        adapter, or none, made. No lifecycle filtering is applied.
+        """
+
+    @abstractmethod
+    async def clear_reprojection_skip(self, document_id: str) -> None:
+        """Remove a document's recorded re-projection skip, if it has one.
+
+        Called when something that could make the document repairable happens
+        -- its retained source is written back -- so the record does not
+        outlive the condition it describes.
+        """
+
     # --- Out-of-band removal / selection ---
     # These exist to support out-of-band operator purge tooling. Document
     # removal is absent from the SAGE request surface by the No-Delete

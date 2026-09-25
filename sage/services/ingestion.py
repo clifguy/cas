@@ -75,6 +75,7 @@ from sage.api.errors import (
     Tier3UniqueConstraintViolation,
     VaultMigrationInFlightError,
     VaultSourcePathRefusedError,
+    VaultSourceStoreUnavailableError,
 )
 from sage.config import (
     INGESTION_PSEUDO_STATE,
@@ -3619,7 +3620,7 @@ class IngestionService:
             await self._content_store.index_chunks(document_id, divided)
             return True
 
-    async def store_text_before_first_heading(self) -> int:
+    async def store_text_before_first_heading(self) -> tuple[int, list[tuple[str, str]]]:
         """Store the text each document carries before its first heading, vault-wide.
 
         A document indexed before that text had a passage holds none of it, and
@@ -3634,27 +3635,52 @@ class IngestionService:
         whose source is examined is stamped with the adapter version that examined
         it, so a later run reads no source it has already read.
 
+        A candidate that cannot be brought current is recorded with the adapter
+        that tried, or none, and is not a candidate again while that is still
+        the adapter for its format. Restoring its retained source clears the
+        record, and a different adapter is not turned away by it, since either
+        can make the document repairable; the record never claims the passages
+        are current.
+
         Returns:
-            The number of documents whose passages were rewritten.
+            The number of documents whose passages were rewritten, and each
+            candidate this run could not bring current with the reason why.
         """
+        skips = await self._store.reprojection_skips()
         candidates = []
         for doc in await self._store.list_all_documents():
             since = _UNTITLED_HEADING_SINCE_ADAPTER_VERSION.get(doc.source_type)
             if since is None or not _projected_before(doc.adapter_version, since):
                 continue
+            if doc.id in skips and skips[doc.id] == self._examining_version(doc):
+                continue
             if await self._needs_reprojection(doc):
                 candidates.append(doc)
         if not candidates:
-            return 0
+            return 0, []
 
         from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
 
         vault_source_store = resolve_stack_vault_source_store(get_stack_config())
         rewritten = 0
+        not_repaired: list[tuple[str, str]] = []
         for doc in candidates:
-            if await self._bring_passages_current(doc, vault_source_store):
+            outcome = await self._bring_passages_current(doc, vault_source_store)
+            if isinstance(outcome, str):
+                not_repaired.append((doc.id, outcome))
+                continue
+            if doc.id in skips:
+                # Brought current by an adapter other than the one the record
+                # names, so the record describes nothing that still holds.
+                await self._store.clear_reprojection_skip(doc.id)
+            if outcome:
                 rewritten += 1
-        return rewritten
+        return rewritten, not_repaired
+
+    def _examining_version(self, doc: Document) -> str | None:
+        """The version of the adapter that would examine ``doc``, or None."""
+        adapter = self._adapters.get(doc.source_type)
+        return adapter.VERSION if adapter is not None else None
 
     async def _needs_reprojection(self, doc: Document) -> bool:
         """Whether a document's stored passages lack text only its source can supply.
@@ -3699,7 +3725,7 @@ class IngestionService:
 
     async def _bring_passages_current(
         self, doc: Document, vault_source_store: "VaultSourceStore"
-    ) -> bool:
+    ) -> bool | str:
         """Make a document's stored passages the ones its adapter now writes.
 
         The source is re-projected and chunked exactly as ingest chunks it. Where
@@ -3718,7 +3744,10 @@ class IngestionService:
         store a document that was never indexed, and so is a source that cannot
         be projected, or that no adapter is registered to project. Each skip is
         logged with its reason and leaves the document's adapter version as it
-        was, so a later run examines it again.
+        was, since its passages are still not what the adapter writes. It is
+        recorded as well, so a later run does not examine it again with the
+        same adapter -- except where the store declined the read as a transient
+        condition, which a later run may not meet.
 
         The migration excludes pipeline work, so only a metadata stamp can reach
         the document meanwhile; the passages are read and rewritten under the
@@ -3730,14 +3759,19 @@ class IngestionService:
         request's config made is not mistaken for one the adapter makes.
 
         Returns:
-            Whether the passages were rewritten.
+            Whether the passages were rewritten, or the reason they could not be
+            brought current.
         """
         document_id = doc.id
         adapter = self._adapters.get(doc.source_type)
         if adapter is None:
-            return self._preamble_skipped(document_id, "no adapter is registered for its format")
+            return await self._preamble_skipped(
+                document_id, None, "no adapter is registered for its format"
+            )
         if doc.source_path is None:
-            return self._preamble_skipped(document_id, "it records no source path")
+            return await self._preamble_skipped(
+                document_id, adapter.VERSION, "it records no source path"
+            )
         storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
         try:
             merged_config = self._merge_adapter_config(doc.source_type, doc.adapter_config)
@@ -3746,13 +3780,16 @@ class IngestionService:
             ) as project_path:
                 projection = await adapter.project(project_path, merged_config)
         except Exception as exc:
-            return self._preamble_skipped(
-                document_id, f"source not projected: {type(exc).__name__}"
+            return await self._preamble_skipped(
+                document_id,
+                adapter.VERSION,
+                f"source not projected: {type(exc).__name__}",
+                record=not isinstance(exc, VaultSourceStoreUnavailableError),
             )
         expected_hash = doc.stored_content_hash or doc.source_content_hash
         if canonicalize_sha256(projection.content_hash) != expected_hash:
-            return self._preamble_skipped(
-                document_id, "source differs from the one its passages hold"
+            return await self._preamble_skipped(
+                document_id, adapter.VERSION, "source differs from the one its passages hold"
             )
         fresh = self._chunk_projection(document_id, projection)
 
@@ -3791,12 +3828,24 @@ class IngestionService:
         """
         await self._store.update_document(document_id, {"adapter_version": adapter_version})
 
-    @staticmethod
-    def _preamble_skipped(document_id: str, reason: str) -> bool:
-        """Record why a document's text before its first heading was not stored."""
+    async def _preamble_skipped(
+        self,
+        document_id: str,
+        adapter_version: str | None,
+        reason: str,
+        *,
+        record: bool = True,
+    ) -> str:
+        """Record why a document's text before its first heading was not stored.
+
+        Logged, and recorded against the adapter that tried unless ``record`` is
+        false, so the same adapter does not try again. Returns the reason.
+        """
         logger.info(
             "text before the first heading of %s not stored by migrate_vault: %s",
             document_id,
             reason,
         )
-        return False
+        if record:
+            await self._store.record_reprojection_skip(document_id, adapter_version, reason)
+        return reason

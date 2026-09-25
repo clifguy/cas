@@ -4707,6 +4707,29 @@ class SourcePathNormalization(BaseModel):
     )
 
 
+class DocumentNotRepaired(BaseModel):
+    """One document whose stored passages the migration could not bring current.
+
+    Bringing a document's passages to the shape the current adapter writes means
+    re-projecting its retained source. Where that source is missing, changed or
+    unreadable, or no adapter reads its format, the passages are left as they
+    are and the document is reported here once rather than read on every call.
+    """
+
+    document_id: DocumentIdStr = Field(
+        description=(
+            "Identifier of the document whose passages the migration could not bring current."
+        )
+    )
+    reason: str = Field(
+        description=(
+            "Why it could not: its retained source differs from the one its passages "
+            "were built from, cannot be read or projected, is not recorded, or no "
+            "adapter is registered for its format."
+        )
+    )
+
+
 class MigrationReport(BaseModel):
     vault_id: VaultIdStr = Field(description="Identifier of the vault whose schema was inspected.")
     columns_added: list[MigrationReportEntry] = Field(
@@ -4729,6 +4752,18 @@ class MigrationReport(BaseModel):
             "spelling. A path that walks out of the vault's source tree has no "
             "plain form inside it and is left as recorded; `verify_vault_source_files` "
             "reports those."
+        ),
+    )
+    documents_not_repaired: list[DocumentNotRepaired] = Field(
+        default_factory=list,
+        description=(
+            "Per-document entries for every document the migration examined to bring "
+            "its stored passages to the current shape and could not, with the reason. "
+            "Each is listed on the run that finds it and is not examined again until "
+            "its retained source is restored with `restore_vault_source_file` or a "
+            "different adapter would read it; a source store that declined the read "
+            "as a transient condition is listed and examined again on the next call. "
+            "Empty when every examined document was brought current."
         ),
     )
     tier3_uniqueness_activations: list[Tier3UniquenessActivation] = Field(

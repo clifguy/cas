@@ -41,6 +41,7 @@ from sage.models.enums import (
 )
 from sage.models.schemas import (
     Document,
+    DocumentNotRepaired,
     DriftEntry,
     DriftReport,
     MigrationReport,
@@ -371,7 +372,9 @@ class MaintenanceService:
         differently. It also moves text an older adapter stored under a heading
         with no text into the section before it, so the empty heading path
         addresses only text under no heading (see
-        ``_store_text_before_first_heading``).
+        ``_store_text_before_first_heading``). A candidate it cannot bring
+        current is reported in ``documents_not_repaired`` with the reason, once:
+        it is not read again until its source is restored.
 
         The other three reshape stored passages without reading a source: moving
         document-level text onto its own retrieval surface
@@ -422,7 +425,8 @@ class MaintenanceService:
         if await self._divide_passages_over_input_bound():
             backfills_applied.append(BACKFILL_PASSAGE_INPUT_BOUND)
 
-        if await self._store_text_before_first_heading():
+        rewritten, not_repaired = await self._store_text_before_first_heading()
+        if rewritten:
             backfills_applied.append(BACKFILL_TEXT_BEFORE_FIRST_HEADING)
 
         if await self._migrate_to_relative_indexed_structure():
@@ -435,6 +439,10 @@ class MaintenanceService:
             columns_added=[],
             backfills_applied=backfills_applied,
             source_paths_normalized=normalized,
+            documents_not_repaired=[
+                DocumentNotRepaired(document_id=document_id, reason=reason)
+                for document_id, reason in not_repaired
+            ],
             tier3_uniqueness_activations=activations,
             tier3_uniqueness_collisions=collisions,
         )
@@ -510,7 +518,7 @@ class MaintenanceService:
             return 0
         return await self._ingestion.divide_passages_over_input_bound()
 
-    async def _store_text_before_first_heading(self) -> int:
+    async def _store_text_before_first_heading(self) -> tuple[int, list[tuple[str, str]]]:
         """Store the text each document carries before its first heading.
 
         A vault indexed before that text had a passage holds none of it, and the
@@ -525,13 +533,19 @@ class MaintenanceService:
         adapter shaped differently; nothing is re-abstracted, and only a document it
         rewrites is re-embedded.
 
+        A candidate it cannot bring current -- its source changed, cannot be
+        read or projected, or has no adapter -- is returned with the reason, and
+        is not a candidate again until its source is restored or another adapter
+        would examine it.
+
         Returns:
             The number of documents rewritten -- zero on a vault with nothing to
             recover, or where no ingestion service is wired to project with, so
-            the backfill does not name itself in the report.
+            the backfill does not name itself in the report -- and each document
+            this run could not bring current, with the reason.
         """
         if self._ingestion is None:
-            return 0
+            return 0, []
         return await self._ingestion.store_text_before_first_heading()
 
     async def _migrate_to_relative_indexed_structure(self) -> int:
@@ -1101,6 +1115,9 @@ class MaintenanceService:
             # none. The binding's own message travels with it -- it has several
             # distinct causes and only it knows which one fired.
             raise VaultSourcePathRefusedError(doc.source_path, str(exc)) from exc
+        # The bytes a re-projection found missing or changed may be these, so a
+        # record that it could not bring the passages current no longer holds.
+        await self._graph_store.clear_reprojection_skip(doc.id)
         record_refreshed = restored_hash != expected and restored_hash != delivered_hash
         if record_refreshed:
             # Refreshed only when the *store* changed the bytes -- the sole

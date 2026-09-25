@@ -478,7 +478,11 @@ async def test_bootstrap_is_idempotent(pg_dsn):
 
 @pytest.mark.parametrize(
     "column,declaration",
-    [("stored_content_hash", "text"), ("adapter_config", "jsonb")],
+    [
+        ("stored_content_hash", "text"),
+        ("adapter_config", "jsonb"),
+        ("reprojection_skipped", "jsonb"),
+    ],
 )
 async def test_bootstrap_adds_a_new_column_to_an_already_provisioned_schema(
     pg_dsn, column, declaration
