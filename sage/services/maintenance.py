@@ -197,6 +197,11 @@ BACKFILL_DOCUMENT_SURFACE = "relocate_document_level_text_to_document_surface"
 # parsing content with its markup brackets in place.
 BACKFILL_PASSAGE_INDEXED_STRUCTURE = "derive_passage_structure_relative_to_document"
 
+# Name reported in MigrationReport.backfills_applied when the migration rebuilt the
+# document surface's keyword vectors from an earlier expression -- one parsing
+# authored or derived text with its markup brackets in place.
+BACKFILL_DOCUMENT_SURFACE_KEYWORD_VECTORS = "rebuild_document_surface_keyword_vectors"
+
 # Name reported in MigrationReport.backfills_applied when the migration divided a
 # stored section longer than the embedding provider's input bound.
 BACKFILL_PASSAGE_INPUT_BOUND = "split_passages_over_embedding_input_bound"
@@ -343,7 +348,7 @@ class MaintenanceService:
         there is no pending-column work for this method to detect or apply and
         ``columns_added`` is always empty.
 
-        Six data backfills run, each naming itself in ``backfills_applied``
+        Seven data backfills run, each naming itself in ``backfills_applied``
         only when it changed rows, so a clean vault reports an empty list and a
         re-call after a repair reports nothing further.
 
@@ -376,11 +381,13 @@ class MaintenanceService:
         current is reported in ``documents_not_repaired`` with the reason, once:
         it is not read again until its source is restored.
 
-        The other three reshape stored passages without reading a source: moving
-        document-level text onto its own retrieval surface
-        (``_migrate_to_document_surface``), dividing a passage longer than the
-        embedding provider's input bound (``_divide_passages_over_input_bound``),
-        and indexing each passage's structure relative to its document
+        Four reshape stored passages or the indexes over them, without reading a
+        source: moving document-level text onto its own retrieval surface
+        (``_migrate_to_document_surface``), rebuilding that surface's keyword
+        vectors where they parse markup brackets in place (CAS-ADR-049
+        Decision 9), dividing a passage longer than the embedding provider's
+        input bound (``_divide_passages_over_input_bound``), and indexing each
+        passage's structure relative to its document
         (``_migrate_to_relative_indexed_structure``).
 
         Scan every ``unique_keys`` declaration in vault config. For each
@@ -421,6 +428,9 @@ class MaintenanceService:
 
         if await self._migrate_to_document_surface():
             backfills_applied.append(BACKFILL_DOCUMENT_SURFACE)
+
+        if await self._content_store.rebuild_document_surface_vector():
+            backfills_applied.append(BACKFILL_DOCUMENT_SURFACE_KEYWORD_VECTORS)
 
         if await self._divide_passages_over_input_bound():
             backfills_applied.append(BACKFILL_PASSAGE_INPUT_BOUND)

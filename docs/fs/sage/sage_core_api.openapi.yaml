@@ -4156,12 +4156,13 @@ paths:
         columns_added is always empty.
 
 
-        Six data backfills run; backfills_applied names each that changed
+        Seven data backfills run; backfills_applied names each that changed
         rows. They clear the pipeline_error a recovered
         failure left behind, reduce a stored source_path in a spelling
         ingest no longer records to its plain form (each rewrite reported in
         source_paths_normalized; a path that walks out of the source tree is
-        left as recorded), and bring stored passages to the current shape.
+        left as recorded), and bring stored passages and keyword vectors to
+        the current shape.
         Only the heading backfill reads sources: a document whose source
         changed since it was indexed or cannot be read is listed once in
         documents_not_repaired and not read again until its source is

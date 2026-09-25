@@ -392,6 +392,23 @@ class ContentStore(ABC):
         """
 
     @abstractmethod
+    async def document_surface_vector_is_current(self) -> bool:
+        """Whether the document surface's keyword vectors use the current expressions.
+
+        Answered from the stored expressions rather than from any row, because a
+        vault whose vectors predate a change to them holds nothing else that
+        would say so.
+        """
+
+    @abstractmethod
+    async def rebuild_document_surface_vector(self) -> bool:
+        """Rebuild the document surface's keyword vectors if they are not current.
+
+        Returns whether a rebuild ran, so a re-run over a current vault reports
+        that it did nothing.
+        """
+
+    @abstractmethod
     async def migrate_indexed_structure(self, derived: Sequence[tuple[str, str, str]]) -> int:
         """Apply ``(document_id, heading_path, structure)`` and repair the vector.
 

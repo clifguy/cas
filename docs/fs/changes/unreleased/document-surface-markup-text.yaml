@@ -1,0 +1,17 @@
+classification: minor
+category: [capability, operator-adaptation]
+summary: >-
+  The document surface's two keyword vectors now parse their text with angle
+  brackets replaced by spaces, as the passage vector already does, so a term
+  inside markup in a title or tag is indexed and matches a keyword query. The
+  match vector still reads authored text only, and the rank vector reads derived
+  text the same way. The stored text is unchanged. migrate_vault gains a
+  seventh backfill, rebuild_document_surface_keyword_vectors, which rebuilds a
+  vault's surface vectors built from the earlier expressions once and is a
+  no-op thereafter; the migrate_vault descriptions in sage_core_api.openapi.yaml
+  and the MCP tool catalog count it.
+for_callers: >-
+  Keyword search now matches a term inside angle brackets in a document's title
+  or tags, such as scan in "Parsing <scan> reports", once the vault has been
+  migrated with migrate_vault, which reports
+  rebuild_document_surface_keyword_vectors on that run.

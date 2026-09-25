@@ -723,6 +723,71 @@ def test_document_surface_table_carries_both_generated_vectors():
     assert "idx_document_surface_embedding_hnsw" in idx
 
 
+def test_the_document_surface_vectors_read_text_with_markup_brackets_replaced():
+    """Both surface vectors parse their text with ``<`` and ``>`` replaced.
+
+    Anti-coincidental-pass: the negative assertions are what make this a
+    replacement. An expression that added the substituted arm beside a raw one
+    would still carry every positive substring.
+    """
+    match = pgschema.DOCUMENT_SURFACE_TSV_MATCH_EXPRESSION
+    rank = pgschema.DOCUMENT_SURFACE_TSV_RANK_EXPRESSION
+    assert pgschema.DOCUMENT_SURFACE_MATCHABLE_EXPRESSION in match
+    assert pgschema.DOCUMENT_SURFACE_MATCHABLE_EXPRESSION in rank
+    assert pgschema.DOCUMENT_SURFACE_ORIENTING_EXPRESSION in rank
+    for expression in (match, rank):
+        assert "to_tsvector('english', matchable)" not in expression
+        assert "to_tsvector('english', orienting)" not in expression
+    assert match in pgschema.DOCUMENT_SURFACE_TABLE
+    assert rank in pgschema.DOCUMENT_SURFACE_TABLE
+    for column, markers in pgschema.DOCUMENT_SURFACE_TSV_CURRENT_MARKERS.items():
+        expression = match if column == "tsv_match" else rank
+        for marker in markers:
+            assert marker in expression, (column, marker)
+
+
+def test_the_document_surface_match_vector_never_reads_derived_text():
+    """``orienting`` is derived text and reaches the rank vector only."""
+    assert "orienting" not in pgschema.DOCUMENT_SURFACE_TSV_MATCH_EXPRESSION
+    assert "orienting" in pgschema.DOCUMENT_SURFACE_TSV_RANK_EXPRESSION
+
+
+def test_the_document_surface_rebuild_is_written_to_the_deploy_floor():
+    """The rebuild drops and re-adds both vectors rather than setting their
+    expressions, which only the newer server major supports, and recreates
+    the indexes the drop takes with it, from the strings the bootstrap uses."""
+    rebuild = "\n".join(pgschema.DOCUMENT_SURFACE_TSV_REBUILD)
+    assert "SET EXPRESSION" not in rebuild.upper()
+    (adding,) = [s for s in pgschema.DOCUMENT_SURFACE_TSV_REBUILD if "ADD COLUMN" in s]
+    assert "tsv_match" in adding and "tsv_rank" in adding, (
+        "both vectors are added in one statement, so the table is rewritten once"
+    )
+    for column in ("tsv_match", "tsv_rank"):
+        assert f"DROP COLUMN IF EXISTS {column}" in rebuild
+        assert f"ADD COLUMN {column} tsvector GENERATED ALWAYS AS" in rebuild
+    assert pgschema.DOCUMENT_SURFACE_TSV_MATCH_EXPRESSION in rebuild
+    assert pgschema.DOCUMENT_SURFACE_TSV_RANK_EXPRESSION in rebuild
+    for index in (
+        pgschema.IDX_DOCUMENT_SURFACE_TSV_MATCH_GIN,
+        pgschema.IDX_DOCUMENT_SURFACE_TSV_RANK_GIN,
+    ):
+        assert index in pgschema.CONTENT_INDEXES
+        assert index in pgschema.DOCUMENT_SURFACE_TSV_REBUILD
+
+
+def test_the_document_surface_rebuild_stays_out_of_the_bootstrap():
+    """The rebuild rewrites the table, and the bootstrap runs on every open."""
+    bootstrap = pgschema.schema_statements(schema="sage_test_x", extensions=["vector"])
+    indexes = {
+        pgschema.IDX_DOCUMENT_SURFACE_TSV_MATCH_GIN,
+        pgschema.IDX_DOCUMENT_SURFACE_TSV_RANK_GIN,
+    }
+    for statement in pgschema.DOCUMENT_SURFACE_TSV_REBUILD:
+        if statement in indexes:
+            continue
+        assert statement not in bootstrap, f"the rebuild leaked into the bootstrap: {statement!r}"
+
+
 @pytest.mark.asyncio
 async def test_document_surface_match_vector_excludes_derived_text(pg_pool):
     """Derived text reaches ranking and never matching.
