@@ -5089,7 +5089,12 @@ components:
             passages current with that adapter.
         created_by:
           type: string
-          description: User ID of the actor (human or agent) that created this document.
+          description: >-
+            Who created this document. Where the creating request
+            authenticated, the authenticated principal: a user's preferred
+            username, else their object id, or app:<client id> for an
+            application. Otherwise the caller-supplied created_by, or the
+            vault owner.
         created_at:
           type: string
           format: date-time
@@ -5097,9 +5102,12 @@ components:
         last_modified_by:
           type: string
           description: >-
-            User ID of the actor responsible for the most recent
-            modification. Set to created_by at document creation;
-            updated on lifecycle transitions and metadata changes.
+            Who made the most recent modification, recorded the same way
+            as created_by: the authenticated principal where the request
+            authenticated, otherwise the writer the operation supplied, or
+            the vault owner. Set to created_by at document creation;
+            updated on metadata changes, lifecycle transitions including
+            supersession, and forced re-ingestion.
         updated_at:
           type: string
           format: date-time
@@ -6016,7 +6024,9 @@ components:
           type: [string, "null"]
           description: >-
             User ID of the actor initiating ingestion. Used for
-            provenance tracking.
+            provenance tracking. Where the request authenticated, the
+            authenticated principal is recorded instead, and a differing
+            value here is ignored and named in the response's warnings.
         force:
           type: boolean
           default: false
@@ -7526,6 +7536,14 @@ components:
           $ref: "#/components/schemas/Document"
         pipeline_status:
           $ref: "#/components/schemas/PipelineStatus"
+        warnings:
+          type: array
+          items:
+            type: string
+          description: >-
+            Caller-facing warnings about the write. Names a created_by value
+            that was ignored because the request authenticated as a
+            different principal.
 
     DocTypeRequirements:
       type: object

@@ -349,6 +349,7 @@ async def ingest(
     response = IngestResponse(
         document=result.document,
         pipeline_status=result.document.pipeline_status,
+        warnings=result.warnings,
     )
     return JSONResponse(
         status_code=201 if result.is_new else 200,

@@ -1,0 +1,21 @@
+classification: minor
+category: [capability]
+summary: >-
+  Under a profile that authenticates callers, created_by on a new document and
+  last_modified_by on every created, patched, superseded, lifecycle-transitioned
+  or force re-ingested document record the authenticated principal, on the REST
+  routes and the MCP tools alike: a user's preferred username, else their
+  object id, or app:<client id> for an application. A caller-supplied
+  created_by that differs is ignored, not refused, and IngestResponse gains
+  warnings naming it; the MCP ingest_document result carries the same warnings
+  when there are any. Without authentication the caller-supplied created_by is
+  recorded and the vault owner is the default, as before, and update_metadata
+  over REST now records the vault owner rather than a fixed placeholder. Lifecycle
+  transitions and forced re-ingestion now stamp last_modified_by on either
+  profile. The created_by and last_modified_by descriptions in
+  sage_core_api.openapi.yaml and the MCP tool catalog say so. Existing documents
+  are not rewritten.
+for_callers: >-
+  On an authenticated deployment every write is now attributed to the signed-in
+  user or application that made it, not to the vault owner. A created_by you
+  pass is ignored there, and the ingest response's warnings says so.
