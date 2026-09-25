@@ -1465,3 +1465,70 @@ def test_the_stack_config_is_fetched_once_for_both_checks() -> None:
     assert verdicts.get("kv_anthropic") == "PASS", out
     assert verdicts.get("sharepoint_discovery") == "PASS", out
     assert len(fetched) == 1, fetched
+
+
+@_NEEDS_RUNTIME
+def test_kv_anthropic_fails_for_a_provider_a_cloud_tenant_cannot_load() -> None:
+    """The cloud profile ships no local model runtime, so a served local-mlx
+    provider is a misconfiguration, not a pass and not a skip."""
+    verdicts, out = _startup_run(
+        _stack_config(200, _STACK_CONFIG_BODY.replace('"anthropic"', '"local-mlx"'))
+    )
+    assert verdicts.get("kv_anthropic") == "FAIL", out
+    assert "local-mlx" in _detail(out, "kv_anthropic"), out
+
+
+@_NEEDS_RUNTIME
+def test_kv_anthropic_reads_the_provider_inside_the_abstraction_section() -> None:
+    """A ``provider`` key elsewhere in the configuration is not the abstraction
+    provider, whichever of the two comes first."""
+    decoy = _STACK_CONFIG_BODY.replace(
+        '{"profile":"cloud",', '{"profile":"cloud","embedding":{"provider":"anthropic"},', 1
+    ).replace('"provider":"anthropic","model"', '"provider":"stub","model"')
+    assert decoy.index('"provider":"anthropic"') < decoy.index('"abstraction"'), decoy
+    verdicts, out = _startup_run(_stack_config(200, decoy))
+    assert verdicts.get("kv_anthropic") == "SKIP", out
+
+
+# --------------------------------------------------------------------------- #
+# The BFF's liveness is credited on its status value too                      #
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "health,expected",
+    [
+        ('{"status":"broken","token":"x"}', "FAIL"),
+        ('{"status":"booking"}', "FAIL"),
+        ('{"status" : "ok"}', "PASS"),
+    ],
+    ids=["broken-with-token", "value-containing-ok", "ok-spaced"],
+)
+@_NEEDS_RUNTIME
+def test_bff_liveness_reads_the_status_value(health: str, expected: str) -> None:
+    def responder(method: str, path: str, body: bytes) -> tuple[int, str, dict[str, str]]:
+        if path.split("?", 1)[0] == "/health":
+            return 200, health, {}
+        return _green(method, path, body)
+
+    with serve(responder) as url:
+        proc = _run(_base_env(url, PREFLIGHT_CHECKS="bff_liveness"))
+    assert _verdicts(proc.stdout).get("bff_liveness") == expected, proc.stdout
+
+
+@_NEEDS_RUNTIME
+def test_both_stack_config_readers_report_why_the_fetch_failed(tmp_path: Path) -> None:
+    """A connection-level failure is fetched once and read twice; each reader's
+    FAIL line carries the decoded reason, not a bare 000."""
+    curl = _write_stub_cmd(
+        tmp_path,
+        "curl-stub",
+        'for a in "$@"; do case "$a" in *stack-config*) exit 7 ;; esac; done\nexec curl "$@"\n',
+    )
+    verdicts, out = _startup_run(
+        _green,
+        PREFLIGHT_CURL_CMD=curl,
+        PREFLIGHT_WARMUP_MAX_ATTEMPTS="1",
+        PREFLIGHT_WARMUP_INTERVAL_SECONDS="0",
+    )
+    for check in ("kv_anthropic", "sharepoint_discovery"):
+        assert verdicts.get(check) == "FAIL", out
+        assert "curl 7" in _detail(out, check), out

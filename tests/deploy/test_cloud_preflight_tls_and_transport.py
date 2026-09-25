@@ -921,3 +921,22 @@ def test_asuid_txt_is_matched_as_a_whole_record(tmp_path: Path, record: str, exp
     )
     proc = _run(env)
     assert _verdicts(proc.stdout).get("dns_asuid_txt") == expected, proc.stdout
+
+
+@_NEEDS_RUNTIME
+def test_cname_equal_to_the_suffix_itself_is_credited(tmp_path: Path) -> None:
+    """A target that is the suffix, not a name under it, is still at the label
+    boundary."""
+    resolver = _write_stub_cmd(
+        tmp_path,
+        "resolve",
+        'case "$1" in\n  *nxdomain-control*) exit 0 ;;\n  *) echo "azure-api.net." ;;\nesac\n',
+    )
+    env = _base_env(
+        "http://127.0.0.1:1",
+        PREFLIGHT_CHECKS="dns_sage_cname",
+        PREFLIGHT_RESOLVE_CMD=resolver,
+        EXPECTED_SAGE_CNAME_SUFFIX="azure-api.net",
+    )
+    proc = _run(env)
+    assert _verdicts(proc.stdout).get("dns_sage_cname") == "PASS", proc.stdout

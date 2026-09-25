@@ -133,6 +133,7 @@ HTTP_DIAG=""
 VAULT_FIRST_ID=""
 STACK_CONFIG_FETCHED=""
 STACK_CONFIG_BODY=""
+STACK_CONFIG_DIAG=""
 DETAIL_MSG=""
 MCP_PROBE_RC=""
 MCP_PROBE_OUT=""
@@ -954,15 +955,19 @@ check_transfer_download_gate() {
 }
 
 # The stack configuration the tenant loaded at start, fetched once per run and
-# shared by the checks that read it. Returns non-zero when it is not served.
+# shared by the checks that read it. Returns non-zero when it is not served. The
+# decoded reason for a connection-level failure is kept with the code, so every
+# reader's FAIL line names it, not only the first.
 fetch_stack_config() {
   if [ -z "$STACK_CONFIG_FETCHED" ]; then
     http_get "$STACK_CONFIG_URL" "$AUTH_TOKEN"
     STACK_CONFIG_FETCHED="$HTTP_CODE"
+    STACK_CONFIG_DIAG="$HTTP_DIAG"
     STACK_CONFIG_BODY=""
     [ "$HTTP_CODE" = 200 ] && STACK_CONFIG_BODY="$HTTP_BODY"
   fi
   HTTP_CODE="$STACK_CONFIG_FETCHED"
+  HTTP_DIAG="$STACK_CONFIG_DIAG"
   [ "$STACK_CONFIG_FETCHED" = 200 ]
 }
 
@@ -1342,8 +1347,9 @@ check_kv_anthropic() {
 
 check_bff_liveness() {
   http_get "$CAS_BASE_URL/health"
-  if [ "$HTTP_CODE" = 200 ] && printf '%s' "$HTTP_BODY" | grep -q '"status"'; then
-    DETAIL_MSG="BFF /health 200 (process up; store-free)"
+  if [ "$HTTP_CODE" = 200 ] \
+    && printf '%s' "$HTTP_BODY" | grep -qE '"status"[[:space:]]*:[[:space:]]*"ok"'; then
+    DETAIL_MSG="BFF /health 200 status=ok (process up; store-free)"
     return 0
   fi
   DETAIL_MSG="BFF /health unhealthy: code=$HTTP_CODE"
@@ -1586,7 +1592,7 @@ register kv_wildcard_tls check_kv_wildcard_tls \
   "a wrong/parked cert subject fails even though the handshake succeeds"
 register kv_anthropic check_kv_anthropic \
   "anthropic-api-key resolved (inferred from vault registration under the served anthropic provider)" \
-  "rides vault_load not /health; SKIP if vault_load did not pass or the served provider is stub (no fetch); FAIL if the provider cannot be read"
+  "rides vault_load not /health; SKIP if vault_load did not pass or the served provider is stub (no fetch); FAIL if the provider cannot be read or is one a cloud tenant cannot load"
 register bff_liveness check_bff_liveness \
   "BFF /health 200 status=ok" \
   "store-free; credited only as BFF process-up"
