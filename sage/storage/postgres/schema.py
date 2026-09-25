@@ -254,6 +254,25 @@ CREATE TABLE IF NOT EXISTS chunks (
 # it still ranks and orients. A consumer added later cannot forget the rule:
 # the match arm has no column to read derived text from.
 
+#
+# Both columns are parsed with their angle brackets replaced, for the reason
+# CHUNKS_INDEXED_CONTENT_EXPRESSION gives: the parser reads a ``<...>`` span as
+# one markup tag and indexes none of it, so a title or tag carrying one would be
+# unmatchable on any term inside it (CAS-ADR-049 Decision 9). The stored text is
+# unchanged; only the vectors are built from the substituted text.
+DOCUMENT_SURFACE_MATCHABLE_EXPRESSION = "translate(matchable, '<>', '  ')"
+DOCUMENT_SURFACE_ORIENTING_EXPRESSION = "translate(orienting, '<>', '  ')"
+
+DOCUMENT_SURFACE_TSV_MATCH_EXPRESSION = (
+    f"setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', {DOCUMENT_SURFACE_MATCHABLE_EXPRESSION}), 'A')"
+)
+
+DOCUMENT_SURFACE_TSV_RANK_EXPRESSION = (
+    f"{DOCUMENT_SURFACE_TSV_MATCH_EXPRESSION}"
+    f" || setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', "
+    f"{DOCUMENT_SURFACE_ORIENTING_EXPRESSION}), 'D')"
+)
+
 DOCUMENT_SURFACE_TABLE = f"""\
 CREATE TABLE IF NOT EXISTS document_surface (
     document_id text NOT NULL,
@@ -263,13 +282,8 @@ CREATE TABLE IF NOT EXISTS document_surface (
     doc_type text,
     lifecycle_status text,
     project text,
-    tsv_match tsvector GENERATED ALWAYS AS (
-        setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', matchable), 'A')
-    ) STORED,
-    tsv_rank tsvector GENERATED ALWAYS AS (
-        setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', matchable), 'A')
-        || setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', orienting), 'D')
-    ) STORED
+    tsv_match tsvector GENERATED ALWAYS AS ({DOCUMENT_SURFACE_TSV_MATCH_EXPRESSION}) STORED,
+    tsv_rank tsvector GENERATED ALWAYS AS ({DOCUMENT_SURFACE_TSV_RANK_EXPRESSION}) STORED
 );
 """
 
@@ -319,6 +333,14 @@ UNIQUE_NATURAL_KEY_INDEXES: tuple[str, ...] = (
 # dropped column takes its indexes with it. One string, so a rebuilt index
 # cannot be defined differently from the one the bootstrap builds.
 IDX_CHUNKS_TSV_GIN = "CREATE INDEX IF NOT EXISTS idx_chunks_tsv_gin ON chunks USING GIN (tsv);"
+IDX_DOCUMENT_SURFACE_TSV_MATCH_GIN = (
+    "CREATE INDEX IF NOT EXISTS idx_document_surface_tsv_match_gin "
+    "ON document_surface USING GIN (tsv_match);"
+)
+IDX_DOCUMENT_SURFACE_TSV_RANK_GIN = (
+    "CREATE INDEX IF NOT EXISTS idx_document_surface_tsv_rank_gin "
+    "ON document_surface USING GIN (tsv_rank);"
+)
 
 CONTENT_INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_chunks_document_id ON chunks(document_id);",
@@ -327,10 +349,8 @@ CONTENT_INDEXES: tuple[str, ...] = (
     "ON chunks USING hnsw (embedding vector_cosine_ops);",
     "CREATE UNIQUE INDEX IF NOT EXISTS idx_document_surface_document_id "
     "ON document_surface(document_id);",
-    "CREATE INDEX IF NOT EXISTS idx_document_surface_tsv_match_gin "
-    "ON document_surface USING GIN (tsv_match);",
-    "CREATE INDEX IF NOT EXISTS idx_document_surface_tsv_rank_gin "
-    "ON document_surface USING GIN (tsv_rank);",
+    IDX_DOCUMENT_SURFACE_TSV_MATCH_GIN,
+    IDX_DOCUMENT_SURFACE_TSV_RANK_GIN,
     "CREATE INDEX IF NOT EXISTS idx_document_surface_embedding_hnsw "
     "ON document_surface USING hnsw (embedding vector_cosine_ops);",
 )
@@ -430,6 +450,36 @@ CHUNKS_TSV_GENERATION_EXPRESSION_PROBE = (
     "SELECT generation_expression FROM information_schema.columns"
     " WHERE table_schema = current_schema()"
     " AND table_name = 'chunks' AND column_name = 'tsv'"
+)
+
+# The document surface's counterpart of the passage-vector rebuild, for the
+# same reasons and under the same constraints: not in the bootstrap, written to
+# the deploy floor, and recreating the indexes the dropped columns take along.
+DOCUMENT_SURFACE_TSV_REBUILD: tuple[str, ...] = (
+    "ALTER TABLE document_surface DROP COLUMN IF EXISTS tsv_match;",
+    "ALTER TABLE document_surface DROP COLUMN IF EXISTS tsv_rank;",
+    "ALTER TABLE document_surface ADD COLUMN tsv_match tsvector GENERATED ALWAYS AS "
+    f"({DOCUMENT_SURFACE_TSV_MATCH_EXPRESSION}) STORED;",
+    "ALTER TABLE document_surface ADD COLUMN tsv_rank tsvector GENERATED ALWAYS AS "
+    f"({DOCUMENT_SURFACE_TSV_RANK_EXPRESSION}) STORED;",
+    IDX_DOCUMENT_SURFACE_TSV_MATCH_GIN,
+    IDX_DOCUMENT_SURFACE_TSV_RANK_GIN,
+)
+
+# Whether each surface vector is built from the current expression, read as for
+# the passage vector: each marker survives Postgres's normalization of the stored
+# expression, where a whole-string comparison would not. The match vector must
+# read the substituted authored text; the rank vector must read both halves
+# substituted.
+DOCUMENT_SURFACE_TSV_CURRENT_MARKERS: dict[str, tuple[str, ...]] = {
+    "tsv_match": ("translate(matchable",),
+    "tsv_rank": ("translate(matchable", "translate(orienting"),
+}
+
+DOCUMENT_SURFACE_TSV_GENERATION_EXPRESSION_PROBE = (
+    "SELECT column_name, generation_expression FROM information_schema.columns"
+    " WHERE table_schema = current_schema()"
+    " AND table_name = 'document_surface' AND column_name IN ('tsv_match', 'tsv_rank')"
 )
 
 

@@ -45,6 +45,9 @@ from sage.storage.postgres.schema import (
     CHUNKS_TSV_CURRENT_MARKERS,
     CHUNKS_TSV_GENERATION_EXPRESSION_PROBE,
     CHUNKS_TSV_REBUILD,
+    DOCUMENT_SURFACE_TSV_CURRENT_MARKERS,
+    DOCUMENT_SURFACE_TSV_GENERATION_EXPRESSION_PROBE,
+    DOCUMENT_SURFACE_TSV_REBUILD,
     EMBEDDING_DIM,
     TEXT_SEARCH_CONFIG,
 )
@@ -599,6 +602,49 @@ class PostgresContentStore(ContentStore):
             )
         expression = row[0] or ""
         return all(marker in expression for marker in CHUNKS_TSV_CURRENT_MARKERS)
+
+    async def document_surface_vector_is_current(self) -> bool:
+        """Whether both surface vectors are built from the current expressions."""
+        with self._query_timer.measure("document_surface_vector_is_current"):
+            async with self._pool.connection() as conn:
+                return await self._surface_vector_is_current(conn)
+
+    @staticmethod
+    async def _surface_vector_is_current(conn: AsyncConnection) -> bool:
+        """Read both stored surface expressions on an open connection."""
+        cur = await conn.execute(DOCUMENT_SURFACE_TSV_GENERATION_EXPRESSION_PROBE)
+        expressions = {row[0]: row[1] or "" for row in await cur.fetchall()}
+        missing = set(DOCUMENT_SURFACE_TSV_CURRENT_MARKERS) - set(expressions)
+        if missing:
+            raise RuntimeError(
+                "the document surface carries no generated keyword vector "
+                f"{sorted(missing)}; a rebuild was interrupted outside a transaction "
+                "and the table needs repair before a migration can proceed"
+            )
+        return all(
+            marker in expressions[column]
+            for column, markers in DOCUMENT_SURFACE_TSV_CURRENT_MARKERS.items()
+            for marker in markers
+        )
+
+    async def rebuild_document_surface_vector(self) -> bool:
+        """Rebuild both surface vectors in one transaction, when either is stale.
+
+        Locked and re-checked as ``migrate_indexed_structure`` locks and
+        re-checks the passage table, and for the same reasons: the mode stops a
+        second migrator deciding to rebuild without holding up searches or
+        ingest, and the drop escalates on its own where the rewrite needs it.
+        The table holds one row per document, so the rewrite is far cheaper than
+        the passage table's.
+        """
+        with self._query_timer.measure("rebuild_document_surface_vector"):
+            async with self._pool.connection() as conn, conn.transaction():
+                await conn.execute("LOCK TABLE document_surface IN SHARE UPDATE EXCLUSIVE MODE")
+                if await self._surface_vector_is_current(conn):
+                    return False
+                for statement in DOCUMENT_SURFACE_TSV_REBUILD:
+                    await conn.execute(statement)
+                return True
 
     async def migrate_indexed_structure(self, derived: Sequence[tuple[str, str, str]]) -> int:
         """Apply derived structure and, if needed, rebuild the keyword vector.

@@ -138,6 +138,14 @@ class StubContentStore(ContentStore):
                     seen.setdefault((document_id, chunk.heading_path))
         return list(seen)
 
+    async def document_surface_vector_is_current(self) -> bool:
+        """Always true, for the reason ``passage_vector_is_current`` gives."""
+        return True
+
+    async def rebuild_document_surface_vector(self) -> bool:
+        """Never rebuilds: this double has no generated vector to rebuild."""
+        return False
+
     async def passage_vector_is_current(self) -> bool:
         """Always true: this double has no generated vector that could be stale.
 

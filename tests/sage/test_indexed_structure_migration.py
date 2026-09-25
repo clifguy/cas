@@ -30,7 +30,7 @@ from sage.models.enums import SourceType
 from sage.models.schemas import Document
 from sage.services.maintenance import BACKFILL_PASSAGE_INDEXED_STRUCTURE, MaintenanceService
 from sage.services.passage_structure import indexed_structure
-from sage.storage.postgres.schema import EMBEDDING_DIM, TEXT_SEARCH_CONFIG
+from sage.storage.postgres.schema import CHUNKS_TSV_REBUILD, EMBEDDING_DIM, TEXT_SEARCH_CONFIG
 
 pytestmark = pytest.mark.asyncio
 
@@ -65,6 +65,26 @@ _PRE_CHANGE_TSV = (
 @pytest.fixture
 async def store(pg_pool):
     return PostgresContentStore(pg_pool)
+
+
+@pytest.fixture(autouse=True)
+async def _restore_the_current_vector(pg_pool):
+    """Put the current passage vector back after each test.
+
+    The schema outlives the test while the fixtures below install earlier
+    vectors into it, so a test that fails before migrating would otherwise hand
+    every later test on the same worker a stale vector.
+    """
+    yield
+    store = PostgresContentStore(pg_pool)
+    try:
+        current = await store.passage_vector_is_current()
+    except RuntimeError:
+        current = False
+    if not current:
+        async with pg_pool.connection() as conn:
+            for statement in CHUNKS_TSV_REBUILD:
+                await conn.execute(statement)
 
 
 def _doc(document_id: str, title: str) -> Document:
