@@ -706,22 +706,23 @@ async def test_u3_malformed_agent_is_refused_on_staging_and_batch(
     auth_app, tmp_vault_dir, agent: str
 ) -> None:
     source = str(tmp_vault_dir / "sources" / seed(tmp_vault_dir, "u3b.md"))
-    calls = {
-        "update_staging_edge": {
-            "edge_id": "71111111-1111-4111-8111-111111111111",
-            "action": "confirm",
-        },
-        "bulk_ingest_document": {"files": [{"file_path": source, "source_type": "markdown"}]},
-    }
+    staged = await _stage(auth_app, tmp_vault_dir, "u3s", "81111111-1111-4111-8111-111111111111")
+    calls = [
+        ("update_staging_edge", {"edge_id": staged, "action": "confirm"}),
+        # A dismiss records no agent, but a malformed one is refused all the same.
+        ("update_staging_edge", {"edge_id": staged, "action": "dismiss"}),
+        ("bulk_ingest_document", {"files": [{"file_path": source, "source_type": "markdown"}]}),
+    ]
     async with mcp_running(auth_app):
-        for tool, arguments in calls.items():
+        for tool, arguments in calls:
             result = await mcp_call(
                 auth_app, "alice-mcp", tool, {"vault_id": VAULT, "agent": agent, **arguments}
             )
             assert result.get("error") == "invalid_parameter", (tool, result)
             assert result["detail"]["parameter"] == "agent", (tool, result)
-    digest = f"sha256:{hashlib.sha256(Path(source).read_bytes()).hexdigest()}"
     store = auth_app.state.vault_registry[VAULT].graph_store
+    assert await store.get_staging_edge(staged) is not None
+    digest = f"sha256:{hashlib.sha256(Path(source).read_bytes()).hexdigest()}"
     assert not await store.find_documents_by_hashes(
         [digest], prefer_lifecycle_statuses=frozenset({"active"})
     )

@@ -2376,7 +2376,7 @@ def register_sage_tools(
             str | None,
             StagingEdgeConfirmRequest,
             "agent",
-            mcp="A dismiss records nothing, so there it has no effect.",
+            mcp="A dismiss records nothing.",
         ) = None,
     ) -> dict:
         """Confirm or dismiss a staging edge.

@@ -10,7 +10,7 @@ summary: >-
   IngestRequest in the CAS Application API spec gain agent, applied to every
   document and production edge the batch writes. The update_staging_edge and
   bulk_ingest_document MCP tools take agent too. The bulk_ingest_document
-  description drops two sentences its parameters already state.
+  description drops three passages the tool already states elsewhere.
 for_callers: >-
   Name the agent explicitly when confirming a staging edge or ingesting a
   batch: pass agent to update_staging_edge or bulk_ingest_document, send
