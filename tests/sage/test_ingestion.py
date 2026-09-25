@@ -2932,8 +2932,8 @@ async def test_recompute_pipeline_applies_vault_adapter_defaults(
 ):
     """Re-projection reads adapter parameters from the vault config.
 
-    ``recompute_pipeline`` carries no per-request config, so vault defaults
-    are its only source of adapter parameters. A relocation that wired the
+    A document ingested with no request config has none recorded, so vault
+    defaults are its only source of adapter parameters. A relocation that wired the
     new section into ingest alone would leave this path reading nothing and
     silently flatten the heading tree of every re-projected document.
     """
@@ -3560,3 +3560,225 @@ def test_chunk_projection_divides_a_preamble_over_the_bound(ingestion_service):
     assert {c.section_index for c in lead_chunks} == {0}
     assert chunks[: len(lead_chunks)] == lead_chunks, "the preamble passages come first"
     assert "".join(c.content for c in lead_chunks) == lead
+
+
+# --------------------------------------------------------------------------- #
+# The request's adapter config is part of the document's record               #
+# --------------------------------------------------------------------------- #
+#: A config only a request supplies: the vault's docx defaults map a different
+#: style, so the Subtitle style reads as a heading only when this map reaches
+#: the adapter.
+_REQUEST_DOCX_CONFIG = {"heading_style_map": {"Subtitle": 1}}
+_VAULT_DOCX_DEFAULTS = {"heading_style_map": {"Title": 1}}
+#: What a re-projection must hand the adapter: the request's map merged over
+#: the vault's, key by key. Passing the stored request config through alone
+#: would drop the vault's Title entry.
+_MERGED_DOCX_CONFIG = {"heading_style_map": {"Title": 1, "Subtitle": 1}}
+
+
+def _recording_docx_service(
+    config: VaultConfig,
+    *,
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+):
+    from sage.services.ingestion import IngestionService
+    from sage.services.lifecycle import LifecycleService
+
+    adapter = _RecordingDocxAdapter()
+    service = IngestionService(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=stub_abstraction_provider,
+        config=config,
+        source_adapters={SourceType.MARKDOWN: MarkdownAdapter(), SourceType.DOCX: adapter},
+        lifecycle_service=LifecycleService(graph_store, lock_manager, config),
+    )
+    return service, adapter
+
+
+@pytest.fixture
+def request_config_service(
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    minimal_vault_config_dict,
+):
+    config = _build_vault_config_with_docx(
+        minimal_vault_config_dict, vault_docx_config=_VAULT_DOCX_DEFAULTS
+    )
+    return _recording_docx_service(
+        config,
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        stub_content_store=stub_content_store,
+        stub_embedding_provider=stub_embedding_provider,
+        stub_abstraction_provider=stub_abstraction_provider,
+    )
+
+
+def _subtitled_docx(tmp_vault_dir: Path, name: str, body: str = "Body text.") -> str:
+    _write_styled_docx(
+        tmp_vault_dir / "sources" / name, [("SUBTITLED", "Subtitle"), (body, "Normal")]
+    )
+    return name
+
+
+@requires_docx
+async def test_ingest_persists_the_request_adapter_config(
+    tmp_vault_dir, graph_store, request_config_service
+):
+    service, _ = request_config_service
+    configured = await service.ingest(
+        IngestRequest(
+            source=_subtitled_docx(tmp_vault_dir, "configured.docx"),
+            source_type=SourceType.DOCX,
+            config=_REQUEST_DOCX_CONFIG,
+        )
+    )
+    plain = await service.ingest(
+        IngestRequest(
+            source=_subtitled_docx(tmp_vault_dir, "plain.docx", body="Other body."),
+            source_type=SourceType.DOCX,
+        )
+    )
+
+    stored = await graph_store.get_document(configured.document.id)
+    assert stored.adapter_config == _REQUEST_DOCX_CONFIG
+    assert (await graph_store.get_document(plain.document.id)).adapter_config is None
+
+
+@requires_docx
+async def test_force_reingest_replaces_the_stored_adapter_config(
+    tmp_vault_dir, graph_store, request_config_service
+):
+    """The stored config describes the passages the latest ingest wrote, so a
+    re-ingest replaces it -- and one with no config clears it."""
+    service, _ = request_config_service
+    name = _subtitled_docx(tmp_vault_dir, "reingested.docx")
+    first = await service.ingest(
+        IngestRequest(source=name, source_type=SourceType.DOCX, config=_REQUEST_DOCX_CONFIG)
+    )
+    other = {"heading_style_map": {"Subtitle": 2}}
+
+    await service.ingest(
+        IngestRequest(source=name, source_type=SourceType.DOCX, config=other, force=True)
+    )
+    assert (await graph_store.get_document(first.document.id)).adapter_config == other
+
+    await service.ingest(IngestRequest(source=name, source_type=SourceType.DOCX, force=True))
+    assert (await graph_store.get_document(first.document.id)).adapter_config is None
+
+
+@requires_docx
+async def test_supersession_successor_does_not_inherit_adapter_config(
+    tmp_vault_dir, graph_store, request_config_service
+):
+    service, _ = request_config_service
+    first = await service.ingest(
+        IngestRequest(
+            source=_subtitled_docx(tmp_vault_dir, "v1.docx"),
+            source_type=SourceType.DOCX,
+            config=_REQUEST_DOCX_CONFIG,
+        )
+    )
+    second = await service.ingest(
+        IngestRequest(
+            source=_subtitled_docx(tmp_vault_dir, "v2.docx", body="Revised body."),
+            source_type=SourceType.DOCX,
+            predecessor_id=first.document.id,
+        )
+    )
+
+    assert (await graph_store.get_document(second.document.id)).adapter_config is None
+    assert (await graph_store.get_document(first.document.id)).adapter_config == (
+        _REQUEST_DOCX_CONFIG
+    )
+
+
+@requires_docx
+async def test_recompute_pipeline_reprojects_with_the_stored_request_config(
+    tmp_vault_dir, graph_store, stub_content_store, request_config_service
+):
+    service, adapter = request_config_service
+    result = await service.ingest(
+        IngestRequest(
+            source=_subtitled_docx(tmp_vault_dir, "recompute.docx"),
+            source_type=SourceType.DOCX,
+            config=_REQUEST_DOCX_CONFIG,
+        )
+    )
+    assert "SUBTITLED" in await stub_content_store.get_heading_paths(result.document.id), (
+        "control: the request config must shape the ingest"
+    )
+
+    adapter.configs.clear()
+    await service.recompute_pipeline(result.document.id)
+
+    assert adapter.configs, "recompute_pipeline did not re-project"
+    assert adapter.configs[-1] == _MERGED_DOCX_CONFIG
+    await await_pipeline_idle(graph_store, result.document.id, service=service)
+    assert "SUBTITLED" in await stub_content_store.get_heading_paths(result.document.id)
+
+
+@requires_docx
+async def test_worker_recovery_reprojects_with_the_stored_request_config(
+    tmp_vault_dir, request_config_service
+):
+    service, adapter = request_config_service
+    result = await service.ingest(
+        IngestRequest(
+            source=_subtitled_docx(tmp_vault_dir, "recovered.docx"),
+            source_type=SourceType.DOCX,
+            config=_REQUEST_DOCX_CONFIG,
+        )
+    )
+
+    adapter.configs.clear()
+    projection = await service._reproject_from_source(result.document.id)
+
+    assert adapter.configs == [_MERGED_DOCX_CONFIG]
+    assert projection.headings, "the reprojection must read the subtitle as a heading"
+
+
+@requires_docx
+async def test_the_reprojection_script_reprojects_with_the_stored_request_config(
+    tmp_vault_dir, graph_store, stub_content_store, request_config_service
+):
+    from types import SimpleNamespace
+
+    from scripts import reproject_active_documents
+
+    service, adapter = request_config_service
+    result = await service.ingest(
+        IngestRequest(
+            source=_subtitled_docx(tmp_vault_dir, "scripted.docx"),
+            source_type=SourceType.DOCX,
+            config=_REQUEST_DOCX_CONFIG,
+        )
+    )
+    await await_pipeline_idle(graph_store, result.document.id, service=service)
+
+    adapter.configs.clear()
+    await reproject_active_documents.reproject_vault_with_services(
+        service._config.vault.id,
+        SimpleNamespace(
+            config=service._config,
+            graph_store=graph_store,
+            ingestion_service=service,
+            content_store=stub_content_store,
+        ),
+        execute=True,
+        allow_hash_drift=False,
+        source_types=frozenset({SourceType.DOCX.value}),
+    )
+
+    assert adapter.configs == [_MERGED_DOCX_CONFIG]
+    assert "SUBTITLED" in await stub_content_store.get_heading_paths(result.document.id)

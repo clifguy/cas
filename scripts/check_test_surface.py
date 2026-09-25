@@ -159,6 +159,28 @@ _CONFORMANCE_STREAMS: Final[str] = (
 
 KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
     (
+        "tests/sage/test_postgres_schema.py::"
+        "test_bootstrap_adds_a_new_column_to_an_already_provisioned_schema"
+    ): (
+        "parametrized over each additive documents column, so the case runs under "
+        "its [stored_content_hash-text] and [adapter_config-jsonb] ids"
+    ),
+    (
+        "tests/sage/test_reindex_chunks_script.py::"
+        "test_reindex_skips_documents_already_at_current_version"
+    ): (
+        "inverted and renamed test_reindex_selects_documents_by_chunks_not_version: "
+        "the script no longer stamps adapter_version, so the version no longer "
+        "selects what it re-embeds"
+    ),
+    (
+        "tests/sage/test_reindex_chunks_script.py::"
+        "test_reindex_handles_source_type_with_no_adapter_registered"
+    ): (
+        "inverted and renamed test_reindex_reembeds_whatever_the_source_type: "
+        "re-embedding reads stored passages, never a source, so no adapter is needed"
+    ),
+    (
         "tests/deploy/test_stub_server.py::"
         "test_stub_modules_import_the_shared_helper[test_cloud_preflight.py]"
     ): (

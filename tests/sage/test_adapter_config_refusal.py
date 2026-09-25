@@ -6,9 +6,11 @@ source: ``ingest_document`` over MCP and HTTP, the batch ingest's per-file
 errors, and ``recompute_pipeline``. A source the adapter cannot read is not a
 config refusal and keeps the reporting it had.
 
-A per-request config reaches the adapter only through ``ingest_document``; the
-batch and ``recompute_pipeline`` carry the vault's ``adapter_defaults`` alone, so
-their arms refuse a vault default rather than a request value. The write paths
+A per-request config reaches the adapter through ``ingest_document``, and
+``recompute_pipeline`` merges the one the document recorded; the batch carries
+the vault's ``adapter_defaults`` alone. Their arms therefore refuse a vault
+default rather than a request value, the recompute arm on a document that
+recorded none. The write paths
 refuse such a default, so those arms hold it the one way it still reaches a
 running vault: stored, and loaded leniently (CAS-ADR-047).
 """
@@ -238,8 +240,12 @@ async def test_ad_184_recompute_pipeline_reports_a_refused_vault_default(
     """AD-184: recompute_pipeline reports a refused vault default as adapter_config_invalid.
 
     The ingest's per-request ``preview_rows`` overrides the vault's refused
-    value, so the document exists; re-projection reads the vault default alone.
-    A second call returning the same error shows the claim was released.
+    value, so the document exists. Re-projection merges the request config the
+    document recorded, so while it is recorded the refused default never
+    reaches the adapter; the refusal is reached by a document carrying none,
+    which is what every document ingested before the config was recorded
+    carries. A second call returning the same error shows the claim was
+    released.
     """
     config_dict = _stored_with_refused_xlsx_default(minimal_vault_config_dict)
     source = _write_source(tmp_vault_dir, "test/book.xlsx", _workbook_bytes())
@@ -253,6 +259,13 @@ async def test_ad_184_recompute_pipeline_reports_a_refused_vault_default(
             return _parse(await get_document(_VAULT, doc_id))
 
         await await_tool_idle(fetch, doc_id, service=services.ingestion_service)
+        recorded = _parse(await recompute_pipeline(_VAULT, doc_id))
+        assert "error" not in recorded, (
+            "the recorded request config must override the refused default",
+            recorded,
+        )
+        await await_tool_idle(fetch, doc_id, service=services.ingestion_service)
+        await services.graph_store.update_document(doc_id, {"adapter_config": None})
 
         first = _parse(await recompute_pipeline(_VAULT, doc_id))
         second = _parse(await recompute_pipeline(_VAULT, doc_id))

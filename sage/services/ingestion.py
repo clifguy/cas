@@ -929,9 +929,11 @@ class IngestionService:
         are absent so adapters that branch on ``config is None`` keep their
         legacy fast path.
 
-        Vault defaults are the only source of adapter parameters on the
-        re-projection paths (``recompute_pipeline`` and reindex), which
-        carry no per-request config to fall back on.
+        Every path that re-projects a stored document passes the request config
+        the document's ingest recorded, so a re-projected source is shaped the
+        way it was at ingest while still picking up any change to the vault's
+        defaults. A document ingested with no request config has none recorded,
+        and re-projects from the vault's defaults alone.
         """
         defaults = self._config.adapter_defaults
         vault_config: dict | None = None
@@ -1588,8 +1590,9 @@ class IngestionService:
         # Stage 1: Projection (synchronous). Merge vault-level adapter config
         # with the per-request config; per-request keys override vault keys
         # on collision. The vault's adapter_defaults entry is the authority
-        # for adapter behavior across all ingests; the request override is a
-        # per-call escape hatch.
+        # for adapter behavior across all ingests; the request override is
+        # recorded on the document, so a later re-projection of this source
+        # shapes its passages the way this call did.
         merged_config = self._merge_adapter_config(request.source_type, request.config)
         with self._project_source(vault_source_store, storage_root, vault_relative) as project_path:
             with (
@@ -1781,6 +1784,9 @@ class IngestionService:
                 "semantic_abstract": None,
                 "indexed_at": None,
                 "source_modified_at": source_modified_at_str,
+                # Replaced rather than kept: the passages about to be written
+                # are shaped by this call's config, and by nothing else.
+                "adapter_config": request.config or None,
             }
             if retained:
                 # The record is reused because the delivered bytes matched, so
@@ -1891,6 +1897,7 @@ class IngestionService:
                 source_modified_at=source_modified_at,
                 pipeline_status=PipelineStatus.PROJECTION_COMPLETE,
                 tier3_metadata=final_tier3,
+                adapter_config=request.config or None,
                 relocated_from=request.relocated_from,
             )
             doc = Document(**{**base, **field_updates})
@@ -2742,7 +2749,7 @@ class IngestionService:
         # non-filesystem store after a restart (CAS-ADR-043).
         start_time = datetime.now(timezone.utc)
         try:
-            merged_config = self._merge_adapter_config(doc.source_type, None)
+            merged_config = self._merge_adapter_config(doc.source_type, doc.adapter_config)
             with self._project_source(
                 vault_source_store, storage_root, doc.source_path
             ) as project_path:
@@ -2805,7 +2812,7 @@ class IngestionService:
         from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
 
         vault_source_store = resolve_stack_vault_source_store(get_stack_config())
-        merged_config = self._merge_adapter_config(doc.source_type, None)
+        merged_config = self._merge_adapter_config(doc.source_type, doc.adapter_config)
         with self._project_source(
             vault_source_store, storage_root, doc.source_path
         ) as project_path:
@@ -3716,8 +3723,11 @@ class IngestionService:
         The migration excludes pipeline work, so only a metadata stamp can reach
         the document meanwhile; the passages are read and rewritten under the
         lock stamps take, as the division above does, and the rewrite carries the
-        scalars stamped on the rows it read. The source is projected before that
-        lock is taken, since projection can be slow.
+        scalars stamped on the rows it read, and derives each passage's structure
+        from the title as it stands under that lock. The source is projected
+        before the lock is taken, since projection can be slow, and with the
+        request config the document's ingest recorded, so a difference the
+        request's config made is not mistaken for one the adapter makes.
 
         Returns:
             Whether the passages were rewritten.
@@ -3730,7 +3740,7 @@ class IngestionService:
             return self._preamble_skipped(document_id, "it records no source path")
         storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
         try:
-            merged_config = self._merge_adapter_config(doc.source_type, None)
+            merged_config = self._merge_adapter_config(doc.source_type, doc.adapter_config)
             with self._project_source(
                 vault_source_store, storage_root, doc.source_path
             ) as project_path:
@@ -3747,6 +3757,13 @@ class IngestionService:
         fresh = self._chunk_projection(document_id, projection)
 
         async with self._locks.lock(document_id):
+            # Re-read under the lock: a title edit that landed while the source
+            # was projected has already re-derived the stored structure, and the
+            # rewrite must derive from the same title rather than the one read
+            # before projection.
+            current = await self._store.get_document(document_id)
+            if current is None:
+                return False
             stored = await self._content_store.get_all_chunks(document_id)
             if not stored or [(c.heading_path, c.content) for c in fresh] == [
                 (c.heading_path, c.content) for c in stored
@@ -3754,7 +3771,7 @@ class IngestionService:
                 await self._stamp_examined(document_id, adapter.VERSION)
                 return False
             for chunk in fresh:
-                chunk.indexed_structure = indexed_structure(chunk.heading_path, doc.title)
+                chunk.indexed_structure = indexed_structure(chunk.heading_path, current.title)
                 chunk.doc_type = stored[0].doc_type
                 chunk.lifecycle_status = stored[0].lifecycle_status
                 chunk.project = stored[0].project

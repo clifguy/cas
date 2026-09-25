@@ -476,7 +476,13 @@ async def test_bootstrap_is_idempotent(pg_dsn):
             await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')  # noqa: S608
 
 
-async def test_bootstrap_adds_a_new_column_to_an_already_provisioned_schema(pg_dsn):
+@pytest.mark.parametrize(
+    "column,declaration",
+    [("stored_content_hash", "text"), ("adapter_config", "jsonb")],
+)
+async def test_bootstrap_adds_a_new_column_to_an_already_provisioned_schema(
+    pg_dsn, column, declaration
+):
     """A vault provisioned before an additive column existed gains it on the next
     bootstrap -- i.e. on its next open, with no operator step.
 
@@ -499,8 +505,8 @@ async def test_bootstrap_adds_a_new_column_to_an_already_provisioned_schema(pg_d
     )
 
     schema = assert_disposable_target("sage_test_addcol_" + os.urandom(3).hex())
-    legacy_documents = pg.DOCUMENTS_TABLE.replace("    stored_content_hash text,\n", "")
-    assert "stored_content_hash" not in legacy_documents
+    legacy_documents = pg.DOCUMENTS_TABLE.replace(f"    {column} {declaration},\n", "")
+    assert column not in legacy_documents
 
     async def _columns(conn) -> set[str]:
         cur = await conn.execute(
@@ -518,13 +524,13 @@ async def test_bootstrap_adds_a_new_column_to_an_already_provisioned_schema(pg_d
 
             before = await _columns(conn)
             assert "source_content_hash" in before, "the stand-in table must exist"
-            assert "stored_content_hash" not in before, (
+            assert column not in before, (
                 "pre-state must lack the column, or this proves nothing about migration"
             )
 
             await bootstrap_schema(conn, schema=schema, extensions=["vector", "pgstattuple"])
 
-            assert "stored_content_hash" in await _columns(conn)
+            assert column in await _columns(conn)
         finally:
             await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')  # noqa: S608
 

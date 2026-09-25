@@ -114,6 +114,7 @@ export interface Document {
   pipeline_status: string;
   pipeline_error?: string | null;
   tier3_metadata?: Record<string, unknown> | null;
+  adapter_config?: Record<string, unknown> | null;
   metadata_confirmed?: boolean;
   relocated_from?: RelocationPointer | null;
   relocated_to?: RelocationPointer | null;

@@ -3079,7 +3079,9 @@ file in the same batch is ingested.
 **Artifact:** MCP `recompute_pipeline`
 **Category:** error-envelope
 **Expected:** A workbook ingested with a per-request `preview_rows` that overrides
-the vault's `"ten"` is re-projected under the vault default alone: the call returns
+the vault's `"ten"` re-projects cleanly while that request config is recorded on
+the document. With no request config recorded -- as on a document ingested before
+it was -- it is re-projected under the vault default alone: the call returns
 `error: adapter_config_invalid` with the exact `detail`, and a second call returns
 the same error rather than reporting work in flight.
 

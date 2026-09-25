@@ -554,6 +554,19 @@ class Document(BaseModel):
             "store."
         ),
     )
+    adapter_config: dict | None = Field(
+        default=None,
+        description=(
+            "The adapter configuration the ingest request supplied, as it was "
+            "given, before it was deep-merged over the vault's adapter "
+            "defaults. Re-projecting the source merges it over the vault's "
+            "current defaults again, so the stored passages keep the shape "
+            "the request gave them. Null when the request supplied none. A "
+            "force re-ingest replaces it, and a supersession does not carry "
+            "it forward: it describes how this version's passages were "
+            "projected."
+        ),
+    )
     metadata_confirmed: bool = Field(
         default=False,
         description=(
