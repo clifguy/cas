@@ -3343,7 +3343,8 @@ same blank lines, each ending CRLF, and with CR line endings, each ending CR.
 Lines are counted as the parser counts them, so a lone CR inside a text node or
 an attribute does not move a blank line onto the wrong record. A comment
 spanning several lines directly above a separated element stays with it: the
-blank line goes above the line that opens it.
+blank line goes above the line that opens it; one that opens on a line holding
+anything else is not a block, and the blank line goes directly above the element.
 
 ### TEST-SAGE-AD-211: Entities and external references are refused unfetched
 

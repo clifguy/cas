@@ -6131,9 +6131,16 @@ class TestStructuredDataAdapter:
             '  <item n="2"/>\n'
             "</root>\n"
         )
+        trailing = (
+            '<root>\n  <item n="1"/> <!-- a trailing\n  comment -->\n  <item n="2"/>\n</root>\n'
+        )
         _, result = await self._project(tmp_path, "block_comment.xml", source)
+        _, shared = await self._project(tmp_path, "trailing_comment.xml", trailing)
 
         assert result.text == source.replace("  <!-- the second", "\n  <!-- the second")
+        # A comment opening on a line that holds anything else is not a comment
+        # block: the blank line goes directly above the element.
+        assert shared.text == trailing.replace('  <item n="2"/>', '\n  <item n="2"/>')
 
     async def test_ad_211_entities_and_external_references_are_refused_unfetched(self, tmp_path):
         """AD-211: Entity and external-reference payloads are read errors and fetch nothing."""
