@@ -31,6 +31,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from sage.models.schemas import (
     _ERROR_MODELS,
+    AGENT_ARGUMENT_DESCRIPTION,
+    AgentNameStr,
     BatchIngestFileError,
     DocTypeRequirements,
     DocumentDateStr,
@@ -248,6 +250,11 @@ class IngestRequest(BaseModel):
             "within one batch is not reflected: two entries carrying "
             "identical bytes each report no duplicate."
         ),
+    )
+    agent: AgentNameStr | None = Field(
+        default=None,
+        description=AGENT_ARGUMENT_DESCRIPTION
+        + " Applies to every document and production edge the batch writes.",
     )
 
 

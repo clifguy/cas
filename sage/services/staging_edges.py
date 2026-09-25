@@ -20,7 +20,7 @@ from sage.models.schemas import (
     StagingEdgeDismissResponse,
     StagingEdgeListResponse,
 )
-from sage.request_identity import edge_attribution
+from sage.request_identity import asserted_agent, edge_attribution
 
 
 class StagingEdgesService:
@@ -40,8 +40,13 @@ class StagingEdgesService:
         response.read_meta = response.read_meta.stamped(self._config.fingerprint())
         return response
 
-    async def confirm_staging_edge(self, edge_id: str) -> StagingEdgeConfirmResponse:
+    async def confirm_staging_edge(
+        self, edge_id: str, agent: str | None = None
+    ) -> StagingEdgeConfirmResponse:
         """Promote a staging edge to the production edge table.
+
+        ``agent``, when given, is the asserted agent recorded on the
+        production edge in place of the one the request's User-Agent names.
 
         Mints a new production-edge UUID, copies source/target/edge_type
         from the staging record, sequences insert + delete.
@@ -75,6 +80,8 @@ class StagingEdgesService:
         if staging is None:
             raise StagingEdgeNotFoundError(edge_id)
 
+        with asserted_agent(agent):
+            attribution = edge_attribution(self._config.vault.owner)
         candidate = Edge(
             id=str(uuid.uuid4()),
             source_id=staging.source_id,
@@ -83,7 +90,7 @@ class StagingEdgesService:
             created_at=datetime.now(timezone.utc),
             notes=f"Confirmed from staging edge {edge_id}",
             rationale=staging.inference_evidence,
-            **edge_attribution(self._config.vault.owner),
+            **attribution,
         )
         # If the natural-key triple already exists in production
         # (e.g., a parallel create_edge or earlier auto-inference path

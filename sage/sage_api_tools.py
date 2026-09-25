@@ -79,6 +79,7 @@ from sage.models.schemas import (
     Sha256Str,
     SourceFileIntegrityRequest,
     SourceFileRestoreRequest,
+    StagingEdgeConfirmRequest,
     TraverseRequest,
     UpdateVaultConfigRequest,
     UploadRecipe,
@@ -2371,6 +2372,12 @@ def register_sage_tools(
                 )
             ),
         ],
+        agent: model_param(
+            str | None,
+            StagingEdgeConfirmRequest,
+            "agent",
+            mcp="A dismiss records nothing, so there it has no effect.",
+        ) = None,
     ) -> dict:
         """Confirm or dismiss a staging edge.
 
@@ -2401,6 +2408,10 @@ def register_sage_tools(
             edge_id = _EDGE_ID_ADAPTER.validate_python(edge_id)
             if action not in STAGING_EDGE_ACTIONS:
                 raise InvalidActionError(action, list(STAGING_EDGE_ACTIONS))
+            try:
+                request = StagingEdgeConfirmRequest(agent=agent)
+            except ValidationError as exc:
+                raise validation_error_envelope(exc, root_model=StagingEdgeConfirmRequest) from exc
             v = get_vault(vault_id)
             if action == "confirm":
                 # Confirm inserts the production edge and then deletes the
@@ -2408,7 +2419,9 @@ def register_sage_tools(
                 # fails after the insert leaves the staging row beside the new
                 # edge until a later confirm consumes it, which the natural-key
                 # idempotency above turns into a no-op.
-                return serialize(await v.staging_edges_service.confirm_staging_edge(edge_id))
+                return serialize(
+                    await v.staging_edges_service.confirm_staging_edge(edge_id, agent=request.agent)
+                )
             return serialize(await v.staging_edges_service.dismiss_staging_edge(edge_id))
         except (SAGEError, ValueError) as e:
             return error_response(e)

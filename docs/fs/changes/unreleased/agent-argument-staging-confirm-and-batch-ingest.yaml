@@ -1,0 +1,19 @@
+classification: minor
+category: [capability, caller-adaptation]
+summary: >-
+  Adds the optional asserted agent argument to the two write paths that lacked
+  it. confirm_staging_edge accepts an optional JSON body, the new
+  StagingEdgeConfirmRequest component, whose agent is recorded on the
+  production edge; a bodyless confirm is unchanged, and dismiss, which records
+  nothing, takes no body. A malformed agent in that body is refused as
+  invalid_parameter (422). BatchIngestUploadMetadata in the Core API spec and
+  IngestRequest in the CAS Application API spec gain agent, applied to every
+  document and production edge the batch writes. The update_staging_edge and
+  bulk_ingest_document MCP tools take agent too. The bulk_ingest_document
+  description drops two sentences its parameters already state.
+for_callers: >-
+  Name the agent explicitly when confirming a staging edge or ingesting a
+  batch: pass agent to update_staging_edge or bulk_ingest_document, send
+  {"agent": "..."} as the body of a staging-edge confirm, or set agent in the
+  batch-ingest metadata envelope. It is recorded as asserted with source
+  parameter, in place of the agent the User-Agent names.

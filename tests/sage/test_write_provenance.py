@@ -24,6 +24,8 @@ Anti-coincidental-pass discipline:
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Annotated, get_args
@@ -604,6 +606,223 @@ async def test_a3b_agent_argument_reaches_every_write_tool(auth_app, tmp_vault_d
     assert (await _get(auth_app, a["id"]))["last_modified_agent"] == named
     assert (await _get(auth_app, b["id"]))["last_modified_agent"] == named
     assert linked["results"][0]["edge"]["created_agent"] == named
+
+
+async def _stage(app, tmp_vault_dir, stem: str, edge_id: str) -> str:
+    """Two documents and a staging edge between them; returns the staging id."""
+    from datetime import datetime, timezone
+
+    from sage.models.schemas import StagingEdge
+
+    a = await _rest_ingest(app, "svc", None, seed(tmp_vault_dir, f"{stem}a.md"))
+    b = await _rest_ingest(app, "svc", None, seed(tmp_vault_dir, f"{stem}b.md"))
+    staged, _ = await app.state.vault_registry[VAULT].graph_store.insert_staging_edge(
+        StagingEdge(
+            id=edge_id,
+            source_id=a["id"],
+            target_id=b["id"],
+            edge_type="references",
+            inference_evidence="test",
+            confidence_tier=2,
+            created_at=datetime.now(timezone.utc),
+        )
+    )
+    return staged.id
+
+
+async def _edge_agent(app, edge_id: str) -> dict | None:
+    edge = await app.state.vault_registry[VAULT].graph_store.get_edge(edge_id)
+    return None if edge.created_agent is None else edge.created_agent.model_dump(mode="json")
+
+
+async def test_a11_staging_confirm_agent_argument_mcp(auth_app, tmp_vault_dir) -> None:
+    staged = await _stage(auth_app, tmp_vault_dir, "a11", "21111111-1111-4111-8111-111111111111")
+    async with mcp_running(auth_app):
+        confirmed = await mcp_call(
+            auth_app,
+            "bob-mcp",
+            "update_staging_edge",
+            {"vault_id": VAULT, "edge_id": staged, "action": "confirm", "agent": "nightly-sync"},
+            user_agent=_CODEX_UA,
+        )
+    edge = await auth_app.state.vault_registry[VAULT].graph_store.get_edge(
+        confirmed["production_edge_id"]
+    )
+    assert (edge.created_by, edge.created_client) == (_BOB, "mcp-connector")
+    assert edge.created_agent.model_dump(mode="json") == _agent("nightly-sync", "parameter")
+
+
+async def test_a12_staging_confirm_agent_argument_rest(auth_app, tmp_vault_dir) -> None:
+    named = await _stage(auth_app, tmp_vault_dir, "a12", "31111111-1111-4111-8111-111111111111")
+    bare = await _stage(auth_app, tmp_vault_dir, "a12n", "41111111-1111-4111-8111-111111111111")
+    resp = await _rest(
+        auth_app, "bob-mcp", _CODEX_UA, "POST", f"/staging-edges/{named}/confirm",
+        {"agent": "nightly-sync"},
+    )  # fmt: skip
+    assert resp.status_code == 200, resp.text
+    assert await _edge_agent(auth_app, resp.json()["production_edge_id"]) == _agent(
+        "nightly-sync", "parameter"
+    )
+    # A bodyless confirm still works, and records the header agent.
+    resp = await _rest(auth_app, "bob-mcp", _CODEX_UA, "POST", f"/staging-edges/{bare}/confirm")
+    assert resp.status_code == 200, resp.text
+    assert await _edge_agent(auth_app, resp.json()["production_edge_id"]) == _agent(
+        "codex", "header"
+    )
+
+
+async def test_a12_malformed_confirm_body_is_refused(auth_app, tmp_vault_dir) -> None:
+    staged = await _stage(auth_app, tmp_vault_dir, "a12m", "51111111-1111-4111-8111-111111111111")
+    path = f"/staging-edges/{staged}/confirm"
+    resp = await _rest(auth_app, "bob-mcp", None, "POST", path, {"agent": "Claude Code"})
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["code"] == "invalid_parameter"
+    resp = await _rest(auth_app, "bob-mcp", None, "POST", path, {"agnet": "nightly-sync"})
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["code"] == "unknown_parameter"
+    # Neither refusal consumed the staging row.
+    staging = await auth_app.state.vault_registry[VAULT].graph_store.get_staging_edge(staged)
+    assert staging is not None
+    # An empty object, as the application sends, names no field and confirms.
+    resp = await _rest(auth_app, "bob-mcp", None, "POST", path, {})
+    assert resp.status_code == 200, resp.text
+
+
+async def test_a13_staging_dismiss_accepts_agent(auth_app, tmp_vault_dir) -> None:
+    staged = await _stage(auth_app, tmp_vault_dir, "a13", "61111111-1111-4111-8111-111111111111")
+    async with mcp_running(auth_app):
+        dismissed = await mcp_call(
+            auth_app,
+            "bob-mcp",
+            "update_staging_edge",
+            {"vault_id": VAULT, "edge_id": staged, "action": "dismiss", "agent": "nightly-sync"},
+            user_agent=_CODEX_UA,
+        )
+    assert dismissed["dismissed"] is True
+
+
+@pytest.mark.parametrize("agent", ["Claude Code", "../x"])
+async def test_u3_malformed_agent_is_refused_on_staging_and_batch(
+    auth_app, tmp_vault_dir, agent: str
+) -> None:
+    source = str(tmp_vault_dir / "sources" / seed(tmp_vault_dir, "u3b.md"))
+    calls = {
+        "update_staging_edge": {
+            "edge_id": "71111111-1111-4111-8111-111111111111",
+            "action": "confirm",
+        },
+        "bulk_ingest_document": {"files": [{"file_path": source, "source_type": "markdown"}]},
+    }
+    async with mcp_running(auth_app):
+        for tool, arguments in calls.items():
+            result = await mcp_call(
+                auth_app, "alice-mcp", tool, {"vault_id": VAULT, "agent": agent, **arguments}
+            )
+            assert result.get("error") == "invalid_parameter", (tool, result)
+            assert result["detail"]["parameter"] == "agent", (tool, result)
+    digest = f"sha256:{hashlib.sha256(Path(source).read_bytes()).hexdigest()}"
+    store = auth_app.state.vault_registry[VAULT].graph_store
+    assert not await store.find_documents_by_hashes(
+        [digest], prefer_lifecycle_statuses=frozenset({"active"})
+    )
+
+
+def _batch_sources(tmp_vault_dir, stem: str, count: int) -> list[str]:
+    return [
+        str(tmp_vault_dir / "sources" / seed(tmp_vault_dir, f"{stem}-{i}.md")) for i in range(count)
+    ]
+
+
+async def _ingested(app, paths: list[str]) -> list[dict]:
+    """The stored record of each source, found by its content hash."""
+    hashes = [f"sha256:{hashlib.sha256(Path(p).read_bytes()).hexdigest()}" for p in paths]
+    found = await app.state.vault_registry[VAULT].graph_store.find_documents_by_hashes(
+        hashes, prefer_lifecycle_statuses=frozenset({"active"})
+    )
+    assert sorted(found) == sorted(hashes), found
+    return [await _get(app, found[h]) for h in hashes]
+
+
+async def test_a14_mcp_bulk_ingest_agent_argument(auth_app, tmp_vault_dir) -> None:
+    paths = _batch_sources(tmp_vault_dir, "a14", 3)
+    files = [{"file_path": p, "source_type": "markdown"} for p in paths]
+    async with mcp_running(auth_app):
+        result = await mcp_call(
+            auth_app,
+            "bob-mcp",
+            "bulk_ingest_document",
+            {"vault_id": VAULT, "files": files, "agent": "nightly-sync"},
+            user_agent=_CODEX_UA,
+        )
+    assert result["error_count"] == 0, result
+    ingested = await _ingested(auth_app, paths)
+    assert [d["created_agent"] for d in ingested] == [_agent("nightly-sync", "parameter")] * 3
+
+
+async def _rest_batch(app, stem: str, tmp_vault_dir, **envelope) -> list[str]:
+    paths = _batch_sources(tmp_vault_dir, stem, 2)
+    metadata = {"files": [{"source_type": "markdown"} for _ in paths], **envelope}
+    async with client(app, "bob-mcp", _CODEX_UA) as c:
+        resp = await c.post(
+            f"/sage_vaults/{VAULT}/documents:batch",
+            files=[("files", (Path(p).name, Path(p).read_bytes(), "text/markdown")) for p in paths],
+            data={"metadata": json.dumps(metadata)},
+        )
+    assert resp.status_code == 200, resp.text
+    assert '"error_count":0' in resp.text.replace(" ", ""), resp.text
+    return paths
+
+
+async def test_a15_rest_batch_ingest_agent_argument(auth_app, tmp_vault_dir) -> None:
+    named = await _ingested(
+        auth_app, await _rest_batch(auth_app, "a15p", tmp_vault_dir, agent="nightly-sync")
+    )
+    header = await _ingested(auth_app, await _rest_batch(auth_app, "a15h", tmp_vault_dir))
+    assert [d["created_agent"] for d in named] == [_agent("nightly-sync", "parameter")] * 2
+    # The same batch without the argument records the header agent.
+    assert [d["created_agent"] for d in header] == [_agent("codex", "header")] * 2
+
+
+async def test_a16_app_ingest_agent_argument(auth_app, tmp_vault_dir) -> None:
+    paths = _batch_sources(tmp_vault_dir, "a16", 2)
+    files = [{"file_path": p, "source_type": "markdown"} for p in paths]
+    async with client(auth_app, "alice-bff", _CODEX_UA) as c:
+        resp = await c.post(
+            "/app/ingest", json={"vault_id": VAULT, "files": files, "agent": "nightly-sync"}
+        )
+    assert resp.status_code == 200, resp.text
+    ingested = await _ingested(auth_app, paths)
+    assert [d["created_agent"] for d in ingested] == [_agent("nightly-sync", "parameter")] * 2
+
+
+async def test_u4_batch_run_binds_agent_across_all_phases(
+    auth_app, tmp_vault_dir, monkeypatch
+) -> None:
+    import sage.services.batch_ingest as batch_ingest
+    from sage.services.batch_inference import EdgeResult
+
+    seen: list[dict | None] = []
+
+    async def plan(self, files, vault_services):
+        return object()
+
+    async def execute(*args, **kwargs):
+        agent = current_agent()
+        seen.append(None if agent is None else agent.model_dump(mode="json"))
+        return EdgeResult()
+
+    monkeypatch.setattr(batch_ingest.BatchIngestService, "_build_edge_plan", plan)
+    monkeypatch.setattr(batch_ingest, "resolve_and_execute", execute)
+    (path,) = _batch_sources(tmp_vault_dir, "u4", 1)
+    await batch_ingest.BatchIngestService().run(
+        files=[batch_ingest.FileDescriptor(file_path=path, source_type="markdown")],
+        vault_services=auth_app.state.vault_registry[VAULT],
+        agent="nightly-sync",
+    )
+    (doc,) = await _ingested(auth_app, [path])
+    assert doc["created_agent"] == _agent("nightly-sync", "parameter")
+    assert seen == [_agent("nightly-sync", "parameter")]
+    assert current_agent() is None
 
 
 async def test_a7b_lifecycle_supersede_records_the_writer(auth_app, tmp_vault_dir) -> None:

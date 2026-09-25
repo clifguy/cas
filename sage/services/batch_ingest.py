@@ -39,6 +39,7 @@ from sage.models.schemas import (
     IngestRequest,
 )
 from sage.models.wire import to_wire
+from sage.request_identity import asserted_agent
 from sage.services.batch_inference import (
     EdgePlan,
     InferenceItem,
@@ -238,6 +239,7 @@ class BatchIngestService:
         on_file_done: OnFileDone | None = None,
         on_file_error: OnFileError | None = None,
         dry_run: bool = False,
+        agent: str | None = None,
     ) -> IngestSummary:
         """Execute the three-phase batch ingestion pipeline.
 
@@ -370,9 +372,36 @@ class BatchIngestService:
             on_file_start: Optional callback before each file.
             on_file_done: Optional callback after successful ingestion.
             on_file_error: Optional callback on per-file failure.
+            agent: The asserted agent every write in the batch records, in
+                place of the one the request's User-Agent names.
         """
         if not files:
             raise ValueError("No files selected for ingestion")
+        with asserted_agent(agent):
+            return await self._run(
+                files,
+                vault_services,
+                infer_edges=infer_edges,
+                needs_review=needs_review,
+                on_file_start=on_file_start,
+                on_file_done=on_file_done,
+                on_file_error=on_file_error,
+                dry_run=dry_run,
+            )
+
+    async def _run(
+        self,
+        files: list[FileDescriptor],
+        vault_services: SAGEServices,
+        *,
+        infer_edges: bool,
+        needs_review: bool,
+        on_file_start: OnFileStart | None,
+        on_file_done: OnFileDone | None,
+        on_file_error: OnFileError | None,
+        dry_run: bool,
+    ) -> IngestSummary:
+        """The three phases ``run`` describes, under its agent binding."""
 
         summary = IngestSummary(dry_run=dry_run)
         total = len(files)

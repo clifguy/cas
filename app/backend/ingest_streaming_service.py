@@ -89,6 +89,7 @@ class IngestStreamingService:
                 infer_edges=body.infer_edges,
                 needs_review=body.needs_review,
                 dry_run=body.dry_run,
+                agent=body.agent,
             ),
             media_type="text/event-stream",
         )

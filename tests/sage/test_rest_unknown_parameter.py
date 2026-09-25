@@ -367,7 +367,6 @@ BODYLESS_ROWS: list[tuple[str, str, str]] = [
     ("recompute_abstract", "POST", f"{VS}/documents/{DOC_ID}/reabstract"),
     ("recompute_pipeline", "POST", f"{VS}/documents/{DOC_ID}/recompute-pipeline"),
     ("reload_vault", "POST", f"{VS}/maintenance/reload"),
-    ("confirm_staging_edge", "POST", f"{VS}/staging-edges/{EDGE_ID}/confirm"),
     ("recompute_views", "POST", f"{VS}/refresh-views"),
 ]
 
