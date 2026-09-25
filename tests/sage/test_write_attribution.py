@@ -1,4 +1,4 @@
-"""Write attribution follows the authenticated principal (CAS-ADR-042).
+"""Write attribution follows the authenticated principal.
 
 Under a profile that authenticates callers, ``created_by`` on a new document
 and ``last_modified_by`` on every created, patched, superseded or
@@ -36,7 +36,7 @@ from sage.adapters.stubs import StubAbstractionProvider, StubContentStore, StubE
 from sage.app import _initialize_services, create_app
 from sage.auth import AuthenticatedPrincipal, AuthError, AuthMiddleware, NoAuthValidator
 from sage.config import SageCoreConfig, StackAuthConfig, VaultConfig
-from sage.request_identity import current_actor, principal_actor
+from sage.request_identity import current_actor, principal_actor, request_principal
 from tests.helpers.pipeline_wait import drain_vaults
 
 _VAULT = "test_vault"
@@ -565,6 +565,39 @@ async def test_n5_no_auth_superseding_ingest_stamps_the_ingests_writer_on_the_pr
     after = await _rest_get(noauth_app, None, pred["id"])
     assert after["lifecycle_status"] == "archived"
     assert after["last_modified_by"] == "dave"
+
+
+async def test_n6_no_auth_force_reingest_with_predecessor_stamps_the_ingests_writer(
+    noauth_app, tmp_vault_dir
+) -> None:
+    pred = (
+        await _rest_ingest(noauth_app, None, _seed(tmp_vault_dir, "n6a.md"), created_by="carol")
+    )["document"]
+    source = _seed(tmp_vault_dir, "n6b.md")
+    await _rest_ingest(noauth_app, None, source, created_by="carol")
+    await _rest_ingest(
+        noauth_app, None, source, created_by="dave", force=True, predecessor_id=pred["id"]
+    )
+    after = await _rest_get(noauth_app, None, pred["id"])
+    assert after["lifecycle_status"] == "archived"
+    assert after["last_modified_by"] == "dave"
+
+
+async def test_abstraction_worker_does_not_inherit_the_request_principal(noauth_app) -> None:
+    # The per-vault worker is started lazily from inside whichever request first
+    # enqueues work, and outlives it; it must not carry that request's identity.
+    service = noauth_app.state.vault_registry[_VAULT].ingestion_service
+    await service.stop_worker()
+    binding = request_principal.set(_PRINCIPALS["alice-tok"])
+    try:
+        assert current_actor() == _ALICE
+        service._ensure_worker_running()
+    finally:
+        request_principal.reset(binding)
+    try:
+        assert service._worker_task.get_context().get(request_principal) is None
+    finally:
+        await service.stop_worker()
 
 
 # --------------------------------------------------------------------------

@@ -365,8 +365,7 @@ class MetadataService:
             # even with an empty body (pure confirmation without edits).
             updates["metadata_confirmed"] = True
             # The authenticated principal where the request carries one,
-            # otherwise the supplied writer, otherwise the vault owner
-            # (CAS-ADR-042).
+            # otherwise the supplied writer, otherwise the vault owner.
             updates["last_modified_by"] = current_actor() or modified_by or self._config.vault.owner
             updates["updated_at"] = datetime.now(timezone.utc).isoformat()
             doc = await self._store.update_document(document_id, updates)

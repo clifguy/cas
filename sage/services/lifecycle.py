@@ -85,7 +85,7 @@ class LifecycleService:
         return self._table
 
     def _writer(self, modified_by: str | None) -> str:
-        """Who a transition is attributed to (CAS-ADR-042): the authenticated
+        """Who a transition is attributed to: the authenticated
         principal where the request carries one, otherwise the writer the
         calling operation supplies, otherwise the vault owner."""
         return current_actor() or modified_by or self._config.vault.owner

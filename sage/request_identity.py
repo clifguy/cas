@@ -1,4 +1,4 @@
-"""The identity a request writes as (CAS-ADR-042).
+"""The identity a request writes as.
 
 The auth middleware validates a request's bearer token and binds the resulting
 principal here for the lifetime of that request. The services read it back
@@ -8,7 +8,8 @@ the mounted MCP transports, and anything they call -- without any tool or
 route reading the request itself.
 
 The binding is a context variable: it is visible to the request's own task and
-to every task that request starts, and to nothing else. Outside a request, and
+to every task that request starts, and to nothing else. A long-lived worker
+that a request happens to start is created without it. Outside a request, and
 under a profile that does not authenticate callers, there is no actor, and the
 services fall back to the caller-supplied value or the vault owner.
 """

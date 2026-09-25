@@ -11,6 +11,7 @@ document at a time (BH-026, BH-068).
 
 import asyncio
 import contextlib
+import contextvars
 import dataclasses
 import hmac
 import json
@@ -103,7 +104,7 @@ from sage.models.schemas import (
     UploadRecipe,
     canonicalize_sha256,
 )
-from sage.request_identity import attributed_writer
+from sage.request_identity import attributed_writer, request_principal
 from sage.services._dry_run import doc_type_requirements
 from sage.services.caller_paths import caller_basename
 from sage.services.document_surface import compose_document_surface, embedding_text
@@ -570,7 +571,11 @@ class IngestionService:
         if self._abstraction_queue is None:
             self._abstraction_queue = asyncio.Queue()
         if self._worker_task is None or self._worker_task.done():
-            self._worker_task = asyncio.create_task(self._abstraction_worker())
+            # The worker is started from inside whichever request first enqueues
+            # work and outlives it, so it runs without that request's identity.
+            context = contextvars.copy_context()
+            context.run(request_principal.set, None)
+            self._worker_task = asyncio.create_task(self._abstraction_worker(), context=context)
         return self._abstraction_queue
 
     async def _abstraction_worker(self) -> None:
@@ -1804,7 +1809,7 @@ class IngestionService:
             vault_timezone=self._config.vault.timezone,
         )
 
-        # The writer this call is attributed to (CAS-ADR-042): the
+        # The writer this call is attributed to: the
         # authenticated principal where the request carries one, otherwise the
         # caller's created_by, otherwise the vault owner.
         writer, attribution_warnings = attributed_writer(
