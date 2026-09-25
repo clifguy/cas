@@ -292,10 +292,11 @@ def _operations_with_a_nested_strict_model(
     ``unknown_filter_key``, whose detail says more than the general refusal
     does -- the valid key set plus a worked example of the typed-metadata
     shape -- so the operation that carries it declares that code instead.
-    This is the one shadowing, and it is named here rather than exempted so
-    the next reader meets the reason and not a list.
+    ``ProvenanceFilter`` nests inside it and keeps the same code, naming
+    the dotted key and its own key set. These are the shadowings, named here
+    rather than exempted so the next reader meets the reason and not a list.
     """
-    shadowed = {schemas.RetrievalFilters}
+    shadowed = {schemas.RetrievalFilters, schemas.ProvenanceFilter}
     answers: dict[str, bool] = {}
     for route in routes:
         roots: set[type[BaseModel]] = set()

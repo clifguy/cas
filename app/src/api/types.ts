@@ -88,6 +88,25 @@ export interface RelocationPointer {
   relocated_at: string;
 }
 
+// An agent a write was attributed to, as the caller asserted it; never
+// verified (CAS-ADR-056).
+export interface AssertedAgent {
+  name: string;
+  trust?: 'asserted';
+  source: 'header' | 'parameter';
+}
+
+// Write-provenance filter: every key given must match exactly, and an agent
+// key matches the agent's name.
+export interface ProvenanceFilter {
+  created_by?: string | null;
+  created_client?: string | null;
+  created_agent?: string | null;
+  last_modified_by?: string | null;
+  last_modified_client?: string | null;
+  last_modified_agent?: string | null;
+}
+
 export interface Document {
   id: string;
   title: string;
@@ -105,6 +124,12 @@ export interface Document {
   created_by: string;
   created_at: string;
   last_modified_by: string;
+  // The client is server-derived from the validated token; the agent is
+  // caller-asserted and never verified (CAS-ADR-056).
+  created_client?: string | null;
+  created_agent?: AssertedAgent | null;
+  last_modified_client?: string | null;
+  last_modified_agent?: AssertedAgent | null;
   updated_at: string;
   projected_at?: string | null;
   indexed_at?: string | null;
@@ -205,6 +230,10 @@ export interface Edge {
   // Set only on `retracts` edges; identifies the retracted edge instance.
   retracted_edge_id?: string | null;
   created_at: string;
+  // Who created the edge, through which client, and the asserted agent.
+  created_by?: string | null;
+  created_client?: string | null;
+  created_agent?: AssertedAgent | null;
   notes?: string | null;
   rationale?: string | null;
   rationale_kind?: RationaleKind;
@@ -255,6 +284,7 @@ export interface RetrievalFilters {
   document_ids?: string[];
   source_type?: string;
   tier3_metadata?: Record<string, unknown>;
+  provenance?: ProvenanceFilter | null;
   source_id?: string;
   target_id?: string;
   edge_type?: EdgeType | string;
@@ -827,6 +857,7 @@ export interface BulkLifecycleItemResult {
 export interface BulkLifecycleRequest {
   items: BulkLifecycleItem[];
   response_mode?: 'light' | 'full' | null;
+  agent?: string | null;
   dry_run?: boolean;
 }
 
@@ -864,6 +895,7 @@ export interface BulkMetadataItemResult {
 export interface BulkMetadataRequest {
   items: BulkMetadataItem[];
   response_mode?: 'light' | 'full' | null;
+  agent?: string | null;
   dry_run?: boolean;
 }
 
@@ -907,6 +939,7 @@ export interface BulkLinkItemResult {
 export interface BulkLinkRequest {
   items: BulkLinkItem[];
   response_mode?: 'light' | 'full' | null;
+  agent?: string | null;
   dry_run?: boolean;
 }
 

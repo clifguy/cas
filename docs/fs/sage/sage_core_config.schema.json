@@ -171,6 +171,12 @@
           "default": ["Sage.Reader"],
           "description": "Application roles (the token's 'roles' claim) of which an accepted token may instead carry at least one -- the app-only complement to 'required_scopes'. An empty list disables role-based acceptance."
         },
+        "client_names": {
+          "type": "object",
+          "additionalProperties": {"type": "string"},
+          "default": {},
+          "description": "Names for the client applications a token may be issued to, keyed by client id (the token's 'azp' claim, or 'appid' on a v1 token). A write records the name as its client; a client id with no entry is recorded as the id itself. Attribution only: no request is admitted or refused on its client."
+        },
         "resource_metadata_url": {
           "type": ["string", "null"],
           "default": null,

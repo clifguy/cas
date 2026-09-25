@@ -79,6 +79,14 @@ from sage.services.read_diagnostics import build_not_found_detail
 from sage.utils.date_parsing import parse_document_date
 from sage.utils.rrf import rrf_fuse
 
+
+def _provenance_constraints(filters: RetrievalFilters | None) -> dict[str, str | None]:
+    """The write-provenance keys a filter constrains, or an empty dict."""
+    if filters is None or filters.provenance is None:
+        return {}
+    return filters.provenance.constraints()
+
+
 logger = logging.getLogger(__name__)
 
 # Filter keys the content store can pre-filter on as chunk-row columns. Pure
@@ -635,6 +643,7 @@ class RetrievalService:
             or f.document_ids
             or f.source_type
             or f.tier3_metadata
+            or _provenance_constraints(f)
         )
         if not has_any_filter:
             return request.limit * _FETCH_MULTIPLIER_NONE
@@ -644,6 +653,7 @@ class RetrievalService:
             or f.document_ids
             or f.source_type
             or f.tier3_metadata
+            or _provenance_constraints(f)
             or f.exclude_terminal_lifecycle
         )
         return request.limit * (_FETCH_MULTIPLIER_MIXED if is_mixed else _FETCH_MULTIPLIER_PUSHDOWN)
@@ -709,6 +719,7 @@ class RetrievalService:
             or f.document_ids
             or f.source_type
             or f.tier3_metadata
+            or _provenance_constraints(f)
             or f.exclude_terminal_lifecycle
         )
         if has_non_pushdown:
@@ -770,6 +781,8 @@ class RetrievalService:
             out["source_type"] = filters.source_type.value
         if filters.tier3_metadata:
             out["tier3_metadata"] = filters.tier3_metadata
+        if _provenance_constraints(filters):
+            out["provenance"] = _provenance_constraints(filters)
         return out or None
 
     def _boost_filters(self, request: DiscoverRequest) -> dict[str, object] | None:
@@ -825,6 +838,8 @@ class RetrievalService:
             active["source_type"] = f.source_type.value
         if f.tier3_metadata:
             active["tier3_metadata"] = f.tier3_metadata
+        if _provenance_constraints(f):
+            active["provenance"] = _provenance_constraints(f)
         return active
 
     @staticmethod
@@ -1430,6 +1445,9 @@ class RetrievalService:
             retracted_edge_id=edge.retracted_edge_id,
             retracted_at=row.retracted_at,
             retracted_by_edge_id=row.retracted_by_edge_id,
+            created_by=edge.created_by,
+            created_client=edge.created_client,
+            created_agent=edge.created_agent,
         )
 
     # ------------------------------------------------------------------

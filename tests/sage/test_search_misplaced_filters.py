@@ -66,6 +66,7 @@ MISPLACED_VALUES: dict[str, object] = {
     "pipeline_status": "abstraction_complete",
     "source_type": "markdown",
     "tier3_metadata": {"ticket_id": "T-0001"},
+    "provenance": {"created_client": "some-client"},
     "source_id": "some_document_id",
     "target_id": "another_document_id",
     "edge_type": "references",

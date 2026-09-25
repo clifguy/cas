@@ -31,6 +31,11 @@ param bffOidcClientId = 'REPLACE-WITH-BFF-CLIENT-ID'
 // at deploy time from the Entra bootstrap's emitted mcpClientId coordinate.
 param mcpClientId = 'REPLACE-WITH-MCP-CLIENT-ID'
 
+// Client id of the deploy identity CI signs in as, named in SAGE's client map so
+// writes under it record their client as CI (CAS-ADR-056). Substituted at deploy
+// time from the environment's AZURE_CLIENT_ID variable.
+param deployClientId = 'REPLACE-WITH-DEPLOY-CLIENT-ID'
+
 // Owned base domain the cas/sage custom hostnames derive from. The operator
 // substitutes the real zone; the wildcard certificate *.<base-domain> (loaded
 // in Key Vault as wildcard-tls) covers both hostnames. DNS is published

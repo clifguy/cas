@@ -871,3 +871,25 @@ def test_resource_blocks_detector_controls() -> None:
     )
     assert "principalType" in blocks[1], "the second block must carry its own properties"
     assert _resource_blocks(sample, "Microsoft.Absent/things") == []
+
+
+def test_sage_config_names_each_client_a_write_can_come_through() -> None:
+    """SAGE's config maps the known client ids to names, and only SAGE's.
+
+    Each entry keys on the deploy-time parameter carrying that client's id, so
+    a mapping written against a literal id, or against the wrong parameter,
+    fails. The BFF's own config makes no attribution and must not carry it.
+    """
+    text = _strip_line_comments(CONTAINER_APPS.read_text(encoding="utf-8"))
+    for key, name in (
+        ("${bffOidcClientId}", "cas-app"),
+        ("${mcpClientId}", "mcp-connector"),
+        ("${azureCliClientId}", "azure-cli"),
+        ("${deployClientId}", "ci"),
+    ):
+        # Quoted so a client id is always read as a string key, whatever its digits.
+        assert f"'    \"{key}\": {name}'" in text, (key, name)
+    sage_block = text.split("var sageConfigLines", 1)[1].split("var bffConfigLines", 1)[0]
+    bff_block = text.split("var bffConfigLines", 1)[1].split("var sageConfigYaml", 1)[0]
+    assert "clientNameLines" in sage_block
+    assert "client_names" not in bff_block and "clientNameLines" not in bff_block

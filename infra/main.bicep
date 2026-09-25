@@ -43,6 +43,9 @@ param bffOidcClientId string
 @description('Application (client) id of the pre-provisioned public MCP client (auth-code + PKCE, no secret) the DCR-compatibility facade registers back at /register (supplied at deploy time, CAS-ADR-042).')
 param mcpClientId string
 
+@description('Application (client) id of the deploy identity CI signs in as (supplied at deploy time). SAGE names it as the CI client in its client map; empty leaves it unnamed.')
+param deployClientId string = ''
+
 @description('Claude model identifier the hosted abstraction provider generates abstracts with.')
 param abstractionModel string = 'claude-haiku-4-5'
 
@@ -241,6 +244,8 @@ module containerApps 'modules/container-apps.bicep' = {
     postgresDatabaseName: postgres.outputs.postgresDatabaseName
     sageAudience: sageAudience
     bffOidcClientId: bffOidcClientId
+    mcpClientId: mcpClientId
+    deployClientId: deployClientId
     sageHostname: sageHostname
     casHostname: casHostname
     casCertificateId: customDomains.outputs.casCertificateId

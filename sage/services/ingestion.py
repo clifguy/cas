@@ -104,7 +104,13 @@ from sage.models.schemas import (
     UploadRecipe,
     canonicalize_sha256,
 )
-from sage.request_identity import attributed_writer, request_principal
+from sage.request_identity import (
+    IDENTITY_VARS,
+    asserted_agent,
+    attributed_writer,
+    modifier_fields,
+    provenance_fields,
+)
 from sage.services._dry_run import doc_type_requirements
 from sage.services.caller_paths import caller_basename
 from sage.services.document_surface import compose_document_surface, embedding_text
@@ -582,7 +588,8 @@ class IngestionService:
             # The worker is started from inside whichever request first enqueues
             # work and outlives it, so it runs without that request's identity.
             context = contextvars.copy_context()
-            context.run(request_principal.set, None)
+            for var in IDENTITY_VARS:
+                context.run(var.set, None)
             self._worker_task = asyncio.create_task(self._abstraction_worker(), context=context)
         return self._abstraction_queue
 
@@ -1214,7 +1221,10 @@ class IngestionService:
         self.refuse_during_migration()
         self._ingests_running += 1
         try:
-            return await self._ingest(request, wait_for_pipeline, caller_source)
+            # Every write this ingest makes is attributed to the agent the
+            # request names, where it names one (CAS-ADR-056).
+            with asserted_agent(request.agent):
+                return await self._ingest(request, wait_for_pipeline, caller_source)
         finally:
             self._ingests_running -= 1
 
@@ -1843,7 +1853,7 @@ class IngestionService:
                 # Replaced rather than kept: the passages about to be written
                 # are shaped by this call's config, and by nothing else.
                 "adapter_config": request.config or None,
-                "last_modified_by": writer,
+                **modifier_fields(writer),
             }
             if retained:
                 # The record is reused because the delivered bytes matched, so
@@ -1949,7 +1959,8 @@ class IngestionService:
                 adapter_version=projection.adapter_version,
                 created_by=created_by,
                 created_at=now,
-                last_modified_by=created_by,
+                **provenance_fields("created"),
+                **modifier_fields(created_by),
                 updated_at=now,
                 projected_at=now,
                 source_modified_at=source_modified_at,

@@ -1,0 +1,30 @@
+classification: minor
+category: [capability]
+summary: >-
+  Every document write now records, beside the principal in created_by and
+  last_modified_by, the client application its request came through
+  (created_client, last_modified_client) and the agent that made it
+  (created_agent, last_modified_agent). The client is derived from the
+  validated token's client id and named through the new auth.client_names
+  stack setting; no argument sets it, and it is null without authentication.
+  The agent is an object carrying name, trust (always asserted) and source:
+  the new optional agent argument on ingest_document, update_metadata,
+  update_lifecycles and create_edges and their REST request bodies, whose MCP
+  input schemas publish the same name pattern as the REST contract, otherwise
+  the product the request's User-Agent names. Edges record created_by,
+  created_client and created_agent at creation; an edge written outside a
+  request records none. A new provenance search filter matches these fields
+  exactly. The Document, Edge and EdgeHit schemas, the four request bodies,
+  RetrievalFilters and the stack configuration schema gain the fields, and two
+  components, AssertedAgent and ProvenanceFilter, are added. The register_user
+  description no longer claims a registered user id is recorded as the actor
+  on lifecycle and edge writes.
+for_callers: >-
+  get_document now shows which client application and which agent created and
+  last modified a document, and search can filter on them with
+  filters={"provenance": {...}}. The client comes from your token and cannot
+  be set; the agent is whatever your client's User-Agent names, or what you
+  pass as agent, and is always marked asserted. Documents and edges written
+  before this release carry no client or agent value. Per-vault tier-3
+  conventions that record the writer are left in place: SAGE does not rewrite
+  tier-3 metadata.

@@ -47,7 +47,7 @@ from sage.models.schemas import (
     SetLifecycleRequest,
     SetLifecycleResponse,
 )
-from sage.request_identity import current_actor
+from sage.request_identity import asserted_agent, current_actor, edge_attribution, modifier_fields
 from sage.services._bulk_envelope import resolve_item_document_id, sage_error_to_envelope
 from sage.services._dry_run import DRY_RUN_SENTINEL_EDGE_ID as _DRY_RUN_SENTINEL_EDGE_ID
 from sage.storage.locks import DocumentLockManager
@@ -256,7 +256,7 @@ class LifecycleService:
                 predecessor_updates = {
                     "lifecycle_status": to_state,
                     "updated_at": now.isoformat(),
-                    "last_modified_by": self._writer(modified_by),
+                    **modifier_fields(self._writer(modified_by)),
                 }
                 # On dry-run, build the would-be edge with a
                 # sentinel id so callers can never mistake it for a
@@ -270,6 +270,7 @@ class LifecycleService:
                     edge_type=EdgeType.SUPERSEDES,
                     resolution_policy=ResolutionPolicy.NONE,
                     created_at=now,
+                    **edge_attribution(self._writer(modified_by)),
                 )
                 if request.dry_run:
                     # Compute the would-be predecessor without persisting.
@@ -289,7 +290,7 @@ class LifecycleService:
                 updates: dict = {
                     "lifecycle_status": to_state,
                     "updated_at": now.isoformat(),
-                    "last_modified_by": self._writer(modified_by),
+                    **modifier_fields(self._writer(modified_by)),
                 }
                 if lands_in_relocated:
                     updates["relocated_to"] = request.relocated_to
@@ -420,6 +421,11 @@ class LifecycleService:
         ``LIGHT_DEFAULT_THRESHOLD = 5`` items default to ``light``,
         smaller batches default to ``full``.
         """
+        with asserted_agent(request.agent):
+            return await self._bulk_set_lifecycle(request)
+
+    async def _bulk_set_lifecycle(self, request: BulkLifecycleRequest) -> BulkLifecycleResponse:
+        """The body of :meth:`bulk_set_lifecycle`."""
         # Resolve the effective response_mode the same way
         # ``RetrievalService._edges`` does, but driven by ``len(items)``
         # instead of ``total_count``. The default-threshold rule is
@@ -550,7 +556,7 @@ class LifecycleService:
         predecessor_updates = {
             "lifecycle_status": to_state,
             "updated_at": now.isoformat(),
-            "last_modified_by": self._writer(modified_by),
+            **modifier_fields(self._writer(modified_by)),
         }
         edge = Edge(
             id=str(uuid.uuid4()),
@@ -561,5 +567,6 @@ class LifecycleService:
             created_at=now,
             rationale=rationale,
             rationale_kind=rationale_kind,
+            **edge_attribution(self._writer(modified_by)),
         )
         return SupersedeTransition(predecessor_updates=predecessor_updates, edge=edge)

@@ -25,21 +25,32 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
-from contextlib import AsyncExitStack, asynccontextmanager
-from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from starlette.types import Receive, Scope, Send
 
-from sage.adapters.stubs import StubAbstractionProvider, StubContentStore, StubEmbeddingProvider
-from sage.app import _initialize_services, create_app
-from sage.auth import AuthenticatedPrincipal, AuthError, AuthMiddleware, NoAuthValidator
+from sage.app import create_app
+from sage.auth import AuthenticatedPrincipal, AuthMiddleware, NoAuthValidator
 from sage.config import SageCoreConfig, StackAuthConfig, VaultConfig
 from sage.request_identity import current_actor, principal_actor, request_principal
-from tests.helpers.pipeline_wait import drain_vaults
+from tests.helpers.write_attribution import (
+    VAULT as _VAULT,
+)
+from tests.helpers.write_attribution import (
+    StubValidator,
+    install_stub,
+    mcp_running,
+    running_app,
+    seed,
+)
+from tests.helpers.write_attribution import (
+    client as _client,
+)
+from tests.helpers.write_attribution import (
+    mcp_call as _mcp_call,
+)
 
-_VAULT = "test_vault"
 _OWNER = "owner-o"
 _ALICE = "alice@example.org"
 _BOB = "oid-b"
@@ -67,20 +78,17 @@ _ENABLED = SageCoreConfig(
 )
 
 
-class _StubValidator:
-    async def validate(self, token: str | None) -> AuthenticatedPrincipal:
-        if token in _PRINCIPALS:
-            return _PRINCIPALS[token]
-        raise AuthError(401, "invalid_token", "bad or missing token")
+def _StubValidator() -> StubValidator:  # noqa: N802 -- stands in for the former class
+    return StubValidator(_PRINCIPALS)
 
 
 def _install_stub(monkeypatch) -> None:
-    def fake(auth_config):
-        if auth_config is None or not auth_config.enabled:
-            return NoAuthValidator()
-        return _StubValidator()
+    install_stub(monkeypatch, _PRINCIPALS)
 
-    monkeypatch.setattr("sage.mcp_init.build_auth_validator", fake)
+
+_app = running_app
+_mcp_running = mcp_running
+_seed = seed
 
 
 # --------------------------------------------------------------------------
@@ -95,29 +103,6 @@ def owned_config(minimal_vault_config_dict) -> VaultConfig:
     return VaultConfig.model_validate(config)
 
 
-@asynccontextmanager
-async def _app(config: VaultConfig, stack_config: SageCoreConfig | None) -> AsyncIterator[object]:
-    app = create_app(config=config, stack_config=stack_config)
-    await _initialize_services(
-        app,
-        config,
-        content_store=StubContentStore(),
-        embedding_provider=StubEmbeddingProvider(),
-        abstraction_provider=StubAbstractionProvider(),
-    )
-    try:
-        yield app
-    finally:
-        try:
-            await drain_vaults(app.state.vault_registry, [_VAULT])
-        finally:
-            registry = app.state.vault_registry
-            if _VAULT in registry:
-                services = registry.pop(_VAULT)
-                services.close_timing()
-                await services.close_storage()
-
-
 @pytest.fixture
 async def auth_app(owned_config, monkeypatch) -> AsyncIterator[object]:
     _install_stub(monkeypatch)
@@ -129,36 +114,6 @@ async def auth_app(owned_config, monkeypatch) -> AsyncIterator[object]:
 async def noauth_app(owned_config) -> AsyncIterator[object]:
     async with _app(owned_config, None) as app:
         yield app
-
-
-@asynccontextmanager
-async def _mcp_running(app) -> AsyncIterator[None]:
-    """Run the MCP session managers for the body of one test.
-
-    Entered in the test's own task: a session manager's task group must be
-    exited in the task that entered it, which an async fixture's teardown is
-    not guaranteed to be.
-    """
-    async with AsyncExitStack() as stack:
-        for server in app.state.mcp_mounts.values():
-            await stack.enter_async_context(server.session_manager.run())
-        yield
-
-
-def _client(app, token: str | None = None) -> AsyncClient:
-    headers = {"Accept": "application/json, text/event-stream"}
-    if token is not None:
-        headers["Authorization"] = f"Bearer {token}"
-    return AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test", headers=headers, timeout=30.0
-    )
-
-
-def _seed(tmp_vault_dir: Path, name: str, body: str | None = None) -> str:
-    path = tmp_vault_dir / "sources" / name
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(body or f"# {name}\n\nBody of {name}.\n")
-    return name
 
 
 async def _rest_ingest(app, token: str | None, source: str, **extra) -> dict:
@@ -183,29 +138,6 @@ async def _rest_post(app, token: str | None, path: str, body: dict) -> dict:
         resp = await c.post(f"/sage_vaults/{_VAULT}{path}", json=body)
     assert resp.status_code == 200, resp.text
     return resp.json()
-
-
-def _decode_rpc(resp) -> dict:
-    assert resp.status_code == 200, resp.text
-    if resp.headers.get("content-type", "").startswith("text/event-stream"):
-        data = [line[5:].strip() for line in resp.text.splitlines() if line.startswith("data:")]
-        envelope = json.loads(data[-1])
-    else:
-        envelope = resp.json()
-    assert "error" not in envelope, envelope
-    return json.loads(envelope["result"]["content"][0]["text"])
-
-
-async def _mcp_call(app, token: str | None, tool: str, arguments: dict) -> dict:
-    request = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "tools/call",
-        "params": {"name": tool, "arguments": arguments},
-    }
-    async with _client(app, token) as c:
-        resp = await c.post("/mcp", json=request)
-    return _decode_rpc(resp)
 
 
 # --------------------------------------------------------------------------

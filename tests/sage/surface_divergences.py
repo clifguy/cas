@@ -151,6 +151,7 @@ MCP_ONLY_ARGUMENTS: Final[dict[tuple[str, str, str], Divergence]] = {
             "pipeline_status",
             "source_type",
             "tier3_metadata",
+            "provenance",
             "source_id",
             "target_id",
             "edge_type",

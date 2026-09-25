@@ -53,6 +53,7 @@ from sage.models.schemas import (
     TraverseResponse,
     UnlinkResponse,
 )
+from sage.request_identity import asserted_agent, edge_attribution
 from sage.services._bulk_envelope import sage_error_to_envelope
 from sage.services._dry_run import DRY_RUN_SENTINEL_EDGE_ID as _DRY_RUN_SENTINEL_EDGE_ID
 from sage.storage.edge_provenance import derive_rationale_kind
@@ -301,6 +302,11 @@ class GraphOpsService:
         with more than ``LIGHT_DEFAULT_THRESHOLD = 5`` items default to
         ``light``, smaller batches default to ``full``.
         """
+        with asserted_agent(request.agent):
+            return await self._create_edges(request)
+
+    async def _create_edges(self, request: BulkLinkRequest) -> BulkLinkResponse:
+        """The body of :meth:`create_edges`."""
         # Resolve the effective response_mode by batch size, the
         # same rule the sibling bulk mutation tools use. Batches that
         # cross the threshold default to light so the response stays
@@ -517,6 +523,7 @@ class GraphOpsService:
                 rationale_kind=rationale_kind,
                 synced_from_version=request.synced_from_version,
                 synced_from_content_hash=request.synced_from_content_hash,
+                **edge_attribution(self._config.vault.owner),
             )
 
             # Dry-run returns the would-be edge without writing.
@@ -1037,6 +1044,9 @@ class GraphOpsService:
                 rationale_kind=RationaleKind(representative["rationale_kind"]),
                 synced_from_version=representative.get("synced_from_version"),
                 synced_from_content_hash=representative.get("synced_from_content_hash"),
+                created_by=representative.get("edge_created_by"),
+                created_client=representative.get("edge_created_client"),
+                created_agent=representative.get("edge_created_agent"),
             )
 
             # Per-type edge counts (deduplicated by edge ID to avoid

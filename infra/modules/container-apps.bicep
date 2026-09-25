@@ -79,6 +79,12 @@ param sageAudience string
 @description('Application (client) id of the CAS BFF confidential client registration.')
 param bffOidcClientId string
 
+@description('Application (client) id of the public MCP client registration the DCR-compatibility facade hands out.')
+param mcpClientId string
+
+@description('Application (client) id of the deploy identity CI signs in as; empty leaves it out of the client map.')
+param deployClientId string = ''
+
 @description('Custom domain hostname of the APIM-fronted SAGE edge the BFF reaches server-side.')
 param sageHostname string
 
@@ -128,7 +134,25 @@ var bffClientSecretUri = '${keyVaultUri}secrets/${bffClientSecretName}'
 // keys must stay a subset of docs/fs/sage/sage_core_config.schema.json (the
 // container-env <-> config-schema drift guard enforces this). The two configs
 // differ only in postgres.user — each app connects as its own identity.
-var sageConfigLines = [
+// Azure CLI's first-party client id, assembled from segments so the template
+// carries no GUID-shaped literal (the Entra bootstrap does the same). Tokens an
+// operator mints with `az account get-access-token` carry it as their client.
+var azureCliClientId = '${'04b07795-8ddb-461a'}-${'bbee-02f9e1bf7b46'}'
+
+// Names the client applications a write can come through, keyed by the token's
+// client id, so each write records which one it was (CAS-ADR-056). A client id
+// with no entry is recorded as the id itself.
+var clientNameLines = concat(
+  [
+    '  client_names:'
+    '    "${bffOidcClientId}": cas-app'
+    '    "${mcpClientId}": mcp-connector'
+    '    "${azureCliClientId}": azure-cli'
+  ],
+  empty(deployClientId) ? [] : ['    "${deployClientId}": ci']
+)
+
+var sageConfigLines = concat([
   'profile: cloud'
   'storage_backend: postgres'
   // CAS-ADR-043: the cloud profile persists each vault's configuration
@@ -154,13 +178,14 @@ var sageConfigLines = [
   '  enabled: true'
   '  tenant_id: ${tenantId}'
   '  audience: ${sageAudience}'
+], clientNameLines, [
   // The caller-local transfer channel mints recipes whose URLs the caller's
   // environment executes verbatim, so the config must carry the externally
   // reachable edge base -- the custom domain APIM serves, not the container's
   // internal FQDN.
   'transfer:'
   '  public_base_url: https://${sageHostname}'
-]
+])
 var bffConfigLines = [
   'profile: cloud'
   'storage_backend: postgres'

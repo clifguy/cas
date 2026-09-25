@@ -933,6 +933,7 @@ def create_app(
         validator=resolve_stack_auth_validator(stack_cfg),
         exempt_paths=frozenset({"/health", "/upload", "/openapi.json"}),
         exempt_prefixes=frozenset({"/download/"}),
+        client_names=stack_cfg.auth.client_names if stack_cfg.auth is not None else None,
     )
 
     return app

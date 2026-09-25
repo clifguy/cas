@@ -482,6 +482,10 @@ async def test_bootstrap_is_idempotent(pg_dsn):
         ("stored_content_hash", "text"),
         ("adapter_config", "jsonb"),
         ("reprojection_skipped", "jsonb"),
+        ("created_client", "text"),
+        ("created_agent", "jsonb"),
+        ("last_modified_client", "text"),
+        ("last_modified_agent", "jsonb"),
     ],
 )
 async def test_bootstrap_adds_a_new_column_to_an_already_provisioned_schema(
@@ -528,6 +532,63 @@ async def test_bootstrap_adds_a_new_column_to_an_already_provisioned_schema(
 
             before = await _columns(conn)
             assert "source_content_hash" in before, "the stand-in table must exist"
+            assert column not in before, (
+                "pre-state must lack the column, or this proves nothing about migration"
+            )
+
+            await bootstrap_schema(conn, schema=schema, extensions=["vector", "pgstattuple"])
+
+            assert column in await _columns(conn)
+        finally:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')  # noqa: S608
+
+
+@pytest.mark.parametrize(
+    "column,declaration",
+    [
+        ("created_by", "text"),
+        ("created_client", "text"),
+        ("created_agent", "jsonb"),
+    ],
+)
+async def test_bootstrap_adds_a_new_edges_column_to_an_already_provisioned_schema(
+    pg_dsn, column, declaration
+):
+    """The ``edges`` counterpart of the documents additive-column test.
+
+    ``edges`` is stood in for the same way: created from the table DDL with the
+    column stripped, beside a current ``documents`` its foreign keys need, and
+    the column's absence is asserted before the bootstrap runs.
+    """
+    import psycopg
+
+    from sage.storage.postgres import schema as pg
+    from sage.storage.postgres.schema import (
+        assert_disposable_target,
+        bootstrap_schema,
+    )
+
+    schema = assert_disposable_target("sage_test_addedgecol_" + os.urandom(3).hex())
+    legacy_edges = pg.EDGES_TABLE.replace(f"    {column} {declaration},\n", "")
+    assert f"{column} " not in legacy_edges
+
+    async def _columns(conn) -> set[str]:
+        cur = await conn.execute(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = %s AND table_name = 'edges'",
+            (schema,),
+        )
+        return {r[0] for r in await cur.fetchall()}
+
+    async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+        try:
+            await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')  # noqa: S608
+            await conn.execute(f'SET search_path TO "{schema}", public')  # noqa: S608
+            await conn.execute(pg.DOCUMENTS_TABLE)
+            await conn.execute(legacy_edges)
+
+            before = await _columns(conn)
+            assert "edge_type" in before, "the stand-in table must exist"
             assert column not in before, (
                 "pre-state must lack the column, or this proves nothing about migration"
             )

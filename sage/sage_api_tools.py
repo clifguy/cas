@@ -402,7 +402,7 @@ _SEARCH_FILTERS = _discover_param(
     mcp=(
         "Document-target keys: ``doc_type``, ``project``, ``lifecycle_status``, "
         "``exclude_terminal_lifecycle``, ``tags``, ``document_ids``, "
-        "``pipeline_status``, ``source_type``, ``tier3_metadata`` (these also "
+        "``pipeline_status``, ``source_type``, ``tier3_metadata``, ``provenance`` (these also "
         'narrow the faceted slice). Edge-target keys (target="edges"): '
         "``source_id``, ``target_id``, ``edge_type``; mixing the two sets is "
         "refused. Every key belongs nested here, e.g. "
@@ -414,7 +414,9 @@ _SEARCH_FILTERS = _discover_param(
         "way; anything else is refused with invalid_filter_value. "
         "``exclude_terminal_lifecycle`` drops documents in a state the vault "
         "declares terminal. ``tier3_metadata`` takes field-to-value pairs that "
-        "must all match exactly; null matches a null or absent field."
+        "must all match exactly; null matches a null or absent field. "
+        "``provenance`` matches created_/last_modified_ by, client or agent "
+        "likewise; agents by name."
     ),
 )
 
@@ -809,6 +811,7 @@ def register_sage_tools(
         created_by: _ingest_param(
             str | None, "created_by", mcp="Without authentication, defaults to vault owner."
         ) = None,
+        agent: _ingest_param(str | None, "agent") = None,
         force: _ingest_param(bool, "force") = False,
         predecessor_id: _INGEST_PREDECESSOR_ID = None,
         expected_head_version: _INGEST_EXPECTED_HEAD_VERSION = None,
@@ -914,6 +917,7 @@ def register_sage_tools(
                         source_type=source_type,
                         config=config,
                         created_by=created_by,
+                        agent=agent,
                         force=force,
                         predecessor_id=predecessor_id,
                         expected_head_version=expected_head_version,
@@ -1037,6 +1041,14 @@ def register_sage_tools(
           content_size, content_hash). Preferred for files that would
           exceed MCP tool-result size ceilings.
 
+        Write provenance, for the creation and the most recent modification:
+        ``created_by`` / ``last_modified_by`` name the principal and
+        ``created_client`` / ``last_modified_client`` the client application,
+        both server-derived from the validated token where the request
+        authenticated; ``created_agent`` /
+        ``last_modified_agent`` are the agent the caller asserted, marked
+        ``trust: asserted`` and never verified.
+
         Error modes (the two store codes only when bytes are requested):
         - ``invalid_vault_id`` (400)
         - ``vault_not_found`` (404)
@@ -1089,6 +1101,7 @@ def register_sage_tools(
             str | None, BulkLifecycleRequest, "response_mode", mcp=_BATCH_RESPONSE_MODE_NOTE
         ) = None,
         dry_run: model_param(bool, BulkLifecycleRequest, "dry_run") = False,
+        agent: model_param(str | None, BulkLifecycleRequest, "agent") = None,
     ) -> dict:
         """Apply one or more lifecycle state transitions to documents.
 
@@ -1146,6 +1159,7 @@ def register_sage_tools(
             validated_items = _validated_items(BATCH_ITEM_MODELS["update_lifecycles"], items)
             v = get_vault(vault_id)
             request = BulkLifecycleRequest(
+                agent=agent,
                 items=validated_items,
                 response_mode=response_mode,
                 dry_run=dry_run,
@@ -1163,6 +1177,7 @@ def register_sage_tools(
             str | None, BulkLinkRequest, "response_mode", mcp=_BATCH_RESPONSE_MODE_NOTE
         ) = None,
         dry_run: model_param(bool, BulkLinkRequest, "dry_run") = False,
+        agent: model_param(str | None, BulkLinkRequest, "agent") = None,
     ) -> dict:
         """Create one or more typed edges between documents in the graph.
 
@@ -1218,6 +1233,7 @@ def register_sage_tools(
             validated_items = _validated_items(BATCH_ITEM_MODELS["create_edges"], items)
             v = get_vault(vault_id)
             request = BulkLinkRequest(
+                agent=agent,
                 items=validated_items,
                 response_mode=response_mode,
                 dry_run=dry_run,
@@ -1235,6 +1251,7 @@ def register_sage_tools(
             str | None, BulkMetadataRequest, "response_mode", mcp=_BATCH_RESPONSE_MODE_NOTE
         ) = None,
         dry_run: model_param(bool, BulkMetadataRequest, "dry_run") = False,
+        agent: model_param(str | None, BulkMetadataRequest, "agent") = None,
     ) -> dict:
         """Patch mutable metadata fields on one or more documents.
 
@@ -1297,6 +1314,7 @@ def register_sage_tools(
             validated_items = _validated_items(BATCH_ITEM_MODELS["update_metadata"], items)
             v = get_vault(vault_id)
             request = BulkMetadataRequest(
+                agent=agent,
                 items=validated_items,
                 response_mode=response_mode,
                 dry_run=dry_run,
@@ -1653,6 +1671,7 @@ def register_sage_tools(
         pipeline_status: _SEARCH_TRIPWIRE = None,
         source_type: _SEARCH_TRIPWIRE = None,
         tier3_metadata: _SEARCH_TRIPWIRE = None,
+        provenance: _SEARCH_TRIPWIRE = None,
         source_id: _SEARCH_TRIPWIRE = None,
         target_id: _SEARCH_TRIPWIRE = None,
         edge_type: _SEARCH_TRIPWIRE = None,
@@ -1712,6 +1731,7 @@ def register_sage_tools(
                     "pipeline_status": pipeline_status,
                     "source_type": source_type,
                     "tier3_metadata": tier3_metadata,
+                    "provenance": provenance,
                     "source_id": source_id,
                     "target_id": target_id,
                     "edge_type": edge_type,

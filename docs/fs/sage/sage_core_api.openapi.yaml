@@ -1199,6 +1199,15 @@ paths:
         the response with base64 payloads that exceed MCP tool-result
         ceilings. `include_content` and `write_to_path` are mutually
         exclusive.
+
+
+        Write provenance, for the creation and the most recent
+        modification: `created_by` / `last_modified_by` name the principal
+        and `created_client` / `last_modified_client` the client
+        application, both server-derived from the validated token where
+        the request authenticated;
+        `created_agent` / `last_modified_agent` are the agent the caller
+        asserted, marked `trust: asserted` and never verified.
       tags: [Document Metadata]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -1757,11 +1766,11 @@ paths:
         Registers a new actor for provenance tracking and access
         control. Both human users and agent identities are registered
         through this endpoint. The user ID is assigned by SAGE at
-        registration time and is the canonical attribution source: it
+        registration time. Where a request does not authenticate, it
         can be used as the `created_by` value on subsequent ingest
-        calls and is recorded as the actor on lifecycle and edge
-        mutations. Ad-hoc strings in `created_by` are accepted but are
-        not linked to a registered user record.
+        calls; an authenticated request is attributed to its principal
+        whatever `created_by` says. Ad-hoc strings in `created_by` are
+        accepted but are not linked to a registered user record.
 
 
         The `user_type` field (`human` or `agent`) is informational
@@ -5008,6 +5017,70 @@ components:
             that composed it. The two sides are written by separate
             calls, so their timestamps are close rather than identical.
 
+    AssertedAgent:
+      type: object
+      additionalProperties: false
+      description: >-
+        An agent a write was attributed to, as the caller asserted it.
+        Recorded as given and never verified; trust is always asserted
+        (CAS-ADR-056).
+      required:
+        - name
+        - source
+      properties:
+        name:
+          type: string
+          pattern: "^[a-z0-9][a-z0-9._-]{0,63}$"
+          description: >-
+            The agent's name: lowercase letters, digits, '.', '_' or '-',
+            starting with a letter or digit.
+        trust:
+          type: string
+          enum: [asserted]
+          default: asserted
+          description: >-
+            How SAGE knows the agent: always asserted, meaning the caller
+            named it and nothing verified it.
+        source:
+          type: string
+          enum: [header, parameter]
+          description: >-
+            Where the name came from: parameter for a write tool's agent
+            argument, header for the request's User-Agent product name.
+
+    ProvenanceFilter:
+      type: object
+      additionalProperties: false
+      description: >-
+        Write-provenance filter (CAS-ADR-056): every key given must
+        match exactly, a key set to null matches a null field, and a key
+        left out constrains nothing.
+      properties:
+        created_by:
+          type: [string, "null"]
+          description: >-
+            Principal that created the document.
+        created_client:
+          type: [string, "null"]
+          description: >-
+            Client the creating request came through.
+        created_agent:
+          type: [string, "null"]
+          description: >-
+            Name of the agent asserted at creation.
+        last_modified_by:
+          type: [string, "null"]
+          description: >-
+            Principal that made the most recent modification.
+        last_modified_client:
+          type: [string, "null"]
+          description: >-
+            Client the most recent modification came through.
+        last_modified_agent:
+          type: [string, "null"]
+          description: >-
+            Name of the agent asserted at the most recent modification.
+
     Document:
       type: object
       description: >-
@@ -5109,6 +5182,38 @@ components:
             the vault owner. Set to created_by at document creation;
             updated on metadata changes, lifecycle transitions including
             supersession, and forced re-ingestion.
+        created_client:
+          type: [string, "null"]
+          description: >-
+            The client application the creating request came through: its
+            name in the deployment's client map, or its client id where the
+            map names none. Derived by the server from the validated token,
+            so it is verified, and no parameter sets it. Null where the
+            request did not authenticate, and on documents created before
+            clients were recorded.
+        created_agent:
+          anyOf:
+            - $ref: "#/components/schemas/AssertedAgent"
+            - type: "null"
+          description: >-
+            The agent that created this document, as the caller asserted it:
+            the write's agent argument, otherwise the product the request's
+            User-Agent names. Marked asserted and never verified. Null where
+            neither named an agent, and on documents created before agents
+            were recorded.
+        last_modified_client:
+          type: [string, "null"]
+          description: >-
+            The client application the most recent modification came
+            through, recorded the same way as created_client and updated
+            with last_modified_by.
+        last_modified_agent:
+          anyOf:
+            - $ref: "#/components/schemas/AssertedAgent"
+            - type: "null"
+          description: >-
+            The agent that made the most recent modification, asserted the
+            same way as created_agent and updated with last_modified_by.
         updated_at:
           type: string
           format: date-time
@@ -5412,6 +5517,28 @@ components:
           type: string
           format: date-time
           description: Timestamp when the edge was created.
+        created_by:
+          type: [string, "null"]
+          description: >-
+            Who created this edge, recorded as a document's created_by is:
+            the authenticated principal where the request authenticated,
+            otherwise the writer the operation recorded, or the vault owner.
+            Null for an edge written outside a request, and on edges created
+            before edge attribution was recorded.
+        created_client:
+          type: [string, "null"]
+          description: >-
+            The client application the edge's creating request came through,
+            recorded as a document's created_client is. Verified; no
+            parameter sets it. Null where created_by is null or the request
+            did not authenticate.
+        created_agent:
+          anyOf:
+            - $ref: "#/components/schemas/AssertedAgent"
+            - type: "null"
+          description: >-
+            The agent that created this edge, asserted as a document's
+            created_agent is. Never verified. Null where no agent was named.
         notes:
           type: [string, "null"]
           description: Optional annotation on why the relationship exists.
@@ -5738,6 +5865,16 @@ components:
             field is either null or absent from the tier3_metadata
             dict. All pairs AND together; an empty dict is treated
             as no filter.
+        provenance:
+          anyOf:
+            - $ref: "#/components/schemas/ProvenanceFilter"
+            - type: "null"
+          description: >-
+            Write-provenance filter: every key given must match exactly.
+            Keys: created_by, created_client, created_agent,
+            last_modified_by, last_modified_client, last_modified_agent. An
+            agent key matches the agent's name; null matches a field that is
+            null.
         source_id:
           type: [string, "null"]
           description: >-
@@ -6028,6 +6165,14 @@ components:
             provenance tracking. Where the request authenticated, the
             authenticated principal is recorded instead, and a differing
             value here is ignored and named in the response's warnings.
+        agent:
+          type: [string, "null"]
+          pattern: "^[a-z0-9][a-z0-9._-]{0,63}$"
+          description: >-
+            The agent making this write, as you name it: 1 to 64 of a-z,
+            0-9, '.', '_' and '-', starting with a letter or digit. Recorded
+            as asserted and never verified, in place of the agent the
+            User-Agent names.
         force:
           type: boolean
           default: false
@@ -6677,6 +6822,29 @@ components:
             Computed. The edge_id of the earliest retracts edge that
             disclaims this row. Null when this edge is still live.
             Omitted in light mode.
+        created_by:
+          type: [string, "null"]
+          description: >-
+            Who created this edge, recorded as a document's created_by is:
+            the authenticated principal where the request authenticated,
+            otherwise the writer the operation recorded, or the vault owner.
+            Null for an edge written outside a request, and on edges created
+            before edge attribution was recorded. Omitted in light mode.
+        created_client:
+          type: [string, "null"]
+          description: >-
+            The client application the edge's creating request came through,
+            recorded as a document's created_client is. Verified; no
+            parameter sets it. Null where created_by is null or the request
+            did not authenticate. Omitted in light mode.
+        created_agent:
+          anyOf:
+            - $ref: "#/components/schemas/AssertedAgent"
+            - type: "null"
+          description: >-
+            The agent that created this edge, asserted as a document's
+            created_agent is. Never verified. Null where no agent was named.
+            Omitted in light mode.
 
     FacetHit:
       type: object
@@ -6885,6 +7053,14 @@ components:
             full structured error envelope regardless of mode. When
             unset, batches with more than 5 items default to "light",
             smaller batches default to "full".
+        agent:
+          type: [string, "null"]
+          pattern: "^[a-z0-9][a-z0-9._-]{0,63}$"
+          description: >-
+            The agent making this write, as you name it: 1 to 64 of a-z,
+            0-9, '.', '_' and '-', starting with a letter or digit. Recorded
+            as asserted and never verified, in place of the agent the
+            User-Agent names.
         dry_run:
           type: boolean
           default: false
@@ -7114,6 +7290,14 @@ components:
             entries carry the full structured error envelope regardless
             of mode. When unset, batches with more than 5 items default
             to "light", smaller batches default to "full".
+        agent:
+          type: [string, "null"]
+          pattern: "^[a-z0-9][a-z0-9._-]{0,63}$"
+          description: >-
+            The agent making this write, as you name it: 1 to 64 of a-z,
+            0-9, '.', '_' and '-', starting with a letter or digit. Recorded
+            as asserted and never verified, in place of the agent the
+            User-Agent names.
         dry_run:
           type: boolean
           default: false
@@ -7334,6 +7518,14 @@ components:
             full structured error envelope regardless of mode. When
             unset, batches with more than 5 items default to "light",
             smaller batches default to "full".
+        agent:
+          type: [string, "null"]
+          pattern: "^[a-z0-9][a-z0-9._-]{0,63}$"
+          description: >-
+            The agent making this write, as you name it: 1 to 64 of a-z,
+            0-9, '.', '_' and '-', starting with a letter or digit. Recorded
+            as asserted and never verified, in place of the agent the
+            User-Agent names.
         dry_run:
           type: boolean
           default: false

@@ -252,6 +252,7 @@ ENROLLED: Final[Enrollment] = {
 # Request interfaces, which F6 additionally holds to their components' required lists.
 ENROLLED_REQUESTS: Final[Enrollment] = {
     "core": {
+        "AssertedAgent": "AssertedAgent",
         "BatchIngestFileMetadata": "BatchIngestFileMetadata",
         "BatchIngestParsedMetadata": "BatchIngestParsedMetadata",
         "BatchIngestUploadMetadata": "BatchIngestUploadMetadata",
@@ -265,6 +266,7 @@ ENROLLED_REQUESTS: Final[Enrollment] = {
         "DiscoverRequest": "DiscoverRequest",
         "LinkRequest": "LinkRequest",
         "ListFieldPatch": "ListFieldPatch",
+        "ProvenanceFilter": "ProvenanceFilter",
         "ReabstractRequest": "ReabstractRequest",
         "RelocationPointer": "RelocationPointer",
         "RetrievalFilters": "RetrievalFilters",
