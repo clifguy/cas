@@ -17,9 +17,9 @@ version-gated backfill that passages it has never examined are current.
 
 Every document with stored chunks is re-embedded, whatever its source type,
 since the input is the stored passages rather than the source. A document
-with no chunks is skipped. Re-running the script re-embeds everything again;
-embedding is deterministic, so a second run changes nothing but costs the
-time of the first.
+with no chunks is skipped. The script keeps no record of what it has done, so
+re-running it re-embeds every such document again, at the cost of the first
+run.
 
 Usage::
 

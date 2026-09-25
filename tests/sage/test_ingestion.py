@@ -3565,9 +3565,15 @@ def test_chunk_projection_divides_a_preamble_over_the_bound(ingestion_service):
 # --------------------------------------------------------------------------- #
 # The request's adapter config is part of the document's record               #
 # --------------------------------------------------------------------------- #
-#: A config only a request supplies: the vault declares no docx defaults, so
-#: the Subtitle style reads as a heading only when this map reaches the adapter.
+#: A config only a request supplies: the vault's docx defaults map a different
+#: style, so the Subtitle style reads as a heading only when this map reaches
+#: the adapter.
 _REQUEST_DOCX_CONFIG = {"heading_style_map": {"Subtitle": 1}}
+_VAULT_DOCX_DEFAULTS = {"heading_style_map": {"Title": 1}}
+#: What a re-projection must hand the adapter: the request's map merged over
+#: the vault's, key by key. Passing the stored request config through alone
+#: would drop the vault's Title entry.
+_MERGED_DOCX_CONFIG = {"heading_style_map": {"Title": 1, "Subtitle": 1}}
 
 
 def _recording_docx_service(
@@ -3605,7 +3611,9 @@ def request_config_service(
     stub_abstraction_provider,
     minimal_vault_config_dict,
 ):
-    config = _build_vault_config_with_docx(minimal_vault_config_dict, vault_docx_config=None)
+    config = _build_vault_config_with_docx(
+        minimal_vault_config_dict, vault_docx_config=_VAULT_DOCX_DEFAULTS
+    )
     return _recording_docx_service(
         config,
         graph_store=graph_store,
@@ -3715,7 +3723,7 @@ async def test_recompute_pipeline_reprojects_with_the_stored_request_config(
     await service.recompute_pipeline(result.document.id)
 
     assert adapter.configs, "recompute_pipeline did not re-project"
-    assert adapter.configs[-1] == _REQUEST_DOCX_CONFIG
+    assert adapter.configs[-1] == _MERGED_DOCX_CONFIG
     await await_pipeline_idle(graph_store, result.document.id, service=service)
     assert "SUBTITLED" in await stub_content_store.get_heading_paths(result.document.id)
 
@@ -3736,7 +3744,7 @@ async def test_worker_recovery_reprojects_with_the_stored_request_config(
     adapter.configs.clear()
     projection = await service._reproject_from_source(result.document.id)
 
-    assert adapter.configs == [_REQUEST_DOCX_CONFIG]
+    assert adapter.configs == [_MERGED_DOCX_CONFIG]
     assert projection.headings, "the reprojection must read the subtitle as a heading"
 
 
@@ -3772,5 +3780,5 @@ async def test_the_reprojection_script_reprojects_with_the_stored_request_config
         source_types=frozenset({SourceType.DOCX.value}),
     )
 
-    assert adapter.configs == [_REQUEST_DOCX_CONFIG]
+    assert adapter.configs == [_MERGED_DOCX_CONFIG]
     assert "SUBTITLED" in await stub_content_store.get_heading_paths(result.document.id)

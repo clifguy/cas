@@ -911,6 +911,12 @@ async def test_the_backfill_preserves_structure_projected_under_a_request_config
     import docx
 
     request_config = {"heading_style_map": {"Subtitle": 1}}
+    # A vault default the request does not set, so the config reaching the
+    # adapter shows whether the recorded request config was merged over the
+    # vault's defaults or passed through alone.
+    vault.ingestion._config = vault.config.model_copy(
+        update={"adapter_defaults": {"docx": {"heading_style_map": {"Title": 1}}}}
+    )
     built = docx.Document()
     built.add_paragraph("Opening paragraph delta.")
     built.add_paragraph("SUBTITLED", style="Subtitle")
@@ -930,7 +936,15 @@ async def test_the_backfill_preserves_structure_projected_under_a_request_config
     assert [c.heading_path for c in defaults_only] != ["", "SUBTITLED"], (
         "control: without the request config the source has no such heading"
     )
-    vault.ship_adapters()
+    shipped = vault.ship_adapters()[SourceType.DOCX]
+    project = shipped.project
+    received: list[dict | None] = []
+
+    async def recording(source_path, config=None):
+        received.append(config)
+        return await project(source_path, config)
+
+    shipped.project = recording
 
     report = await vault.migrate()
 
@@ -940,6 +954,7 @@ async def test_the_backfill_preserves_structure_projected_under_a_request_config
     assert [(c.heading_path, c.content) for c in after[1:]] == [
         (c.heading_path, c.content) for c in before
     ]
+    assert received == [{"heading_style_map": {"Title": 1, "Subtitle": 1}}]
 
 
 async def test_a_title_edit_before_the_lock_is_not_overwritten_by_the_rewrite(vault):
