@@ -415,6 +415,10 @@ class RelocationPointer(BaseModel):
 
 AGENT_NAME_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,63}$"
 
+# The name an agent is recorded under (CAS-ADR-056): lowercase letters,
+# digits, '.', '_' and '-', 1 to 64 characters, starting alphanumeric.
+AgentNameStr = Annotated[str, Field(pattern=AGENT_NAME_PATTERN)]
+
 
 class AssertedAgent(BaseModel):
     """An agent a write was attributed to, as the caller asserted it.
@@ -425,8 +429,7 @@ class AssertedAgent(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = Field(
-        pattern=AGENT_NAME_PATTERN,
+    name: AgentNameStr = Field(
         description=(
             "The agent's name: lowercase letters, digits, '.', '_' or '-', "
             "starting with a letter or digit."
@@ -1012,7 +1015,7 @@ class Edge(BaseModel):
             "Who created this edge, recorded as a document's created_by is: the "
             "authenticated principal where the request authenticated, otherwise "
             "the writer the operation recorded, or the vault owner. Null for an "
-            "edge a background task derived, and on edges created before edge "
+            "edge written outside a request, and on edges created before edge "
             "attribution was recorded."
         ),
     )
@@ -1327,9 +1330,8 @@ class IngestRequest(BaseModel):
             "when `force=true`; ignored otherwise."
         ),
     )
-    agent: str | None = Field(
+    agent: AgentNameStr | None = Field(
         default=None,
-        pattern=AGENT_NAME_PATTERN,
         description=(
             "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, "
             "'.', '_' and '-', starting with a letter or digit. Recorded as "
@@ -1957,9 +1959,8 @@ class BulkLifecycleRequest(BaseModel):
             'smaller batches default to "full".'
         ),
     )
-    agent: str | None = Field(
+    agent: AgentNameStr | None = Field(
         default=None,
-        pattern=AGENT_NAME_PATTERN,
         description=(
             "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, "
             "'.', '_' and '-', starting with a letter or digit. Recorded as "
@@ -2451,9 +2452,8 @@ class BulkMetadataRequest(BaseModel):
             'smaller batches default to "full".'
         ),
     )
-    agent: str | None = Field(
+    agent: AgentNameStr | None = Field(
         default=None,
-        pattern=AGENT_NAME_PATTERN,
         description=(
             "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, "
             "'.', '_' and '-', starting with a letter or digit. Recorded as "
@@ -3106,9 +3106,8 @@ class BulkLinkRequest(BaseModel):
             'items default to "light", smaller batches default to "full".'
         ),
     )
-    agent: str | None = Field(
+    agent: AgentNameStr | None = Field(
         default=None,
-        pattern=AGENT_NAME_PATTERN,
         description=(
             "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, "
             "'.', '_' and '-', starting with a letter or digit. Recorded as "
@@ -4507,7 +4506,7 @@ class EdgeHit(BaseModel):
             "Who created this edge, recorded as a document's created_by is: the "
             "authenticated principal where the request authenticated, otherwise "
             "the writer the operation recorded, or the vault owner. Null for an "
-            "edge a background task derived, and on edges created before edge "
+            "edge written outside a request, and on edges created before edge "
             "attribution was recorded. Omitted in light mode."
         ),
     )

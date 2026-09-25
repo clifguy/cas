@@ -4576,6 +4576,7 @@
             "agent": {
               "default": null,
               "description": "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, '.', '_' and '-', starting with a letter or digit. Recorded as asserted and never verified, in place of the agent the User-Agent names.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
               "type": "string"
             },
             "dry_run": {
@@ -9260,6 +9261,7 @@
             "agent": {
               "default": null,
               "description": "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, '.', '_' and '-', starting with a letter or digit. Recorded as asserted and never verified, in place of the agent the User-Agent names.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
               "type": "string"
             },
             "authority_scope": {
@@ -17748,6 +17750,7 @@
             "agent": {
               "default": null,
               "description": "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, '.', '_' and '-', starting with a letter or digit. Recorded as asserted and never verified, in place of the agent the User-Agent names.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
               "type": "string"
             },
             "dry_run": {
@@ -19218,6 +19221,7 @@
             "agent": {
               "default": null,
               "description": "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, '.', '_' and '-', starting with a letter or digit. Recorded as asserted and never verified, in place of the agent the User-Agent names.",
+              "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$",
               "type": "string"
             },
             "dry_run": {

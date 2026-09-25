@@ -63,7 +63,6 @@ from sage.models.enums import (
 )
 from sage.models.graph_rows import EdgeQueryRow
 from sage.models.schemas import (
-    AssertedAgent,
     DiscoverHit,
     DiscoverRequest,
     DiscoverResponse,
@@ -86,14 +85,6 @@ def _provenance_constraints(filters: RetrievalFilters | None) -> dict[str, str |
     if filters is None or filters.provenance is None:
         return {}
     return filters.provenance.constraints()
-
-
-def document_provenance_value(doc: Document, key: str) -> str | None:
-    """A document's value for a provenance filter key; an agent compares by name."""
-    value = getattr(doc, key)
-    if isinstance(value, AssertedAgent):
-        return value.name
-    return value
 
 
 logger = logging.getLogger(__name__)
@@ -2092,9 +2083,6 @@ class RetrievalService:
                     return False
             if filters.source_type and doc.source_type != filters.source_type:
                 return False
-            for key, value in _provenance_constraints(filters).items():
-                if document_provenance_value(doc, key) != value:
-                    return False
 
         return True
 

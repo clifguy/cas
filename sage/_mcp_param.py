@@ -14,7 +14,7 @@ the REST surface does not have.
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, get_args
 
 from pydantic import BaseModel, BeforeValidator, Field
 
@@ -32,11 +32,42 @@ def param_doc(model: type[BaseModel], field: str, *, mcp: str | None = None) -> 
     return f"{info.description} {mcp}" if mcp else info.description
 
 
+def _field_pattern(model: type[BaseModel], field: str) -> str | None:
+    """The ``pattern`` constraint on ``model.field``, if it carries one.
+
+    Read from the field's own metadata and, for an optional field, from the
+    typed alias inside its union, so the MCP parameter publishes the same
+    rule the REST contract does.
+    """
+    info = model.model_fields[field]
+    candidates = list(info.metadata)
+    for arg in get_args(info.annotation):
+        candidates.extend(getattr(arg, "__metadata__", ()))
+    for item in candidates:
+        for meta in getattr(item, "metadata", [item]):
+            pattern = getattr(meta, "pattern", None)
+            if pattern:
+                return pattern
+    return None
+
+
 def model_param(
     annotation: object, model: type[BaseModel], field: str, *, mcp: str | None = None
 ) -> object:
-    """``annotation`` published with ``param_doc(model, field, mcp=mcp)``."""
-    return Annotated[annotation, Field(description=param_doc(model, field, mcp=mcp))]
+    """``annotation`` published with ``param_doc(model, field, mcp=mcp)``.
+
+    A request field constrained by a pattern publishes that pattern on the
+    parameter's schema too. The schema annotation constrains nothing at the
+    framework boundary: the tool body validates the value against the same
+    request model, so a refusal reads the same on both surfaces.
+    """
+    description = param_doc(model, field, mcp=mcp)
+    pattern = _field_pattern(model, field)
+    if pattern is None:
+        return Annotated[annotation, Field(description=description)]
+    return Annotated[
+        annotation, Field(description=description, json_schema_extra={"pattern": pattern})
+    ]
 
 
 VaultIdParam = Annotated[

@@ -219,8 +219,9 @@ def edge_attribution(owner: str) -> dict[str, object]:
     """The creation attribution for an edge written now.
 
     Inside a request, the principal (or ``owner`` when the request did not
-    authenticate), the client, and the agent. Outside one -- a background task
-    deriving edges -- no one is attributed, and all three are None.
+    authenticate), the client, and the agent. Outside any request no one is
+    attributed, and all three are None; a task started by a request inherits
+    that request's identity unless it clears it.
     """
     if not in_request():
         return {"created_by": None, "created_client": None, "created_agent": None}

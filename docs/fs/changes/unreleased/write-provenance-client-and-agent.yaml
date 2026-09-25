@@ -9,10 +9,11 @@ summary: >-
   stack setting; no argument sets it, and it is null without authentication.
   The agent is an object carrying name, trust (always asserted) and source:
   the new optional agent argument on ingest_document, update_metadata,
-  update_lifecycles and create_edges and their REST request bodies, otherwise
+  update_lifecycles and create_edges and their REST request bodies, whose MCP
+  input schemas publish the same name pattern as the REST contract, otherwise
   the product the request's User-Agent names. Edges record created_by,
-  created_client and created_agent at creation; an edge a background task
-  derives records none. A new provenance search filter matches these fields
+  created_client and created_agent at creation; an edge written outside a
+  request records none. A new provenance search filter matches these fields
   exactly. The Document, Edge and EdgeHit schemas, the four request bodies,
   RetrievalFilters and the stack configuration schema gain the fields, and two
   components, AssertedAgent and ProvenanceFilter, are added. The register_user

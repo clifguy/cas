@@ -25,15 +25,17 @@ Anti-coincidental-pass discipline:
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
+import yaml
 from httpx import ASGITransport, AsyncClient
 from starlette.types import Receive, Scope, Send
 
 from sage.app import create_app
 from sage.auth import AuthenticatedPrincipal, AuthMiddleware
 from sage.config import SageCoreConfig, StackAuthConfig, VaultConfig
-from sage.models.schemas import BulkLinkItem, BulkLinkRequest
+from sage.models.schemas import AGENT_NAME_PATTERN, BulkLinkItem, BulkLinkRequest
 from sage.request_identity import (
     IDENTITY_VARS,
     agent_from_user_agent,
@@ -46,6 +48,7 @@ from sage.request_identity import (
     request_header_agent,
     request_principal,
 )
+from tests.helpers.pipeline_wait import drain_vaults
 from tests.helpers.write_attribution import (
     VAULT,
     StubValidator,
@@ -57,6 +60,8 @@ from tests.helpers.write_attribution import (
     running_app,
     seed,
 )
+
+_SPEC = Path(__file__).resolve().parents[2] / "docs/fs/sage/sage_core_api.openapi.yaml"
 
 _OWNER = "owner-o"
 _ALICE = "alice@example.org"
@@ -553,12 +558,118 @@ async def test_a9_staging_confirm_records_the_confirming_writer(auth_app, tmp_va
     )
 
 
+async def test_a3b_agent_argument_reaches_every_write_tool(auth_app, tmp_vault_dir) -> None:
+    # The header names codex; a tool that drops the argument records codex instead.
+    async with mcp_running(auth_app):
+        a = await _mcp_ingest(auth_app, "svc", None, seed(tmp_vault_dir, "a3b-a.md"))
+        b = await _mcp_ingest(auth_app, "svc", None, seed(tmp_vault_dir, "a3b-b.md"))
+        c = await _mcp_ingest(auth_app, "svc", None, seed(tmp_vault_dir, "a3b-c.md"))
+        common = {"vault_id": VAULT, "agent": "nightly-sync"}
+        await mcp_call(
+            auth_app,
+            "bob-mcp",
+            "update_metadata",
+            {**common, "items": [{"document_id": a["id"], "title": "Patched"}]},
+            user_agent=_CODEX_UA,
+        )
+        await mcp_call(
+            auth_app,
+            "bob-mcp",
+            "update_lifecycles",
+            {**common, "items": [{"document_id": b["id"], "action": "complete"}]},
+            user_agent=_CODEX_UA,
+        )
+        linked = await mcp_call(
+            auth_app,
+            "bob-mcp",
+            "create_edges",
+            {
+                **common,
+                "items": [
+                    {
+                        "source_id": a["id"],
+                        "target_id": c["id"],
+                        "edge_type": "references",
+                        "source_valid_from_version": a["id"],
+                        "target_valid_from_version": c["id"],
+                    }
+                ],
+            },
+            user_agent=_CODEX_UA,
+        )
+    named = _agent("nightly-sync", "parameter")
+    assert (await _get(auth_app, a["id"]))["last_modified_agent"] == named
+    assert (await _get(auth_app, b["id"]))["last_modified_agent"] == named
+    assert linked["results"][0]["edge"]["created_agent"] == named
+
+
+async def test_a7b_lifecycle_supersede_records_the_writer(auth_app, tmp_vault_dir) -> None:
+    async with mcp_running(auth_app):
+        old = await _mcp_ingest(auth_app, "alice-mcp", _CLAUDE_UA, seed(tmp_vault_dir, "a7b.md"))
+        new = await _mcp_ingest(
+            auth_app, "alice-mcp", _CLAUDE_UA, seed(tmp_vault_dir, "a7b-next.md")
+        )
+        await mcp_call(
+            auth_app,
+            "bob-mcp",
+            "update_lifecycles",
+            {
+                "vault_id": VAULT,
+                "agent": "reviser",
+                "items": [
+                    {"document_id": old["id"], "action": "supersede", "successor_id": new["id"]}
+                ],
+            },
+            user_agent=_CODEX_UA,
+        )
+        chain = await mcp_call(
+            auth_app,
+            "svc",
+            "traverse",
+            {"vault_id": VAULT, "start_id": new["id"], "edge_type": "supersedes"},
+        )
+    bob = (_BOB, "mcp-connector", _agent("reviser", "parameter"))
+    assert _modified(await _get(auth_app, old["id"])) == bob
+    (node,) = chain["nodes"]
+    assert _created(node["edge"]) == bob
+
+
+async def test_a10_force_reingest_restamps_only_the_last_modification(
+    auth_app, tmp_vault_dir
+) -> None:
+    source = seed(tmp_vault_dir, "a10.md")
+    doc = await _rest_ingest(auth_app, "alice-mcp", _CLAUDE_UA, source)
+    again = await _rest_ingest(auth_app, "bob-mcp", _CODEX_UA, source, force=True)
+    assert again["id"] == doc["id"]
+    stored = await _get(auth_app, doc["id"])
+    assert _created(stored) == (_ALICE, "mcp-connector", _agent("claude-code", "header"))
+    assert _modified(stored) == (_BOB, "mcp-connector", _agent("codex", "header"))
+
+
+def test_d2_mcp_agent_schema_publishes_the_rest_pattern() -> None:
+    app = create_app(stack_config=SageCoreConfig())
+    tools = app.state.mcp_mounts["/mcp"]._tool_manager
+    for tool in ("ingest_document", "update_metadata", "update_lifecycles", "create_edges"):
+        schema = tools.get_tool(tool).parameters["properties"]["agent"]
+        assert schema.get("pattern") == AGENT_NAME_PATTERN, tool
+    spec = yaml.safe_load(_SPEC.read_text(encoding="utf-8"))
+    for request in (
+        "IngestRequest",
+        "BulkMetadataRequest",
+        "BulkLifecycleRequest",
+        "BulkLinkRequest",
+    ):
+        agent = spec["components"]["schemas"][request]["properties"]["agent"]
+        assert agent["pattern"] == AGENT_NAME_PATTERN, request
+
+
 # --------------------------------------------------------------------------
 # Filters
 # --------------------------------------------------------------------------
 
 
-async def test_f1_provenance_filter_matches_exactly(auth_app, tmp_vault_dir) -> None:
+@pytest.mark.parametrize("mode", ["catalog", "keyword", "semantic"])
+async def test_f1_provenance_filter_matches_exactly(auth_app, tmp_vault_dir, mode: str) -> None:
     async with mcp_running(auth_app):
         a1 = await _mcp_ingest(auth_app, "alice-mcp", _CLAUDE_UA, seed(tmp_vault_dir, "f1a.md"))
         a2 = await _rest_ingest(auth_app, "alice-bff", _BROWSER_UA, seed(tmp_vault_dir, "f1b.md"))
@@ -569,20 +680,22 @@ async def test_f1_provenance_filter_matches_exactly(auth_app, tmp_vault_dir) -> 
             "update_metadata",
             {"vault_id": VAULT, "items": [{"document_id": a5["id"], "title": "Bob's"}]},
         )
+        # The scored modes read indexed passages; let the pipeline settle.
+        await drain_vaults(auth_app.state.vault_registry, [VAULT])
+        query = {} if mode == "catalog" else {"query": "body"}
 
-        async def ids(provenance: dict) -> set[str]:
+        async def ids(provenance: dict | None) -> set[str]:
+            filters = {} if provenance is None else {"filters": {"provenance": provenance}}
             result = await mcp_call(
                 auth_app,
                 "svc",
                 "search",
-                {
-                    "vault_id": VAULT,
-                    "mode": "catalog",
-                    "filters": {"provenance": provenance},
-                    "limit": 100,
-                },
+                {"vault_id": VAULT, "mode": mode, "limit": 100, **query, **filters},
             )
             return {hit["document"]["id"] for hit in result["results"]}
+
+        # Positive control: unfiltered, the mode returns all three documents.
+        assert await ids(None) == {a1["id"], a2["id"], a5["id"]}
 
         assert await ids({"created_client": "cas-app"}) == {a2["id"]}
         assert await ids({"created_agent": "claude-code"}) == {a1["id"], a5["id"]}

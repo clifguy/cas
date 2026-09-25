@@ -42,7 +42,7 @@ TOOL_CEILINGS: Final[dict[str, int]] = {
     "ingest_document": 16_250,
     "search": 13_500,
     "bulk_ingest_document": 11_250,
-    "create_edges": 9_000,
+    "create_edges": 9_250,
     "update_lifecycles": 8_750,
     "update_metadata": 7_750,
     "restore_vault_source_file": 4_750,

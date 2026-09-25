@@ -5522,7 +5522,7 @@ components:
             Who created this edge, recorded as a document's created_by is:
             the authenticated principal where the request authenticated,
             otherwise the writer the operation recorded, or the vault owner.
-            Null for an edge a background task derived, and on edges created
+            Null for an edge written outside a request, and on edges created
             before edge attribution was recorded.
         created_client:
           type: [string, "null"]
@@ -6827,7 +6827,7 @@ components:
             Who created this edge, recorded as a document's created_by is:
             the authenticated principal where the request authenticated,
             otherwise the writer the operation recorded, or the vault owner.
-            Null for an edge a background task derived, and on edges created
+            Null for an edge written outside a request, and on edges created
             before edge attribution was recorded. Omitted in light mode.
         created_client:
           type: [string, "null"]
