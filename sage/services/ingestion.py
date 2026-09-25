@@ -932,9 +932,8 @@ class IngestionService:
         Every path that re-projects a stored document passes the request config
         the document's ingest recorded, so a re-projected source is shaped the
         way it was at ingest while still picking up any change to the vault's
-        defaults. A
-        document ingested with no request config has none recorded, and
-        re-projects from the vault's defaults alone.
+        defaults. A document ingested with no request config has none recorded,
+        and re-projects from the vault's defaults alone.
         """
         defaults = self._config.adapter_defaults
         vault_config: dict | None = None
