@@ -42,6 +42,7 @@ from sage.adapters.interfaces import (
 )
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
 from sage.storage.postgres.schema import (
+    CHUNKS_TSV_CURRENT_MARKERS,
     CHUNKS_TSV_GENERATION_EXPRESSION_PROBE,
     CHUNKS_TSV_REBUILD,
     EMBEDDING_DIM,
@@ -579,14 +580,14 @@ class PostgresContentStore(ContentStore):
             )
             return [(r[0], r[1]) for r in rows]
 
-    async def passage_vector_ranks_indexed_structure(self) -> bool:
-        """Whether the keyword vector already ranks the relative structure."""
-        with self._query_timer.measure("passage_vector_ranks_indexed_structure"):
+    async def passage_vector_is_current(self) -> bool:
+        """Whether the keyword vector is built from the current expression."""
+        with self._query_timer.measure("passage_vector_is_current"):
             async with self._pool.connection() as conn:
-                return await self._vector_ranks_indexed_structure(conn)
+                return await self._vector_is_current(conn)
 
     @staticmethod
-    async def _vector_ranks_indexed_structure(conn: AsyncConnection) -> bool:
+    async def _vector_is_current(conn: AsyncConnection) -> bool:
         """Read the stored generation expression on an open connection."""
         cur = await conn.execute(CHUNKS_TSV_GENERATION_EXPRESSION_PROBE)
         row = await cur.fetchone()
@@ -596,7 +597,8 @@ class PostgresContentStore(ContentStore):
                 "was interrupted outside a transaction and the table needs repair "
                 "before a migration can proceed"
             )
-        return "indexed_structure" in (row[0] or "")
+        expression = row[0] or ""
+        return all(marker in expression for marker in CHUNKS_TSV_CURRENT_MARKERS)
 
     async def migrate_indexed_structure(self, derived: Sequence[tuple[str, str, str]]) -> int:
         """Apply derived structure and, if needed, rebuild the keyword vector.
@@ -610,8 +612,9 @@ class PostgresContentStore(ContentStore):
         compacting the dead tuples the backfill created instead of leaving them
         for a later optimize.
 
-        The rebuild is skipped when the stored expression already names the
-        column, so an ordinary re-run costs a catalog read. The table is locked
+        The rebuild is skipped when the stored expression is already current,
+        so an ordinary re-run costs a catalog read. A vector built from an older
+        expression is rebuilt whether or not any structure was outstanding. The table is locked
         explicitly before that check, which is belt-and-braces rather than a
         repair. Reading a generated column's expression out of the catalog
         renders it through ``pg_get_expr``, which opens the relation and takes a
@@ -644,7 +647,7 @@ class PostgresContentStore(ContentStore):
             written = 0
             async with self._pool.connection() as conn, conn.transaction():
                 await conn.execute("LOCK TABLE chunks IN SHARE UPDATE EXCLUSIVE MODE")
-                rebuilding = not await self._vector_ranks_indexed_structure(conn)
+                rebuilding = not await self._vector_is_current(conn)
                 drop, add, index = CHUNKS_TSV_REBUILD
 
                 if rebuilding:

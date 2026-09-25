@@ -99,11 +99,28 @@ def test_chunks_table_has_vector_fts_and_indexes():
     assert "to_tsvector('english', coalesce(indexed_structure, heading_path))" in (
         pgschema.CHUNKS_TABLE
     )
-    assert "to_tsvector('english', content)" in pgschema.CHUNKS_TABLE
+    assert "to_tsvector('english', translate(content, '<>', '  '))" in pgschema.CHUNKS_TABLE
     assert "setweight" in pgschema.CHUNKS_TABLE
     content_idx = "\n".join(pgschema.CONTENT_INDEXES)
     assert "USING GIN (tsv)" in content_idx
     assert "USING hnsw (embedding vector_cosine_ops)" in content_idx
+
+
+def test_the_passage_vector_reads_content_with_markup_brackets_replaced():
+    """Weight D parses the content with ``<`` and ``>`` replaced, never the raw content.
+
+    The parser reads a ``<...>`` span as one markup tag and the configuration
+    indexes none, so parsing raw content drops every attribute value.
+
+    Anti-coincidental-pass: the negative assertion is what makes this a
+    replacement. An expression that added the substituted arm beside a raw one
+    would still carry the positive substring.
+    """
+    _, _, weight_d = pgschema.CHUNKS_TSV_EXPRESSION.partition("||")
+    assert pgschema.CHUNKS_INDEXED_CONTENT_EXPRESSION in weight_d and "'D'" in weight_d
+    assert "to_tsvector('english', content)" not in pgschema.CHUNKS_TSV_EXPRESSION
+    for marker in pgschema.CHUNKS_TSV_CURRENT_MARKERS:
+        assert marker in pgschema.CHUNKS_TSV_EXPRESSION, marker
 
 
 def test_the_passage_vector_ranks_structure_rather_than_the_address():

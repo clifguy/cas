@@ -139,6 +139,7 @@ async def _document_count() -> int:
         (XlsxAdapter, "plain.xlsx", b"plain text, no package magic\n"),
         (MarkdownAdapter, "latin1.md", b"# Caf\xe9\n"),
         (StructuredDataAdapter, "broken.json", b'{"a": '),
+        (StructuredDataAdapter, "broken.xml", b"<a><b></a>"),
     ],
     ids=[
         "pdf",
@@ -150,6 +151,7 @@ async def _document_count() -> int:
         "xlsx-plain",
         "md",
         "structured-data",
+        "structured-data-xml",
     ],
 )
 async def test_each_adapter_reports_an_unreadable_source_as_a_read_error(

@@ -138,7 +138,7 @@ class StubContentStore(ContentStore):
                     seen.setdefault((document_id, chunk.heading_path))
         return list(seen)
 
-    async def passage_vector_ranks_indexed_structure(self) -> bool:
+    async def passage_vector_is_current(self) -> bool:
         """Always true: this double has no generated vector that could be stale.
 
         The Postgres binding's keyword vector is a stored generated column, so a

@@ -190,6 +190,22 @@ async def test_rest_ingest_infers_a_non_markdown_type(vault, client):
     assert resp.json()["document"]["source_type"] == "docx"
 
 
+async def test_xml_source_infers_structured_data_on_both_surfaces(vault, client):
+    """A ``.xml`` source with no ``source_type`` resolves to structured data on both surfaces."""
+    _application, root = vault
+    body = '<scan surface="{}"><host addr="10.0.0.1"/>\n<host addr="10.0.0.2"/></scan>\n'
+    via_mcp = _write(root, "test/scan_mcp.xml", body.format("mcp").encode())
+    via_rest = _write(root, "test/scan_rest.xml", body.format("rest").encode())
+
+    mcp = _parse(await ingest_document(_VAULT_ID, source=via_mcp))
+    rest = await client.post(_INGEST, json={"source": via_rest})
+
+    assert "error" not in mcp, mcp
+    assert mcp["source_type"] == "structured_data", mcp
+    assert rest.status_code == 201, rest.text
+    assert rest.json()["document"]["source_type"] == "structured_data"
+
+
 async def test_rest_transfer_token_completion_infers_from_staged_basename(client, tmp_path):
     """A completion carrying only the token has a type inferred at all.
 

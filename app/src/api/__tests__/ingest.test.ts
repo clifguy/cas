@@ -45,6 +45,7 @@ describe('sourceTypeForFilename', () => {
     expect(sourceTypeForFilename('config.yaml')).toBe('structured_data');
     expect(sourceTypeForFilename('config.yml')).toBe('structured_data');
     expect(sourceTypeForFilename('pyproject.toml')).toBe('structured_data');
+    expect(sourceTypeForFilename('scan.XML')).toBe('structured_data');
   });
 
   it('A2: returns null for unknown or extension-less names', () => {

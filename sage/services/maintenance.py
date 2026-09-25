@@ -191,8 +191,9 @@ BACKFILL_NON_CANONICAL_SOURCE_PATH = "normalize_non_canonical_source_paths"
 BACKFILL_DOCUMENT_SURFACE = "relocate_document_level_text_to_document_surface"
 
 # Name reported in MigrationReport.backfills_applied when the migration derived
-# each passage's structure relative to its document, or repaired a keyword
-# vector still built from the passage's address.
+# each passage's structure relative to its document, or rebuilt a keyword vector
+# built from an earlier expression -- one ranking the passage's address, or one
+# parsing content with its markup brackets in place.
 BACKFILL_PASSAGE_INDEXED_STRUCTURE = "derive_passage_structure_relative_to_document"
 
 # Name reported in MigrationReport.backfills_applied when the migration divided a
@@ -553,7 +554,9 @@ class MaintenanceService:
         Two conditions are repaired, and they can disagree. A pass interrupted
         after its derivation leaves nothing to derive and a keyword vector still
         built from the address, so guarding on the derivation alone would leave
-        such a vault unrepaired forever. The store settles both inside one
+        such a vault unrepaired forever. The vector condition is also how a later
+        change to the vector's expression reaches a vault: one built from any
+        earlier expression is rebuilt here. The store settles both inside one
         transaction and reports what the derivation wrote; this method names the
         backfill when either did work.
 
@@ -562,7 +565,7 @@ class MaintenanceService:
             repair, so the backfill does not name itself in the report.
         """
         pending = await self._content_store.passages_awaiting_indexed_structure()
-        vector_is_stale = not await self._content_store.passage_vector_ranks_indexed_structure()
+        vector_is_stale = not await self._content_store.passage_vector_is_current()
         if not pending and not vector_is_stale:
             return 0
 

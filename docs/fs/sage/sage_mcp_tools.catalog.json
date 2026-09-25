@@ -2944,7 +2944,7 @@
                       }
                     ],
                     "default": null,
-                    "description": "Source artifact format for this file: markdown (.md, .markdown), docx (.docx, .dotx), xlsx (.xlsx), pptx (.pptx, .potx), pdf (.pdf) or structured_data (.json, .jsonl, .yaml, .yml, .toml). Must be a source type with a registered adapter. Optional: when omitted, it is inferred from the uploaded file's extension using the extensions listed with each format, and an extension no registered adapter claims is reported for that file as `source_type_unresolved`."
+                    "description": "Source artifact format for this file: markdown (.md, .markdown), docx (.docx, .dotx), xlsx (.xlsx), pptx (.pptx, .potx), pdf (.pdf) or structured_data (.json, .jsonl, .yaml, .yml, .toml, .xml). Must be a source type with a registered adapter. Optional: when omitted, it is inferred from the uploaded file's extension using the extensions listed with each format, and an extension no registered adapter claims is reported for that file as `source_type_unresolved`."
                   },
                   "tier3_metadata": {
                     "anyOf": [
@@ -6347,7 +6347,7 @@
               "type": "string"
             },
             "source_type": {
-              "description": "Source artifact format whose filename_extraction configuration governs the parse. Must be a source type with a registered adapter. The registered formats are markdown (.md, .markdown), docx (.docx, .dotx), xlsx (.xlsx), pptx (.pptx, .potx), pdf (.pdf) and structured_data (.json, .jsonl, .yaml, .yml, .toml) -- the same set `ingest_document` accepts, so a filename that parses here is one that can go on to be ingested.",
+              "description": "Source artifact format whose filename_extraction configuration governs the parse. Must be a source type with a registered adapter. The registered formats are markdown (.md, .markdown), docx (.docx, .dotx), xlsx (.xlsx), pptx (.pptx, .potx), pdf (.pdf) and structured_data (.json, .jsonl, .yaml, .yml, .toml, .xml) -- the same set `ingest_document` accepts, so a filename that parses here is one that can go on to be ingested.",
               "type": "string"
             },
             "vault_id": {
@@ -9333,7 +9333,7 @@
             },
             "source_type": {
               "default": null,
-              "description": "Source artifact format. Determines which source adapter processes the artifact. Must be a source type with a registered adapter. Optional: when omitted, it is inferred from the extension of the source being ingested against the registered adapters' declared extensions -- for a `transfer_token` completion, the staged file, which carries the caller's own basename. An explicit value is never overridden, even where it disagrees with the extension. An omitted value whose extension no registered adapter claims is refused with `source_type_unresolved`. The registered formats are markdown (.md, .markdown), docx (.docx, .dotx), xlsx (.xlsx), pptx (.pptx, .potx), pdf (.pdf) and structured_data (.json, .jsonl, .yaml, .yml, .toml). An omitted type is inferred from the extensions listed with each format; a refusal names the formats in ``registered_source_types`` and their extensions in ``registered_extensions``.",
+              "description": "Source artifact format. Determines which source adapter processes the artifact. Must be a source type with a registered adapter. Optional: when omitted, it is inferred from the extension of the source being ingested against the registered adapters' declared extensions -- for a `transfer_token` completion, the staged file, which carries the caller's own basename. An explicit value is never overridden, even where it disagrees with the extension. An omitted value whose extension no registered adapter claims is refused with `source_type_unresolved`. The registered formats are markdown (.md, .markdown), docx (.docx, .dotx), xlsx (.xlsx), pptx (.pptx, .potx), pdf (.pdf) and structured_data (.json, .jsonl, .yaml, .yml, .toml, .xml). An omitted type is inferred from the extensions listed with each format; a refusal names the formats in ``registered_source_types`` and their extensions in ``registered_extensions``.",
               "type": "string"
             },
             "tags": {
