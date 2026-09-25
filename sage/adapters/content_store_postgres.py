@@ -196,10 +196,11 @@ _EXCLUDED_QUOTED_SPAN = re.compile(r'-"[^"]*"')
 def _required_phrase_spans(query: str) -> list[str]:
     """The phrase spans the caller's own text requires, in order.
 
-    Adjacency has to be recognized from the query text rather than from the
-    rendered operator, because the tokenizer emits adjacency of its own for any
-    compound it splits -- so a hyphenated identifier would otherwise read as a
-    phrase the caller never wrote.
+    Phrases have to be located in the query text rather than in the rendered
+    query, because the tokenizer emits adjacency of its own for any compound it
+    splits -- so a hyphenated identifier would otherwise read as a phrase the
+    caller never wrote. Whether a located span imposes adjacency is then read
+    from its own rendering, by ``_span_imposes_adjacency``.
 
     Quotes are paired sequentially rather than matched by a pattern. A pattern
     looking for a quote, a word, whitespace and a closing quote will happily
@@ -211,6 +212,21 @@ def _required_phrase_spans(query: str) -> list[str]:
     renders ``'alpha' & 'beta' <-> 'gamma'``, adjacency and all.
     """
     return _EXCLUDED_QUOTED_SPAN.sub("", query).split('"')[1::2]
+
+
+def _span_imposes_adjacency(quoted: str, bare: str) -> bool:
+    """Whether a quoted span's quotes changed what the query requires.
+
+    ``quoted`` and ``bare`` are the span rendered with and without its quotes.
+    The question is the one the empty-result advisory asks the caller to act
+    on -- would unquoting relax anything -- so it is answered by comparing the
+    two renderings rather than by reading the span's words. A span whose
+    stopwords left one lexeme renders the same either way, and so does a lone
+    hyphenated compound, whose adjacency the tokenizer supplies whether or not
+    it is quoted. A distance above one still counts: ``<2>`` is what a dropped
+    stopword inside a phrase produces.
+    """
+    return "<" in quoted and quoted != bare
 
 
 def _skip_quoted(rendered: str, i: int) -> int:
@@ -305,13 +321,20 @@ def _or_form(terms: tuple[str, ...]) -> str:
 
 
 def _parse_rendered(
-    query: str, rendered: str, branches: list[list[str]] | None
+    rendered: str,
+    branches: list[list[str]] | None,
+    span_renderings: Sequence[tuple[str, str]],
 ) -> KeywordQueryParse:
-    """Read a rendered tsquery, alongside the text it came from, as a parse.
+    """Read a rendered tsquery, alongside its phrase spans' renderings, as a parse.
 
     Split out from ``parse_keyword_query`` so the dispatcher can reuse a
     rendering it already has rather than asking the backend for a second one.
     Everything here is pure; the round-trip is the caller's.
+
+    ``span_renderings`` holds, for each phrase span the query requires, that
+    span rendered with and without its quotes; adjacency is read from them and
+    from nothing else. A caller that never reads ``adjacent`` may pass none,
+    and the parse then reports no adjacency.
 
     ``branches`` is the decomposition ``_split_branches`` returned for this
     same rendering, and is what the reported scope is read from. It is passed
@@ -322,7 +345,6 @@ def _parse_rendered(
     answered within one passage.
     """
     required, excluded = _split_negation(rendered)
-    spans = _required_phrase_spans(query)
     terms = tuple(lexeme.replace("''", "'") for lexeme in _TSQUERY_LEXEME.findall(required))
     return KeywordQueryParse(
         terms=terms,
@@ -334,15 +356,11 @@ def _parse_rendered(
         # has nothing to intersect with. Either sends the query to the
         # within-unit path, so either makes this false.
         document_scoped=bool(terms) and branches is not None,
-        # Both halves are load-bearing, and each is read from its own source.
-        # The rendered operator alone over-reports: the tokenizer emits
-        # adjacency for every compound it splits, so "CAS-ADR-048" would read
-        # as a phrase. The caller's quotes alone over-report too: a quoted span
-        # that rendered nothing imposes no adjacency. A span counts only if it
-        # holds more than one word, since a single quoted word has nothing to
-        # be adjacent to. Matching on "<" rather than "<->" catches the
-        # distances a dropped stopword produces.
-        adjacent=any(len(span.split()) > 1 for span in spans) and "<" in required,
+        # Read span by span, never from the whole rendering: the tokenizer
+        # emits adjacency for every compound it splits, so an operator in the
+        # rendering can belong to an identifier beside the phrase rather than
+        # to the phrase itself.
+        adjacent=any(_span_imposes_adjacency(q, b) for q, b in span_renderings),
     )
 
 
@@ -1028,7 +1046,10 @@ class PostgresContentStore(ContentStore):
             # decision below needs the backend for.
             rendered, folded = await self._render_query_forms(query)
             branches = _split_branches(rendered)
-            parse = _parse_rendered(query, rendered, branches)
+            # No span renderings: the dispatch routes on terms and scope and
+            # never reads adjacency, so rendering the spans would add columns
+            # for a field this path discards.
+            parse = _parse_rendered(rendered, branches, ())
             if not parse.terms:
                 # Nothing to rank against, and nothing to intersect on: either
                 # every word was discarded, or the query asked only for
@@ -1060,14 +1081,23 @@ class PostgresContentStore(ContentStore):
         """
         folded = fold_for_query(query)
         wants_folded = bool(folded.strip()) and folded != query
+        renderings = await self._render_many([query, folded] if wants_folded else [query])
+        return renderings[0], (renderings[1] or None) if wants_folded else None
+
+    async def _render_many(self, texts: Sequence[str]) -> list[str]:
+        """Each text as the text-search configuration parses it, in one round-trip.
+
+        One column per text, in order; a text that renders nothing, or a
+        backend that returns no row, yields the empty string in its place.
+        """
         column = f"websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s)::text"
         rows = await self._fetchall(
-            f"SELECT {', '.join([column] * (2 if wants_folded else 1))}",  # noqa: S608
-            [query, folded] if wants_folded else [query],
+            f"SELECT {', '.join([column] * len(texts))}",  # noqa: S608
+            list(texts),
         )
         if not rows:
-            return "", None
-        return rows[0][0] or "", (rows[0][1] or None) if wants_folded else None
+            return [""] * len(texts)
+        return [value or "" for value in rows[0]]
 
     async def _search_bm25_across_document(
         self,
@@ -1154,7 +1184,7 @@ class PostgresContentStore(ContentStore):
         surface_rank = "ts_rank(tsv_rank, %s::tsquery)"
         surface_params: list[object] = [or_form]
         if folded:
-            folded_parse = _parse_rendered("", folded, _split_branches(folded))
+            folded_parse = _parse_rendered(folded, _split_branches(folded), ())
             if folded_parse.terms:
                 surface_rank = f"GREATEST({surface_rank}, ts_rank(tsv_rank, %s::tsquery))"
                 surface_params.append(_or_form(folded_parse.terms))
@@ -1290,14 +1320,6 @@ class PostgresContentStore(ContentStore):
         rows = await self._fetchall(sql, params)
         return [self._row_to_document_result(r) for r in rows]
 
-    async def _render_tsquery(self, query: str) -> str:
-        """The query as the text-search configuration parses it."""
-        rows = await self._fetchall(
-            f"SELECT websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s)::text",  # noqa: S608
-            [query],
-        )
-        return rows[0][0] if rows and rows[0][0] else ""
-
     async def parse_keyword_query(self, query: str) -> KeywordQueryParse:
         """How the text-search configuration read this query.
 
@@ -1331,8 +1353,16 @@ class PostgresContentStore(ContentStore):
                 return KeywordQueryParse(
                     terms=(), excluded=(), all_required=True, adjacent=False, document_scoped=True
                 )
-            rendered = await self._render_tsquery(query)
-            return _parse_rendered(query, rendered, _split_branches(rendered))
+            # Each required span is rendered twice, quoted and bare, in the same
+            # statement as the query: adjacency is whether the quotes changed
+            # the rendering, which only the backend's own parse can say.
+            spans = _required_phrase_spans(query)
+            texts = [query]
+            for span in spans:
+                texts += [f'"{span}"', span]
+            rendered, *span_forms = await self._render_many(texts)
+            span_renderings = list(zip(span_forms[::2], span_forms[1::2], strict=True))
+            return _parse_rendered(rendered, _split_branches(rendered), span_renderings)
 
     async def get_chunks_by_heading_prefix(
         self, document_id: str, heading_prefix: str

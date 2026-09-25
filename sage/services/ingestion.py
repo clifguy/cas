@@ -165,11 +165,19 @@ _UNTITLED_PDF_ENTRY_TITLE = "{'/Title': '',"
 
 
 def _projected_before(adapter_version: str | None, since: tuple[int, ...]) -> bool:
-    """Whether ``adapter_version`` predates ``since``; an unreadable version does."""
+    """Whether ``adapter_version`` predates ``since``; an unreadable version does.
+
+    Components compare as integers, so ``0.10.0`` follows ``0.9.0``. A short
+    spelling is read with its missing components as zero -- ``0.6`` is
+    ``0.6.0``, not something older -- because tuple comparison would otherwise
+    order a prefix before every extension of it.
+    """
     try:
-        return tuple(int(part) for part in (adapter_version or "").split(".")) < since
+        parts = tuple(int(part) for part in (adapter_version or "").split("."))
     except ValueError:
         return True
+    width = max(len(parts), len(since))
+    return parts + (0,) * (width - len(parts)) < since + (0,) * (width - len(since))
 
 
 # Provider-neutral abstraction latency records. Shares the logger name with
