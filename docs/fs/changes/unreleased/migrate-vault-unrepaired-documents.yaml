@@ -7,8 +7,9 @@ summary: >-
   adapter reads. It records such a document against the adapter that tried, and
   a later call skips it while that is still the adapter for its format.
   restore_vault_source_file clears the record, whether it writes the source back
-  or finds it already intact, so the next call re-examines the document; a read the source store declined as a
-  transient condition is not recorded. MigrationReport gains
+  or finds it already intact, so the next call re-examines the document. A read
+  that failed for a reason that may not recur -- the store unavailable, a
+  permission, a busy file -- is not recorded. MigrationReport gains
   documents_not_repaired, listing each such document with its reason on the
   call that finds it, where the server log was the only record before. The
   migrate_vault descriptions in sage_core_api.openapi.yaml and the MCP tool

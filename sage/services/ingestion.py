@@ -376,6 +376,30 @@ class _InflightClaim:
 _DIRECT_METADATA_FIELDS: frozenset[str] = INGEST_METADATA_SPELLINGS - {"date", "codes", "tags"}
 
 
+# Read faults that are properties of the recorded path -- nothing is there, or
+# the path names a directory -- and so recur on every run until the path or
+# its source changes.
+_PATH_BOUND_READ_FAULTS: tuple[type[OSError], ...] = (
+    FileNotFoundError,
+    IsADirectoryError,
+    NotADirectoryError,
+)
+
+
+def _is_momentary_read_fault(exc: BaseException) -> bool:
+    """Whether a failed source read may succeed on a later attempt.
+
+    A store binding that classifies its own refusals says so with
+    ``VaultSourceStoreUnavailableError``. A binding that reads in place raises
+    the operating system's error instead, and every one of those but the
+    path-bound faults -- a permission, a busy or locked file, an I/O error --
+    describes the moment rather than the document.
+    """
+    if isinstance(exc, VaultSourceStoreUnavailableError):
+        return True
+    return isinstance(exc, OSError) and not isinstance(exc, _PATH_BOUND_READ_FAULTS)
+
+
 class IngestionService:
     def __init__(
         self,
@@ -3746,8 +3770,9 @@ class IngestionService:
         logged with its reason and leaves the document's adapter version as it
         was, since its passages are still not what the adapter writes. It is
         recorded as well, so a later run does not examine it again with the
-        same adapter -- except where the store declined the read as a transient
-        condition, which a later run may not meet.
+        same adapter -- except where the read failed for a reason of the moment
+        rather than of the recorded path (see ``_is_momentary_read_fault``),
+        which a later run may not meet.
 
         The migration excludes pipeline work, so only a metadata stamp can reach
         the document meanwhile; the passages are read and rewritten under the
@@ -3784,7 +3809,7 @@ class IngestionService:
                 document_id,
                 adapter.VERSION,
                 f"source not projected: {type(exc).__name__}",
-                record=not isinstance(exc, VaultSourceStoreUnavailableError),
+                record=not _is_momentary_read_fault(exc),
             )
         expected_hash = doc.stored_content_hash or doc.source_content_hash
         if canonicalize_sha256(projection.content_hash) != expected_hash:

@@ -1255,3 +1255,37 @@ async def test_a_reprojection_skip_is_recorded_listed_cleared_and_removed(vault)
 
     await vault.graph_store.remove_document(other)
     assert await vault.graph_store.reprojection_skips() == {}
+
+
+@pytest.mark.parametrize(
+    ("fault", "recorded"),
+    [
+        (PermissionError(13, "Permission denied"), False),
+        (BlockingIOError(35, "Resource temporarily unavailable"), False),
+        (IsADirectoryError(21, "Is a directory"), True),
+        (NotADirectoryError(20, "Not a directory"), True),
+    ],
+    ids=["permission", "busy", "is-a-directory", "not-a-directory"],
+)
+async def test_a_read_fault_of_the_moment_is_not_recorded(vault, fault, recorded):
+    """A read fault that may not recur -- a permission, a busy file -- is reported
+    but not recorded, whichever source binding raised it, so the next run tries
+    again. A fault that is a property of the recorded path is recorded.
+
+    Anti-coincidental-pass: every case is first confirmed reported, so a fault
+    that never reached the backfill cannot pass the recording assertion.
+    """
+    led = await _led(vault)
+    failing = vault.ship_adapters()
+
+    async def cannot_read(source_path, config=None):
+        raise fault
+
+    failing[SourceType.MARKDOWN].project = cannot_read
+    report = await vault.migrate()
+
+    assert "source not projected" in _not_repaired(report).get(led, ""), "control: reported"
+    assert (led in await vault.graph_store.reprojection_skips()) is recorded
+    adapters = vault.ship_adapters()
+    await vault.migrate()
+    assert adapters[SourceType.MARKDOWN].projected == ([] if recorded else ["led.md"])
