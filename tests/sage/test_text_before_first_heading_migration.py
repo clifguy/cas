@@ -1262,15 +1262,18 @@ async def test_a_reprojection_skip_is_recorded_listed_cleared_and_removed(vault)
     [
         (PermissionError(13, "Permission denied"), False),
         (BlockingIOError(35, "Resource temporarily unavailable"), False),
+        (FileNotFoundError(2, "No such file or directory"), True),
         (IsADirectoryError(21, "Is a directory"), True),
         (NotADirectoryError(20, "Not a directory"), True),
+        (ValueError("could not open the file"), True),
     ],
-    ids=["permission", "busy", "is-a-directory", "not-a-directory"],
+    ids=["permission", "busy", "not-found", "is-a-directory", "not-a-directory", "wrapped"],
 )
 async def test_a_read_fault_of_the_moment_is_not_recorded(vault, fault, recorded):
     """A read fault that may not recur -- a permission, a busy file -- is reported
     but not recorded, whichever source binding raised it, so the next run tries
-    again. A fault that is a property of the recorded path is recorded.
+    again. A fault that is a property of the recorded path is recorded, and so is
+    one that arrives re-raised as something other than an operating-system error.
 
     Anti-coincidental-pass: every case is first confirmed reported, so a fault
     that never reached the backfill cannot pass the recording assertion.

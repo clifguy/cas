@@ -394,6 +394,13 @@ def _is_momentary_read_fault(exc: BaseException) -> bool:
     the operating system's error instead, and every one of those but the
     path-bound faults -- a permission, a busy or locked file, an I/O error --
     describes the moment rather than the document.
+
+    The classification reads the exception as it arrives, so it covers only a
+    fault that reaches here as one of those. A fault a layer below re-raises as
+    something else -- a missing-source refusal from an existence check that a
+    permission defeated, an adapter reporting an unreadable file as a content
+    error -- is recorded like any other failure, and restoring the source
+    clears that record.
     """
     if isinstance(exc, VaultSourceStoreUnavailableError):
         return True

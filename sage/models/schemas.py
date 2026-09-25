@@ -4761,9 +4761,10 @@ class MigrationReport(BaseModel):
             "its stored passages to the current shape and could not, with the reason. "
             "Each is listed on the run that finds it and is not examined again until "
             "its retained source is restored with `restore_vault_source_file` or a "
-            "different adapter would read it; a read that failed for a reason that may "
-            "not recur -- the store unavailable, a permission, a busy file -- is listed "
-            "and examined again on the next call. "
+            "different adapter would read it. A read the source store reported "
+            "unavailable, or one that raised an operating-system fault other than a "
+            "missing path, is listed and examined again on the next call; a fault "
+            "reported any other way is recorded, and restoring the source clears it. "
             "Empty when every examined document was brought current."
         ),
     )
