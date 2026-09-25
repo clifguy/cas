@@ -66,6 +66,8 @@ _TOML_HEADER = re.compile(r"[ \t]*\[\[?[^\[\]\n]+\]\]?[ \t]*(?:#.*)?\r?")
 _COMMENT = re.compile(r"[ \t]*#")
 # A line holding one whole XML comment and nothing else.
 _XML_COMMENT = re.compile(r"[ \t]*<!--(?:(?!-->).)*-->[ \t]*\r?$")
+# An XML line end: the parser ends a line at CRLF, a lone CR, or a lone LF.
+_XML_LINE_END = re.compile(r"(\r\n|\r|\n)")
 _INDENT = "  "
 
 
@@ -333,7 +335,7 @@ def _xml_starts(lines: list[str], root: _Element) -> set[int]:
         for previous, current in zip(children, children[1:]):
             if (
                 current.tag == previous.tag
-                and current.line > previous.line
+                and previous.line < current.line < len(lines)
                 and not lines[current.line][: current.column].strip()
             ):
                 starts.add(current.line)
@@ -341,9 +343,28 @@ def _xml_starts(lines: list[str], root: _Element) -> set[int]:
 
 
 def _xml_text(source: str, root: _Element) -> str:
-    """``source`` with a blank line above each repeated element of element-only content."""
-    lines = source.split("\n")
+    """``source`` with a blank line above each repeated element of element-only content.
+
+    The text is divided into lines exactly as the parser counts them -- at CRLF,
+    a lone CR, or a lone LF -- so the line an element's position names is the
+    line it is on. Each line keeps its own terminator, and an inserted blank
+    line takes the terminator of the line above it, so the text is preserved
+    byte for byte whatever its line endings.
+    """
+    parts = _XML_LINE_END.split(source)
+    lines, terminators = parts[0::2], parts[1::2]
     expected = root.canonical()
+
+    def render(candidate_lines: list[str], targets: list[int]) -> str:
+        targets_set = set(targets)
+        out: list[str] = []
+        for index, line in enumerate(candidate_lines):
+            if index in targets_set:
+                out.append(terminators[index - 1])
+            out.append(line)
+            if index < len(terminators):
+                out.append(terminators[index])
+        return "".join(out)
 
     def agrees(text: str) -> bool:
         try:
@@ -351,7 +372,41 @@ def _xml_text(source: str, root: _Element) -> str:
         except SAXException, DefusedXmlException:
             return False
 
-    return _separate(lines, _xml_starts(lines, root), False, agrees, source, comment=_XML_COMMENT)
+    return _separate(
+        lines,
+        _xml_starts(lines, root),
+        False,
+        agrees,
+        source,
+        comment_start=_xml_comment_start,
+        render=render,
+    )
+
+
+def _hash_comment_start(lines: list[str], index: int) -> int | None:
+    """``index`` if that line is a ``#`` comment, else ``None``."""
+    return index if _COMMENT.match(lines[index]) else None
+
+
+def _xml_comment_start(lines: list[str], index: int) -> int | None:
+    """The first line of an XML comment that ends on line ``index`` and fills its lines.
+
+    A one-line comment starts where it ends. A comment spanning lines is walked
+    back to the line that opens it; ``None`` where line ``index`` does not end a
+    comment, or where the comment shares a line with anything else.
+    """
+    line = lines[index]
+    if _XML_COMMENT.match(line):
+        return index
+    if not line.rstrip().endswith("-->") or "<!--" in line:
+        return None
+    for opener in range(index - 1, -1, -1):
+        text = lines[opener]
+        if "-->" in text:
+            return None
+        if "<!--" in text:
+            return opener if text.lstrip().startswith("<!--") else None
+    return None
 
 
 def _separate(
@@ -360,7 +415,8 @@ def _separate(
     indent_bound: bool,
     agrees: Callable[[str], bool],
     source: str,
-    comment: re.Pattern[str] = _COMMENT,
+    comment_start: Callable[[list[str], int], int | None] = _hash_comment_start,
+    render: Callable[[list[str], list[int]], str] | None = None,
 ) -> str:
     """``lines`` with a blank line above each start, keeping only those ``agrees`` accepts.
 
@@ -369,44 +425,51 @@ def _separate(
     halved until each refused insertion stands alone and is dropped, so one
     insertion that would change the data costs only itself. The kept set is
     checked once more as a whole, and the source is returned if even that fails.
+    ``render`` joins the lines with the blank lines added; the default joins at
+    line feeds.
     """
+    render = render or _render
 
     def accepted(candidates: list[int]) -> list[int]:
-        if not candidates or agrees(_render(lines, candidates)):
+        if not candidates or agrees(render(lines, candidates)):
             return candidates
         if len(candidates) == 1:
             return []
         middle = len(candidates) // 2
         return accepted(candidates[:middle]) + accepted(candidates[middle:])
 
-    kept = accepted(sorted(_insertion_points(lines, starts, indent_bound, comment)))
-    text = _render(lines, kept)
+    kept = accepted(sorted(_insertion_points(lines, starts, indent_bound, comment_start)))
+    text = render(lines, kept)
     return text if agrees(text) else source
 
 
 def _insertion_points(
-    lines: list[str], starts: set[int], indent_bound: bool, comment: re.Pattern[str]
+    lines: list[str],
+    starts: set[int],
+    indent_bound: bool,
+    comment_start: Callable[[list[str], int], int | None],
 ) -> set[int]:
     """The line indices a blank line goes above, one for each line in ``starts``.
 
-    The blank line goes above any comment lines immediately preceding the start,
-    so a comment stays with what it describes. Where indentation is structure
-    (``indent_bound``), only comments indented no deeper than the start count:
-    a deeper ``#`` line belongs to the content above. No blank line is added at
-    the top of the text or where one is already present.
+    The blank line goes above any comments immediately preceding the start, so
+    a comment stays with what it describes. ``comment_start`` names the first
+    line of a comment ending on a given line -- the line itself for a one-line
+    comment, the line that opens it for one spanning lines. Where indentation is
+    structure (``indent_bound``), only comments indented no deeper than the
+    start count: a deeper ``#`` line belongs to the content above. No blank line
+    is added at the top of the text or where one is already present.
     """
     targets: set[int] = set()
     for start in starts:
         depth = len(lines[start]) - len(lines[start].lstrip(" \t"))
         index = start
-        while (
-            index > 0
-            and comment.match(lines[index - 1])
-            and not (
-                indent_bound and len(lines[index - 1]) - len(lines[index - 1].lstrip(" \t")) > depth
-            )
-        ):
-            index -= 1
+        while index > 0:
+            opener = comment_start(lines, index - 1)
+            if opener is None or (
+                indent_bound and len(lines[opener]) - len(lines[opener].lstrip(" \t")) > depth
+            ):
+                break
+            index = opener
         if index > 0 and lines[index - 1].strip():
             targets.add(index)
     return targets
@@ -423,19 +486,22 @@ def _render(lines: list[str], targets: list[int]) -> str:
     return "\n".join(out)
 
 
+def _all_text(element: _Element) -> str:
+    """The text of ``element`` and of every element inside it, in document order."""
+    return "".join(item if isinstance(item, str) else _all_text(item) for item in element.content)
+
+
 def _title(data: object, stem: str) -> str:
     """A top-level ``title``, ``name`` or ``info.title`` string, else ``stem``.
 
     For XML, the root's ``title`` attribute, else the text of its first
-    ``<title>`` child.
+    ``<title>`` child -- including text inside markup within it -- with runs of
+    whitespace collapsed.
     """
     if isinstance(data, _Element):
         attribute = dict(data.attributes).get("title", "")
         child = next((c for c in data.children if c.tag == "title"), None)
-        for candidate in (
-            attribute,
-            "".join(item for item in child.content if isinstance(item, str)) if child else "",
-        ):
+        for candidate in (attribute, " ".join(_all_text(child).split()) if child else ""):
             if candidate.strip():
                 return candidate.strip()
         return stem

@@ -3339,7 +3339,11 @@ at the start of its line, placed above a one-line comment directly before it;
 none between siblings of different tags, above a sibling that opens on the
 line where the one before it closes or on the line it shares with it, or
 inside a mixed-content parent. The same file with CRLF line endings gains the
-same blank lines, each ending CRLF.
+same blank lines, each ending CRLF, and with CR line endings, each ending CR.
+Lines are counted as the parser counts them, so a lone CR inside a text node or
+an attribute does not move a blank line onto the wrong record. A comment
+spanning several lines directly above a separated element stays with it: the
+blank line goes above the line that opens it.
 
 ### TEST-SAGE-AD-211: Entities and external references are refused unfetched
 
@@ -3375,5 +3379,6 @@ its blank line.
 **Artifact:** StructuredDataAdapter.project
 **Category:** title
 **Expected:** The root's `title` attribute, then the text of its first `<title>`
-child; a blank value, or neither, falls back to the filename stem. A declaration
+child, including the text of markup inside it, with whitespace runs collapsed;
+a blank value, or neither, falls back to the filename stem. A declaration
 naming another encoding does not re-decode the UTF-8 text.

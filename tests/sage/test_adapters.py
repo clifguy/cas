@@ -6090,8 +6090,50 @@ class TestStructuredDataAdapter:
             tmp_path, "rule_crlf.xml", source.replace("\n", "\r\n").encode("utf-8")
         )
 
+        _, cr = await self._project(
+            tmp_path, "rule_cr.xml", source.replace("\n", "\r").encode("utf-8")
+        )
+
         assert result.text == expected
         assert crlf.text == expected.replace("\n", "\r\n")
+        assert cr.text == expected.replace("\n", "\r")
+
+    async def test_ad_210_a_lone_carriage_return_in_content_does_not_shift_records(self, tmp_path):
+        """AD-210: Lines are counted as the parser counts them, a lone CR included.
+
+        The parser ends a line at a lone carriage return as well as at a line
+        feed, so a text node or attribute carrying one, in an otherwise
+        LF-terminated file, must not move the blank lines onto the wrong records.
+        """
+        source = (
+            "<root>\n"
+            "  <note>first\rsecond</note>\n"
+            '  <item n="1" memo="a\rb"/>\n'
+            '  <item n="2"/>\n'
+            '  <item n="3"/>\n'
+            '  <item n="4"/>\n'
+            "</root>\n"
+        )
+        _, result = await self._project(tmp_path, "cr_in_text.xml", source.encode("utf-8"))
+
+        expected = source
+        for n in ("2", "3", "4"):
+            expected = expected.replace(f'  <item n="{n}"', f'\n  <item n="{n}"')
+        assert result.text == expected
+
+    async def test_ad_210_a_multi_line_comment_stays_with_the_record_below_it(self, tmp_path):
+        """AD-210: The blank line goes above a comment block, not inside or below it."""
+        source = (
+            "<root>\n"
+            '  <item n="1"/>\n'
+            "  <!-- the second\n"
+            "       item -->\n"
+            '  <item n="2"/>\n'
+            "</root>\n"
+        )
+        _, result = await self._project(tmp_path, "block_comment.xml", source)
+
+        assert result.text == source.replace("  <!-- the second", "\n  <!-- the second")
 
     async def test_ad_211_entities_and_external_references_are_refused_unfetched(self, tmp_path):
         """AD-211: Entity and external-reference payloads are read errors and fetch nothing."""
@@ -6196,6 +6238,7 @@ class TestStructuredDataAdapter:
             # The file is UTF-8 whatever its declaration names, so the title is
             # not decoded a second time as Latin-1.
             ('<?xml version="1.0" encoding="ISO-8859-1"?><doc title="Café"/>', "Café"),
+            ("<doc><title>The <em>Big</em>\n  Book</title></doc>", "The Big Book"),
         ],
         ids=[
             "attribute",
@@ -6204,6 +6247,7 @@ class TestStructuredDataAdapter:
             "blank-child",
             "nested-only",
             "declared-encoding-overridden",
+            "nested-markup",
         ],
     )
     async def test_ad_214_an_xml_title_comes_from_the_root_or_the_filename(
