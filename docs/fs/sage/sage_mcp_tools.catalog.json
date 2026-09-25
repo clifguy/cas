@@ -4573,6 +4573,11 @@
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "agent": {
+              "default": null,
+              "description": "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, '.', '_' and '-', starting with a letter or digit. Recorded as asserted and never verified, in place of the agent the User-Agent names.",
+              "type": "string"
+            },
             "dry_run": {
               "default": false,
               "description": "When true, every item runs in dry-run mode — validators execute (including the natural-key pre-check), the would-be projection of the edge is computed, and each per-item result carries the would-be `edge` with the nil-UUID sentinel id (or the existing edge id on a natural-key hit, with `created=false`). No persistence occurs. Note: link is an edge mutation, not a document field mutation, so the change surface is the per-item `edge` field (subject to `response_mode`) rather than a separate `changes` block. Envelope-level only; per-item override is not supported. **Limitation:** each item's dry-run is evaluated against the committed state at batch start; no item's would-be effects are visible to subsequent items. For full preview accuracy under sequential dependencies (e.g., item N creates an edge and item N+1 references it via retracted_edge_id), dry-run each item separately.",
@@ -6008,7 +6013,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Retrieve a document record with all metadata, lifecycle state, and\npipeline status. Optional delivery of the vault-local source file\nbytes supports the agentic read-modify-reingest round-trip.\n\nTwo mutually-exclusive delivery modes:\n- include_content=true: inline base64 bytes in the response.\n  Best for small files.\n- write_to_path=/abs/path: SAGE writes the bytes to the\n  filesystem path; response carries only metadata (written_to,\n  content_size, content_hash). Preferred for files that would\n  exceed MCP tool-result size ceilings.\n\nError modes (the two store codes only when bytes are requested):\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``invalid_document_id`` (400)\n- ``document_not_found`` (404): no document with that id.\n- ``content_file_missing`` (404): bytes requested; the vault-local\n  file is absent.\n- ``content_too_large`` (413)\n- ``content_delivery_conflict`` (400): both delivery modes set.\n- ``write_path_exists`` (409)\n- ``write_path_invalid`` (400)\n- ``vault_source_store_refused`` (502): resolve it at the store before\n  retrying; ``detail.store_status`` carries its status.\n- ``vault_source_store_unavailable`` (503): the same call may succeed\n  later.\n",
+        "description": "Retrieve a document record with all metadata, lifecycle state, and\npipeline status. Optional delivery of the vault-local source file\nbytes supports the agentic read-modify-reingest round-trip.\n\nTwo mutually-exclusive delivery modes:\n- include_content=true: inline base64 bytes in the response.\n  Best for small files.\n- write_to_path=/abs/path: SAGE writes the bytes to the\n  filesystem path; response carries only metadata (written_to,\n  content_size, content_hash). Preferred for files that would\n  exceed MCP tool-result size ceilings.\n\nWrite provenance, for the creation and the most recent modification:\n``created_by`` / ``last_modified_by`` name the principal and\n``created_client`` / ``last_modified_client`` the client application,\nboth server-derived from the validated token where the request\nauthenticated; ``created_agent`` /\n``last_modified_agent`` are the agent the caller asserted, marked\n``trust: asserted`` and never verified.\n\nError modes (the two store codes only when bytes are requested):\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``invalid_document_id`` (400)\n- ``document_not_found`` (404): no document with that id.\n- ``content_file_missing`` (404): bytes requested; the vault-local\n  file is absent.\n- ``content_too_large`` (413)\n- ``content_delivery_conflict`` (400): both delivery modes set.\n- ``write_path_exists`` (409)\n- ``write_path_invalid`` (400)\n- ``vault_source_store_refused`` (502): resolve it at the store before\n  retrying; ``detail.store_status`` carries its status.\n- ``vault_source_store_unavailable`` (503): the same call may succeed\n  later.\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -9252,6 +9257,11 @@
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "agent": {
+              "default": null,
+              "description": "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, '.', '_' and '-', starting with a letter or digit. Recorded as asserted and never verified, in place of the agent the User-Agent names.",
+              "type": "string"
+            },
             "authority_scope": {
               "default": null,
               "description": "Tripwire, not a functional argument; use metadata={...} (misplaced_metadata)."
@@ -15769,7 +15779,7 @@
             "filters": {
               "additionalProperties": true,
               "default": null,
-              "description": "Metadata filters applied before retrieval. Document-target keys: ``doc_type``, ``project``, ``lifecycle_status``, ``exclude_terminal_lifecycle``, ``tags``, ``document_ids``, ``pipeline_status``, ``source_type``, ``tier3_metadata`` (these also narrow the faceted slice). Edge-target keys (target=\"edges\"): ``source_id``, ``target_id``, ``edge_type``; mixing the two sets is refused. Every key belongs nested here, e.g. filters={\"doc_type\": \"adr\", \"lifecycle_status\": \"active\"}; a key passed at the top level is refused with misplaced_filters rather than dropped. ``source_type`` takes one of markdown, docx, pdf, email, onenote, teams_chat, xlsx, pptx, structured_data, and ``edge_type`` is closed the same way; anything else is refused with invalid_filter_value. ``exclude_terminal_lifecycle`` drops documents in a state the vault declares terminal. ``tier3_metadata`` takes field-to-value pairs that must all match exactly; null matches a null or absent field.",
+              "description": "Metadata filters applied before retrieval. Document-target keys: ``doc_type``, ``project``, ``lifecycle_status``, ``exclude_terminal_lifecycle``, ``tags``, ``document_ids``, ``pipeline_status``, ``source_type``, ``tier3_metadata``, ``provenance`` (these also narrow the faceted slice). Edge-target keys (target=\"edges\"): ``source_id``, ``target_id``, ``edge_type``; mixing the two sets is refused. Every key belongs nested here, e.g. filters={\"doc_type\": \"adr\", \"lifecycle_status\": \"active\"}; a key passed at the top level is refused with misplaced_filters rather than dropped. ``source_type`` takes one of markdown, docx, pdf, email, onenote, teams_chat, xlsx, pptx, structured_data, and ``edge_type`` is closed the same way; anything else is refused with invalid_filter_value. ``exclude_terminal_lifecycle`` drops documents in a state the vault declares terminal. ``tier3_metadata`` takes field-to-value pairs that must all match exactly; null matches a null or absent field. ``provenance`` matches created_/last_modified_ by, client or agent likewise; agents by name.",
               "type": "object"
             },
             "heading_path": {
@@ -15817,6 +15827,10 @@
               "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters)."
             },
             "project": {
+              "default": null,
+              "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters)."
+            },
+            "provenance": {
               "default": null,
               "description": "Tripwire, not a functional argument; use filters={...} (misplaced_filters)."
             },
@@ -17731,6 +17745,11 @@
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "agent": {
+              "default": null,
+              "description": "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, '.', '_' and '-', starting with a letter or digit. Recorded as asserted and never verified, in place of the agent the User-Agent names.",
+              "type": "string"
+            },
             "dry_run": {
               "default": false,
               "description": "When true, every item runs in dry-run mode — validators execute, the would-be projection of the post-state is computed, and each per-item result carries a `changes` block with a single `lifecycle_status` entry on state-changing transitions (preserved under `response_mode=light`). No persistence occurs. Per-item override is not supported. **Limitation:** each item's dry-run is evaluated against the committed state at batch start; no item's would-be effects are visible to subsequent items. For full preview accuracy under sequential dependencies (e.g., item N supersedes a document and item N+1 tries to mutate it), dry-run each item separately.",
@@ -19196,6 +19215,11 @@
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
+            "agent": {
+              "default": null,
+              "description": "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, '.', '_' and '-', starting with a letter or digit. Recorded as asserted and never verified, in place of the agent the User-Agent names.",
+              "type": "string"
+            },
             "dry_run": {
               "default": false,
               "description": "When true, every item runs in dry-run mode — validators execute, the would-be projection of the post-state is computed, and each per-item result carries a `changes` block enumerating field-level deltas (preserved under `response_mode=light`). No persistence occurs. Per-item override is not supported. **Limitation:** each item's dry-run is evaluated against the committed state at batch start; no item's would-be effects are visible to subsequent items. For full preview accuracy under sequential dependencies (e.g., item N adds tag X and item N+1 tries to add the same tag), dry-run each item separately.",

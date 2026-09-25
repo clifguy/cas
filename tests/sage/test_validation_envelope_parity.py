@@ -770,13 +770,19 @@ def _tools_building_a_nesting_model() -> dict[str, type]:
 #: ``RetrievalFilters`` -- a key it refuses keeps ``unknown_filter_key``, whose
 #: detail carries the valid key set and a worked example.
 #:
+#: ``ProvenanceFilter`` -- nested under ``RetrievalFilters``, and a key it
+#: refuses keeps ``unknown_filter_key`` for the same reason, naming the dotted
+#: key and the provenance filter's own key set.
+#:
 #: ``Tier3Patch`` -- the retired bare-dict form is detected as *any* key
 #: outside ``{set, unset}`` (``sage/models/legacy_form.py``), so a patch object
 #: carrying an undeclared key alongside its ops is read as that form and
 #: refused as ``legacy_form`` before the model is reached. ``ListFieldPatch``
 #: is deliberately not here: its retired form is a bare *list*, so a mapping
 #: with an extra key does reach the model, and it is probed.
-_SHADOWED_NESTINGS: frozenset[str] = frozenset({"RetrievalFilters", "Tier3Patch"})
+_SHADOWED_NESTINGS: frozenset[str] = frozenset(
+    {"ProvenanceFilter", "RetrievalFilters", "Tier3Patch"}
+)
 
 
 #: One call per (tool, nested model) that plants an undeclared key at that

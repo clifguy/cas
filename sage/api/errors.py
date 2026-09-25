@@ -2670,6 +2670,7 @@ _FILTER_FIELD_TYPE_NAMES: dict[str, str] = {
     "source_id": "DocumentIdStr",
     "target_id": "DocumentIdStr",
     "tier3_metadata": "dict",
+    "provenance": "ProvenanceFilter",
 }
 
 # Remedies attached to ``invalid_parameter`` envelopes, keyed by the final
@@ -2924,7 +2925,7 @@ def translate_validation_error(
     # Local import sidesteps any future circular-import risk: errors.py is
     # imported by routers/services that themselves import models/schemas.
     from sage.models.enums import RetrievalMode
-    from sage.models.schemas import RetrievalFilters
+    from sage.models.schemas import ProvenanceFilter, RetrievalFilters
 
     for err in exc.errors():
         loc = tuple(err.get("loc") or ())
@@ -3038,6 +3039,14 @@ def translate_validation_error(
             return InvalidModeError(mode=str(input_value), valid_modes=valid_modes)
 
         # 2) Unknown filter key: extra_forbidden under `filters`.
+        if len(loc) >= 3 and loc[:2] == ("filters", "provenance") and err_type == "extra_forbidden":
+            # A key inside the provenance filter names that filter's own key
+            # set, not the top-level one it sits under.
+            return UnknownFilterKeyError(
+                key=f"provenance.{loc[2]}",
+                valid_keys=list(ProvenanceFilter.model_fields.keys()),
+                example='{"provenance": {"created_client": "<client name>"}}',
+            )
         if len(loc) >= 2 and loc[0] == "filters" and err_type == "extra_forbidden":
             key = str(loc[1])
             valid_keys = list(RetrievalFilters.model_fields.keys())

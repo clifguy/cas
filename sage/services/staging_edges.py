@@ -20,6 +20,7 @@ from sage.models.schemas import (
     StagingEdgeDismissResponse,
     StagingEdgeListResponse,
 )
+from sage.request_identity import edge_attribution
 
 
 class StagingEdgesService:
@@ -82,6 +83,7 @@ class StagingEdgesService:
             created_at=datetime.now(timezone.utc),
             notes=f"Confirmed from staging edge {edge_id}",
             rationale=staging.inference_evidence,
+            **edge_attribution(self._config.vault.owner),
         )
         # If the natural-key triple already exists in production
         # (e.g., a parallel create_edge or earlier auto-inference path

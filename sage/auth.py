@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -28,7 +28,14 @@ from jwt import PyJWKClient
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from sage.config import StackAuthConfig
-from sage.request_identity import request_principal
+from sage.request_identity import (
+    agent_from_user_agent,
+    client_name,
+    header_user_agent,
+    request_client,
+    request_header_agent,
+    request_principal,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -323,9 +330,11 @@ class AuthMiddleware:
         validator: TokenValidator,
         exempt_paths: frozenset[str] = frozenset(),
         exempt_prefixes: frozenset[str] = frozenset(),
+        client_names: Mapping[str, str] | None = None,
     ) -> None:
         self.app = app
         self._validator = validator
+        self._client_names = dict(client_names or {})
         self._exempt_paths = exempt_paths
         self._exempt_prefixes = exempt_prefixes
 
@@ -344,10 +353,22 @@ class AuthMiddleware:
             await _send_challenge(send, exc)
             return
         scope[SCOPE_PRINCIPAL_KEY] = principal
-        # Bind the principal for the request's lifetime so writes beneath it,
-        # on any surface, are attributed to it (sage.request_identity).
-        binding = request_principal.set(principal)
+        # Bind the principal, the client its token was issued to, and the
+        # agent the request's User-Agent names, for the request's lifetime, so
+        # writes beneath it on any surface are attributed to them
+        # (sage.request_identity).
+        bindings = (
+            (request_principal, request_principal.set(principal)),
+            (request_client, request_client.set(client_name(principal, self._client_names))),
+            (
+                request_header_agent,
+                request_header_agent.set(
+                    agent_from_user_agent(header_user_agent(scope.get("headers", [])))
+                ),
+            ),
+        )
         try:
             await self.app(scope, receive, send)
         finally:
-            request_principal.reset(binding)
+            for var, token in reversed(bindings):
+                var.reset(token)

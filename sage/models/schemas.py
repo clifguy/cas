@@ -413,6 +413,40 @@ class RelocationPointer(BaseModel):
         return cls.model_validate(raw)
 
 
+AGENT_NAME_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,63}$"
+
+
+class AssertedAgent(BaseModel):
+    """An agent a write was attributed to, as the caller asserted it.
+
+    Recorded as given and never verified; ``trust`` is always ``asserted``
+    (CAS-ADR-056).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(
+        pattern=AGENT_NAME_PATTERN,
+        description=(
+            "The agent's name: lowercase letters, digits, '.', '_' or '-', "
+            "starting with a letter or digit."
+        ),
+    )
+    trust: Literal["asserted"] = Field(
+        default="asserted",
+        description=(
+            "How SAGE knows the agent: always asserted, meaning the caller named "
+            "it and nothing verified it."
+        ),
+    )
+    source: Literal["header", "parameter"] = Field(
+        description=(
+            "Where the name came from: parameter for a write tool's agent "
+            "argument, header for the request's User-Agent product name."
+        ),
+    )
+
+
 class Document(BaseModel):
     id: DocumentIdStr = Field(
         description="Immutable, assigned at creation (short hash + hint from title)."
@@ -498,6 +532,41 @@ class Document(BaseModel):
             "metadata changes, lifecycle transitions including supersession, "
             "and forced re-ingestion."
         )
+    )
+    created_client: str | None = Field(
+        default=None,
+        description=(
+            "The client application the creating request came through: its name "
+            "in the deployment's client map, or its client id where the map names "
+            "none. Derived by the server from the validated token, so it is "
+            "verified, and no parameter sets it. Null where the request did not "
+            "authenticate, and on documents created before clients were recorded."
+        ),
+    )
+    created_agent: AssertedAgent | None = Field(
+        default=None,
+        description=(
+            "The agent that created this document, as the caller asserted it: the "
+            "write's agent argument, otherwise the product the request's "
+            "User-Agent names. Marked asserted and never verified. Null where "
+            "neither named an agent, and on documents created before agents were "
+            "recorded."
+        ),
+    )
+    last_modified_client: str | None = Field(
+        default=None,
+        description=(
+            "The client application the most recent modification came through, "
+            "recorded the same way as created_client and updated with "
+            "last_modified_by."
+        ),
+    )
+    last_modified_agent: AssertedAgent | None = Field(
+        default=None,
+        description=(
+            "The agent that made the most recent modification, asserted the same "
+            "way as created_agent and updated with last_modified_by."
+        ),
     )
     updated_at: datetime = Field(description="Last modification timestamp.")
     projected_at: datetime | None = Field(
@@ -937,6 +1006,32 @@ class Edge(BaseModel):
         ),
     )
     created_at: datetime = Field(description="Timestamp when the edge was created.")
+    created_by: str | None = Field(
+        default=None,
+        description=(
+            "Who created this edge, recorded as a document's created_by is: the "
+            "authenticated principal where the request authenticated, otherwise "
+            "the writer the operation recorded, or the vault owner. Null for an "
+            "edge a background task derived, and on edges created before edge "
+            "attribution was recorded."
+        ),
+    )
+    created_client: str | None = Field(
+        default=None,
+        description=(
+            "The client application the edge's creating request came through, "
+            "recorded as a document's created_client is. Verified; no parameter "
+            "sets it. Null where created_by is null or the request did not "
+            "authenticate."
+        ),
+    )
+    created_agent: AssertedAgent | None = Field(
+        default=None,
+        description=(
+            "The agent that created this edge, asserted as a document's "
+            "created_agent is. Never verified. Null where no agent was named."
+        ),
+    )
     notes: str | None = Field(
         default=None,
         description="Optional annotation on why the relationship exists.",
@@ -1230,6 +1325,16 @@ class IngestRequest(BaseModel):
             "carry the delivered content hash, or no document at all, is "
             "rejected with 409 `force_reingest_pin_mismatch`. Consulted only "
             "when `force=true`; ignored otherwise."
+        ),
+    )
+    agent: str | None = Field(
+        default=None,
+        pattern=AGENT_NAME_PATTERN,
+        description=(
+            "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, "
+            "'.', '_' and '-', starting with a letter or digit. Recorded as "
+            "asserted and never verified, in place of the agent the User-Agent "
+            "names."
         ),
     )
     dry_run: bool = Field(
@@ -1852,6 +1957,16 @@ class BulkLifecycleRequest(BaseModel):
             'smaller batches default to "full".'
         ),
     )
+    agent: str | None = Field(
+        default=None,
+        pattern=AGENT_NAME_PATTERN,
+        description=(
+            "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, "
+            "'.', '_' and '-', starting with a letter or digit. Recorded as "
+            "asserted and never verified, in place of the agent the User-Agent "
+            "names."
+        ),
+    )
     dry_run: bool = Field(
         default=False,
         description=(
@@ -2334,6 +2449,16 @@ class BulkMetadataRequest(BaseModel):
             "full structured error envelope regardless of mode. When "
             'unset, batches with more than 5 items default to "light", '
             'smaller batches default to "full".'
+        ),
+    )
+    agent: str | None = Field(
+        default=None,
+        pattern=AGENT_NAME_PATTERN,
+        description=(
+            "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, "
+            "'.', '_' and '-', starting with a letter or digit. Recorded as "
+            "asserted and never verified, in place of the agent the User-Agent "
+            "names."
         ),
     )
     dry_run: bool = Field(
@@ -2981,6 +3106,16 @@ class BulkLinkRequest(BaseModel):
             'items default to "light", smaller batches default to "full".'
         ),
     )
+    agent: str | None = Field(
+        default=None,
+        pattern=AGENT_NAME_PATTERN,
+        description=(
+            "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, "
+            "'.', '_' and '-', starting with a letter or digit. Recorded as "
+            "asserted and never verified, in place of the agent the User-Agent "
+            "names."
+        ),
+    )
     dry_run: bool = Field(
         default=False,
         description=(
@@ -3451,6 +3586,37 @@ class PreconditionResult(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+class ProvenanceFilter(BaseModel):
+    """Write-provenance filter: every key given must match exactly (CAS-ADR-056).
+
+    A key set to null matches a document whose field is null; a key left out
+    constrains nothing.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    created_by: str | None = Field(default=None, description="Principal that created the document.")
+    created_client: str | None = Field(
+        default=None, description="Client the creating request came through."
+    )
+    created_agent: str | None = Field(
+        default=None, description="Name of the agent asserted at creation."
+    )
+    last_modified_by: str | None = Field(
+        default=None, description="Principal that made the most recent modification."
+    )
+    last_modified_client: str | None = Field(
+        default=None, description="Client the most recent modification came through."
+    )
+    last_modified_agent: str | None = Field(
+        default=None, description="Name of the agent asserted at the most recent modification."
+    )
+
+    def constraints(self) -> dict[str, str | None]:
+        """The keys the caller set, with their values, null included."""
+        return {key: getattr(self, key) for key in self.model_fields_set}
+
+
 class RetrievalFilters(BaseModel):
     """Metadata filters applied before retrieval.
 
@@ -3538,6 +3704,15 @@ class RetrievalFilters(BaseModel):
             "treated as no filter."
         ),
     )
+    provenance: ProvenanceFilter | None = Field(
+        default=None,
+        description=(
+            "Write-provenance filter: every key given must match exactly. Keys: "
+            "created_by, created_client, created_agent, last_modified_by, "
+            "last_modified_client, last_modified_agent. An agent key matches the "
+            "agent's name; null matches a field that is null."
+        ),
+    )
     # Edge-only filter keys. Valid only when the DiscoverRequest
     # targets edges; document-targeting requests that set these are rejected
     # at the DiscoverRequest model_validator (mode_parameter_mismatch).
@@ -3573,6 +3748,7 @@ class RetrievalFilters(BaseModel):
 
 # Document-only filter keys that must NOT be set when target="edges".
 _DOC_ONLY_FILTER_KEYS: tuple[str, ...] = (
+    "provenance",
     "doc_type",
     "project",
     "lifecycle_status",
@@ -4322,6 +4498,33 @@ class EdgeHit(BaseModel):
         description=(
             "Computed. The edge_id of the earliest retracts edge that "
             "disclaims this row. Null when this edge is still live. "
+            "Omitted in light mode."
+        ),
+    )
+    created_by: str | None = Field(
+        default=None,
+        description=(
+            "Who created this edge, recorded as a document's created_by is: the "
+            "authenticated principal where the request authenticated, otherwise "
+            "the writer the operation recorded, or the vault owner. Null for an "
+            "edge a background task derived, and on edges created before edge "
+            "attribution was recorded. Omitted in light mode."
+        ),
+    )
+    created_client: str | None = Field(
+        default=None,
+        description=(
+            "The client application the edge's creating request came through, "
+            "recorded as a document's created_client is. Verified; no parameter "
+            "sets it. Null where created_by is null or the request did not "
+            "authenticate. Omitted in light mode."
+        ),
+    )
+    created_agent: AssertedAgent | None = Field(
+        default=None,
+        description=(
+            "The agent that created this edge, asserted as a document's "
+            "created_agent is. Never verified. Null where no agent was named. "
             "Omitted in light mode."
         ),
     )

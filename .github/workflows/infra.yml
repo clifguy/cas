@@ -99,6 +99,9 @@ jobs:
       PUBLISHER_EMAIL: ${{ vars.PUBLISHER_EMAIL }}
       BFF_OIDC_CLIENT_ID: ${{ vars.BFF_OIDC_CLIENT_ID }}
       MCP_CLIENT_ID: ${{ vars.MCP_CLIENT_ID }}
+      # The deploy identity's own client id, named in SAGE's client map so a
+      # write made under it records its client as CI.
+      DEPLOY_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
       BASE_DOMAIN: ${{ vars.BASE_DOMAIN }}
       POSTGRES_GENERATION: ${{ vars.POSTGRES_GENERATION }}
       POSTGRES_AAD_ADMIN_OBJECT_ID: ${{ vars.POSTGRES_AAD_ADMIN_OBJECT_ID }}
@@ -135,6 +138,7 @@ jobs:
               imageTag="$IMAGE_TAG" \
               bffOidcClientId="$BFF_OIDC_CLIENT_ID" \
               mcpClientId="$MCP_CLIENT_ID" \
+              deployClientId="$DEPLOY_CLIENT_ID" \
               baseDomain="$BASE_DOMAIN" \
               postgresGeneration="$POSTGRES_GENERATION" \
               postgresAadAdminObjectId="$POSTGRES_AAD_ADMIN_OBJECT_ID" \
@@ -157,6 +161,7 @@ jobs:
               imageTag="$IMAGE_TAG" \
               bffOidcClientId="$BFF_OIDC_CLIENT_ID" \
               mcpClientId="$MCP_CLIENT_ID" \
+              deployClientId="$DEPLOY_CLIENT_ID" \
               baseDomain="$BASE_DOMAIN" \
               postgresGeneration="$POSTGRES_GENERATION" \
               postgresAadAdminObjectId="$POSTGRES_AAD_ADMIN_OBJECT_ID" \

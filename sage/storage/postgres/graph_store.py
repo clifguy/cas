@@ -51,6 +51,7 @@ from sage.models.enums import (
 )
 from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
 from sage.models.schemas import (
+    AssertedAgent,
     Document,
     Edge,
     LinkRequest,
@@ -95,6 +96,33 @@ def _pointer_to_jsonb(pointer: RelocationPointer | None) -> Jsonb | None:
         return None
     return Jsonb(pointer.model_dump(mode="json"))
 
+
+def _agent_to_jsonb(agent: AssertedAgent | dict | None) -> Jsonb | None:
+    """Adapt an asserted agent to its column form, or NULL when none was named."""
+    if agent is None:
+        return None
+    if isinstance(agent, dict):
+        agent = AssertedAgent.model_validate(agent)
+    return Jsonb(agent.model_dump(mode="json"))
+
+
+def _agent_from_stored(raw: dict | None) -> AssertedAgent | None:
+    """Read an asserted agent back from its column, validating it on the way out."""
+    if raw is None:
+        return None
+    return AssertedAgent.model_validate(raw)
+
+
+# The SQL each write-provenance filter key compares; an agent compares by name.
+# A key outside this map is refused by the request model before it reaches here.
+_PROVENANCE_FILTER_COLUMNS: dict[str, str] = {
+    "created_by": "created_by",
+    "created_client": "created_client",
+    "created_agent": "created_agent->>'name'",
+    "last_modified_by": "last_modified_by",
+    "last_modified_client": "last_modified_client",
+    "last_modified_agent": "last_modified_agent->>'name'",
+}
 
 # Columns safe to interpolate into ORDER BY; the allowlist prevents SQL injection.
 _SORTABLE_COLUMNS: frozenset[str] = frozenset(
@@ -355,9 +383,11 @@ class PostgresGraphStore(GraphStore):
                 last_modified_by, updated_at, projected_at, indexed_at,
                 source_modified_at, document_date,
                 semantic_abstract, pipeline_status, pipeline_error, tier3_metadata,
-                adapter_config, metadata_confirmed, relocated_from, relocated_to
+                adapter_config, metadata_confirmed, relocated_from, relocated_to,
+                created_client, created_agent, last_modified_client, last_modified_agent
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                      %s, %s, %s, %s)""",
             (
                 doc.id,
                 doc.title,
@@ -388,6 +418,10 @@ class PostgresGraphStore(GraphStore):
                 bool(doc.metadata_confirmed),
                 _pointer_to_jsonb(doc.relocated_from),
                 _pointer_to_jsonb(doc.relocated_to),
+                doc.created_client,
+                _agent_to_jsonb(doc.created_agent),
+                doc.last_modified_client,
+                _agent_to_jsonb(doc.last_modified_agent),
             ),
         )
         await self._sync_document_tags(conn, doc.id, doc.tags)
@@ -492,6 +526,9 @@ class PostgresGraphStore(GraphStore):
         for pointer_field in ("relocated_from", "relocated_to"):
             if pointer_field in updates:
                 updates[pointer_field] = _pointer_to_jsonb(updates[pointer_field])
+        for agent_field in ("created_agent", "last_modified_agent"):
+            if agent_field in updates:
+                updates[agent_field] = _agent_to_jsonb(updates[agent_field])
         if "metadata_confirmed" in updates:
             updates["metadata_confirmed"] = bool(updates["metadata_confirmed"])
         if "is_chain_head" in updates:
@@ -629,6 +666,14 @@ class PostgresGraphStore(GraphStore):
                     clause, clause_params = _tier3_equality_predicate(key, value)
                     where_clauses.append(clause)
                     params.extend(clause_params)
+
+            for key, value in (filters.get("provenance") or {}).items():
+                column = _PROVENANCE_FILTER_COLUMNS[key]
+                if value is None:
+                    where_clauses.append(f"{column} IS NULL")
+                else:
+                    where_clauses.append(f"{column} = %s")
+                    params.append(value)
 
         where_sql = " AND ".join(where_clauses) if where_clauses else "TRUE"
         return where_sql, params
@@ -879,9 +924,11 @@ class PostgresGraphStore(GraphStore):
                 source_valid_from_version, target_valid_from_version,
                 valid_until_version, retracted_edge_id,
                 created_at, notes, rationale, rationale_kind,
-                synced_from_version, synced_from_content_hash
+                synced_from_version, synced_from_content_hash,
+                created_by, created_client, created_agent
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                    %s, %s, %s)""",
             (
                 edge.id,
                 edge.source_id,
@@ -898,6 +945,9 @@ class PostgresGraphStore(GraphStore):
                 edge.rationale_kind.value,
                 edge.synced_from_version,
                 edge.synced_from_content_hash,
+                edge.created_by,
+                edge.created_client,
+                _agent_to_jsonb(edge.created_agent),
             ),
         )
 
@@ -1722,7 +1772,9 @@ class PostgresGraphStore(GraphStore):
                 "e.resolution_policy, e.source_valid_from_version, "
                 "e.target_valid_from_version, e.valid_until_version, "
                 "e.retracted_edge_id, "
-                "e.synced_from_version, e.synced_from_content_hash"
+                "e.synced_from_version, e.synced_from_content_hash, "
+                "e.created_by AS edge_created_by, e.created_client AS edge_created_client, "
+                "e.created_agent AS edge_created_agent"
             )
             params: list = []
             if direction == "outbound":
@@ -1809,6 +1861,9 @@ class PostgresGraphStore(GraphStore):
                     "valid_until_version": row["valid_until_version"],
                     "synced_from_version": row["synced_from_version"],
                     "synced_from_content_hash": row["synced_from_content_hash"],
+                    "edge_created_by": row["edge_created_by"],
+                    "edge_created_client": row["edge_created_client"],
+                    "edge_created_agent": row["edge_created_agent"],
                     "depth": row["depth"],
                     "d_title": row["title"],
                     "d_lifecycle_status": row["lifecycle_status"],
@@ -2028,6 +2083,11 @@ class PostgresGraphStore(GraphStore):
             # ``.get`` for the same reason as ``stored_content_hash`` above.
             relocated_from=RelocationPointer.from_stored(row.get("relocated_from")),
             relocated_to=RelocationPointer.from_stored(row.get("relocated_to")),
+            # ``.get`` for the same reason as ``stored_content_hash`` above.
+            created_client=row.get("created_client"),
+            created_agent=_agent_from_stored(row.get("created_agent")),
+            last_modified_client=row.get("last_modified_client"),
+            last_modified_agent=_agent_from_stored(row.get("last_modified_agent")),
         )
 
     @staticmethod
@@ -2050,6 +2110,9 @@ class PostgresGraphStore(GraphStore):
             rationale_kind=RationaleKind(rationale_kind_value),
             synced_from_version=row.get("synced_from_version"),
             synced_from_content_hash=row.get("synced_from_content_hash"),
+            created_by=row.get("created_by"),
+            created_client=row.get("created_client"),
+            created_agent=_agent_from_stored(row.get("created_agent")),
         )
 
     @staticmethod

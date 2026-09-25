@@ -12,18 +12,66 @@ to every task that request starts, and to nothing else. A long-lived worker
 that a request happens to start is created without it. Outside a request, and
 under a profile that does not authenticate callers, there is no actor, and the
 services fall back to the caller-supplied value or the vault owner.
+
+Two further identities are bound alongside the principal and recorded with it
+(CAS-ADR-056). The *client* is the registered application the token was issued
+to, named through the deployment's client map; it is derived from the validated
+token and no parameter can set it. The *agent* is the product or process making
+the call, as the caller asserts it: a write tool's explicit ``agent`` argument,
+otherwise the request's ``User-Agent`` product name. The agent is always served
+marked asserted, never as verified.
 """
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import TYPE_CHECKING
+
+from sage.models.schemas import AGENT_NAME_PATTERN, AssertedAgent
 
 if TYPE_CHECKING:
     from sage.auth import AuthenticatedPrincipal
 
 request_principal: ContextVar[AuthenticatedPrincipal | None] = ContextVar(
     "sage_request_principal", default=None
+)
+request_client: ContextVar[str | None] = ContextVar("sage_request_client", default=None)
+request_header_agent: ContextVar[str | None] = ContextVar("sage_request_header_agent", default=None)
+_parameter_agent: ContextVar[str | None] = ContextVar("sage_parameter_agent", default=None)
+
+# Every contextvar that carries a request's identity. A task that outlives its
+# request clears all of them, so it never writes as the request that started it.
+IDENTITY_VARS: tuple[ContextVar, ...] = (
+    request_principal,
+    request_client,
+    request_header_agent,
+    _parameter_agent,
+)
+
+_AGENT_NAME = re.compile(AGENT_NAME_PATTERN)
+
+# User-Agent product names that identify a browser or a general-purpose HTTP
+# library rather than the agent using it. A request carrying one records no
+# header agent.
+_GENERIC_USER_AGENT_PRODUCTS = frozenset(
+    {
+        "mozilla",
+        "python-httpx",
+        "python-requests",
+        "python-urllib",
+        "aiohttp",
+        "node",
+        "node-fetch",
+        "undici",
+        "axios",
+        "curl",
+        "wget",
+        "go-http-client",
+        "okhttp",
+    }
 )
 
 
@@ -75,3 +123,105 @@ def attributed_writer(caller_value: str | None, fallback: str) -> tuple[str, lis
             f"{actor!r}, and a write is attributed to the authenticated principal."
         ]
     return actor, []
+
+
+def client_name(principal: AuthenticatedPrincipal, client_names: Mapping[str, str]) -> str | None:
+    """The client a validated principal's token was issued to, or None if anonymous.
+
+    The client id is the token's ``azp`` claim, or ``appid`` on a v1 token.
+    The deployment's ``client_names`` map names it; an id the map does not
+    name is recorded as the id itself, which is still derived from the token.
+    """
+    if principal.anonymous:
+        return None
+    client_id = principal.claims.get("azp") or principal.claims.get("appid")
+    if not client_id:
+        return None
+    return client_names.get(str(client_id), str(client_id))
+
+
+def agent_from_user_agent(user_agent: str | None) -> str | None:
+    """The agent a ``User-Agent`` header names, or None if it names none.
+
+    The agent is the first product token's name, lowercased. A browser or a
+    general-purpose HTTP library names no agent, nor does a value that is not
+    a well-formed product name.
+    """
+    if not user_agent:
+        return None
+    product = user_agent.strip().split(" ", 1)[0].split("/", 1)[0].lower()
+    if product in _GENERIC_USER_AGENT_PRODUCTS or not _AGENT_NAME.match(product):
+        return None
+    return product
+
+
+def header_user_agent(headers: list[tuple[bytes, bytes]]) -> str | None:
+    """The ``User-Agent`` header from raw ASGI headers, if present."""
+    for name, value in headers:
+        if name == b"user-agent":
+            return value.decode("latin-1")
+    return None
+
+
+@contextmanager
+def asserted_agent(agent: str | None) -> Iterator[None]:
+    """Attribute writes within the block to a caller-named agent.
+
+    A None ``agent`` changes nothing, so a write tool can wrap its call
+    unconditionally. The name is validated by the request models that carry
+    it.
+    """
+    if agent is None:
+        yield
+        return
+    binding = _parameter_agent.set(agent)
+    try:
+        yield
+    finally:
+        _parameter_agent.reset(binding)
+
+
+def in_request() -> bool:
+    """Whether the code is running inside a request the middleware admitted."""
+    return request_principal.get() is not None
+
+
+def current_client() -> str | None:
+    """The client the request in progress came through, if it authenticated."""
+    return request_client.get()
+
+
+def current_agent() -> AssertedAgent | None:
+    """The asserted agent of the request in progress, if it names one.
+
+    An explicit ``agent`` argument wins over the ``User-Agent`` header.
+    """
+    named = _parameter_agent.get()
+    if named is not None:
+        return AssertedAgent(name=named, source="parameter")
+    header = request_header_agent.get()
+    if header is not None:
+        return AssertedAgent(name=header, source="header")
+    return None
+
+
+def provenance_fields(prefix: str) -> dict[str, object]:
+    """The client and agent fields for a write, keyed ``<prefix>_client`` and ``<prefix>_agent``."""
+    return {f"{prefix}_client": current_client(), f"{prefix}_agent": current_agent()}
+
+
+def modifier_fields(writer: str) -> dict[str, object]:
+    """The last-modification attribution for a write by ``writer``: principal, client, agent."""
+    return {"last_modified_by": writer, **provenance_fields("last_modified")}
+
+
+def edge_attribution(owner: str) -> dict[str, object]:
+    """The creation attribution for an edge written now.
+
+    Inside a request, the principal (or ``owner`` when the request did not
+    authenticate), the client, and the agent. Outside one -- a background task
+    deriving edges -- no one is attributed, and all three are None.
+    """
+    if not in_request():
+        return {"created_by": None, "created_client": None, "created_agent": None}
+    return {"created_by": current_actor() or owner, **provenance_fields("created")}

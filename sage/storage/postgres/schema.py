@@ -112,6 +112,10 @@ CREATE TABLE IF NOT EXISTS documents (
     created_by text NOT NULL,
     created_at text NOT NULL,
     last_modified_by text NOT NULL,
+    created_client text,
+    created_agent jsonb,
+    last_modified_client text,
+    last_modified_agent jsonb,
     updated_at text NOT NULL,
     projected_at text,
     indexed_at text,
@@ -156,6 +160,9 @@ CREATE TABLE IF NOT EXISTS edges (
     rationale_kind text NOT NULL DEFAULT 'manual',
     synced_from_version text,
     synced_from_content_hash text,
+    created_by text,
+    created_client text,
+    created_agent jsonb,
     FOREIGN KEY (source_id) REFERENCES documents(id),
     FOREIGN KEY (target_id) REFERENCES documents(id)
 );
@@ -408,6 +415,18 @@ ADDITIVE_COLUMNS: tuple[str, ...] = (
     # vault needs no backfill. Kept apart from ``adapter_version``, which states
     # whose output the passages are and so cannot record a failed attempt.
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS reprojection_skipped jsonb;",
+    # Who a write came through and which agent asserted it made it, recorded
+    # beside the principal (CAS-ADR-056). Nullable with no default: null is
+    # what "not recorded" means, which is every document and edge written
+    # before these were recorded, so an existing vault needs no backfill. The
+    # agent is jsonb so its trust marker and source travel with the name.
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS created_client text;",
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS created_agent jsonb;",
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS last_modified_client text;",
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS last_modified_agent jsonb;",
+    "ALTER TABLE edges ADD COLUMN IF NOT EXISTS created_by text;",
+    "ALTER TABLE edges ADD COLUMN IF NOT EXISTS created_client text;",
+    "ALTER TABLE edges ADD COLUMN IF NOT EXISTS created_agent jsonb;",
 )
 
 

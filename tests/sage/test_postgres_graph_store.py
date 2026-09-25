@@ -137,6 +137,9 @@ def _pg_edge_row() -> dict:
         "rationale_kind": RationaleKind.VERSION_CHAIN.value,
         "synced_from_version": "00000004_doc_synced",
         "synced_from_content_hash": "sha256:" + "ab" * 32,
+        "created_by": "sentinel-edge-writer",
+        "created_client": "sentinel-edge-client",
+        "created_agent": {"name": "sentinel-edge-agent", "trust": "asserted", "source": "header"},
     }
 
 
@@ -239,6 +242,14 @@ def test_pg_row_to_document_populates_every_field():
             "server_address": "https://destination.example",
             "source_content_hash": "sha256:" + "12" * 32,
             "relocated_at": datetime(2026, 5, 19, 9, 0, tzinfo=timezone.utc).isoformat(),
+        },
+        "created_client": "sentinel-client-created",
+        "created_agent": {"name": "sentinel-agent-c", "trust": "asserted", "source": "header"},
+        "last_modified_client": "sentinel-client-modified",
+        "last_modified_agent": {
+            "name": "sentinel-agent-m",
+            "trust": "asserted",
+            "source": "parameter",
         },
     }
     doc = PostgresGraphStore._row_to_document(row)

@@ -1453,6 +1453,16 @@ class StackAuthConfig(BaseModel):
             "role-based acceptance."
         ),
     )
+    client_names: dict[str, str] = Field(
+        default_factory=dict,
+        description=(
+            "Names for the client applications a token may be issued to, "
+            "keyed by client id (the token's 'azp' claim, or 'appid' on a v1 "
+            "token). A write records the name as its client; a client id with "
+            "no entry is recorded as the id itself. Attribution only: no "
+            "request is admitted or refused on its client."
+        ),
+    )
     resource_metadata_url: str | None = Field(
         default=None,
         description=(

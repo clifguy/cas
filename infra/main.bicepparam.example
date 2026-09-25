@@ -49,8 +49,12 @@ param mcpClientId = 'REPLACE-WITH-MCP-CLIENT-ID'
 // `latest`). bffOidcClientId is the CAS BFF confidential-client app id,
 // emitted by the Entra bootstrap script. abstractionModel defaults to the
 // committed hosted Claude model id; override only to pin a different model.
+// deployClientId is the client id of the deploy identity CI signs in as, named
+// in SAGE's client map so writes under it record their client as CI; leave it
+// empty to leave that identity unnamed.
 param imageTag = 'REPLACE-WITH-IMAGE-TAG'
 param bffOidcClientId = 'REPLACE-WITH-BFF-CLIENT-ID'
+param deployClientId = 'REPLACE-WITH-DEPLOY-CLIENT-ID'
 
 // --- Key Vault protection --------------------------------------------
 // enableKeyVaultPurgeProtection defaults to false. Purge protection is

@@ -37,7 +37,7 @@ from sage.models.schemas import (
     UpdateMetadataRequest,
     UpdateMetadataResponse,
 )
-from sage.request_identity import current_actor
+from sage.request_identity import asserted_agent, current_actor, modifier_fields
 from sage.services._bulk_envelope import resolve_item_document_id, sage_error_to_envelope
 from sage.services._dry_run import doc_type_requirements
 from sage.services.document_surface import compose_document_surface
@@ -366,7 +366,9 @@ class MetadataService:
             updates["metadata_confirmed"] = True
             # The authenticated principal where the request carries one,
             # otherwise the supplied writer, otherwise the vault owner.
-            updates["last_modified_by"] = current_actor() or modified_by or self._config.vault.owner
+            updates.update(
+                modifier_fields(current_actor() or modified_by or self._config.vault.owner)
+            )
             updates["updated_at"] = datetime.now(timezone.utc).isoformat()
             doc = await self._store.update_document(document_id, updates)
 
@@ -464,6 +466,15 @@ class MetadataService:
         ``LIGHT_DEFAULT_THRESHOLD = 5`` items default to ``light``,
         smaller batches default to ``full``.
         """
+        with asserted_agent(request.agent):
+            return await self._bulk_update_metadata(request, modified_by)
+
+    async def _bulk_update_metadata(
+        self,
+        request: BulkMetadataRequest,
+        modified_by: str | None = None,
+    ) -> BulkMetadataResponse:
+        """The body of :meth:`bulk_update_metadata`."""
         # Resolve the effective response_mode (mirror
         # ``RetrievalService._edges``). Driven by ``len(items)`` because
         # the bulk endpoint's blast radius is known up front.
