@@ -223,6 +223,7 @@ def test_pg_row_to_document_populates_every_field():
         "pipeline_error": "err",
         "tier3_metadata": {"ticket_id": "T-1"},
         "metadata_confirmed": True,
+        "adapter_config": {"heading_style_map": {"Subtitle": 1}},
         # Distinct in every member, so a read path that served one column
         # for both, or transposed them, fails the assertions below.
         "relocated_from": {
@@ -244,6 +245,7 @@ def test_pg_row_to_document_populates_every_field():
     assert doc.tags == ["a", "b"]
     assert doc.tier3_metadata == {"ticket_id": "T-1"}
     assert doc.metadata_confirmed is True
+    assert doc.adapter_config == {"heading_style_map": {"Subtitle": 1}}
     for field_name in Document.model_fields:
         # version_label/pipeline_error etc. all carry non-None sentinels above.
         assert getattr(doc, field_name) is not None, (

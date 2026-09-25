@@ -3,13 +3,13 @@
 Exercises the script's core logic (``reindex_with_services``) with stub
 fixtures rather than the full production initialization path. Verifies:
 
-- Documents whose ``adapter_version`` is below the current adapter
-  ``VERSION`` are re-indexed.
+- Every document with stored chunks is re-indexed, whatever its
+  ``adapter_version`` or source type.
 - Re-indexing replaces chunk embeddings using ``heading_path + content``
   as embedder input (so semantic search reaches heading-only queries).
 - Chunk ``content`` and ``heading_path`` fields are preserved unchanged.
-- ``adapter_version`` on the document record is bumped after re-index.
-- Documents already at current ``VERSION`` are skipped (idempotency).
+- ``adapter_version`` on the document record is left as it was: the script
+  does not re-project, so it cannot say which adapter shaped the passages.
 - Dry-run mode does not mutate state.
 """
 
@@ -98,7 +98,7 @@ async def test_reindex_replaces_embeddings_with_heading_context_combined_text(
     graph_store, stub_content_store
 ):
     """The embedder is called with ``heading_path + content``; chunks are
-    rewritten with new embeddings; adapter_version is bumped."""
+    rewritten with new embeddings; adapter_version is left as it was."""
     # Set up an old-regime document with chunks indexed by content alone.
     doc = _make_doc(doc_id=_id("doc_old"), adapter_version="0.1.0")
     await graph_store.insert_document(doc)
@@ -140,14 +140,15 @@ async def test_reindex_replaces_embeddings_with_heading_context_combined_text(
     assert chunks_after[0].heading_path == heading
     assert chunks_after[0].embedding != old_embedding
 
-    # adapter_version bumped to current DocxAdapter.VERSION.
+    # Nothing was re-projected, so the record still names the adapter that
+    # shaped these passages; a version-gated backfill still sees it as due.
     doc_after = await graph_store.get_document(doc.id)
-    assert doc_after.adapter_version == DocxAdapter.VERSION
+    assert doc_after.adapter_version == "0.1.0"
 
 
-async def test_reindex_skips_documents_already_at_current_version(graph_store, stub_content_store):
-    """Documents whose adapter_version equals the current VERSION are
-    skipped — no embedder calls, no chunk rewrites."""
+async def test_reindex_selects_documents_by_chunks_not_version(graph_store, stub_content_store):
+    """A document already at the current adapter VERSION is re-embedded too:
+    the version is no longer the script's record of what it has done."""
     doc = _make_doc(doc_id=_id("doc_current"), adapter_version=DocxAdapter.VERSION)
     await graph_store.insert_document(doc)
 
@@ -169,7 +170,9 @@ async def test_reindex_skips_documents_already_at_current_version(graph_store, s
         batch_size=64,
     )
     assert rc == 0
-    assert embedder.calls == [], "embedder must not be called for up-to-date docs"
+    assert len(embedder.calls) == 1, embedder.calls
+    assert (await stub_content_store.get_all_chunks(doc.id))[0].embedding != [0.5] * 768
+    assert (await graph_store.get_document(doc.id)).adapter_version == DocxAdapter.VERSION
 
 
 async def test_reindex_dry_run_does_not_mutate(graph_store, stub_content_store):
@@ -265,12 +268,9 @@ async def test_reindex_preserves_chunk_doc_type(graph_store, stub_content_store)
     )
 
 
-async def test_reindex_handles_source_type_with_no_adapter_registered(
-    graph_store, stub_content_store
-):
-    """Documents whose source_type has no adapter VERSION registered in
-    SOURCE_TYPE_TO_VERSION are skipped (e.g. forward-declared types like
-    email/onenote/teams_chat)."""
+async def test_reindex_reembeds_whatever_the_source_type(graph_store, stub_content_store):
+    """Re-embedding reads stored passages, never a source, so a document whose
+    format has no adapter is re-embedded like any other."""
     doc = _make_doc(
         doc_id=_id("doc_email"),
         source_type=SourceType.EMAIL.value,
@@ -296,4 +296,5 @@ async def test_reindex_handles_source_type_with_no_adapter_registered(
         batch_size=64,
     )
     assert rc == 0
-    assert embedder.calls == []
+    assert len(embedder.calls) == 1, embedder.calls
+    assert (await graph_store.get_document(doc.id)).adapter_version == "0.1.0"

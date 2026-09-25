@@ -10,13 +10,16 @@ on a heading.
 
 Does NOT re-run projection or abstraction. Only the chunk store is touched:
 ``heading_path`` and ``content`` fields stay the same; only the embedding
-vectors change. Each document's ``adapter_version`` is bumped to the
-current adapter ``VERSION`` so subsequent runs skip it (idempotent).
+vectors change. The document record is not written: its ``adapter_version``
+names the adapter that shaped the stored passages, and since nothing here
+re-projects, stamping the current adapter's version would tell a
+version-gated backfill that passages it has never examined are current.
 
-Skips documents that:
-  - are already at the current adapter ``VERSION`` for their source_type
-  - have a source_type with no registered adapter VERSION (no-op)
-  - have no chunks in the content store
+Every document with stored chunks is re-embedded, whatever its source type,
+since the input is the stored passages rather than the source. A document
+with no chunks is skipped. Re-running the script re-embeds everything again;
+embedding is deterministic, so a second run changes nothing but costs the
+time of the first.
 
 Usage::
 
@@ -45,22 +48,8 @@ from datetime import datetime, timedelta, timezone
 
 from sage.config import load_vault_config
 from sage.mcp_init import initialize_services
-from sage.models.enums import SourceType
 from sage.services.passage_split import embedding_input
-from sage.source_adapters.docx_adapter import DocxAdapter
-from sage.source_adapters.markdown_adapter import MarkdownAdapter
-from sage.source_adapters.pdf_adapter import PdfAdapter
-from sage.source_adapters.xlsx_adapter import XlsxAdapter
 from sage.vault_management import config_path_for_vault
-
-# Source-type to current adapter VERSION. Documents with adapter_version
-# below this for their source_type are candidates for re-indexing.
-SOURCE_TYPE_TO_VERSION: dict[str, str] = {
-    SourceType.DOCX.value: DocxAdapter.VERSION,
-    SourceType.MARKDOWN.value: MarkdownAdapter.VERSION,
-    SourceType.XLSX.value: XlsxAdapter.VERSION,
-    SourceType.PDF.value: PdfAdapter.VERSION,
-}
 
 
 def _truncate(s: str | None, n: int) -> str:
@@ -86,30 +75,19 @@ async def reindex_with_services(
     """
     documents = await graph.list_all_documents()
 
-    plan: list[tuple[object, int, str]] = []  # (doc, chunk_count, target_version)
-    skipped_current = 0
-    skipped_no_adapter = 0
+    plan: list[tuple[object, int]] = []  # (doc, chunk_count)
     skipped_no_chunks = 0
 
     for doc in documents:
-        target_version = SOURCE_TYPE_TO_VERSION.get(doc.source_type)
-        if target_version is None:
-            skipped_no_adapter += 1
-            continue
-        if doc.adapter_version == target_version:
-            skipped_current += 1
-            continue
         chunks = await store.get_all_chunks(doc.id)
         if not chunks:
             skipped_no_chunks += 1
             continue
-        plan.append((doc, len(chunks), target_version))
+        plan.append((doc, len(chunks)))
 
-    total_chunks = sum(n for _, n, _ in plan)
+    total_chunks = sum(n for _, n in plan)
     print(f"Vault: {label}")
     print(f"Total documents: {len(documents)}")
-    print(f"  skipped (already at current version): {skipped_current}")
-    print(f"  skipped (no adapter version registered): {skipped_no_adapter}")
     print(f"  skipped (no chunks): {skipped_no_chunks}")
     print(f"  to re-index: {len(plan)} document(s), {total_chunks} chunk(s)")
 
@@ -117,11 +95,9 @@ async def reindex_with_services(
         print("Nothing to do.")
         return 0
 
-    for doc, n, target in plan[:10]:
+    for doc, n in plan[:10]:
         print(
-            f"  {doc.id:36s}  {doc.source_type:8s}  "
-            f"{_truncate(doc.title, 40):40s}  "
-            f"chunks={n:5d}  {doc.adapter_version}→{target}"
+            f"  {doc.id:36s}  {doc.source_type:8s}  {_truncate(doc.title, 40):40s}  chunks={n:5d}"
         )
     if len(plan) > 10:
         print(f"  ... and {len(plan) - 10} more")
@@ -133,17 +109,11 @@ async def reindex_with_services(
     print("\nApplying...")
     started = datetime.now(timezone.utc)
     n_done = 0
-    for i, (doc, _expected_chunks, target_version) in enumerate(plan, 1):
+    for i, (doc, _expected_chunks) in enumerate(plan, 1):
         chunks = await store.get_all_chunks(doc.id)
         if not chunks:
             # Could happen if chunks were removed between plan and apply.
-            await graph.update_document(doc.id, {"adapter_version": target_version})
-            print(
-                f"[{i:4d}/{len(plan)}]  {doc.id}  "
-                f"{_truncate(doc.title, 40):40s}  "
-                f"(no chunks; version bumped)"
-            )
-            n_done += 1
+            print(f"[{i:4d}/{len(plan)}]  {doc.id}  {_truncate(doc.title, 40):40s}  (no chunks)")
             continue
 
         for start in range(0, len(chunks), batch_size):
@@ -154,7 +124,6 @@ async def reindex_with_services(
                 c.embedding = emb
 
         await store.index_chunks(doc.id, chunks)
-        await graph.update_document(doc.id, {"adapter_version": target_version})
         n_done += 1
         print(
             f"[{i:4d}/{len(plan)}]  {doc.id}  "

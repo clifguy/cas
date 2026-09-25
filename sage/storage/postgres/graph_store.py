@@ -355,9 +355,9 @@ class PostgresGraphStore(GraphStore):
                 last_modified_by, updated_at, projected_at, indexed_at,
                 source_modified_at, document_date,
                 semantic_abstract, pipeline_status, pipeline_error, tier3_metadata,
-                metadata_confirmed, relocated_from, relocated_to
+                adapter_config, metadata_confirmed, relocated_from, relocated_to
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                      %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (
                 doc.id,
                 doc.title,
@@ -384,6 +384,7 @@ class PostgresGraphStore(GraphStore):
                 doc.pipeline_status.value,
                 doc.pipeline_error,
                 Jsonb(doc.tier3_metadata) if doc.tier3_metadata else None,
+                Jsonb(doc.adapter_config) if doc.adapter_config else None,
                 bool(doc.metadata_confirmed),
                 _pointer_to_jsonb(doc.relocated_from),
                 _pointer_to_jsonb(doc.relocated_to),
@@ -483,6 +484,11 @@ class PostgresGraphStore(GraphStore):
             # ``None`` and ``{}`` are stored as jsonb ``null`` / ``{}`` and
             # read back as Python None / {} respectively.
             updates["tier3_metadata"] = Jsonb(updates["tier3_metadata"])
+        if "adapter_config" in updates:
+            # An empty config configures nothing, so it is stored as the
+            # absence it means rather than as an empty object.
+            config = updates["adapter_config"]
+            updates["adapter_config"] = Jsonb(config) if config else None
         for pointer_field in ("relocated_from", "relocated_to"):
             if pointer_field in updates:
                 updates[pointer_field] = _pointer_to_jsonb(updates[pointer_field])
@@ -1992,6 +1998,8 @@ class PostgresGraphStore(GraphStore):
             pipeline_status=PipelineStatus(row["pipeline_status"]),
             pipeline_error=row["pipeline_error"],
             tier3_metadata=row["tier3_metadata"],
+            # ``.get`` for the same reason as ``stored_content_hash`` above.
+            adapter_config=row.get("adapter_config"),
             metadata_confirmed=bool(row["metadata_confirmed"]),
             # ``.get`` for the same reason as ``stored_content_hash`` above.
             relocated_from=RelocationPointer.from_stored(row.get("relocated_from")),

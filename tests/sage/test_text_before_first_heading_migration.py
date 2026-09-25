@@ -898,3 +898,82 @@ async def test_a_pdf_heading_titled_by_its_outline_entry_object_is_read(vault, t
     assert adapters[SourceType.PDF].projected == ["repr.pdf"]
     assert [(c.heading_path, c.content) for c in await vault.store.get_all_chunks(led)] == expected
     assert await vault.store.get_heading_paths(led) == ["Named", "After"]
+
+
+# ── Faithful to the document as it stands ───────────────────────────
+
+
+@requires_docx
+async def test_the_backfill_preserves_structure_projected_under_a_request_config(vault, tmp_path):
+    """A heading only the ingest request's config made one stays a heading: the
+    source is re-projected with the config it was projected with, so the only
+    change is the text before the first heading."""
+    import docx
+
+    request_config = {"heading_style_map": {"Subtitle": 1}}
+    built = docx.Document()
+    built.add_paragraph("Opening paragraph delta.")
+    built.add_paragraph("SUBTITLED", style="Subtitle")
+    built.add_paragraph("Subtitle body.")
+    path = vault.root / "sources" / "styled.docx"
+    built.save(str(path))
+    result = await vault.ingestion.ingest(
+        IngestRequest(source="styled.docx", source_type=SourceType.DOCX, config=request_config)
+    )
+    await await_pipeline_idle(vault.graph_store, result.document.id, service=vault.ingestion)
+    led = result.document.id
+    before = await vault.store.get_all_chunks(led)
+    assert await vault.store.get_heading_paths(led) == ["SUBTITLED"], (
+        "control: seeded with the request's heading and without the text before it"
+    )
+    defaults_only = vault.ingestion._chunk_projection(led, await DocxAdapter().project(path))
+    assert [c.heading_path for c in defaults_only] != ["", "SUBTITLED"], (
+        "control: without the request config the source has no such heading"
+    )
+    vault.ship_adapters()
+
+    report = await vault.migrate()
+
+    assert BACKFILL_TEXT_BEFORE_FIRST_HEADING in report.backfills_applied
+    after = await vault.store.get_all_chunks(led)
+    assert (after[0].heading_path, after[0].content) == ("", "Opening paragraph delta.")
+    assert [(c.heading_path, c.content) for c in after[1:]] == [
+        (c.heading_path, c.content) for c in before
+    ]
+
+
+async def test_a_title_edit_before_the_lock_is_not_overwritten_by_the_rewrite(vault):
+    """The title is read under the lock the rewrite holds, so an edit landing
+    while the source is projected -- before that lock -- is the one the
+    rewritten passages' structure derives from."""
+    from sage.models.schemas import UpdateMetadataRequest
+    from sage.services.metadata import MetadataService
+    from sage.services.passage_structure import indexed_structure
+
+    led = await _led(vault)
+    metadata = MetadataService(vault.graph_store, vault.ingestion._locks, vault.config, vault.store)
+    candidacy_title = (await vault.graph_store.get_document(led)).title
+    assert indexed_structure("Guide > Part", candidacy_title) != indexed_structure(
+        "Guide > Part", "Renamed"
+    ), "control: the title read at candidacy must derive a different structure"
+    adapters = vault.ship_adapters()
+    shipped = adapters[SourceType.MARKDOWN]
+    project = shipped.project
+
+    async def project_then_rename(source_path, config=None):
+        projection = await project(source_path, config)
+        await metadata._update_metadata(
+            led, UpdateMetadataRequest(title="Renamed"), modified_by="t"
+        )
+        return projection
+
+    shipped.project = project_then_rename
+
+    await vault.migrate()
+
+    assert vault.store.writes == 1, "control: the passages must have been rewritten"
+    chunks = await vault.store.get_all_chunks(led)
+    assert chunks[0].heading_path == ""
+    assert [c.indexed_structure for c in chunks] == [
+        indexed_structure(c.heading_path, "Renamed") for c in chunks
+    ]

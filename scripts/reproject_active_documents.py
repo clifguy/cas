@@ -19,7 +19,9 @@ Per-document flow:
 
 1. Look up the adapter for the document's source_type.
 2. Re-read the source file from ``storage_root / source_path``.
-3. Run the adapter to produce a fresh ``ProjectionResult``.
+3. Run the adapter to produce a fresh ``ProjectionResult``, with the vault's
+   adapter defaults merged under the request config the document recorded
+   at ingest, exactly as ingest merged them.
 4. Verify the new content hash matches the document's stored
    ``source_content_hash``. On mismatch, the source file has drifted
    since original ingest; skip with a warning (override via
@@ -222,8 +224,13 @@ async def reproject_vault_with_services(
             f"[{i:4d}/{len(plan)}]  {doc.id}  {doc.source_type:9s}  {_truncate(doc.title, 40):40s}"
         )
         try:
-            # Stage-1-equivalent: project the source fresh.
-            projection = await adapter.project(src_path)
+            # Stage-1-equivalent: project the source fresh, with the adapter
+            # config ingest used -- the vault's defaults merged under the
+            # request config the document recorded -- so the rebuilt passages
+            # keep the structure that config gave them.
+            projection = await adapter.project(
+                src_path, ingestion._merge_adapter_config(doc.source_type, doc.adapter_config)
+            )
 
             # Hash drift guard: source file changed since original ingest.
             # Compared against the digest recorded for the *retained* copy --

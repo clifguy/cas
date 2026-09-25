@@ -1,0 +1,15 @@
+classification: minor
+category: [capability]
+summary: >-
+  Adds adapter_config to the Document component in the Core API spec: the
+  adapter configuration the ingest request supplied, as given, or null when it
+  supplied none. Ingest records it, a force re-ingest replaces it, and a
+  supersession does not carry it forward. recompute_pipeline, worker recovery
+  and the migration's re-projection of the text before the first heading now
+  merge it over the vault's adapter defaults, so a re-projected document keeps
+  the structure its request config gave it.
+for_callers: >-
+  Documents now report adapter_config, the adapter configuration their ingest
+  request supplied. recompute_pipeline re-projects with it, so a document
+  ingested with a request-level config keeps that config's structure when
+  recomputed rather than falling back to the vault's defaults alone.
