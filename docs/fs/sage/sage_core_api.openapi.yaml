@@ -1207,9 +1207,10 @@ paths:
           in: query
           required: false
           description: >-
-            When true, include the vault-local file bytes (base64) and
-            byte count in the response. Default: false. Rejected with 413
-            when the file exceeds the configured inline content ceiling.
+            When true, include the vault-local file bytes (base64
+            whatever `body_form` reports) and byte count in the response.
+            Default: false. Rejected with 413 when the file exceeds the
+            configured inline content ceiling.
             Mutually exclusive with `write_to_path`.
           schema:
             type: boolean
@@ -7804,7 +7805,8 @@ components:
               type: [string, "null"]
               description: >-
                 Base64-encoded bytes of the vault-local source file at
-                `storage_root/source_path`. Present only when the request
+                `storage_root/source_path`, whatever `body_form` reports: a
+                `text` source is base64 too. Present only when the request
                 specified `include_content=true`. Decodes to the exact
                 bytes of the authoritative file.
             content_size:
@@ -7844,7 +7846,9 @@ components:
                 binary-container source is refused with
                 `binary_content_refused` (400), directing the caller to
                 `read_projection`. Null only on responses that carry no source
-                form (e.g. an error envelope).
+                form (e.g. an error envelope). It describes the source, not the
+                response: `content`, when present, is base64 for every source, a
+                `text` source included.
 
     TraverseResponse:
       type: object

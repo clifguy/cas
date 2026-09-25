@@ -8,12 +8,14 @@ re-ingest as a new version via `ingest(predecessor_id=...)`.
 import asyncio
 import base64
 import hashlib
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
+import yaml
 from httpx import ASGITransport, AsyncClient
 
 from sage.adapters.interfaces import AbstractionProvider
@@ -34,7 +36,12 @@ from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.enums import SourceType as _SourceType  # alias for fixture
-from sage.models.schemas import Document, IngestRequest, SetLifecycleRequest
+from sage.models.schemas import (
+    Document,
+    DocumentWithContent,
+    IngestRequest,
+    SetLifecycleRequest,
+)
 from sage.services.documents import DocumentsService
 from sage.services.ingestion import IngestionService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
@@ -909,6 +916,55 @@ async def test_binary_container_without_content_stamps_body_form_binary(
     assert response.content is None
     assert response.read_meta.success is True
     assert response.read_meta.body_present is False
+
+
+# ---------------------------------------------------------------------------
+# The content encoding is stated wherever body_form could be misread
+#
+# `content` is base64 for every source, and it is only ever delivered for a
+# `text` source, so `body_form: text` sitting beside it reads as a promise of
+# plain text. Each description that meets that reading states the encoding.
+# The claim is matched within one sentence: a term appearing in an unrelated
+# clause (the binary refusal, say) is not the statement being pinned.
+# ---------------------------------------------------------------------------
+
+_SAGE_CORE_SPEC_PATH = (
+    Path(__file__).resolve().parents[2] / "docs" / "fs" / "sage" / "sage_core_api.openapi.yaml"
+)
+
+
+def _sentences_with(text: str, *terms: str) -> list[str]:
+    """The sentences of ``text`` that contain every one of ``terms``, ignoring case."""
+    sentences = re.split(r"(?<=[.;])\s+", " ".join(text.split()))
+    return [s for s in sentences if all(term.lower() in s.lower() for term in terms)]
+
+
+def test_body_form_description_says_content_is_base64() -> None:
+    description = DocumentWithContent.model_fields["body_form"].description
+    assert _sentences_with(description, "`content`", "base64"), description
+
+
+def test_content_description_says_base64_whatever_body_form() -> None:
+    description = DocumentWithContent.model_fields["content"].description
+    assert _sentences_with(description, "base64", "`body_form`"), description
+
+
+def test_mcp_include_content_description_says_base64_whatever_body_form() -> None:
+    """Read from the servers' own tool listing, not the committed catalog copy."""
+    from scripts.dump_mcp_catalog import build_catalog
+
+    (tool,) = [t for t in build_catalog()["surfaces"]["sage"] if t["name"] == "get_document"]
+    description = tool["inputSchema"]["properties"]["include_content"]["description"]
+    assert _sentences_with(description, "base64", "`body_form`"), description
+
+
+def test_rest_include_content_description_says_base64_whatever_body_form() -> None:
+    """The REST parameter has no code-side copy, so no parity gate holds it."""
+    spec = yaml.safe_load(_SAGE_CORE_SPEC_PATH.read_text(encoding="utf-8"))
+    operation = spec["paths"]["/sage_vaults/{vault_id}/documents/{document_id}"]["get"]
+    (parameter,) = [p for p in operation["parameters"] if p.get("name") == "include_content"]
+    description = parameter["description"]
+    assert _sentences_with(description, "base64", "`body_form`"), description
 
 
 # ---------------------------------------------------------------------------
