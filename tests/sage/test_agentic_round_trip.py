@@ -934,9 +934,9 @@ _SAGE_CORE_SPEC_PATH = (
 
 
 def _sentences_with(text: str, *terms: str) -> list[str]:
-    """The sentences of ``text`` that contain every one of ``terms``."""
+    """The sentences of ``text`` that contain every one of ``terms``, ignoring case."""
     sentences = re.split(r"(?<=[.;])\s+", " ".join(text.split()))
-    return [s for s in sentences if all(term in s for term in terms)]
+    return [s for s in sentences if all(term.lower() in s.lower() for term in terms)]
 
 
 def test_body_form_description_says_content_is_base64() -> None:
