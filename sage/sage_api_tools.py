@@ -1010,11 +1010,12 @@ def register_sage_tools(
             bool,
             Field(
                 description=(
-                    "When true, add `content` (base64) and `content_size` to the "
-                    "response. Fails with content_too_large (413) past the inline "
-                    "ceiling (default 100 MB; override via "
-                    "SAGE_MAX_INLINE_CONTENT_BYTES): use `write_to_path` instead. "
-                    "Mutually exclusive with `write_to_path`."
+                    "When true, add `content` (base64 whatever `body_form` "
+                    "reports) and `content_size` to the response. Fails with "
+                    "content_too_large (413) past the inline ceiling (default "
+                    "100 MB; override via SAGE_MAX_INLINE_CONTENT_BYTES): use "
+                    "`write_to_path` instead. Mutually exclusive with "
+                    "`write_to_path`."
                 )
             ),
         ] = False,

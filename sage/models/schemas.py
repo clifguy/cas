@@ -1558,7 +1558,8 @@ class DocumentWithContent(Document):
         default=None,
         description=(
             "Base64-encoded bytes of the vault-local source file at "
-            "`storage_root/source_path`. Present only when the request "
+            "`storage_root/source_path`, whatever `body_form` reports: a "
+            "`text` source is base64 too. Present only when the request "
             "specified `include_content=true`. Decodes to the exact "
             "bytes of the authoritative file."
         ),
@@ -1607,7 +1608,9 @@ class DocumentWithContent(Document):
             "`include_content=true` against a binary-container source is "
             "refused with `binary_content_refused` (400), directing the caller "
             "to `read_projection`. Null only on responses that carry no source "
-            "form (e.g. an error envelope)."
+            "form (e.g. an error envelope). It describes the source, not the "
+            "response: `content`, when present, is base64 for every source, a "
+            "`text` source included."
         ),
     )
 

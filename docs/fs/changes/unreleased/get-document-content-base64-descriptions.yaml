@@ -1,0 +1,8 @@
+classification: patch
+summary: >-
+  States that get_document's content is base64 whatever body_form reports, in
+  the Core API OpenAPI specification, the DocumentWithContent model and the MCP
+  tool catalog. The body_form description now says it describes the source, not
+  the encoding of content; the content field and both include_content parameter
+  descriptions say a text source is base64 too. No behaviour changes, and no
+  content_encoding field is added.
