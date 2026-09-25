@@ -580,8 +580,9 @@ def test_a_control_character_in_any_operator_input_is_refused(
 
     * ``PREFLIGHT_VAULT_SOURCE`` is supplied by a repository variable and
       interpolated into a matrix detail, so a trailing newline splits a row;
-    * ``PREFLIGHT_EXPECTED_ASUID`` is compared with ``grep -F``, which reads a
-      multi-line value as one pattern per line and credits it by any one line;
+    * ``PREFLIGHT_EXPECTED_ASUID`` is compared against resolver output read
+      one record per line, so a multi-line value can never equal a record and
+      would fail the check without saying why;
     * ``PREFLIGHT_CHECKS`` compared whole selects no check at all, and the run
       passes on an empty matrix;
     * ``PREFLIGHT_SKIP`` compared whole is silently not honoured;
