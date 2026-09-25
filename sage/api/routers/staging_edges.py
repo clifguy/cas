@@ -5,14 +5,15 @@ POST /sage_vaults/{vault_id}/staging-edges/{edge_id}/confirm -- promote to produ
 POST /sage_vaults/{vault_id}/staging-edges/{edge_id}/dismiss -- delete (BE-012)
 """
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Body, Depends
 
 from sage.api.dependencies import get_staging_edges_service, get_vault_id
-from sage.api.response_docs import boundary_400
+from sage.api.response_docs import boundary_400, invalid_parameter_422
 from sage.api.wire_route import WireRoute
 from sage.models.schemas import (
     EdgeIdStr,
     ErrorResponse,
+    StagingEdgeConfirmRequest,
     StagingEdgeConfirmResponse,
     StagingEdgeDismissResponse,
     StagingEdgeListResponse,
@@ -61,15 +62,21 @@ async def list_staging_edges(
                 "lists the registered vaults."
             ),
         },
+        422: invalid_parameter_422(),
     },
 )
 async def confirm_staging_edge(
     edge_id: EdgeIdStr,
+    body: StagingEdgeConfirmRequest = Body(default_factory=StagingEdgeConfirmRequest),
     vault_id: VaultIdStr = Depends(get_vault_id),
     service: StagingEdgesService = Depends(get_staging_edges_service),
 ) -> StagingEdgeConfirmResponse:
-    """Confirm a staging edge: move it to the production edge table."""
-    return await service.confirm_staging_edge(edge_id)
+    """Confirm a staging edge: move it to the production edge table.
+
+    The body is optional; a confirm that sends none records the agent the
+    request's User-Agent names.
+    """
+    return await service.confirm_staging_edge(edge_id, agent=body.agent)
 
 
 @router.post(

@@ -426,6 +426,17 @@ KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
         )
         for binding in ("PostgresContentStore", "StubContentStore")
     },
+    **{
+        f"tests/sage/test_rest_unknown_parameter.py::{test}[confirm_staging_edge]": (
+            "confirm_staging_edge declares an optional body carrying agent, so it "
+            "is no longer a bodyless operation; its body refusals and its empty-object "
+            "acceptance are asserted in tests/sage/test_write_provenance.py"
+        )
+        for test in (
+            "test_json_field_on_bodyless_operation_refused",
+            "test_empty_object_body_on_bodyless_operation_accepted",
+        )
+    },
 }
 
 

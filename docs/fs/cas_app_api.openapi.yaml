@@ -647,6 +647,15 @@ components:
             sequential dependency within one batch is not reflected:
             two entries carrying identical bytes each report no
             duplicate.
+        agent:
+          type: [string, "null"]
+          pattern: "^[a-z0-9][a-z0-9._-]{0,63}$"
+          description: >-
+            The agent making this write, as you name it: 1 to 64 of a-z,
+            0-9, '.', '_' and '-', starting with a letter or digit. Recorded
+            as asserted and never verified, in place of the agent the
+            User-Agent names. Applies to every document and production edge
+            the batch writes.
 
     IngestFileItem:
       type: object

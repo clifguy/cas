@@ -623,7 +623,7 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # Both counts fell again once the per-item and per-argument rules moved
     # into the published parameter descriptions, which the whole-docstring
     # side credits, in the wording the operation already used.
-    ("cas_app", "bulk_ingest_document"): Pin(9, 9),
+    ("cas_app", "bulk_ingest_document"): Pin(9, 8),
     ("cas_app", "list_directory"): Pin(6, 9),
 }
 

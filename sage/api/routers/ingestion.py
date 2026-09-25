@@ -415,7 +415,7 @@ async def batch_ingest_documents(
         description=(
             "JSON-encoded BatchIngestUploadMetadata: per-file source_type and "
             "optional parsed_metadata, plus the batch infer_edges, "
-            "needs_review and dry_run flags."
+            "needs_review and dry_run flags and the asserted agent."
         ),
     ),
     vault_id: VaultIdStr = Depends(get_vault_id),
@@ -498,6 +498,7 @@ async def batch_ingest_documents(
             infer_edges=envelope.infer_edges,
             needs_review=envelope.needs_review,
             dry_run=envelope.dry_run,
+            agent=envelope.agent,
         ),
         media_type="text/event-stream",
     )

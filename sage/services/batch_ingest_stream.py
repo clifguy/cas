@@ -103,6 +103,7 @@ async def batch_ingest_sse_stream(
     infer_edges: bool = True,
     needs_review: bool = True,
     dry_run: bool = False,
+    agent: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Run a batch ingest and yield its progress/summary events as SSE lines.
 
@@ -187,6 +188,7 @@ async def batch_ingest_sse_stream(
                 infer_edges=infer_edges,
                 needs_review=needs_review,
                 dry_run=dry_run,
+                agent=agent,
                 on_file_start=on_file_start,
                 on_file_done=on_file_done,
                 on_file_error=on_file_error,
@@ -220,6 +222,7 @@ async def stream_uploaded_batch_ingest(
     infer_edges: bool = True,
     needs_review: bool = True,
     dry_run: bool = False,
+    agent: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stage uploaded file content and stream a batch ingest as SSE.
 
@@ -278,6 +281,7 @@ async def stream_uploaded_batch_ingest(
             infer_edges=infer_edges,
             needs_review=needs_review,
             dry_run=dry_run,
+            agent=agent,
         ):
             yield chunk
     finally:

@@ -30,6 +30,7 @@ from sage.api.errors import (
 from sage.mcp_init import SAGEServices, require_caller_local_filesystem
 from sage.models.mcp_items import BulkIngestFileEntry
 from sage.models.schemas import (
+    AgentNameStr,
     BatchIngestParsedMetadata,
     BatchIngestUploadMetadata,
     ReadMeta,
@@ -47,6 +48,7 @@ if TYPE_CHECKING:
 # ``sage/sage_api_tools.py``.
 _VAULT_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(VaultIdStr)
 _SHA256_ADAPTER: TypeAdapter[str] = TypeAdapter(Sha256Str)
+_AGENT_ADAPTER: TypeAdapter[str | None] = TypeAdapter(AgentNameStr | None)
 
 # The names a ``bulk_ingest_document`` file entry, and the parsed metadata it
 # may carry, declare. The request surface refuses any other name in the same
@@ -237,6 +239,18 @@ def _parsed_metadata_of(files: list[dict]) -> list[BatchIngestParsedMetadata | N
                 constraint=str(err.get("msg", "Invalid value")),
             ) from exc
     return validated
+
+
+def _validated_agent(agent: str | None) -> str | None:
+    """The batch's ``agent`` argument, refused as ``invalid_parameter`` if malformed."""
+    try:
+        return _AGENT_ADAPTER.validate_python(agent)
+    except ValidationError as exc:
+        raise InvalidParameterError(
+            parameter="agent",
+            value=agent,
+            constraint=str(exc.errors()[0].get("msg", "Invalid value")),
+        ) from exc
 
 
 def _tier3_metadata_of(files: list[dict]) -> list[dict | None]:
@@ -455,9 +469,9 @@ def register_app_tools(
         infer_edges: _INFER_EDGES = True,
         needs_review: _NEEDS_REVIEW = True,
         dry_run: Annotated[bool, _DRY_RUN] = False,
+        agent: model_param(str | None, BatchIngestUploadMetadata, "agent") = None,
     ) -> dict:
-        """Ingest multiple files with optional edge inference. Returns a
-        summary when complete.
+        """Ingest multiple files with optional edge inference.
 
         Companion to ``list_directory``: the caller submits the scanned files
         it chose. Per-file ingest
@@ -466,8 +480,6 @@ def register_app_tools(
         turn: the documents have reached a terminal ``pipeline_status`` by
         the time the summary returns, so no caller-side wait is needed. The
         cost is duration -- a large batch can exceed a client's RPC timeout.
-
-        ``needs_review`` defaults to ``True`` here, unlike ``ingest_document``.
 
         The batch is NOT atomic: a per-file failure lands in
         ``summary.errors[]`` carrying its ``code`` and ``detail``, and the
@@ -493,7 +505,6 @@ def register_app_tools(
         - ``invalid_vault_id`` (400)
         - ``vault_not_found`` (404)
         - ``empty_file_list`` (string in response)
-        - ``invalid_document_date``: per file, in ``summary.errors[]``
         - 400: ``undeclared_key``, ``invalid_sha256``, ``ambiguous_ingest_source``,
           ``missing_ingest_source``
         - ``invalid_parameter`` (422)
@@ -504,6 +515,7 @@ def register_app_tools(
             from sage.services.batch_ingest import BatchIngestService
 
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
+            agent = _validated_agent(agent)
             v = get_vault(vault_id)
 
             if not files:
@@ -581,6 +593,7 @@ def register_app_tools(
                     infer_edges=infer_edges,
                     needs_review=needs_review,
                     dry_run=dry_run,
+                    agent=agent,
                 )
                 return result.to_dict()
         except (SAGEError, ValueError) as e:

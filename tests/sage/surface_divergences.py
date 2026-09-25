@@ -65,9 +65,11 @@ class Divergence(NamedTuple):
     #: The component schema carrying the caller-settable options of a delivery
     #: form that encodes them in a transport field the specification types
     #: opaquely -- a JSON envelope in a multipart form field, say, which no
-    #: structural reader can follow to its component. Naming it lets the gate
-    #: compare those options against ``reached_by``'s arguments, which is the
-    #: whole of what "the capability is reachable there" asserts.
+    #: structural reader can follow to its component -- or of a factored
+    #: operation, whose arguments no tool-to-operation walk pairs. Naming it
+    #: lets the gate compare those options against ``reached_by``'s
+    #: arguments, which is the whole of what "the capability is reachable
+    #: there" asserts.
     options_schema: str | None = None
     #: Properties of ``options_schema`` that *are* the delivery form rather
     #: than options it carries, and so have no counterpart argument.
@@ -187,11 +189,9 @@ MCP_ONLY_TOOLS: Final[dict[tuple[str, str], Divergence]] = {
 # REST-only operations: (surface, operation_id) -> Divergence
 # ---------------------------------------------------------------------------
 
-_STAGING_FACTORING = Divergence(
-    _OF,
+_STAGING_FACTORING_BASIS = (
     "Discrete REST operation; MCP reaches the same capability through "
-    "update_staging_edge(action=...).",
-    reached_by=("update_staging_edge",),
+    "update_staging_edge(action=...)."
 )
 
 _EDITOR_MODEL = Divergence(
@@ -207,8 +207,15 @@ _ROOT_HARNESS = Divergence(
 )
 
 REST_ONLY_OPERATIONS: Final[dict[tuple[str, str], Divergence]] = {
-    ("sage_core", "confirm_staging_edge"): _STAGING_FACTORING,
-    ("sage_core", "dismiss_staging_edge"): _STAGING_FACTORING,
+    ("sage_core", "confirm_staging_edge"): Divergence(
+        _OF,
+        _STAGING_FACTORING_BASIS,
+        reached_by=("update_staging_edge",),
+        options_schema="StagingEdgeConfirmRequest",
+    ),
+    ("sage_core", "dismiss_staging_edge"): Divergence(
+        _OF, _STAGING_FACTORING_BASIS, reached_by=("update_staging_edge",)
+    ),
     ("sage_core", "register_user"): Divergence(
         _SA,
         "CAS Application account creation. Agents pass created_by strings per "

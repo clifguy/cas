@@ -703,7 +703,12 @@ async def test_b13_stage_writes_same_named_parts_to_distinct_paths(monkeypatch):
     roots: set[str] = set()
 
     async def fake_stream(
-        descriptors, vault_services, infer_edges=True, needs_review=True, dry_run=False
+        descriptors,
+        vault_services,
+        infer_edges=True,
+        needs_review=True,
+        dry_run=False,
+        agent=None,
     ):
         for fd in descriptors:
             staged = Path(fd.file_path)
@@ -743,7 +748,12 @@ async def test_b14_degenerate_upload_names_stage_under_a_synthetic_basename(monk
     seen: list[tuple[str, bytes, str | None]] = []
 
     async def fake_stream(
-        descriptors, vault_services, infer_edges=True, needs_review=True, dry_run=False
+        descriptors,
+        vault_services,
+        infer_edges=True,
+        needs_review=True,
+        dry_run=False,
+        agent=None,
     ):
         for fd in descriptors:
             staged = Path(fd.file_path)

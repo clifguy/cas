@@ -419,6 +419,14 @@ AGENT_NAME_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,63}$"
 # digits, '.', '_' and '-', 1 to 64 characters, starting alphanumeric.
 AgentNameStr = Annotated[str, Field(pattern=AGENT_NAME_PATTERN)]
 
+# The published description of a write's optional ``agent`` argument.
+AGENT_ARGUMENT_DESCRIPTION = (
+    "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, "
+    "'.', '_' and '-', starting with a letter or digit. Recorded as "
+    "asserted and never verified, in place of the agent the User-Agent "
+    "names."
+)
+
 
 class AssertedAgent(BaseModel):
     """An agent a write was attributed to, as the caller asserted it.
@@ -1332,12 +1340,7 @@ class IngestRequest(BaseModel):
     )
     agent: AgentNameStr | None = Field(
         default=None,
-        description=(
-            "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, "
-            "'.', '_' and '-', starting with a letter or digit. Recorded as "
-            "asserted and never verified, in place of the agent the User-Agent "
-            "names."
-        ),
+        description=AGENT_ARGUMENT_DESCRIPTION,
     )
     dry_run: bool = Field(
         default=False,
@@ -1964,12 +1967,7 @@ class BulkLifecycleRequest(BaseModel):
     )
     agent: AgentNameStr | None = Field(
         default=None,
-        description=(
-            "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, "
-            "'.', '_' and '-', starting with a letter or digit. Recorded as "
-            "asserted and never verified, in place of the agent the User-Agent "
-            "names."
-        ),
+        description=AGENT_ARGUMENT_DESCRIPTION,
     )
     dry_run: bool = Field(
         default=False,
@@ -2457,12 +2455,7 @@ class BulkMetadataRequest(BaseModel):
     )
     agent: AgentNameStr | None = Field(
         default=None,
-        description=(
-            "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, "
-            "'.', '_' and '-', starting with a letter or digit. Recorded as "
-            "asserted and never verified, in place of the agent the User-Agent "
-            "names."
-        ),
+        description=AGENT_ARGUMENT_DESCRIPTION,
     )
     dry_run: bool = Field(
         default=False,
@@ -3111,12 +3104,7 @@ class BulkLinkRequest(BaseModel):
     )
     agent: AgentNameStr | None = Field(
         default=None,
-        description=(
-            "The agent making this write, as you name it: 1 to 64 of a-z, 0-9, "
-            "'.', '_' and '-', starting with a letter or digit. Recorded as "
-            "asserted and never verified, in place of the agent the User-Agent "
-            "names."
-        ),
+        description=AGENT_ARGUMENT_DESCRIPTION,
     )
     dry_run: bool = Field(
         default=False,
@@ -5832,6 +5820,11 @@ class BatchIngestUploadMetadata(BaseModel):
             "as authoritative."
         ),
     )
+    agent: AgentNameStr | None = Field(
+        default=None,
+        description=AGENT_ARGUMENT_DESCRIPTION
+        + " Applies to every document and production edge the batch writes.",
+    )
     dry_run: bool = Field(
         default=False,
         description=(
@@ -6554,6 +6547,17 @@ class StagingEdgeListResponse(BaseModel):
     read_meta: ReadMeta = Field(
         default_factory=ReadMeta.bodiless,
         description=_STAMPED_READ_META_DESCRIPTION,
+    )
+
+
+class StagingEdgeConfirmRequest(BaseModel):
+    """Optional body of a staging-edge confirm; a confirm may send none."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent: AgentNameStr | None = Field(
+        default=None,
+        description=AGENT_ARGUMENT_DESCRIPTION + " Recorded on the production edge.",
     )
 
 

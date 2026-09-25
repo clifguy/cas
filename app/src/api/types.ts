@@ -588,6 +588,9 @@ export interface BatchIngestUploadMetadata {
   // be refused. The bytes are still uploaded, and are discarded when the
   // stream ends, so a real run afterwards uploads them again.
   dry_run?: boolean;
+  // The agent every document and production edge the batch writes records,
+  // asserted and never verified, in place of the one the User-Agent names.
+  agent?: string | null;
 }
 
 export interface BatchDocumentsCreated {
