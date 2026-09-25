@@ -26,12 +26,16 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from pathlib import Path
+from typing import Annotated, get_args
 
 import pytest
 import yaml
 from httpx import ASGITransport, AsyncClient
+from pydantic import BaseModel, Field
+from pydantic.fields import FieldInfo
 from starlette.types import Receive, Scope, Send
 
+from sage._mcp_param import model_param
 from sage.app import create_app
 from sage.auth import AuthenticatedPrincipal, AuthMiddleware
 from sage.config import SageCoreConfig, StackAuthConfig, VaultConfig
@@ -48,7 +52,6 @@ from sage.request_identity import (
     request_header_agent,
     request_principal,
 )
-from tests.helpers.pipeline_wait import drain_vaults
 from tests.helpers.write_attribution import (
     VAULT,
     StubValidator,
@@ -661,6 +664,28 @@ def test_d2_mcp_agent_schema_publishes_the_rest_pattern() -> None:
     ):
         agent = spec["components"]["schemas"][request]["properties"]["agent"]
         assert agent["pattern"] == AGENT_NAME_PATTERN, request
+    name = spec["components"]["schemas"]["AssertedAgent"]["properties"]["name"]
+    assert name["pattern"] == AGENT_NAME_PATTERN
+
+
+@pytest.mark.parametrize("declared_on", ["alias", "field"])
+def test_d2_model_param_publishes_a_pattern_wherever_the_field_declares_it(
+    declared_on: str,
+) -> None:
+    # A pattern reaches the MCP schema whether the field declares it itself or
+    # through a typed alias in an optional union.
+    alias = Annotated[str, Field(pattern="^alias$")]
+
+    class ViaAlias(BaseModel):
+        value: alias | None = Field(default=None, description="Aliased.")
+
+    class ViaField(BaseModel):
+        value: str | None = Field(default=None, pattern="^field$", description="Own.")
+
+    model, expected = (ViaAlias, "^alias$") if declared_on == "alias" else (ViaField, "^field$")
+    published = model_param(str | None, model, "value")
+    (info,) = [meta for meta in get_args(published)[1:] if isinstance(meta, FieldInfo)]
+    assert info.json_schema_extra == {"pattern": expected}
 
 
 # --------------------------------------------------------------------------
@@ -680,8 +705,6 @@ async def test_f1_provenance_filter_matches_exactly(auth_app, tmp_vault_dir, mod
             "update_metadata",
             {"vault_id": VAULT, "items": [{"document_id": a5["id"], "title": "Bob's"}]},
         )
-        # The scored modes read indexed passages; let the pipeline settle.
-        await drain_vaults(auth_app.state.vault_registry, [VAULT])
         query = {} if mode == "catalog" else {"query": "body"}
 
         async def ids(provenance: dict | None) -> set[str]:
