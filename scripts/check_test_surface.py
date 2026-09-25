@@ -394,6 +394,16 @@ KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
             ),
         )
     },
+    **{
+        (
+            "tests/sage/test_content_store_seam.py::"
+            f"test_cs5_binding_signature_matches_port[passage_vector_ranks_indexed_structure-{binding}]"
+        ): (
+            "the port method became passage_vector_is_current once the vector's "
+            "currency covered more than its structure, so the case runs under that id"
+        )
+        for binding in ("PostgresContentStore", "StubContentStore")
+    },
 }
 
 

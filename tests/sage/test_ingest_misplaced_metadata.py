@@ -501,6 +501,8 @@ async def test_rejection_is_consistent_across_create_and_supersession(vault_serv
         ("config.yml", SourceType.STRUCTURED_DATA),
         ("pyproject.toml", SourceType.STRUCTURED_DATA),
         ("LEDGER.JSON", SourceType.STRUCTURED_DATA),
+        ("scan.xml", SourceType.STRUCTURED_DATA),
+        ("SCAN.XML", SourceType.STRUCTURED_DATA),
         # Case-insensitive: callers paste paths from Finder and Windows alike.
         ("NOTES.MD", SourceType.MARKDOWN),
     ],

@@ -207,10 +207,19 @@ CREATE TABLE IF NOT EXISTS document_tags (
 # index nothing at all at weight A.
 CHUNKS_INDEXED_STRUCTURE_EXPRESSION = "coalesce(indexed_structure, heading_path)"
 
+# The text-search parser reads everything from ``<`` to the matching ``>`` as
+# one markup tag, and the configuration indexes no tag, so markup and every
+# attribute value inside it would be invisible to keyword search. Replacing the
+# angle brackets with spaces before parsing lets the words inside be read as
+# words. The stored content is unchanged; only the vector is built from the
+# substituted text.
+CHUNKS_INDEXED_CONTENT_EXPRESSION = "translate(content, '<>', '  ')"
+
 CHUNKS_TSV_EXPRESSION = (
     f"setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', "
     f"{CHUNKS_INDEXED_STRUCTURE_EXPRESSION}), 'A')"
-    f" || setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', content), 'D')"
+    f" || setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', "
+    f"{CHUNKS_INDEXED_CONTENT_EXPRESSION}), 'D')"
 )
 
 CHUNKS_TABLE = f"""\
@@ -391,16 +400,18 @@ CHUNKS_TSV_REBUILD: tuple[str, ...] = (
     IDX_CHUNKS_TSV_GIN,
 )
 
-# Whether a vault's passage vector already ranks the relative structure.
+# Whether a vault's passage vector is built from the current expression.
 #
-# The test is whether the stored expression *names the column*, not whether it
+# The test is whether the stored expression *carries each marker*, not whether it
 # equals CHUNKS_TSV_EXPRESSION: Postgres stores its own normalization of a
-# generated expression -- `'english'::regconfig`, `'A'::"char"`, added
-# parentheses -- so a whole-string comparison would report "not yet migrated"
-# forever and rewrite the table on every migration call. The column name is the
-# minimal discriminator that survives that normalization, and it is exactly the
-# property that matters: does weight A read the relative structure, or the
-# address?
+# generated expression -- `'english'::regconfig`, `'A'::"char"`, `'<>'::text`,
+# added parentheses -- so a whole-string comparison would report "not yet
+# migrated" forever and rewrite the table on every migration call. Each marker is
+# the minimal discriminator for one property that survives that normalization:
+# weight A reads the relative structure rather than the address, and the content
+# is read with its markup brackets replaced.
+CHUNKS_TSV_CURRENT_MARKERS: tuple[str, ...] = ("indexed_structure", "translate(content")
+
 CHUNKS_TSV_GENERATION_EXPRESSION_PROBE = (
     "SELECT generation_expression FROM information_schema.columns"
     " WHERE table_schema = current_schema()"

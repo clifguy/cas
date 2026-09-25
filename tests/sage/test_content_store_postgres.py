@@ -3788,3 +3788,40 @@ async def test_record_identifiers_in_a_data_passage_are_keyword_searchable(store
     ):
         results = await store.search_bm25(identifier, limit=10)
         assert [r.document_id for r in results] == [expected], identifier
+
+
+async def test_attribute_values_in_an_xml_passage_are_keyword_searchable(store, tmp_path):
+    """An address and a port number held in XML attributes each find their own report.
+
+    The passages are the structured-data adapter's projection of a scan report,
+    so the values sit inside attribute quotes the way they do on ingest. The two
+    reports' addresses and ports differ only in their last digit, so a match on
+    a shared fragment returns both and fails. A word the fixtures never contain
+    is searched first as the control.
+    """
+    from sage.source_adapters.structured_data_adapter import StructuredDataAdapter
+
+    for name, address, port in (
+        ("scan-a", "10.20.30.41", "8441"),
+        ("scan-b", "10.20.30.42", "8442"),
+    ):
+        path = tmp_path / f"{name}.xml"
+        path.write_text(
+            '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE nmaprun>\n<nmaprun scanner="nmap">\n'
+            f'  <host><address addr="{address}" addrtype="ipv4"/>\n'
+            f'    <ports><port protocol="tcp" portid="{port}">'
+            '<state state="open"/></port></ports>\n'
+            "  </host>\n</nmaprun>\n"
+        )
+        projection = await StructuredDataAdapter().project(path)
+        await store.index_chunks(name, [_chunk(name, content=projection.text, heading_path="")])
+
+    assert await store.search_bm25("quetzalcoatl", limit=10) == []
+    for term, expected in (
+        ("10.20.30.41", "scan-a"),
+        ("8441", "scan-a"),
+        ("10.20.30.42", "scan-b"),
+        ("8442", "scan-b"),
+    ):
+        results = await store.search_bm25(term, limit=10)
+        assert [r.document_id for r in results] == [expected], term

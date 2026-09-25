@@ -3151,7 +3151,7 @@ running vault after AD-188: stored before the refusal existed and loaded under
 ## 12. Structured-Data Source Adapter
 
 Covers `sage/source_adapters/structured_data_adapter.py`, which reads JSON,
-JSON Lines, YAML and TOML, choosing the parser by extension. A data file's keys
+JSON Lines, YAML, TOML and XML, choosing the parser by extension. A data file's keys
 are not a document's sections, so the projection has no headings; the whole
 file is one section, which the ingestion service divides at blank lines first.
 The adapter puts a blank line between records -- the members of a container
@@ -3305,3 +3305,75 @@ complaint -- fails the test.
 
 **Expected:** Parsed data unchanged; the record after the scalar stays joined to
 it; every later record is separated.
+
+### TEST-SAGE-AD-208: XML keeps its text and separates repeated records
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** happy path
+**Precondition:** A scan report with an XML declaration, an entity-free document
+type declaration, a processing instruction, a comment, and three hosts of three
+ports each, every fact held in attributes.
+
+**Expected:** No headings; removing the added blank lines gives the source text
+exactly; split at blank lines, each port is its own unit and each address is in
+exactly one unit; attribute values, the declaration, the document type, the
+processing instruction and the comment are present verbatim.
+
+### TEST-SAGE-AD-209: Document-style XML projects as its source
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** mixed content
+**Decision:** An element holding text beside child elements gets no insertions
+inside it.
+
+**Expected:** A document whose body mixes text with repeated paragraphs, each
+itself mixed content, projects identical to its source and takes its title from
+its `<title>` child.
+
+### TEST-SAGE-AD-210: Only line-leading repeats in element-only content are separated
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** record boundary
+**Expected:** A blank line above an element that follows a sibling of its own tag
+at the start of its line, placed above a one-line comment directly before it;
+none between siblings of different tags, above a sibling that opens on the
+line where the one before it closes or on the line it shares with it, or
+inside a mixed-content parent. The same file with CRLF line endings gains the
+same blank lines, each ending CRLF.
+
+### TEST-SAGE-AD-211: Entities and external references are refused unfetched
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** safety
+**Precondition:** A local HTTP server counting requests.
+
+**Expected:** A single small internal entity, nested internal entities, an
+external entity and an external document type definition, the last two
+addressed to the server, each raise
+`SourceReadError` naming the source, and the server receives no request. A
+direct fetch from the test reaches it, so the count is live.
+
+### TEST-SAGE-AD-212: A document type declaration without entities is accepted
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** safety
+**Expected:** A file whose internal subset declares an element but no entity
+projects, with the declaration present verbatim.
+
+### TEST-SAGE-AD-213: One insertion that would change the tree is dropped alone
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** self-check
+**Precondition:** Record boundaries supplemented, by fault injection, with a line
+inside a multi-line text node.
+
+**Expected:** The text node is unchanged and every record boundary still carries
+its blank line.
+
+### TEST-SAGE-AD-214: An XML title comes from the root or the filename
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** title
+**Expected:** The root's `title` attribute, then the text of its first `<title>`
+child; a blank value, or neither, falls back to the filename stem. A declaration
+naming another encoding does not re-decode the UTF-8 text.

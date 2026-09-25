@@ -1,0 +1,14 @@
+classification: minor
+category: [capability, operator-adaptation]
+summary: >-
+  The structured_data source type now also reads XML, inferred from .xml, and
+  the ingest and batch-upload source_type descriptions list the extension. XML
+  is read with entity declarations and external references refused, and
+  projects as its source text with a blank line between repeated elements. The
+  passage keyword vector now parses content with its angle brackets replaced by
+  spaces, so text inside markup, attribute values included, is indexed;
+  migrate_vault rebuilds a vault's vector built from the earlier expression.
+for_callers: >-
+  XML files now ingest directly as source type structured_data, inferred from
+  .xml. Keyword search now matches text inside angle brackets, such as XML
+  attribute values, in passages indexed after a vault is migrated.

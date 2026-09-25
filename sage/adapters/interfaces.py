@@ -380,13 +380,15 @@ class ContentStore(ABC):
         """
 
     @abstractmethod
-    async def passage_vector_ranks_indexed_structure(self) -> bool:
-        """Whether the keyword arm already ranks the relative structure.
+    async def passage_vector_is_current(self) -> bool:
+        """Whether the keyword arm is built from the current vector expression.
 
         Reported separately from whether any passage still awaits derivation,
         because the two can disagree: a migration interrupted after its backfill
-        leaves nothing to derive and a vector still built from the address, so a
-        caller guarding only on the backfill would never repair it.
+        leaves nothing to derive and a vector still built from the address, and
+        a vault whose structure was derived under an older expression has
+        nothing to derive and a vector that still reads content differently. A
+        caller guarding only on the backfill would repair neither.
         """
 
     @abstractmethod

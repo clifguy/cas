@@ -1,7 +1,7 @@
-"""Structured-data source adapter: JSON, JSON Lines, YAML and TOML.
+"""Structured-data source adapter: JSON, JSON Lines, YAML, TOML and XML.
 
-The four formats share one data model -- a tree of mappings, sequences and
-scalars -- so one adapter reads them all, choosing the parser by extension.
+The formats are all trees of records, so one adapter reads them all, choosing
+the parser by extension.
 
 The projection has no headings. A data file's keys are not a document's
 sections: a heading per key multiplies passages without giving a search anything
@@ -20,18 +20,33 @@ JSON the line structure a division needs. YAML and TOML keep their text,
 comments included, and gain only blank lines; the result is re-parsed, and a
 blank line that would change the data is not made, while the others stand.
 
+XML keeps its text the same way, so attributes, namespaces, comments and
+processing instructions need no rendering of their own. Its records are the
+repeated elements of an element with no text of its own: a blank line goes above
+an element that follows a sibling of the same tag. An element holding text
+beside its children is prose, and nothing is inserted inside it, so a
+document-style file projects as it was written. XML is read with entity
+declarations and external references refused.
+
 Computes SHA-256 of source file bytes for content_hash.
 """
 
 import hashlib
+import io
 import json
 import re
 import tomllib
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from xml.sax import SAXException
+from xml.sax.handler import ContentHandler
+from xml.sax.xmlreader import InputSource, Locator
 
 import yaml
+from defusedxml import DefusedXmlException
+from defusedxml.expatreader import create_parser
 
 from sage.source_adapters.base import (
     ProjectionResult,
@@ -44,16 +59,19 @@ _JSON = ".json"
 _JSON_LINES = ".jsonl"
 _YAML = (".yaml", ".yml")
 _TOML = ".toml"
+_XML = ".xml"
 
 # A TOML table or array-of-tables header line, optionally followed by a comment.
 _TOML_HEADER = re.compile(r"[ \t]*\[\[?[^\[\]\n]+\]\]?[ \t]*(?:#.*)?\r?")
 _COMMENT = re.compile(r"[ \t]*#")
+# A line holding one whole XML comment and nothing else.
+_XML_COMMENT = re.compile(r"[ \t]*<!--(?:(?!-->).)*-->[ \t]*\r?$")
 _INDENT = "  "
 
 
 class StructuredDataAdapter(SourceAdapter):
-    VERSION = "0.1.0"
-    EXTENSIONS = [_JSON, _JSON_LINES, *_YAML, _TOML]
+    VERSION = "0.2.0"
+    EXTENSIONS = [_JSON, _JSON_LINES, *_YAML, _TOML, _XML]
 
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
         raw_bytes = source_path.read_bytes()
@@ -73,7 +91,13 @@ class StructuredDataAdapter(SourceAdapter):
 
         try:
             data, text = _project(suffix, source)
-        except (json.JSONDecodeError, tomllib.TOMLDecodeError, yaml.YAMLError) as exc:
+        except (
+            json.JSONDecodeError,
+            tomllib.TOMLDecodeError,
+            yaml.YAMLError,
+            SAXException,
+            DefusedXmlException,
+        ) as exc:
             raise SourceReadError(
                 f"Structured-data source does not parse as {suffix[1:]}: {source_path}: {exc}"
             ) from exc
@@ -110,6 +134,9 @@ def _project(suffix: str, source: str) -> tuple[object, str]:
     if suffix in _YAML:
         documents = list(yaml.safe_load_all(source))
         return (documents[0] if len(documents) == 1 else documents), _yaml_text(source)
+    if suffix == _XML:
+        root = _xml_parse(source)
+        return root, _xml_text(source, root)
     data = tomllib.loads(source)
     return data, _toml_text(source, data)
 
@@ -197,12 +224,143 @@ def _toml_text(source: str, data: dict) -> str:
     return _separate(lines, starts, False, lambda text: tomllib.loads(text) == data, source)
 
 
+@dataclass
+class _Element:
+    """An XML element: its tag, attributes, content, and where its start tag begins."""
+
+    tag: str
+    attributes: tuple[tuple[str, str], ...]
+    line: int
+    column: int
+    content: list["str | _Element"] = field(default_factory=list)
+
+    @property
+    def children(self) -> list["_Element"]:
+        return [item for item in self.content if isinstance(item, _Element)]
+
+    @property
+    def mixed(self) -> bool:
+        """Whether any text beside the children is more than whitespace."""
+        return any(isinstance(item, str) and item.strip() for item in self.content)
+
+    def canonical(self) -> tuple:
+        """The element as nested tuples, with whitespace-only text dropped."""
+        return (
+            self.tag,
+            self.attributes,
+            tuple(
+                item.canonical() if isinstance(item, _Element) else item
+                for item in self.content
+                if isinstance(item, _Element) or item.strip()
+            ),
+        )
+
+
+class _TreeBuilder(ContentHandler):
+    """Builds the ``_Element`` tree, noting where each start tag begins."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.root: _Element | None = None
+        self._open: list[_Element] = []
+        self._locator: Locator | None = None
+
+    def setDocumentLocator(self, locator: Locator) -> None:  # noqa: N802
+        self._locator = locator
+
+    def startElement(self, name: str, attrs: object) -> None:  # noqa: N802
+        if self._locator is None:
+            raise SAXException("the XML reader supplied no position for an element")
+        element = _Element(
+            tag=name,
+            attributes=tuple(sorted(attrs.items())),  # type: ignore[attr-defined]
+            line=self._locator.getLineNumber() - 1,
+            column=self._locator.getColumnNumber(),
+        )
+        if self._open:
+            self._open[-1].content.append(element)
+        else:
+            self.root = element
+        self._open.append(element)
+
+    def endElement(self, name: str) -> None:  # noqa: N802
+        self._open.pop()
+
+    def characters(self, content: str) -> None:
+        if not self._open:
+            return
+        items = self._open[-1].content
+        if items and isinstance(items[-1], str):
+            items[-1] += content
+        else:
+            items.append(content)
+
+
+def _xml_parse(text: str) -> _Element:
+    """The element tree of ``text``, read with entities and external references refused.
+
+    A document type declaration is accepted as long as it declares no entity.
+    The text is already decoded, so an encoding the XML declaration names is
+    overridden rather than applied a second time.
+    """
+    parser = create_parser(forbid_dtd=False, forbid_entities=True, forbid_external=True)
+    builder = _TreeBuilder()
+    parser.setContentHandler(builder)
+    source = InputSource()
+    source.setByteStream(io.BytesIO(text.encode("utf-8")))
+    source.setEncoding("utf-8")
+    parser.parse(source)
+    if builder.root is None:
+        raise SAXException("no root element")
+    return builder.root
+
+
+def _xml_starts(lines: list[str], root: _Element) -> set[int]:
+    """The lines of each element that follows a sibling of its own tag in element-only content.
+
+    An element that does not begin its line -- one sharing a line with the
+    sibling before it -- gets none, and nothing inside a mixed-content element
+    does.
+    """
+    starts: set[int] = set()
+    pending = [root]
+    while pending:
+        element = pending.pop()
+        children = element.children
+        pending.extend(children)
+        if element.mixed:
+            continue
+        for previous, current in zip(children, children[1:]):
+            if (
+                current.tag == previous.tag
+                and current.line > previous.line
+                and not lines[current.line][: current.column].strip()
+            ):
+                starts.add(current.line)
+    return starts
+
+
+def _xml_text(source: str, root: _Element) -> str:
+    """``source`` with a blank line above each repeated element of element-only content."""
+    lines = source.split("\n")
+    expected = root.canonical()
+
+    def agrees(text: str) -> bool:
+        try:
+            return _xml_parse(text).canonical() == expected
+        except SAXException, DefusedXmlException:
+            return False
+
+    return _separate(lines, _xml_starts(lines, root), False, agrees, source, comment=_XML_COMMENT)
+
+
 def _separate(
     lines: list[str],
     starts: set[int],
     indent_bound: bool,
     agrees: Callable[[str], bool],
     source: str,
+    comment: re.Pattern[str] = _COMMENT,
 ) -> str:
     """``lines`` with a blank line above each start, keeping only those ``agrees`` accepts.
 
@@ -221,12 +379,14 @@ def _separate(
         middle = len(candidates) // 2
         return accepted(candidates[:middle]) + accepted(candidates[middle:])
 
-    kept = accepted(sorted(_insertion_points(lines, starts, indent_bound)))
+    kept = accepted(sorted(_insertion_points(lines, starts, indent_bound, comment)))
     text = _render(lines, kept)
     return text if agrees(text) else source
 
 
-def _insertion_points(lines: list[str], starts: set[int], indent_bound: bool) -> set[int]:
+def _insertion_points(
+    lines: list[str], starts: set[int], indent_bound: bool, comment: re.Pattern[str]
+) -> set[int]:
     """The line indices a blank line goes above, one for each line in ``starts``.
 
     The blank line goes above any comment lines immediately preceding the start,
@@ -241,7 +401,7 @@ def _insertion_points(lines: list[str], starts: set[int], indent_bound: bool) ->
         index = start
         while (
             index > 0
-            and _COMMENT.match(lines[index - 1])
+            and comment.match(lines[index - 1])
             and not (
                 indent_bound and len(lines[index - 1]) - len(lines[index - 1].lstrip(" \t")) > depth
             )
@@ -264,7 +424,21 @@ def _render(lines: list[str], targets: list[int]) -> str:
 
 
 def _title(data: object, stem: str) -> str:
-    """A top-level ``title``, ``name`` or ``info.title`` string, else ``stem``."""
+    """A top-level ``title``, ``name`` or ``info.title`` string, else ``stem``.
+
+    For XML, the root's ``title`` attribute, else the text of its first
+    ``<title>`` child.
+    """
+    if isinstance(data, _Element):
+        attribute = dict(data.attributes).get("title", "")
+        child = next((c for c in data.children if c.tag == "title"), None)
+        for candidate in (
+            attribute,
+            "".join(item for item in child.content if isinstance(item, str)) if child else "",
+        ):
+            if candidate.strip():
+                return candidate.strip()
+        return stem
     if isinstance(data, dict):
         info = data.get("info")
         for candidate in (

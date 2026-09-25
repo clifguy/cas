@@ -40,6 +40,18 @@ _TITLE = "T-0001: Zztitleword and the retrieval surface"
 # H1: every one rooted at the title, including the H1's own passage.
 _PATHS = (_TITLE, f"{_TITLE} > Problem", f"{_TITLE} > Design notes")
 
+# The expression a vault built after the structure decision and before content
+# was read with its markup brackets replaced.
+_PRE_MARKUP_TSV = (
+    "ALTER TABLE chunks DROP COLUMN IF EXISTS tsv;"
+    " ALTER TABLE chunks ADD COLUMN tsv tsvector GENERATED ALWAYS AS ("
+    f"setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', "
+    "coalesce(indexed_structure, heading_path)), 'A')"
+    f" || setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', content), 'D')"
+    ") STORED;"
+    " CREATE INDEX IF NOT EXISTS idx_chunks_tsv_gin ON chunks USING GIN (tsv);"
+)
+
 _PRE_CHANGE_TSV = (
     "ALTER TABLE chunks DROP COLUMN IF EXISTS tsv;"
     " ALTER TABLE chunks ADD COLUMN tsv tsvector GENERATED ALWAYS AS ("
@@ -130,7 +142,7 @@ async def pre_change_vault(store, postgres_graph_store, pg_pool):
         await conn.execute("UPDATE chunks SET indexed_structure = NULL")
         await conn.execute(_PRE_CHANGE_TSV)
 
-    assert not await store.passage_vector_ranks_indexed_structure(), (
+    assert not await store.passage_vector_is_current(), (
         "the stand-in must carry the pre-decision vector, or this module proves nothing"
     )
     assert await store.passages_awaiting_indexed_structure(), (
@@ -184,7 +196,7 @@ async def test_the_migration_rebuilds_the_vector_that_ranks_it(
 
     after = await _generation_expression(pg_pool)
     assert "indexed_structure" in after
-    assert await store.passage_vector_ranks_indexed_structure()
+    assert await store.passage_vector_is_current()
 
 
 async def test_the_migration_recreates_the_index_over_the_vector(
@@ -367,7 +379,7 @@ async def test_the_migration_takes_the_table_lock_before_it_decides(
             migrating.cancel()
 
     assert written == len(derived), "the pass completes once the lock is released"
-    assert await store.passage_vector_ranks_indexed_structure()
+    assert await store.passage_vector_is_current()
 
 
 async def test_a_backfill_does_not_hold_readers_out(store, pre_change_vault, pg_pool):
@@ -391,7 +403,7 @@ async def test_a_backfill_does_not_hold_readers_out(store, pre_change_vault, pg_
     await store.migrate_indexed_structure(
         [(doc, path, indexed_structure(path, _TITLE)) for doc, path in pending]
     )
-    assert await store.passage_vector_ranks_indexed_structure(), "the vector is current"
+    assert await store.passage_vector_is_current(), "the vector is current"
     async with pg_pool.connection() as conn:
         await conn.execute("UPDATE chunks SET indexed_structure = NULL")
     still_pending = await store.passages_awaiting_indexed_structure()
@@ -467,7 +479,7 @@ async def test_a_completed_derivation_still_repairs_a_stale_vector(
             )
 
     assert not await store.passages_awaiting_indexed_structure(), "nothing left to derive"
-    assert not await store.passage_vector_ranks_indexed_structure(), "the vector is still stale"
+    assert not await store.passage_vector_is_current(), "the vector is still stale"
 
     report = await _maintenance(
         postgres_graph_store, store, minimal_config, tmp_vault_dir
@@ -477,7 +489,7 @@ async def test_a_completed_derivation_still_repairs_a_stale_vector(
         "a pass that repaired the vector must say so; a silent return reads as "
         "a vault that needed nothing"
     )
-    assert await store.passage_vector_ranks_indexed_structure()
+    assert await store.passage_vector_is_current()
 
 
 async def test_the_migration_reports_nothing_on_a_clean_vault(
@@ -538,3 +550,65 @@ async def test_stored_addresses_survive_the_migration_byte_for_byte(
     assert await store.get_heading_paths(pre_change_vault) == list(_PATHS), (
         "enumeration returns the addresses the source produced, title root included"
     )
+
+
+# ---------------------------------------------------------------------------
+# A vector built before content was read with markup brackets replaced
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def pre_markup_vault(store, postgres_graph_store, pg_pool):
+    """A vault with every structure derived and the vector that drops markup.
+
+    Asserts its own precondition, as ``pre_change_vault`` does: nothing awaits
+    derivation, so only the vector check can bring the rebuild about, and the
+    attribute value is not yet searchable.
+    """
+    document_id = "00000003_markup"
+    await postgres_graph_store.insert_document(_doc(document_id, "Scan report"))
+    await store.index_chunks(
+        document_id,
+        [
+            Chunk(
+                document_id=document_id,
+                heading_path="",
+                content='<host><address addr="10.20.30.41"/><port portid="8441"/></host>',
+                embedding=[0.0] * EMBEDDING_DIM,
+                chunk_index=0,
+                indexed_structure="",
+            )
+        ],
+    )
+    async with pg_pool.connection() as conn:
+        await conn.execute(_PRE_MARKUP_TSV)
+
+    assert not await store.passages_awaiting_indexed_structure(), "nothing left to derive"
+    assert not await store.passage_vector_is_current(), (
+        "the stand-in must carry the vector that drops markup, or this proves nothing"
+    )
+    assert await store.search_bm25("8441", limit=10) == [], (
+        "pre-state control: the attribute value is inside a tag the old vector drops"
+    )
+    return document_id
+
+
+async def test_the_migration_rebuilds_a_vector_that_drops_markup(
+    store, postgres_graph_store, minimal_config, tmp_vault_dir, pre_markup_vault, pg_pool
+):
+    """A vector from before markup brackets were replaced is rebuilt and reports itself.
+
+    Anti-coincidental-pass: the fixture leaves no structure to derive, so a
+    migration that decided the rebuild on the structure marker alone would find
+    the vector current and do nothing; the search would still miss.
+    """
+    report = await _maintenance(
+        postgres_graph_store, store, minimal_config, tmp_vault_dir
+    ).migrate_vault()
+
+    assert BACKFILL_PASSAGE_INDEXED_STRUCTURE in report.backfills_applied
+    assert "translate" in await _generation_expression(pg_pool)
+    assert await store.passage_vector_is_current()
+    for term in ("8441", "10.20.30.41"):
+        hits = await store.search_bm25(term, limit=10)
+        assert [r.document_id for r in hits] == [pre_markup_vault], term

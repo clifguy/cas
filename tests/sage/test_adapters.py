@@ -5557,7 +5557,7 @@ class TestAdapterConfigRefusal:
         assert not isinstance(failed.value, AdapterConfigError)
 
 
-# ── Structured-data source adapter (AD-190 to AD-205) ───────────────
+# ── Structured-data source adapter (AD-190 to AD-214) ───────────────
 
 
 def _ledger(count: int = 13) -> dict:
@@ -5620,7 +5620,57 @@ def _parse_structured(suffix: str, text: str) -> object:
         return [json.loads(line) for line in text.splitlines() if line.strip()]
     if suffix in (".yaml", ".yml"):
         return list(yaml.safe_load_all(text))
+    if suffix == ".xml":
+        return _xml_tree(text)
     return tomllib.loads(text)
+
+
+def _xml_tree(text: str) -> tuple:
+    """``text``'s element tree as nested tuples, whitespace-only text dropped."""
+    import defusedxml.ElementTree as ET
+
+    def canonical(element) -> tuple:
+        return (
+            element.tag,
+            sorted(element.attrib.items()),
+            (element.text or "").strip() and element.text,
+            [(canonical(child), (child.tail or "").strip() and child.tail) for child in element],
+        )
+
+    return canonical(ET.fromstring(text.encode("utf-8")))
+
+
+def _scan_report(prefix: str = "192.168.4", ports: tuple[int, ...] = (22, 80, 443)) -> str:
+    """A network scan report: every fact is an attribute, three hosts of three ports."""
+
+    def port_lines(octet: int) -> str:
+        return "".join(
+            f'      <port protocol="tcp" portid="{port + octet}">'
+            f'<state state="open" reason="syn-ack"/><service name="svc{port}"/></port>\n'
+            for port in ports
+        )
+
+    hosts = "".join(
+        f"""  <host starttime="1758700000" endtime="1758700009">
+    <status state="up" reason="arp-response"/>
+    <address addr="{prefix}.{octet}" addrtype="ipv4"/>
+    <ports>
+      <extraports state="closed" count="997"/>
+      <!-- open ports -->
+{port_lines(octet)}    </ports>
+  </host>
+"""
+        for octet in (11, 12, 13)
+    )
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE nmaprun>
+<?xml-stylesheet href="file:///usr/share/nmap/nmap.xsl" type="text/xsl"?>
+<!-- Scan initiated as: nmap -oX scan.xml 192.168.4.0/24 -->
+<nmaprun scanner="nmap" args="nmap -oX scan.xml" version="7.95">
+  <scaninfo type="syn" protocol="tcp" numservices="1000"/>
+{hosts}  <runstats><finished elapsed="9.12" exit="success"/></runstats>
+</nmaprun>
+"""
 
 
 def _structured_source(suffix: str) -> str:
@@ -5632,11 +5682,24 @@ def _structured_source(suffix: str) -> str:
         return "\n".join(json.dumps(record) for record in _ledger(3)["entries"]) + "\n"
     if suffix in (".yaml", ".yml"):
         return _YAML_LEDGER
+    if suffix == ".xml":
+        return _scan_report()
     return _TOML_LEDGER
 
 
+def _without_added_blank_lines(text: str, source: str) -> str:
+    """``text`` with each blank line that ``source`` lacks at that point removed."""
+    out: list[str] = []
+    wanted = source.split("\n")
+    for line in text.split("\n"):
+        if line == "" and (len(out) >= len(wanted) or wanted[len(out)] != ""):
+            continue
+        out.append(line)
+    return "\n".join(out)
+
+
 class TestStructuredDataAdapter:
-    """AD-190 to AD-205: JSON, JSON Lines, YAML and TOML projected without headings."""
+    """AD-190 to AD-214: JSON, JSON Lines, YAML, TOML and XML projected without headings."""
 
     async def _project(self, tmp_path, name: str, body: str | bytes):
         from sage.source_adapters.structured_data_adapter import StructuredDataAdapter
@@ -5800,7 +5863,7 @@ class TestStructuredDataAdapter:
         assert '"""\n[not a header]' in result.text
         assert '"""\n\n[[entries]]\nid = "B"' in result.text
 
-    @pytest.mark.parametrize("suffix", [".json", ".jsonl", ".yaml", ".yml", ".toml"])
+    @pytest.mark.parametrize("suffix", [".json", ".jsonl", ".yaml", ".yml", ".toml", ".xml"])
     async def test_ad_199_the_projection_parses_to_the_source_data(self, tmp_path, suffix):
         """AD-199: Parsing the projection yields the data parsing the source does."""
         source = _structured_source(suffix)
@@ -5818,8 +5881,19 @@ class TestStructuredDataAdapter:
             ("broken.toml", b"a = \n"),
             ("latin1.json", b'{"a": "caf\xe9"}'),
             ("data.txt", b'{"a": 1}'),
+            ("broken.xml", b"<a><b></a>"),
+            ("latin1.xml", b'<?xml version="1.0" encoding="ISO-8859-1"?><a>caf\xe9</a>'),
         ],
-        ids=["json", "jsonl", "yaml", "toml", "not-utf8", "unclaimed-extension"],
+        ids=[
+            "json",
+            "jsonl",
+            "yaml",
+            "toml",
+            "not-utf8",
+            "unclaimed-extension",
+            "xml",
+            "xml-not-utf8",
+        ],
     )
     async def test_ad_200_an_unparseable_source_is_a_read_error(self, tmp_path, name, body):
         """AD-200: An unparseable, non-UTF-8 or unclaimed-extension source is a read error.
@@ -5936,3 +6010,206 @@ class TestStructuredDataAdapter:
             <= 3
         )
         assert join_passages(chunks) == result.text
+
+    async def test_ad_208_xml_keeps_its_text_and_separates_repeated_records(self, tmp_path):
+        """AD-208: A scan report keeps every byte and puts each port in its own paragraph."""
+        source = _scan_report()
+        _, result = await self._project(tmp_path, "scan.xml", source)
+
+        assert result.headings == []
+        assert _without_added_blank_lines(result.text, source) == source
+        units = result.text.split("\n\n")
+        for octet in (11, 12, 13):
+            address = f'addr="192.168.4.{octet}"'
+            assert sum(address in unit for unit in units) == 1, address
+            for port in (22, 80, 443):
+                portid = f'portid="{port + octet}"'
+                holding = [unit for unit in units if portid in unit]
+                assert len(holding) == 1, portid
+                assert holding[0].count("<port ") == 1, portid
+                assert 'state="open"' in holding[0]
+        for kept in (
+            '<?xml version="1.0" encoding="UTF-8"?>',
+            "<!DOCTYPE nmaprun>",
+            '<?xml-stylesheet href="file:///usr/share/nmap/nmap.xsl" type="text/xsl"?>',
+            "<!-- Scan initiated as: nmap -oX scan.xml 192.168.4.0/24 -->",
+        ):
+            assert kept in result.text, kept
+
+    async def test_ad_209_document_style_xml_projects_as_its_source(self, tmp_path):
+        """AD-209: Mixed-content paragraphs gain no insertions; the title is the <title> child."""
+        source = (
+            "<article>\n"
+            "  <title>Field Notes</title>\n"
+            "  <body>Opening text before any paragraph.\n"
+            "    <p>The first <em>paragraph</em> runs on.\n"
+            "      <em>Still</em> the first.\n"
+            "    </p>\n"
+            "    <p>The second <em>one</em>.</p>\n"
+            "    Text between paragraphs.\n"
+            "    <p>A third, with <b>bold</b>\n"
+            "      <b>and more</b> text.</p>\n"
+            "  </body>\n"
+            "</article>\n"
+        )
+        _, result = await self._project(tmp_path, "notes.xml", source)
+
+        assert result.text == source
+        assert result.headings == []
+        assert result.title == "Field Notes"
+
+    async def test_ad_210_only_line_leading_repeats_in_element_only_content_are_separated(
+        self, tmp_path
+    ):
+        """AD-210: Blank lines go only above line-leading repeats inside element-only parents."""
+        source = (
+            "<root>\n"
+            '  <address a="1"/>\n'
+            "  <ports/>\n"
+            '  <item n="1"/>\n'
+            "  <!-- the second item -->\n"
+            '  <item n="2"/>\n'
+            '  <item n="3"/><item n="4"/>\n'
+            "  <para>Mixed\n"
+            "    <em>one</em>\n"
+            "    <em>two</em>\n"
+            "  </para>\n"
+            "  <rec>\n"
+            "    <x/>\n"
+            "  </rec><rec>\n"
+            "    <x/>\n"
+            "  </rec>\n"
+            "</root>\n"
+        )
+        expected = source.replace(
+            "  <!-- the second item -->", "\n  <!-- the second item -->"
+        ).replace('  <item n="3"/>', '\n  <item n="3"/>')
+
+        _, result = await self._project(tmp_path, "rule.xml", source)
+        _, crlf = await self._project(
+            tmp_path, "rule_crlf.xml", source.replace("\n", "\r\n").encode("utf-8")
+        )
+
+        assert result.text == expected
+        assert crlf.text == expected.replace("\n", "\r\n")
+
+    async def test_ad_211_entities_and_external_references_are_refused_unfetched(self, tmp_path):
+        """AD-211: Entity and external-reference payloads are read errors and fetch nothing."""
+        import http.server
+        import threading
+        import urllib.request
+
+        from sage.source_adapters.base import SourceReadError
+
+        hits: list[str] = []
+
+        class Counting(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                hits.append(self.path)
+                body = b'<!ENTITY leak "fetched">'
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, *_args: object) -> None:
+                pass
+
+        server = http.server.HTTPServer(("127.0.0.1", 0), Counting)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_address[1]}"
+        laughs = "".join(f'<!ENTITY l{i} "{("&l" + str(i - 1) + ";") * 10}">' for i in range(1, 10))
+        # Each payload is refused for its own reason: a small internal entity by
+        # the entity rule alone, since expat's amplification guard admits it;
+        # nested entities by both; the two external references by the external
+        # rule, before any fetch.
+        payloads = {
+            "entity.xml": '<!DOCTYPE a [<!ENTITY x "expanded">]><a>&x;</a>',
+            "laughs.xml": f'<!DOCTYPE a [<!ENTITY l0 "lol">{laughs}]><a>&l9;</a>',
+            "external.xml": f'<!DOCTYPE a [<!ENTITY x SYSTEM "{base}/entity">]><a>&x;</a>',
+            "dtd.xml": f'<!DOCTYPE a SYSTEM "{base}/schema.dtd"><a/>',
+        }
+        try:
+            for name, body in payloads.items():
+                with pytest.raises(SourceReadError) as caught:
+                    await self._project(tmp_path, name, body)
+                assert str(tmp_path / name) in str(caught.value), name
+            assert hits == []
+            # The loopback server started above; the URL is not caller-supplied.
+            with urllib.request.urlopen(f"{base}/control") as response:  # noqa: S310
+                response.read()
+            assert hits == ["/control"]
+        finally:
+            server.shutdown()
+            server.server_close()
+
+    async def test_ad_212_a_document_type_without_entities_is_accepted(self, tmp_path):
+        """AD-212: An internal subset declaring no entity is accepted and kept."""
+        doctype = "<!DOCTYPE a [<!ELEMENT a ANY>]>"
+        _, result = await self._project(tmp_path, "typed.xml", f"{doctype}\n<a>text</a>\n")
+
+        assert doctype in result.text
+
+    async def test_ad_213_one_insertion_that_would_change_the_tree_is_dropped_alone(
+        self, tmp_path, monkeypatch
+    ):
+        """AD-213: A proposed insertion inside a text node is dropped; the others stand.
+
+        No line-leading element in element-only content sits anywhere but in
+        ignorable whitespace, so the tree check is reached only by injecting an
+        insertion the rule would never propose.
+        """
+        from sage.source_adapters import structured_data_adapter as module
+
+        source = (
+            "<root>\n"
+            "  <note>first line\n"
+            "second line</note>\n"
+            '  <rec id="1"/>\n'
+            '  <rec id="2"/>\n'
+            '  <rec id="3"/>\n'
+            '  <rec id="4"/>\n'
+            "</root>\n"
+        )
+        proposed = module._xml_starts
+
+        def with_a_bad_one(*args, **kwargs) -> set[int]:
+            return proposed(*args, **kwargs) | {2}
+
+        monkeypatch.setattr(module, "_xml_starts", with_a_bad_one)
+        _, result = await self._project(tmp_path, "faulty.xml", source)
+
+        assert "first line\nsecond line" in result.text
+        assert result.text == source.replace('  <rec id="2"', '\n  <rec id="2"').replace(
+            '  <rec id="3"', '\n  <rec id="3"'
+        ).replace('  <rec id="4"', '\n  <rec id="4"')
+
+    @pytest.mark.parametrize(
+        ("body", "title"),
+        [
+            ('<doc title="From attribute"><title>Not this</title></doc>', "From attribute"),
+            ("<doc><meta/><title> From child </title><title>Second</title></doc>", "From child"),
+            ('<doc title=" "><title>Child after blank</title></doc>', "Child after blank"),
+            ("<doc><title>  </title></doc>", "fallback"),
+            ("<doc><section><title>Nested</title></section></doc>", "fallback"),
+            # The file is UTF-8 whatever its declaration names, so the title is
+            # not decoded a second time as Latin-1.
+            ('<?xml version="1.0" encoding="ISO-8859-1"?><doc title="Café"/>', "Café"),
+        ],
+        ids=[
+            "attribute",
+            "child",
+            "blank-attribute",
+            "blank-child",
+            "nested-only",
+            "declared-encoding-overridden",
+        ],
+    )
+    async def test_ad_214_an_xml_title_comes_from_the_root_or_the_filename(
+        self, tmp_path, body, title
+    ):
+        """AD-214: The root's title attribute, then its first <title> child, else the stem."""
+        _, result = await self._project(tmp_path, "fallback.xml", body)
+
+        assert result.title == title
