@@ -1351,6 +1351,30 @@ class PostgresGraphStore(GraphStore):
             )
             return {row["id"]: row["source_path"] for row in rows}
 
+    async def record_reprojection_skip(
+        self, document_id: str, adapter_version: str | None, reason: str
+    ) -> None:
+        with self._query_timer.measure("record_reprojection_skip"):
+            await self._execute(
+                "UPDATE documents SET reprojection_skipped = %s WHERE id = %s",
+                (Jsonb({"adapter_version": adapter_version, "reason": reason}), document_id),
+            )
+
+    async def reprojection_skips(self) -> dict[str, str | None]:
+        with self._query_timer.measure("reprojection_skips"):
+            rows = await self._fetch_rows(
+                "SELECT id, reprojection_skipped->>'adapter_version' AS adapter_version "
+                "FROM documents WHERE reprojection_skipped IS NOT NULL"
+            )
+            return {row["id"]: row["adapter_version"] for row in rows}
+
+    async def clear_reprojection_skip(self, document_id: str) -> None:
+        with self._query_timer.measure("clear_reprojection_skip"):
+            await self._execute(
+                "UPDATE documents SET reprojection_skipped = NULL WHERE id = %s",
+                (document_id,),
+            )
+
     async def remove_document(self, document_id: str) -> None:
         with self._query_timer.measure("remove_document"):
             async with self._pool.connection() as conn:

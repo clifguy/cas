@@ -654,6 +654,9 @@ class StubGraphStore(GraphStore):
 
     def __init__(self) -> None:
         self._docs: dict[str, Document] = {}
+        # Held beside the documents, as the durable store holds it in a column
+        # the Document model does not carry.
+        self._reprojection_skips: dict[str, tuple[str | None, str]] = {}
         self._edges: dict[str, Edge] = {}
         self._staging: dict[str, StagingEdge] = {}
         self._users: dict[str, User] = {}
@@ -893,6 +896,22 @@ class StubGraphStore(GraphStore):
             if doc.source_path is not None
             and re.search(NON_CANONICAL_SOURCE_PATH_PATTERN, doc.source_path)
         }
+
+    async def record_reprojection_skip(
+        self, document_id: str, adapter_version: str | None, reason: str
+    ) -> None:
+        if document_id in self._docs:
+            self._reprojection_skips[document_id] = (adapter_version, reason)
+
+    async def reprojection_skips(self) -> dict[str, str | None]:
+        return {
+            doc_id: version
+            for doc_id, (version, _reason) in self._reprojection_skips.items()
+            if doc_id in self._docs
+        }
+
+    async def clear_reprojection_skip(self, document_id: str) -> None:
+        self._reprojection_skips.pop(document_id, None)
 
     async def remove_document(self, document_id: str) -> None:
         self._docs.pop(document_id, None)

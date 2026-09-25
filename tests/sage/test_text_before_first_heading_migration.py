@@ -24,7 +24,7 @@ from sage.adapters.content_store_postgres import PostgresContentStore
 from sage.adapters.interfaces import Chunk
 from sage.adapters.stubs import StubAbstractionProvider, StubEmbeddingProvider
 from sage.models.enums import RetrievalMode, SourceType
-from sage.models.schemas import DiscoverRequest, IngestRequest, SetLifecycleRequest
+from sage.models.schemas import DiscoverRequest, Document, IngestRequest, SetLifecycleRequest
 from sage.services.ingestion import IngestionService
 from sage.services.lifecycle import LifecycleService
 from sage.services.maintenance import BACKFILL_TEXT_BEFORE_FIRST_HEADING, MaintenanceService
@@ -992,3 +992,303 @@ async def test_a_title_edit_before_the_lock_is_not_overwritten_by_the_rewrite(va
     assert [c.indexed_structure for c in chunks] == [
         indexed_structure(c.heading_path, "Renamed") for c in chunks
     ]
+
+
+# ---------------------------------------------------------------------------
+# A document the backfill cannot repair is recorded, and not read again
+# ---------------------------------------------------------------------------
+
+_SKIP_LINE = "not stored by migrate_vault"
+
+
+def _skip_lines(caplog, document_id: str) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if _SKIP_LINE in r.getMessage() and document_id in r.getMessage()
+    ]
+
+
+def _not_repaired(report) -> dict[str, str]:
+    return {entry.document_id: entry.reason for entry in report.documents_not_repaired}
+
+
+async def _change_source(vault: Vault, led: str) -> None:
+    doc = await vault.graph_store.get_document(led)
+    (vault.root / "sources" / doc.source_path).write_text(f"Edited lead.\n\n{BODY}")
+
+
+async def _remove_source(vault: Vault, led: str) -> None:
+    doc = await vault.graph_store.get_document(led)
+    (vault.root / "sources" / doc.source_path).unlink()
+
+
+def _withdraw_adapter(adapters: dict) -> None:
+    del adapters[SourceType.MARKDOWN]
+
+
+async def _forget_source_path(vault: Vault, led: str, monkeypatch) -> None:
+    """Serve the document with no source path, which the durable store cannot hold.
+
+    The column is ``NOT NULL`` and the model requires a string, so the branch is
+    reached only through a record built without validation -- the shape a
+    binding that did not enforce the column would hand back.
+    """
+    list_all = vault.graph_store.list_all_documents
+
+    async def with_no_source_path():
+        docs = await list_all()
+        return [
+            Document.model_construct(**{**dict(d), "source_path": None}) if d.id == led else d
+            for d in docs
+        ]
+
+    monkeypatch.setattr(vault.graph_store, "list_all_documents", with_no_source_path)
+
+
+@pytest.mark.parametrize(
+    "reason",
+    ["source differs", "source not projected", "no adapter", "no source path"],
+)
+async def test_an_unrepairable_document_is_not_read_again(vault, caplog, monkeypatch, reason):
+    """Each reason the backfill cannot repair a document is recorded on the run
+    that finds it, reported with its reason, and not examined again.
+
+    Anti-coincidental-pass: the first run must report the document and log it.
+    Without that control a document that was never a candidate would satisfy
+    every second-run assertion.
+    """
+    led = await _led(vault)
+    if reason == "source differs":
+        await _change_source(vault, led)
+    elif reason == "source not projected":
+        await _remove_source(vault, led)
+    elif reason == "no source path":
+        await _forget_source_path(vault, led, monkeypatch)
+    adapters = vault.ship_adapters()
+    if reason == "no adapter":
+        _withdraw_adapter(adapters)
+
+    with caplog.at_level("INFO", logger="sage.services.ingestion"):
+        first = await vault.migrate()
+
+    assert reason in _not_repaired(first).get(led, ""), first.documents_not_repaired
+    assert len(_skip_lines(caplog, led)) == 1
+    assert (await vault.graph_store.get_document(led)).adapter_version == "0.5.0", (
+        "an unrepaired document is not claimed current"
+    )
+
+    caplog.clear()
+    again = vault.ship_adapters()
+    if reason == "no adapter":
+        _withdraw_adapter(again)
+    with caplog.at_level("INFO", logger="sage.services.ingestion"):
+        second = await vault.migrate()
+
+    assert again.get(SourceType.MARKDOWN) is None or again[SourceType.MARKDOWN].projected == []
+    assert _skip_lines(caplog, led) == []
+    assert second.documents_not_repaired == []
+
+
+async def test_a_restored_copy_is_repaired_by_the_next_run(vault, tmp_path):
+    """Restoring the retained copy undoes the record, so the next run repairs it.
+
+    Anti-coincidental-pass: the record is confirmed to exclude the document
+    first, so the repair is the restore's doing and not a record that never held.
+    """
+    led = await _led(vault)
+    doc = await vault.graph_store.get_document(led)
+    original = (vault.root / "sources" / doc.source_path).read_bytes()
+    await _change_source(vault, led)
+    vault.ship_adapters()
+    assert led in _not_repaired(await vault.migrate())
+    excluded = vault.ship_adapters()
+    await vault.migrate()
+    assert excluded[SourceType.MARKDOWN].projected == [], "control: the record excludes it"
+
+    delivered = tmp_path / "original.md"
+    delivered.write_bytes(original)
+    service = MaintenanceService(
+        vault_id=vault.config.vault.id,
+        graph_store=vault.graph_store,
+        config=vault.config,
+        registry_service=None,
+        content_store=vault.store,
+        ingestion_service=vault.ingestion,
+        vault_dir=vault.root,
+    )
+    await service.restore_vault_source_file(source=str(delivered), document_id=led)
+
+    adapters = vault.ship_adapters()
+    report = await vault.migrate()
+
+    assert adapters[SourceType.MARKDOWN].projected == [Path(doc.source_path).name]
+    assert BACKFILL_TEXT_BEFORE_FIRST_HEADING in report.backfills_applied
+    assert report.documents_not_repaired == []
+    assert (await vault.store.get_all_chunks(led))[0].content == LEAD
+    assert (await vault.graph_store.get_document(led)).adapter_version == MarkdownAdapter.VERSION
+
+
+async def test_an_adapter_registered_later_re_examines_a_recorded_document(vault):
+    """The record names the adapter that examined the document -- none, here --
+    so an adapter that could examine it now is not turned away by it."""
+    led = await _led(vault)
+    _withdraw_adapter(vault.ship_adapters())
+    assert led in _not_repaired(await vault.migrate())
+
+    adapters = vault.ship_adapters()
+    report = await vault.migrate()
+
+    assert adapters[SourceType.MARKDOWN].projected == ["led.md"]
+    assert BACKFILL_TEXT_BEFORE_FIRST_HEADING in report.backfills_applied
+    assert (await vault.store.get_all_chunks(led))[0].content == LEAD
+    assert led not in await vault.graph_store.reprojection_skips(), (
+        "a document brought current keeps no record that it could not be"
+    )
+
+
+async def test_restoring_an_intact_copy_clears_a_projection_failure_record(vault, tmp_path):
+    """A projection that failed for a reason outside the file -- a format
+    dependency missing on the host, say -- is recorded against intact bytes.
+    Restoring those bytes writes nothing, and still clears the record, so the
+    next run tries again once the host can project them.
+
+    Anti-coincidental-pass: the record is confirmed to exclude the document, and
+    the restore is confirmed to have taken the no-write path, before the repair.
+    """
+    led = await _led(vault)
+    doc = await vault.graph_store.get_document(led)
+    original = (vault.root / "sources" / doc.source_path).read_bytes()
+    failing = vault.ship_adapters()
+
+    async def cannot_project(source_path, config=None):
+        raise ValueError("a dependency this host lacks")
+
+    failing[SourceType.MARKDOWN].project = cannot_project
+    assert "source not projected" in _not_repaired(await vault.migrate()).get(led, "")
+    excluded = vault.ship_adapters()
+    await vault.migrate()
+    assert excluded[SourceType.MARKDOWN].projected == [], "control: the record excludes it"
+
+    delivered = tmp_path / "original.md"
+    delivered.write_bytes(original)
+    restore = await MaintenanceService(
+        vault_id=vault.config.vault.id,
+        graph_store=vault.graph_store,
+        config=vault.config,
+        registry_service=None,
+        content_store=vault.store,
+        ingestion_service=vault.ingestion,
+        vault_dir=vault.root,
+    ).restore_vault_source_file(source=str(delivered), document_id=led)
+
+    assert restore.status == "already_intact", "control: the restore wrote nothing"
+    assert led not in await vault.graph_store.reprojection_skips()
+    adapters = vault.ship_adapters()
+    report = await vault.migrate()
+    assert adapters[SourceType.MARKDOWN].projected == ["led.md"]
+    assert BACKFILL_TEXT_BEFORE_FIRST_HEADING in report.backfills_applied
+    assert (await vault.store.get_all_chunks(led))[0].content == LEAD
+
+
+class _UnavailableSourceStore(FilesystemVaultSourceStore):
+    """A source store that declines every read as a transient condition."""
+
+    def __init__(self) -> None:
+        super().__init__(Path("/unused/vault_root"))
+
+    def source_exists(self, vault_id, storage_root, source_path):
+        return True
+
+    def read_source(self, vault_id, storage_root, source_path):
+        from sage.api.errors import VaultSourceStoreUnavailableError
+
+        raise VaultSourceStoreUnavailableError(source_path, "read")
+
+
+async def test_a_transient_store_outage_is_not_recorded(vault, monkeypatch):
+    """A store that may serve the source on a later attempt does not make a
+    document unrepairable, so the next run with the store healthy repairs it."""
+    from sage.services.vault_source_errors import wrap_vault_source_store
+
+    led = await _led(vault)
+    doc = await vault.graph_store.get_document(led)
+    local = vault.root / "sources" / doc.source_path
+    healthy = _InMemorySourceStore({doc.source_path: local.read_bytes()})
+    local.unlink()
+    stores = [_UnavailableSourceStore(), healthy]
+    monkeypatch.setattr(
+        "sage.mcp_init.resolve_stack_vault_source_store",
+        lambda *a, **k: wrap_vault_source_store(stores.pop(0)),
+    )
+    vault.ship_adapters()
+
+    first = await vault.migrate()
+
+    assert "source not projected" in _not_repaired(first).get(led, ""), (
+        "control: the outage is still reported on the run it happens"
+    )
+    assert led not in await vault.graph_store.reprojection_skips()
+
+    report = await vault.migrate()
+
+    assert healthy.reads == [doc.source_path]
+    assert BACKFILL_TEXT_BEFORE_FIRST_HEADING in report.backfills_applied
+    assert (await vault.store.get_all_chunks(led))[0].content == LEAD
+
+
+async def test_a_reprojection_skip_is_recorded_listed_cleared_and_removed(vault):
+    """The graph store's record of an unrepaired document, end to end."""
+    led = await _led(vault)
+    other = await vault.ingest("other.md", b"# Other\n\nOther body.\n", SourceType.MARKDOWN)
+    assert await vault.graph_store.reprojection_skips() == {}
+
+    await vault.graph_store.record_reprojection_skip(led, "0.7.0", "why")
+    await vault.graph_store.record_reprojection_skip(led, "0.8.0", "why")
+    await vault.graph_store.record_reprojection_skip(other, None, "why not")
+    assert await vault.graph_store.reprojection_skips() == {led: "0.8.0", other: None}, (
+        "a later record replaces an earlier one"
+    )
+
+    await vault.graph_store.clear_reprojection_skip(led)
+    assert await vault.graph_store.reprojection_skips() == {other: None}
+
+    await vault.graph_store.remove_document(other)
+    assert await vault.graph_store.reprojection_skips() == {}
+
+
+@pytest.mark.parametrize(
+    ("fault", "recorded"),
+    [
+        (PermissionError(13, "Permission denied"), False),
+        (BlockingIOError(35, "Resource temporarily unavailable"), False),
+        (FileNotFoundError(2, "No such file or directory"), True),
+        (IsADirectoryError(21, "Is a directory"), True),
+        (NotADirectoryError(20, "Not a directory"), True),
+        (ValueError("could not open the file"), True),
+    ],
+    ids=["permission", "busy", "not-found", "is-a-directory", "not-a-directory", "wrapped"],
+)
+async def test_a_read_fault_of_the_moment_is_not_recorded(vault, fault, recorded):
+    """A read fault that may not recur -- a permission, a busy file -- is reported
+    but not recorded, whichever source binding raised it, so the next run tries
+    again. A fault that is a property of the recorded path is recorded, and so is
+    one that arrives re-raised as something other than an operating-system error.
+
+    Anti-coincidental-pass: every case is first confirmed reported, so a fault
+    that never reached the backfill cannot pass the recording assertion.
+    """
+    led = await _led(vault)
+    failing = vault.ship_adapters()
+
+    async def cannot_read(source_path, config=None):
+        raise fault
+
+    failing[SourceType.MARKDOWN].project = cannot_read
+    report = await vault.migrate()
+
+    assert "source not projected" in _not_repaired(report).get(led, ""), "control: reported"
+    assert (led in await vault.graph_store.reprojection_skips()) is recorded
+    adapters = vault.ship_adapters()
+    await vault.migrate()
+    assert adapters[SourceType.MARKDOWN].projected == ([] if recorded else ["led.md"])

@@ -4152,21 +4152,21 @@ paths:
       operationId: migrate_vault
       summary: Run the schema-migration surface's backfill and tier3-uniqueness scan.
       description: >-
-        The durable store provisions its schema externally, so there is no
-        pending schema work for this operation to apply and columns_added is
-        always empty.
+        The durable store provisions its schema externally, so
+        columns_added is always empty.
 
 
-        Six data backfills run, and backfills_applied names each one only
-        when it changed rows. They clear the pipeline_error a recovered
+        Six data backfills run; backfills_applied names each that changed
+        rows. They clear the pipeline_error a recovered
         failure left behind, reduce a stored source_path in a spelling
         ingest no longer records to its plain form (each rewrite reported in
         source_paths_normalized; a path that walks out of the source tree is
         left as recorded), and bring stored passages to the current shape.
         Only the heading backfill reads sources: a document whose source
-        changed since it was indexed or cannot be read is skipped, and the
-        server log names each one. Nothing is re-abstracted, and only the
-        documents a backfill rewrites are re-embedded.
+        changed since it was indexed or cannot be read is listed once in
+        documents_not_repaired and not read again until its source is
+        restored. Nothing is re-abstracted, and only the documents a backfill
+        rewrites are re-embedded.
 
 
         Idempotent: a re-call with nothing left to repair reports no error
@@ -8918,6 +8918,23 @@ components:
             spelling. A path that walks out of the vault's source tree has no
             plain form inside it and is left as recorded; `verify_vault_source_files`
             reports those.
+        documents_not_repaired:
+          type: array
+          items:
+            $ref: "#/components/schemas/DocumentNotRepaired"
+          description: >-
+            Per-document entries for every document the migration
+            examined to bring its stored passages to the current shape
+            and could not, with the reason. Each is listed on the run
+            that finds it and is not examined again until its retained
+            source is restored with `restore_vault_source_file` or a
+            different adapter would read it. A read the source store
+            reported unavailable, or one that raised an operating-system
+            fault the recorded path does not itself cause (nothing there,
+            or a directory), is listed and examined again on the next
+            call; a fault reported any other way is recorded,
+            and restoring the source clears it. Empty when every examined
+            document was brought current.
         tier3_uniqueness_activations:
           type: array
           items:
@@ -8939,6 +8956,27 @@ components:
             substrate refuses to activate the constraint while collisions
             remain (CAS-ADR-031 §5). The operator resolves via renumber,
             supersede, or archive-and-recreate, then re-runs the migration.
+
+    DocumentNotRepaired:
+      type: object
+      required: [document_id, reason]
+      description: >-
+        One document whose stored passages the migration could not bring
+        current. Bringing a document's passages to the shape the current
+        adapter writes means re-projecting its retained source. Where that
+        source is missing, changed or unreadable, or no adapter reads its
+        format, the passages are left as they are and the document is
+        reported here once rather than read on every call.
+      properties:
+        document_id:
+          $ref: "#/components/schemas/DocumentId"
+          description: Identifier of the document whose passages the migration could not bring current.
+        reason:
+          type: string
+          description: >-
+            Why it could not: its retained source differs from the one
+            its passages were built from, cannot be read or projected,
+            is not recorded, or no adapter is registered for its format.
 
     SourcePathNormalization:
       type: object

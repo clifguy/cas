@@ -122,6 +122,7 @@ CREATE TABLE IF NOT EXISTS documents (
     pipeline_error text,
     tier3_metadata jsonb,
     adapter_config jsonb,
+    reprojection_skipped jsonb,
     metadata_confirmed boolean NOT NULL DEFAULT false,
     is_chain_head boolean NOT NULL DEFAULT true,
     relocated_from jsonb,
@@ -380,6 +381,13 @@ ADDITIVE_COLUMNS: tuple[str, ...] = (
     # ingested before the column existed is read exactly that way, so its
     # re-projection keeps using the vault's defaults alone, as it always has.
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS adapter_config jsonb;",
+    # Why a re-projection could not bring a document's passages current, and
+    # the version of the adapter that tried (null when none was registered).
+    # Nullable with no default: null is what "never found unrepairable" means,
+    # which is every document until a re-projection is refused, so an existing
+    # vault needs no backfill. Kept apart from ``adapter_version``, which states
+    # whose output the passages are and so cannot record a failed attempt.
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS reprojection_skipped jsonb;",
 )
 
 
