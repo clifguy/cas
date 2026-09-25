@@ -13,6 +13,7 @@ shape would start from the post-state and every assertion here would pass
 vacuously.
 """
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -243,3 +244,105 @@ async def test_a_vault_bootstrapped_fresh_is_current(
 
     assert BACKFILL_DOCUMENT_SURFACE_KEYWORD_VECTORS not in report.backfills_applied
     assert await _hits(store, "scan") == [_TITLED]
+
+
+# A rank vector that reads authored text substituted and derived text raw: the
+# state the rank marker's derived-text element exists to recognize.
+_HALF_SUBSTITUTED_RANK = (
+    "ALTER TABLE document_surface DROP COLUMN IF EXISTS tsv_rank;"
+    " ALTER TABLE document_surface ADD COLUMN tsv_rank tsvector GENERATED ALWAYS AS ("
+    f"setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', translate(matchable, '<>', '  ')), 'A')"
+    f" || setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', orienting), 'D')"
+    ") STORED;"
+    " CREATE INDEX IF NOT EXISTS idx_document_surface_tsv_rank_gin"
+    " ON document_surface USING GIN (tsv_rank);"
+)
+
+
+async def test_a_rank_vector_reading_derived_text_raw_is_stale(
+    store, postgres_graph_store, minimal_config, tmp_vault_dir, pg_pool
+):
+    """Each half of the rank vector is checked, not only the authored half.
+
+    Anti-coincidental-pass: the match vector here is current and the rank
+    vector's authored half is too, so a currency check reading any one marker
+    per column would call this vault migrated and leave derived text inside
+    markup unread.
+    """
+    await _seed(store)
+    try:
+        async with pg_pool.connection() as conn:
+            await conn.execute(_HALF_SUBSTITUTED_RANK)
+        assert not await _vector_holds(pg_pool, "tsv_rank", _DERIVED, "zzderivedterm"), (
+            "control: the derived term is unread by this rank vector"
+        )
+
+        assert not await store.document_surface_vector_is_current()
+        report = await _maintenance(
+            postgres_graph_store, store, minimal_config, tmp_vault_dir
+        ).migrate_vault()
+
+        assert BACKFILL_DOCUMENT_SURFACE_KEYWORD_VECTORS in report.backfills_applied
+        assert await _vector_holds(pg_pool, "tsv_rank", _DERIVED, "zzderivedterm")
+    finally:
+        async with pg_pool.connection() as conn:
+            for statement in DOCUMENT_SURFACE_TSV_REBUILD:
+                await conn.execute(statement)
+
+
+async def test_the_rebuild_takes_the_table_lock_before_it_decides(
+    store, pre_markup_surface, pg_pool
+):
+    """The decision is made under the lock the rebuild needs, not before it.
+
+    The observable is which statement waits behind a lock another session
+    holds: waiting at ``LOCK TABLE`` means the lock was taken before the
+    currency check, and waiting at the catalog probe means it was not.
+    """
+
+    async def _blocked_statement() -> str:
+        async with pg_pool.connection() as observer:
+            cur = await observer.execute(
+                "SELECT query FROM pg_stat_activity"
+                " WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                " AND query ILIKE '%document_surface%'"
+            )
+            rows = await cur.fetchall()
+        return " | ".join(r[0] for r in rows)
+
+    async def _wait_until_blocked(timeout: float = 10.0) -> str:
+        """Poll until the rebuild is waiting on a lock, or give up."""
+        deadline = asyncio.get_running_loop().time() + timeout
+        while asyncio.get_running_loop().time() < deadline:
+            waiting = await _blocked_statement()
+            if waiting:
+                return waiting
+            await asyncio.sleep(0.05)
+        return ""
+
+    rebuilding: asyncio.Task[bool] | None = None
+    try:
+        async with pg_pool.connection() as blocker:
+            async with blocker.transaction():
+                await blocker.execute("LOCK TABLE document_surface IN ACCESS EXCLUSIVE MODE")
+
+                rebuilding = asyncio.create_task(store.rebuild_document_surface_vector())
+                waiting_on = await _wait_until_blocked()
+
+                assert waiting_on, (
+                    "control: the rebuild never blocked on the held lock, so this "
+                    "test observed nothing"
+                )
+                assert "LOCK TABLE" in waiting_on.upper(), (
+                    f"the rebuild is waiting at {waiting_on!r}, past its own decision"
+                )
+
+            rebuilt = await asyncio.wait_for(rebuilding, timeout=30)
+            rebuilding = None
+    finally:
+        # A failed assertion leaves the rebuild blocked on this test's lock.
+        if rebuilding is not None:
+            rebuilding.cancel()
+
+    assert rebuilt, "the rebuild runs once the lock is released"
+    assert await store.document_surface_vector_is_current()

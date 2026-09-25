@@ -455,12 +455,15 @@ CHUNKS_TSV_GENERATION_EXPRESSION_PROBE = (
 # The document surface's counterpart of the passage-vector rebuild, for the
 # same reasons and under the same constraints: not in the bootstrap, written to
 # the deploy floor, and recreating the indexes the dropped columns take along.
+# Both columns are added in one statement because each stored generated column
+# added rewrites the table and every index over it; the drops are catalog-only.
 DOCUMENT_SURFACE_TSV_REBUILD: tuple[str, ...] = (
     "ALTER TABLE document_surface DROP COLUMN IF EXISTS tsv_match;",
     "ALTER TABLE document_surface DROP COLUMN IF EXISTS tsv_rank;",
-    "ALTER TABLE document_surface ADD COLUMN tsv_match tsvector GENERATED ALWAYS AS "
-    f"({DOCUMENT_SURFACE_TSV_MATCH_EXPRESSION}) STORED;",
-    "ALTER TABLE document_surface ADD COLUMN tsv_rank tsvector GENERATED ALWAYS AS "
+    "ALTER TABLE document_surface"
+    " ADD COLUMN tsv_match tsvector GENERATED ALWAYS AS "
+    f"({DOCUMENT_SURFACE_TSV_MATCH_EXPRESSION}) STORED,"
+    " ADD COLUMN tsv_rank tsvector GENERATED ALWAYS AS "
     f"({DOCUMENT_SURFACE_TSV_RANK_EXPRESSION}) STORED;",
     IDX_DOCUMENT_SURFACE_TSV_MATCH_GIN,
     IDX_DOCUMENT_SURFACE_TSV_RANK_GIN,

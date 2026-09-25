@@ -381,12 +381,13 @@ class MaintenanceService:
         current is reported in ``documents_not_repaired`` with the reason, once:
         it is not read again until its source is restored.
 
-        Four reshape stored text without reading a source: moving document-level
-        text onto its own retrieval surface (``_migrate_to_document_surface``),
-        rebuilding that surface's keyword vectors where they parse markup
-        brackets in place (CAS-ADR-049 Decision 9), dividing a passage longer than the
-        embedding provider's input bound (``_divide_passages_over_input_bound``),
-        and indexing each passage's structure relative to its document
+        Four reshape stored passages or the indexes over them, without reading a
+        source: moving document-level text onto its own retrieval surface
+        (``_migrate_to_document_surface``), rebuilding that surface's keyword
+        vectors where they parse markup brackets in place (CAS-ADR-049
+        Decision 9), dividing a passage longer than the embedding provider's
+        input bound (``_divide_passages_over_input_bound``), and indexing each
+        passage's structure relative to its document
         (``_migrate_to_relative_indexed_structure``).
 
         Scan every ``unique_keys`` declaration in vault config. For each

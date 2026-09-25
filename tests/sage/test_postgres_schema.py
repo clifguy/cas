@@ -758,6 +758,10 @@ def test_the_document_surface_rebuild_is_written_to_the_deploy_floor():
     the indexes the drop takes with it, from the strings the bootstrap uses."""
     rebuild = "\n".join(pgschema.DOCUMENT_SURFACE_TSV_REBUILD)
     assert "SET EXPRESSION" not in rebuild.upper()
+    (adding,) = [s for s in pgschema.DOCUMENT_SURFACE_TSV_REBUILD if "ADD COLUMN" in s]
+    assert "tsv_match" in adding and "tsv_rank" in adding, (
+        "both vectors are added in one statement, so the table is rewritten once"
+    )
     for column in ("tsv_match", "tsv_rank"):
         assert f"DROP COLUMN IF EXISTS {column}" in rebuild
         assert f"ADD COLUMN {column} tsvector GENERATED ALWAYS AS" in rebuild
