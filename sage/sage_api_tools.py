@@ -2655,7 +2655,7 @@ def register_sage_tools(
         one-time.** It rebuilds every passage index, vector index included:
         expect minutes of exclusive access at tens of thousands of passages.
 
-        Run it with no pipeline work in flight: it is refused while any
+        Run with no pipeline work in flight: this call is refused while any
         ingest, reabstract or recompute is queued or running on the vault,
         and they are refused while it runs. The exclusion covers this
         server process only.
