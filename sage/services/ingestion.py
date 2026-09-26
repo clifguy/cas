@@ -114,6 +114,7 @@ from sage.request_identity import (
 )
 from sage.services._dry_run import doc_type_requirements
 from sage.services.caller_paths import caller_basename
+from sage.services.deprecations import warnings_for
 from sage.services.document_surface import compose_document_surface, embedding_text
 from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.services.identifier_mention_inference import infer_identifier_mentions_for_document
@@ -1319,11 +1320,15 @@ class IngestionService:
                     )
                 return plan.recipe
             (delivery,) = plan.resolved
-            return await self.ingest(
-                build_request(delivery.path),
+            request = build_request(delivery.path)
+            result = await self.ingest(
+                request,
                 wait_for_pipeline=wait_for_pipeline,
                 caller_source=delivery.declared_source,
             )
+            if isinstance(result, IngestResult):
+                result.warnings.extend(warnings_for("ingest_document", request))
+            return result
 
     async def _validate_without_bytes(
         self, request: IngestRequest

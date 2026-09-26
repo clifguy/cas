@@ -24,6 +24,7 @@ import pytest
 from scripts.contract_diff import (
     CALLER_ADAPTATION,
     CAPABILITY,
+    DEPRECATION_REQUIRED_KINDS,
     Contract,
     diff_contracts,
     diff_mcp_catalog,
@@ -435,6 +436,41 @@ OPENAPI_POSITIVE: list[tuple[str, Callable[[dict[str, Any]], None], str, str, st
         "component-removed",
         "components/schemas/Other",
     ),
+    (
+        "media-type-removed",
+        lambda s: s["paths"]["/things"]["post"]["requestBody"]["content"].pop("application/json"),
+        CALLER_ADAPTATION,
+        "media-type-removed",
+        "requestBody/content/application/json",
+    ),
+    (
+        "operation-deprecated",
+        lambda s: _get(s).__setitem__("deprecated", True),
+        CALLER_ADAPTATION,
+        "deprecation-added",
+        "paths//things/get",
+    ),
+    (
+        "parameter-deprecated",
+        lambda s: _limit(s).__setitem__("deprecated", True),
+        CALLER_ADAPTATION,
+        "deprecation-added",
+        "paths//things/get/parameters/query:limit",
+    ),
+    (
+        "property-deprecated",
+        lambda s: _thing(s)["properties"]["note"].__setitem__("deprecated", True),
+        CALLER_ADAPTATION,
+        "deprecation-added",
+        "components/schemas/Thing/properties/note",
+    ),
+    (
+        "component-deprecated",
+        lambda s: s["components"]["schemas"]["Other"].__setitem__("deprecated", True),
+        CALLER_ADAPTATION,
+        "deprecation-added",
+        "components/schemas/Other",
+    ),
 ]
 
 
@@ -511,6 +547,22 @@ MCP_POSITIVE: list[tuple[str, Callable[[dict[str, Any]], None], str, str, str]] 
         CAPABILITY,
         "output-schema-added",
         "sage/search/outputSchema",
+    ),
+    (
+        "tool-deprecated",
+        lambda c: _search(c).__setitem__("description", "Deprecated: use find. Search documents."),
+        CALLER_ADAPTATION,
+        "deprecation-added",
+        "sage/search",
+    ),
+    (
+        "input-deprecated",
+        lambda c: _search(c)["inputSchema"]["properties"]["limit"].__setitem__(
+            "description", "Deprecated: use page_size. Page size."
+        ),
+        CALLER_ADAPTATION,
+        "deprecation-added",
+        "sage/search/inputSchema/properties/limit",
     ),
 ]
 
@@ -921,3 +973,152 @@ def test_wrapping_a_reference_does_not_hide_a_retarget() -> None:
     kinds = sorted(f.kind for f in diff_openapi(SPEC, _mutated(SPEC, wrap_other), surface="core"))
 
     assert kinds == ["branch-added", "ref-retargeted"]
+
+
+# ---------------------------------------------------------------------------
+# Deprecation marks (CAS-ADR-008 clause 8): a deprecation is itself a caller
+# adaptation, and exactly one finding, at the element it marks.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("mutate", "pointer"),
+    [
+        (lambda s: _get(s).__setitem__("deprecated", True), "paths//things/get"),
+        (
+            lambda s: _limit(s).__setitem__("deprecated", True),
+            "paths//things/get/parameters/query:limit",
+        ),
+        (
+            lambda s: _thing(s)["properties"]["note"].__setitem__("deprecated", True),
+            "components/schemas/Thing/properties/note",
+        ),
+    ],
+    ids=["operation", "parameter", "property"],
+)
+def test_openapi_deprecation_is_one_finding_at_the_marked_element(
+    mutate: Callable[[dict[str, Any]], None], pointer: str
+) -> None:
+    findings = diff_openapi(SPEC, _mutated(SPEC, mutate), surface="sage_core_api")
+
+    assert [(f.kind, f.category, f.pointer) for f in findings] == [
+        ("deprecation-added", CALLER_ADAPTATION, pointer)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("mutate", "pointer"),
+    [
+        (
+            lambda c: _search(c).__setitem__("description", "Deprecated: use find."),
+            "sage/search",
+        ),
+        (
+            lambda c: _search(c)["inputSchema"]["properties"]["limit"].__setitem__(
+                "description", "Deprecated: use page_size."
+            ),
+            "sage/search/inputSchema/properties/limit",
+        ),
+    ],
+    ids=["tool", "parameter"],
+)
+def test_mcp_deprecation_is_one_finding_at_the_marked_element(
+    mutate: Callable[[dict[str, Any]], None], pointer: str
+) -> None:
+    findings = diff_mcp_catalog(CATALOG, _mutated(CATALOG, mutate))
+
+    assert [(f.kind, f.category, f.pointer) for f in findings] == [
+        ("deprecation-added", CALLER_ADAPTATION, pointer)
+    ]
+
+
+def test_a_withdrawn_deprecation_is_a_capability() -> None:
+    deprecated = _mutated(SPEC, lambda s: _limit(s).__setitem__("deprecated", True))
+
+    findings = diff_openapi(deprecated, SPEC, surface="sage_core_api")
+
+    assert [(f.kind, f.category) for f in findings] == [("deprecation-withdrawn", CAPABILITY)]
+
+
+def test_a_withdrawn_mcp_deprecation_is_a_capability() -> None:
+    deprecated = _mutated(
+        CATALOG, lambda c: _search(c).__setitem__("description", "Deprecated: use find.")
+    )
+
+    findings = diff_mcp_catalog(deprecated, CATALOG)
+
+    assert [(f.kind, f.category) for f in findings] == [("deprecation-withdrawn", CAPABILITY)]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda s: _limit(s).__setitem__("deprecated", False),
+        lambda s: _limit(s).__setitem__("description", "This parameter is Deprecated: sort of."),
+    ],
+    ids=["explicit-false", "prose-mention"],
+)
+def test_openapi_non_deprecations_are_not_findings(
+    mutate: Callable[[dict[str, Any]], None],
+) -> None:
+    assert diff_openapi(SPEC, _mutated(SPEC, mutate), surface="sage_core_api") == []
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda c: _search(c).__setitem__("description", "Search. Deprecated: nothing."),
+        lambda c: _search(c).__setitem__("description", "deprecated: lower case is prose."),
+        lambda c: _search(c)["inputSchema"]["properties"]["query"].__setitem__(
+            "description", "Query text; the old form is Deprecated: see notes."
+        ),
+    ],
+    ids=["mid-description", "lower-case", "parameter-mid-description"],
+)
+def test_mcp_deprecated_marker_counts_only_at_the_start(
+    mutate: Callable[[dict[str, Any]], None],
+) -> None:
+    assert diff_mcp_catalog(CATALOG, _mutated(CATALOG, mutate)) == []
+
+
+def test_deprecation_required_kinds_are_exactly_the_withdrawing_adaptations() -> None:
+    """The kinds that need a prior deprecation: removal, narrowed input, changed default.
+
+    Every one must be a caller adaptation some positive case actually emits, so the
+    set can name neither a capability nor a kind the detector never produces.
+    """
+    emitted = {case[3]: case[2] for case in [*OPENAPI_POSITIVE, *MCP_POSITIVE]}
+
+    assert set(DEPRECATION_REQUIRED_KINDS) == {
+        "operation-removed",
+        "parameter-removed",
+        "property-removed",
+        "component-removed",
+        "media-type-removed",
+        "header-removed",
+        "tool-removed",
+        "tool-moved",
+        "required-parameter-added",
+        "parameter-made-required",
+        "required-added",
+        "type-narrowed",
+        "enum-value-removed",
+        "constraint-tightened",
+        "default-changed",
+    }
+    for kind in DEPRECATION_REQUIRED_KINDS:
+        assert emitted.get(kind) == CALLER_ADAPTATION, kind
+    assert "deprecation-added" not in DEPRECATION_REQUIRED_KINDS
+
+
+def test_a_deprecated_response_header_is_one_finding_at_the_header() -> None:
+    changed = _mutated(
+        SPEC,
+        lambda s: _get(s)["responses"]["200"]["headers"]["X-Page"].__setitem__("deprecated", True),
+    )
+
+    findings = diff_openapi(SPEC, changed, surface="sage_core_api")
+
+    assert [(f.kind, f.pointer) for f in findings] == [
+        ("deprecation-added", "paths//things/get/responses/200/headers/x-page")
+    ]

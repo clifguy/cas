@@ -41,6 +41,14 @@ response included, is a capability. A refusal the server
 already returned and the contract merely did not list is a patch, which only
 the owner's override can say.
 
+**A deprecation is a finding of its own** (CAS-ADR-008 clause 8). Marking an
+operation, parameter, response header, or schema ``deprecated: true``, or opening an MCP tool or
+parameter description with ``Deprecated:``, is a caller adaptation: it announces
+one. The mark is read only there. Elsewhere ``deprecated`` stays descriptive,
+and a description that merely mentions deprecation is text.
+DEPRECATION_REQUIRED_KINDS names the adaptations that withdraw or change what
+callers use, which must follow a deprecation.
+
 Usage::
 
     python -m scripts.contract_diff OLD_SPEC.yaml NEW_SPEC.yaml
@@ -63,6 +71,33 @@ import yaml
 
 CAPABILITY: Final[str] = "capability"
 CALLER_ADAPTATION: Final[str] = "caller-adaptation"
+
+# How an MCP description marks its tool or parameter deprecated: MCP publishes
+# no deprecated flag, and a client that truncates descriptions keeps the start.
+DEPRECATED_PREFIX: Final[str] = "Deprecated:"
+
+# The adaptations that withdraw or change something callers use -- a removal (a
+# rename is a removal beside an addition), a narrowed input, a changed default --
+# and so must follow a deprecation of their target.
+DEPRECATION_REQUIRED_KINDS: Final[frozenset[str]] = frozenset(
+    {
+        "operation-removed",
+        "parameter-removed",
+        "property-removed",
+        "component-removed",
+        "media-type-removed",
+        "header-removed",
+        "tool-removed",
+        "tool-moved",
+        "required-parameter-added",
+        "parameter-made-required",
+        "required-added",
+        "type-narrowed",
+        "enum-value-removed",
+        "constraint-tightened",
+        "default-changed",
+    }
+)
 
 # Keywords that describe a schema or operation without constraining it.
 _IGNORED_KEYS: Final[frozenset[str]] = frozenset(
@@ -165,24 +200,56 @@ def _is_ignored(key: str) -> bool:
     return key in _IGNORED_KEYS or key.startswith("x-")
 
 
-def _strip(value: Any, key: str | None = None) -> Any:
-    """The value with descriptive keys removed and set-like lists sorted."""
+def _strip(value: Any, key: str | None = None, *, marks: bool = False) -> Any:
+    """The value with descriptive keys removed and set-like lists sorted.
+
+    With ``marks``, ``deprecated`` is kept, so two schemas equal but for a
+    deprecation still compare unequal.
+    """
     if isinstance(value, dict):
-        stripped = {k: _strip(v, k) for k, v in value.items() if not _is_ignored(k)}
+        stripped = {
+            k: _strip(v, k, marks=marks)
+            for k, v in value.items()
+            if not _is_ignored(k) or (marks and k == "deprecated")
+        }
         types = _type_set(value)
         if types is not None:
             stripped["type"] = sorted(types)
         return stripped
     if isinstance(value, list):
-        items = [_strip(v) for v in value]
+        items = [_strip(v, marks=marks) for v in value]
         if key in _SET_VALUED:
             return sorted(items, key=_canon)
         return items
     return value
 
 
-def _canon(value: Any) -> str:
-    return json.dumps(_strip(value), sort_keys=True, ensure_ascii=False)
+def _canon(value: Any, *, marks: bool = False) -> str:
+    return json.dumps(_strip(value, marks=marks), sort_keys=True, ensure_ascii=False)
+
+
+def _diff_deprecated(old: Any, new: Any, pointer: str, out: _Collector) -> None:
+    """A ``deprecated: true`` mark newly set or withdrawn on one element."""
+    was = isinstance(old, dict) and old.get("deprecated") is True
+    now = isinstance(new, dict) and new.get("deprecated") is True
+    _report_deprecation(was, now, pointer, out)
+
+
+def _diff_deprecated_prefix(old: Any, new: Any, pointer: str, out: _Collector) -> None:
+    """An MCP description newly opening with, or no longer opening with, the mark."""
+    _report_deprecation(_opens_deprecated(old), _opens_deprecated(new), pointer, out)
+
+
+def _opens_deprecated(node: Any) -> bool:
+    description = node.get("description") if isinstance(node, dict) else None
+    return isinstance(description, str) and description.startswith(DEPRECATED_PREFIX)
+
+
+def _report_deprecation(was: bool, now: bool, pointer: str, out: _Collector) -> None:
+    if now and not was:
+        out.add(pointer, "deprecation-added", CALLER_ADAPTATION)
+    elif was and not now:
+        out.add(pointer, "deprecation-withdrawn", CAPABILITY)
 
 
 def _type_set(schema: dict[str, Any]) -> frozenset[str] | None:
@@ -318,7 +385,7 @@ def _lift_to_composition(
 
 
 def _diff_schema(old: Any, new: Any, pointer: str, out: _Collector) -> None:
-    if _canon(old) == _canon(new):
+    if _canon(old, marks=True) == _canon(new, marks=True):
         return
     if not isinstance(old, dict) or not isinstance(new, dict):
         out.add(pointer, "schema-changed", CALLER_ADAPTATION)
@@ -406,7 +473,9 @@ def _diff_properties(
     for name in sorted(set(old_props) - set(new_props)):
         out.add(f"{pointer}/properties/{name}", "property-removed", CALLER_ADAPTATION)
     for name in sorted(set(old_props) & set(new_props)):
-        _diff_schema(old_props[name], new_props[name], f"{pointer}/properties/{name}", out)
+        at = f"{pointer}/properties/{name}"
+        _diff_deprecated(old_props[name], new_props[name], at, out)
+        _diff_schema(old_props[name], new_props[name], at, out)
 
 
 def _diff_required(old: dict[str, Any], new: dict[str, Any], pointer: str, out: _Collector) -> None:
@@ -530,6 +599,7 @@ def _diff_named_schemas(
     for name in sorted(set(old) - set(new)):
         out.add(f"{pointer}/{name}", "component-removed", CALLER_ADAPTATION)
     for name in sorted(set(old) & set(new)):
+        _diff_deprecated(old[name], new[name], f"{pointer}/{name}", out)
         _diff_schema(old[name], new[name], f"{pointer}/{name}", out)
 
 
@@ -572,6 +642,7 @@ def _parameters(
 def _diff_parameter(
     old: dict[str, Any], new: dict[str, Any], pointer: str, out: _Collector
 ) -> None:
+    _diff_deprecated(old, new, pointer, out)
     old_required = bool(old.get("required"))
     new_required = bool(new.get("required"))
     if new_required and not old_required:
@@ -685,6 +756,7 @@ def _diff_headers(old: Any, new: Any, pointer: str, out: _Collector) -> None:
         at = f"{pointer}/headers/{name}"
         old_header = _resolve(out.old_document or {}, old_headers[name], "headers") or {}
         new_header = _resolve(out.new_document or {}, new_headers[name], "headers") or {}
+        _diff_deprecated(old_header, new_header, at, out)
         if new_header.get("required") and not old_header.get("required"):
             out.add(at, "header-made-required", CALLER_ADAPTATION)
         elif old_header.get("required") and not new_header.get("required"):
@@ -719,6 +791,7 @@ def diff_openapi(old: dict[str, Any], new: dict[str, Any], *, surface: str) -> l
         path, method = key
         pointer = f"paths/{path}/{method}"
         (old_item, old_op), (new_item, new_op) = old_ops[key], new_ops[key]
+        _diff_deprecated(old_op, new_op, pointer, out)
 
         old_params = _parameters(old, old_item, old_op)
         new_params = _parameters(new, new_item, new_op)
@@ -781,7 +854,8 @@ def diff_mcp_catalog(old: dict[str, Any], new: dict[str, Any]) -> list[Finding]:
 
     A tool's name, input schema, output schema, the refusal codes its error
     schema publishes, and the surface that lists it are contract; its
-    description, title, and annotations are not.
+    description, title, and annotations are not, save that a tool or parameter
+    description newly opening with ``Deprecated:`` is a deprecation.
     """
     out = _Collector("mcp")
     old_tools, new_tools = _tools(old), _tools(new)
@@ -805,6 +879,13 @@ def diff_mcp_catalog(old: dict[str, Any], new: dict[str, Any]) -> list[Finding]:
         surface, name = key
         pointer = f"{surface}/{name}"
         old_tool, new_tool = old_tools[key], new_tools[key]
+        _diff_deprecated_prefix(old_tool, new_tool, pointer, out)
+        old_inputs = (old_tool.get("inputSchema") or {}).get("properties") or {}
+        new_inputs = (new_tool.get("inputSchema") or {}).get("properties") or {}
+        for name in sorted(set(old_inputs) & set(new_inputs)):
+            _diff_deprecated_prefix(
+                old_inputs[name], new_inputs[name], f"{pointer}/inputSchema/properties/{name}", out
+            )
         _diff_schema(
             old_tool.get("inputSchema") or {},
             new_tool.get("inputSchema") or {},

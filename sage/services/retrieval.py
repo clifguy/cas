@@ -77,6 +77,7 @@ from sage.models.schemas import (
     RetrievalFilters,
 )
 from sage.models.wire import to_wire
+from sage.services.deprecations import warnings_for
 from sage.services.passage_split import group_sections, section_text
 from sage.services.read_diagnostics import build_not_found_detail
 from sage.utils.date_parsing import parse_document_date
@@ -1193,7 +1194,7 @@ class RetrievalService:
         ``StorageQueryFailedError``.
         """
         try:
-            return await self._dispatch(request)
+            response = await self._dispatch(request)
         except StorageQueryError as exc:
             logger.error(
                 "storage query %s failed during %s retrieval: %s",
@@ -1202,6 +1203,10 @@ class RetrievalService:
                 exc.driver_message,
             )
             raise StorageQueryFailedError(exc.operation) from exc
+        deprecated = warnings_for("search", request)
+        if deprecated:
+            self._merge_hints(response, {"warnings": deprecated})
+        return response
 
     async def _dispatch(self, request: DiscoverRequest) -> DiscoverResponse:
         """Route a request to its mode handler and apply shared post-processing."""

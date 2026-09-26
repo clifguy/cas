@@ -83,6 +83,70 @@ write, not the author. The comparison sees
 shape, not meaning: a changed default behind an unchanged schema, and every
 operator-facing change, still depend on the author's classification.
 
+## Deprecation before adaptation
+
+CAS-ADR-008 clause 8 has a caller adaptation that withdraws or changes something
+callers use follow a deprecation of it. The gate holds a removal (a rename is a
+removal beside an addition), a narrowed input, and a changed default to that rule.
+It applies to adaptations released after 3.0, and reads deprecations only from
+releases after 3.0.
+
+**Deprecating.** Mark the element on the contract in the same change:
+`deprecated: true` on the OpenAPI operation, parameter, or schema, or an MCP tool
+or parameter description that opens with `Deprecated:`. The record names what it
+deprecates, the replacement, and the earliest date the adaptation may ship:
+
+```yaml
+classification: minor
+category: [caller-adaptation]
+summary: Deprecates the limit parameter of the things listing.
+for_callers: >-
+  limit is deprecated; use page_size. It may be removed from 2027-01-15.
+deprecates:
+  - surface: sage_core_api          # sage_core_api | cas_app_api | mcp
+    pointer: paths//things/get/parameters/query:limit
+    replacement: page_size
+    earliest_adaptation: "2027-01-15"   # quoted, so YAML keeps it a string
+```
+
+The pointer is the one the contract comparison prints in its findings. The gate
+fails a change that marks a deprecation no record declares, and a record that
+declares one the contract does not mark. The exception is a deprecated value or
+default: its parameter's description states it, so its pointer ends in `/enum` or
+`/default` and no mark is looked for. For an operation listed in
+`WARNING_CARRIERS` in `sage/services/deprecations.py`, declare the form there
+too, so a caller using it is warned in the response; another operation first
+needs a warnings field and its service wired to that module.
+
+**Adapting.** The adaptation ships in a later release than the deprecation, and
+no sooner than 30 days after that release's date in the manifest's revision
+history, or the recorded `earliest_adaptation` if later. Its record names the
+deprecation it follows. A deprecated element covers the elements inside it, so a
+deprecated operation covers the removal of its parameters:
+
+```yaml
+classification: minor
+category: [caller-adaptation]
+summary: Removes the limit parameter deprecated in release 3.1.
+for_callers: limit is gone; use page_size.
+follows_deprecation:
+  - release: "3.1"
+    surface: sage_core_api
+    pointer: paths//things/get/parameters/query:limit
+```
+
+**Exempt.** An adaptation ships without a deprecation, or before its window
+closes, only for a `security-exposure`, a `data-integrity` fault, or an element
+`never-served` to a caller. The record names the exemption and the reason, and
+its `summary` and `for_callers` say so too. The exemption covers the change's
+withdrawing findings as a whole:
+
+```yaml
+exemption:
+  kind: never-served
+  reason: The operation was specified but no server implemented it.
+```
+
 ## What a change may not do
 
 Only a release moves a version. A change that is not a release fails the gate if
