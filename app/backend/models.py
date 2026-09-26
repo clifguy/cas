@@ -25,7 +25,7 @@ valid.
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -41,6 +41,7 @@ from sage.models.schemas import (
     ErrorResponse,
     IngestPreview,
     ProgressEvent,
+    PublishedShape,
     Sha256Str,
     SummaryEvent,
     VaultIdStr,
@@ -137,7 +138,10 @@ class ParsedMetadata(BaseModel):
 class ScanResultResponse(BaseModel):
     file_path: str = Field(description="Absolute file path on disk.")
     file_hash: Sha256Str = Field(description="SHA-256 hex digest of file contents.")
-    source_modified_at: str = Field(description="File mtime (st_mtime) as an ISO 8601 timestamp.")
+    # A UTC-aware ISO 8601 string, so an RFC 3339 date-time; published as one.
+    source_modified_at: Annotated[str, PublishedShape(format="date-time")] = Field(
+        description="File mtime (st_mtime) as an ISO 8601 timestamp."
+    )
     source_type: str | None = Field(
         default=None,
         description=(

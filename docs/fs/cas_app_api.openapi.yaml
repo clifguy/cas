@@ -488,6 +488,7 @@ components:
       properties:
         vault_id:
           type: string
+          pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
           description: Target vault identifier.
         directory:
           type: string
@@ -540,6 +541,7 @@ components:
           description: Absolute file path on disk.
         file_hash:
           type: string
+          pattern: "^sha256:[0-9a-f]{64}$"
           description: SHA-256 hex digest of file contents.
         source_modified_at:
           type: string
@@ -612,6 +614,7 @@ components:
       properties:
         vault_id:
           type: string
+          pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
           description: Target vault identifier.
         files:
           type: array
@@ -671,6 +674,7 @@ components:
           description: Source artifact format name to use for this file.
         sha256:
           type: [string, "null"]
+          pattern: "^(sha256:)?[0-9a-fA-F]{64}$"
           description: >-
             Optional SHA-256 of this file, as 64 hex characters in
             either case, bare or `sha256:`-prefixed. Checked before
@@ -728,6 +732,7 @@ components:
           description: Per-file processing status the event reports.
         document_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Set when status="completed". Document ID assigned by SAGE.
         error:
           type: [string, "null"]
@@ -1039,6 +1044,7 @@ components:
             value.
         source_content_hash:
           type: [string, "null"]
+          pattern: "^(sha256:)?[0-9a-fA-F]{64}$"
           description: >-
             Canonical digest of the bytes the caller delivered. Null
             only for a source already resident in the vault store that
@@ -1046,6 +1052,7 @@ components:
             recovers from projection -- which a preview does not run.
         duplicate_of:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Identifier of the document already holding these bytes, or
             null when none does. Where several hold them, the one named
@@ -1055,6 +1062,7 @@ components:
             `source_content_hash` is null.
         predecessor_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             The supersession target the caller named, echoed back, or
             null.

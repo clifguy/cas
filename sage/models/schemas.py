@@ -15,10 +15,12 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    GetJsonSchemaHandler,
     SerializeAsAny,
     TypeAdapter,
     model_validator,
 )
+from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import PydanticCustomError
 
 from sage.build_info import VERSION_WITH_BUILD
@@ -52,10 +54,48 @@ from sage.models.legacy_form import detect_legacy_form
 # alias applied at every request-model field carrying that shape. The
 # absence of an alias on a field with a known shape contract is the
 # anomaly we want reviewers to notice.
+#
+# Each alias also carries a ``PublishedShape`` stating its rule to the
+# schema, built from the same pattern constant its validator compiles.
 # ---------------------------------------------------------------------------
 
-# Document ID: 8 hex chars + "_" + slug. See sage/services/identity.py.
-_DOCUMENT_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
+
+@dataclass(frozen=True)
+class PublishedShape:
+    """The shape an alias states to a schema generator, and nothing more.
+
+    An ``AfterValidator`` is opaque to JSON Schema, so an alias carries this
+    marker beside its validator to publish the rule it enforces. The marker
+    constrains nothing: a ``Field(pattern=...)`` would run before the
+    validator and refuse with a generic pattern error, where the validator
+    raises the alias's own code.
+
+    ``serialized_pattern`` is what a normalizing alias emits, published in
+    place of ``pattern`` on a serialization schema: such an alias accepts
+    more spellings than the single canonical one it returns.
+    """
+
+    pattern: str | None = None
+    format: str | None = None
+    serialized_pattern: str | None = None
+
+    def __get_pydantic_json_schema__(
+        self, core_schema: Any, handler: GetJsonSchemaHandler
+    ) -> JsonSchemaValue:
+        schema = handler(core_schema)
+        pattern = self.pattern
+        if handler.mode == "serialization" and self.serialized_pattern is not None:
+            pattern = self.serialized_pattern
+        if pattern is not None:
+            schema["pattern"] = pattern
+        if self.format is not None:
+            schema["format"] = self.format
+        return schema
+
+
+# Document ID: 8 hex chars + "_" + slug, as sage/services/identity.py mints it.
+DOCUMENT_ID_PATTERN = r"^[0-9a-f]{8}_[a-z0-9_]+$"
+_DOCUMENT_ID_RE = re.compile(DOCUMENT_ID_PATTERN)
 
 
 def _validate_document_id(v: str) -> str:
@@ -80,7 +120,9 @@ def _validate_document_id(v: str) -> str:
     return v
 
 
-DocumentIdStr = Annotated[str, AfterValidator(_validate_document_id)]
+DocumentIdStr = Annotated[
+    str, AfterValidator(_validate_document_id), PublishedShape(pattern=DOCUMENT_ID_PATTERN)
+]
 
 
 def _validate_edge_id(v: str) -> str:
@@ -94,10 +136,15 @@ def _validate_edge_id(v: str) -> str:
         ) from exc
 
 
-EdgeIdStr = Annotated[str, AfterValidator(_validate_edge_id)]
+EdgeIdStr = Annotated[str, AfterValidator(_validate_edge_id), PublishedShape(format="uuid")]
 
 
-_SHA256_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+SHA256_PATTERN = r"^sha256:[0-9a-f]{64}$"
+_SHA256_RE = re.compile(SHA256_PATTERN)
+
+# Every spelling ``Sha256Str`` accepts: the prefix optional, the digest in
+# either case. It returns the one canonical spelling ``SHA256_PATTERN`` names.
+SHA256_INPUT_PATTERN = r"^(sha256:)?[0-9a-fA-F]{64}$"
 
 
 def canonicalize_sha256(v: str) -> str:
@@ -147,7 +194,11 @@ def _validate_sha256(v: str) -> str:
     return candidate
 
 
-Sha256Str = Annotated[str, AfterValidator(_validate_sha256)]
+Sha256Str = Annotated[
+    str,
+    AfterValidator(_validate_sha256),
+    PublishedShape(pattern=SHA256_INPUT_PATTERN, serialized_pattern=SHA256_PATTERN),
+]
 
 
 _DOCUMENT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -184,7 +235,11 @@ def _validate_document_date(v: str | None) -> str | None:
     return v
 
 
-DocumentDateStr = Annotated[str | None, AfterValidator(_validate_document_date)]
+# The format sits on the string arm, so an absent date still publishes as null.
+DocumentDateStr = Annotated[
+    Annotated[str, PublishedShape(format="date")] | None,
+    AfterValidator(_validate_document_date),
+]
 
 
 def _validate_user_id(v: str) -> str:
@@ -209,10 +264,11 @@ def _validate_user_id(v: str) -> str:
         ) from exc
 
 
-UserIdStr = Annotated[str, AfterValidator(_validate_user_id)]
+UserIdStr = Annotated[str, AfterValidator(_validate_user_id), PublishedShape(format="uuid")]
 
 
-_VAULT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+VAULT_ID_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
+_VAULT_ID_RE = re.compile(VAULT_ID_PATTERN)
 
 
 def _validate_vault_id(v: str) -> str:
@@ -241,7 +297,9 @@ def _validate_vault_id(v: str) -> str:
     return v
 
 
-VaultIdStr = Annotated[str, AfterValidator(_validate_vault_id)]
+VaultIdStr = Annotated[
+    str, AfterValidator(_validate_vault_id), PublishedShape(pattern=VAULT_ID_PATTERN)
+]
 
 # A file's zero-based position in a batch ingest. One shape declared once:
 # the progress events and the summary's per-file error entries both carry
@@ -5710,7 +5768,9 @@ class BatchIngestParsedMetadata(BaseModel):
         default=None,
         description="Document title. When omitted, the stem of the uploaded file's name seeds it.",
     )
-    date: str | None = Field(
+    # Validated per file, so a malformed date is reported for its file rather
+    # than refusing the batch; the shape is published all the same.
+    date: Annotated[str, PublishedShape(format="date")] | None = Field(
         default=None,
         description=(
             "Document calendar date (YYYY-MM-DD). A value that is not a calendar "

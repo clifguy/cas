@@ -105,7 +105,8 @@ def _constraints(field_info: FieldInfo) -> list[object]:
 
     Collected from the field's metadata and from any ``Annotated`` arguments
     left on its annotation, including one under a single ``None`` arm, less the
-    validators the typed aliases carry.
+    validators the typed aliases carry and the ``PublishedShape`` markers that
+    state their shape, which constrain nothing.
     """
     items = list(field_info.metadata)
     annotation = field_info.annotation
@@ -124,6 +125,7 @@ def _constraints(field_info: FieldInfo) -> list[object]:
         item
         for item in items
         if not (isinstance(item, _VALIDATOR_WRAPPERS) and item.func in _TYPED_ALIAS_VALIDATORS)
+        and not isinstance(item, schemas.PublishedShape)
     ]
 
 

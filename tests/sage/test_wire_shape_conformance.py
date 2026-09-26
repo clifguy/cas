@@ -226,10 +226,12 @@ def _unwrap_annotated(annotation: Any) -> Any:
 def _string_sentinel(field_name: str, constraints: dict) -> str:
     """A string that satisfies the constraints the spec actually declares.
 
-    The specs carry four ``pattern`` constraints (all sha256 digests) and
-    twenty ``format`` declarations (date-time and date). Where the property
-    states one, it decides; otherwise the field-name conventions the
-    typed-alias registry uses pick the shape family.
+    The specs carry ``pattern`` constraints (the typed-alias shapes of ids,
+    vault ids and sha256 digests) and ``format`` declarations (uuid, date-time
+    and date). Where the property states a format or a digest pattern, it
+    decides; otherwise the field-name conventions the typed-alias registry
+    uses pick the shape family. The document-id sentinel also satisfies the
+    vault-id pattern, so either id pattern is met by it.
 
     The sentinel must be a *valid* instance of the declared property, or a
     failure in the sweep is unattributable: a value the schema was always
@@ -241,6 +243,8 @@ def _string_sentinel(field_name: str, constraints: dict) -> str:
             return "2026-01-01T00:00:00Z"
         if fmt == "date":
             return "2026-01-01"
+        if fmt == "uuid":
+            return "0123abcd-0000-4000-8000-000000000000"
     if "pattern" in constraints and "sha256" in constraints["pattern"]:
         return "sha256:" + "0" * 64
     if field_name.endswith("_hash") or field_name in {"sha256", "hashes"}:

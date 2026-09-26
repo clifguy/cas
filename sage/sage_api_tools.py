@@ -27,6 +27,7 @@ from sage._mcp_param import (
     VaultIdParam,
     model_param,
     param_doc,
+    shaped_param,
 )
 from sage._tool_annotations import READ_ONLY, WRITE_ADDITIVE, WRITE_DESTRUCTIVE
 from sage.api.errors import (
@@ -659,18 +660,17 @@ _INTEGRITY_DOCUMENT_IDS = model_param(list[str] | None, SourceFileIntegrityReque
 _REABSTRACT_INCLUDE_PDF = model_param(bool, ReabstractRequest, "include_pdf")
 _OPTIMIZE_CLEANUP_DAYS = model_param(int, OptimizeContentStoreRequest, "cleanup_older_than_days")
 _EXPORT_OUTPUT_PATH = model_param(str, ExportProjectionRequest, "output_path")
-_EXPORT_DOCUMENT_ID = Annotated[
-    str, Field(description="Document whose stored projection is exported.")
-]
-_NEW_VAULT_ID = Annotated[
+_EXPORT_DOCUMENT_ID = shaped_param(
+    str, DocumentIdStr, "Document whose stored projection is exported."
+)
+_NEW_VAULT_ID = shaped_param(
     str,
-    Field(
-        description=(
-            "Identifier the new vault would carry. It shapes the storage and "
-            "brain roots in the returned scaffold; no vault with it need exist."
-        )
+    VaultIdStr,
+    (
+        "Identifier the new vault would carry. It shapes the storage and "
+        "brain roots in the returned scaffold; no vault with it need exist."
     ),
-]
+)
 _CREATE_VAULT_CONFIG = model_param(
     dict,
     CreateVaultRequest,
@@ -1013,10 +1013,11 @@ def register_sage_tools(
     @mcp.tool(annotations=READ_ONLY)
     async def get_document(
         vault_id: VaultIdParam,
-        document_id: Annotated[
+        document_id: shaped_param(
             str | None,
-            Field(description=f"The document's unique identifier. {DOC_ID_ALIAS_NOTE}"),
-        ] = None,
+            DocumentIdStr,
+            f"The document's unique identifier. {DOC_ID_ALIAS_NOTE}",
+        ) = None,
         include_content: Annotated[
             bool,
             Field(
@@ -1334,14 +1335,11 @@ def register_sage_tools(
     @mcp.tool(annotations=WRITE_DESTRUCTIVE)
     async def delete_edge(
         vault_id: VaultIdParam,
-        edge_id: Annotated[
+        edge_id: shaped_param(
             str,
-            Field(
-                description=(
-                    'Production edge identifier, as ``search`` with target="edges" returns it.'
-                )
-            ),
-        ],
+            EdgeIdStr,
+            'Production edge identifier, as ``search`` with target="edges" returns it.',
+        ),
         dry_run: Annotated[
             bool,
             Field(
@@ -1383,15 +1381,14 @@ def register_sage_tools(
     @mcp.tool(annotations=READ_ONLY)
     async def verify_preconditions(
         vault_id: VaultIdParam,
-        document_id: Annotated[
+        document_id: shaped_param(
             str,
-            Field(
-                description=(
-                    "Identifier of the document whose preconditions to check. "
-                    "Any document with outbound `depends_on` edges is valid."
-                )
+            DocumentIdStr,
+            (
+                "Identifier of the document whose preconditions to check. "
+                "Any document with outbound `depends_on` edges is valid."
             ),
-        ],
+        ),
     ) -> dict:
         """Check whether all depends_on targets for a document are
         satisfied (dependency-satisfying lifecycle, pipeline not failed).
@@ -1472,16 +1469,15 @@ def register_sage_tools(
                 "and `tombstone_applied`."
             ),
         ) = False,
-        document_id: Annotated[
+        document_id: shaped_param(
             str | None,
-            Field(
-                description=(
-                    "Alias for `start_id`; supply exactly one of the two. "
-                    "Supplying both, even with equal values, returns "
-                    "ambiguous_document_identifier."
-                )
+            DocumentIdStr,
+            (
+                "Alias for `start_id`; supply exactly one of the two. "
+                "Supplying both, even with equal values, returns "
+                "ambiguous_document_identifier."
             ),
-        ] = None,
+        ) = None,
     ) -> dict:
         """Walk the document graph from a starting document.
 
@@ -1556,19 +1552,18 @@ def register_sage_tools(
         edge_type: Annotated[
             str, Field(description=param_doc(ChainRequest, "edge_type", mcp=_EDGE_TYPE_NOTE))
         ] = ("supersedes"),
-        document_id: Annotated[
+        document_id: shaped_param(
             str | None,
-            Field(
-                description=param_doc(
-                    ChainRequest,
-                    "document_id",
-                    mcp=(
-                        "The result is symmetric: any chain member returns the full "
-                        f"ordered chain with that member's position indicated. {DOC_ID_ALIAS_NOTE}"
-                    ),
-                )
+            DocumentIdStr,
+            param_doc(
+                ChainRequest,
+                "document_id",
+                mcp=(
+                    "The result is symmetric: any chain member returns the full "
+                    f"ordered chain with that member's position indicated. {DOC_ID_ALIAS_NOTE}"
+                ),
             ),
-        ] = None,
+        ) = None,
         doc_id: DocIdAliasParam = None,
         limit: Annotated[int | None, Field(description=param_doc(ChainRequest, "limit"))] = None,
         offset: Annotated[int, Field(description=param_doc(ChainRequest, "offset"))] = 0,
@@ -1788,10 +1783,11 @@ def register_sage_tools(
     @mcp.tool(annotations=READ_ONLY)
     async def read_projection(
         vault_id: VaultIdParam,
-        document_id: Annotated[
+        document_id: shaped_param(
             str | None,
-            Field(description=f"The document's unique identifier. {DOC_ID_ALIAS_NOTE}"),
-        ] = None,
+            DocumentIdStr,
+            f"The document's unique identifier. {DOC_ID_ALIAS_NOTE}",
+        ) = None,
         write_to_path: Annotated[
             str | None,
             Field(description=_READ_PROJECTION_WRITE_TO_PATH),
@@ -1883,10 +1879,11 @@ def register_sage_tools(
                 )
             ),
         ],
-        document_id: Annotated[
+        document_id: shaped_param(
             str | None,
-            Field(description=f"The document's unique identifier. {DOC_ID_ALIAS_NOTE}"),
-        ] = None,
+            DocumentIdStr,
+            f"The document's unique identifier. {DOC_ID_ALIAS_NOTE}",
+        ) = None,
         doc_id: DocIdAliasParam = None,
     ) -> dict:
         """Read a section of a document by heading path.
@@ -1938,10 +1935,11 @@ def register_sage_tools(
     @mcp.tool(annotations=READ_ONLY)
     async def list_headings(
         vault_id: VaultIdParam,
-        document_id: Annotated[
+        document_id: shaped_param(
             str | None,
-            Field(description=f"The document's unique identifier. {DOC_ID_ALIAS_NOTE}"),
-        ] = None,
+            DocumentIdStr,
+            f"The document's unique identifier. {DOC_ID_ALIAS_NOTE}",
+        ) = None,
         doc_id: DocIdAliasParam = None,
     ) -> dict:
         """List all heading paths for a document in document order.
@@ -2359,9 +2357,11 @@ def register_sage_tools(
     @mcp.tool(annotations=WRITE_DESTRUCTIVE)
     async def update_staging_edge(
         vault_id: VaultIdParam,
-        edge_id: Annotated[
-            str, Field(description="Staging edge identifier, from ``list_staging_edges``.")
-        ],
+        edge_id: shaped_param(
+            str,
+            EdgeIdStr,
+            "Staging edge identifier, from ``list_staging_edges``.",
+        ),
         action: Annotated[
             str,
             Field(
@@ -2498,7 +2498,11 @@ def register_sage_tools(
     @mcp.tool(annotations=WRITE_DESTRUCTIVE)
     async def recompute_abstract(
         vault_id: VaultIdParam,
-        document_id: Annotated[str, Field(description="Document to re-abstract.")],
+        document_id: shaped_param(
+            str,
+            DocumentIdStr,
+            "Document to re-abstract.",
+        ),
     ) -> dict:
         """Re-run abstraction on an existing document (fire-and-forget).
         Reconstructs projection text from stored chunks and dispatches a new
@@ -2545,7 +2549,11 @@ def register_sage_tools(
     @mcp.tool(annotations=WRITE_DESTRUCTIVE)
     async def recompute_pipeline(
         vault_id: VaultIdParam,
-        document_id: Annotated[str, Field(description="Document to re-run the pipeline against.")],
+        document_id: shaped_param(
+            str,
+            DocumentIdStr,
+            "Document to re-run the pipeline against.",
+        ),
     ) -> dict:
         """Re-run the full ingestion pipeline against an existing document.
 

@@ -1722,6 +1722,7 @@ paths:
             Any document with outbound `depends_on` edges is valid.
           schema:
             type: string
+            pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
       responses:
         "200":
           description: Precondition check results.
@@ -2317,6 +2318,7 @@ paths:
             brain roots in the returned scaffold.
           schema:
             type: string
+            pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
       responses:
         "200":
           description: Default vault configuration scaffold.
@@ -2813,6 +2815,7 @@ paths:
           description: Staging edge id to confirm.
           schema:
             type: string
+            format: uuid
       requestBody:
         required: false
         content:
@@ -2889,6 +2892,7 @@ paths:
           description: Staging edge id to dismiss.
           schema:
             type: string
+            format: uuid
       responses:
         "200":
           description: Staging edge dismissed.
@@ -3731,6 +3735,7 @@ paths:
           description: Production edge id to delete.
           schema:
             type: string
+            format: uuid
         - name: dry_run
           in: query
           required: false
@@ -4693,6 +4698,7 @@ components:
       description: Vault identifier. All operations are scoped to a single vault.
       schema:
         type: string
+        pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
 
     DocumentId:
       name: document_id
@@ -4701,6 +4707,7 @@ components:
       description: Immutable document identifier (short hash + title hint).
       schema:
         type: string
+        pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
 
   # ---------------------------------------------------------------------------
   # Schemas
@@ -4959,10 +4966,12 @@ components:
 
     VaultId:
       type: string
+      pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
       description: Vault identifier. All operations are scoped to a single vault.
 
     DocumentId:
       type: string
+      pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
       description: Immutable document identifier (short hash + title hint).
 
     # -------------------------------------------------------------------------
@@ -4995,12 +5004,14 @@ components:
       properties:
         vault_id:
           type: string
+          pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
           description: >-
             The counterpart vault's identifier. Unique within an
             installation rather than across installations, so it narrows
             a search rather than settling one.
         document_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             The counterpart document's identifier, minted by and local
             to the counterpart vault.
@@ -5016,6 +5027,7 @@ components:
             address to record.
         source_content_hash:
           type: string
+          pattern: "^(sha256:)?[0-9a-fA-F]{64}$"
           description: >-
             The SHA-256 of the bytes that travelled between the two
             vaults. The one member that confirms rather than hints: a
@@ -5119,6 +5131,7 @@ components:
       properties:
         id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Immutable, assigned at creation (short hash + hint from title).
         title:
           type: string
@@ -5154,6 +5167,7 @@ components:
             defined in the vault's document_types configuration.
         source_content_hash:
           type: string
+          pattern: "^sha256:[0-9a-f]{64}$"
           description: >-
             Hash of source file content at last ingestion (provenance). The
             SHA-256 of the bytes the caller delivered, so a caller holding the
@@ -5256,6 +5270,7 @@ components:
             Null for non-file sources or when the adapter does not provide it.
         document_date:
           type: [string, "null"]
+          format: date
           description: >-
             Authoritative content date in YYYY-MM-DD format. Derived from
             the filename date code when present, falling back to the date
@@ -5337,6 +5352,7 @@ components:
       properties:
         id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Unique document identifier.
         title:
           type: string
@@ -5391,6 +5407,7 @@ components:
           description: Source file modification timestamp at last ingestion.
         document_date:
           type: [string, "null"]
+          format: date
           description: >-
             Authoritative content date in YYYY-MM-DD format (calendar
             date, not a UTC-anchored instant). Matches the on-disk
@@ -5438,6 +5455,7 @@ components:
       properties:
         id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Unique document identifier.
         title:
           type: string
@@ -5474,6 +5492,7 @@ components:
       properties:
         id:
           type: string
+          format: uuid
           description: >-
             Unique edge identifier, auto-generated at creation. The
             production edges table enforces UNIQUE (source_id, target_id,
@@ -5482,9 +5501,11 @@ components:
             and for audit trails.
         source_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Origin document ID.
         target_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Target document ID. Null on `retracts` edges, which target
             an edge instance rather than a document (see
@@ -5528,6 +5549,7 @@ components:
             this version.
         retracted_edge_id:
           type: [string, "null"]
+          format: uuid
           description: >-
             Set only on `retracts` edges; identifies the edge instance
             being retracted. Null on all other edge types.
@@ -5576,6 +5598,7 @@ components:
             and legacy rows take the default `manual`.
         synced_from_version:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             The source-chain version (document id) the content was
             copied or derived from at the moment this edge was
@@ -5613,6 +5636,7 @@ components:
       properties:
         id:
           type: string
+          format: uuid
           description: Immutable, assigned at registration.
         display_name:
           type: string
@@ -5675,6 +5699,7 @@ components:
             Metadata filters applied before retrieval.
         document_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Target document for deterministic extraction.
             Required for deterministic mode.
@@ -5847,6 +5872,7 @@ components:
           type: [array, "null"]
           items:
             type: string
+            pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Restrict to a specific set of documents. Used with
             scope "specific". A malformed id rejects the request with
@@ -5895,12 +5921,14 @@ components:
             null.
         source_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Edge-only filter. Filter edges by source document
             id. Valid only when target="edges"; document-target requests
             that set this are rejected via mode_parameter_mismatch.
         target_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Edge-only filter. Filter edges by target document
             id. Valid only when target="edges". Note: retracts-type edges
@@ -5933,6 +5961,7 @@ components:
             `reactivate`.
         successor_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Document ID of the replacement version. Required when
             `action="supersede"`; forbidden for all other actions, which
@@ -6145,6 +6174,7 @@ components:
             dry run the token is read but not spent.
         sha256:
           type: [string, "null"]
+          pattern: "^(sha256:)?[0-9a-fA-F]{64}$"
           description: >-
             SHA-256 digest of the file this call ingests, bare hex or
             `sha256:`-prefixed. When supplied, the call refuses a source with
@@ -6247,6 +6277,7 @@ components:
             than resolved by which key is walked last.
         predecessor_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             When provided, the ingested document is treated as a new
             version that supersedes the named predecessor. After
@@ -6300,6 +6331,7 @@ components:
             verbatim and never followed. Omit it for an ordinary ingest.
         document_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Pins the force-reingest target. Force-reingest keys the
             record to reuse by content hash alone; when the incoming
@@ -6380,6 +6412,7 @@ components:
           description: Version label extracted from the filename; null when none captured.
         document_date:
           type: [string, "null"]
+          format: date
           description: ISO-8601 date string when extractable.
         doc_type:
           type: [string, "null"]
@@ -6415,9 +6448,11 @@ components:
       properties:
         source_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Origin document ID.
         target_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Target document ID. Must be null on `retracts` edges;
             required for every other edge type.
@@ -6425,6 +6460,7 @@ components:
           $ref: "#/components/schemas/EdgeType"
         source_valid_from_version:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Document ID on the source chain where this edge becomes
             applicable. Required for policies `transitive_source` and
@@ -6434,6 +6470,7 @@ components:
             retracting chain head for `retracts`).
         target_valid_from_version:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Document ID on the target chain where this edge becomes
             applicable. Required for policy `transitive_both`; must be
@@ -6442,6 +6479,7 @@ components:
             target_id when supplied.
         retracted_edge_id:
           type: [string, "null"]
+          format: uuid
           description: >-
             Required for `retracts` edges; must identify an existing
             edge in this vault. Must be null for all other edge types.
@@ -6464,6 +6502,7 @@ components:
             the prefix-derivation rule.
         synced_from_version:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             The source-chain version (document id) the content was
             copied or derived from at the moment this edge was
@@ -6516,6 +6555,7 @@ components:
       properties:
         start_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Document ID to start traversal from.
         edge_type:
           anyOf:
@@ -6553,6 +6593,7 @@ components:
       properties:
         document_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Document ID to start the chain walk from. The walk proceeds
             in both directions from this document.
@@ -6601,6 +6642,7 @@ components:
           type: array
           items:
             type: string
+            format: uuid
           description: >-
             User IDs to set as editors. An empty array restores
             default-open access.
@@ -6787,12 +6829,15 @@ components:
       properties:
         edge_id:
           type: string
+          format: uuid
           description: UUID of this edge row.
         source_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Source document id.
         target_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Target document id. Null for retracts-type edges
             (CAS-ADR-017).
@@ -6822,6 +6867,7 @@ components:
             Omitted in light mode.
         retracted_edge_id:
           type: [string, "null"]
+          format: uuid
           description: >-
             Native column. Populated only on retracts-type rows; carries
             the id of the edge being disclaimed by this retracts edge.
@@ -6836,6 +6882,7 @@ components:
             still live. Omitted in light mode.
         retracted_by_edge_id:
           type: [string, "null"]
+          format: uuid
           description: >-
             Computed. The edge_id of the earliest retracts edge that
             disclaims this row. Null when this edge is still live.
@@ -7003,12 +7050,14 @@ components:
       properties:
         document_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Target document id for this item. Accepts `doc_id` as a
             back-compatible alias; supply exactly one of `document_id` or
             `doc_id` per item.
         doc_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Back-compatible alias for the per-item `document_id`; supply
             exactly one of `document_id` or `doc_id` per item.
@@ -7019,6 +7068,7 @@ components:
             vocabulary.
         successor_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Document id of the replacement version. Required when
             `action="supersede"`; forbidden for all other actions, which
@@ -7104,6 +7154,7 @@ components:
       properties:
         document_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             The target document id from the corresponding request item.
             Null only when the item supplied neither `document_id` nor
@@ -7210,9 +7261,11 @@ components:
       properties:
         source_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Origin document ID.
         target_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Target document ID. Must be null on `retracts` edges;
             required for every other edge type.
@@ -7220,6 +7273,7 @@ components:
           $ref: "#/components/schemas/EdgeType"
         source_valid_from_version:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Document ID on the source chain where this edge becomes
             applicable. Required for policies `transitive_source` and
@@ -7229,6 +7283,7 @@ components:
             retracting chain head for `retracts`).
         target_valid_from_version:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Document ID on the target chain where this edge becomes
             applicable. Required for policy `transitive_both`; must be
@@ -7237,6 +7292,7 @@ components:
             target_id when supplied.
         retracted_edge_id:
           type: [string, "null"]
+          format: uuid
           description: >-
             Required for `retracts` edges; null for every other edge
             type.
@@ -7259,6 +7315,7 @@ components:
             prefix-derivation rule.
         synced_from_version:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             The source-chain version (document id) the content was
             copied or derived from at the moment this edge was asserted.
@@ -7345,9 +7402,11 @@ components:
       properties:
         source_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Echoed from the request item for caller correlation.
         target_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Echoed from the request item for caller correlation. Null
             on `retracts` items (where the request also carries null).
@@ -7446,12 +7505,14 @@ components:
       properties:
         document_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Target document id for this item. Accepts `doc_id` as a
             back-compatible alias; supply exactly one of `document_id` or
             `doc_id` per item.
         doc_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Back-compatible alias for the per-item `document_id`; supply
             exactly one of `document_id` or `doc_id` per item.
@@ -7568,6 +7629,7 @@ components:
       properties:
         document_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             The target document id from the corresponding request item.
             Null only when the item supplied neither `document_id` nor
@@ -7890,6 +7952,7 @@ components:
             value.
         source_content_hash:
           type: [string, "null"]
+          pattern: "^sha256:[0-9a-f]{64}$"
           description: >-
             Canonical digest of the bytes the caller delivered. Null
             only for a source already resident in the vault store that
@@ -7897,6 +7960,7 @@ components:
             recovers from projection -- which a preview does not run.
         duplicate_of:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Identifier of the document already holding these bytes, or
             null when none does. Where several hold them, the one named
@@ -7906,6 +7970,7 @@ components:
             `source_content_hash` is null.
         predecessor_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             The supersession target the caller named, echoed back, or
             null.
@@ -8028,6 +8093,7 @@ components:
                 `write_to_path`.
             content_hash:
               type: [string, "null"]
+              pattern: "^sha256:[0-9a-f]{64}$"
               description: >-
                 Hex digest of the vault-local source file bytes
                 (same algorithm as Document.source_content_hash).
@@ -8067,6 +8133,7 @@ components:
       properties:
         start_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: The document ID traversal started from.
         nodes:
           type: array
@@ -8110,6 +8177,7 @@ components:
             at the queried version.
         edge_id:
           type: string
+          format: uuid
           description: The edge id whose resolution produced this event.
         anchor_field:
           type: [string, "null"]
@@ -8124,6 +8192,7 @@ components:
             the check. Populated for anchor_hit and anchor_miss.
         retracted_edge_id:
           type: [string, "null"]
+          format: uuid
           description: >-
             On retracts_applied: the edge id of the `retracts` edge
             whose application produced this event.
@@ -8179,9 +8248,11 @@ components:
             positions rather than renumbering from zero.
         head_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Document ID of the chain head (latest version / terminal node).
         tail_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Document ID of the chain tail (original / root node).
         query_position:
           type: integer
@@ -8222,6 +8293,7 @@ components:
       properties:
         id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Document ID.
         title:
           type: string
@@ -8249,6 +8321,7 @@ components:
       properties:
         document_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Identifier of the document whose preconditions were checked.
         satisfied:
           type: boolean
@@ -8268,6 +8341,7 @@ components:
       properties:
         target_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Document ID of the dependency target.
         title:
           type: [string, "null"]
@@ -8304,6 +8378,7 @@ components:
       properties:
         document_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Id of the document whose editor list is being reported.
         editors:
           type: array
@@ -8319,6 +8394,7 @@ components:
       properties:
         vault_id:
           type: string
+          pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
           description: Identifier of the vault whose assertions were evaluated.
         passed:
           type: boolean
@@ -8345,6 +8421,7 @@ components:
           description: The assertion query that failed.
         expected_document_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Document ID expected in the top-k results.
         top_k_checked:
           type: integer
@@ -8409,6 +8486,7 @@ components:
       properties:
         id:
           type: string
+          pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
           description: Unique vault identifier.
         name:
           type: string
@@ -8708,6 +8786,7 @@ components:
             modified.
         vault_id:
           type: string
+          pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
           description: Id of the vault whose config was (or would be) updated.
         warnings:
           type: array
@@ -8773,6 +8852,7 @@ components:
           type: array
           items:
             type: string
+            pattern: "^(sha256:)?[0-9a-fA-F]{64}$"
           description: SHA-256 hex digests to check for existence.
 
     HashCheckMatch:
@@ -8785,6 +8865,7 @@ components:
           description: True when a document with this hash already exists in the vault.
         document_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Document id when exists=true; null otherwise. Where several
             documents carry the hash, the one named is a version a
@@ -8819,12 +8900,15 @@ components:
       properties:
         id:
           type: string
+          format: uuid
           description: Unique identifier for this staging edge.
         source_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Origin document id for the proposed edge.
         target_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Target document id for the proposed edge.
         edge_type:
           $ref: "#/components/schemas/EdgeType"
@@ -8886,9 +8970,11 @@ components:
           description: Discriminator confirming the staging edge was promoted; always true.
         staging_edge_id:
           type: string
+          format: uuid
           description: Id of the staging edge that was promoted (now deleted).
         production_edge_id:
           type: string
+          format: uuid
           description: Id of the production edge created.
 
     StagingEdgeDismissResponse:
@@ -8902,6 +8988,7 @@ components:
           description: Discriminator confirming the staging edge was dismissed; always true.
         staging_edge_id:
           type: string
+          format: uuid
           description: Id of the staging edge that was dismissed (now deleted).
 
     # -------------------------------------------------------------------------
@@ -8987,6 +9074,7 @@ components:
       properties:
         document_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Id of the document whose projection was read.
         title:
           type: string
@@ -9025,6 +9113,7 @@ components:
       properties:
         document_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Id of the document whose section was read.
         title:
           type: string
@@ -9055,6 +9144,7 @@ components:
       properties:
         document_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Id of the document whose headings were listed.
         title:
           type: string
@@ -9298,6 +9388,7 @@ components:
           type: array
           items:
             type: string
+            pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             All chain-head document ids holding this value (length >= 2).
             Each id is the head of a distinct supersession chain; resolving
@@ -9436,6 +9527,7 @@ components:
       properties:
         document_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Document id whose reabstract outcome this entry records.
         outcome:
           $ref: "#/components/schemas/ReabstractOutcome"
@@ -9478,18 +9570,22 @@ components:
       properties:
         edge_id:
           type: string
+          format: uuid
           description: Identifier of the drifted edge.
         edge_type:
           $ref: "#/components/schemas/EdgeType"
           description: "`sync_target` or `derived_from` (the two provenance-bearing edge types)."
         source_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Edge source document id (the dependent).
         target_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Edge target document id (the canonical/source document).
         recorded_version_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             The `synced_from_version` recorded on the edge (a document
             id), or null when not recorded.
@@ -9500,11 +9596,13 @@ components:
             the time the drift report was generated, when resolvable.
         recorded_content_hash:
           type: [string, "null"]
+          pattern: "^sha256:[0-9a-f]{64}$"
           description: >-
             The `synced_from_content_hash` recorded on the edge, or
             null when not recorded.
         current_head_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Document id of the current head of the target's supersedes
             chain. Null when `staleness_basis = chain_nonlinear`
@@ -9514,6 +9612,7 @@ components:
           description: Version label of the current chain head, when resolvable.
         current_head_content_hash:
           type: [string, "null"]
+          pattern: "^sha256:[0-9a-f]{64}$"
           description: >-
             `source_content_hash` of the current chain head. Null on
             `chain_nonlinear` and on `recorded_null` rows where we did
@@ -9543,6 +9642,7 @@ components:
       properties:
         vault_id:
           type: string
+          pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
           description: Identifier of the vault whose edges were walked.
         total_edges_walked:
           type: integer
@@ -9585,6 +9685,7 @@ components:
           minItems: 1
           items:
             type: string
+            pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Restrict the audit to these documents, in any lifecycle state.
             Documents outside the set are neither read from the store nor
@@ -9608,6 +9709,7 @@ components:
       properties:
         document_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Identifier of the document with the integrity issue.
         title:
           type: string
@@ -9638,6 +9740,7 @@ components:
             anything resolves at the far end.
         expected_content_hash:
           type: string
+          pattern: "^sha256:[0-9a-f]{64}$"
           description: >-
             The digest the audit compared the retained copy against: the
             document's stored_content_hash, or its source_content_hash when
@@ -9645,6 +9748,7 @@ components:
             to, which is not always the document's provenance hash.
         observed_content_hash:
           type: [string, "null"]
+          pattern: "^sha256:[0-9a-f]{64}$"
           description: >-
             SHA-256 computed from the on-disk file when check_hashes=True
             and the file was readable; null for `missing`, `symlinked` and
@@ -9664,6 +9768,7 @@ components:
       properties:
         vault_id:
           type: string
+          pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
           description: Identifier of the vault whose source files were audited.
         total_documents_checked:
           type: integer
@@ -9721,6 +9826,7 @@ components:
             Supply exactly one of `transfer_token` or `source`.
         document_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Optional pin naming the document to restore, for when resolving
             the target from the delivered digest is ambiguous (several documents
@@ -9730,6 +9836,7 @@ components:
             the delivered bytes).
         sha256:
           type: [string, "null"]
+          pattern: "^(sha256:)?[0-9a-fA-F]{64}$"
           description: >-
             SHA-256 digest of the file being restored, bare hex or
             `sha256:`-prefixed. When supplied, a restore whose delivered bytes
@@ -9763,9 +9870,11 @@ components:
       properties:
         vault_id:
           type: string
+          pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
           description: Identifier of the vault whose source file was restored.
         document_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
             Identifier of the document whose retained source file was the
             target.
@@ -9808,17 +9917,20 @@ components:
             different copy.
         expected_content_hash:
           type: string
+          pattern: "^sha256:[0-9a-f]{64}$"
           description: >-
             The digest the retained copy was required to reproduce before
             the restore: the document's stored_content_hash, or its
             source_content_hash when that is null.
         observed_content_hash:
           type: [string, "null"]
+          pattern: "^sha256:[0-9a-f]{64}$"
           description: >-
             SHA-256 of the retained copy as found before the restore; null
             when no copy was present to hash.
         stored_content_hash:
           type: string
+          pattern: "^sha256:[0-9a-f]{64}$"
           description: >-
             SHA-256 of the retained copy as it stands after the call.
             Differs from expected_content_hash under a binding that rewrites
@@ -9870,6 +9982,7 @@ components:
             and dispatched. Always 'reabstract_started'.
         document_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Identifier of the document whose abstract is being regenerated.
         dispatched_at:
           type: string
@@ -9899,6 +10012,7 @@ components:
             'recompute_pipeline_started'.
         document_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Identifier of the document whose pipeline is being re-run.
         dispatched_at:
           type: string
@@ -9919,6 +10033,7 @@ components:
       properties:
         vault_id:
           type: string
+          pattern: "^[a-z0-9][a-z0-9_-]{0,63}$"
           description: Identifier of the reloaded vault.
         reloaded:
           type: boolean
@@ -9964,6 +10079,7 @@ components:
             `include_pdf=False`. Constant across all events in the stream.
         current_document_id:
           type: string
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Document id this event refers to.
         current_title:
           type: string
@@ -10059,6 +10175,7 @@ components:
             preview.
         edge_id:
           type: string
+          format: uuid
           description: Id of the edge that was (or would be) deleted.
         dry_run:
           type: boolean
@@ -10104,6 +10221,7 @@ components:
             `source_type_unresolved`.
         sha256:
           type: [string, "null"]
+          pattern: "^(sha256:)?[0-9a-fA-F]{64}$"
           description: >-
             Optional SHA-256 of this file, as 64 hex characters in
             either case, bare or `sha256:`-prefixed. Checked before
@@ -10147,6 +10265,7 @@ components:
             seeds it.
         date:
           type: [string, "null"]
+          format: date
           description: >-
             Document calendar date (YYYY-MM-DD). A value that is not a calendar
             date is reported for that file as `invalid_document_date`.
@@ -10269,6 +10388,7 @@ components:
           description: Per-file processing status the event reports.
         document_id:
           type: [string, "null"]
+          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: Set when status="completed". Document ID assigned by SAGE.
         error:
           type: [string, "null"]
@@ -10690,6 +10810,7 @@ components:
             mint a fresh one.
         content_hash:
           type: string
+          pattern: "^sha256:[0-9a-f]{64}$"
           description: >-
             SHA-256 of the bytes the fetch will deliver, in canonical
             `sha256:<hex>` form; verify the fetched file against it.
