@@ -1,0 +1,7 @@
+classification: patch
+summary: >-
+  The confirm_staging_edge operation description in the Core API specification
+  and the update_staging_edge tool description in the MCP catalog now state
+  that a confirmed edge's rationale_kind is derived from the prefix of its
+  staging evidence, falling back to manual. Description text only.
+for_callers: ""

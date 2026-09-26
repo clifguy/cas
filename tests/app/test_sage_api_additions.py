@@ -26,8 +26,9 @@ from sage.adapters.stubs import (
 )
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
-from sage.models.enums import EdgeType, PipelineStatus, SourceType
+from sage.models.enums import EdgeType, PipelineStatus, RationaleKind, SourceType
 from sage.models.schemas import Document, StagingEdge
+from sage.storage.edge_provenance import RATIONALE_PREFIX_TO_KIND
 from tests.helpers.pipeline_wait import drain_vaults
 from tests.sage.conftest import initialize_services_for_test
 
@@ -873,6 +874,51 @@ class TestStagingEdges:
         assert len(prod_edges) == 1
         assert prod_edges[0].source_id == _id("doc-c1")
         assert prod_edges[0].target_id == _id("doc-c2")
+
+    @pytest.mark.parametrize(
+        ("evidence", "expected_kind"),
+        [
+            *(
+                pytest.param(f"{prefix} matched in the source text", kind, id=kind.value)
+                for prefix, kind in RATIONALE_PREFIX_TO_KIND.items()
+            ),
+            pytest.param("Test inference evidence", RationaleKind.MANUAL, id="unprefixed"),
+        ],
+    )
+    async def test_be_011b_confirm_derives_rationale_kind(
+        self, multi_vault_app, multi_client, evidence, expected_kind
+    ):
+        """A confirmed edge's ``rationale_kind`` is recovered from its evidence prefix.
+
+        Anti-coincidental-pass: every prefixed case stores ``manual`` when the
+        kind is left to the model default; the unprefixed case is the control
+        that a derivation which always returned an inferred kind would fail.
+        The kind is read back from the store, not from the candidate edge.
+        """
+        gs = multi_vault_app.state.vault_registry["example_vault"].graph_store
+        source, target = f"doc-k-{expected_kind.value}-s", f"doc-k-{expected_kind.value}-t"
+        await gs.insert_document(_make_document(source))
+        await gs.insert_document(_make_document(target))
+        staging_id = _eid(f"stg-kind-{expected_kind.value}")
+        await gs.insert_staging_edge(
+            _make_staging_edge(staging_id, source, target, evidence=evidence)
+        )
+
+        resp = await multi_client.post(
+            f"/sage_vaults/example_vault/staging-edges/{staging_id}/confirm"
+        )
+        assert resp.status_code == 200, resp.text
+
+        (edge,) = await gs.get_edges_by_source(_id(source))
+        assert edge.rationale == evidence
+        assert edge.rationale_kind is expected_kind
+
+    def test_be_011c_every_rationale_prefix_maps_to_an_inferred_kind(self):
+        """Guards ``test_be_011b`` against passing vacuously: an empty prefix
+        map would leave only the unprefixed case, and a prefix mapped to
+        ``manual`` would pass without any derivation."""
+        assert RATIONALE_PREFIX_TO_KIND
+        assert RationaleKind.MANUAL not in RATIONALE_PREFIX_TO_KIND.values()
 
     async def test_be_012_dismiss_staging_edge(self, multi_vault_app, multi_client):
         """POST dismiss deletes staging edge without creating production edge."""

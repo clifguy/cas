@@ -2387,6 +2387,7 @@ def register_sage_tools(
         ``action="confirm"`` promotes the staging edge to production and
         returns the production ``edge_id``, distinct from the staging id
         passed in — staging and production tables do not share an id space.
+        Its ``rationale_kind`` follows the evidence prefix (else ``manual``).
         ``action="dismiss"`` deletes the staging edge without creating a
         production edge; a future re-ingest that re-triggers the inference
         rule will re-stage the candidate.
