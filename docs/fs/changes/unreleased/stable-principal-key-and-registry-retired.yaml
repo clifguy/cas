@@ -15,9 +15,12 @@ summary: >-
   register_user operation, the forward-declared set_editors and get_editors
   operations, the User, UserType, RegisterUserRequest, SetEditorsRequest and
   EditorList components, and the invalid_user_id error code with its
-  InvalidUserIdError and InvalidUserIdErrorDetail components. migrate_vault
-  drops the table the registry left in a vault, reporting
-  drop_retired_users_table in backfills_applied when it did.
+  InvalidUserIdError and InvalidUserIdErrorDetail components. The ROOT Harness
+  pipeline schema drops the editor_registered precondition check and the
+  policy schema's operations enum drops register_user, set_editors and
+  get_editors. migrate_vault drops the table the registry left in a vault's
+  own schema, reporting drop_retired_users_table in backfills_applied when it
+  did.
 for_callers: >-
   created_by and last_modified_by now hold a stable key such as
   <tenant id>:<object id> for a user, so a filter on them keeps matching a

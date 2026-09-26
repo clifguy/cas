@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cas.local/fs/root_harness/policy.schema.json",
   "title": "ROOT Harness Policy Configuration Schema",
-  "description": "Defines behavioral constraints for agents: permitted operations, scope restrictions, autonomy level, LLM configuration, and tool-level approval policy. Policy enforcement is a ROOT Harness concern (execution layer), distinct from SAGE's editor-based write control (data layer). See ROOT Harness Architecture Reference Sections 4.3 and 4.4.",
+  "description": "Defines behavioral constraints for agents: permitted operations, scope restrictions, autonomy level, LLM configuration, and tool-level approval policy. Policy enforcement is a ROOT Harness concern (execution layer); SAGE admits a caller by its credential and does not restrict writes per document. See ROOT Harness Architecture Reference Sections 4.3 and 4.4.",
   "type": "object",
   "required": ["policies"],
   "additionalProperties": false,

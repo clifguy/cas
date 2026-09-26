@@ -29,6 +29,7 @@ from datetime import datetime
 from typing import Any, Final
 
 from psycopg import errors as pg_errors
+from psycopg import sql as pg_sql
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
@@ -1684,11 +1685,23 @@ class PostgresGraphStore(GraphStore):
             )
 
     async def drop_retired_users_table(self) -> bool:
+        # Qualified to the vault's own schema: the search path falls through to
+        # ``public``, and a bare name would resolve a table this vault never owned.
+        self._check_open()
         with self._query_timer.measure("drop_retired_users_table"):
-            if not await self._fetch_scalar("SELECT to_regclass('users') IS NOT NULL"):
-                return False
-            await self._execute("DROP TABLE IF EXISTS users")
-            return True
+            async with self._pool.connection() as conn:
+                async with conn.transaction():
+                    cur = await conn.execute(
+                        "SELECT current_schema(), "
+                        "to_regclass(format('%I.users', current_schema())) IS NOT NULL"
+                    )
+                    schema, present = await cur.fetchone()
+                    if not present:
+                        return False
+                    await conn.execute(
+                        pg_sql.SQL("DROP TABLE {}.users").format(pg_sql.Identifier(schema))
+                    )
+                    return True
 
     @staticmethod
     def _pending_metadata_where(

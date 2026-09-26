@@ -6717,8 +6717,7 @@ class ErrorResponse(BaseModel):
     code: str = Field(
         description=(
             "Machine-readable error code (e.g., "
-            '"invalid_lifecycle_transition", "document_not_found", '
-            '"editor_permission_denied").'
+            '"invalid_lifecycle_transition", "document_not_found").'
         )
     )
     message: str = Field(description="Human-readable error description.")

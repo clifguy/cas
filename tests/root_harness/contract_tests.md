@@ -114,7 +114,7 @@ transitions:
 
 **Artifact:** `docs/fs/root_harness/pipeline.schema.json`
 **Category:** invalid
-**Constraint:** `check` must be one of [lifecycle_status, required_edges_exist, editor_registered, dependent_documents_complete, metadata_fields_populated, custom]
+**Constraint:** `check` must be one of [lifecycle_status, required_edges_exist, dependent_documents_complete, metadata_fields_populated, custom]
 
 **Input:** Precondition with `check: "approval_received"`
 

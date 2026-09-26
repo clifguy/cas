@@ -429,6 +429,46 @@ async def test_r10_a_rename_does_not_split_the_principals_history(auth_app, tmp_
     assert await found({"created_by": _ALICE_NAME}) == set()
 
 
+async def test_r11_every_modification_path_records_the_modifiers_name(
+    auth_app, tmp_vault_dir
+) -> None:
+    # The modifier carries a name the creator's snapshot does not, so a path that
+    # records no name, or copies the creator's, fails its row.
+    completed = (await _rest_ingest(auth_app, "alice-tok", _seed(tmp_vault_dir, "r11a.md")))[
+        "document"
+    ]
+    await _rest_post(
+        auth_app,
+        "alice-renamed-tok",
+        "/lifecycles",
+        {"items": [{"document_id": completed["id"], "action": "complete"}]},
+    )
+
+    superseded = (await _rest_ingest(auth_app, "alice-tok", _seed(tmp_vault_dir, "r11b.md")))[
+        "document"
+    ]
+    await _rest_ingest(
+        auth_app,
+        "alice-renamed-tok",
+        _seed(tmp_vault_dir, "r11c.md"),
+        predecessor_id=superseded["id"],
+    )
+
+    source = _seed(tmp_vault_dir, "r11d.md")
+    reingested = (await _rest_ingest(auth_app, "alice-tok", source))["document"]
+    await _rest_ingest(auth_app, "alice-renamed-tok", source, force=True)
+
+    for label, doc_id in (
+        ("lifecycle", completed["id"]),
+        ("supersede", superseded["id"]),
+        ("force re-ingest", reingested["id"]),
+    ):
+        after = await _rest_get(auth_app, "bob-tok", doc_id)
+        assert after["last_modified_by"] == _ALICE, label
+        assert after["created_by_name"] == _ALICE_NAME, label
+        assert after["last_modified_by_name"] == _ALICE_NEW_NAME, label
+
+
 # --------------------------------------------------------------------------
 # MCP over HTTP, authenticating profile
 # --------------------------------------------------------------------------

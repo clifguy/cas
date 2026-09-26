@@ -85,12 +85,11 @@
                   "enum": [
                     "lifecycle_status",
                     "required_edges_exist",
-                    "editor_registered",
                     "dependent_documents_complete",
                     "metadata_fields_populated",
                     "custom"
                   ],
-                  "description": "The type of precondition check. lifecycle_status: document must be in a specified lifecycle state. required_edges_exist: specified edge types must exist on the document. editor_registered: specified editors must be registered. dependent_documents_complete: documents linked by depends_on edges must be in a completed state. metadata_fields_populated: specified metadata fields must have values. custom: a domain-specific expression."
+                  "description": "The type of precondition check. lifecycle_status: document must be in a specified lifecycle state. required_edges_exist: specified edge types must exist on the document. dependent_documents_complete: documents linked by depends_on edges must be in a completed state. metadata_fields_populated: specified metadata fields must have values. custom: a domain-specific expression."
                 },
                 "description": {
                   "type": "string",

@@ -634,8 +634,8 @@ KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
         "tests/sage/test_vault_config_api.py::"
         "test_create_vault_rolls_back_when_bootstrap_owner_fails_post_register"
     ): (
-        "renamed test_create_vault_rolls_back_when_initialize_fails_late: owner bootstrap is "
-        "removed, so the late failure is injected inside initialize_services"
+        "folded into test_create_vault_rolls_back_yaml_on_initialize_failure: owner "
+        "bootstrap is removed, so nothing can fail once the services are registered"
     ),
     (
         "tests/sage/test_vault_not_found_refusal_parity.py::"

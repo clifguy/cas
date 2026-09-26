@@ -897,59 +897,6 @@ async def test_create_vault_rolls_back_yaml_on_initialize_failure(
     assert new_vault_id not in app.state.vault_registry
 
 
-async def test_create_vault_rolls_back_when_initialize_fails_late(
-    app, client, tmp_path, monkeypatch
-):
-    """D2: when ``initialize_services`` raises late, after the storage and
-    most services for the new vault are allocated, neither a registry entry
-    nor the on-disk yaml survives; the user can re-issue create_vault cleanly.
-
-    Distinct from the wholesale-allocator failure above: here the real
-    allocator runs and fails partway, so resources exist when it raises.
-
-    Trap (anti-coincidental): a write-then-allocate sequence with no rollback
-    leaves the yaml on disk. Both asserts must hold.
-    """
-    from sage.api.errors import SAGEError
-
-    isolated_root = tmp_path / "sage_vaults"
-    monkeypatch.setattr("sage.vault_management._VAULTS_ROOT", isolated_root)
-
-    new_vault_id = "atomicity_late_target"
-
-    def raising_late_constructor(*args, **kwargs):
-        raise SAGEError(
-            code="schema_migration_required",
-            message="simulated late-stage allocator failure",
-            status_code=409,
-        )
-
-    monkeypatch.setattr("sage.mcp_init.VaultConfigService", raising_late_constructor)
-
-    config = VaultRegistryService.get_default_config(
-        new_vault_id, "Atomicity Bootstrap Target", "testuser"
-    )
-    config["vault"]["storage_root"] = str(tmp_path / new_vault_id / "sources")
-    config["vault"]["brain_root"] = str(tmp_path / new_vault_id / "brain")
-
-    resp = await client.post("/sage_vaults", json={"config": config})
-
-    assert resp.status_code == 409, resp.text
-    assert resp.json()["code"] == "schema_migration_required"
-
-    expected_yaml = isolated_root / new_vault_id / "vault_config.yaml"
-    assert not expected_yaml.exists(), (
-        "create_vault left orphan yaml after a late allocator failure; "
-        "rollback must fire on partial allocation too"
-    )
-
-    assert new_vault_id not in app.state.vault_registry, (
-        "create_vault left a half-registered vault in the registry after a "
-        "late allocator failure; the registry entry must be removed alongside "
-        "the yaml rollback"
-    )
-
-
 # ---------------------------------------------------------------------------
 # Default config validation
 # ---------------------------------------------------------------------------

@@ -306,6 +306,40 @@ async def test_migrate_vault_drops_the_retired_users_table(
     finally:
         async with graph_store._pool.connection() as conn:
             await conn.execute("DROP TABLE IF EXISTS users")
+
+
+async def test_migrate_vault_leaves_a_users_table_outside_the_vault_schema(
+    graph_store, minimal_config, stub_content_store
+):
+    """MNT-006: the retired-table drop reaches only the vault's own schema.
+
+    A vault connection's search path falls through to ``public``, so a probe or
+    drop by bare name finds a ``users`` table there once the vault's own is
+    gone. Anti-coincidental-pass: the vault schema has no ``users`` table and
+    the foreign one is created first and its presence asserted, so an
+    unqualified drop has exactly the table it must not touch to find.
+    """
+
+    async def public_users_present() -> bool:
+        async with graph_store._pool.connection() as conn:
+            cur = await conn.execute("SELECT to_regclass('public.users') IS NOT NULL")
+            return (await cur.fetchone())[0]
+
+    maintenance = _maintenance_for(graph_store, minimal_config, content_store=stub_content_store)
+    async with graph_store._pool.connection() as conn:
+        cur = await conn.execute("SELECT to_regclass(format('%I.users', current_schema())) IS NULL")
+        assert (await cur.fetchone())[0], "the vault schema must hold no users table"
+        await conn.execute("CREATE TABLE public.users (id text PRIMARY KEY)")
+    try:
+        assert await public_users_present()
+
+        report = await maintenance.migrate_vault()
+
+        assert DROP_RETIRED_USERS_TABLE not in report.backfills_applied
+        assert await public_users_present()
+    finally:
+        async with graph_store._pool.connection() as conn:
+            await conn.execute("DROP TABLE IF EXISTS public.users")
     assert (await maintenance.migrate_vault()).backfills_applied == []
 
 
