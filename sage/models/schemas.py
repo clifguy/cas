@@ -41,7 +41,6 @@ from sage.models.enums import (
     SourceType,
     StalenessBasis,
     TraversalDirection,
-    UserType,
 )
 from sage.models.error_contract import build_models as _build_error_models
 from sage.models.error_contract import select_detail as _select_error_detail
@@ -240,31 +239,6 @@ DocumentDateStr = Annotated[
     Annotated[str, PublishedShape(format="date")] | None,
     AfterValidator(_validate_document_date),
 ]
-
-
-def _validate_user_id(v: str) -> str:
-    """Normalize an RFC 4122 UUID to canonical lowercase hyphenated form.
-
-    User IDs are generated as ``str(uuid.uuid4())`` by the
-    user-registration service (sage/services/user_service.py). The
-    canonical form is 8-4-4-4-12 hex digits separated by hyphens,
-    lowercase. ``uuid.UUID()`` accepts urn-prefixed (``urn:uuid:...``),
-    brace-wrapped (``{...}``), hex-no-hyphens (32 hex chars), and
-    mixed-case variants; this validator accepts them and normalizes to
-    canonical so the downstream substrate keys on a single form.
-    Flavor: normalize.
-    """
-    try:
-        return str(uuid.UUID(v))
-    except ValueError as exc:
-        raise PydanticCustomError(
-            "invalid_user_id",
-            "user_id {value} is not a well-formed user id (expected {expected})",
-            {"argument": "user_id", "value": v, "expected": "an RFC 4122 UUID"},
-        ) from exc
-
-
-UserIdStr = Annotated[str, AfterValidator(_validate_user_id), PublishedShape(format="uuid")]
 
 
 VAULT_ID_PATTERN = r"^[a-z0-9][a-z0-9_-]{0,63}$"
@@ -590,10 +564,23 @@ class Document(BaseModel):
     created_by: str = Field(
         description=(
             "Who created this document. Where the creating request authenticated, "
-            "the authenticated principal: a user's preferred username, else their "
-            "object id, or app:<client id> for an application. Otherwise the "
-            "caller-supplied created_by, or the vault owner."
+            "the authenticated principal's stable key: for a user, <tenant id>:<object "
+            "id> (the token's subject stands in for a missing object id, and its "
+            "issuer for a missing tenant, as <issuer>#<id>), which a rename leaves "
+            "unchanged; for an application, app:<client id>. Otherwise the "
+            "caller-supplied created_by, or the vault owner. The user's display name "
+            "is in created_by_name."
         )
+    )
+    created_by_name: str | None = Field(
+        default=None,
+        description=(
+            "The creating user's display name as their token carried it at creation "
+            "time: a snapshot, never a key, so it is not a filter and can differ from "
+            "the name the same principal carries later. Null where the token carries "
+            "no name, for an application, without authentication, and on documents "
+            "created before it was recorded."
+        ),
     )
     created_at: datetime = Field(description="Creation timestamp.")
     last_modified_by: str = Field(
@@ -605,6 +592,14 @@ class Document(BaseModel):
             "metadata changes, lifecycle transitions including supersession, "
             "and forced re-ingestion."
         )
+    )
+    last_modified_by_name: str | None = Field(
+        default=None,
+        description=(
+            "The most recent modifier's display name as their token carried it at "
+            "that write: a snapshot, never a key, recorded the same way as "
+            "created_by_name and updated with last_modified_by."
+        ),
     )
     created_client: str | None = Field(
         default=None,
@@ -1089,6 +1084,14 @@ class Edge(BaseModel):
             "attribution was recorded."
         ),
     )
+    created_by_name: str | None = Field(
+        default=None,
+        description=(
+            "The creating user's display name as their token carried it when the "
+            "edge was written: a snapshot, never a key, recorded as a document's "
+            "created_by_name is. Null wherever that is, and wherever created_by is."
+        ),
+    )
     created_client: str | None = Field(
         default=None,
         description=(
@@ -1155,20 +1158,6 @@ class Edge(BaseModel):
             "unset = explicit null."
         ),
     )
-
-
-class User(BaseModel):
-    """Any actor (human or agent) registered in the vault.
-
-    Serves provenance tracking and access control.
-    """
-
-    id: UserIdStr = Field(description="Immutable, assigned at registration.")
-    display_name: str = Field(
-        description="Human-readable name for the user (shown in audit logs and UIs)."
-    )
-    user_type: UserType = Field(description="Actor type for provenance and access control.")
-    created_at: datetime = Field(description="Timestamp when the user was registered.")
 
 
 # ---------------------------------------------------------------------------
@@ -1267,9 +1256,9 @@ class IngestRequest(BaseModel):
     created_by: str | None = Field(
         default=None,
         description=(
-            "User ID of the actor initiating ingestion. Used for provenance "
-            "tracking. Where the request authenticated, the authenticated "
-            "principal is recorded instead, and a differing value here is "
+            "Who is initiating ingestion, recorded as created_by. Where the "
+            "request authenticated, the authenticated principal's stable key "
+            "is recorded instead, and a differing value here is "
             "ignored and named in the response's warnings."
         ),
     )
@@ -2658,32 +2647,6 @@ class UpdateMetadataResponse(BaseModel):
     )
 
 
-class RegisterUserRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    display_name: str = Field(description="Human-readable name for the user or agent.")
-    user_type: UserType = Field(description="Actor type for provenance and access control.")
-
-
-class SetEditorsRequest(BaseModel):
-    """Replace the editor list on a document."""
-
-    user_ids: list[UserIdStr] = Field(
-        description=("User IDs to set as editors. An empty array restores default-open access.")
-    )
-
-
-class EditorList(BaseModel):
-    """Editor membership for a document."""
-
-    document_id: DocumentIdStr = Field(
-        description="Id of the document whose editor list is being reported."
-    )
-    editors: list[User] = Field(
-        description="Current editors. Empty array means default-open access."
-    )
-
-
 class IngestResponse(BaseModel):
     """Returned by `POST /sage_vaults/{vault_id}/documents`.
 
@@ -3647,7 +3610,9 @@ class ProvenanceFilter(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    created_by: str | None = Field(default=None, description="Principal that created the document.")
+    created_by: str | None = Field(
+        default=None, description="Stable key of the principal that created the document."
+    )
     created_client: str | None = Field(
         default=None, description="Client the creating request came through."
     )
@@ -3655,7 +3620,8 @@ class ProvenanceFilter(BaseModel):
         default=None, description="Name of the agent asserted at creation."
     )
     last_modified_by: str | None = Field(
-        default=None, description="Principal that made the most recent modification."
+        default=None,
+        description="Stable key of the principal that made the most recent modification.",
     )
     last_modified_client: str | None = Field(
         default=None, description="Client the most recent modification came through."
@@ -4561,6 +4527,15 @@ class EdgeHit(BaseModel):
             "the writer the operation recorded, or the vault owner. Null for an "
             "edge written outside a request, and on edges created before edge "
             "attribution was recorded. Omitted in light mode."
+        ),
+    )
+    created_by_name: str | None = Field(
+        default=None,
+        description=(
+            "The creating user's display name as their token carried it when the "
+            "edge was written: a snapshot, never a key, recorded as a document's "
+            "created_by_name is. Null wherever that is, and wherever created_by is. "
+            "Omitted in light mode."
         ),
     )
     created_client: str | None = Field(
@@ -6323,7 +6298,7 @@ class VaultStatsResponse(BaseModel):
         description=(
             "Live on-disk byte footprint of the graph store (CAS-ADR-042) -- "
             "the summed relation size of the "
-            "documents/edges/staging_edges/users/document_tags tables."
+            "documents/edges/staging_edges/document_tags tables."
         )
     )
     content_store_size_bytes: int = Field(description="On-disk size of the content store in bytes.")

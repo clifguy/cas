@@ -194,57 +194,29 @@ surface.
 
 ## 2. Access Control
 
-### TEST-SAGE-BH-009: Vault owner auto-registered at initialization
+SAGE holds no user registry. A write is attributed to the principal of the
+validated credential (CAS-ADR-056), and admission is the credential's group
+membership (CAS-ADR-044). TEST-SAGE-BH-009 to BH-011, which specified a
+per-vault user registry, are retired with it; their ids are not reused.
 
-**Artifact:** SAGE vault initialization, `vault_config.yaml` (vault.owner)
-**Category:** access_control
-**Decision:** Vault init reads owner from config and auto-creates user record.
+### TEST-SAGE-BH-009a: A user is attributed by a key a rename leaves unchanged
 
-**Precondition:** Fresh vault with `vault.owner: clif`.
+**Artifact:** Write provenance on documents and edges
+**Category:** access_control, provenance
+**Decision:** A user principal is keyed `<tenant id>:<object id>`; the display
+name is recorded beside it as a snapshot, never a key.
 
-**Input:** Initialize the vault. Query the user table.
-
-**Expected:**
-- User table contains one record with `display_name: "clif"`, `type: "human"`
-- The user_id is usable as `created_by` on subsequent API calls
-
-**Rationale:** The owner always exists from the moment the vault does. No separate
-bootstrap step required.
-
-### TEST-SAGE-BH-010: ROOT Harness register_agent creates SAGE user
-
-**Artifact:** ROOT Harness `register_agent` -> SAGE `register_user`
-**Category:** access_control, boundary
-**Decision:** ROOT Harness is authoritative for agent registration; it calls
-SAGE register_user internally.
-
-**Precondition:** Vault initialized. ROOT Harness running.
-
-**Input:** Call ROOT Harness `register_agent` with agent name "glossary_steward".
+**Precondition:** An authenticating profile. One user writes a document, then
+writes again after their preferred username changes.
 
 **Expected:**
-- ROOT Harness returns an agent record containing a `sage_user_id` field
-- SAGE user table contains a record with `type: "agent"` matching `sage_user_id`
-- The SAGE user's `display_name` matches the agent's registered name
+- `created_by` and `last_modified_by` are the same key
+- `created_by_name` holds the first name, `last_modified_by_name` the second
+- A `provenance` filter on the key returns the document; one on either name
+  returns nothing
 
-**Rationale:** Single entry point for agent registration. ROOT Harness calls into
-SAGE (boundary rule direction), not the reverse.
-
-### TEST-SAGE-BH-011: Direct SAGE register_user with type agent succeeds
-
-**Artifact:** `sage/sage_core_api.openapi.yaml` (register_user)
-**Category:** access_control
-**Decision:** SAGE's API allows agent registration directly (ROOT Harness is the
-intended caller, not the only possible one).
-
-**Precondition:** Vault initialized.
-
-**Input:** Call SAGE `register_user` with `type: "agent"`, `display_name: "test_agent"`.
-
-**Expected:** 201, user record returned with `type: "agent"`.
-
-**Rationale:** SAGE is not coupled to ROOT Harness. The register_user endpoint
-accepts any valid user type.
+**Rationale:** A key taken from a mutable name splits one person's history
+across two keys on a rename or a domain move.
 
 
 ---

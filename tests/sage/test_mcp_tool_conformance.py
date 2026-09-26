@@ -665,7 +665,7 @@ def test_every_divergence_names_an_admissible_category():
 
     sizes = {name: len(register) for name, register in REGISTERS}
     assert all(size > 0 for name, size in sizes.items() if name != "REST_ONLY_ARGUMENTS"), sizes
-    assert sum(sizes.values()) >= 50, sizes
+    assert sum(sizes.values()) >= 45, sizes
 
 
 def test_divergence_bases_cite_no_tickets():
@@ -698,7 +698,7 @@ def test_pending_remediation_lines_list_exactly_the_pending_entries():
 
     # Population pin: recategorizing or remediating an entry is a deliberate
     # edit here as well as in the register.
-    assert len(pending) == 11
+    assert len(pending) == 9
     assert len(lines) == len(pending)
     for name, key in pending:
         entry = dict(REGISTERS)[name][key]

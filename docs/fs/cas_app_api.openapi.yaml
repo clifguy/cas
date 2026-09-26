@@ -2605,39 +2605,6 @@ components:
           description: No additional context is emitted for this error.
       additionalProperties: false
       description: The refusal envelope for this error code.
-    InvalidUserIdErrorDetail:
-      type: object
-      additionalProperties: false
-      required:
-      - user_id
-      - expected
-      properties:
-        user_id:
-          description: User id.
-        expected:
-          type: string
-          description: Expected.
-      description: Additional context for this refusal.
-    InvalidUserIdError:
-      type: object
-      required:
-      - code
-      - message
-      - detail
-      properties:
-        code:
-          type: string
-          const: invalid_user_id
-          description: Machine-readable error code selecting this envelope.
-        message:
-          type: string
-          description: Human-readable error description.
-        read_meta:
-          $ref: '#/components/schemas/ReadMeta'
-        detail:
-          $ref: '#/components/schemas/InvalidUserIdErrorDetail'
-      additionalProperties: false
-      description: The refusal envelope for this error code.
     InvalidVaultIdErrorDetail:
       type: object
       additionalProperties: false
@@ -5439,7 +5406,6 @@ components:
             - invalid_parameter
             - invalid_sha256
             - invalid_state
-            - invalid_user_id
             - invalid_vault_id
             - legacy_form
             - lifecycle_state_not_applicable
@@ -5556,7 +5522,6 @@ components:
         - invalid_lifecycle_transition
         - invalid_parameter
         - invalid_sha256
-        - invalid_user_id
         - invalid_vault_id
         - legacy_form
         - merged_from_validation
@@ -5611,7 +5576,6 @@ components:
         - invalid_edge_id
         - invalid_parameter
         - invalid_sha256
-        - invalid_user_id
         - invalid_vault_id
         - legacy_form
         - merged_from_validation
@@ -5715,7 +5679,6 @@ components:
         - invalid_lifecycle_transition
         - invalid_parameter
         - invalid_sha256
-        - invalid_user_id
         - invalid_vault_id
         - legacy_form
         - lifecycle_state_not_applicable
@@ -5981,7 +5944,6 @@ components:
         - invalid_lifecycle_transition
         - invalid_parameter
         - invalid_sha256
-        - invalid_user_id
         - invalid_vault_id
         - legacy_form
         - missing_document_identifier
@@ -6003,7 +5965,6 @@ components:
         - invalid_document_date
         - invalid_document_id
         - invalid_parameter
-        - invalid_user_id
         - invalid_vault_id
         - legacy_form
         - lifecycle_state_not_applicable
@@ -6126,7 +6087,6 @@ components:
       - $ref: '#/components/schemas/InvalidParameterError'
       - $ref: '#/components/schemas/InvalidSha256Error'
       - $ref: '#/components/schemas/InvalidStateError'
-      - $ref: '#/components/schemas/InvalidUserIdError'
       - $ref: '#/components/schemas/InvalidVaultIdError'
       - $ref: '#/components/schemas/LegacyFormError'
       - $ref: '#/components/schemas/LifecycleStateNotApplicableError'
@@ -6255,7 +6215,6 @@ components:
           invalid_parameter: '#/components/schemas/InvalidParameterError'
           invalid_sha256: '#/components/schemas/InvalidSha256Error'
           invalid_state: '#/components/schemas/InvalidStateError'
-          invalid_user_id: '#/components/schemas/InvalidUserIdError'
           invalid_vault_id: '#/components/schemas/InvalidVaultIdError'
           legacy_form: '#/components/schemas/LegacyFormError'
           lifecycle_state_not_applicable: '#/components/schemas/LifecycleStateNotApplicableError'

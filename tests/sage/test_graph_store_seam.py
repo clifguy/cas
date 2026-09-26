@@ -233,13 +233,12 @@ async def test_substitutability_instance_injection(minimal_vault_config_dict):
     """T6: an injected StubGraphStore stands in for the concrete store end to end.
 
     The services must hold the exact injected instance (not a freshly-built
-    concrete store), and the write performed during init (bootstrap_owner)
-    must land in the stub.
+    concrete store), and the services built over it must be wired to it.
 
     Trap: if initialize_services ignored the injection and built its own
     default store, ``services.graph_store is stub`` fails. If it stored the
-    stub but wired services to a different store, the bootstrapped-owner read
-    returns None.
+    stub but wired services to a different store, the per-service identity
+    checks fail.
     """
     config = VaultConfig.model_validate(minimal_vault_config_dict)
     stub = StubGraphStore()
@@ -248,11 +247,8 @@ async def test_substitutability_instance_injection(minimal_vault_config_dict):
         assert services.graph_store is stub
         assert isinstance(services.graph_store, StubGraphStore)
         # A real service was threaded to the injected store, not a sibling.
-        assert services.user_service._store is stub
-        # bootstrap_owner wrote the vault owner THROUGH the service INTO the stub.
-        owner = await services.graph_store.get_user_by_display_name(config.vault.owner)
-        assert owner is not None
-        assert owner.display_name == config.vault.owner
+        assert services.documents_service._store is stub
+        assert services.staging_edges_service._store is stub
     finally:
         await _teardown(services)
 
@@ -319,16 +315,15 @@ async def test_injected_store_not_closed_on_failure(minimal_vault_config_dict, m
     stub = StubGraphStore()
 
     from sage.api.errors import SAGEError
-    from sage.services.user_service import UserService
 
-    async def raising_bootstrap(self):
+    def raising_late_constructor(*args, **kwargs):
         raise SAGEError(
             code="schema_migration_required",
             message="T7c failure injection",
             status_code=409,
         )
 
-    monkeypatch.setattr(UserService, "bootstrap_owner", raising_bootstrap)
+    monkeypatch.setattr("sage.mcp_init.VaultConfigService", raising_late_constructor)
 
     with pytest.raises(SAGEError, match="T7c failure injection"):
         await _init_with_stubs(config, graph_store=stub)

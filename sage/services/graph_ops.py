@@ -1045,6 +1045,7 @@ class GraphOpsService:
                 synced_from_version=representative.get("synced_from_version"),
                 synced_from_content_hash=representative.get("synced_from_content_hash"),
                 created_by=representative.get("edge_created_by"),
+                created_by_name=representative.get("edge_created_by_name"),
                 created_client=representative.get("edge_created_client"),
                 created_agent=representative.get("edge_created_agent"),
             )

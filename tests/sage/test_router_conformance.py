@@ -71,7 +71,6 @@ ROUTER_TREES: tuple[RouterTree, ...] = (
                 "documents",
                 "lifecycle",
                 "metadata",
-                "users",
                 "graph_ops",
                 "retrieval",
                 "utilities",

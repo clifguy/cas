@@ -320,7 +320,7 @@ export default function DocumentDetail() {
           ['Projected at', doc.projected_at ? new Date(doc.projected_at).toLocaleString() : '-'],
           ['Indexed at', doc.indexed_at ? new Date(doc.indexed_at).toLocaleString() : '-'],
           ['Source modified at', doc.source_modified_at ? new Date(doc.source_modified_at).toLocaleString() : '-'],
-          ['Created by', doc.created_by],
+          ['Created by', doc.created_by_name ?? doc.created_by],
         ]} />
       </Section>
 

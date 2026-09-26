@@ -1050,10 +1050,12 @@ def register_sage_tools(
           exceed MCP tool-result size ceilings.
 
         Write provenance, for the creation and the most recent modification:
-        ``created_by`` / ``last_modified_by`` name the principal and
-        ``created_client`` / ``last_modified_client`` the client application,
-        both server-derived from the validated token where the request
-        authenticated; ``created_agent`` /
+        ``created_by`` / ``last_modified_by`` key the principal stably and
+        ``created_client`` / ``last_modified_client`` name the client
+        application, both server-derived from the validated token where the
+        request authenticated; ``created_by_name`` /
+        ``last_modified_by_name`` snapshot the user's display name, never a
+        key; ``created_agent`` /
         ``last_modified_agent`` are the agent the caller asserted, marked
         ``trust: asserted`` and never verified.
 

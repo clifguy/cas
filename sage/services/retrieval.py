@@ -1446,6 +1446,7 @@ class RetrievalService:
             retracted_at=row.retracted_at,
             retracted_by_edge_id=row.retracted_by_edge_id,
             created_by=edge.created_by,
+            created_by_name=edge.created_by_name,
             created_client=edge.created_client,
             created_agent=edge.created_agent,
         )

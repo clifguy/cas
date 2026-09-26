@@ -1284,19 +1284,9 @@ def unresolved_component_names(specs: dict[str, dict[str, Any]]) -> set[Componen
 COMPONENT_NAME_PINS: Final[dict[ComponentName, str]] = {
     (
         "sage_core",
-        "#/components/schemas/User/properties/display_name/description",
-        "UIs",
-    ): "plural acronym for user interfaces, not a type reference",
-    (
-        "sage_core",
         "#/components/schemas/IngestRequest/properties/needs_review/description",
         "UIs",
     ): "plural acronym for user interfaces, not a type reference",
-    (
-        "sage_core",
-        "#/components/schemas/SetEditorsRequest/properties/user_ids/description",
-        "IDs",
-    ): "plural acronym for identifiers, not a type reference",
     (
         "sage_core",
         "#/components/schemas/ReabstractRequest/properties/include_pdf/description",

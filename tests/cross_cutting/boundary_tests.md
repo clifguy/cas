@@ -9,23 +9,26 @@ Design decisions made 2026-04-05 during SAGE tier 2 specification.
 
 ## SAGE / ROOT Harness Boundary Rule
 
-### TEST-XCUT-BH-001: Agent registration flows through ROOT Harness
+### TEST-XCUT-BH-001: Agent identity reaches SAGE through the credential
 
-**Artifact:** ROOT Harness `register_agent` -> SAGE `register_user`
+**Artifact:** ROOT Harness writes to SAGE
 **Category:** boundary
-**Decision:** ROOT Harness is authoritative for agent registration.
+**Decision:** SAGE keeps no agent or user registry; it attributes a write to the
+credential's principal and client and to the agent the caller asserts
+(CAS-ADR-056).
 
-**Precondition:** Vault initialized. ROOT Harness running.
+**Precondition:** Vault initialized. ROOT Harness running under its own credential.
 
-**Input:** Call ROOT Harness `register_agent` for a steward agent.
+**Input:** A steward agent writes a document through the ROOT Harness.
 
 **Expected:**
-- ROOT Harness internally calls SAGE `register_user` with `type: "agent"`
-- ROOT Harness agent record contains `sage_user_id` matching the SAGE user record
-- Provenance fields on documents use the SAGE user_id (not a ROOT Harness-specific ID)
+- The document's `created_by` is the ROOT Harness credential's principal and
+  `created_client` its client, both derived by SAGE from the token
+- `created_agent` names the steward, marked `trust: asserted`
+- No registration call precedes the write
 
-**Rationale:** Single entry point for agent identity. ROOT Harness calls into SAGE
-(boundary rule direction). SAGE's user table is the provenance authority.
+**Rationale:** Identity a server can verify comes from the credential; what it
+cannot verify is labelled as asserted rather than registered.
 
 ### TEST-XCUT-BH-002: Stewards call SAGE Core API for artifact operations
 

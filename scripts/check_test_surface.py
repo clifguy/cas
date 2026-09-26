@@ -437,6 +437,239 @@ KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
             "test_empty_object_body_on_bodyless_operation_accepted",
         )
     },
+    "tests/sage/test_access_control.py": (
+        "the per-vault user registry is removed, so owner bootstrap and register_user have "
+        "nothing to test"
+    ),
+    "tests/sage/test_alias_invariants.py::test_invalid_inputs_rejected[UserIdStr-empty_string]": (
+        "UserIdStr and the invalid_user_id code are removed with the per-vault user registry"
+    ),
+    "tests/sage/test_alias_invariants.py::test_invalid_inputs_rejected[UserIdStr-extended_uuid]": (
+        "UserIdStr and the invalid_user_id code are removed with the per-vault user registry"
+    ),
+    "tests/sage/test_alias_invariants.py::test_invalid_inputs_rejected[UserIdStr-non_hex_chars]": (
+        "UserIdStr and the invalid_user_id code are removed with the per-vault user registry"
+    ),
+    "tests/sage/test_alias_invariants.py::test_invalid_inputs_rejected[UserIdStr-random_text]": (
+        "UserIdStr and the invalid_user_id code are removed with the per-vault user registry"
+    ),
+    "tests/sage/test_alias_invariants.py::test_invalid_inputs_rejected[UserIdStr-truncated_uuid]": (
+        "UserIdStr and the invalid_user_id code are removed with the per-vault user registry"
+    ),
+    (
+        "tests/sage/test_alias_invariants.py::"
+        "test_invalid_inputs_rejected[UserIdStr-wrong_separator]"
+    ): ("UserIdStr and the invalid_user_id code are removed with the per-vault user registry"),
+    (
+        "tests/sage/test_alias_invariants.py::"
+        "test_user_id_non_canonical_inputs_normalized_to_canonical[brace_wrapped]"
+    ): ("UserIdStr and the invalid_user_id code are removed with the per-vault user registry"),
+    (
+        "tests/sage/test_alias_invariants.py::"
+        "test_user_id_non_canonical_inputs_normalized_to_canonical[mixed_case]"
+    ): ("UserIdStr and the invalid_user_id code are removed with the per-vault user registry"),
+    (
+        "tests/sage/test_alias_invariants.py::"
+        "test_user_id_non_canonical_inputs_normalized_to_canonical[no_hyphens_hex]"
+    ): ("UserIdStr and the invalid_user_id code are removed with the per-vault user registry"),
+    (
+        "tests/sage/test_alias_invariants.py::"
+        "test_user_id_non_canonical_inputs_normalized_to_canonical[urn_prefixed]"
+    ): ("UserIdStr and the invalid_user_id code are removed with the per-vault user registry"),
+    "tests/sage/test_alias_invariants.py::test_uuid_format_is_what_the_alias_emits[UserIdStr]": (
+        "UserIdStr and the invalid_user_id code are removed with the per-vault user registry"
+    ),
+    "tests/sage/test_alias_invariants.py::test_valid_inputs_accepted[UserIdStr]": (
+        "UserIdStr and the invalid_user_id code are removed with the per-vault user registry"
+    ),
+    "tests/sage/test_api_integration.py::test_register_user_201": (
+        "the per-vault user registry and its editor contract are removed; nothing registers a"
+        " user or accepts a user id"
+    ),
+    "tests/sage/test_graph_store_seam.py::test_concrete_signature_matches_port[get_user]": (
+        "the graph-store port no longer stores users; the per-vault user registry is removed"
+    ),
+    (
+        "tests/sage/test_graph_store_seam.py::"
+        "test_concrete_signature_matches_port[get_user_by_display_name]"
+    ): ("the graph-store port no longer stores users; the per-vault user registry is removed"),
+    "tests/sage/test_graph_store_seam.py::test_concrete_signature_matches_port[insert_user]": (
+        "the graph-store port no longer stores users; the per-vault user registry is removed"
+    ),
+    "tests/sage/test_graph_store_seam.py::test_concrete_signature_matches_port[list_users]": (
+        "the graph-store port no longer stores users; the per-vault user registry is removed"
+    ),
+    "tests/sage/test_graph_store_seam.py::test_stub_signature_matches_port[get_user]": (
+        "the graph-store port no longer stores users; the per-vault user registry is removed"
+    ),
+    (
+        "tests/sage/test_graph_store_seam.py::"
+        "test_stub_signature_matches_port[get_user_by_display_name]"
+    ): ("the graph-store port no longer stores users; the per-vault user registry is removed"),
+    "tests/sage/test_graph_store_seam.py::test_stub_signature_matches_port[insert_user]": (
+        "the graph-store port no longer stores users; the per-vault user registry is removed"
+    ),
+    "tests/sage/test_graph_store_seam.py::test_stub_signature_matches_port[list_users]": (
+        "the graph-store port no longer stores users; the per-vault user registry is removed"
+    ),
+    "tests/sage/test_mcp_server.py::test_error_response_maps_typed_alias_family[invalid_user_id]": (
+        "UserIdStr and the invalid_user_id code are removed with the per-vault user registry"
+    ),
+    (
+        "tests/sage/test_mcp_server.py::"
+        "test_translate_validation_error_maps_typed_alias_family[invalid_user_id]"
+    ): ("UserIdStr and the invalid_user_id code are removed with the per-vault user registry"),
+    (
+        "tests/sage/test_mcp_tool_conformance.py::"
+        "test_openapi_operation_has_mcp_tool[sage_core-get_editors]"
+    ): (
+        "the per-vault user registry and its editor contract are removed; nothing registers a"
+        " user or accepts a user id"
+    ),
+    (
+        "tests/sage/test_mcp_tool_conformance.py::"
+        "test_openapi_operation_has_mcp_tool[sage_core-register_user]"
+    ): (
+        "the per-vault user registry and its editor contract are removed; nothing registers a"
+        " user or accepts a user id"
+    ),
+    (
+        "tests/sage/test_mcp_tool_conformance.py::"
+        "test_openapi_operation_has_mcp_tool[sage_core-set_editors]"
+    ): (
+        "the per-vault user registry and its editor contract are removed; nothing registers a"
+        " user or accepts a user id"
+    ),
+    (
+        "tests/sage/test_openapi_conformance.py::"
+        "test_alias_typed_params_declare_their_400[POST /sage_vaults/{vault_id}/users -> inva"
+        "lid_vault_id]"
+    ): (
+        "the per-vault user registry and its editor contract are removed; nothing registers a"
+        " user or accepts a user id"
+    ),
+    (
+        "tests/sage/test_openapi_conformance.py::"
+        "test_live_openapi_matches_yaml_error_envelope[POST /sage_vaults/{vault_id}/users -> "
+        "400]"
+    ): (
+        "the per-vault user registry and its editor contract are removed; nothing registers a"
+        " user or accepts a user id"
+    ),
+    (
+        "tests/sage/test_openapi_conformance.py::"
+        "test_live_openapi_matches_yaml_error_envelope[POST /sage_vaults/{vault_id}/users -> "
+        "404]"
+    ): (
+        "the per-vault user registry and its editor contract are removed; nothing registers a"
+        " user or accepts a user id"
+    ),
+    (
+        "tests/sage/test_openapi_conformance.py::"
+        "test_live_openapi_matches_yaml_error_envelope[POST /sage_vaults/{vault_id}/users -> "
+        "422]"
+    ): (
+        "the per-vault user registry and its editor contract are removed; nothing registers a"
+        " user or accepts a user id"
+    ),
+    "tests/sage/test_postgres_graph_store.py::test_pg_row_to_user_populates_every_field": (
+        "the graph-store port no longer stores users; the per-vault user registry is removed"
+    ),
+    (
+        "tests/sage/test_published_shape_parity.py::"
+        "test_alias_publishes_its_declared_shape[UserIdStr-serialization]"
+    ): ("UserIdStr and the invalid_user_id code are removed with the per-vault user registry"),
+    (
+        "tests/sage/test_published_shape_parity.py::"
+        "test_alias_publishes_its_declared_shape[UserIdStr-validation]"
+    ): ("UserIdStr and the invalid_user_id code are removed with the per-vault user registry"),
+    (
+        "tests/sage/test_published_shape_parity.py::"
+        "test_refusal_code_is_the_validators_own[UserIdStr]"
+    ): ("UserIdStr and the invalid_user_id code are removed with the per-vault user registry"),
+    "tests/sage/test_rest_unknown_parameter.py::test_declared_body_not_refused[register_user]": (
+        "the per-vault user registry and its editor contract are removed; nothing registers a"
+        " user or accepts a user id"
+    ),
+    "tests/sage/test_rest_unknown_parameter.py::test_unknown_body_field_refused[register_user]": (
+        "the per-vault user registry and its editor contract are removed; nothing registers a"
+        " user or accepts a user id"
+    ),
+    "tests/sage/test_router_conformance.py::test_route_models_are_pydantic[sage-users]": (
+        "the per-vault user registry and its editor contract are removed; nothing registers a"
+        " user or accepts a user id"
+    ),
+    "tests/sage/test_router_conformance.py::test_router_conformance[sage-users]": (
+        "the per-vault user registry and its editor contract are removed; nothing registers a"
+        " user or accepts a user id"
+    ),
+    (
+        "tests/sage/test_typed_alias_coverage.py::"
+        "test_fastapi_route_param_coverage[sage.api.dependencies.get_user_service.vault_id]"
+    ): ("the graph-store port no longer stores users; the per-vault user registry is removed"),
+    (
+        "tests/sage/test_typed_alias_coverage.py::"
+        "test_fastapi_route_param_coverage[sage.api.routers.users.register_user.vault_id]"
+    ): (
+        "the per-vault user registry and its editor contract are removed; nothing registers a"
+        " user or accepts a user id"
+    ),
+    "tests/sage/test_typed_alias_coverage.py::test_typed_alias_coverage[EditorList.document_id]": (
+        "the per-vault user registry and its editor contract are removed; nothing registers a"
+        " user or accepts a user id"
+    ),
+    (
+        "tests/sage/test_typed_alias_coverage.py::"
+        "test_typed_alias_coverage[SetEditorsRequest.user_ids]"
+    ): ("UserIdStr and the invalid_user_id code are removed with the per-vault user registry"),
+    "tests/sage/test_typed_alias_coverage.py::test_typed_alias_coverage[User.id]": (
+        "the per-vault user registry and its editor contract are removed; nothing registers a"
+        " user or accepts a user id"
+    ),
+    (
+        "tests/sage/test_typed_alias_coverage.py::"
+        "test_typed_alias_validator_raises_structured_custom_error[invalid_user_id]"
+    ): ("UserIdStr and the invalid_user_id code are removed with the per-vault user registry"),
+    (
+        "tests/sage/test_vault_config_api.py::"
+        "test_create_vault_rolls_back_when_bootstrap_owner_fails_post_register"
+    ): (
+        "renamed test_create_vault_rolls_back_when_initialize_fails_late: owner bootstrap is "
+        "removed, so the late failure is injected inside initialize_services"
+    ),
+    (
+        "tests/sage/test_vault_not_found_refusal_parity.py::"
+        "test_vault_scoped_operations_declare_vault_not_found[sage_core-get_editors]"
+    ): (
+        "the per-vault user registry and its editor contract are removed; nothing registers a"
+        " user or accepts a user id"
+    ),
+    (
+        "tests/sage/test_vault_not_found_refusal_parity.py::"
+        "test_vault_scoped_operations_declare_vault_not_found[sage_core-register_user]"
+    ): (
+        "the per-vault user registry and its editor contract are removed; nothing registers a"
+        " user or accepts a user id"
+    ),
+    (
+        "tests/sage/test_vault_not_found_refusal_parity.py::"
+        "test_vault_scoped_operations_declare_vault_not_found[sage_core-set_editors]"
+    ): (
+        "the per-vault user registry and its editor contract are removed; nothing registers a"
+        " user or accepts a user id"
+    ),
+    "tests/sage/test_write_attribution.py::test_u1_principal_actor_derivation[delegated-oid]": (
+        "re-parametrized for the stable key: the cases run under their delegated-tenant-* and"
+        " delegated-issuer-* ids"
+    ),
+    "tests/sage/test_write_attribution.py::test_u1_principal_actor_derivation[delegated-sub]": (
+        "re-parametrized for the stable key: the cases run under their delegated-tenant-* and"
+        " delegated-issuer-* ids"
+    ),
+    "tests/sage/test_write_attribution.py::test_u1_principal_actor_derivation[delegated-upn]": (
+        "re-parametrized for the stable key: the cases run under their delegated-tenant-* and"
+        " delegated-issuer-* ids"
+    ),
 }
 
 

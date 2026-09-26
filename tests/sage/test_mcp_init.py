@@ -160,10 +160,8 @@ async def test_di_006_services_functional_with_stubs(minimal_vault_config_dict, 
         abstraction_provider=StubAbstractionProvider(),
         content_store=StubContentStore(),
     ) as services:
-        # Bootstrap owner should have run during init
-        owner = await services.graph_store.get_user_by_display_name(config.vault.owner)
-        assert owner is not None
-        assert owner.display_name == config.vault.owner
+        # The graph store answers a basic read over the freshly built vault.
+        assert await services.graph_store.get_total_document_count() == 0
 
 
 # ---------------------------------------------------------------------------

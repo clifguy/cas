@@ -60,18 +60,17 @@ async def test_initialize_services_cleans_up_timing_thread_on_failure(
     """
     pre_count = _count_timing_threads()
 
-    # Patch UserService.bootstrap_owner — it runs late in initialize_services,
-    # AFTER _build_vault_timers has started the flusher thread.
-    from sage.services.user_service import UserService
+    # Make VaultConfigService's construction raise — it runs late in
+    # initialize_services, AFTER _build_vault_timers has started the flusher thread.
 
-    async def raising_bootstrap(self):
+    def raising_late_constructor(*args, **kwargs):
         raise SAGEError(
             code="schema_migration_required",
             message="N5 failure injection",
             status_code=409,
         )
 
-    monkeypatch.setattr(UserService, "bootstrap_owner", raising_bootstrap)
+    monkeypatch.setattr("sage.mcp_init.VaultConfigService", raising_late_constructor)
 
     # Raw initialize_services: this test exercises the failure path
     # (pytest.raises below), so initialize_services_for_test is the wrong
@@ -114,7 +113,6 @@ async def test_initialize_services_cleans_up_graph_store_on_failure(
     """
     config = VaultConfig.model_validate(minimal_vault_config_dict)
 
-    from sage.services.user_service import UserService
     from sage.storage.postgres import graph_store as _pg_gs_module
 
     captured: dict = {}
@@ -130,16 +128,16 @@ async def test_initialize_services_cleans_up_graph_store_on_failure(
     # through the provisioner path.
     monkeypatch.setattr(_pg_gs_module, "PostgresGraphStore", CapturingGraphStore)
 
-    # Patch bootstrap_owner to raise AFTER the graph store is constructed and
-    # initialized.
-    async def raising_bootstrap(self):
+    # Make VaultConfigService's construction raise AFTER the graph store is
+    # constructed and initialized.
+    def raising_late_constructor(*args, **kwargs):
         raise SAGEError(
             code="schema_migration_required",
             message="N6 failure injection",
             status_code=409,
         )
 
-    monkeypatch.setattr(UserService, "bootstrap_owner", raising_bootstrap)
+    monkeypatch.setattr("sage.mcp_init.VaultConfigService", raising_late_constructor)
 
     # Raw initialize_services: this test exercises the failure path
     # (pytest.raises below), so initialize_services_for_test is the wrong
@@ -189,17 +187,16 @@ async def test_initialize_services_cleanup_does_not_mask_original_exception(
     PROPAGATING exception carries the original message.
     """
     from sage.instrumentation.timing import VaultTimingThread
-    from sage.services.user_service import UserService
 
     # Inject the original failure
-    async def raising_bootstrap(self):
+    def raising_late_constructor(*args, **kwargs):
         raise SAGEError(
             code="schema_migration_required",
             message="N7 ORIGINAL exception that must propagate",
             status_code=409,
         )
 
-    monkeypatch.setattr(UserService, "bootstrap_owner", raising_bootstrap)
+    monkeypatch.setattr("sage.mcp_init.VaultConfigService", raising_late_constructor)
 
     # Also break VaultTimingThread.stop so cleanup-time itself raises
     def broken_stop(self, timeout=2.0):

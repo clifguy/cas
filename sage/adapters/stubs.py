@@ -25,7 +25,7 @@ from sage.adapters.interfaces import (
 )
 from sage.models.enums import ResolutionPolicy
 from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
-from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge, User
+from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge
 
 
 class StubContentStore(ContentStore):
@@ -650,12 +650,12 @@ class FailingAbstractionProvider(AbstractionProvider):
 class StubGraphStore(GraphStore):
     """In-memory graph store for hermetic tests.
 
-    Seam-proof, not a full graph engine: documents, edges, staging edges, and
-    users get straightforward in-memory CRUD plus simple counts, which covers
-    vault-owner bootstrap, the substitutability path, and most hermetic service
-    tests. Methods whose correctness depends on query/filter semantics, atomic
-    multi-step transactions, lineage/retraction resolution, or graph traversal
-    raise ``NotImplementedError`` until a test needs them, so a coincidental
+    Seam-proof, not a full graph engine: documents, edges and staging edges
+    get straightforward in-memory CRUD plus simple counts, which covers the
+    substitutability path and most hermetic service tests. Methods whose
+    correctness depends on query/filter semantics, atomic multi-step
+    transactions, lineage/retraction resolution, or graph traversal raise
+    ``NotImplementedError`` until a test needs them, so a coincidental
     empty-result pass can never masquerade as real behavior. ``close`` records
     its call count so ownership/cleanup tests can assert it was not closed.
     """
@@ -667,7 +667,6 @@ class StubGraphStore(GraphStore):
         self._reprojection_skips: dict[str, tuple[str | None, str]] = {}
         self._edges: dict[str, Edge] = {}
         self._staging: dict[str, StagingEdge] = {}
-        self._users: dict[str, User] = {}
         self.close_calls: int = 0
 
     @staticmethod
@@ -1006,6 +1005,9 @@ class StubGraphStore(GraphStore):
             cleared += 1
         return cleared
 
+    async def drop_retired_users_table(self) -> bool:
+        return False
+
     async def list_pending_metadata_documents(
         self,
         exclude_lifecycle_statuses: Sequence[str] = (),
@@ -1037,19 +1039,3 @@ class StubGraphStore(GraphStore):
 
     async def head_with_hash_for_chain(self, target_id: str, edge_type: str = "supersedes") -> dict:
         raise self._unsupported("head_with_hash_for_chain")
-
-    # --- Users ---
-    async def insert_user(self, user: User) -> None:
-        self._users[user.id] = user
-
-    async def get_user(self, user_id: str) -> User | None:
-        return self._users.get(user_id)
-
-    async def get_user_by_display_name(self, display_name: str) -> User | None:
-        for u in self._users.values():
-            if u.display_name == display_name:
-                return u
-        return None
-
-    async def list_users(self) -> list[User]:
-        return list(self._users.values())

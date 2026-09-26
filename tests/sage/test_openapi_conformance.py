@@ -73,14 +73,7 @@ _SUCCESS_STATUSES = {"200", "201", "202", "204"}
 # implementation. Entries are (path, method) tuples; each must have a
 # justification comment pointing at the architectural authority that
 # declares the feature as intentional pending work.
-SPEC_FORWARD_DECLARATIONS: set[tuple[str, str]] = {
-    # Editor-based write control: SAGE Architecture Reference v1.4.2
-    # Section 4.3 (Editor Model) and Section 6.3 (Editor-Based Write
-    # Control). set_editors / get_editors are listed in the service
-    # operations table; FastAPI implementation is pending.
-    ("/sage_vaults/{vault_id}/documents/{document_id}/editors", "get"),
-    ("/sage_vaults/{vault_id}/documents/{document_id}/editors", "put"),
-}
+SPEC_FORWARD_DECLARATIONS: set[tuple[str, str]] = set()
 
 # YAML schemas in cas_app_api.openapi.yaml that have no same-named
 # BaseModel under app.backend.{models,router} by design. Same
@@ -120,7 +113,6 @@ YAML_ONLY_FORWARD_DECLARATIONS: set[str] = {
     "SourceType",
     "StalenessBasis",
     "TraversalDirection",
-    "UserType",
     # Extensible vocabularies. Vaults add domain-specific members to the
     # base sets, so both surfaces are typed as `str` and validated against
     # vault config at the API boundary rather than by the Python type
@@ -2423,6 +2415,8 @@ def test_forward_declared_alias_operations_declare_their_400(sage_core_spec: dic
     declaration has no annotation to reflect. The weaker derivation is confined
     to these entries: everywhere else the code is read from the validator.
     """
+    if not SPEC_FORWARD_DECLARATIONS:
+        pytest.skip("no operation is forward-declared, so there is nothing to check")
     assert sage_core_spec is not None, f"SAGE Core API spec missing at {SAGE_CORE_SPEC_PATH}"
     code_by_parameter = {name: code for (_p, _m, name, code) in _ALIAS_PARAM_ROWS}
     assert code_by_parameter, "no live rows to learn the parameter-to-code correspondence from"

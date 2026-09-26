@@ -296,18 +296,41 @@ def test_overlay_enriches_prose_on_the_same_document():
     assert _norm_ws(operation.get("description")), "the overlay wrote no description"
 
 
-def test_overlay_ignores_spec_operations_absent_from_routes(published: dict):
+def test_overlay_ignores_spec_operations_absent_from_routes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
     """Operations a committed spec declares but the app does not route stay
     out of the published document.
 
-    The editors endpoints are forward declarations: documented, not built.
-    Publishing them would tell a caller the deployment serves something it
-    does not.
+    A spec documenting an operation ahead of its route would otherwise
+    publish it, telling a caller the deployment serves something it does
+    not. The unrouted operation is injected into a copy of the spec, so the
+    test does not depend on the committed spec carrying one.
     """
-    editors = "/sage_vaults/{vault_id}/documents/{document_id}/editors"
-    published_paths = published.get("paths") or {}
+    import sage.app as sage_app
 
-    assert editors not in published_paths, (
+    unrouted = "/sage_vaults/{vault_id}/unrouted_operation"
+    spec = yaml.safe_load(SAGE_CORE_SPEC_PATH.read_text())
+    spec["paths"][unrouted] = {
+        "get": {
+            "operationId": "unrouted_operation",
+            "summary": "Documented but not routed.",
+            "responses": {"200": {"description": "Never served."}},
+        }
+    }
+    spec_copy = tmp_path / "sage_core_api.openapi.yaml"
+    spec_copy.write_text(yaml.safe_dump(spec))
+
+    sage_app._load_published_prose.cache_clear()
+    monkeypatch.setattr(sage_app, "_SAGE_CORE_SPEC_PATH", spec_copy)
+    try:
+        published_paths = create_app().openapi().get("paths") or {}
+    finally:
+        sage_app._load_published_prose.cache_clear()
+
+    # Positive control: the copy was read, so a routed path is still published.
+    assert "/sage_vaults/{vault_id}/discover" in published_paths
+    assert unrouted not in published_paths, (
         "the published document declares an operation the app does not route; "
         "the overlay is injecting spec paths rather than enriching live ones"
     )

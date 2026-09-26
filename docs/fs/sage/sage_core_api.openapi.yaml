@@ -1202,11 +1202,12 @@ paths:
 
 
         Write provenance, for the creation and the most recent
-        modification: `created_by` / `last_modified_by` name the principal
-        and `created_client` / `last_modified_client` the client
-        application, both server-derived from the validated token where
-        the request authenticated;
-        `created_agent` / `last_modified_agent` are the agent the caller
+        modification: `created_by` / `last_modified_by` key the principal
+        stably and `created_client` / `last_modified_client` name the
+        client application, both server-derived from the validated token
+        where the request authenticated; `created_by_name` /
+        `last_modified_by_name` snapshot the user's display name, never a
+        key; `created_agent` / `last_modified_agent` are the agent the caller
         asserted, marked `trust: asserted` and never verified.
       tags: [Document Metadata]
       parameters:
@@ -1739,190 +1740,6 @@ paths:
 
             `unknown_parameter`: the request carries a body field or query
             parameter the operation does not declare.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: >-
-            `document_not_found`: no document with that id.
-
-
-            `vault_not_found`: no vault registered with that id;
-            `detail.available_vaults` lists the registered vaults.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  # ---------------------------------------------------------------------------
-  # Access Control
-  # ---------------------------------------------------------------------------
-
-  /sage_vaults/{vault_id}/users:
-    post:
-      operationId: register_user
-      summary: Register a user (human or agent) in the vault's user table.
-      description: >-
-        Registers a new actor for provenance tracking and access
-        control. Both human users and agent identities are registered
-        through this endpoint. The user ID is assigned by SAGE at
-        registration time. Where a request does not authenticate, it
-        can be used as the `created_by` value on subsequent ingest
-        calls; an authenticated request is attributed to its principal
-        whatever `created_by` says. Ad-hoc strings in `created_by` are
-        accepted but are not linked to a registered user record.
-
-
-        The `user_type` field (`human` or `agent`) is informational
-        (attribution audit) and does not gate any operation's behavior.
-      tags: [Access Control]
-      parameters:
-        - $ref: "#/components/parameters/VaultId"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/RegisterUserRequest"
-      responses:
-        "201":
-          description: User registered.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/User"
-        "400":
-          description: >-
-            Invalid user type or missing required field.
-
-            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
-
-            `unknown_parameter`: the request carries a body field or query
-            parameter the operation does not declare.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: >-
-            `vault_not_found`: no vault registered with that id;
-            `detail.available_vaults` lists the registered vaults.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "422":
-          description: >-
-            `invalid_parameter`: a value in the request failed validation -- a
-            wrong type, a bound, a malformed value -- and no more specific
-            code reports it. `detail.parameter` locates the value as a dotted
-            path from the top of the request, with a list position as its
-            index, `detail.value` carries it, and `detail.constraint` states
-            the rule it broke.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-  /sage_vaults/{vault_id}/documents/{document_id}/editors:
-    put:
-      operationId: set_editors
-      summary: Set the editor list for a document.
-      description: >-
-        Replaces the full editor list for a document wholesale (not a
-        delta). Sending an empty array restores default-open access
-        (any registered user can read and write). Sending one or more
-        user IDs restricts write access to that set; all other
-        registered users become read-only for this document.
-
-
-        Editors are referenced by their registered user IDs (see
-        `POST /sage_vaults/{vault_id}/users`). Vault-wide defaults for
-        the editor model live under `access_control_defaults` in the
-        vault config; this operation overrides the default at the
-        per-document level.
-      tags: [Access Control]
-      parameters:
-        - $ref: "#/components/parameters/VaultId"
-        - $ref: "#/components/parameters/DocumentId"
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: "#/components/schemas/SetEditorsRequest"
-      responses:
-        "200":
-          description: Editor list updated. Returns the current editor list.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/EditorList"
-        "400":
-          description: >-
-            One or more user IDs are not registered in this vault.
-
-            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
-
-            `invalid_document_id`: `document_id` is not a well-formed
-            document id.
-
-            `invalid_user_id`: a user id in the request is not
-            well-formed.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "404":
-          description: >-
-            `document_not_found`: no document with that id.
-
-
-            `vault_not_found`: no vault registered with that id;
-            `detail.available_vaults` lists the registered vaults.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "422":
-          description: >-
-            `invalid_parameter`: a value in the request failed validation -- a
-            wrong type, a bound, a malformed value -- and no more specific
-            code reports it. `detail.parameter` locates the value as a dotted
-            path from the top of the request, with a list position as its
-            index, `detail.value` carries it, and `detail.constraint` states
-            the rule it broke.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-
-    get:
-      operationId: get_editors
-      summary: Return the editor list for a document.
-      description: >-
-        Returns the list of users registered as editors for this
-        document. An empty list means the document is in default-open
-        mode (any registered user can write). Read-only operation; no
-        side effects.
-      tags: [Access Control]
-      parameters:
-        - $ref: "#/components/parameters/VaultId"
-        - $ref: "#/components/parameters/DocumentId"
-      responses:
-        "200":
-          description: Editor list.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/EditorList"
-        "400":
-          description: >-
-            `invalid_vault_id`: `vault_id` is not a well-formed vault id.
-
-            `invalid_document_id`: `document_id` is not a well-formed
-            document id.
           content:
             application/json:
               schema:
@@ -4918,11 +4735,6 @@ components:
       description: >-
         Sort direction for catalog mode results. Ignored by other modes.
 
-    UserType:
-      type: string
-      enum: [human, agent]
-      description: Actor type for provenance and access control.
-
     PipelineStatus:
       type: string
       enum:
@@ -5089,7 +4901,7 @@ components:
         created_by:
           type: [string, "null"]
           description: >-
-            Principal that created the document.
+            Stable key of the principal that created the document.
         created_client:
           type: [string, "null"]
           description: >-
@@ -5101,7 +4913,8 @@ components:
         last_modified_by:
           type: [string, "null"]
           description: >-
-            Principal that made the most recent modification.
+            Stable key of the principal that made the most recent
+            modification.
         last_modified_client:
           type: [string, "null"]
           description: >-
@@ -5197,10 +5010,22 @@ components:
           type: string
           description: >-
             Who created this document. Where the creating request
-            authenticated, the authenticated principal: a user's preferred
-            username, else their object id, or app:<client id> for an
-            application. Otherwise the caller-supplied created_by, or the
-            vault owner.
+            authenticated, the authenticated principal's stable key: for a
+            user, <tenant id>:<object id> (the token's subject stands in for
+            a missing object id, and its issuer for a missing tenant, as
+            <issuer>#<id>), which a rename leaves unchanged; for an
+            application, app:<client id>. Otherwise the caller-supplied
+            created_by, or the vault owner. The user's display name is in
+            created_by_name.
+        created_by_name:
+          type: [string, "null"]
+          description: >-
+            The creating user's display name as their token carried it at
+            creation time: a snapshot, never a key, so it is not a filter
+            and can differ from the name the same principal carries later.
+            Null where the token carries no name, for an application,
+            without authentication, and on documents created before it was
+            recorded.
         created_at:
           type: string
           format: date-time
@@ -5214,6 +5039,12 @@ components:
             the vault owner. Set to created_by at document creation;
             updated on metadata changes, lifecycle transitions including
             supersession, and forced re-ingestion.
+        last_modified_by_name:
+          type: [string, "null"]
+          description: >-
+            The most recent modifier's display name as their token carried
+            it at that write: a snapshot, never a key, recorded the same way
+            as created_by_name and updated with last_modified_by.
         created_client:
           type: [string, "null"]
           description: >-
@@ -5565,6 +5396,13 @@ components:
             otherwise the writer the operation recorded, or the vault owner.
             Null for an edge written outside a request, and on edges created
             before edge attribution was recorded.
+        created_by_name:
+          type: [string, "null"]
+          description: >-
+            The creating user's display name as their token carried it when
+            the edge was written: a snapshot, never a key, recorded as a
+            document's created_by_name is. Null wherever that is, and
+            wherever created_by is.
         created_client:
           type: [string, "null"]
           description: >-
@@ -5622,31 +5460,6 @@ components:
             `sha256:` + 64 lowercase hex form; request schemas accept
             wider spellings and normalize to it;
             unset = explicit null.
-
-    User:
-      type: object
-      description: >-
-        Any actor (human or agent) registered in the vault. Serves
-        provenance tracking and access control.
-      required:
-        - id
-        - display_name
-        - user_type
-        - created_at
-      properties:
-        id:
-          type: string
-          format: uuid
-          description: Immutable, assigned at registration.
-        display_name:
-          type: string
-          description: Human-readable name for the user (shown in audit logs and UIs).
-        user_type:
-          $ref: "#/components/schemas/UserType"
-        created_at:
-          type: string
-          format: date-time
-          description: Timestamp when the user was registered.
 
     # -------------------------------------------------------------------------
     # Request Schemas
@@ -6209,9 +6022,9 @@ components:
         created_by:
           type: [string, "null"]
           description: >-
-            User ID of the actor initiating ingestion. Used for
-            provenance tracking. Where the request authenticated, the
-            authenticated principal is recorded instead, and a differing
+            Who is initiating ingestion, recorded as created_by. Where the
+            request authenticated, the authenticated principal's stable key
+            is recorded instead, and a differing
             value here is ignored and named in the response's warnings.
         agent:
           type: [string, "null"]
@@ -6621,32 +6434,6 @@ components:
             ordered chain before applying `limit`. Used together with
             `limit` to page through long chains.
 
-    RegisterUserRequest:
-      type: object
-      additionalProperties: false
-      required: [display_name, user_type]
-      description: Request body for the user-registration endpoint.
-      properties:
-        display_name:
-          type: string
-          description: Human-readable name for the user or agent.
-        user_type:
-          $ref: "#/components/schemas/UserType"
-
-    SetEditorsRequest:
-      type: object
-      required: [user_ids]
-      description: Request body for the set-editors endpoint that replaces the editor allowlist on a document.
-      properties:
-        user_ids:
-          type: array
-          items:
-            type: string
-            format: uuid
-          description: >-
-            User IDs to set as editors. An empty array restores
-            default-open access.
-
     ExportProjectionRequest:
       type: object
       additionalProperties: false
@@ -6895,6 +6682,13 @@ components:
             otherwise the writer the operation recorded, or the vault owner.
             Null for an edge written outside a request, and on edges created
             before edge attribution was recorded. Omitted in light mode.
+        created_by_name:
+          type: [string, "null"]
+          description: >-
+            The creating user's display name as their token carried it when
+            the edge was written: a snapshot, never a key, recorded as a
+            document's created_by_name is. Null wherever that is, and
+            wherever created_by is. Omitted in light mode.
         created_client:
           type: [string, "null"]
           description: >-
@@ -8371,22 +8165,6 @@ components:
           type: boolean
           description: True when the actual state meets the required condition for this target.
 
-    EditorList:
-      type: object
-      required: [document_id, editors]
-      description: Response body for the get-editors endpoint; carries the document id and its current editor list.
-      properties:
-        document_id:
-          type: string
-          pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
-          description: Id of the document whose editor list is being reported.
-        editors:
-          type: array
-          items:
-            $ref: "#/components/schemas/User"
-          description: >-
-            Current editors. Empty array means default-open access.
-
     EvalRetrievalResult:
       type: object
       required: [vault_id, passed, assertion_count, failure_count, failures]
@@ -8656,7 +8434,7 @@ components:
           description: Number of edges in the Tier 2 staging table awaiting review.
         graph_store_size_bytes:
           type: integer
-          description: Live on-disk byte footprint of the graph store (CAS-ADR-042) -- the summed relation size of the documents/edges/staging_edges/users/document_tags tables.
+          description: Live on-disk byte footprint of the graph store (CAS-ADR-042) -- the summed relation size of the documents/edges/staging_edges/document_tags tables.
         content_store_size_bytes:
           type: integer
           description: On-disk size of the content store in bytes.
@@ -12317,39 +12095,6 @@ components:
           description: No additional context is emitted for this error.
       additionalProperties: false
       description: The refusal envelope for this error code.
-    InvalidUserIdErrorDetail:
-      type: object
-      additionalProperties: false
-      required:
-      - user_id
-      - expected
-      properties:
-        user_id:
-          description: User id.
-        expected:
-          type: string
-          description: Expected.
-      description: Additional context for this refusal.
-    InvalidUserIdError:
-      type: object
-      required:
-      - code
-      - message
-      - detail
-      properties:
-        code:
-          type: string
-          const: invalid_user_id
-          description: Machine-readable error code selecting this envelope.
-        message:
-          type: string
-          description: Human-readable error description.
-        read_meta:
-          $ref: '#/components/schemas/ReadMeta'
-        detail:
-          $ref: '#/components/schemas/InvalidUserIdErrorDetail'
-      additionalProperties: false
-      description: The refusal envelope for this error code.
     InvalidVaultIdErrorDetail:
       type: object
       additionalProperties: false
@@ -15151,7 +14896,6 @@ components:
             - invalid_parameter
             - invalid_sha256
             - invalid_state
-            - invalid_user_id
             - invalid_vault_id
             - legacy_form
             - lifecycle_state_not_applicable
@@ -15268,7 +15012,6 @@ components:
         - invalid_lifecycle_transition
         - invalid_parameter
         - invalid_sha256
-        - invalid_user_id
         - invalid_vault_id
         - legacy_form
         - merged_from_validation
@@ -15323,7 +15066,6 @@ components:
         - invalid_edge_id
         - invalid_parameter
         - invalid_sha256
-        - invalid_user_id
         - invalid_vault_id
         - legacy_form
         - merged_from_validation
@@ -15427,7 +15169,6 @@ components:
         - invalid_lifecycle_transition
         - invalid_parameter
         - invalid_sha256
-        - invalid_user_id
         - invalid_vault_id
         - legacy_form
         - lifecycle_state_not_applicable
@@ -15693,7 +15434,6 @@ components:
         - invalid_lifecycle_transition
         - invalid_parameter
         - invalid_sha256
-        - invalid_user_id
         - invalid_vault_id
         - legacy_form
         - missing_document_identifier
@@ -15715,7 +15455,6 @@ components:
         - invalid_document_date
         - invalid_document_id
         - invalid_parameter
-        - invalid_user_id
         - invalid_vault_id
         - legacy_form
         - lifecycle_state_not_applicable
@@ -15838,7 +15577,6 @@ components:
       - $ref: '#/components/schemas/InvalidParameterError'
       - $ref: '#/components/schemas/InvalidSha256Error'
       - $ref: '#/components/schemas/InvalidStateError'
-      - $ref: '#/components/schemas/InvalidUserIdError'
       - $ref: '#/components/schemas/InvalidVaultIdError'
       - $ref: '#/components/schemas/LegacyFormError'
       - $ref: '#/components/schemas/LifecycleStateNotApplicableError'
@@ -15967,7 +15705,6 @@ components:
           invalid_parameter: '#/components/schemas/InvalidParameterError'
           invalid_sha256: '#/components/schemas/InvalidSha256Error'
           invalid_state: '#/components/schemas/InvalidStateError'
-          invalid_user_id: '#/components/schemas/InvalidUserIdError'
           invalid_vault_id: '#/components/schemas/InvalidVaultIdError'
           legacy_form: '#/components/schemas/LegacyFormError'
           lifecycle_state_not_applicable: '#/components/schemas/LifecycleStateNotApplicableError'
@@ -16082,8 +15819,6 @@ tags:
     description: Three-stage ingestion pipeline (projection, indexing, abstraction).
   - name: Graph
     description: Edge creation, deletion, graph traversal, and precondition checking.
-  - name: Access Control
-    description: User registration and editor-based write control.
   - name: Utilities
     description: Projection export, projection/section reads, retrieval health checks, and filesystem views.
   - name: Vault Management

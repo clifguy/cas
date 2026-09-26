@@ -69,8 +69,10 @@ from tests.helpers.write_attribution import (
 _SPEC = Path(__file__).resolve().parents[2] / "docs/fs/sage/sage_core_api.openapi.yaml"
 
 _OWNER = "owner-o"
-_ALICE = "alice@example.org"
-_BOB = "oid-b"
+_TID = "tid-1"
+_ALICE_NAME = "alice@example.org"
+_ALICE = f"{_TID}:oid-a"
+_BOB = f"{_TID}:oid-b"
 _SVC = "app:ci-cid"
 
 _CLIENT_NAMES = {"bff-cid": "cas-app", "mcp-cid": "mcp-connector", "ci-cid": "ci"}
@@ -81,7 +83,7 @@ _BROWSER_UA = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1
 
 
 def _delegated(username: str | None, oid: str, azp: str) -> AuthenticatedPrincipal:
-    claims = {"scp": "Sage.Access", "oid": oid, "sub": f"sub-{oid}", "azp": azp}
+    claims = {"scp": "Sage.Access", "tid": _TID, "oid": oid, "sub": f"sub-{oid}", "azp": azp}
     if username is not None:
         claims["preferred_username"] = username
     return AuthenticatedPrincipal(
@@ -90,9 +92,9 @@ def _delegated(username: str | None, oid: str, azp: str) -> AuthenticatedPrincip
 
 
 _PRINCIPALS = {
-    "alice-bff": _delegated(_ALICE, "oid-a", "bff-cid"),
-    "alice-mcp": _delegated(_ALICE, "oid-a", "mcp-cid"),
-    "bob-mcp": _delegated(None, _BOB, "mcp-cid"),
+    "alice-bff": _delegated(_ALICE_NAME, "oid-a", "bff-cid"),
+    "alice-mcp": _delegated(_ALICE_NAME, "oid-a", "mcp-cid"),
+    "bob-mcp": _delegated(None, "oid-b", "mcp-cid"),
     "svc": AuthenticatedPrincipal(
         subject="sub-s",
         roles=frozenset({"Sage.Access"}),
@@ -259,6 +261,7 @@ def test_w1_edge_attribution_outside_a_request_is_empty() -> None:
     try:
         assert edge_attribution(_OWNER) == {
             "created_by": None,
+            "created_by_name": None,
             "created_client": None,
             "created_agent": None,
         }
@@ -308,6 +311,10 @@ async def test_a1_mcp_ingest_records_principal_client_and_header_agent(
     expected = (_ALICE, "mcp-connector", _agent("claude-code", "header"))
     assert _created(stored) == expected
     assert _modified(stored) == expected
+    assert (stored["created_by_name"], stored["last_modified_by_name"]) == (
+        _ALICE_NAME,
+        _ALICE_NAME,
+    )
 
 
 async def test_a2_cas_app_write_is_distinguishable_by_client(auth_app, tmp_vault_dir) -> None:
@@ -523,9 +530,12 @@ async def test_a8_create_edges_records_the_writer_on_every_edge(auth_app, tmp_va
     alice = (_ALICE, "mcp-connector", _agent("claude-code", "header"))
     assert len(traversed["nodes"]) == 2
     assert all(_created(node["edge"]) == alice for node in traversed["nodes"])
+    assert all(node["edge"]["created_by_name"] == _ALICE_NAME for node in traversed["nodes"])
     assert len(full["results"]) == 2
     assert all(_created(hit) == alice for hit in full["results"])
+    assert all(hit["created_by_name"] == _ALICE_NAME for hit in full["results"])
     assert all("created_by" not in hit for hit in light["results"])
+    assert all("created_by_name" not in hit for hit in light["results"])
 
 
 async def test_a9_staging_confirm_records_the_confirming_writer(auth_app, tmp_vault_dir) -> None:
@@ -561,6 +571,8 @@ async def test_a9_staging_confirm_records_the_confirming_writer(auth_app, tmp_va
         "mcp-connector",
         "codex",
     )
+    # bob's token names no one, so no display name is recorded.
+    assert edge.created_by_name is None
 
 
 async def test_a3b_agent_argument_reaches_every_write_tool(auth_app, tmp_vault_dir) -> None:
@@ -943,6 +955,9 @@ async def test_f1_provenance_filter_matches_exactly(auth_app, tmp_vault_dir, mod
         assert await ids({"created_client": "cas-app"}) == {a2["id"]}
         assert await ids({"created_agent": "claude-code"}) == {a1["id"], a5["id"]}
         assert await ids({"last_modified_by": _BOB}) == {a5["id"]}
+        # The key matches; the display name it once was does not.
+        assert await ids({"created_by": _ALICE}) == {a1["id"], a2["id"], a5["id"]}
+        assert await ids({"created_by": _ALICE_NAME}) == set()
         assert await ids({"created_agent": None}) == {a2["id"]}
         assert await ids(
             {
@@ -967,6 +982,16 @@ async def test_f2_provenance_filter_refusals(auth_app) -> None:
             "search",
             {"vault_id": VAULT, "target": "edges", "filters": {"provenance": {"created_by": "x"}}},
         )
+        by_name = await mcp_call(
+            auth_app,
+            "svc",
+            "search",
+            {
+                "vault_id": VAULT,
+                "mode": "catalog",
+                "filters": {"provenance": {"created_by_name": _ALICE_NAME}},
+            },
+        )
         top_level = await mcp_call(
             auth_app,
             "svc",
@@ -990,6 +1015,9 @@ async def test_f2_provenance_filter_refusals(auth_app) -> None:
     assert rest.json()["code"] == "unknown_filter_key"
     assert rest.json()["detail"]["key"] == "provenance.writer"
     assert on_edges["error"] == "mode_parameter_mismatch"
+    # A display name is a snapshot, never a key: it is not a filter.
+    assert by_name["error"] == "unknown_filter_key"
+    assert by_name["detail"]["key"] == "provenance.created_by_name"
     assert top_level["error"] == "misplaced_filters"
 
 
@@ -1010,6 +1038,7 @@ async def test_n1_no_auth_records_no_client_and_asserts_the_agent(
     stored_named = await _get_noauth(noauth_app, named["id"])
     assert _created(stored_header) == (_OWNER, None, _agent("claude-code", "header"))
     assert _created(stored_named) == (_OWNER, None, _agent("nightly-sync", "parameter"))
+    assert stored_header.get("created_by_name") is None
 
     # A supersedes edge takes the operation's writer, here the caller's created_by.
     revised = await _rest_ingest(
@@ -1029,6 +1058,7 @@ async def test_n1_no_auth_records_no_client_and_asserts_the_agent(
         )
     (node,) = chain["nodes"]
     assert _created(node["edge"]) == ("carol", None, _agent("codex", "header"))
+    assert node["edge"].get("created_by_name") is None
 
 
 async def test_w1_edge_created_outside_a_request_is_unattributed(auth_app, tmp_vault_dir) -> None:
@@ -1050,7 +1080,12 @@ async def test_w1_edge_created_outside_a_request_is_unattributed(auth_app, tmp_v
     )
     (result,) = response.results
     edge = await auth_app.state.vault_registry[VAULT].graph_store.get_edge(result.edge.id)
-    assert (edge.created_by, edge.created_client, edge.created_agent) == (None, None, None)
+    assert (edge.created_by, edge.created_by_name, edge.created_client, edge.created_agent) == (
+        None,
+        None,
+        None,
+        None,
+    )
 
 
 async def test_w1_abstraction_worker_clears_every_identity(noauth_app) -> None:

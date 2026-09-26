@@ -16,9 +16,7 @@ summary: >-
   request records none. A new provenance search filter matches these fields
   exactly. The Document, Edge and EdgeHit schemas, the four request bodies,
   RetrievalFilters and the stack configuration schema gain the fields, and two
-  components, AssertedAgent and ProvenanceFilter, are added. The register_user
-  description no longer claims a registered user id is recorded as the actor
-  on lifecycle and edge writes.
+  components, AssertedAgent and ProvenanceFilter, are added.
 for_callers: >-
   get_document now shows which client application and which agent created and
   last modified a document, and search can filter on them with

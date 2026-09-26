@@ -37,7 +37,6 @@ from sage.services.maintenance import MaintenanceService
 from sage.services.metadata import MetadataService
 from sage.services.retrieval import RetrievalService
 from sage.services.staging_edges import StagingEdgesService
-from sage.services.user_service import UserService
 from sage.services.utilities import UtilitiesService
 from sage.services.vault_config import VaultConfigService
 from sage.source_adapters.registry import build_source_adapter_registry
@@ -230,7 +229,6 @@ class SAGEServices:
     graph_store: GraphStore
     content_store: ContentStore
     lock_manager: DocumentLockManager
-    user_service: UserService
     lifecycle_service: LifecycleService
     metadata_service: MetadataService
     documents_service: DocumentsService
@@ -1056,7 +1054,6 @@ async def initialize_services(
         source_adapters = build_source_adapter_registry()
 
         # Services
-        user_service = UserService(graph_store, config)
         lifecycle_service = LifecycleService(graph_store, lock_manager, config, content_store)
         metadata_service = MetadataService(graph_store, lock_manager, config, content_store)
         documents_service = DocumentsService(graph_store, config)
@@ -1109,15 +1106,11 @@ async def initialize_services(
                 ingestion_service=ingestion_service,
             )
 
-        # Bootstrap vault owner
-        await user_service.bootstrap_owner()
-
         return SAGEServices(
             config=config,
             graph_store=graph_store,
             content_store=content_store,
             lock_manager=lock_manager,
-            user_service=user_service,
             lifecycle_service=lifecycle_service,
             metadata_service=metadata_service,
             documents_service=documents_service,

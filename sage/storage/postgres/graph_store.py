@@ -47,7 +47,6 @@ from sage.models.enums import (
     RationaleKind,
     ResolutionPolicy,
     SourceType,
-    UserType,
 )
 from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
 from sage.models.schemas import (
@@ -57,7 +56,6 @@ from sage.models.schemas import (
     LinkRequest,
     RelocationPointer,
     StagingEdge,
-    User,
 )
 from sage.storage.tier3_uniqueness import (
     TIER3_UNIQUE_INDEX_PREFIX,
@@ -384,10 +382,11 @@ class PostgresGraphStore(GraphStore):
                 source_modified_at, document_date,
                 semantic_abstract, pipeline_status, pipeline_error, tier3_metadata,
                 adapter_config, metadata_confirmed, relocated_from, relocated_to,
-                created_client, created_agent, last_modified_client, last_modified_agent
+                created_client, created_agent, last_modified_client, last_modified_agent,
+                created_by_name, last_modified_by_name
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                       %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, %s)""",
+                      %s, %s, %s, %s, %s, %s)""",
             (
                 doc.id,
                 doc.title,
@@ -422,6 +421,8 @@ class PostgresGraphStore(GraphStore):
                 _agent_to_jsonb(doc.created_agent),
                 doc.last_modified_client,
                 _agent_to_jsonb(doc.last_modified_agent),
+                doc.created_by_name,
+                doc.last_modified_by_name,
             ),
         )
         await self._sync_document_tags(conn, doc.id, doc.tags)
@@ -925,10 +926,10 @@ class PostgresGraphStore(GraphStore):
                 valid_until_version, retracted_edge_id,
                 created_at, notes, rationale, rationale_kind,
                 synced_from_version, synced_from_content_hash,
-                created_by, created_client, created_agent
+                created_by, created_client, created_agent, created_by_name
             )
             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s)""",
+                    %s, %s, %s, %s)""",
             (
                 edge.id,
                 edge.source_id,
@@ -948,6 +949,7 @@ class PostgresGraphStore(GraphStore):
                 edge.created_by,
                 edge.created_client,
                 _agent_to_jsonb(edge.created_agent),
+                edge.created_by_name,
             ),
         )
 
@@ -1681,6 +1683,13 @@ class PostgresGraphStore(GraphStore):
                 (list(statuses),),
             )
 
+    async def drop_retired_users_table(self) -> bool:
+        with self._query_timer.measure("drop_retired_users_table"):
+            if not await self._fetch_scalar("SELECT to_regclass('users') IS NOT NULL"):
+                return False
+            await self._execute("DROP TABLE IF EXISTS users")
+            return True
+
     @staticmethod
     def _pending_metadata_where(
         exclude_lifecycle_statuses: Sequence[str],
@@ -1721,7 +1730,7 @@ class PostgresGraphStore(GraphStore):
     async def measured_byte_size(self) -> int:
         """Live total relation size of the graph tables (heap + indexes + toast).
 
-        Sums documents, edges, staging_edges, users, and document_tags --
+        Sums documents, edges, staging_edges and document_tags --
         the tables that constitute the graph store. ``chunks`` (the content
         store) is deliberately excluded; that footprint is reported through
         ``ContentStore.measured_byte_size`` instead. ``to_regclass`` resolves
@@ -1733,7 +1742,7 @@ class PostgresGraphStore(GraphStore):
             value = await self._fetch_scalar(
                 "SELECT COALESCE(SUM(pg_total_relation_size(to_regclass(t.name))), 0) "
                 "FROM (VALUES ('documents'), ('edges'), ('staging_edges'), "
-                "('users'), ('document_tags')) AS t(name)"
+                "('document_tags')) AS t(name)"
             )
             return int(value)
 
@@ -1774,7 +1783,8 @@ class PostgresGraphStore(GraphStore):
                 "e.retracted_edge_id, "
                 "e.synced_from_version, e.synced_from_content_hash, "
                 "e.created_by AS edge_created_by, e.created_client AS edge_created_client, "
-                "e.created_agent AS edge_created_agent"
+                "e.created_agent AS edge_created_agent, "
+                "e.created_by_name AS edge_created_by_name"
             )
             params: list = []
             if direction == "outbound":
@@ -1864,6 +1874,7 @@ class PostgresGraphStore(GraphStore):
                     "edge_created_by": row["edge_created_by"],
                     "edge_created_client": row["edge_created_client"],
                     "edge_created_agent": row["edge_created_agent"],
+                    "edge_created_by_name": row["edge_created_by_name"],
                     "depth": row["depth"],
                     "d_title": row["title"],
                     "d_lifecycle_status": row["lifecycle_status"],
@@ -2004,33 +2015,6 @@ class PostgresGraphStore(GraphStore):
             }
 
     # ------------------------------------------------------------------
-    # User operations
-    # ------------------------------------------------------------------
-
-    async def insert_user(self, user: User) -> None:
-        await self._execute(
-            "INSERT INTO users (id, display_name, user_type, created_at) VALUES (%s, %s, %s, %s)",
-            (user.id, user.display_name, user.user_type.value, user.created_at.isoformat()),
-        )
-
-    async def get_user(self, user_id: str) -> User | None:
-        with self._query_timer.measure("get_user"):
-            row = await self._fetch_one("SELECT * FROM users WHERE id = %s", (user_id,))
-            return self._row_to_user(row) if row else None
-
-    async def get_user_by_display_name(self, display_name: str) -> User | None:
-        with self._query_timer.measure("get_user_by_display_name"):
-            row = await self._fetch_one(
-                "SELECT * FROM users WHERE display_name = %s", (display_name,)
-            )
-            return self._row_to_user(row) if row else None
-
-    async def list_users(self) -> list[User]:
-        with self._query_timer.measure("list_users"):
-            rows = await self._fetch_rows("SELECT * FROM users")
-            return [self._row_to_user(r) for r in rows]
-
-    # ------------------------------------------------------------------
     # Row -> model conversions
     #
     # jsonb columns come back already parsed (tags as list, tier3_metadata as
@@ -2084,6 +2068,8 @@ class PostgresGraphStore(GraphStore):
             relocated_from=RelocationPointer.from_stored(row.get("relocated_from")),
             relocated_to=RelocationPointer.from_stored(row.get("relocated_to")),
             # ``.get`` for the same reason as ``stored_content_hash`` above.
+            created_by_name=row.get("created_by_name"),
+            last_modified_by_name=row.get("last_modified_by_name"),
             created_client=row.get("created_client"),
             created_agent=_agent_from_stored(row.get("created_agent")),
             last_modified_client=row.get("last_modified_client"),
@@ -2111,6 +2097,7 @@ class PostgresGraphStore(GraphStore):
             synced_from_version=row.get("synced_from_version"),
             synced_from_content_hash=row.get("synced_from_content_hash"),
             created_by=row.get("created_by"),
+            created_by_name=row.get("created_by_name"),
             created_client=row.get("created_client"),
             created_agent=_agent_from_stored(row.get("created_agent")),
         )
@@ -2124,14 +2111,5 @@ class PostgresGraphStore(GraphStore):
             edge_type=EdgeType(row["edge_type"]),
             inference_evidence=row["inference_evidence"],
             confidence_tier=row["confidence_tier"],
-            created_at=datetime.fromisoformat(row["created_at"]),
-        )
-
-    @staticmethod
-    def _row_to_user(row: dict) -> User:
-        return User(
-            id=row["id"],
-            display_name=row["display_name"],
-            user_type=UserType(row["user_type"]),
             created_at=datetime.fromisoformat(row["created_at"]),
         )

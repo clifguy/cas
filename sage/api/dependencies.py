@@ -27,7 +27,6 @@ from sage.services.metadata import MetadataService
 from sage.services.retrieval import RetrievalService
 from sage.services.staging_edges import StagingEdgesService
 from sage.services.transfer import TransferStore, get_transfer_store
-from sage.services.user_service import UserService
 from sage.services.utilities import UtilitiesService
 from sage.services.vault_config import VaultConfigService
 from sage.services.vault_registry import VaultRegistryService
@@ -186,13 +185,6 @@ async def get_staging_edges_service(
     vault_id: VaultIdStr = Depends(get_vault_id),
 ) -> StagingEdgesService:
     return _get_services(request, vault_id).staging_edges_service
-
-
-async def get_user_service(
-    request: Request,
-    vault_id: VaultIdStr = Depends(get_vault_id),
-) -> UserService:
-    return _get_services(request, vault_id).user_service
 
 
 async def get_ingestion_service(

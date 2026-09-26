@@ -31,7 +31,6 @@ from sage.services.graph_ops import GraphOpsService
 from sage.services.ingestion import IngestionService
 from sage.services.lifecycle import LifecycleService
 from sage.services.metadata import MetadataService
-from sage.services.user_service import UserService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 from sage.storage.locks import DocumentLockManager
 from tests.helpers.pipeline_wait import drain_abstraction_queue, drain_vaults
@@ -369,11 +368,6 @@ def failing_abstraction_provider():
 
 
 @pytest.fixture
-def user_service(graph_store, minimal_config):
-    return UserService(graph_store, minimal_config)
-
-
-@pytest.fixture
 def lifecycle_service(graph_store, lock_manager, minimal_config, stub_content_store):
     return LifecycleService(graph_store, lock_manager, minimal_config, stub_content_store)
 
@@ -514,7 +508,6 @@ _PG_TABLES = (
     "documents",
     "edges",
     "staging_edges",
-    "users",
     "document_tags",
     "chunks",
     "document_surface",

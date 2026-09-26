@@ -60,23 +60,6 @@ async def client(app):
 
 
 # ---------------------------------------------------------------------------
-# User registration
-# ---------------------------------------------------------------------------
-
-
-async def test_register_user_201(client):
-    resp = await client.post(
-        "/sage_vaults/test_vault/users",
-        json={"display_name": "new_agent", "user_type": "agent"},
-    )
-    assert resp.status_code == 201
-    body = resp.json()
-    assert body["display_name"] == "new_agent"
-    assert body["user_type"] == "agent"
-    assert "id" in body
-
-
-# ---------------------------------------------------------------------------
 # Ingestion
 # ---------------------------------------------------------------------------
 
@@ -182,10 +165,7 @@ async def test_get_document_malformed_id_returns_invalid_document_id_400(client)
 # The generic RequestValidationError handler routes every translate-recognized
 # alias rejection to its structured 400 (status_code=sage_err.status_code), so a
 # malformed value on any alias-bearing endpoint returns 400 + code + detail
-# rather than FastAPI's native 422. The detail key is the alias name. user_id is
-# absent here: SetEditorsRequest (its only carrier) is wired to no route, so it
-# has no FastAPI surface -- it is covered at the shared choke point in
-# test_mcp_server.py::test_translate_validation_error_maps_typed_alias_family.
+# rather than FastAPI's native 422. The detail key is the alias name.
 # ---------------------------------------------------------------------------
 
 

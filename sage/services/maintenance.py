@@ -210,6 +210,11 @@ BACKFILL_PASSAGE_INPUT_BOUND = "split_passages_over_embedding_input_bound"
 # text a document carries before its first heading, re-projected from its source.
 BACKFILL_TEXT_BEFORE_FIRST_HEADING = "store_text_before_first_heading"
 
+# Name reported in MigrationReport.backfills_applied when the migration dropped the
+# table a retired per-vault user registry left behind. Write attribution reads the
+# validated credential (CAS-ADR-056), so nothing reads or writes that table.
+DROP_RETIRED_USERS_TABLE = "drop_retired_users_table"
+
 
 def _canonical_or_none(content_hash: str | None) -> str | None:
     """Canonicalize a content hash, preserving null.
@@ -441,6 +446,9 @@ class MaintenanceService:
 
         if await self._migrate_to_relative_indexed_structure():
             backfills_applied.append(BACKFILL_PASSAGE_INDEXED_STRUCTURE)
+
+        if await self._graph_store.drop_retired_users_table():
+            backfills_applied.append(DROP_RETIRED_USERS_TABLE)
 
         activations, collisions = await self._activate_tier3_uniqueness()
 

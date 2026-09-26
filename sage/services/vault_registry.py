@@ -302,7 +302,6 @@ class VaultRegistryService:
                 abstraction_provider=stack_provider,
             )
             self._registry[vault_id] = services
-            await services.user_service.bootstrap_owner()
         except BaseException:
             # Roll back the registry entry and any services that were
             # constructed before the failure point, so the user can retry

@@ -472,7 +472,7 @@ async def test_update_config_rolls_back_yaml_when_inner_initialize_raises_late(
     isolated_vault_client, tmp_vault_dir, monkeypatch
 ):
     """A2: yaml rollback fires even when the inner allocator (i.e.
-    ``UserService.bootstrap_owner``, which runs late inside
+    ``VaultConfigService``'s construction, which runs late inside
     ``initialize_services``) raises.
 
     Distinguishes "rollback wired only to outer reload surface" from
@@ -485,7 +485,6 @@ async def test_update_config_rolls_back_yaml_when_inner_initialize_raises_late(
     import yaml as _yaml
 
     from sage.api.errors import SAGEError
-    from sage.services.user_service import UserService
 
     client, app, isolated_root = isolated_vault_client
 
@@ -495,14 +494,14 @@ async def test_update_config_rolls_back_yaml_when_inner_initialize_raises_late(
     pre_call_dict = _yaml.safe_load(config_path.read_text())
     assert pre_call_dict["vault"]["name"] == "Pre Late Failure"
 
-    async def raising_bootstrap(self):
+    def raising_late_constructor(*args, **kwargs):
         raise SAGEError(
             code="schema_migration_required",
             message="simulated late-stage failure inside initialize_services",
             status_code=409,
         )
 
-    monkeypatch.setattr(UserService, "bootstrap_owner", raising_bootstrap)
+    monkeypatch.setattr("sage.mcp_init.VaultConfigService", raising_late_constructor)
 
     resp = await client.put(
         "/sage_vaults/test_vault/config",
@@ -898,34 +897,34 @@ async def test_create_vault_rolls_back_yaml_on_initialize_failure(
     assert new_vault_id not in app.state.vault_registry
 
 
-async def test_create_vault_rolls_back_when_bootstrap_owner_fails_post_register(
+async def test_create_vault_rolls_back_when_initialize_fails_late(
     app, client, tmp_path, monkeypatch
 ):
-    """D2: when ``bootstrap_owner`` raises after the new services are
-    already in the registry, both the registry entry and the on-disk yaml
-    are rolled back; the user can re-issue create_vault cleanly.
+    """D2: when ``initialize_services`` raises late, after the storage and
+    most services for the new vault are allocated, neither a registry entry
+    nor the on-disk yaml survives; the user can re-issue create_vault cleanly.
 
-    Trap (anti-coincidental): a write-then-allocate-then-register-then-
-    bootstrap sequence with no rollback leaves the vault half-registered
-    (services live in the registry, but no owner bootstrapped) and the
-    yaml on disk. Both asserts must hold.
+    Distinct from the wholesale-allocator failure above: here the real
+    allocator runs and fails partway, so resources exist when it raises.
+
+    Trap (anti-coincidental): a write-then-allocate sequence with no rollback
+    leaves the yaml on disk. Both asserts must hold.
     """
     from sage.api.errors import SAGEError
-    from sage.services.user_service import UserService
 
     isolated_root = tmp_path / "sage_vaults"
     monkeypatch.setattr("sage.vault_management._VAULTS_ROOT", isolated_root)
 
-    new_vault_id = "atomicity_bootstrap_target"
+    new_vault_id = "atomicity_late_target"
 
-    async def raising_bootstrap(self):
+    def raising_late_constructor(*args, **kwargs):
         raise SAGEError(
             code="schema_migration_required",
-            message="simulated late-stage bootstrap_owner failure",
+            message="simulated late-stage allocator failure",
             status_code=409,
         )
 
-    monkeypatch.setattr(UserService, "bootstrap_owner", raising_bootstrap)
+    monkeypatch.setattr("sage.mcp_init.VaultConfigService", raising_late_constructor)
 
     config = VaultRegistryService.get_default_config(
         new_vault_id, "Atomicity Bootstrap Target", "testuser"
@@ -940,13 +939,13 @@ async def test_create_vault_rolls_back_when_bootstrap_owner_fails_post_register(
 
     expected_yaml = isolated_root / new_vault_id / "vault_config.yaml"
     assert not expected_yaml.exists(), (
-        "create_vault left orphan yaml after bootstrap_owner failed; "
-        "rollback must fire on post-register failures too"
+        "create_vault left orphan yaml after a late allocator failure; "
+        "rollback must fire on partial allocation too"
     )
 
     assert new_vault_id not in app.state.vault_registry, (
-        "create_vault left a half-registered vault in the registry after "
-        "bootstrap_owner failed; the registry entry must be removed alongside "
+        "create_vault left a half-registered vault in the registry after a "
+        "late allocator failure; the registry entry must be removed alongside "
         "the yaml rollback"
     )
 

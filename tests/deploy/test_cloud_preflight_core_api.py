@@ -77,8 +77,6 @@ _MUTATING_FRAGMENTS: Final[tuple[str, ...]] = (
     "/export",
     "/hash-check",
     "/eval-retrieval",
-    "/users",
-    "/editors",
     "/refresh-views",
     "/maintenance/",
 )

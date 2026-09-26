@@ -194,12 +194,6 @@ _STAGING_FACTORING_BASIS = (
     "update_staging_edge(action=...)."
 )
 
-_EDITOR_MODEL = Divergence(
-    _PR,
-    "Editor-model write control, forward-declared and unbuilt on either surface. "
-    "Closes when it is built beneath both surfaces.",
-)
-
 _ROOT_HARNESS = Divergence(
     _PR,
     "The ROOT Harness Orchestration API has no MCP surface yet. Closes when the "
@@ -215,11 +209,6 @@ REST_ONLY_OPERATIONS: Final[dict[tuple[str, str], Divergence]] = {
     ),
     ("sage_core", "dismiss_staging_edge"): Divergence(
         _OF, _STAGING_FACTORING_BASIS, reached_by=("update_staging_edge",)
-    ),
-    ("sage_core", "register_user"): Divergence(
-        _SA,
-        "CAS Application account creation. Agents pass created_by strings per "
-        "CAS-ADR-021 and have no account to register.",
     ),
     ("sage_core", "open_document"): Divergence(_SA, "Browser UI affordance."),
     ("sage_core", "get_document_download_url"): Divergence(
@@ -257,8 +246,6 @@ REST_ONLY_OPERATIONS: Final[dict[tuple[str, str], Divergence]] = {
         reached_by=("bulk_ingest_document",),
         options_schema="BatchIngestUploadMetadata",
     ),
-    ("sage_core", "get_editors"): _EDITOR_MODEL,
-    ("sage_core", "set_editors"): _EDITOR_MODEL,
     ("cas_app", "begin_login"): Divergence(
         _SA, "Browser-interactive sign-in entry: an identity-provider redirect and a cookie."
     ),

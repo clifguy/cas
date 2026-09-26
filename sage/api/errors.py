@@ -113,7 +113,6 @@ _TYPED_ALIAS_CODES: frozenset[str] = frozenset(
         "invalid_edge_id",
         "invalid_sha256",
         "invalid_document_date",
-        "invalid_user_id",
     }
 )
 
@@ -122,7 +121,7 @@ class InvalidTypedAliasError(SAGEError):
     """400: a typed-alias boundary value failed its shape validator.
 
     One parameterized error for the typed-alias family (vault_id, edge_id,
-    sha256, document_date, user_id). The leaf-layer validator in
+    sha256, document_date). The leaf-layer validator in
     ``sage/models/schemas.py`` raises a ``PydanticCustomError`` carrying a
     uniform ``{argument, value, expected}`` ctx; the request-boundary translator
     rebuilds this structured 400 from that ctx, so a malformed value surfaces as
@@ -3010,7 +3009,7 @@ def translate_validation_error(
             return InvalidDocumentIdError(str(ctx.get("document_id", input_value)))
 
         # 0c) The rest of the typed-alias family: vault_id, edge_id, sha256,
-        # document_date, user_id. Same leaf-layer-contract
+        # document_date. Same leaf-layer-contract
         # reasoning as ``invalid_document_id`` above -- the validator embeds a
         # uniform ``{argument, value, expected}`` ctx and we rebuild the public
         # 400 here via the single parameterized ``InvalidTypedAliasError``.
