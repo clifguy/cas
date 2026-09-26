@@ -2765,7 +2765,20 @@ def test_yaml_shapes_match_pydantic(
     assert not issues, "YAML shape diverges from the model:\n" + "\n".join(sorted(issues))
 
 
-def test_served_document_splits_no_component(live_openapi: dict):
+def _served_documents() -> dict[str, dict]:
+    """Each OpenAPI document the deployments serve, keyed by the app serving it.
+
+    The core app serves the SAGE and co-located CAS Application operations;
+    the BFF serves the CAS Application on its own in a hosted deployment, and
+    carries components the core document does not.
+    """
+    from app.backend.asgi import create_bff_app
+
+    return {"core": create_app().openapi(), "bff": create_bff_app().openapi()}
+
+
+@pytest.mark.parametrize("served", ["core", "bff"])
+def test_served_document_splits_no_component(served: str):
     """The served document publishes each model as one component, as the YAML does.
 
     FastAPI renders a model reached from both a request and a response once
@@ -2776,9 +2789,10 @@ def test_served_document_splits_no_component(live_openapi: dict):
     is how a split arises; a model carrying one on both sides pins a single
     rendering.
     """
+    document = _served_documents()[served]
     split = sorted(
         name
-        for name in (live_openapi.get("components") or {}).get("schemas") or {}
+        for name in (document.get("components") or {}).get("schemas") or {}
         if name.endswith(("-Input", "-Output"))
     )
-    assert not split, f"the served document splits these components by mode: {split}"
+    assert not split, f"the {served} document splits these components by mode: {split}"
