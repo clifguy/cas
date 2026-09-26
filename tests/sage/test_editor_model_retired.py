@@ -238,3 +238,39 @@ def test_backfill_script_loads_a_stored_config_with_retired_keys(
     config = script._load_vault_config(stale["vault"]["id"])
 
     assert config.vault.id == stale["vault"]["id"]
+
+
+def _with_null_placeholders(config: dict) -> dict:
+    """``config`` as a model still declaring the retired fields wrote it back."""
+    written = copy.deepcopy(config)
+    written["access_control_defaults"] = None
+    written["vault"]["members"] = None
+    return written
+
+
+def test_null_placeholders_are_not_retired_sections(
+    minimal_vault_config_dict: dict, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A null retired field configures nothing, so it neither warns nor refuses.
+
+    Every configuration updated before the retirement was written from a model
+    dump that recorded both unset fields as explicit nulls. Control: the same
+    fields with a value still warn and refuse.
+    """
+    written = _with_null_placeholders(minimal_vault_config_dict)
+    path = tmp_path / "vault_config.yaml"
+    path.write_text(yaml.dump(written, sort_keys=False))
+    on_disk = yaml.safe_load(path.read_text())
+    assert all(_carries(on_disk, key) for key in _EDITOR_MODEL_KEYS)
+
+    with caplog.at_level(logging.WARNING, logger="sage.config"):
+        config = load_vault_config(path)
+    assert [r for r in caplog.records if "is retired and ignored" in r.getMessage()] == []
+    assert not any(_carries(config.model_dump(), key) for key in _EDITOR_MODEL_KEYS)
+
+    _validate_config(copy.deepcopy(written))
+
+    valued = copy.deepcopy(written)
+    valued["vault"]["members"] = copy.deepcopy(_MEMBERS)
+    with pytest.raises(VaultConfigValidationError):
+        _validate_config(valued)

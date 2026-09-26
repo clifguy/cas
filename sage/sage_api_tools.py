@@ -2094,7 +2094,8 @@ def register_sage_tools(
         Error modes:
         - ``vault_already_exists`` (409)
         - ``vault_config_validation_error`` (400): the config, or a doc_type's
-          ``metadata_schema``, fails validation
+          ``metadata_schema``, fails validation, or the config declares a
+          retired section
         """
         try:
             summary = await get_vault_registry_service().create_vault(

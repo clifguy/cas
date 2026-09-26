@@ -2174,7 +2174,12 @@ _RETIRED_SECTIONS: dict[str, str] = {
 
 
 def retired_sections_in(raw: object) -> list[str]:
-    """Return the retired section paths a raw vault config carries, in table order."""
+    """Return the retired section paths a raw vault config carries, in table order.
+
+    A section whose value is null is not carried: a null configures nothing,
+    and a configuration written back from a model that still declared the
+    field records each unset section as an explicit null.
+    """
     if not isinstance(raw, dict):
         return []
     present = []
@@ -2185,7 +2190,8 @@ def retired_sections_in(raw: object) -> list[str]:
                 break
             node = node[part]
         else:
-            present.append(path)
+            if node is not None:
+                present.append(path)
     return present
 
 

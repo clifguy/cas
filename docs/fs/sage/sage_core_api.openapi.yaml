@@ -2080,8 +2080,8 @@ paths:
         "400":
           description: >-
             `vault_config_validation_error`: the supplied configuration
-            failed schema validation (detail includes the list of
-            failed constraints).
+            failed schema validation or declares a retired section
+            (detail includes the list of failed constraints).
 
             `unknown_parameter`: the request carries a body field or query
             parameter the operation does not declare.

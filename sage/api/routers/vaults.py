@@ -216,8 +216,8 @@ async def update_vault_config(
             request=("unknown_parameter",),
             extra=(
                 "`vault_config_validation_error`: the supplied configuration "
-                "failed schema validation (detail includes the list of "
-                "failed constraints)."
+                "failed schema validation or declares a retired section "
+                "(detail includes the list of failed constraints)."
             ),
         ),
         409: {
