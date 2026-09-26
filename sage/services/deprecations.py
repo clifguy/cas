@@ -22,12 +22,14 @@ operation that field, which is itself a published capability.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
 from pydantic import BaseModel
+
+from sage.models.schemas import DiscoverRequest, IngestRequest
 
 
 class DeprecatedForm(StrEnum):
@@ -84,8 +86,12 @@ class Deprecation:
 
 #: The operations whose response carries a caller-facing warnings list and whose
 #: service consults ``warnings_for``: ``search`` in its hints, ``ingest_document``
-#: in the ingest result's warnings.
-WARNING_CARRIERS: Final[frozenset[str]] = frozenset({"search", "ingest_document"})
+#: in the ingest result's warnings. Each names the request model its service
+#: receives, which holds every parameter a deprecation of it can name.
+WARNING_CARRIERS: Final[Mapping[str, type[BaseModel]]] = {
+    "search": DiscoverRequest,
+    "ingest_document": IngestRequest,
+}
 
 #: Every deprecated form currently served. An entry names the operation id the
 #: REST operation and the MCP tool share, and stays until the adaptation ships.
@@ -103,6 +109,11 @@ def validate_registry(entries: Iterable[Deprecation]) -> None:
         if entry.form is not DeprecatedForm.OPERATION and not entry.parameter:
             raise DeprecationRegistryError(
                 f"a {entry.form} deprecation of {entry.operation!r} names no parameter"
+            )
+        request_model = WARNING_CARRIERS[entry.operation]
+        if entry.parameter and entry.parameter not in request_model.model_fields:
+            raise DeprecationRegistryError(
+                f"{entry.operation!r} takes no parameter {entry.parameter!r}"
             )
         if entry.form is DeprecatedForm.VALUE and entry.value is None:
             raise DeprecationRegistryError(

@@ -79,8 +79,8 @@ def test_the_shipped_registry_is_valid_and_empty() -> None:
 
 
 def test_every_warning_carrier_is_a_published_operation() -> None:
-    assert WARNING_CARRIERS <= set(SERVER_ASSIGNMENT)
-    assert {"search", "ingest_document"} <= WARNING_CARRIERS
+    assert set(WARNING_CARRIERS) <= set(SERVER_ASSIGNMENT)
+    assert {"search", "ingest_document"} <= set(WARNING_CARRIERS)
 
 
 @pytest.mark.parametrize(
@@ -96,8 +96,18 @@ def test_every_warning_carrier_is_a_published_operation() -> None:
             Deprecation("search", DeprecatedForm.VALUE, "x", EARLIEST, parameter="mode"),
             "names no value",
         ),
+        (
+            Deprecation("search", DeprecatedForm.DEFAULT, "x", EARLIEST, parameter="mdoe"),
+            "takes no parameter 'mdoe'",
+        ),
     ],
-    ids=["carrier-less-operation", "unknown-operation", "parameter-unnamed", "value-unnamed"],
+    ids=[
+        "carrier-less-operation",
+        "unknown-operation",
+        "parameter-unnamed",
+        "value-unnamed",
+        "parameter-misspelled",
+    ],
 )
 def test_the_registry_refuses_a_declaration_it_cannot_honour(
     entry: Deprecation, reason: str

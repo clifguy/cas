@@ -451,6 +451,21 @@ def _diff_schema(old: Any, new: Any, pointer: str, out: _Collector) -> None:
             continue
         if _canon(old.get(key)) != _canon(new.get(key)) or ((key in old) != (key in new)):
             out.add(f"{pointer}/{key}", "keyword-changed", CALLER_ADAPTATION)
+        # The structural walk does not descend into these keywords (``not``,
+        # ``patternProperties``, ``if`` and the like), so a deprecation marked
+        # anywhere beneath one is read here.
+        _diff_marks_beneath(old.get(key), new.get(key), f"{pointer}/{key}", out)
+
+
+def _diff_marks_beneath(old: Any, new: Any, pointer: str, out: _Collector) -> None:
+    """Every deprecation mark newly set or withdrawn in two parallel subtrees."""
+    if isinstance(old, dict) and isinstance(new, dict):
+        _diff_deprecated(old, new, pointer, out)
+        for key in sorted(set(old) & set(new)):
+            _diff_marks_beneath(old[key], new[key], f"{pointer}/{key}", out)
+    elif isinstance(old, list) and isinstance(new, list):
+        for index, (old_item, new_item) in enumerate(zip(old, new, strict=False)):
+            _diff_marks_beneath(old_item, new_item, f"{pointer}/{index}", out)
 
 
 def _diff_type(old: dict[str, Any], new: dict[str, Any], pointer: str, out: _Collector) -> None:

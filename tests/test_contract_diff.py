@@ -1299,3 +1299,31 @@ def test_an_allof_branch_is_a_constraint_not_a_union_branch() -> None:
 
     assert [(f.kind, f.category) for f in added] == [("constraint-tightened", CALLER_ADAPTATION)]
     assert [(f.kind, f.category) for f in dropped] == [("constraint-loosened", CAPABILITY)]
+
+
+@pytest.mark.parametrize(
+    ("shape", "suffix"),
+    [
+        (lambda d: {"not": {"type": "null", **d}}, "not"),
+        (
+            lambda d: {"type": "object", "patternProperties": {"^x-": {"type": "string", **d}}},
+            "patternProperties/^x-",
+        ),
+        (lambda d: {"if": {"type": "string", **d}, "then": {"minLength": 1}}, "if"),
+        (lambda d: {"type": "array", "contains": {"type": "string", **d}}, "contains"),
+    ],
+    ids=["not", "patternProperties", "if", "contains"],
+)
+def test_a_deprecation_is_read_beneath_a_keyword_the_walk_does_not_descend(
+    shape: Callable[[dict[str, Any]], dict[str, Any]], suffix: str
+) -> None:
+    base = _mutated(SPEC, lambda s: _thing(s)["properties"].__setitem__("extra", shape({})))
+    changed = _mutated(
+        SPEC, lambda s: _thing(s)["properties"].__setitem__("extra", shape({"deprecated": True}))
+    )
+
+    findings = diff_openapi(base, changed, surface="sage_core_api")
+
+    assert [(f.kind, f.pointer) for f in findings] == [
+        ("deprecation-added", f"components/schemas/Thing/properties/extra/{suffix}")
+    ]
