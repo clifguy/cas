@@ -1692,10 +1692,10 @@ async def _envelope_refusal_message(batch_app, metadata: str) -> str:
             id="boolean-field",
         ),
         pytest.param(
-            {"files": [{"source_type": "markdown", "parsed_metadata": {"title": 5}}]},
+            {"files": [{"source_type": "markdown", "parsed_metadata": {"title": 424242}}]},
             "`files.0.parsed_metadata.title`",
             "valid string",
-            "input_value=5",
+            "424242",
             id="nested-field",
         ),
     ],

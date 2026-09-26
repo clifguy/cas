@@ -449,20 +449,16 @@ async def batch_ingest_documents(
     """
     try:
         envelope = BatchIngestUploadMetadata.model_validate_json(metadata)
-    except ValueError as exc:
-        if isinstance(exc, ValidationError):
-            refusal = _undeclared_file_entry_key(exc)
-            if refusal is not None:
-                raise refusal from exc
-            refusal = translate_validation_error(exc)
-            if refusal is not None and refusal.code == "invalid_sha256":
-                raise refusal from exc
-            reason = describe_validation_failure(exc)
-        else:
-            reason = "not valid JSON"
+    except ValidationError as exc:
+        refusal = _undeclared_file_entry_key(exc)
+        if refusal is not None:
+            raise refusal from exc
+        refusal = translate_validation_error(exc)
+        if refusal is not None and refusal.code == "invalid_sha256":
+            raise refusal from exc
         raise SAGEError(
             "invalid_batch_metadata",
-            f"`metadata` is not a valid batch-ingest envelope: {reason}",
+            f"`metadata` is not a valid batch-ingest envelope: {describe_validation_failure(exc)}",
             400,
         ) from exc
 
