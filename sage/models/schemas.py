@@ -6480,13 +6480,6 @@ class UpdateVaultConfigRequest(BaseModel):
             "Replacement for the abstraction section of vault_config.yaml. Omit to leave unchanged."
         ),
     )
-    access_control_defaults: dict | None = Field(
-        default=None,
-        description=(
-            "Replacement for the access_control_defaults section of "
-            "vault_config.yaml. Omit to leave unchanged."
-        ),
-    )
     retrieval_health: dict | None = Field(
         default=None,
         description=(

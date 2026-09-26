@@ -271,8 +271,17 @@ def _discovered_by_id(store: VaultSourceStore, vault_id: str):
     return matches[0]
 
 
+#: One stored value per retired section, keyed by its dotted path.
+_RETIRED_VALUES = {
+    "source_adapters": _RETIRED_LEGACY_SECTION,
+    "access_control_defaults": {"new_documents_restricted": False},
+    "vault.members": [{"user_id": "user1", "role": "editor"}],
+}
+
+
+@pytest.mark.parametrize("retired", list(_RETIRED_VALUES))
 def test_vss_b1_load_config_warns_on_retired_section(
-    source_store, minimal_vault_config_dict, caplog
+    source_store, minimal_vault_config_dict, caplog, retired
 ):
     """B1: ``load_config`` on a stored declaration still carrying a retired
     section emits the migration WARNING naming the vault; a clean declaration
@@ -285,32 +294,41 @@ def test_vss_b1_load_config_warns_on_retired_section(
     hardcoded log line. A binding that validates the raw mapping without
     routing it past ``warn_on_retired_sections`` fails the stale half while
     the other binding passes -- the exact divergence this section exists to
-    surface."""
+    surface. The nested ``vault.members`` arm kills a binding that detects
+    top-level sections only."""
     clean = copy.deepcopy(minimal_vault_config_dict)
     clean["vault"]["id"] = "clean_vault"
     source_store.write_config("clean_vault", clean)
 
     stale = copy.deepcopy(minimal_vault_config_dict)
     stale["vault"]["id"] = "stale_vault"
-    stale["source_adapters"] = _RETIRED_LEGACY_SECTION
+    *parents, leaf = retired.split(".")
+    node = stale
+    for part in parents:
+        node = node[part]
+    node[leaf] = copy.deepcopy(_RETIRED_VALUES[retired])
     source_store.write_config("stale_vault", stale)
+    named = f"'{retired}'"
 
     with caplog.at_level(logging.WARNING, logger="sage.config"):
         source_store.load_config(_discovered_by_id(source_store, "clean_vault"))
-    assert [r for r in caplog.records if "source_adapters" in r.getMessage()] == []
+    assert [r for r in caplog.records if named in r.getMessage()] == []
 
     caplog.clear()
     with caplog.at_level(logging.WARNING, logger="sage.config"):
         config = source_store.load_config(_discovered_by_id(source_store, "stale_vault"))
 
-    matching = [r for r in caplog.records if "source_adapters" in r.getMessage()]
+    matching = [r for r in caplog.records if named in r.getMessage()]
     assert len(matching) == 1
     message = matching[0].getMessage()
     assert "is retired and ignored" in message
     assert "stale_vault" in message
     # The parsed model drops the section either way; the warning is the only
     # surviving trace of it.
-    assert getattr(config, "source_adapters", None) is None
+    dumped = config.model_dump()
+    for part in parents:
+        dumped = dumped[part]
+    assert leaf not in dumped
 
 
 def test_vss_b2_load_config_loads_refused_adapter_defaults_with_a_warning(

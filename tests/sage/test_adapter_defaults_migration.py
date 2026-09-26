@@ -23,7 +23,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from sage.config import VaultConfig, load_vault_config
+from sage.config import STORED_CONFIG_CONTEXT, VaultConfig, load_vault_config
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _VAULT_CONFIG_SCHEMA_PATH = _REPO_ROOT / "docs" / "fs" / "sage" / "vault_config.schema.json"
@@ -71,16 +71,17 @@ def test_adapter_defaults_is_optional_and_defaults_empty(minimal_vault_config_di
 
 
 def test_legacy_source_adapters_section_is_ignored_not_rejected(minimal_vault_config_dict):
-    """A config still carrying the retired section loads with it dropped.
+    """A stored config still carrying the retired section loads with it dropped.
 
     Asserting the attribute is *absent* is the load-bearing half: a bare
     "validation succeeded" assertion would also pass under
     ``extra="allow"``, which would keep the stale section reachable and
-    invite a consumer to grow back.
+    invite a consumer to grow back. A request declaring the section is
+    refused instead; ``test_editor_model_retired`` covers that path.
     """
     minimal_vault_config_dict["source_adapters"] = _LEGACY_SECTION
 
-    config = VaultConfig.model_validate(minimal_vault_config_dict)
+    config = VaultConfig.model_validate(minimal_vault_config_dict, context=STORED_CONFIG_CONTEXT)
 
     assert getattr(config, "source_adapters", None) is None
     assert config.adapter_defaults == {}

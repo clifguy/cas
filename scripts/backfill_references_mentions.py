@@ -48,13 +48,12 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-import yaml  # noqa: E402
 
 from sage.adapters.stubs import (  # noqa: E402
     StubAbstractionProvider,
     StubEmbeddingProvider,
 )
-from sage.config import VaultConfig  # noqa: E402
+from sage.config import VaultConfig, load_vault_config  # noqa: E402
 from sage.mcp_init import initialize_services  # noqa: E402
 from sage.models.enums import EdgeType, RationaleKind  # noqa: E402
 from sage.models.schemas import LinkRequest  # noqa: E402
@@ -84,9 +83,7 @@ def _load_vault_config(vault_id: str) -> VaultConfig:
     config_path = config_path_for_vault(vault_id)
     if not config_path.exists():
         raise FileNotFoundError(f"Vault config not found: {config_path}")
-    with open(config_path) as f:
-        cfg = yaml.safe_load(f)
-    return VaultConfig.model_validate(cfg)
+    return load_vault_config(config_path)
 
 
 async def _enumerate_active_documents(services, *, doc_type: str | None, limit: int | None) -> list:

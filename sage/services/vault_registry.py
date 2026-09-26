@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from sage.api.errors import VaultAlreadyExistsError, VaultNotFoundError
-from sage.config import VaultConfig
+from sage.config import VaultConfig, without_null_retired_sections
 from sage.models.schemas import (
     CreateVaultRequest,
     ReloadVaultResponse,
@@ -255,6 +255,9 @@ class VaultRegistryService:
         Validates the config, creates the vault directories, writes
         vault_config.yaml, initializes services, and registers the vault.
         """
+        # The request carries the declaration as written, so a caller echoing
+        # it back reports what was stored rather than what was sent.
+        body.config = without_null_retired_sections(body.config)
         config = _validate_config(body.config)
         vault_id = config.vault.id
 

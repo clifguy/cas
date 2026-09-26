@@ -1703,7 +1703,6 @@ _CONFIG_SECTIONS: Final[tuple[str, ...]] = (
     "metadata_extraction",
     "edge_inference",
     "abstraction",
-    "access_control_defaults",
     "retrieval_health",
 )
 

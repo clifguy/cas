@@ -225,8 +225,8 @@ _VAULT_ID_FILES: tuple[Path, ...] = tuple(_vault_id_anchors(root_default=""))
 
 # Top-level sections VaultConfig declares without a default (sage/config.py).
 # Each must be present for a config to validate; the optional sections
-# (adapter_defaults, abstraction, access_control_defaults, retrieval_health,
-# timing) carry defaults and are intentionally excluded.
+# (adapter_defaults, abstraction, retrieval_health, timing) carry defaults and
+# are intentionally excluded.
 REQUIRED_SECTIONS = (
     "vault",
     "document_types",

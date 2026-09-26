@@ -165,7 +165,8 @@ async def get_vault_config(
             path=("invalid_vault_id",),
             request=("unknown_parameter",),
             extra="`vault_config_validation_error`: the merged config failed "
-            "schema validation, or the request attempts to change `vault.id`.",
+            "schema validation, the request attempts to change `vault.id`, "
+            "or its `vault` section declares a retired field.",
         ),
         404: {
             "model": ErrorResponse,
@@ -215,8 +216,8 @@ async def update_vault_config(
             request=("unknown_parameter",),
             extra=(
                 "`vault_config_validation_error`: the supplied configuration "
-                "failed schema validation (detail includes the list of "
-                "failed constraints)."
+                "failed schema validation or declares a retired section "
+                "(detail includes the list of failed constraints)."
             ),
         ),
         409: {

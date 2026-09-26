@@ -38,7 +38,6 @@ function makeVaultConfig(overrides: Partial<VaultIdentityConfig> = {}): VaultCon
       storage_root: '/tmp/storage',
       brain_root: '/tmp/brain',
       visibility: 'personal',
-      members: null,
       timezone: 'UTC',
       ...overrides,
     },

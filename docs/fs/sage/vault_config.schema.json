@@ -43,26 +43,6 @@
           "enum": ["personal", "team", "org"],
           "description": "Access scope for this vault."
         },
-        "members": {
-          "type": "array",
-          "description": "Users with access to this vault. Each entry specifies a user and their vault-level role.",
-          "items": {
-            "type": "object",
-            "required": ["user_id", "role"],
-            "additionalProperties": false,
-            "properties": {
-              "user_id": {
-                "type": "string",
-                "description": "Reference to a registered SAGE User entity."
-              },
-              "role": {
-                "type": "string",
-                "enum": ["reader", "editor", "admin"],
-                "description": "Vault-level role. Distinct from document-level editor permissions."
-              }
-            }
-          }
-        },
         "timezone": {
           "type": "string",
           "default": "UTC",
@@ -131,18 +111,6 @@
             "minimum": 1,
             "description": "For the pdf adapter: cap on pages projected from one document."
           }
-        }
-      }
-    },
-    "access_control_defaults": {
-      "type": "object",
-      "description": "Default access control settings for new documents in this vault.",
-      "additionalProperties": false,
-      "properties": {
-        "new_documents_restricted": {
-          "type": "boolean",
-          "default": false,
-          "description": "If true, new documents are created with the ingesting user as the sole editor. If false (default), new documents are open (no editors registered, any registered user can write)."
         }
       }
     },

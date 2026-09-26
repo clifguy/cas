@@ -37,7 +37,7 @@ Design decisions encoded here:
   takes one optional kwarg per top-level section
   (`vault`, `document_types`, `lifecycle`, `metadata_extraction`,
   `edge_inference`, `adapter_defaults`, `abstraction`,
-  `access_control_defaults`, `retrieval_health`) instead of the earlier
+  `retrieval_health`) instead of the earlier
   `sections: dict` wrapper. Each non-null kwarg replaces the
   corresponding section wholesale; omitted kwargs are preserved
   unchanged. Partial-section merges are not supported because list-valued

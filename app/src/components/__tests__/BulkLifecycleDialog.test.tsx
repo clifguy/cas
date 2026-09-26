@@ -18,7 +18,7 @@ type TransitionSpec = string | { action: string; doc_types: string[] };
 
 function makeVaultConfig(actions: TransitionSpec[]): VaultConfig {
   return {
-    vault: { id: 'v', name: 'v', description: null, owner: 'system', storage_root: '', brain_root: '', visibility: 'private', members: null, timezone: 'UTC' },
+    vault: { id: 'v', name: 'v', description: null, owner: 'system', storage_root: '', brain_root: '', visibility: 'private', timezone: 'UTC' },
     document_types: { doc_types: [] },
     lifecycle: {
       base_states_required: true,
