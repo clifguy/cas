@@ -167,7 +167,10 @@ def test_request_carrying_retired_key_is_refused(minimal_vault_config_dict: dict
     with pytest.raises(VaultConfigValidationError) as excinfo:
         _validate_config(_with_retired(minimal_vault_config_dict, key))
 
-    assert key in str(excinfo.value.detail["errors"])
+    # The refusal is one message, naming the section first: a model-level
+    # error carries no location to prefix, and no framework preamble.
+    (message,) = excinfo.value.detail["errors"]
+    assert message.startswith(f"'{key}' is retired: "), message
 
 
 def test_update_request_rejects_access_control_defaults() -> None:

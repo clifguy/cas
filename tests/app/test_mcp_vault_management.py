@@ -460,6 +460,29 @@ class TestSageUpdateVaultConfig:
         assert key not in (written[section] if section else written)
         assert written["adapter_defaults"] == {"docx": {"heading_style_map": {"Custom Section": 1}}}
 
+    async def test_update_refuses_a_vault_section_carrying_members(
+        self, registered_vault, vaults_root
+    ):
+        """A retired field inside the ``vault`` section is refused by name.
+
+        The section is a free-form mapping on the request, so the field reaches
+        configuration validation, which refuses it rather than persisting a
+        value that configures nothing. The stored file is left untouched.
+        """
+        config_path = Path(vaults_root) / "test_vault" / "vault_config.yaml"
+        before = config_path.read_bytes()
+        vault = dict(registered_vault["vault"])
+        vault["members"] = [{"user_id": "user1", "role": "editor"}]
+
+        result = _parse(await update_vault_config("test_vault", vault=vault))
+
+        assert result.get("error") == "vault_config_validation_error"
+        assert any(e.startswith("'vault.members' is retired") for e in result["detail"]["errors"])
+        assert config_path.read_bytes() == before
+        # Control: the same section without the field is accepted.
+        del vault["members"]
+        assert _parse(await update_vault_config("test_vault", vault=vault))["status"] == "updated"
+
     # TEST-APP-MCP-037
     async def test_mcp_037_blocks_destructive_change_without_force(self, registered_vault):
         """Removing an in-use doc_type without force returns destructive_config_change."""

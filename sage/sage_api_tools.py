@@ -2195,7 +2195,8 @@ def register_sage_tools(
         - ``vault_not_found`` (404)
         - ``destructive_config_change`` (409): see above
         - ``vault_config_validation_error`` (400): the merged config fails
-          validation, changes ``vault.id``, or declares a retired section
+          validation, changes ``vault.id``, or its ``vault`` section declares
+          a retired field
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)

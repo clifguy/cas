@@ -2432,7 +2432,7 @@ paths:
           description: >-
             `vault_config_validation_error`: the merged config failed
             schema validation, the request attempts to change `vault.id`,
-            or it declares a retired section.
+            or its `vault` section declares a retired field.
 
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
 

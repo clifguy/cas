@@ -7,7 +7,9 @@ place. Default-config generation lives on VaultRegistryService.
 
 import os
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
+from typing import Any
 
 import jsonschema
 import yaml
@@ -89,8 +91,7 @@ def config_refusal(exc: Exception) -> VaultConfigValidationError:
     re-raised by the caller rather than described as a configuration error.
     """
     if isinstance(exc, ValidationError):
-        errors = [f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors()]
-        return VaultConfigValidationError(errors)
+        return VaultConfigValidationError([_describe_error(e) for e in exc.errors()])
     if isinstance(exc, jsonschema.SchemaError):
         path_str = ".".join(str(p) for p in exc.path) or "<root>"
         return VaultConfigValidationError(
@@ -99,6 +100,22 @@ def config_refusal(exc: Exception) -> VaultConfigValidationError:
     if isinstance(exc, yaml.YAMLError):
         return VaultConfigValidationError([f"declaration is not valid YAML: {exc}"])
     raise TypeError(f"not a configuration failure: {type(exc).__name__}")
+
+
+def _describe_error(error: Mapping[str, Any]) -> str:
+    """Render one Pydantic error as ``<location>: <message>``.
+
+    A model-level error has no location, so it renders as its message alone,
+    and a ``ValueError`` raised there as the raised text without Pydantic's
+    ``Value error,`` preamble: the text already names what it refuses.
+    """
+    location = ".".join(str(p) for p in error["loc"])
+    if location:
+        return f"{location}: {error['msg']}"
+    raised = error.get("ctx", {}).get("error")
+    if error["type"] == "value_error" and raised is not None:
+        return str(raised)
+    return error["msg"]
 
 
 #: The failures :func:`config_refusal` translates. A caller catches exactly
