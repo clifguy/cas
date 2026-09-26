@@ -19,6 +19,11 @@ that machinery:
     edits are what made concurrent changes conflict, so only the release step
     makes them.
 
+    A removal, narrowed input, or changed default must follow a deprecation of
+    its target that a release after 3.0 published at least 30 days earlier, or
+    claim an exemption. A deprecation the contract marks must be declared by a
+    record, and one a record declares must be marked (CAS-ADR-008 clause 8).
+
 ``status``
     What is waiting to be released: the unreleased records, whether a minor
     release is due, the contract comparison against the last release tag, and
@@ -76,7 +81,13 @@ from typing import Any, Final
 import jsonschema
 import yaml
 
-from scripts.contract_diff import Contract, Finding, diff_contracts
+from scripts.contract_diff import (
+    CALLER_ADAPTATION,
+    DEPRECATION_REQUIRED_KINDS,
+    Contract,
+    Finding,
+    diff_contracts,
+)
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[1]
 
@@ -101,6 +112,15 @@ LEGACY_COUNTER: Final[str] = "substrate_version"
 RELEASE_TAG_MATCH: Final[str] = "v*.*.0"
 DEFAULT_BRANCHES: Final[frozenset[str]] = frozenset({"main", "master"})
 CATEGORY_ORDER: Final[tuple[str, ...]] = ("capability", "caller-adaptation", "operator-adaptation")
+
+# CAS-ADR-008 clause 8 binds the adaptations released after the production
+# baseline, so deprecation history is read only from releases after it.
+DEPRECATION_BASELINE: Final[str] = "3.0"
+DEPRECATION_WINDOW: Final[dt.timedelta] = dt.timedelta(days=30)
+# A deprecated value or default is stated in its parameter's description, which
+# the contract comparison does not read, so no mark is looked for. A value is
+# addressed as ``.../enum/<value>``, the pointer its removal is reported at.
+_VALUE_POINTER: Final[re.Pattern[str]] = re.compile(r"/default$|/enum/")
 
 
 class ReleaseRefused(RuntimeError):
@@ -366,9 +386,18 @@ def _changed_paths(root: Path, base: str, head: str | None) -> dict[str, str]:
 
 
 def run_check(
-    repo_root: Path | str, base: str | None = None, head: str | None = None
+    repo_root: Path | str,
+    base: str | None = None,
+    head: str | None = None,
+    *,
+    today: dt.date | None = None,
 ) -> CheckResult:
-    """The change-record gate over ``head`` (the working tree when ``None``)."""
+    """The change-record gate over ``head`` (the working tree when ``None``).
+
+    ``today`` is the date a deprecation's window is measured to. An adaptation
+    ships no earlier than the check that admits it, so a window open today is
+    open on the release date.
+    """
     root = Path(repo_root)
     base_commit = _git(root, "merge-base", base or _default_base(root), head or "HEAD").strip()
     result = CheckResult(base=base_commit)
@@ -457,7 +486,153 @@ def run_check(
                     + " and ".join(missing)
                     + " change that no added record names in its category"
                 )
+    if minor:
+        _check_deprecations(result, valid, head_manifest, today or dt.date.today())
     return result
+
+
+@dataclass(frozen=True)
+class _Deprecation:
+    """One element a released record deprecated, and the date it may be withdrawn."""
+
+    release: str
+    published: dt.date
+    surface: str
+    pointer: str
+    earliest: dt.date
+
+
+def _released_deprecations(manifest: Mapping[str, Any] | None) -> list[_Deprecation]:
+    """Every deprecation the releases after the baseline published, dated by release."""
+    baseline = _version_tuple(DEPRECATION_BASELINE)
+    found: list[_Deprecation] = []
+    for entry in release_entries(manifest):
+        release = str(entry["release"])
+        try:
+            if _version_tuple(release) <= baseline:
+                continue
+            published = dt.date.fromisoformat(str(entry.get("date")))
+        except ValueError:
+            continue
+        for record in entry.get("changes") or []:
+            if not isinstance(record, Mapping):
+                continue
+            for target in _entries(record, "deprecates"):
+                window = published + DEPRECATION_WINDOW
+                try:
+                    recorded = dt.date.fromisoformat(str(target.get("earliest_adaptation")))
+                except ValueError:
+                    recorded = window
+                found.append(
+                    _Deprecation(
+                        release,
+                        published,
+                        str(target.get("surface")),
+                        str(target.get("pointer")),
+                        max(window, recorded),
+                    )
+                )
+    return found
+
+
+def _entries(record: Mapping[str, Any], key: str) -> list[Mapping[str, Any]]:
+    """A record's list of mappings under ``key``, without what the schema refuses.
+
+    A record the schema refuses is reported as such and still reaches this
+    check, so a malformed field is skipped here rather than raised on.
+    """
+    value = record.get(key)
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, Mapping)]
+
+
+def _covers(target: str, pointer: str) -> bool:
+    """Whether a deprecated element is the element at ``pointer`` or contains it."""
+    return pointer == target or pointer.startswith(f"{target}/")
+
+
+def _check_deprecations(
+    result: CheckResult,
+    records: list[dict[str, Any]],
+    head_manifest: Mapping[str, Any],
+    today: dt.date,
+) -> None:
+    """Hold a withdrawing adaptation to a ripe deprecation, and marks to declarations."""
+    released = _released_deprecations(head_manifest)
+    named: list[tuple[str, str]] = []
+    for record in records:
+        for ref in _entries(record, "follows_deprecation"):
+            surface, pointer, release = ref.get("surface"), ref.get("pointer"), ref.get("release")
+            label = f"{surface}:{pointer}"
+            named.append((str(surface), str(pointer)))
+            match = next(
+                (
+                    d
+                    for d in released
+                    if (d.release, d.surface, d.pointer) == (str(release), surface, pointer)
+                ),
+                None,
+            )
+            if match is None:
+                result.errors.append(
+                    f"follows_deprecation names {label} in release {release}, which no release "
+                    f"after {DEPRECATION_BASELINE} deprecates; a deprecation counts once a "
+                    "release publishes it"
+                )
+            elif today < match.earliest:
+                result.errors.append(
+                    f"the deprecation of {label}, published in release {match.release} on "
+                    f"{match.published.isoformat()}, is not yet ripe: the adaptation may ship "
+                    f"no sooner than {match.earliest.isoformat()} (CAS-ADR-008 clause 8)"
+                )
+
+    if not any(isinstance(record.get("exemption"), dict) for record in records):
+        for finding in result.findings:
+            if (
+                finding.kind not in DEPRECATION_REQUIRED_KINDS
+                or finding.category != CALLER_ADAPTATION
+            ):
+                continue
+            if any(s == finding.surface and _covers(p, finding.pointer) for s, p in named):
+                continue
+            result.errors.append(
+                f"{finding.render()} withdraws or changes something callers use, but no added "
+                "record follows a deprecation of it or claims an exemption (CAS-ADR-008 "
+                "clause 8); see docs/fs/changes/README.md"
+            )
+
+    declared: set[tuple[str, str]] = set()
+    for record in records:
+        for target in _entries(record, "deprecates"):
+            surface, pointer = str(target.get("surface")), str(target.get("pointer"))
+            declared.add((surface, pointer))
+            try:
+                dt.date.fromisoformat(str(target.get("earliest_adaptation")))
+            except ValueError:
+                result.errors.append(
+                    f"deprecates names {surface}:{pointer} with earliest_adaptation "
+                    f"{target.get('earliest_adaptation')!r}, which is not a date"
+                )
+    marked = sorted(
+        (f for f in result.findings if f.kind == "deprecation-added"),
+        key=lambda f: (f.surface, f.pointer),
+    )
+    for finding in marked:
+        if (finding.surface, finding.pointer) not in declared:
+            result.errors.append(
+                f"{finding.render()}: the contract marks it deprecated, but no added record's "
+                "deprecates names it with its replacement and earliest adaptation date"
+            )
+    marked_at = {(f.surface, f.pointer) for f in marked}
+    for surface, pointer in sorted(declared):
+        if _VALUE_POINTER.search(pointer) or (surface, pointer) in marked_at:
+            continue
+        result.errors.append(
+            f"deprecates names {surface}:{pointer}, but this change's contract does not mark it "
+            "deprecated: deprecated: true in a specification, or a description opening with "
+            "Deprecated: in the MCP catalog"
+        )
 
 
 def _check_change(

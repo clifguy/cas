@@ -324,7 +324,9 @@ def test_record_file_name_is_a_kebab_slug_with_yaml_suffix(repo: SubstrateRepo, 
 
 
 def test_category_disagreement_warns_without_failing(repo: SubstrateRepo) -> None:
-    repo.edit_yaml(CORE_SPEC, _require_property)
+    # An added refusal: a caller adaptation that withdraws nothing, so no
+    # deprecation is owed and the category disagreement is all that is wrong.
+    repo.edit_yaml(CORE_SPEC, _add_response("409"))
     repo.add_record("things-carry-a-kind", **MINOR_CAPABILITY)
 
     result = _check(repo)
@@ -552,7 +554,7 @@ def test_working_tree_and_commit_range_agree(repo: SubstrateRepo) -> None:
 def test_json_report_aggregates_the_added_records(
     repo: SubstrateRepo, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    repo.edit_yaml(CORE_SPEC, _require_property)
+    repo.edit_yaml(CORE_SPEC, _add_response("409"))
     repo.add_record(
         "things-carry-a-kind",
         classification="minor",
