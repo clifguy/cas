@@ -42,9 +42,10 @@ already returned and the contract merely did not list is a patch, which only
 the owner's override can say.
 
 **A deprecation is a finding of its own** (CAS-ADR-008 clause 8). Marking an
-operation, parameter, response header, or schema ``deprecated: true``, or opening an MCP tool or
-parameter description with ``Deprecated:``, is a caller adaptation: it announces
-one. The mark is read only there. Elsewhere ``deprecated`` stays descriptive,
+operation, parameter, response header, or schema ``deprecated: true`` -- a
+schema at any position, the MCP input schemas included -- or opening an MCP tool
+or parameter description with ``Deprecated:``, is a caller adaptation: it
+announces one. The mark is read only there. Elsewhere ``deprecated`` stays descriptive,
 and a description that merely mentions deprecation is text.
 DEPRECATION_REQUIRED_KINDS names the adaptations that withdraw or change what
 callers use, which must follow a deprecation.
@@ -72,25 +73,41 @@ import yaml
 CAPABILITY: Final[str] = "capability"
 CALLER_ADAPTATION: Final[str] = "caller-adaptation"
 
-# How an MCP description marks its tool or parameter deprecated: MCP publishes
-# no deprecated flag, and a client that truncates descriptions keeps the start.
+# How an MCP description marks its tool or parameter deprecated: MCP tool
+# metadata has no deprecated flag, and a client that truncates descriptions keeps
+# the start. A parameter's input schema may also carry JSON Schema's own
+# ``deprecated`` flag, which counts as well; the two at one parameter are one
+# finding.
 DEPRECATED_PREFIX: Final[str] = "Deprecated:"
 
 # The adaptations that withdraw or change something callers use -- a removal (a
 # rename is a removal beside an addition), a narrowed input, a changed default --
-# and so must follow a deprecation of their target.
+# and so must follow a deprecation of their target. Held only where the finding
+# is a caller adaptation: a dropped ``allOf`` branch is a capability.
+#
+# Left out: an added refusal response and an added or removed error code, which
+# the rule's operational form leaves to review; a change that
+# cannot coexist with its old form (security, an operation id); and a changed
+# shape the comparison cannot read as a withdrawal (a retargeted reference, a
+# changed keyword, a replaced schema).
 DEPRECATION_REQUIRED_KINDS: Final[frozenset[str]] = frozenset(
     {
+        "artifact-removed",
         "operation-removed",
+        "tool-removed",
+        "tool-moved",
         "parameter-removed",
         "property-removed",
         "component-removed",
         "media-type-removed",
         "header-removed",
-        "tool-removed",
-        "tool-moved",
+        "request-body-removed",
+        "response-removed",
+        "output-schema-removed",
+        "branch-removed",
         "required-parameter-added",
         "parameter-made-required",
+        "request-body-made-required",
         "required-added",
         "type-narrowed",
         "enum-value-removed",
@@ -286,7 +303,9 @@ class _Collector:
         self._refusal_schemas: frozenset[str] | None = None
 
     def add(self, pointer: str, kind: str, category: str) -> None:
-        self.findings.append(Finding(self.surface, pointer, kind, category))
+        finding = Finding(self.surface, pointer, kind, category)
+        if finding not in self.findings:
+            self.findings.append(finding)
 
     def is_refusal(self, pointer: str) -> bool:
         """Whether a location describes only refusals: what a non-2xx response carries.
@@ -390,6 +409,7 @@ def _diff_schema(old: Any, new: Any, pointer: str, out: _Collector) -> None:
     if not isinstance(old, dict) or not isinstance(new, dict):
         out.add(pointer, "schema-changed", CALLER_ADAPTATION)
         return
+    _diff_deprecated(old, new, pointer, out)
     lifted = _lift_to_composition(old, new)
     if lifted is not None:
         key, old_branches, new_branches = lifted
@@ -455,12 +475,18 @@ def _diff_enum(old: dict[str, Any], new: dict[str, Any], pointer: str, out: _Col
     if "enum" not in new:
         out.add(at, "constraint-loosened", CAPABILITY)
         return
-    old_values = {_canon(v) for v in old["enum"]}
-    new_values = {_canon(v) for v in new["enum"]}
-    if new_values - old_values:
+    old_values = {_canon(v): v for v in old["enum"]}
+    new_values = {_canon(v): v for v in new["enum"]}
+    if set(new_values) - set(old_values):
         out.add(at, "enum-value-added", CAPABILITY)
-    if old_values - new_values:
-        out.add(at, "enum-value-removed", CALLER_ADAPTATION)
+    # One finding per removed value, the value in the pointer, so a deprecation
+    # of one value covers the removal of that value and no other. The value is
+    # escaped as a JSON Pointer token, so a value holding "/" is never read as
+    # the child of a shorter one.
+    for key in sorted(set(old_values) - set(new_values)):
+        value = old_values[key]
+        token = (value if isinstance(value, str) else key).replace("~", "~0").replace("/", "~1")
+        out.add(f"{at}/{token}", "enum-value-removed", CALLER_ADAPTATION)
 
 
 def _diff_properties(
@@ -473,9 +499,7 @@ def _diff_properties(
     for name in sorted(set(old_props) - set(new_props)):
         out.add(f"{pointer}/properties/{name}", "property-removed", CALLER_ADAPTATION)
     for name in sorted(set(old_props) & set(new_props)):
-        at = f"{pointer}/properties/{name}"
-        _diff_deprecated(old_props[name], new_props[name], at, out)
-        _diff_schema(old_props[name], new_props[name], at, out)
+        _diff_schema(old_props[name], new_props[name], f"{pointer}/properties/{name}", out)
 
 
 def _diff_required(old: dict[str, Any], new: dict[str, Any], pointer: str, out: _Collector) -> None:
@@ -599,7 +623,6 @@ def _diff_named_schemas(
     for name in sorted(set(old) - set(new)):
         out.add(f"{pointer}/{name}", "component-removed", CALLER_ADAPTATION)
     for name in sorted(set(old) & set(new)):
-        _diff_deprecated(old[name], new[name], f"{pointer}/{name}", out)
         _diff_schema(old[name], new[name], f"{pointer}/{name}", out)
 
 

@@ -524,3 +524,189 @@ def test_a_malformed_record_is_refused_not_raised_on(
 
     assert "remove-limit.yaml" in message, "the schema refusal is not reported"
     assert "claims an exemption" in message, "a malformed field was read as coverage"
+
+
+def _post_things(schema: dict[str, Any]) -> Any:
+    def mutate(spec: dict[str, Any]) -> None:
+        spec["paths"]["/things"]["post"] = {
+            "summary": "Create a thing.",
+            "operationId": "create_thing",
+            "requestBody": {
+                "required": False,
+                "content": {"application/json": {"schema": schema}},
+            },
+            "responses": {"201": {"description": "Created."}},
+        }
+
+    return mutate
+
+
+_UNION = {"oneOf": [{"type": "string"}, {"type": "integer"}]}
+
+
+@pytest.mark.parametrize(
+    ("base", "mutate", "kind"),
+    [
+        (
+            _post_things({"type": "object"}),
+            lambda s: s["paths"]["/things"]["post"].pop("requestBody"),
+            "request-body-removed",
+        ),
+        (
+            None,
+            lambda s: s["paths"]["/things"]["get"]["responses"].pop("200"),
+            "response-removed",
+        ),
+        (
+            _post_things(_UNION),
+            lambda s: s["paths"]["/things"]["post"]["requestBody"]["content"]["application/json"][
+                "schema"
+            ]["oneOf"].pop(),
+            "branch-removed",
+        ),
+    ],
+    ids=["request-body-removed", "success-response-removed", "request-branch-removed"],
+)
+def test_every_withdrawal_shape_needs_a_deprecation(
+    tmp_path: Path, base: Any, mutate: Any, kind: str
+) -> None:
+    repo = make_substrate_repo(tmp_path / "repo")
+    if base is not None:
+        repo.edit_yaml(CORE_SPEC, base)
+        repo.commit("the element exists on main")
+    repo.checkout("feature", create=True)
+    repo.edit_yaml(CORE_SPEC, mutate)
+    repo.add_record("adapt", **_adaptation())
+
+    result = _check(repo)
+
+    assert kind in [f.kind for f in result.findings]
+    assert f"{kind} at sage_core_api:" in _errors(result)
+
+
+def test_a_declared_earliest_date_that_is_not_a_date_fails(tmp_path: Path) -> None:
+    repo = make_substrate_repo(tmp_path / "repo")
+    repo.checkout("feature", create=True)
+    repo.edit_yaml(CORE_SPEC, _mark_limit)
+    repo.add_record(
+        "deprecate-limit",
+        **{
+            **DEPRECATION,
+            "deprecates": [{**DEPRECATION["deprecates"][0], "earliest_adaptation": "2026-02-30"}],
+        },
+    )
+
+    message = _errors(_check(repo))
+
+    assert "'2026-02-30', which is not a date" in message
+
+
+def test_an_mcp_flag_and_prefix_together_are_one_undeclared_deprecation(tmp_path: Path) -> None:
+    repo = make_substrate_repo(tmp_path / "repo")
+    repo.checkout("feature", create=True)
+
+    def mark(catalog: dict[str, Any]) -> None:
+        query = catalog["surfaces"]["sage"][0]["inputSchema"]["properties"]["query"]
+        query["deprecated"] = True
+        query["description"] = "Deprecated: use text."
+
+    repo.edit_json(CATALOG, mark)
+    repo.add_record("deprecate-query", **_adaptation())
+
+    result = _check(repo)
+
+    undeclared = [e for e in result.errors if "no added record's deprecates names it" in e]
+    assert len(undeclared) == 1, result.errors
+
+
+def _mode_enum(spec: dict[str, Any]) -> None:
+    spec["paths"]["/things"]["get"]["parameters"][0]["schema"] = {
+        "type": "string",
+        "enum": ["keyword", "semantic"],
+    }
+
+
+MODE = "paths//things/get/parameters/query:limit/schema/enum"
+
+
+@pytest.mark.parametrize(
+    ("removed", "passes"),
+    [("keyword", True), ("semantic", False)],
+    ids=["the-deprecated-value", "another-value"],
+)
+def test_a_value_deprecation_covers_that_value_only(
+    tmp_path: Path, removed: str, passes: bool
+) -> None:
+    deprecation = {
+        **DEPRECATION,
+        "deprecates": [{**DEPRECATION["deprecates"][0], "pointer": f"{MODE}/keyword"}],
+    }
+    repo = make_substrate_repo(tmp_path / "repo")
+    repo.edit_yaml(CORE_SPEC, _mode_enum)
+    _publish(repo, "3.1", TODAY - dt.timedelta(days=60), [deprecation])
+    repo.commit("release 3.1 deprecates the keyword value")
+    repo.checkout("feature", create=True)
+
+    def remove(spec: dict[str, Any]) -> None:
+        spec["paths"]["/things"]["get"]["parameters"][0]["schema"]["enum"].remove(removed)
+
+    repo.edit_yaml(CORE_SPEC, remove)
+    repo.add_record(
+        "remove-value",
+        **_adaptation(follows_deprecation=_follows(pointer=f"{MODE}/keyword")),
+    )
+
+    result = _check(repo)
+
+    assert [f.pointer for f in result.findings] == [f"{MODE}/{removed}"]
+    assert (result.errors == []) is passes, result.errors
+
+
+def test_a_withdrawal_kind_reported_as_a_capability_needs_no_deprecation(tmp_path: Path) -> None:
+    """A dropped ``allOf`` branch admits more, so the comparison calls it a capability."""
+    repo = make_substrate_repo(tmp_path / "repo")
+    repo.edit_yaml(CORE_SPEC, _post_things({"allOf": [{"type": "object"}, {"required": ["a"]}]}))
+    repo.commit("an allOf body exists on main")
+    repo.checkout("feature", create=True)
+    repo.edit_yaml(
+        CORE_SPEC,
+        lambda s: s["paths"]["/things"]["post"]["requestBody"]["content"]["application/json"][
+            "schema"
+        ]["allOf"].pop(),
+    )
+    repo.add_record(
+        "relax-body",
+        classification="minor",
+        category=["capability"],
+        summary="The body no longer requires a.",
+        for_callers="a is optional.",
+    )
+
+    result = _check(repo)
+
+    assert [(f.kind, f.category) for f in result.findings] == [("branch-removed", "capability")]
+    assert result.errors == []
+
+
+def test_a_deprecated_value_needs_no_contract_mark(tmp_path: Path) -> None:
+    repo = make_substrate_repo(tmp_path / "repo")
+    repo.edit_yaml(CORE_SPEC, _mode_enum)
+    repo.commit("the enum exists on main")
+    repo.checkout("feature", create=True)
+    repo.edit_yaml(
+        CORE_SPEC,
+        lambda s: s["paths"]["/things"]["get"]["parameters"][0].__setitem__(
+            "description", "Page size. The keyword value is deprecated."
+        ),
+    )
+    repo.add_record(
+        "deprecate-keyword",
+        **{
+            **DEPRECATION,
+            "deprecates": [
+                {**DEPRECATION["deprecates"][0], "pointer": f"{MODE}/keyword", "value": "keyword"}
+            ],
+        },
+    )
+
+    assert _check(repo).errors == []

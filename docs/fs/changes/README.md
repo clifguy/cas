@@ -92,8 +92,10 @@ It applies to adaptations released after 3.0, and reads deprecations only from
 releases after 3.0.
 
 **Deprecating.** Mark the element on the contract in the same change:
-`deprecated: true` on the OpenAPI operation, parameter, or schema, or an MCP tool
-or parameter description that opens with `Deprecated:`. The record names what it
+`deprecated: true` on the OpenAPI operation, parameter, response header, or
+schema, or an MCP tool or parameter description that opens with `Deprecated:`.
+On MCP, JSON Schema's own `deprecated: true` in a parameter's input schema also
+counts; with the description prefix it is still one deprecation. The record names what it
 deprecates, the replacement, and the earliest date the adaptation may ship:
 
 ```yaml
@@ -112,8 +114,11 @@ deprecates:
 The pointer is the one the contract comparison prints in its findings. The gate
 fails a change that marks a deprecation no record declares, and a record that
 declares one the contract does not mark. The exception is a deprecated value or
-default: its parameter's description states it, so its pointer ends in `/enum` or
-`/default` and no mark is looked for. For an operation listed in
+default: its parameter's description states it, so no mark is looked for. A
+deprecated default's pointer ends in `/default`; a deprecated value's is
+`.../enum/<value>`, the pointer its removal is reported at, so the deprecation
+covers that value and no other. A `/` in the value is written `~1` and a `~`
+is written `~0`, as in a JSON Pointer. For an operation listed in
 `WARNING_CARRIERS` in `sage/services/deprecations.py`, declare the form there
 too, so a caller using it is warned in the response; another operation first
 needs a warnings field and its service wired to that module.

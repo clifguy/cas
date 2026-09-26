@@ -82,6 +82,7 @@ import jsonschema
 import yaml
 
 from scripts.contract_diff import (
+    CALLER_ADAPTATION,
     DEPRECATION_REQUIRED_KINDS,
     Contract,
     Finding,
@@ -117,8 +118,9 @@ CATEGORY_ORDER: Final[tuple[str, ...]] = ("capability", "caller-adaptation", "op
 DEPRECATION_BASELINE: Final[str] = "3.0"
 DEPRECATION_WINDOW: Final[dt.timedelta] = dt.timedelta(days=30)
 # A deprecated value or default is stated in its parameter's description, which
-# the contract comparison does not read, so no mark is looked for.
-_VALUE_POINTER_SUFFIXES: Final[tuple[str, ...]] = ("/default", "/enum")
+# the contract comparison does not read, so no mark is looked for. A value is
+# addressed as ``.../enum/<value>``, the pointer its removal is reported at.
+_VALUE_POINTER: Final[re.Pattern[str]] = re.compile(r"/(default|enum)$|/enum/")
 
 
 class ReleaseRefused(RuntimeError):
@@ -587,7 +589,10 @@ def _check_deprecations(
 
     if not any(isinstance(record.get("exemption"), dict) for record in records):
         for finding in result.findings:
-            if finding.kind not in DEPRECATION_REQUIRED_KINDS:
+            if (
+                finding.kind not in DEPRECATION_REQUIRED_KINDS
+                or finding.category != CALLER_ADAPTATION
+            ):
                 continue
             if any(s == finding.surface and _covers(p, finding.pointer) for s, p in named):
                 continue
@@ -597,11 +602,18 @@ def _check_deprecations(
                 "clause 8); see docs/fs/changes/README.md"
             )
 
-    declared = {
-        (str(target.get("surface")), str(target.get("pointer")))
-        for record in records
-        for target in _entries(record, "deprecates")
-    }
+    declared: set[tuple[str, str]] = set()
+    for record in records:
+        for target in _entries(record, "deprecates"):
+            surface, pointer = str(target.get("surface")), str(target.get("pointer"))
+            declared.add((surface, pointer))
+            try:
+                dt.date.fromisoformat(str(target.get("earliest_adaptation")))
+            except ValueError:
+                result.errors.append(
+                    f"deprecates names {surface}:{pointer} with earliest_adaptation "
+                    f"{target.get('earliest_adaptation')!r}, which is not a date"
+                )
     marked = sorted(
         (f for f in result.findings if f.kind == "deprecation-added"),
         key=lambda f: (f.surface, f.pointer),
@@ -614,7 +626,7 @@ def _check_deprecations(
             )
     marked_at = {(f.surface, f.pointer) for f in marked}
     for surface, pointer in sorted(declared):
-        if pointer.endswith(_VALUE_POINTER_SUFFIXES) or (surface, pointer) in marked_at:
+        if _VALUE_POINTER.search(pointer) or (surface, pointer) in marked_at:
             continue
         result.errors.append(
             f"deprecates names {surface}:{pointer}, but this change's contract does not mark it "

@@ -15,7 +15,9 @@ so a detector that treats every diff as a finding fails there instead.
 
 from __future__ import annotations
 
+import ast
 import copy
+import inspect
 from collections.abc import Callable
 from typing import Any
 
@@ -1081,34 +1083,83 @@ def test_mcp_deprecated_marker_counts_only_at_the_start(
     assert diff_mcp_catalog(CATALOG, _mutated(CATALOG, mutate)) == []
 
 
-def test_deprecation_required_kinds_are_exactly_the_withdrawing_adaptations() -> None:
-    """The kinds that need a prior deprecation: removal, narrowed input, changed default.
-
-    Every one must be a caller adaptation some positive case actually emits, so the
-    set can name neither a capability nor a kind the detector never produces.
-    """
-    emitted = {case[3]: case[2] for case in [*OPENAPI_POSITIVE, *MCP_POSITIVE]}
-
-    assert set(DEPRECATION_REQUIRED_KINDS) == {
-        "operation-removed",
-        "parameter-removed",
-        "property-removed",
-        "component-removed",
-        "media-type-removed",
-        "header-removed",
-        "tool-removed",
-        "tool-moved",
-        "required-parameter-added",
-        "parameter-made-required",
-        "required-added",
-        "type-narrowed",
-        "enum-value-removed",
-        "constraint-tightened",
-        "default-changed",
+# Every kind the comparison can emit that needs no prior deprecation: capabilities,
+# and the caller adaptations DEPRECATION_REQUIRED_KINDS deliberately leaves out.
+NOT_WITHDRAWING: frozenset[str] = frozenset(
+    {
+        # capabilities
+        "operation-added",
+        "tool-added",
+        "parameter-added",
+        "parameter-made-optional",
+        "property-added",
+        "required-removed",
+        "request-body-added",
+        "request-body-made-optional",
+        "response-added",
+        "media-type-added",
+        "header-added",
+        "output-schema-added",
+        "type-widened",
+        "enum-value-added",
+        "constraint-loosened",
+        "branch-added",
+        "deprecation-withdrawn",
+        # caller adaptations that withdraw nothing a deprecation could announce
+        "deprecation-added",
+        "error-code-added",
+        "error-code-removed",
+        "header-made-required",
+        "header-made-optional",
+        "operation-id-changed",
+        "security-changed",
+        "ref-retargeted",
+        "keyword-changed",
+        "schema-changed",
     }
-    for kind in DEPRECATION_REQUIRED_KINDS:
-        assert emitted.get(kind) == CALLER_ADAPTATION, kind
-    assert "deprecation-added" not in DEPRECATION_REQUIRED_KINDS
+)
+
+
+def _emitted_kinds() -> set[str]:
+    """Every kind ``contract_diff`` passes to ``_Collector.add`` or ``Finding``, read from source.
+
+    Both arms of a conditional expression count, so a kind chosen at run time is
+    not missed.
+    """
+    import scripts.contract_diff as module
+
+    def strings(node: ast.AST) -> set[str]:
+        if isinstance(node, ast.Constant) and isinstance(node.value, str):
+            return {node.value}
+        if isinstance(node, ast.IfExp):
+            return strings(node.body) | strings(node.orelse)
+        return set()
+
+    kinds: set[str] = set()
+    for node in ast.walk(ast.parse(inspect.getsource(module))):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr == "add" and len(node.args) >= 2:
+            kinds |= strings(node.args[1])
+        elif isinstance(func, ast.Name) and func.id == "Finding" and len(node.args) >= 3:
+            kinds |= strings(node.args[2])
+    return kinds
+
+
+def test_every_emitted_kind_is_classified_for_deprecation() -> None:
+    """A withdrawing kind left out of the set would pass the gate undeprecated.
+
+    So the classification is checked over the complement: every kind the
+    comparison emits is either held to a deprecation or named here as needing
+    none, and neither list names a kind the comparison never emits.
+    """
+    emitted = _emitted_kinds()
+    assert {"operation-removed", "request-body-removed", "branch-removed"} <= emitted
+
+    assert emitted - DEPRECATION_REQUIRED_KINDS - NOT_WITHDRAWING == set()
+    assert DEPRECATION_REQUIRED_KINDS & NOT_WITHDRAWING == set()
+    assert (DEPRECATION_REQUIRED_KINDS | NOT_WITHDRAWING) - emitted == set()
 
 
 def test_a_deprecated_response_header_is_one_finding_at_the_header() -> None:
@@ -1122,3 +1173,88 @@ def test_a_deprecated_response_header_is_one_finding_at_the_header() -> None:
     assert [(f.kind, f.pointer) for f in findings] == [
         ("deprecation-added", "paths//things/get/responses/200/headers/x-page")
     ]
+
+
+def _with_tags(spec: dict[str, Any], items: dict[str, Any]) -> None:
+    _thing(spec)["properties"]["tags"] = {"type": "array", "items": items}
+
+
+def test_a_deprecation_is_read_at_an_items_schema() -> None:
+    base = _mutated(SPEC, lambda s: _with_tags(s, {"type": "string"}))
+    changed = _mutated(SPEC, lambda s: _with_tags(s, {"type": "string", "deprecated": True}))
+
+    findings = diff_openapi(base, changed, surface="sage_core_api")
+
+    assert [(f.kind, f.pointer) for f in findings] == [
+        ("deprecation-added", "components/schemas/Thing/properties/tags/items")
+    ]
+
+
+def test_a_deprecation_is_read_at_an_inline_media_type_schema() -> None:
+    changed = _mutated(
+        SPEC,
+        lambda s: _get(s)["responses"]["200"]["content"]["application/json"].__setitem__(
+            "schema", {"$ref": "#/components/schemas/Thing", "deprecated": True}
+        ),
+    )
+
+    findings = diff_openapi(SPEC, changed, surface="sage_core_api")
+
+    assert [(f.kind, f.pointer) for f in findings] == [
+        ("deprecation-added", "paths//things/get/responses/200/content/application/json/schema")
+    ]
+
+
+def _limit_input(catalog: dict[str, Any]) -> dict[str, Any]:
+    return _search(catalog)["inputSchema"]["properties"]["limit"]
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        lambda c: _limit_input(c).__setitem__("deprecated", True),
+        lambda c: (
+            _limit_input(c).__setitem__("deprecated", True),
+            _limit_input(c).__setitem__("description", "Deprecated: use page_size."),
+        ),
+    ],
+    ids=["schema-flag", "flag-and-prefix"],
+)
+def test_the_mcp_schema_flag_is_one_deprecation_with_or_without_the_prefix(
+    mutate: Callable[[dict[str, Any]], None],
+) -> None:
+    findings = diff_mcp_catalog(CATALOG, _mutated(CATALOG, mutate))
+
+    assert [(f.kind, f.pointer) for f in findings] == [
+        ("deprecation-added", "sage/search/inputSchema/properties/limit")
+    ]
+
+
+def test_each_removed_enum_value_is_a_finding_at_its_value() -> None:
+    changed = _mutated(SPEC, lambda s: _thing(s)["properties"]["kind"].__setitem__("enum", ["c"]))
+
+    findings = [f for f in diff_openapi(SPEC, changed, surface="core") if f.kind.startswith("enum")]
+
+    assert sorted((f.kind, f.pointer) for f in findings) == [
+        ("enum-value-added", "components/schemas/Thing/properties/kind/enum"),
+        ("enum-value-removed", "components/schemas/Thing/properties/kind/enum/a"),
+        ("enum-value-removed", "components/schemas/Thing/properties/kind/enum/b"),
+    ]
+
+
+def test_a_removed_enum_value_is_escaped_in_its_pointer() -> None:
+    """``application/json`` must not read as a child of an ``application`` value."""
+
+    def media_enum(values: list[Any]) -> Callable[[dict[str, Any]], None]:
+        return lambda s: _thing(s)["properties"]["kind"].__setitem__("enum", values)
+
+    base = _mutated(SPEC, media_enum(["application", "application/json", "a~b", 3]))
+    changed = _mutated(SPEC, media_enum(["application"]))
+
+    removed = {
+        f.pointer.rsplit("/enum/", 1)[1]
+        for f in diff_openapi(base, changed, surface="core")
+        if f.kind == "enum-value-removed"
+    }
+
+    assert removed == {"3", "a~0b", "application~1json"}

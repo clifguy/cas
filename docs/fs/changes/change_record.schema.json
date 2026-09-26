@@ -74,7 +74,7 @@
             "type": "string",
             "minLength": 1,
             "pattern": "\\S",
-            "description": "The element, in the contract comparison's pointer form: paths/{path}/{method}, then /parameters/{in}:{name}, or components/schemas/{name}/properties/{name} for a specification; {surface}/{tool}, then /inputSchema/properties/{name}, for the MCP catalog. A deprecated value or default appends /enum or /default to its parameter's schema pointer."
+            "description": "The element, in the contract comparison's pointer form: paths/{path}/{method}, then /parameters/{in}:{name}, or components/schemas/{name}/properties/{name} for a specification; {surface}/{tool}, then /inputSchema/properties/{name}, for the MCP catalog. A deprecated default appends /default to its parameter's schema pointer, and a deprecated value /enum/<value>."
           },
           "replacement": {
             "type": "string",
@@ -84,6 +84,7 @@
           },
           "earliest_adaptation": {
             "type": "string",
+            "format": "date",
             "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
             "description": "The earliest date the adaptation this deprecation announces may ship. It is no earlier than 30 days after the release that publishes the deprecation; the gate holds the adaptation to whichever of the two is later. An ISO date, quoted in YAML so it stays a string."
           },
@@ -124,7 +125,7 @@
             "type": "string",
             "minLength": 1,
             "pattern": "\\S",
-            "description": "The element, in the contract comparison's pointer form: paths/{path}/{method}, then /parameters/{in}:{name}, or components/schemas/{name}/properties/{name} for a specification; {surface}/{tool}, then /inputSchema/properties/{name}, for the MCP catalog. A deprecated value or default appends /enum or /default to its parameter's schema pointer."
+            "description": "The element, in the contract comparison's pointer form: paths/{path}/{method}, then /parameters/{in}:{name}, or components/schemas/{name}/properties/{name} for a specification; {surface}/{tool}, then /inputSchema/properties/{name}, for the MCP catalog. A deprecated default appends /default to its parameter's schema pointer, and a deprecated value /enum/<value>."
           }
         }
       }
