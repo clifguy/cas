@@ -3157,16 +3157,15 @@ def _generic_parameter_error(
     several failures to win -- as the argument-model boundary does for
     unknown parameters -- select it before reaching this function.
     """
-    errors = exc.errors()
-    if not errors:  # pragma: no cover -- pydantic always reports at least one
+    first = _first_validation_error(exc)
+    if first is None:  # pragma: no cover -- pydantic always reports at least one
         return InvalidParameterError(
             parameter="request",
             value=None,
             constraint="Request failed validation",
         )
 
-    err = errors[0]
-    loc = _strip_transport_segment(tuple(err.get("loc") or ()), exc)
+    loc, err = first
     parameter = ".".join(str(segment) for segment in loc) or "request"
     return InvalidParameterError(
         parameter=parameter,
@@ -3174,6 +3173,38 @@ def _generic_parameter_error(
         constraint=str(err.get("msg", "Invalid value")),
         hint=_PARAMETER_HINTS.get((str(loc[-1]) if loc else "", str(err.get("type", "")))),
     )
+
+
+def _first_validation_error(
+    exc: ValidationError | RequestValidationError,
+) -> tuple[tuple, dict] | None:
+    """Return the first reported error and its location, transport segment stripped."""
+    errors = exc.errors()
+    if not errors:
+        return None
+    err = errors[0]
+    return _strip_transport_segment(tuple(err.get("loc") or ()), exc), err
+
+
+def describe_validation_failure(exc: ValidationError | RequestValidationError) -> str:
+    """State a validation failure as its dotted location and constraint.
+
+    For refusals whose envelope carries no ``detail``, so the location and
+    constraint travel in the message. Built from the same structured fields
+    as `_generic_parameter_error` and nothing else: the model class name and
+    the documentation link are not read, and neither is the rejected input
+    (a validator's own message is passed through as it was written).
+    The first error is described; a failure with no location (text that
+    does not parse at all) is stated by its constraint alone.
+    """
+    first = _first_validation_error(exc)
+    if first is None:  # pragma: no cover -- pydantic always reports at least one
+        return "failed validation"
+    loc, err = first
+    constraint = str(err.get("msg", "Invalid value"))
+    if not loc:
+        return constraint
+    return f"`{'.'.join(str(segment) for segment in loc)}`: {constraint}"
 
 
 def validation_error_envelope(
