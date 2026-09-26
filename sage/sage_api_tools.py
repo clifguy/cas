@@ -1699,12 +1699,13 @@ def register_sage_tools(
             ``filters={"source_id": "<doc_id>", "edge_type": "references"}``.
 
         Facet enumeration:
-            ``target="facets"`` returns one row per field -- doc_type,
-            lifecycle_status, source_type, pipeline_status, tags -- with its
-            top values, counts and ``total_distinct``;
-            ``facet_value_limit`` sets the cap. A call omitting ``mode``
+            ``target="facets"`` returns a row per field (doc_type,
+            lifecycle_status, source_type, pipeline_status, tags) with
+            top values, counts and ``total_distinct``, capped by
+            ``facet_value_limit``. A call omitting ``mode``
             resolves to catalog; naming a non-catalog mode is still refused.
-            ``created_by`` takes a display name too; ``facet_fields`` lists it.
+            ``created_by``/``last_modified_by`` take a display name and are
+            ``facet_fields``.
 
         Error modes:
         - ``invalid_vault_id`` (400)

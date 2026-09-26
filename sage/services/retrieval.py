@@ -1143,11 +1143,19 @@ class RetrievalService:
                 entry: dict[str, object] = {"value": value, "keys": keys}
                 if len(keys) > 1:
                     entry["ambiguous"] = True
-                    warnings.append(
-                        f"Filter provenance.{field}={value!r} matched {len(keys)} principals "
-                        f"by key or latest display name ({', '.join(keys)}), so it matches "
-                        "the writes of all of them. Filter by one key to narrow it."
-                    )
+                    if value in names:
+                        # Already a key: no narrower filter exists to advise.
+                        warnings.append(
+                            f"Filter provenance.{field}={value!r} is a principal key, and is "
+                            f"also the latest display name of {', '.join(by_name)}, so the "
+                            "key's own writes are joined by theirs."
+                        )
+                    else:
+                        warnings.append(
+                            f"Filter provenance.{field}={value!r} is the latest display name "
+                            f"of {len(keys)} principals ({', '.join(keys)}), so it matches "
+                            "the writes of all of them. Filter by one key to narrow it."
+                        )
                 report[field] = entry
             elif value not in names:
                 nearest = _nearest_names(value, names)

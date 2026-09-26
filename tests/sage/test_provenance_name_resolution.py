@@ -324,13 +324,22 @@ async def test_t4_provenance_facet_fields_count_keys_clients_and_agent_names(gra
 
 
 @_SURFACES
+@pytest.mark.parametrize(
+    "search_mode",
+    [
+        {"mode": "catalog"},
+        {"mode": "keyword", "query": "Body"},
+        {"mode": "semantic", "query": "Body"},
+    ],
+    ids=["catalog", "keyword", "semantic"],
+)
 async def test_t5_a_latest_name_resolves_to_the_key_and_finds_former_name_writes(
-    auth_app, tmp_vault_dir, surface
+    auth_app, tmp_vault_dir, surface, search_mode
 ) -> None:
     docs = await _renamed_alice(auth_app, tmp_vault_dir)
 
     body = {
-        "mode": "catalog",
+        **search_mode,
         "limit": 100,
         "filters": {"provenance": {"created_by": "ALICE.new@example.org"}},
     }
@@ -368,7 +377,8 @@ async def test_t7_an_ambiguous_name_matches_every_key(auth_app, tmp_vault_dir, s
     resolution = _resolution(response)["created_by"]
     assert resolution["keys"] == sorted([_ALICE, _ALICE2])
     assert resolution["ambiguous"] is True
-    assert any(_ALICE_NEW in w for w in response["hints"]["warnings"])
+    (warning,) = [w for w in response["hints"]["warnings"] if _ALICE_NEW in w]
+    assert "Filter by one key" in warning
 
 
 @pytest.mark.parametrize(
@@ -412,6 +422,11 @@ async def test_t8b_a_value_that_is_a_key_and_a_name_matches_both(auth_app, tmp_v
     resolution = _resolution(response)["created_by"]
     assert resolution["keys"] == sorted([_BOB, _MALLORY])
     assert resolution["ambiguous"] is True
+    # The caller already filtered by one key, so the advisory explains the
+    # widening rather than advising a narrowing it has already done.
+    (warning,) = [w for w in response["hints"]["warnings"] if _BOB in w]
+    assert _MALLORY in warning
+    assert "Filter by one key" not in warning
 
 
 @_SURFACES
@@ -519,3 +534,4 @@ async def test_t14_the_search_description_states_both_paths(auth_app) -> None:
     assert "display name" in description
     assert "facet_fields" in description
     assert "created_by" in description
+    assert "last_modified_by" in description

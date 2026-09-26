@@ -234,7 +234,8 @@ paths:
         would.
 
 
-        `created_by` takes a display name too; `facet_fields` lists it.
+        `created_by`/`last_modified_by` take a display name and are
+        `facet_fields`.
       tags: [Retrieval]
       parameters:
         - $ref: "#/components/parameters/VaultId"
