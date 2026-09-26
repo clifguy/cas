@@ -2846,6 +2846,7 @@
                           "date": {
                             "anyOf": [
                               {
+                                "format": "date",
                                 "type": "string"
                               },
                               {
@@ -2931,6 +2932,7 @@
                   "sha256": {
                     "anyOf": [
                       {
+                        "pattern": "^(sha256:)?[0-9a-fA-F]{64}$",
                         "type": "string"
                       },
                       {
@@ -2994,6 +2996,7 @@
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -3489,11 +3492,13 @@
             "doc_id": {
               "default": null,
               "description": "Alias for `document_id`; supply exactly one of the two.",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "document_id": {
               "default": null,
               "description": "Document ID to start the chain walk from. The walk proceeds in both directions from this document. The result is symmetric: any chain member returns the full ordered chain with that member's position indicated. Alias: `doc_id`; supply exactly one of the two.",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "edge_type": {
@@ -3513,6 +3518,7 @@
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -4657,6 +4663,7 @@
                   "retracted_edge_id": {
                     "anyOf": [
                       {
+                        "format": "uuid",
                         "type": "string"
                       },
                       {
@@ -4668,11 +4675,13 @@
                   },
                   "source_id": {
                     "description": "Origin document ID.",
+                    "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
                     "type": "string"
                   },
                   "source_valid_from_version": {
                     "anyOf": [
                       {
+                        "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
                         "type": "string"
                       },
                       {
@@ -4685,6 +4694,7 @@
                   "synced_from_content_hash": {
                     "anyOf": [
                       {
+                        "pattern": "^(sha256:)?[0-9a-fA-F]{64}$",
                         "type": "string"
                       },
                       {
@@ -4697,6 +4707,7 @@
                   "synced_from_version": {
                     "anyOf": [
                       {
+                        "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
                         "type": "string"
                       },
                       {
@@ -4709,6 +4720,7 @@
                   "target_id": {
                     "anyOf": [
                       {
+                        "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
                         "type": "string"
                       },
                       {
@@ -4721,6 +4733,7 @@
                   "target_valid_from_version": {
                     "anyOf": [
                       {
+                        "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
                         "type": "string"
                       },
                       {
@@ -4746,6 +4759,7 @@
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -5119,10 +5133,12 @@
             },
             "edge_id": {
               "description": "Production edge identifier, as ``search`` with target=\"edges\" returns it.",
+              "format": "uuid",
               "type": "string"
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -6027,11 +6043,13 @@
             "doc_id": {
               "default": null,
               "description": "Alias for `document_id`; supply exactly one of the two.",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "document_id": {
               "default": null,
               "description": "The document's unique identifier. Alias: `doc_id`; supply exactly one of the two.",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "include_content": {
@@ -6041,6 +6059,7 @@
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             },
             "write_to_path": {
@@ -6364,6 +6383,7 @@
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -9296,6 +9316,7 @@
             "document_id": {
               "default": null,
               "description": "Pins the force-reingest target. Force-reingest keys the record to reuse by content hash alone; when the incoming file is byte-identical to an existing document stored at a different source_path, the hash match may be an unrelated document. To protect that document's identity, a different-path collision is rejected with 409 `force_reingest_path_mismatch` unless this field names the record the caller intends to overwrite (for example, re-ingesting a document whose file legitimately moved). Where several documents carry the delivered content hash, this field selects any one of them, not only the one a duplicate refusal would name. A value naming a document that does not carry the delivered content hash, or no document at all, is rejected with 409 `force_reingest_pin_mismatch`. Consulted only when `force=true`; ignored otherwise.",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "dry_run": {
@@ -9327,6 +9348,7 @@
             "predecessor_id": {
               "default": null,
               "description": "When provided, the ingested document is treated as a new version that supersedes the named predecessor. After successful ingestion, SAGE applies the `supersede` lifecycle transition on the predecessor: creates a `supersedes` edge from the new document to the predecessor and moves the predecessor to the state the vault's transition table lands `supersede` in (`archived` in the create-vault scaffold). Predecessor validation (exists + the vault's transition table permits `supersede` from its current state + different content hash) runs before projection; failures return 404/409 before any pipeline work begins. An omitted ``doc_type``, ``project`` or ``authority_scope`` inherits the predecessor's value. A ``supersede_target_not_active`` refusal carries the ``allowed_states``; move the predecessor to one with ``update_lifecycles`` (``reactivate`` from ``completed``) rather than archiving it first.",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "project": {
@@ -9342,6 +9364,7 @@
             "sha256": {
               "default": null,
               "description": "SHA-256 digest of the file this call ingests, bare hex or `sha256:`-prefixed. When supplied, the call refuses a source with any other digest (`source_digest_mismatch`) before anything is retained. On a call that returns an upload recipe, each token is bound to this digest: the upload endpoint refuses any other bytes without spending the token, short of its refusal limit, so a token disclosed to anyone not already holding the exact file admits nothing. Pass it again on the completion call.",
+              "pattern": "^(sha256:)?[0-9a-fA-F]{64}$",
               "type": "string"
             },
             "source": {
@@ -9375,6 +9398,7 @@
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             },
             "version_label": {
@@ -9758,6 +9782,7 @@
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -10295,15 +10320,18 @@
             "doc_id": {
               "default": null,
               "description": "Alias for `document_id`; supply exactly one of the two.",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "document_id": {
               "default": null,
               "description": "The document's unique identifier. Alias: `doc_id`; supply exactly one of the two.",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -10597,6 +10625,7 @@
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -10875,6 +10904,7 @@
           "properties": {
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -11865,15 +11895,18 @@
             "doc_id": {
               "default": null,
               "description": "Alias for `document_id`; supply exactly one of the two.",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "document_id": {
               "default": null,
               "description": "The document's unique identifier. Alias: `doc_id`; supply exactly one of the two.",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             },
             "write_to_path": {
@@ -12476,11 +12509,13 @@
             "doc_id": {
               "default": null,
               "description": "Alias for `document_id`; supply exactly one of the two.",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "document_id": {
               "default": null,
               "description": "The document's unique identifier. Alias: `doc_id`; supply exactly one of the two.",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "heading_path": {
@@ -12489,6 +12524,7 @@
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -13528,10 +13564,12 @@
           "properties": {
             "document_id": {
               "description": "Document to re-abstract.",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -14627,10 +14665,12 @@
           "properties": {
             "document_id": {
               "description": "Document to re-run the pipeline against.",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -15750,6 +15790,7 @@
             "document_id": {
               "default": null,
               "description": "Target document for deterministic extraction. Required for deterministic mode.",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "document_ids": {
@@ -15904,6 +15945,7 @@
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -16455,6 +16497,7 @@
             "document_id": {
               "default": null,
               "description": "Alias for `start_id`; supply exactly one of the two. Supplying both, even with equal values, returns ambiguous_document_identifier.",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "edge_type": {
@@ -16465,10 +16508,12 @@
             "start_id": {
               "default": null,
               "description": "Document ID to start traversal from. Alias: `document_id`; supply exactly one of the two. The response key remains `start_id` whichever form was used.",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -17776,6 +17821,7 @@
                   "doc_id": {
                     "anyOf": [
                       {
+                        "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
                         "type": "string"
                       },
                       {
@@ -17788,6 +17834,7 @@
                   "document_id": {
                     "anyOf": [
                       {
+                        "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
                         "type": "string"
                       },
                       {
@@ -17804,6 +17851,7 @@
                         "properties": {
                           "document_id": {
                             "description": "The counterpart document's identifier, minted by and local to the counterpart vault.",
+                            "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
                             "type": "string"
                           },
                           "relocated_at": {
@@ -17825,10 +17873,12 @@
                           },
                           "source_content_hash": {
                             "description": "The SHA-256 of the bytes that travelled between the two vaults. The one member that confirms rather than hints: a caller arriving from either direction matches it to know it reached the document the pointer meant. Checked at write time on both halves against digests each already records, so a pointer neither side accounts for is refused rather than stored. The destination accounts for the bytes it was delivered; the origin accounts for either its provenance digest or its as-stored digest, which differ where its store rewrites its copy at rest.",
+                            "pattern": "^(sha256:)?[0-9a-fA-F]{64}$",
                             "type": "string"
                           },
                           "vault_id": {
                             "description": "The counterpart vault's identifier. Unique within an installation rather than across installations, so it narrows a search rather than settling one.",
+                            "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
                             "type": "string"
                           }
                         },
@@ -17850,6 +17900,7 @@
                   "successor_id": {
                     "anyOf": [
                       {
+                        "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
                         "type": "string"
                       },
                       {
@@ -17874,6 +17925,7 @@
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -19255,6 +19307,7 @@
                   "doc_id": {
                     "anyOf": [
                       {
+                        "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
                         "type": "string"
                       },
                       {
@@ -19279,6 +19332,7 @@
                   "document_date": {
                     "anyOf": [
                       {
+                        "format": "date",
                         "type": "string"
                       },
                       {
@@ -19291,6 +19345,7 @@
                   "document_id": {
                     "anyOf": [
                       {
+                        "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
                         "type": "string"
                       },
                       {
@@ -19448,6 +19503,7 @@
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -19875,10 +19931,12 @@
             },
             "edge_id": {
               "description": "Staging edge identifier, from ``list_staging_edges``.",
+              "format": "uuid",
               "type": "string"
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -20210,12 +20268,14 @@
             "hashes": {
               "description": "SHA-256 hex digests to check for existence. Canonical `sha256:<hex>` or bare hex, digest in either case. An empty list short-circuits; a hash that cannot be normalized rejects the whole call with invalid_sha256.",
               "items": {
+                "pattern": "^(sha256:)?[0-9a-fA-F]{64}$",
                 "type": "string"
               },
               "type": "array"
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -20610,10 +20670,12 @@
           "properties": {
             "document_id": {
               "description": "Identifier of the document whose preconditions to check. Any document with outbound `depends_on` edges is valid.",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -21460,6 +21522,7 @@
           "properties": {
             "document_id": {
               "description": "Document whose stored projection is exported.",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "output_path": {
@@ -21468,6 +21531,7 @@
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -21698,6 +21762,7 @@
           "properties": {
             "vault_id": {
               "description": "Identifier the new vault would carry. It shapes the storage and brain roots in the returned scaffold; no vault with it need exist.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -22150,6 +22215,7 @@
           "properties": {
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -22428,6 +22494,7 @@
           "properties": {
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -22895,6 +22962,7 @@
           "properties": {
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -23179,6 +23247,7 @@
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -24228,6 +24297,7 @@
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -24554,6 +24624,7 @@
           "properties": {
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -24878,6 +24949,7 @@
           "properties": {
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -25909,11 +25981,13 @@
             "document_id": {
               "default": null,
               "description": "Optional pin naming the document to restore, for when resolving the target from the delivered digest is ambiguous (several documents share a provenance hash) or impossible (a document ingested before delivered and stored digests were recorded separately, whose provenance hash describes the stored copy rather than the delivered bytes).",
+              "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
               "type": "string"
             },
             "sha256": {
               "default": null,
               "description": "SHA-256 digest of the file being restored, bare hex or `sha256:`-prefixed. When supplied, a restore whose delivered bytes have any other digest is refused (`source_digest_mismatch`) before the retained copy is touched. On a call that returns an upload recipe, the token is bound to this digest: the upload endpoint refuses any other bytes without spending the token, short of its refusal limit. A token seen by anyone not already holding the exact file therefore admits nothing. Pass it again on the completion call.",
+              "pattern": "^(sha256:)?[0-9a-fA-F]{64}$",
               "type": "string"
             },
             "source": {
@@ -25928,6 +26002,7 @@
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -26361,6 +26436,7 @@
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -26639,6 +26715,7 @@
           "properties": {
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -27140,6 +27217,7 @@
           "properties": {
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },
@@ -27613,12 +27691,14 @@
               "default": null,
               "description": "Restrict the audit to these documents, in any lifecycle state. Documents outside the set are neither read from the store nor reported. Omitted, the audit covers every document in the vault. A malformed id rejects the request with invalid_document_id (400); a well-formed id naming no document rejects it with document_scope_unmatched (404) rather than narrowing the audit.",
               "items": {
+                "pattern": "^[0-9a-f]{8}_[a-z0-9_]+$",
                 "type": "string"
               },
               "type": "array"
             },
             "vault_id": {
               "description": "Target vault identifier. `list_vaults` names the registered vaults.",
+              "pattern": "^[a-z0-9][a-z0-9_-]{0,63}$",
               "type": "string"
             }
           },

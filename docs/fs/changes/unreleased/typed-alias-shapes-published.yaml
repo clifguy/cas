@@ -1,0 +1,25 @@
+classification: minor
+category: [caller-adaptation]
+summary: >-
+  Every identifier, digest and date the server validates by shape now
+  publishes that shape, on the REST contract and on the MCP tool input
+  schemas alike: a document id the pattern ^[0-9a-f]{8}_[a-z0-9_]+$, a vault
+  id ^[a-z0-9][a-z0-9_-]{0,63}$, an edge or user id format uuid, a document
+  date format date, and a content hash ^(sha256:)?[0-9a-fA-F]{64}$ where a
+  value is accepted and ^sha256:[0-9a-f]{64}$ where one is returned, except
+  on RelocationPointer, which requests and responses share and which states
+  the accepting pattern so it is published as one component. The
+  shared VaultId and DocumentId parameter and schema components carry them,
+  as do the request and response properties those types reach, the edge_id
+  path parameters, and the vault_id, document_id, doc_id and edge_id
+  parameters of every MCP tool that takes one. The server accepts and refuses
+  exactly the values it did before, with the same error codes.
+for_callers: >-
+  The published schemas now state the shape of each id, digest and date the
+  server already required, so a client that validates against them can reject
+  a malformed value before sending it. Nothing the server accepted is now
+  refused, and refusals carry the same codes (invalid_document_id,
+  invalid_vault_id, invalid_edge_id, invalid_user_id, invalid_sha256,
+  invalid_document_date). A content hash is still accepted with or without
+  its sha256: prefix and in either case, and is always returned in the
+  canonical lowercase prefixed form.

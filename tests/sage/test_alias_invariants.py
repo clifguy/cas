@@ -29,14 +29,17 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from pydantic import AfterValidator, TypeAdapter, ValidationError
 
+from sage.models import schemas as schemas_module
 from sage.models.schemas import (
     DocumentDateStr,
     DocumentIdStr,
     EdgeIdStr,
+    PublishedShape,
     Sha256Str,
     UserIdStr,
     VaultIdStr,
 )
+from tests.helpers.published_shape import published_shape_of
 
 ALIAS_SETTINGS = settings(max_examples=100, deadline=200)
 
@@ -529,3 +532,182 @@ def test_alias_roster_and_error_code_family_correspond() -> None:
         f"Roster implies {sorted(from_roster)}; the table declares "
         f"{sorted(_TYPED_ALIAS_CODES)}."
     )
+
+
+# ---------------------------------------------------------------------------
+# The published shape agrees with the validator
+# ---------------------------------------------------------------------------
+
+_NORMALIZE_FROM: dict[str, dict[str, st.SearchStrategy[str]]] = {
+    "EdgeIdStr": EDGE_ID_NORMALIZE_FROM,
+    "Sha256Str": SHA256_NORMALIZE_FROM,
+    "UserIdStr": USER_ID_NORMALIZE_FROM,
+}
+
+
+def _published_shape(name: str) -> PublishedShape:
+    marker = published_shape_of(getattr(schemas_module, name))
+    assert marker is not None, f"{name} publishes no shape"
+    return marker
+
+
+def _schema_match(pattern: str, value: str) -> bool:
+    """Whether ``value`` matches ``pattern`` as a JSON Schema validator reads it.
+
+    JSON Schema patterns are ECMA-262, where ``$`` without the multiline flag
+    matches only at the end of input; Python's ``$`` also matches before a
+    final newline. Anchoring with ``\\Z`` reads the pattern as a client does.
+    """
+    return re.search(re.sub(r"\$$", r"\\Z", pattern), value) is not None
+
+
+def _accepted(adapter: TypeAdapter[Any], value: str) -> bool:
+    try:
+        adapter.validate_python(value)
+    except ValidationError:
+        return False
+    return True
+
+
+_EDIT_ALPHABET = st.characters(min_codepoint=0x20, max_codepoint=0x7E)
+
+
+@st.composite
+def _one_edit(draw: st.DrawFn, base: st.SearchStrategy[str]) -> str:
+    """A value one character away from ``base``: inserted, replaced, or deleted.
+
+    The near-misses a pattern one character class wider or narrower than the
+    validator would disagree on, which unrelated random text almost never is.
+    """
+    value = draw(base)
+    at = draw(st.integers(min_value=0, max_value=len(value)))
+    char = draw(_EDIT_ALPHABET)
+    edit = draw(st.sampled_from(["insert", "replace", "delete"]))
+    if edit == "insert" or at == len(value):
+        return value[:at] + char + value[at:]
+    if edit == "replace":
+        return value[:at] + char + value[at + 1 :]
+    return value[:at] + value[at + 1 :]
+
+
+def _every_candidate(spec: AliasSpec) -> st.SearchStrategy[str]:
+    valid = spec.valid.filter(lambda v: v is not None)
+    arms = [
+        valid,
+        _one_edit(valid),
+        *spec.invalid.values(),
+        *_NORMALIZE_FROM.get(spec.name, {}).values(),
+        st.text(max_size=80),
+    ]
+    return st.one_of(*arms)
+
+
+def _publishes_pattern(spec: AliasSpec) -> bool:
+    marker = published_shape_of(getattr(schemas_module, spec.name))
+    return marker is not None and marker.pattern is not None
+
+
+_PATTERNED = [s for s in TYPED_ALIASES if _publishes_pattern(s)]
+
+
+@pytest.mark.parametrize("spec", _PATTERNED, ids=[s.name for s in _PATTERNED])
+def test_published_pattern_agrees_with_validator(spec: AliasSpec) -> None:
+    """A value matches the published pattern exactly when the alias accepts it.
+
+    Both directions: a pattern narrower than the validator would have a client
+    withhold values the server accepts, and a wider one would promise
+    acceptance the server refuses. A normalizing alias's output also matches
+    the pattern it publishes for responses.
+    """
+    marker = _published_shape(spec.name)
+    assert marker.pattern is not None
+    emitted = marker.serialized_pattern or marker.pattern
+
+    @given(_every_candidate(spec))
+    @settings(max_examples=500, deadline=None)
+    def inner(value: str) -> None:
+        accepted = _accepted(spec.adapter, value)
+        assert _schema_match(marker.pattern, value) == accepted, value
+        if accepted:
+            assert _schema_match(emitted, spec.adapter.validate_python(value))
+
+    inner()
+
+
+def test_patterned_aliases_are_found() -> None:
+    # Three aliases publish a pattern today; the others publish a format.
+    assert {s.name for s in _PATTERNED} >= {"DocumentIdStr", "Sha256Str", "VaultIdStr"}
+
+
+@pytest.mark.parametrize("name", ["EdgeIdStr", "UserIdStr"])
+def test_uuid_format_is_what_the_alias_emits(name: str) -> None:
+    """An alias publishing ``format: uuid`` accepts and emits canonical UUIDs."""
+    assert _published_shape(name).format == "uuid"
+    adapter = TypeAdapter(getattr(schemas_module, name))
+
+    @given(st.uuids())
+    @ALIAS_SETTINGS
+    def inner(value: uuid.UUID) -> None:
+        assert adapter.validate_python(str(value)) == str(value)
+
+    inner()
+
+
+def test_date_format_is_necessary_not_sufficient() -> None:
+    """Every calendar date is accepted; a date-shaped impossible day is not.
+
+    ``format: date`` is RFC 3339 full-date, which already excludes
+    ``2026-02-30``; the validator refuses it too, so the published format
+    promises nothing the server withholds.
+    """
+    assert _published_shape("DocumentDateStr").format == "date"
+    adapter = TypeAdapter(DocumentDateStr)
+
+    @given(DOC_DATE_SHAPE_VALID)
+    @ALIAS_SETTINGS
+    def inner(value: str) -> None:
+        assert adapter.validate_python(value) == value
+
+    inner()
+    assert not _accepted(adapter, "2026-02-30")
+
+
+# A valid value of each patterned alias, edited below one character at a time.
+_EDIT_SEEDS: dict[str, tuple[str, ...]] = {
+    "DocumentIdStr": ("0123abcd_slug_9",),
+    "VaultIdStr": ("vault_a-9", "a"),
+    "Sha256Str": ("sha256:" + "0a" * 32, "0A" * 32),
+}
+
+
+def _single_edits(seed: str) -> set[str]:
+    printable = [chr(c) for c in range(0x20, 0x7F)] + ["\n"]
+    edits = {seed[:i] + seed[i + 1 :] for i in range(len(seed))}
+    for i in range(len(seed) + 1):
+        for char in printable:
+            edits.add(seed[:i] + char + seed[i:])
+            if i < len(seed):
+                edits.add(seed[:i] + char + seed[i + 1 :])
+    return edits
+
+
+def test_edit_seeds_cover_every_patterned_alias() -> None:
+    assert {s.name for s in _PATTERNED} == set(_EDIT_SEEDS)
+
+
+@pytest.mark.parametrize("spec", _PATTERNED, ids=[s.name for s in _PATTERNED])
+def test_published_pattern_agrees_on_every_one_character_edit(spec: AliasSpec) -> None:
+    """Exhaustively, every value one printable character from a valid one.
+
+    The boundary a pattern one character class off the validator's would
+    move, checked without depending on a generator happening to reach it.
+    """
+    pattern = _published_shape(spec.name).pattern
+    assert pattern is not None
+    disagreements = sorted(
+        value
+        for seed in _EDIT_SEEDS[spec.name]
+        for value in _single_edits(seed)
+        if _schema_match(pattern, value) != _accepted(spec.adapter, value)
+    )
+    assert not disagreements, disagreements[:10]

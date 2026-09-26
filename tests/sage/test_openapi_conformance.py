@@ -2603,3 +2603,196 @@ def test_published_source_type_vocabularies_match_the_enum():
     assert sorted(spec["components"]["schemas"]["SourceType"]["enum"]) == members
     adapter_defaults = vault_config["properties"]["adapter_defaults"]
     assert sorted(adapter_defaults["propertyNames"]["enum"]) == members
+
+
+# ---------------------------------------------------------------------------
+# Published shapes: the YAML states the shape each typed alias publishes
+# ---------------------------------------------------------------------------
+
+_SHAPE_KEYS = ("pattern", "format")
+
+
+def _shape_node(node: dict, defs: dict) -> dict:
+    """``node`` with ``$ref``s followed through ``defs`` and a null arm dropped."""
+    while isinstance(node, dict) and "$ref" in node:
+        node = defs[node["$ref"].rsplit("/", 1)[-1]]
+    for key in ("anyOf", "oneOf"):
+        arms = [a for a in node.get(key, ()) if a.get("type") != "null"]
+        if len(arms) == 1:
+            return _shape_node(arms[0], defs)
+    return node
+
+
+def _shapes_along(node: dict, defs: dict, path: str) -> dict[str, dict]:
+    """``{path: shape}`` for a property and, for an array, its items."""
+    node = _shape_node(node, defs)
+    found = {path: {k: node[k] for k in _SHAPE_KEYS if k in node}}
+    if isinstance(node.get("items"), dict):
+        found.update(_shapes_along(node["items"], defs, f"{path}[]"))
+    return found
+
+
+def _reachable_from(spec: dict, key: str) -> set[str]:
+    """Component schemas reachable from any operation's ``key`` node.
+
+    ``key`` is ``requestBody`` or ``responses``.
+    """
+    schemas = spec["components"]["schemas"]
+    pending: list = []
+    for item in (spec.get("paths") or {}).values():
+        for method, op in item.items():
+            if method in _HTTP_METHODS:
+                pending.append(op.get(key) or {})
+    seen: set[str] = set()
+    while pending:
+        node = pending.pop()
+        if isinstance(node, dict):
+            ref = node.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/components/schemas/"):
+                name = ref.rsplit("/", 1)[-1]
+                if name not in seen:
+                    seen.add(name)
+                    pending.append(schemas.get(name, {}))
+            pending.extend(node.values())
+        elif isinstance(node, list):
+            pending.extend(node)
+    return seen
+
+
+def _model_shape_divergences(spec: dict, classes: dict[str, type], label: str) -> list[str]:
+    """Each property whose YAML shape differs from its Pydantic field's.
+
+    A schema reachable from a request body is compared with the model's
+    validation schema -- what the server accepts -- and one reachable only
+    from a response with its serialization schema -- what the server emits.
+    A normalizing alias publishes a different pattern in each. A schema no
+    operation reaches has no direction, so either rendering satisfies it.
+    """
+    schemas = spec["components"]["schemas"]
+    requests = _reachable_from(spec, "requestBody")
+    responses = _reachable_from(spec, "responses")
+    issues: list[str] = []
+    for name, schema_def in schemas.items():
+        model = classes.get(name)
+        if model is None or getattr(model, "__pydantic_root_model__", False):
+            continue
+        if name in requests:
+            modes = ("validation",)
+        elif name in responses:
+            modes = ("serialization",)
+        else:
+            modes = ("validation", "serialization")
+        yaml_props = _flatten_yaml_properties(schema_def, spec)
+        rendered = {
+            mode: model.model_json_schema(mode=mode, ref_template="#/$defs/{model}")
+            for mode in modes
+        }
+        for field, yaml_prop in yaml_props.items():
+            if not isinstance(yaml_prop, dict):
+                continue
+            yam = _shapes_along(yaml_prop, schemas, f"{name}.{field}")
+            candidates = []
+            for mode, schema in rendered.items():
+                pyd_prop = (schema.get("properties") or {}).get(field)
+                if pyd_prop is None or ("$ref" in pyd_prop and "$ref" in yaml_prop):
+                    break  # absent, or a nested model compared as its own schema
+                candidates.append(
+                    (mode, _shapes_along(pyd_prop, schema.get("$defs", {}), f"{name}.{field}"))
+                )
+            else:
+                if not any(
+                    all(pyd[p] == yam[p] for p in pyd.keys() & yam.keys())
+                    for _mode, pyd in candidates
+                ):
+                    mode, pyd = candidates[0]
+                    for path in sorted(pyd.keys() & yam.keys()):
+                        if pyd[path] != yam[path]:
+                            issues.append(
+                                f"{label} {path} ({mode}): YAML {yam[path]} vs model {pyd[path]}"
+                            )
+    return issues
+
+
+def _route_param_shape_divergences(spec: dict, live: dict, label: str) -> list[str]:
+    """Each YAML path or query parameter whose shape differs from the live route's."""
+    issues: list[str] = []
+    live_schemas = (live.get("components") or {}).get("schemas") or {}
+    for path, item in (spec.get("paths") or {}).items():
+        live_item = (live.get("paths") or {}).get(path) or {}
+        for method, op in item.items():
+            if method not in _HTTP_METHODS or method not in live_item:
+                continue
+            declared = [*item.get("parameters", []), *op.get("parameters", [])]
+            live_params = {p["name"]: p for p in live_item[method].get("parameters", [])}
+            for param in declared:
+                if "$ref" in param:
+                    param = _resolve_json_pointer(spec, param["$ref"])
+                counterpart = live_params.get(param.get("name"))
+                if counterpart is None:
+                    continue
+                where = f"{method.upper()} {path} {param['name']}"
+                yam = _shapes_along(param.get("schema", {}), spec["components"]["schemas"], where)
+                got = _shapes_along(counterpart.get("schema", {}), live_schemas, where)
+                for key in yam.keys() & got.keys():
+                    if yam[key] != got[key]:
+                        issues.append(f"{label} {key}: YAML {yam[key]} vs route {got[key]}")
+    return issues
+
+
+def test_yaml_shapes_match_pydantic(
+    sage_core_spec: dict | None,
+    cas_app_spec: dict | None,
+    live_openapi: dict,
+):
+    """The YAML publishes the ``pattern`` and ``format`` each field's model does.
+
+    A typed alias states its shape through a ``PublishedShape`` marker. Per
+    CAS-ADR-008 the YAML is authoritative, so it carries the same shape on
+    every property and parameter the alias types -- request bodies, response
+    bodies, and path and query parameters alike. No allowlist: a field typed
+    with an alias and published bare fails here, as does a YAML shape on a
+    field whose model states none. It compares the YAML with each model's own
+    rendering; that the served document renders each model once, as the YAML
+    does, is ``test_served_document_splits_no_component``'s.
+    """
+    assert sage_core_spec is not None and cas_app_spec is not None
+    issues = [
+        *_model_shape_divergences(sage_core_spec, _sage_pydantic_classes(), "sage_core_api"),
+        *_model_shape_divergences(cas_app_spec, _cas_app_pydantic_classes(), "cas_app_api"),
+        *_route_param_shape_divergences(sage_core_spec, live_openapi, "sage_core_api"),
+        *_route_param_shape_divergences(cas_app_spec, live_openapi, "cas_app_api"),
+    ]
+    assert not issues, "YAML shape diverges from the model:\n" + "\n".join(sorted(issues))
+
+
+def _served_documents() -> dict[str, dict]:
+    """Each OpenAPI document the deployments serve, keyed by the app serving it.
+
+    The core app serves the SAGE and co-located CAS Application operations;
+    the BFF serves the CAS Application on its own in a hosted deployment, and
+    carries components the core document does not.
+    """
+    from app.backend.asgi import create_bff_app
+
+    return {"core": create_app().openapi(), "bff": create_bff_app().openapi()}
+
+
+@pytest.mark.parametrize("served", ["core", "bff"])
+def test_served_document_splits_no_component(served: str):
+    """The served document publishes each model as one component, as the YAML does.
+
+    FastAPI renders a model reached from both a request and a response once
+    per mode, and when the two renderings differ it publishes them as
+    ``<Model>-Input`` and ``<Model>-Output``. The YAML never splits a
+    component, so a split is a served contract the authoritative one does not
+    state. A normalizing alias publishes a different pattern per mode, which
+    is how a split arises; a model carrying one on both sides pins a single
+    rendering.
+    """
+    document = _served_documents()[served]
+    split = sorted(
+        name
+        for name in (document.get("components") or {}).get("schemas") or {}
+        if name.endswith(("-Input", "-Output"))
+    )
+    assert not split, f"the {served} document splits these components by mode: {split}"

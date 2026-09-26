@@ -14,9 +14,11 @@ the REST surface does not have.
 
 from __future__ import annotations
 
-from typing import Annotated, get_args
+from typing import Annotated
 
-from pydantic import BaseModel, BeforeValidator, Field
+from pydantic import BaseModel, BeforeValidator, Field, TypeAdapter
+
+from sage.models.schemas import DocumentIdStr, VaultIdStr
 
 
 def param_doc(model: type[BaseModel], field: str, *, mcp: str | None = None) -> str:
@@ -32,23 +34,31 @@ def param_doc(model: type[BaseModel], field: str, *, mcp: str | None = None) -> 
     return f"{info.description} {mcp}" if mcp else info.description
 
 
-def _field_pattern(model: type[BaseModel], field: str) -> str | None:
-    """The ``pattern`` constraint on ``model.field``, if it carries one.
+_SHAPE_KEYS = ("pattern", "format")
 
-    Read from the field's own metadata and, for an optional field, from the
-    typed alias inside its union, so the MCP parameter publishes the same
-    rule the REST contract does.
+
+def published_shape(annotation: object) -> dict[str, object]:
+    """The ``pattern`` and ``format`` that ``annotation`` publishes.
+
+    Read from the schema the annotation renders, so a shape declared by a
+    ``Field(pattern=...)`` and one a typed alias states through its marker
+    are found alike, and an optional value's null arm is looked past. A list
+    publishes its items' shape as its ``items`` schema.
     """
-    info = model.model_fields[field]
-    candidates = list(info.metadata)
-    for arg in get_args(info.annotation):
-        candidates.extend(getattr(arg, "__metadata__", ()))
-    for item in candidates:
-        for meta in getattr(item, "metadata", [item]):
-            pattern = getattr(meta, "pattern", None)
-            if pattern:
-                return pattern
-    return None
+    schema = TypeAdapter(annotation).json_schema()
+    arms = [a for a in schema.get("anyOf", ()) if a.get("type") != "null"]
+    node = arms[0] if len(arms) == 1 else schema
+    shape: dict[str, object] = {k: node[k] for k in _SHAPE_KEYS if k in node}
+    items = node.get("items")
+    if isinstance(items, dict) and any(k in items for k in _SHAPE_KEYS):
+        shape["items"] = items
+    return shape
+
+
+def _described(annotation: object, description: str, shape: dict[str, object]) -> object:
+    if not shape:
+        return Annotated[annotation, Field(description=description)]
+    return Annotated[annotation, Field(description=description, json_schema_extra=shape)]
 
 
 def model_param(
@@ -56,29 +66,37 @@ def model_param(
 ) -> object:
     """``annotation`` published with ``param_doc(model, field, mcp=mcp)``.
 
-    A request field constrained by a pattern publishes that pattern on the
-    parameter's schema too. The schema annotation constrains nothing at the
-    framework boundary: the tool body validates the value against the same
-    request model, so a refusal reads the same on both surfaces.
+    A request field whose type states a shape publishes that shape on the
+    parameter's schema too, so the MCP parameter states the rule the REST
+    contract does. The schema annotation constrains nothing at the framework
+    boundary: the tool body validates the value against the same request
+    model, so a refusal reads the same on both surfaces.
     """
     description = param_doc(model, field, mcp=mcp)
-    pattern = _field_pattern(model, field)
-    if pattern is None:
-        return Annotated[annotation, Field(description=description)]
-    return Annotated[
-        annotation, Field(description=description, json_schema_extra={"pattern": pattern})
-    ]
+    info = model.model_fields[field]
+    # A typed alias's metadata is lifted off the annotation onto the field.
+    typed = Annotated[(info.annotation, *info.metadata)] if info.metadata else info.annotation
+    shape = published_shape(typed)
+    return _described(annotation, description, shape)
 
 
-VaultIdParam = Annotated[
-    str,
-    Field(description="Target vault identifier. `list_vaults` names the registered vaults."),
-]
+def shaped_param(annotation: object, shaped_as: object, description: str) -> object:
+    """``annotation`` published with ``description`` and the shape of ``shaped_as``.
 
-DocIdAliasParam = Annotated[
-    str | None,
-    Field(description="Alias for `document_id`; supply exactly one of the two."),
-]
+    For a parameter with no request-body field to read: a path segment or the
+    vault a tool addresses. ``shaped_as`` is the typed alias the REST route
+    validates the same value with.
+    """
+    return _described(annotation, description, published_shape(shaped_as))
+
+
+VaultIdParam = shaped_param(
+    str, VaultIdStr, "Target vault identifier. `list_vaults` names the registered vaults."
+)
+
+DocIdAliasParam = shaped_param(
+    str | None, DocumentIdStr, "Alias for `document_id`; supply exactly one of the two."
+)
 
 #: Appended to a ``document_id`` description that admits the ``doc_id`` alias.
 DOC_ID_ALIAS_NOTE = "Alias: `doc_id`; supply exactly one of the two."

@@ -8,11 +8,12 @@ import hashlib
 import re
 import unicodedata
 
-# Canonical document-id shape: 8 hex chars, an underscore, then a slug.
-# Mirrors the validator pattern enforced on DocumentIdStr in
-# sage/models/schemas.py; kept here as the single source for the
-# generator and the shape predicate so the two never drift.
-_DOCUMENT_ID_RE = re.compile(r"^[0-9a-f]{8}_[a-z0-9_]+$")
+from sage.models.schemas import DOCUMENT_ID_PATTERN
+
+# Canonical document-id shape: 8 hex chars, an underscore, then a slug --
+# the pattern DocumentIdStr validates and publishes, so the generator's
+# predicate, the validator and the published schema share one rule.
+_DOCUMENT_ID_RE = re.compile(DOCUMENT_ID_PATTERN)
 
 
 def is_well_formed_document_id(value: str) -> bool:
