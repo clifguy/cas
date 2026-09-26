@@ -2098,14 +2098,13 @@ def register_sage_tools(
           retired section
         """
         try:
-            summary = await get_vault_registry_service().create_vault(
-                CreateVaultRequest(config=config)
-            )
+            request = CreateVaultRequest(config=config)
+            summary = await get_vault_registry_service().create_vault(request)
             return {
                 "vault_id": summary.id,
                 "name": summary.name,
-                "storage_root": config["vault"]["storage_root"],
-                "config": config,
+                "storage_root": request.config["vault"]["storage_root"],
+                "config": request.config,
             }
         except (SAGEError, ValueError) as e:
             return error_response(e)

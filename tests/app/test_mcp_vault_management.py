@@ -523,6 +523,8 @@ class TestSageCreateVaultRetiredNulls:
         assert "members" not in on_disk["vault"]
         # Positive control: the rest of the declaration was written.
         assert on_disk["vault"]["name"] == "Null Vault"
+        # The echoed config is the one written, not the one sent.
+        assert result["config"] == on_disk
 
     # TEST-APP-MCP-037
     async def test_mcp_037_blocks_destructive_change_without_force(self, registered_vault):

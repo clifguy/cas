@@ -255,8 +255,10 @@ class VaultRegistryService:
         Validates the config, creates the vault directories, writes
         vault_config.yaml, initializes services, and registers the vault.
         """
-        declaration = without_null_retired_sections(body.config)
-        config = _validate_config(declaration)
+        # The request carries the declaration as written, so a caller echoing
+        # it back reports what was stored rather than what was sent.
+        body.config = without_null_retired_sections(body.config)
+        config = _validate_config(body.config)
         vault_id = config.vault.id
 
         if vault_id in self._registry:
@@ -291,7 +293,7 @@ class VaultRegistryService:
         old_yaml_bytes = (
             config_path.read_bytes() if config_path is not None and config_path.exists() else None
         )
-        vault_source_store.write_config(vault_id, declaration)
+        vault_source_store.write_config(vault_id, body.config)
 
         try:
             services = await self._initialize_services(
