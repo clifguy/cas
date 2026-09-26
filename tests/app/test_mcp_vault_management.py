@@ -21,6 +21,7 @@ from sage.mcp_server import (
     get_vault_config,
     ingest_document,
     list_vaults,
+    reload_vault,
     update_vault_config,
 )
 from sage.mcp_server import (
@@ -414,24 +415,38 @@ class TestSageUpdateVaultConfig:
         for section in ("lifecycle", "metadata_extraction", "edge_inference"):
             assert updated[section] == original[section]
 
+    @pytest.mark.parametrize(
+        ("section", "key", "value"),
+        [
+            (
+                None,
+                "source_adapters",
+                {"adapters": [{"source_type": "markdown", "enabled": False}]},
+            ),
+            (None, "access_control_defaults", {"new_documents_restricted": False}),
+            ("vault", "members", [{"user_id": "user1", "role": "editor"}]),
+        ],
+        ids=["source_adapters", "access_control_defaults", "vault.members"],
+    )
     async def test_update_rewrite_drops_an_ignored_legacy_section(
-        self, registered_vault, vaults_root
+        self, registered_vault, vaults_root, section, key, value
     ):
-        """A stale ``source_adapters`` section disappears on the first write.
+        """A stale retired section disappears on the first write.
 
         ``update_config`` rebuilds the persisted YAML from the validated
-        model, so the section a pre-CAS-ADR-046 config still carries is
-        dropped by any update rather than needing a hand edit of a file
-        inside the vault tree. That is what makes the operational
-        migration a single tool call per vault.
+        model, so a section a stored config still carries after its
+        retirement is dropped by any update rather than needing a hand edit
+        of a file inside the vault tree. That is what makes the operational
+        migration a single tool call per vault. The reload stands in for the
+        server reading the stale file at startup.
         """
         config_path = Path(vaults_root) / "test_vault" / "vault_config.yaml"
         raw = yaml.safe_load(config_path.read_text())
-        raw["source_adapters"] = {
-            "adapters": [{"source_type": "markdown", "enabled": False}],
-        }
+        (raw[section] if section else raw)[key] = value
         config_path.write_text(yaml.dump(raw, sort_keys=False))
-        assert "source_adapters" in yaml.safe_load(config_path.read_text())
+        stale = yaml.safe_load(config_path.read_text())
+        assert key in (stale[section] if section else stale)
+        assert "error" not in _parse(await reload_vault("test_vault"))
 
         result = _parse(
             await update_vault_config(
@@ -442,8 +457,31 @@ class TestSageUpdateVaultConfig:
         assert result["status"] == "updated"
 
         written = yaml.safe_load(config_path.read_text())
-        assert "source_adapters" not in written
+        assert key not in (written[section] if section else written)
         assert written["adapter_defaults"] == {"docx": {"heading_style_map": {"Custom Section": 1}}}
+
+    async def test_update_refuses_a_vault_section_carrying_members(
+        self, registered_vault, vaults_root
+    ):
+        """A retired field inside the ``vault`` section is refused by name.
+
+        The section is a free-form mapping on the request, so the field reaches
+        configuration validation, which refuses it rather than persisting a
+        value that configures nothing. The stored file is left untouched.
+        """
+        config_path = Path(vaults_root) / "test_vault" / "vault_config.yaml"
+        before = config_path.read_bytes()
+        vault = dict(registered_vault["vault"])
+        vault["members"] = [{"user_id": "user1", "role": "editor"}]
+
+        result = _parse(await update_vault_config("test_vault", vault=vault))
+
+        assert result.get("error") == "vault_config_validation_error"
+        assert any(e.startswith("'vault.members' is retired") for e in result["detail"]["errors"])
+        assert config_path.read_bytes() == before
+        # Control: the same section without the field is accepted.
+        del vault["members"]
+        assert _parse(await update_vault_config("test_vault", vault=vault))["status"] == "updated"
 
     # TEST-APP-MCP-037
     async def test_mcp_037_blocks_destructive_change_without_force(self, registered_vault):

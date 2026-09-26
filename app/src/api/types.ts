@@ -686,7 +686,6 @@ export interface VaultIdentityConfig {
   storage_root: string;
   brain_root: string;
   visibility: string;
-  members: Record<string, unknown>[] | null;
   timezone: string;
 }
 
@@ -744,7 +743,6 @@ export interface VaultConfig {
   metadata_extraction: Record<string, unknown>;
   edge_inference: Record<string, unknown>;
   abstraction: VaultAbstractionConfig;
-  access_control_defaults?: Record<string, unknown> | null;
   retrieval_health?: Record<string, unknown> | null;
 }
 
@@ -767,7 +765,6 @@ export interface UpdateVaultConfigRequest {
   metadata_extraction?: Record<string, unknown>;
   edge_inference?: Record<string, unknown>;
   abstraction?: VaultAbstractionConfig;
-  access_control_defaults?: Record<string, unknown> | null;
   retrieval_health?: Record<string, unknown> | null;
   dry_run?: boolean;
 }

@@ -55,7 +55,7 @@ full base state set and base actions.
 
 **Artifact:** `docs/fs/sage/vault_config.schema.json`
 **Category:** valid
-**Constraint:** Optional fields (members, access_control_defaults, abstraction) accepted
+**Constraint:** Optional fields (timezone, adapter_defaults, abstraction) accepted
 
 **Input:**
 ```yaml
@@ -66,11 +66,7 @@ vault:
   storage_root: "/data/sources"
   brain_root: "/data/brain"
   visibility: team
-  members:
-    - user_id: user1
-      role: editor
-    - user_id: user2
-      role: reader
+  timezone: America/Chicago
 document_types:
   doc_types:
     - value: report
@@ -97,8 +93,6 @@ edge_inference:
       tier: 1
       inference_rules:
         - method: version_chain
-access_control_defaults:
-  new_documents_restricted: true
 abstraction:
   enabled: true
   model: "test-model"
@@ -163,16 +157,22 @@ abstraction:
 **Expected:** FAIL -- enum violation
 **Rationale:** "public" is not a valid visibility level.
 
-### TEST-SAGE-VC-008: member role invalid enum
+### TEST-SAGE-VC-008: Retired section in a request vs. a stored config
 
-**Artifact:** `docs/fs/sage/vault_config.schema.json`
-**Category:** invalid
-**Constraint:** `vault.members[].role` must be one of [reader, editor, admin]
+**Artifact:** `docs/fs/sage/vault_config.schema.json`, `sage/config.py`
+**Category:** invalid (request) / valid (stored)
+**Constraint:** `access_control_defaults`, `vault.members` and `source_adapters` are retired
 
-**Input:** `vault.members: [{user_id: "u1", role: "owner"}]`
+**Input:** `vault.members: [{user_id: "u1", role: "editor"}]`
 
-**Expected:** FAIL -- enum violation
-**Rationale:** "owner" is set at vault level, not as a member role.
+**Expected:** a `create_vault` or `update_vault_config` request FAILS with
+`vault_config_validation_error` naming `vault.members`; the same content read
+back from a stored `vault_config.yaml` loads with the field ignored and one
+WARNING naming the vault and the field.
+**Rationale:** SAGE keeps no member roles or document editors (CAS-ADR-044,
+CAS-ADR-056). A request declaring one would configure nothing, so it is
+refused; a stored configuration is a fact, and refusing it would drop the
+vault from discovery.
 
 ### TEST-SAGE-VC-009: max_abstract_tokens below minimum
 
