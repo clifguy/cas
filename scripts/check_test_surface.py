@@ -670,6 +670,32 @@ KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
         "re-parametrized for the stable key: the cases run under their delegated-tenant-* and"
         " delegated-issuer-* ids"
     ),
+    (
+        "tests/app/test_mcp_vault_management.py::TestSageUpdateVaultConfig::"
+        "test_update_rewrite_drops_an_ignored_legacy_section"
+    ): (
+        "parametrized over every retired section, so the case runs under its "
+        "[source_adapters], [access_control_defaults] and [vault.members] ids"
+    ),
+    (
+        "tests/sage/test_mcp_self_documentation.py::"
+        "test_maintenance_parameters_publish_their_request_field"
+        "[update_vault_config-access_control_defaults]"
+    ): "the update_vault_config access_control_defaults parameter is retired",
+    (
+        "tests/sage/test_vault_source_store_seam.py::"
+        "test_vss_b1_load_config_warns_on_retired_section[document_store]"
+    ): (
+        "parametrized over every retired section, so each binding runs under its "
+        "<binding>-<section> ids"
+    ),
+    (
+        "tests/sage/test_vault_source_store_seam.py::"
+        "test_vss_b1_load_config_warns_on_retired_section[filesystem]"
+    ): (
+        "parametrized over every retired section, so each binding runs under its "
+        "<binding>-<section> ids"
+    ),
 }
 
 

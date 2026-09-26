@@ -256,6 +256,25 @@ class TestSageCreateVault:
         expected_path = vaults_root / "cp_vault" / "vault_config.yaml"
         assert services.config_path == expected_path
 
+    async def test_create_drops_null_retired_fields_instead_of_persisting_them(
+        self, vaults_root, empty_registry
+    ):
+        """A creation declaration's null retired fields are not written to storage."""
+        cfg = _make_full_config_dict(vaults_root, "null_vault", "Null Vault", "testuser")
+        cfg["access_control_defaults"] = None
+        cfg["vault"]["members"] = None
+
+        result = _parse(await create_vault(config=cfg))
+
+        assert result["vault_id"] == "null_vault"
+        on_disk = yaml.safe_load((vaults_root / "null_vault" / "vault_config.yaml").read_text())
+        assert "access_control_defaults" not in on_disk
+        assert "members" not in on_disk["vault"]
+        # Positive control: the rest of the declaration was written.
+        assert on_disk["vault"]["name"] == "Null Vault"
+        # The echoed config is the one written, not the one sent.
+        assert result["config"] == on_disk
+
 
 # ---------------------------------------------------------------------------
 # 2. get_vault_config
@@ -504,27 +523,6 @@ class TestSageUpdateVaultConfig:
 
         assert result["status"] == "updated"
         assert "members" not in yaml.safe_load(config_path.read_text())["vault"]
-
-
-class TestSageCreateVaultRetiredNulls:
-    async def test_create_drops_null_retired_fields_instead_of_persisting_them(
-        self, vaults_root, empty_registry
-    ):
-        """A creation declaration's null retired fields are not written to storage."""
-        cfg = _make_full_config_dict(vaults_root, "null_vault", "Null Vault", "testuser")
-        cfg["access_control_defaults"] = None
-        cfg["vault"]["members"] = None
-
-        result = _parse(await create_vault(config=cfg))
-
-        assert result["vault_id"] == "null_vault"
-        on_disk = yaml.safe_load((vaults_root / "null_vault" / "vault_config.yaml").read_text())
-        assert "access_control_defaults" not in on_disk
-        assert "members" not in on_disk["vault"]
-        # Positive control: the rest of the declaration was written.
-        assert on_disk["vault"]["name"] == "Null Vault"
-        # The echoed config is the one written, not the one sent.
-        assert result["config"] == on_disk
 
     # TEST-APP-MCP-037
     async def test_mcp_037_blocks_destructive_change_without_force(self, registered_vault):
