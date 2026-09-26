@@ -1,14 +1,14 @@
 # CAS — Clif's Agentic System
 
-CAS is a personal, experimental agentic ecosystem for working with personal-scale knowledge graphs and the LLM-orchestrated workflows that consume them. It is not a product — it is a single-developer research codebase, made public so others can read, fork, and adapt.
+CAS is an agentic ecosystem for working with knowledge graphs and the LLM-orchestrated workflows that consume them. SAGE, its knowledge-graph and retrieval subsystem, is in commercial production. The source is public so others can read, fork, and adapt it.
 
 ## Components
 
-CAS has three loosely-coupled pieces:
+CAS has three loosely-coupled pieces. Two are built; the third is designed but not yet implemented.
 
 - **SAGE** (Salience-Aware Graph Engine) — knowledge graph, document store, and retrieval subsystem. Built on Postgres with pgvector for the graph store and vector / full-text content. Exposes a Core API (FastAPI) and an MCP server.
-- **ROOT Harness** (Runtime for Orchestration, Operations, and Testing) — LangGraph-based orchestration layer for stewards (agents that own canonical artifacts) and orchestrators (agents that own coordination lifecycles). Calls into SAGE via the Core API.
 - **CAS Application** — HTML5 web client (React + TypeScript) for human oversight, approval, and browsing of the graph and pipeline state.
+- **ROOT Harness** (Runtime for Orchestration, Operations, and Testing) — *planned, not yet built.* A LangGraph-based orchestration layer for stewards (agents that own canonical artifacts) and orchestrators (agents that own coordination lifecycles), which will call into SAGE via the Core API. Its API contract is specified in the Formal Substrate.
 
 ## Repository layout
 
@@ -19,7 +19,6 @@ docs/
   process/         Process and governance documentation
 domains/           Use-case-specific orchestrator configs (empty by default)
 sage/              SAGE source code
-root_harness/      ROOT Harness source code
 app/               CAS web client source code
 tests/             Test suite and test specifications
 scripts/           One-off operational scripts
@@ -63,7 +62,11 @@ Restart the uvicorn process after editing files in its import path — the runni
 
 ## Status
 
-Experimental. The architecture is real and the system runs day-to-day for the maintainer, but interfaces churn, test coverage is uneven outside the SAGE core, and there is no public release cadence. Issues and PRs are welcome but no SLA is implied.
+In production. SAGE and the CAS Application run on a cloud deployment; ROOT Harness is not yet built.
+
+Since release 3.0, the published contract follows a compatibility rule. Every contract change is classified as a patch or a minor release, and anything callers use (an operation, tool, parameter, response field or default) is deprecated at least 30 days and one release before it is removed or changed. The only exceptions are fixes for a security exposure or a data-integrity defect.
+
+Test coverage is uneven outside the SAGE core. Issues and PRs are welcome but no SLA is implied.
 
 ## License
 
