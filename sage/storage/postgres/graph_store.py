@@ -1,4 +1,4 @@
-"""PostgreSQL graph store for SAGE documents, edges, and users (CAS-ADR-042).
+"""PostgreSQL graph store for SAGE documents and edges (CAS-ADR-042).
 
 A native async psycopg3 store over a connection pool. Postgres is the sole
 storage backend; concurrent operations borrow pooled connections and Postgres

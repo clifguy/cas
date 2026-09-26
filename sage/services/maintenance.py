@@ -353,8 +353,8 @@ class MaintenanceService:
         there is no pending-column work for this method to detect or apply and
         ``columns_added`` is always empty.
 
-        Seven data backfills run, each naming itself in ``backfills_applied``
-        only when it changed rows, so a clean vault reports an empty list and a
+        The data backfills run, each naming itself in ``backfills_applied``
+        only when it changed something, so a clean vault reports an empty list and a
         re-call after a repair reports nothing further.
 
         The first: a document that failed abstraction and was later repaired
@@ -394,6 +394,12 @@ class MaintenanceService:
         input bound (``_divide_passages_over_input_bound``), and indexing each
         passage's structure relative to its document
         (``_migrate_to_relative_indexed_structure``).
+
+        The last drops the table a retired per-vault user registry left in the
+        vault's own schema. Write attribution reads the validated credential
+        (CAS-ADR-056), so nothing reads or writes it. The table is resolved
+        against the connection's current schema, never through the search path,
+        which falls through to ``public``.
 
         Scan every ``unique_keys`` declaration in vault config. For each
         declared (doc_type, field), build the chain-head-grouped value map and

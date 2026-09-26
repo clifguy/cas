@@ -2633,13 +2633,14 @@ def register_sage_tools(
         The durable store provisions its schema externally, so
         ``columns_added`` is always empty.
 
-        Seven data backfills run; ``backfills_applied`` names each that changed
-        rows. They clear the ``pipeline_error`` a recovered
+        ``backfills_applied`` names each data backfill that changed
+        something. They clear the ``pipeline_error`` a recovered
         failure left behind, reduce a stored ``source_path`` in a spelling
         ingest no longer records to its plain form (each rewrite reported in
         ``source_paths_normalized``; a path that walks out of the source tree
-        is left as recorded), and bring stored passages and keyword vectors to
-        the current shape.
+        is left as recorded), bring stored passages and keyword vectors to
+        the current shape, and drop a retired user table from the vault's
+        schema.
         Only the heading backfill reads sources: a document whose source
         changed since it was indexed or cannot be read is listed once in
         ``documents_not_repaired`` and not read again until its source is
@@ -2650,14 +2651,13 @@ def register_sage_tools(
         and empty lists, except ``tier3_uniqueness_activations``, which
         re-lists each clean declaration.
 
-        **The last backfill is expensive and exclusive, and runs once.** It
-        rebuilds every index over the passage table, including the vector
-        index: expect minutes of exclusive access on a vault holding tens of
-        thousands of passages.
+        **The passage-structure backfill is expensive, exclusive and
+        one-time.** It rebuilds every passage index, vector index included:
+        expect minutes of exclusive access at tens of thousands of passages.
 
-        Run it with no pipeline work in flight: the call is refused while any
+        Run it with no pipeline work in flight: it is refused while any
         ingest, reabstract or recompute is queued or running on the vault,
-        and those calls are refused while it runs. The exclusion covers this
+        and they are refused while it runs. The exclusion covers this
         server process only.
 
         tier3 uniqueness: each ``unique_keys`` declaration in vault config

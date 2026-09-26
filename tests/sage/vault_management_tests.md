@@ -125,7 +125,7 @@ Creation is distinct from update.
 
 **Decision:** Passing a complete `config` dict validates the dict,
 creates the directory tree from `config.vault.id`, writes YAML,
-initializes services, registers, and bootstraps the owner. The return
+initializes services, and registers the vault. The return
 value echoes the written config.
 
 **Precondition:** Empty registry. `config.vault.id` is unique.

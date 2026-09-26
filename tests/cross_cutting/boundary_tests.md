@@ -59,9 +59,9 @@ Harness governance concern, not a SAGE enforcement concern.
 
 **Input:** Orchestrator calls SAGE `update_metadata` on a decision log it owns.
 
-**Expected:** Succeeds (SAGE allows it; the orchestrator is in the editor list for
-its own working-state documents). Policy enforcement at the ROOT Harness level
-permits this specific operation class.
+**Expected:** Succeeds (SAGE admits any authenticated caller and restricts no
+document's writers). Policy enforcement at the ROOT Harness level permits this
+specific operation class.
 
 **Rationale:** Working-state documents (decision logs, checkpoint artifacts) are
 owned by orchestrators. The boundary rule permits orchestrator-to-SAGE calls for

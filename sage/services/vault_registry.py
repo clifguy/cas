@@ -253,8 +253,7 @@ class VaultRegistryService:
         """Create a new vault from a full config dict.
 
         Validates the config, creates the vault directories, writes
-        vault_config.yaml, initializes services, registers the vault, and
-        bootstraps the owner.
+        vault_config.yaml, initializes services, and registers the vault.
         """
         config = _validate_config(body.config)
         vault_id = config.vault.id
