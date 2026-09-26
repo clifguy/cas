@@ -483,6 +483,47 @@ class TestSageUpdateVaultConfig:
         del vault["members"]
         assert _parse(await update_vault_config("test_vault", vault=vault))["status"] == "updated"
 
+    async def test_update_drops_a_null_retired_field_instead_of_persisting_it(
+        self, registered_vault, vaults_root
+    ):
+        """A null retired field is accepted and not written back.
+
+        A null configures nothing, so the update neither refuses it nor keeps a
+        placeholder for a field the model no longer declares; a dry run sees no
+        change to the section.
+        """
+        config_path = Path(vaults_root) / "test_vault" / "vault_config.yaml"
+        vault = dict(_parse(await get_vault_config("test_vault"))["vault"])
+        assert "members" not in vault
+        vault["members"] = None
+
+        preview = _parse(await update_vault_config("test_vault", vault=vault, dry_run=True))
+        assert preview["preview"]["changed_sections"] == []
+
+        result = _parse(await update_vault_config("test_vault", vault=vault))
+
+        assert result["status"] == "updated"
+        assert "members" not in yaml.safe_load(config_path.read_text())["vault"]
+
+
+class TestSageCreateVaultRetiredNulls:
+    async def test_create_drops_null_retired_fields_instead_of_persisting_them(
+        self, vaults_root, empty_registry
+    ):
+        """A creation declaration's null retired fields are not written to storage."""
+        cfg = _make_full_config_dict(vaults_root, "null_vault", "Null Vault", "testuser")
+        cfg["access_control_defaults"] = None
+        cfg["vault"]["members"] = None
+
+        result = _parse(await create_vault(config=cfg))
+
+        assert result["vault_id"] == "null_vault"
+        on_disk = yaml.safe_load((vaults_root / "null_vault" / "vault_config.yaml").read_text())
+        assert "access_control_defaults" not in on_disk
+        assert "members" not in on_disk["vault"]
+        # Positive control: the rest of the declaration was written.
+        assert on_disk["vault"]["name"] == "Null Vault"
+
     # TEST-APP-MCP-037
     async def test_mcp_037_blocks_destructive_change_without_force(self, registered_vault):
         """Removing an in-use doc_type without force returns destructive_config_change."""

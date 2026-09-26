@@ -4,6 +4,7 @@ Loads vault config from YAML, validates structure, and builds the lifecycle
 transition table used by LifecycleService for state machine validation.
 """
 
+import copy
 import functools
 import hashlib
 import json
@@ -2193,6 +2194,24 @@ def retired_sections_in(raw: object) -> list[str]:
             if node is not None:
                 present.append(path)
     return present
+
+
+def without_null_retired_sections(raw: dict) -> dict:
+    """Return a copy of ``raw`` with every null-valued retired section removed.
+
+    A null retired section configures nothing (:func:`retired_sections_in`), so
+    a write path drops it rather than persisting a placeholder for a field the
+    model no longer declares.
+    """
+    cleaned = copy.deepcopy(raw)
+    for path in _RETIRED_SECTIONS:
+        *parents, leaf = path.split(".")
+        node: object = cleaned
+        for part in parents:
+            node = node.get(part) if isinstance(node, dict) else None
+        if isinstance(node, dict) and leaf in node and node[leaf] is None:
+            del node[leaf]
+    return cleaned
 
 
 def warn_on_retired_sections(raw: object) -> None:

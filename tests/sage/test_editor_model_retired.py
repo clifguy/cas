@@ -272,5 +272,13 @@ def test_null_placeholders_are_not_retired_sections(
 
     valued = copy.deepcopy(written)
     valued["vault"]["members"] = copy.deepcopy(_MEMBERS)
+    valued_path = tmp_path / "valued.yaml"
+    valued_path.write_text(yaml.dump(valued, sort_keys=False))
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger="sage.config"):
+        load_vault_config(valued_path)
+    assert [
+        r for r in caplog.records if "'vault.members' is retired and ignored" in r.getMessage()
+    ] != []
     with pytest.raises(VaultConfigValidationError):
         _validate_config(valued)

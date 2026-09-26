@@ -23,7 +23,7 @@ from sage.api.errors import (
     DestructiveConfigChangeError,
     VaultConfigValidationError,
 )
-from sage.config import VaultConfig
+from sage.config import VaultConfig, without_null_retired_sections
 from sage.models.schemas import (
     HashCheckMatch,
     HashCheckRequest,
@@ -248,6 +248,7 @@ class VaultConfigService:
         for section in _ALL_SECTIONS:
             if section in body_dict:
                 merged[section] = body_dict[section]
+        merged = without_null_retired_sections(merged)
 
         if "vault" in body_dict and body_dict["vault"].get("id") != vault_id:
             raise VaultConfigValidationError(

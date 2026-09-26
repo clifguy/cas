@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from sage.api.errors import VaultAlreadyExistsError, VaultNotFoundError
-from sage.config import VaultConfig
+from sage.config import VaultConfig, without_null_retired_sections
 from sage.models.schemas import (
     CreateVaultRequest,
     ReloadVaultResponse,
@@ -255,7 +255,8 @@ class VaultRegistryService:
         Validates the config, creates the vault directories, writes
         vault_config.yaml, initializes services, and registers the vault.
         """
-        config = _validate_config(body.config)
+        declaration = without_null_retired_sections(body.config)
+        config = _validate_config(declaration)
         vault_id = config.vault.id
 
         if vault_id in self._registry:
@@ -290,7 +291,7 @@ class VaultRegistryService:
         old_yaml_bytes = (
             config_path.read_bytes() if config_path is not None and config_path.exists() else None
         )
-        vault_source_store.write_config(vault_id, body.config)
+        vault_source_store.write_config(vault_id, declaration)
 
         try:
             services = await self._initialize_services(
