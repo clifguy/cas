@@ -2115,8 +2115,8 @@ def register_sage_tools(
 
         Section structure follows the schema: ``vault``, ``document_types``,
         ``lifecycle``, ``metadata_extraction``, ``edge_inference``,
-        ``adapter_defaults``, ``abstraction``, ``access_control_defaults``,
-        ``retrieval_health``, ``timing``.
+        ``adapter_defaults``, ``abstraction``, ``retrieval_health``,
+        ``timing``.
 
         This is the authoritative source for vault-config-defined
         vocabulary that other tools depend on. Read this when you need:
@@ -2164,7 +2164,6 @@ def register_sage_tools(
         metadata_extraction: _config_section("metadata_extraction") = None,
         edge_inference: _config_section("edge_inference") = None,
         abstraction: _config_section("abstraction") = None,
-        access_control_defaults: _config_section("access_control_defaults") = None,
         retrieval_health: _config_section("retrieval_health") = None,
         force: _UPDATE_CONFIG_FORCE = False,
         dry_run: _UPDATE_CONFIG_DRY_RUN = False,
@@ -2196,7 +2195,7 @@ def register_sage_tools(
         - ``vault_not_found`` (404)
         - ``destructive_config_change`` (409): see above
         - ``vault_config_validation_error`` (400): the merged config fails
-          validation, or changes ``vault.id``
+          validation, changes ``vault.id``, or declares a retired section
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -2209,7 +2208,6 @@ def register_sage_tools(
                 metadata_extraction=metadata_extraction,
                 edge_inference=edge_inference,
                 abstraction=abstraction,
-                access_control_defaults=access_control_defaults,
                 retrieval_health=retrieval_health,
                 dry_run=dry_run,
             )

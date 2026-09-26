@@ -2312,7 +2312,7 @@ paths:
         `docs/fs/sage/vault_config.schema.json`. Section structure
         follows the schema: `vault`, `document_types`, `lifecycle`,
         `metadata_extraction`, `edge_inference`, `adapter_defaults`,
-        `abstraction`, `access_control_defaults`, `retrieval_health`, `timing`.
+        `abstraction`, `retrieval_health`, `timing`.
 
 
         **This is the authoritative source for vault-config-defined
@@ -2431,7 +2431,8 @@ paths:
         "400":
           description: >-
             `vault_config_validation_error`: the merged config failed
-            schema validation, or the request attempts to change `vault.id`.
+            schema validation, the request attempts to change `vault.id`,
+            or it declares a retired section.
 
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
 
@@ -8558,10 +8559,6 @@ components:
           type: [object, "null"]
           additionalProperties: true
           description: Replacement for the abstraction section of vault_config.yaml. Omit to leave unchanged.
-        access_control_defaults:
-          type: [object, "null"]
-          additionalProperties: true
-          description: Replacement for the access_control_defaults section of vault_config.yaml. Omit to leave unchanged.
         retrieval_health:
           type: [object, "null"]
           additionalProperties: true

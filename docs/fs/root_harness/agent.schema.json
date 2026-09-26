@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://cas.local/fs/root_harness/agent.schema.json",
   "title": "ROOT Harness Agent Registration Schema",
-  "description": "Defines the agent registration record for ROOT Harness. Every agent is also registered as a SAGE User entity (shared identifier). The SAGE User provides identity for data-layer operations; the ROOT Harness record provides configuration for execution-layer operations. See ROOT Harness Architecture Reference Sections 2.3 and 4.1.",
+  "description": "Defines the agent registration record for ROOT Harness, which configures an agent's execution-layer operations. SAGE holds no registration of its own: an agent's data-layer writes are attributed from its credential and from the agent_id it asserts as the agent name (CAS-ADR-056). See ROOT Harness Architecture Reference Sections 2.3 and 4.1.",
   "type": "object",
   "required": ["agents"],
   "additionalProperties": false,
@@ -18,7 +18,7 @@
         "properties": {
           "agent_id": {
             "type": "string",
-            "description": "Unique identifier, matching the SAGE User entity ID. Permanent; an agent that is retired is marked inactive but the SAGE User record persists for provenance."
+            "description": "Unique identifier, asserted as the agent name on the agent's SAGE writes. Permanent; an agent that is retired is marked inactive, and the provenance SAGE recorded for its writes is unaffected."
           },
           "display_name": {
             "type": "string",

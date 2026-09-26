@@ -15,7 +15,7 @@ from pydantic import ValidationError
 
 from sage.adapters.interfaces import GraphStore
 from sage.api.errors import VaultConfigValidationError
-from sage.config import VaultConfig, warn_on_retired_sections
+from sage.config import VaultConfig
 
 _REQUIRED_SECTIONS = (
     "vault",
@@ -27,7 +27,6 @@ _REQUIRED_SECTIONS = (
 _OPTIONAL_SECTIONS = (
     "adapter_defaults",
     "abstraction",
-    "access_control_defaults",
     "retrieval_health",
 )
 _ALL_SECTIONS = _REQUIRED_SECTIONS + _OPTIONAL_SECTIONS
@@ -117,9 +116,9 @@ def _validate_config(config_dict: dict) -> VaultConfig:
     The tier3 validator cache is built by ``VaultConfig.model_post_init``
     during ``model_validate``; a malformed ``metadata_schema`` therefore
     surfaces here at vault-create / update_config time rather than at the
-    first ingest call.
+    first ingest call. A retired section is refused here rather than
+    warned about: this path validates a request, not a stored configuration.
     """
-    warn_on_retired_sections(config_dict)
     try:
         return VaultConfig.model_validate(config_dict)
     except (ValidationError, jsonschema.SchemaError) as exc:

@@ -1,0 +1,27 @@
+classification: minor
+category: [caller-adaptation, operator-adaptation]
+summary: >-
+  The vault configuration drops the editor model it still described after the
+  per-vault user registry was removed. vault_config.schema.json removes the
+  access_control_defaults section and the vault.members roles, and VaultConfig
+  and VaultIdentity drop the matching fields. UpdateVaultConfigRequest and the
+  update_vault_config tool drop their access_control_defaults section, and the
+  get_vault_config description no longer lists it. A stored configuration
+  still carrying access_control_defaults, vault.members or source_adapters
+  loads with the section ignored and logs a warning naming the vault; a
+  create or update request declaring one is refused with
+  vault_config_validation_error naming the section. In the ROOT Harness
+  orchestration API (0.2.0) and agent.schema.json, register_agent registers
+  in ROOT Harness alone: an agent reaches SAGE under its own credential and
+  asserts its agent_id as the agent name, the dual_write_failure response is
+  removed, and no description refers to a SAGE user entity.
+for_callers: >-
+  get_vault_config no longer returns access_control_defaults or vault.members,
+  and update_vault_config no longer takes access_control_defaults; neither
+  ever controlled who could write. A create_vault or update_vault_config
+  request that declares access_control_defaults, vault.members or
+  source_adapters is now refused with vault_config_validation_error naming the
+  section; remove it and resend. Operators: a vault whose stored configuration
+  still carries one of these loads normally and logs a warning at startup; any
+  update_vault_config call on that vault rewrites the stored configuration
+  without it.

@@ -23,7 +23,7 @@ from sage.api.errors import (
     ForceReingestPathMismatchError,
     ForceReingestPinMismatchError,
 )
-from sage.config import VaultConfig
+from sage.config import STORED_CONFIG_CONTEXT, VaultConfig
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document, IngestRequest
 from sage.services.document_surface import compose_document_surface
@@ -3006,7 +3006,7 @@ async def test_retired_source_adapters_section_does_not_feed_the_adapter(
             }
         ]
     }
-    config = VaultConfig.model_validate(config_dict)
+    config = VaultConfig.model_validate(config_dict, context=STORED_CONFIG_CONTEXT)
     assert config.adapter_defaults == {}
 
     service = _make_ingestion_with_docx(

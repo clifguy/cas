@@ -19,13 +19,15 @@
 #   - Workflow-scoped: all execution operations are scoped to a workflow
 #     execution ID returned by trigger_workflow.
 #   - Agent identity: every agent is registered and referenced by a
-#     stable agent_id that matches its SAGE User entity.
+#     stable agent_id. SAGE holds no registration of its own: an agent's
+#     writes are attributed from its credential and its asserted agent
+#     name (CAS-ADR-056).
 #   - Two-type taxonomy: agent_type is steward or orchestrator
 #     (CAS-ADR-010).
 #   - Named operations: interrupt resolution uses structured descriptors,
 #     not freeform text (interrupt.schema.json).
 #
-# Related CAS ADRs: 001, 008, 010, 012, 013.
+# Related CAS ADRs: 001, 008, 010, 012, 013, 044, 056.
 # Related FS schemas: event_stream.schema.json, interrupt.schema.json.
 # =============================================================================
 
@@ -33,7 +35,7 @@ openapi: "3.1.0"
 
 info:
   title: ROOT Harness Orchestration API
-  version: "0.1.0"
+  version: "0.2.0"
   description: >-
     Orchestration API for ROOT Harness, the agent management and workflow
     execution component of CAS. Exposes workflow triggering, status
@@ -375,19 +377,19 @@ paths:
       operationId: register_agent
       summary: Register a new agent with capabilities and policy configuration.
       description: >-
-        Registers an agent in ROOT Harness and creates a corresponding
-        SAGE User entity with the same `agent_id`. The dual registration
-        serves two purposes: SAGE uses the identity for provenance
-        tracking and editor-based access control; ROOT Harness uses
-        it for dispatch, policy lookup, and execution logging.
+        Registers an agent in ROOT Harness, which uses the record for
+        dispatch, policy lookup, and execution logging. Registration
+        writes to ROOT Harness alone.
 
 
-        **Dual write is transactional.** If either the ROOT Harness
-        record or the SAGE User write fails after the other has
-        committed, the committed side is rolled back and the caller
-        receives `dual_write_failure` (500). Either the operation
-        succeeds end-to-end (201) or no record persists in either
-        store.
+        **SAGE identity is not registered.** SAGE admits a caller by
+        its credential (CAS-ADR-044) and attributes each write to the
+        principal and client that credential names, together with the
+        agent the caller asserts (CAS-ADR-056). ROOT Harness calls SAGE
+        under the agent's own credential and asserts the `agent_id` as
+        the agent name; SAGE records that name marked as asserted. No
+        SAGE-side record is created, so there is nothing to roll back
+        when registration fails.
 
 
         **Steward / orchestrator invariant.** Per the two-type
@@ -404,8 +406,8 @@ paths:
         live in `agent.schema.json`. `policy_ref` resolves against
         the domain instantiation's policies configuration (validated
         against `policy.schema.json`). Retirement marks the agent
-        inactive in ROOT Harness but its SAGE User record persists,
-        preserving provenance — the retirement endpoint will arrive
+        inactive in ROOT Harness; the provenance SAGE recorded for its
+        earlier writes is unaffected — the retirement endpoint will arrive
         in a future revision of this spec; until then, agent
         deactivation is an out-of-band operation.
       tags: [Agent Management]
@@ -417,7 +419,7 @@ paths:
               $ref: "#/components/schemas/RegisterAgentRequest"
       responses:
         "201":
-          description: Agent registered in both ROOT Harness and SAGE.
+          description: Agent registered in ROOT Harness.
           content:
             application/json:
               schema:
@@ -458,16 +460,6 @@ paths:
             `owned_artifact_claimed_by_other_steward`: another active
             steward already claims the `owned_artifact` document.
             Steward authority over an artifact is exclusive.
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/ErrorResponse"
-        "500":
-          description: >-
-            `dual_write_failure`: one side of the ROOT Harness /
-            SAGE dual write committed but the other failed; the
-            committed side has been rolled back. No record persists
-            in either store. The operation is safe to retry.
           content:
             application/json:
               schema:
@@ -658,8 +650,8 @@ components:
       in: path
       required: true
       description: >-
-        Agent identifier. Matches both the ROOT Harness registration
-        and the SAGE User entity.
+        Agent identifier from the ROOT Harness registration; also the
+        agent name asserted on the agent's SAGE writes.
       schema:
         type: string
 
@@ -715,8 +707,8 @@ components:
       type: string
       enum: [active, inactive]
       description: >-
-        Agent lifecycle status. Inactive agents are not dispatched
-        but their SAGE User records persist for provenance.
+        Agent lifecycle status. Inactive agents are not dispatched;
+        the provenance SAGE recorded for their writes is unaffected.
 
     # -------------------------------------------------------------------------
     # Core Entities
@@ -725,9 +717,9 @@ components:
     AgentRegistration:
       type: object
       description: >-
-        Full agent registration record. Combines ROOT Harness execution
-        configuration with SAGE User identity. Source authority: ROOT
-        Harness Architecture Reference Section 2.3.
+        Full agent registration record: the ROOT Harness execution
+        configuration for one agent. Source authority: ROOT Harness
+        Architecture Reference Section 2.3.
       required:
         - agent_id
         - display_name
@@ -742,8 +734,8 @@ components:
         agent_id:
           type: string
           description: >-
-            Unique identifier matching the SAGE User entity ID.
-            Permanent; survives agent retirement.
+            Unique identifier, asserted as the agent name on the
+            agent's SAGE writes. Permanent; survives agent retirement.
         display_name:
           type: string
           description: Human-readable name for logs and UI display.
@@ -1135,8 +1127,7 @@ components:
           type: string
           description: >-
             Desired agent ID. Must be unique across the domain.
-            A SAGE User entity with this ID is created as part
-            of registration.
+            Asserted as the agent name on the agent's SAGE writes.
         display_name:
           type: string
           description: Human-readable name for the agent (shown in audit logs and UIs).
@@ -1408,8 +1399,8 @@ components:
             canonical vocabulary as `ErrorResponse.code` (see that
             schema for representative codes). For workflow-execution
             failures captured here, common codes include
-            `state_schema_validation_failed`, `dual_write_failure`,
-            and adapter-level errors propagated from SAGE.
+            `state_schema_validation_failed` and adapter-level
+            errors propagated from SAGE.
         message:
           type: string
           description: Human-readable error description.

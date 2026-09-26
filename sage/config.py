@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 STORED_CONFIG_CONTEXT: Mapping[str, str] = {
     "lifecycle_validation": "warn",
     "adapter_defaults_validation": "warn",
+    "retired_sections": "warn",
 }
 
 
@@ -556,13 +557,6 @@ class VaultIdentity(BaseModel):
         )
     )
     visibility: str = Field(description="Access scope for this vault.")
-    members: list[dict] | None = Field(
-        default=None,
-        description=(
-            "Users with access to this vault. Each entry specifies a user "
-            "and their vault-level role."
-        ),
-    )
     timezone: str = Field(
         default="UTC",
         description=(
@@ -1802,10 +1796,6 @@ class VaultConfig(BaseModel):
     )
     metadata_extraction: dict = Field(description="Metadata extraction pipeline configuration.")
     edge_inference: dict = Field(description="Edge inference tier assignments and rules.")
-    access_control_defaults: dict | None = Field(
-        default=None,
-        description=("Default access control settings for new documents in this vault."),
-    )
     abstraction: VaultAbstractionConfig = Field(
         default_factory=VaultAbstractionConfig,
         description=(
@@ -1834,6 +1824,26 @@ class VaultConfig(BaseModel):
     )
 
     _tier3_validators: dict[str, jsonschema.protocols.Validator] = PrivateAttr(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_retired_sections(cls, data: object, info: ValidationInfo) -> object:
+        """Refuse a request that declares a retired section.
+
+        A retired section configures nothing, so a caller declaring one would
+        believe it had taken effect. A stored configuration is loaded instead,
+        with the section ignored and a warning from
+        :func:`warn_on_retired_sections`, under the context
+        ``{"retired_sections": "warn"}``.
+        """
+        if (info.context or {}).get("retired_sections", "strict") == "warn":
+            return data
+        present = retired_sections_in(data)
+        if present:
+            raise ValueError(
+                "; ".join(f"'{path}' is retired: {_RETIRED_SECTIONS[path]}" for path in present)
+            )
+        return data
 
     @model_validator(mode="after")
     def _validate_adapter_defaults(self, info: ValidationInfo) -> "VaultConfig":
@@ -2136,19 +2146,47 @@ class TransitionTable:
 
 
 #: Sections a vault configuration may still carry from before the model
-#: dropped them. Pydantic ignores unknown keys, so a stale section is inert
+#: dropped them, keyed by dotted path from the configuration root. Pydantic
+#: ignores unknown keys, so a stale section in a stored configuration is inert
 #: rather than fatal -- deliberately, since vault configurations live outside
 #: the repository and are cleaned operationally after the code change deploys,
 #: and a loader that rejected one would make the vault silently unavailable in
 #: the meantime (CAS-ADR-046). The warning is what keeps "inert" from meaning
-#: "invisible": it names the vault whose config still needs migrating.
+#: "invisible": it names the vault whose config still needs migrating. A
+#: request declaring one is refused instead (``VaultConfig``).
 _RETIRED_SECTIONS: dict[str, str] = {
     "source_adapters": (
         "adapter availability is process-wide capability, not vault "
         "configuration; move any per-adapter projection parameters to "
         "`adapter_defaults` keyed by source type"
     ),
+    "access_control_defaults": (
+        "SAGE keeps no per-document editors; admission is one group gate "
+        "(CAS-ADR-044) and write identity is taken from the request "
+        "(CAS-ADR-056), so remove the section"
+    ),
+    "vault.members": (
+        "SAGE keeps no vault member roles; admission is one group gate "
+        "(CAS-ADR-044) and write identity is taken from the request "
+        "(CAS-ADR-056), so remove the field"
+    ),
 }
+
+
+def retired_sections_in(raw: object) -> list[str]:
+    """Return the retired section paths a raw vault config carries, in table order."""
+    if not isinstance(raw, dict):
+        return []
+    present = []
+    for path in _RETIRED_SECTIONS:
+        node: object = raw
+        for part in path.split("."):
+            if not isinstance(node, dict) or part not in node:
+                break
+            node = node[part]
+        else:
+            present.append(path)
+    return present
 
 
 def warn_on_retired_sections(raw: object) -> None:
@@ -2165,14 +2203,13 @@ def warn_on_retired_sections(raw: object) -> None:
         if isinstance(raw.get("vault"), dict)
         else "<unknown>"
     )
-    for section, remedy in _RETIRED_SECTIONS.items():
-        if section in raw:
-            logger.warning(
-                "vault '%s': config section '%s' is retired and ignored; %s",
-                vault_id,
-                section,
-                remedy,
-            )
+    for section in retired_sections_in(raw):
+        logger.warning(
+            "vault '%s': config section '%s' is retired and ignored; %s",
+            vault_id,
+            section,
+            _RETIRED_SECTIONS[section],
+        )
 
 
 def load_vault_config(config_path: Path) -> VaultConfig:
