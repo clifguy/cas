@@ -1647,6 +1647,88 @@ async def test_b29_other_envelope_defects_stay_invalid_batch_metadata(batch_app,
     assert resp.json()["code"] == "invalid_batch_metadata", resp.text
 
 
+# Tokens only the rendered form of a validation error carries: its header
+# naming the model, the documentation link, and the per-error input echo.
+_RENDERING_TOKENS = (
+    "validation error for",
+    "BatchIngestUploadMetadata",
+    "pydantic.dev",
+    "input_value",
+    "type=",
+)
+
+
+async def _envelope_refusal_message(batch_app, metadata: str) -> str:
+    app, vault_id, _config = batch_app
+    async with _client(app) as client:
+        resp = await client.post(
+            f"/sage_vaults/{vault_id}/documents:batch",
+            files=[_md_part("a.md", b"# A\n\nbody")],
+            data={"metadata": metadata},
+        )
+    assert resp.status_code == 400, resp.text
+    assert "application/json" in resp.headers.get("content-type", "")
+    body = resp.json()
+    assert body["code"] == "invalid_batch_metadata", resp.text
+    assert not body.get("detail"), resp.text
+    return body["message"]
+
+
+@pytest.mark.parametrize(
+    ("envelope", "location", "constraint", "echoed_input"),
+    [
+        pytest.param(
+            {"files": [{"source_type": "markdown"}], "agent": "Bad Name!!"},
+            "`agent`",
+            "String should match pattern",
+            "Bad Name!!",
+            id="string-pattern-field",
+        ),
+        pytest.param(
+            {"files": [{"source_type": "markdown"}], "infer_edges": "maybe"},
+            "`infer_edges`",
+            "valid boolean",
+            "maybe",
+            id="boolean-field",
+        ),
+        pytest.param(
+            {"files": [{"source_type": "markdown", "parsed_metadata": {"title": 5}}]},
+            "`files.0.parsed_metadata.title`",
+            "valid string",
+            "input_value=5",
+            id="nested-field",
+        ),
+    ],
+)
+async def test_b40_envelope_refusal_carries_no_validator_rendering(
+    batch_app, envelope, location, constraint, echoed_input
+):
+    """A malformed envelope is refused by location and constraint alone.
+
+    Anti-coincidental-pass: a message that dropped only the documentation link,
+    or only the header, still fails on the remaining tokens; a constant message
+    passes every absence check and fails on the location.
+    """
+    message = await _envelope_refusal_message(batch_app, json.dumps(envelope))
+
+    assert location in message, message
+    assert constraint in message, message
+    assert echoed_input not in message, message
+    for token in _RENDERING_TOKENS:
+        assert token not in message, (token, message)
+
+
+async def test_b40_unparseable_envelope_refusal_carries_no_validator_rendering(batch_app):
+    """Text that is not JSON has no field location; the refusal still states
+    the constraint and echoes neither the input nor the rendering."""
+    message = await _envelope_refusal_message(batch_app, "{not valid json")
+
+    assert "Invalid JSON" in message, message
+    assert "{not valid json" not in message, message
+    for token in _RENDERING_TOKENS:
+        assert token not in message, (token, message)
+
+
 async def test_b31_undeclared_key_wins_over_a_malformed_value(batch_app):
     """An entry carrying both an undeclared key and a malformed value is
     refused for the key, as the MCP tool refuses names before values."""

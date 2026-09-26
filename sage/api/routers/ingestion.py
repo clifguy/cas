@@ -15,6 +15,7 @@ from sage.api.errors import (
     SAGEError,
     UndeclaredKeyError,
     codes_and_tags_conflict_error,
+    describe_validation_failure,
     translate_validation_error,
     undeclared_entry_key_error,
 )
@@ -456,9 +457,12 @@ async def batch_ingest_documents(
             refusal = translate_validation_error(exc)
             if refusal is not None and refusal.code == "invalid_sha256":
                 raise refusal from exc
+            reason = describe_validation_failure(exc)
+        else:
+            reason = "not valid JSON"
         raise SAGEError(
             "invalid_batch_metadata",
-            f"`metadata` is not valid BatchIngestUploadMetadata JSON: {exc}",
+            f"`metadata` is not a valid batch-ingest envelope: {reason}",
             400,
         ) from exc
 
