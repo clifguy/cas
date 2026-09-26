@@ -232,6 +232,9 @@ paths:
         hint, naming the `recommended_facet_value_limit` to re-call at
         whenever a smaller cap would fit and omitting it when none
         would.
+
+
+        `created_by` takes a display name too; `facet_fields` lists it.
       tags: [Retrieval]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -4699,12 +4702,24 @@ components:
 
     FacetField:
       type: string
-      enum: [doc_type, lifecycle_status, source_type, pipeline_status, tags]
+      enum:
+        - doc_type
+        - lifecycle_status
+        - source_type
+        - pipeline_status
+        - tags
+        - created_by
+        - last_modified_by
+        - created_client
+        - last_modified_client
+        - created_agent
+        - last_modified_agent
       description: >-
         A document metadata field exposed for facet aggregation. The
         closed vocabulary of the facet_fields request parameter: search
         with target="facets" aggregates any subset of these, defaulting
-        to all of them.
+        to the first five. The write-provenance fields are opt-in; an
+        agent field aggregates by the agent's name (CAS-ADR-056).
 
     ResponseMode:
       type: string
@@ -4901,7 +4916,9 @@ components:
         created_by:
           type: [string, "null"]
           description: >-
-            Stable key of the principal that created the document.
+            Stable key of the principal that created the document, or a
+            display name, matched case-insensitively to keys by their
+            latest name.
         created_client:
           type: [string, "null"]
           description: >-
@@ -4914,7 +4931,8 @@ components:
           type: [string, "null"]
           description: >-
             Stable key of the principal that made the most recent
-            modification.
+            modification, or a display name, matched case-insensitively to
+            keys by their latest name.
         last_modified_client:
           type: [string, "null"]
           description: >-
@@ -5630,8 +5648,8 @@ components:
           minItems: 1
           description: >-
             Facet fields to aggregate for the facets target. Any subset
-            of: doc_type, lifecycle_status, source_type,
-            pipeline_status, tags. Null (default) aggregates all five.
+            of the enumerated fields. Null (default) aggregates doc_type,
+            lifecycle_status, source_type, pipeline_status and tags.
             Rows return in that fixed field order regardless of the
             order given here. Not valid for other targets.
         facet_value_limit:
@@ -5731,7 +5749,8 @@ components:
             Keys: created_by, created_client, created_agent,
             last_modified_by, last_modified_client, last_modified_agent. An
             agent key matches the agent's name; null matches a field that is
-            null.
+            null. created_by and last_modified_by also accept a display
+            name, resolved to keys and reported in hints.
         source_id:
           type: [string, "null"]
           pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
@@ -6527,11 +6546,17 @@ components:
             `response_size_bytes`, `budget_bytes`, and
             `recommended_facet_value_limit` (re-call at this cap to fit
             inline), the last omitted when no cap below the one in
-            force would help. Vocabulary warnings
+            force would help. Provenance resolution hint (fires when a
+            created_by or last_modified_by filter value matched a display
+            name, or matched neither a key nor a name):
+            `provenance_resolution`, keyed by field, each entry carrying
+            `value`, the matched `keys`, `ambiguous` when it matched
+            more than one key, and `nearest_names` when nothing matched.
+            Vocabulary warnings
             (all modes): `warnings`, a list of advisories naming any
             filter value outside this vault's configured doc_type or
-            lifecycle_status vocabulary. Absent when every filter value
-            is recognized.
+            lifecycle_status vocabulary, and any ambiguous or unmatched
+            principal name. Absent when every filter value is recognized.
         read_meta:
           $ref: "#/components/schemas/ReadMeta"
 
@@ -6725,7 +6750,8 @@ components:
           description: >-
             The faceted document metadata field. One of the fixed facet
             field set: doc_type, lifecycle_status, source_type,
-            pipeline_status, tags.
+            pipeline_status, tags, or a write-provenance field. An agent
+            field counts agents by name.
         values:
           type: object
           additionalProperties:
@@ -6749,6 +6775,14 @@ components:
             count of values. Counts distinct values, unlike the
             response's total_available, which counts matching
             documents.
+        labels:
+          type: [object, "null"]
+          additionalProperties:
+            type: string
+          description: >-
+            On a created_by or last_modified_by row, each key in values
+            mapped to its latest display name in the vault, or to itself
+            when it has none. Null on every other row.
 
     FieldChange:
       type: object

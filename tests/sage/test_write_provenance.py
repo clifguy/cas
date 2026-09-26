@@ -955,9 +955,11 @@ async def test_f1_provenance_filter_matches_exactly(auth_app, tmp_vault_dir, mod
         assert await ids({"created_client": "cas-app"}) == {a2["id"]}
         assert await ids({"created_agent": "claude-code"}) == {a1["id"], a5["id"]}
         assert await ids({"last_modified_by": _BOB}) == {a5["id"]}
-        # The key matches; the display name it once was does not.
+        # The key matches, and so does the principal's latest display name,
+        # which resolves to the key; a name no principal carries does not.
         assert await ids({"created_by": _ALICE}) == {a1["id"], a2["id"], a5["id"]}
-        assert await ids({"created_by": _ALICE_NAME}) == set()
+        assert await ids({"created_by": _ALICE_NAME}) == {a1["id"], a2["id"], a5["id"]}
+        assert await ids({"created_by": "mallory@example.org"}) == set()
         assert await ids({"created_agent": None}) == {a2["id"]}
         assert await ids(
             {

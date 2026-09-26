@@ -1692,19 +1692,19 @@ def register_sage_tools(
                 document_id + heading_path.
 
         Edge enumeration:
-            ``target="edges"`` returns edge rows, with the edge id
-            ``delete_edge`` needs, filtered by ``source_id``, ``target_id``
-            and ``edge_type``. A call omitting ``mode`` resolves to catalog;
+            ``target="edges"`` returns edge rows, with the id
+            ``delete_edge`` needs, filtered by ``source_id``, ``target_id``,
+            ``edge_type``. A call omitting ``mode`` resolves to catalog;
             naming a non-catalog mode is still refused. E.g.
             ``filters={"source_id": "<doc_id>", "edge_type": "references"}``.
 
         Facet enumeration:
             ``target="facets"`` returns one row per field -- doc_type,
             lifecycle_status, source_type, pipeline_status, tags -- with its
-            top values, their counts, and ``total_distinct``;
+            top values, counts and ``total_distinct``;
             ``facet_value_limit`` sets the cap. A call omitting ``mode``
             resolves to catalog; naming a non-catalog mode is still refused.
-            E.g. ``filters={"doc_type": "ticket"}``.
+            ``created_by`` takes a display name too; ``facet_fields`` lists it.
 
         Error modes:
         - ``invalid_vault_id`` (400)

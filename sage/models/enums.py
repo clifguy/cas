@@ -211,7 +211,9 @@ class FacetField(StrEnum):
 
     The closed vocabulary of the ``facet_fields`` request parameter:
     ``search`` with ``target="facets"`` aggregates any subset of these,
-    defaulting to all of them.
+    defaulting to the first five. The write-provenance fields are opt-in,
+    so a request that names no fields gets the same rows it always has;
+    an agent field aggregates by the agent's name (CAS-ADR-056).
     """
 
     DOC_TYPE = "doc_type"
@@ -219,6 +221,12 @@ class FacetField(StrEnum):
     SOURCE_TYPE = "source_type"
     PIPELINE_STATUS = "pipeline_status"
     TAGS = "tags"
+    CREATED_BY = "created_by"
+    LAST_MODIFIED_BY = "last_modified_by"
+    CREATED_CLIENT = "created_client"
+    LAST_MODIFIED_CLIENT = "last_modified_client"
+    CREATED_AGENT = "created_agent"
+    LAST_MODIFIED_AGENT = "last_modified_agent"
 
 
 class DryRunValidator(StrEnum):

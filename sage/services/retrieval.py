@@ -18,6 +18,7 @@ Deterministic mode:
   - Returns 404 for non-existent heading paths (BH-030).
 """
 
+import difflib
 import logging
 import math
 import os
@@ -29,7 +30,9 @@ from typing import Final
 import pydantic_core
 
 from sage.adapters.interfaces import (
+    ALL_FACET_FIELDS,
     DOCUMENT_FACET_FIELDS,
+    PRINCIPAL_FIELDS,
     ContentStore,
     EmbeddingProvider,
     FacetFieldCounts,
@@ -80,11 +83,34 @@ from sage.utils.date_parsing import parse_document_date
 from sage.utils.rrf import rrf_fuse
 
 
-def _provenance_constraints(filters: RetrievalFilters | None) -> dict[str, str | None]:
-    """The write-provenance keys a filter constrains, or an empty dict."""
+def _provenance_constraints(
+    filters: RetrievalFilters | None,
+) -> dict[str, str | tuple[str, ...] | None]:
+    """The write-provenance constraints storage executes, or an empty dict.
+
+    A principal value that resolved to keys by display name is its key set.
+    """
     if filters is None or filters.provenance is None:
         return {}
-    return filters.provenance.constraints()
+    return filters.provenance.store_constraints()
+
+
+# How many display names a principal value that matched nothing is answered with.
+_NEAREST_NAME_COUNT: Final = 3
+
+
+def _nearest_names(value: str, names: dict[str, str | None]) -> list[str]:
+    """The display names closest to ``value``, most similar first."""
+    folded = value.casefold()
+    distinct = sorted({name for name in names.values() if name is not None})
+    ranked = sorted(
+        distinct,
+        key=lambda name: (
+            -difflib.SequenceMatcher(None, folded, name.casefold()).ratio(),
+            name,
+        ),
+    )
+    return ranked[:_NEAREST_NAME_COUNT]
 
 
 logger = logging.getLogger(__name__)
@@ -838,8 +864,8 @@ class RetrievalService:
             active["source_type"] = f.source_type.value
         if f.tier3_metadata:
             active["tier3_metadata"] = f.tier3_metadata
-        if _provenance_constraints(f):
-            active["provenance"] = _provenance_constraints(f)
+        if f.provenance is not None and f.provenance.constraints():
+            active["provenance"] = f.provenance.constraints()
         return active
 
     @staticmethod
@@ -1074,6 +1100,81 @@ class RetrievalService:
         if warnings:
             self._merge_hints(response, {"warnings": warnings})
 
+    async def _resolve_principal_names(
+        self, request: DiscoverRequest
+    ) -> tuple[DiscoverRequest, dict[str, object] | None, dict[str, str | None] | None]:
+        """Resolve display names on the principal filter fields to keys (CAS-ADR-056).
+
+        A ``created_by`` or ``last_modified_by`` value matches its key
+        exactly, and also every key whose latest display name in the vault
+        equals it ignoring case. The name only selects keys: the filter
+        executes on keys, and a name is never stored or matched as one.
+
+        Returns the request with its resolved filter, the hints reporting the
+        resolution, and the vault's latest names when they were read. A value
+        that matched no name leaves the request as it was, and reports
+        nothing unless it is not a key either, in which case the nearest
+        display names are named so an empty result is not read as a fact
+        about the vault.
+        """
+        f = request.filters
+        if f is None or f.provenance is None:
+            return request, None, None
+        asked = {
+            field: value
+            for field, value in f.provenance.constraints().items()
+            if field in PRINCIPAL_FIELDS and value is not None
+        }
+        if not asked:
+            return request, None, None
+
+        names = await self._graph.latest_principal_names()
+        resolved: dict[str, tuple[str, ...]] = {}
+        report: dict[str, dict[str, object]] = {}
+        warnings: list[str] = []
+        for field, value in asked.items():
+            folded = value.casefold()
+            by_name = sorted(
+                key for key, name in names.items() if name is not None and name.casefold() == folded
+            )
+            if by_name:
+                keys = sorted({*by_name, *([value] if value in names else [])})
+                resolved[field] = tuple(keys)
+                entry: dict[str, object] = {"value": value, "keys": keys}
+                if len(keys) > 1:
+                    entry["ambiguous"] = True
+                    warnings.append(
+                        f"Filter provenance.{field}={value!r} matched {len(keys)} principals "
+                        f"by key or latest display name ({', '.join(keys)}), so it matches "
+                        "the writes of all of them. Filter by one key to narrow it."
+                    )
+                report[field] = entry
+            elif value not in names:
+                nearest = _nearest_names(value, names)
+                report[field] = {"value": value, "keys": [], "nearest_names": nearest}
+                closest = (
+                    f"The nearest display names are {nearest!r}."
+                    if nearest
+                    else "This vault records no display names."
+                )
+                warnings.append(
+                    f"Filter provenance.{field}={value!r} is neither a principal key nor "
+                    "the latest display name of one in this vault, so it matches nothing. "
+                    + closest
+                )
+
+        if resolved:
+            provenance = f.provenance.resolved(resolved)
+            request = request.model_copy(
+                update={"filters": f.model_copy(update={"provenance": provenance})}
+            )
+        if not report:
+            return request, None, names
+        hints: dict[str, object] = {"provenance_resolution": report}
+        if warnings:
+            hints["warnings"] = warnings
+        return request, hints, names
+
     async def discover(self, request: DiscoverRequest) -> DiscoverResponse:
         """Dispatch to the appropriate retrieval mode handler.
 
@@ -1116,8 +1217,13 @@ class RetrievalService:
             # per-field value cap -- but that bound is denominated in
             # values, not bytes, and the catalog hint's recommended_limit
             # would name a parameter this target rejects.
+            with phases.phase("resolve_principal_names"):
+                request, resolution, names = await self._resolve_principal_names(request)
+
             if request.target == RetrievalTarget.FACETS:
-                response = await self._catalog_facets(request, phases)
+                response = await self._catalog_facets(request, phases, principal_names=names)
+                if resolution:
+                    self._merge_hints(response, resolution)
                 self._apply_warnings(response, request)
                 self._stamp(response)
                 _apply_facets_budget_hint(response)
@@ -1157,6 +1263,8 @@ class RetrievalService:
             # only in semantic and keyword mode and only when the result
             # set is empty, whereas a filter value the vault does not
             # recognize is worth reporting in every mode.
+            if resolution:
+                self._merge_hints(response, resolution)
             self._apply_warnings(response, request)
             self._stamp(response)
 
@@ -1298,6 +1406,8 @@ class RetrievalService:
         self,
         request: DiscoverRequest,
         phases: PhaseCollector | _NullPhaseCollector,
+        *,
+        principal_names: dict[str, str | None] | None = None,
     ) -> DiscoverResponse:
         """Vocabulary aggregation via GROUP BY on the graph store.
 
@@ -1314,12 +1424,17 @@ class RetrievalService:
         companion is ``_apply_facets_budget_hint``, applied by the
         dispatcher. ``total_available`` is the count of documents
         matching the filters (the facet denominator).
+
+        A principal row labels each key it returns with the key's latest
+        display name in the whole vault, not the slice, so a key reads the
+        same whatever filter produced it. ``principal_names`` reuses the
+        names the dispatcher already read to resolve a filter.
         """
         sql_filters = self._build_catalog_sql_filters(request)
         requested = (
             DOCUMENT_FACET_FIELDS
             if request.facet_fields is None
-            else tuple(f for f in DOCUMENT_FACET_FIELDS if f in set(request.facet_fields))
+            else tuple(f for f in ALL_FACET_FIELDS if f in set(request.facet_fields))
         )
         value_limit = request.facet_value_limit or DEFAULT_FACET_VALUE_LIMIT
 
@@ -1328,11 +1443,24 @@ class RetrievalService:
                 sql_filters, fields=requested, value_limit=value_limit
             )
 
+        if principal_names is None and any(f in PRINCIPAL_FIELDS for f in requested):
+            principal_names = await self._graph.latest_principal_names()
+
         hits = []
         for f in requested:
             counts = facets.get(f, FacetFieldCounts({}, 0))
+            labels = (
+                {key: principal_names.get(key) or key for key in counts.values}
+                if f in PRINCIPAL_FIELDS and principal_names is not None
+                else None
+            )
             hits.append(
-                FacetHit(field=f, values=counts.values, total_distinct=counts.total_distinct)
+                FacetHit(
+                    field=f,
+                    values=counts.values,
+                    total_distinct=counts.total_distinct,
+                    labels=labels,
+                )
             )
 
         return DiscoverResponse(

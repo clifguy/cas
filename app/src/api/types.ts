@@ -315,7 +315,19 @@ export interface DiscoverRequest {
   scope?: string;
   target?: 'documents' | 'edges' | 'facets';
   facet_fields?:
-    | ('doc_type' | 'lifecycle_status' | 'source_type' | 'pipeline_status' | 'tags')[]
+    | (
+        | 'doc_type'
+        | 'lifecycle_status'
+        | 'source_type'
+        | 'pipeline_status'
+        | 'tags'
+        | 'created_by'
+        | 'last_modified_by'
+        | 'created_client'
+        | 'last_modified_client'
+        | 'created_agent'
+        | 'last_modified_agent'
+      )[]
     | null;
   facet_value_limit?: number | null;
   filters?: RetrievalFilters;

@@ -801,6 +801,25 @@ DOCUMENT_FACET_FIELDS: tuple[str, ...] = (
     "tags",
 )
 
+# The write-provenance facet fields, aggregated only when a caller names them.
+# Principal and client fields aggregate their stored values; an agent field
+# aggregates the agent's name (CAS-ADR-056).
+PROVENANCE_FACET_FIELDS: tuple[str, ...] = (
+    "created_by",
+    "last_modified_by",
+    "created_client",
+    "last_modified_client",
+    "created_agent",
+    "last_modified_agent",
+)
+
+# The principal fields: the ones a display name resolves on, and whose facet
+# rows carry each key's latest display name.
+PRINCIPAL_FIELDS: tuple[str, ...] = ("created_by", "last_modified_by")
+
+# Every facet field in response order: the default set, then provenance.
+ALL_FACET_FIELDS: tuple[str, ...] = DOCUMENT_FACET_FIELDS + PROVENANCE_FACET_FIELDS
+
 
 class FacetFieldCounts(NamedTuple):
     """One facet field's aggregation: its (possibly capped) value counts
@@ -907,6 +926,22 @@ class GraphStore(ABC):
         Unrequested fields are not aggregated. Fields with no matching
         values map to ``({}, 0)``. Applies no default failed-pipeline
         exclusion, matching catalog enumeration.
+
+        ``fields`` may name any ``ALL_FACET_FIELDS`` entry; an agent field
+        aggregates the agent's name.
+        """
+
+    @abstractmethod
+    async def latest_principal_names(self) -> dict[str, str | None]:
+        """Every principal key the vault records, with its latest display name.
+
+        A key is any value of a document's ``created_by`` or
+        ``last_modified_by`` or an edge's ``created_by``. Its name is the
+        display-name snapshot of the most recent of those writes that
+        recorded one, or None when no write of the key recorded a name, as
+        for an application principal or an unauthenticated write. The name
+        labels a key and resolves a caller's name to keys; it never
+        identifies a principal (CAS-ADR-056).
         """
 
     @abstractmethod
