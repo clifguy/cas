@@ -1094,7 +1094,6 @@ NOT_WITHDRAWING: frozenset[str] = frozenset(
         "parameter-made-optional",
         "property-added",
         "required-removed",
-        "request-body-added",
         "request-body-made-optional",
         "response-added",
         "media-type-added",
@@ -1258,3 +1257,45 @@ def test_a_removed_enum_value_is_escaped_in_its_pointer() -> None:
     }
 
     assert removed == {"3", "a~0b", "application~1json"}
+
+
+@pytest.mark.parametrize(
+    ("key", "shape"),
+    [
+        ("oneOf", lambda d: {"oneOf": [{"type": "string", **d}, {"type": "integer"}]}),
+        ("anyOf", lambda d: {"anyOf": [{"type": "string", **d}, {"type": "integer"}]}),
+        (
+            "additionalProperties",
+            lambda d: {"type": "object", "additionalProperties": {"type": "string", **d}},
+        ),
+    ],
+    ids=["oneOf-branch", "anyOf-branch", "additional-properties"],
+)
+def test_a_deprecation_is_read_inside_a_union_or_additional_properties(
+    key: str, shape: Callable[[dict[str, Any]], dict[str, Any]]
+) -> None:
+    base = _mutated(SPEC, lambda s: _thing(s)["properties"].__setitem__("extra", shape({})))
+    changed = _mutated(
+        SPEC, lambda s: _thing(s)["properties"].__setitem__("extra", shape({"deprecated": True}))
+    )
+
+    findings = diff_openapi(base, changed, surface="sage_core_api")
+
+    suffix = "additionalProperties" if key == "additionalProperties" else f"{key}/0"
+    assert [(f.kind, f.pointer) for f in findings] == [
+        ("deprecation-added", f"components/schemas/Thing/properties/extra/{suffix}")
+    ]
+
+
+def test_an_allof_branch_is_a_constraint_not_a_union_branch() -> None:
+    def all_of(branches: list[dict[str, Any]]) -> Callable[[dict[str, Any]], None]:
+        return lambda s: _thing(s)["properties"].__setitem__("extra", {"allOf": branches})
+
+    one = _mutated(SPEC, all_of([{"type": "object"}]))
+    two = _mutated(SPEC, all_of([{"type": "object"}, {"required": ["a"]}]))
+
+    added = diff_openapi(one, two, surface="core")
+    dropped = diff_openapi(two, one, surface="core")
+
+    assert [(f.kind, f.category) for f in added] == [("constraint-tightened", CALLER_ADAPTATION)]
+    assert [(f.kind, f.category) for f in dropped] == [("constraint-loosened", CAPABILITY)]

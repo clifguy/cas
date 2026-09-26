@@ -662,30 +662,62 @@ def test_a_value_deprecation_covers_that_value_only(
     assert (result.errors == []) is passes, result.errors
 
 
-def test_a_withdrawal_kind_reported_as_a_capability_needs_no_deprecation(tmp_path: Path) -> None:
-    """A dropped ``allOf`` branch admits more, so the comparison calls it a capability."""
+def _post_without_body(spec: dict[str, Any]) -> None:
+    _post_things({"type": "object"})(spec)
+    spec["paths"]["/things"]["post"].pop("requestBody")
+
+
+def _add_body(required: bool) -> Any:
+    def mutate(spec: dict[str, Any]) -> None:
+        spec["paths"]["/things"]["post"]["requestBody"] = {
+            "required": required,
+            "content": {"application/json": {"schema": {"type": "object"}}},
+        }
+
+    return mutate
+
+
+@pytest.mark.parametrize(
+    ("required", "category", "held"),
+    [(False, "capability", False), (True, "caller-adaptation", True)],
+    ids=["optional-body-is-a-capability", "required-body-is-held"],
+)
+def test_an_added_request_body_is_held_only_when_required(
+    tmp_path: Path, required: bool, category: str, held: bool
+) -> None:
     repo = make_substrate_repo(tmp_path / "repo")
-    repo.edit_yaml(CORE_SPEC, _post_things({"allOf": [{"type": "object"}, {"required": ["a"]}]}))
-    repo.commit("an allOf body exists on main")
+    repo.edit_yaml(CORE_SPEC, _post_without_body)
+    repo.commit("a bodiless create exists on main")
     repo.checkout("feature", create=True)
-    repo.edit_yaml(
-        CORE_SPEC,
-        lambda s: s["paths"]["/things"]["post"]["requestBody"]["content"]["application/json"][
-            "schema"
-        ]["allOf"].pop(),
-    )
-    repo.add_record(
-        "relax-body",
-        classification="minor",
-        category=["capability"],
-        summary="The body no longer requires a.",
-        for_callers="a is optional.",
-    )
+    repo.edit_yaml(CORE_SPEC, _add_body(required))
+    repo.add_record("body", **_adaptation(category=["capability", "caller-adaptation"]))
 
     result = _check(repo)
 
-    assert [(f.kind, f.category) for f in result.findings] == [("branch-removed", "capability")]
-    assert result.errors == []
+    assert [(f.kind, f.category) for f in result.findings] == [("request-body-added", category)]
+    assert ("request-body-added at sage_core_api:" in _errors(result)) is held, result.errors
+
+
+def test_a_value_less_enum_deprecation_is_refused(tmp_path: Path) -> None:
+    """A bare ``.../enum`` would cover every value's removal, so it must name one."""
+    repo = make_substrate_repo(tmp_path / "repo")
+    repo.edit_yaml(CORE_SPEC, _mode_enum)
+    repo.commit("the enum exists on main")
+    repo.checkout("feature", create=True)
+    repo.edit_yaml(
+        CORE_SPEC,
+        lambda s: s["paths"]["/things"]["get"]["parameters"][0].__setitem__(
+            "description", "Page size. Some values are deprecated."
+        ),
+    )
+    repo.add_record(
+        "deprecate-enum",
+        **{**DEPRECATION, "deprecates": [{**DEPRECATION["deprecates"][0], "pointer": MODE}]},
+    )
+
+    message = _errors(_check(repo))
+
+    assert f"deprecates names sage_core_api:{MODE}, but" in message
 
 
 def test_a_deprecated_value_needs_no_contract_mark(tmp_path: Path) -> None:

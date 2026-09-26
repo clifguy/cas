@@ -120,7 +120,7 @@ DEPRECATION_WINDOW: Final[dt.timedelta] = dt.timedelta(days=30)
 # A deprecated value or default is stated in its parameter's description, which
 # the contract comparison does not read, so no mark is looked for. A value is
 # addressed as ``.../enum/<value>``, the pointer its removal is reported at.
-_VALUE_POINTER: Final[re.Pattern[str]] = re.compile(r"/(default|enum)$|/enum/")
+_VALUE_POINTER: Final[re.Pattern[str]] = re.compile(r"/default$|/enum/")
 
 
 class ReleaseRefused(RuntimeError):

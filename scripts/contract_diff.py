@@ -83,7 +83,7 @@ DEPRECATED_PREFIX: Final[str] = "Deprecated:"
 # The adaptations that withdraw or change something callers use -- a removal (a
 # rename is a removal beside an addition), a narrowed input, a changed default --
 # and so must follow a deprecation of their target. Held only where the finding
-# is a caller adaptation: a dropped ``allOf`` branch is a capability.
+# is a caller adaptation: an optional request body added is a capability.
 #
 # Left out: an added refusal response and an added or removed error code, which
 # the rule's operational form leaves to review; a change that
@@ -102,6 +102,7 @@ DEPRECATION_REQUIRED_KINDS: Final[frozenset[str]] = frozenset(
         "media-type-removed",
         "header-removed",
         "request-body-removed",
+        "request-body-added",
         "response-removed",
         "output-schema-removed",
         "branch-removed",
@@ -516,7 +517,7 @@ def _diff_additional_properties(
 ) -> None:
     old_ap = old.get("additionalProperties", True)
     new_ap = new.get("additionalProperties", True)
-    if _canon(old_ap) == _canon(new_ap):
+    if _canon(old_ap, marks=True) == _canon(new_ap, marks=True):
         return
     at = f"{pointer}/additionalProperties"
     if isinstance(old_ap, dict) and isinstance(new_ap, dict):
@@ -599,22 +600,35 @@ def _diff_branches(old: Any, new: Any, key: str, pointer: str, out: _Collector) 
     unmatched_new = list(range(len(new_list)))
     unmatched_old: list[int] = []
     for i, branch in enumerate(old_list):
-        match = next((j for j in unmatched_new if _canon(new_list[j]) == _canon(branch)), None)
+        match = next(
+            (
+                j
+                for j in unmatched_new
+                if _canon(new_list[j], marks=True) == _canon(branch, marks=True)
+            ),
+            None,
+        )
         if match is None:
             unmatched_old.append(i)
         else:
             unmatched_new.remove(match)
     for i, j in zip(unmatched_old, unmatched_new, strict=False):
         _diff_schema(old_list[i], new_list[j], f"{pointer}/{key}/{j}", out)
-    widening = key != "allOf"
+    if key == "allOf":
+        # Every allOf branch constrains, so adding one tightens the schema and
+        # dropping one loosens it; branch-added and branch-removed name a union.
+        for j in unmatched_new[len(unmatched_old) :]:
+            out.add(f"{pointer}/{key}/{j}", "constraint-tightened", CALLER_ADAPTATION)
+        for i in unmatched_old[len(unmatched_new) :]:
+            out.add(f"{pointer}/{key}/{i}", "constraint-loosened", CAPABILITY)
+        return
     for j in unmatched_new[len(unmatched_old) :]:
         at = f"{pointer}/{key}/{j}"
         # A widened refusal is a new refusal a caller must now handle.
-        category = CAPABILITY if widening and not out.is_refusal(at) else CALLER_ADAPTATION
+        category = CAPABILITY if not out.is_refusal(at) else CALLER_ADAPTATION
         out.add(at, "branch-added", category)
     for i in unmatched_old[len(unmatched_new) :]:
-        category = CALLER_ADAPTATION if widening else CAPABILITY
-        out.add(f"{pointer}/{key}/{i}", "branch-removed", category)
+        out.add(f"{pointer}/{key}/{i}", "branch-removed", CALLER_ADAPTATION)
 
 
 def _diff_named_schemas(
