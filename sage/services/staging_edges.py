@@ -21,6 +21,7 @@ from sage.models.schemas import (
     StagingEdgeListResponse,
 )
 from sage.request_identity import asserted_agent, edge_attribution
+from sage.storage.edge_provenance import derive_rationale_kind
 
 
 class StagingEdgesService:
@@ -49,7 +50,10 @@ class StagingEdgesService:
         production edge in place of the one the request's User-Agent names.
 
         Mints a new production-edge UUID, copies source/target/edge_type
-        from the staging record, sequences insert + delete.
+        from the staging record, sequences insert + delete. The staging
+        evidence becomes the edge's rationale, and its ``rationale_kind``
+        is derived from the evidence prefix, as ``create_edges`` derives
+        it; evidence with no recognized prefix yields ``manual``.
 
         Confirm idempotency on natural-key collision:
         If the staging edge's natural-key triple
@@ -90,6 +94,7 @@ class StagingEdgesService:
             created_at=datetime.now(timezone.utc),
             notes=f"Confirmed from staging edge {edge_id}",
             rationale=staging.inference_evidence,
+            rationale_kind=derive_rationale_kind(staging.inference_evidence),
             **attribution,
         )
         # If the natural-key triple already exists in production

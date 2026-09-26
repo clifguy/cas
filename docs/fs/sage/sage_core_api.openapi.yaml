@@ -2622,8 +2622,10 @@ paths:
       description: >-
         Inserts a production `Edge` with a fresh id mirroring the
         staging edge's `source_id`, `target_id`, and `edge_type`,
-        copies `inference_evidence` into the new edge's `rationale`,
-        then deletes the staging edge. The returned response carries
+        copies `inference_evidence` into the new edge's `rationale`
+        and derives its `rationale_kind` from that text's prefix
+        (`manual` when none is recognized), then deletes the staging
+        edge. The returned response carries
         the production `edge_id`, which is **distinct from the staging
         id passed in** -- staging and production tables do not share
         an id space.
