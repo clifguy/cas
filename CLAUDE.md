@@ -1,6 +1,6 @@
 # CAS development guide
 
-A personal experimental agentic ecosystem. See `README.md` for the public-facing description.
+An agentic ecosystem whose SAGE subsystem is in commercial production. See `README.md` for the public-facing description.
 
 **Built today:**
 

@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Inventory and version tracking for the CAS Formal Substrate (CAS-ADR-008). Each artifact's version is the release MAJOR.MINOR in which it last changed, or null until a release first publishes it; no counter is assigned when a change is authored. revision_history is assembled per release: a change adds a numberless change record under changes/unreleased/, and the release step folds every unreleased record into one entry for the new release, newest first. Entries written before this scheme, which carry a substrate counter in their version field, follow the release entries and are kept verbatim.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-09-23",
+  "manifest_date": "2026-09-26",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -18,7 +18,7 @@
       "path": "sage/vault_config.schema.json",
       "title": "SAGE Vault Configuration",
       "status": "draft",
-      "version": "2.6",
+      "version": "3.0",
       "role": "Root schema for SAGE vault configuration. A domain instantiation produces a single YAML file that validates against this schema.",
       "instantiation_checklist_items": [
         1
@@ -28,7 +28,7 @@
       "path": "sage/sage_core_config.schema.json",
       "title": "SAGE Core API Configuration",
       "status": "draft",
-      "version": "2.6",
+      "version": "3.0",
       "role": "Stack-wide configuration for the SAGE Core API process (CAS-ADR-030, CAS-ADR-042, CAS-ADR-043). Loaded once at process startup before any vault is registered; carries resources whose enforcement spans the whole SAGE process (the abstraction provider, its model, and the local provider's optional context-window override and clause (f) opener constraint), the deployment-profile marker that co-binds the adapter-port implementations for one deployment target, the durable-storage binding selector (postgres, the storage port's sole binding), the vault-source-store binding selector (filesystem default, tenant document-store alternative), the Postgres storage-engine connection parameters (non-secret; password from the environment), the optional OAuth resource-server auth binding (absent by default; non-secret issuer/audience coordinates when a deployment authenticates its callers), and the caller-local transfer channel block (the public endpoint base minted recipes embed, the one-time token lifetime, and how many refused deliveries an upload token survives; omitted by deployments that never mint recipes). The on-disk file is sage/config.yaml at the repo root.",
       "instantiation_checklist_items": []
     },
@@ -84,7 +84,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "2.7",
+      "version": "3.0",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -92,7 +92,7 @@
       "path": "cas_app_api.openapi.yaml",
       "title": "CAS Application API",
       "status": "draft",
-      "version": "2.7",
+      "version": "3.0",
       "role": "OpenAPI 3.1.0 specification for the CAS Application backend HTTP surface (mounted at the /app prefix). Defines directory scan and batch-ingest endpoints used by the CAS Application UI. Architecturally distinct from the SAGE Core API; the two specs are validated together by tests/sage/test_openapi_conformance.py and must respect URL-prefix boundaries (sage_core_api owns /sage_vaults/*, cas_app_api owns /app/*).",
       "instantiation_checklist_items": []
     },
@@ -100,7 +100,7 @@
       "path": "sage/sage_mcp_tools.catalog.json",
       "title": "SAGE MCP Tool Catalog",
       "status": "draft",
-      "version": "2.7",
+      "version": "3.0",
       "role": "The tools the SAGE MCP surfaces publish through tools/list: name, input and output schemas, annotations, and description, for the ordinary surface (/mcp) and the maintenance surface (/mcp_maint). Generated from the servers by scripts/dump_mcp_catalog.py and held to them by a test gate; the contract comparison reads it as the MCP half of the published contract.",
       "instantiation_checklist_items": []
     },
@@ -116,7 +116,7 @@
       "path": "root_harness/pipeline.schema.json",
       "title": "ROOT Harness Pipeline Configuration",
       "status": "draft",
-      "version": "2.3",
+      "version": "3.0",
       "role": "Defines pipeline stages, transitions, gatekeeper bindings, and precondition expressions.",
       "instantiation_checklist_items": [
         7,
@@ -127,7 +127,7 @@
       "path": "root_harness/agent.schema.json",
       "title": "ROOT Harness Agent Registration",
       "status": "draft",
-      "version": "1.0",
+      "version": "3.0",
       "role": "Defines agent registration records: type, owned artifact, autonomy level, capabilities, policy reference, LLM configuration.",
       "instantiation_checklist_items": [
         8
@@ -137,7 +137,7 @@
       "path": "root_harness/policy.schema.json",
       "title": "ROOT Harness Policy Configuration",
       "status": "draft",
-      "version": "2.5",
+      "version": "3.0",
       "role": "Defines behavioral constraints: permitted operations, scope restrictions, and tool-level approval policy.",
       "instantiation_checklist_items": [
         9
@@ -158,7 +158,7 @@
       "path": "root_harness/orchestration_api.openapi.yaml",
       "title": "ROOT Harness Orchestration API",
       "status": "draft",
-      "version": "1.0",
+      "version": "3.0",
       "role": "OpenAPI 3.1.0 specification for the ROOT Harness Orchestration API. Defines the REST surface for workflow triggering, status monitoring, human-in-the-loop interrupt resolution, agent registration, pipeline status queries, and real-time event streaming. Consumed by the CAS Application, MCP adapter, and CLI. Source authority: ROOT Harness Architecture Reference Section 2.5.",
       "instantiation_checklist_items": []
     },
@@ -189,6 +189,136 @@
   ],
   "deferred": [],
   "revision_history": [
+    {
+      "release": "3.0",
+      "date": "2026-09-26",
+      "changes": [
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation"
+          ],
+          "summary": "Adds the optional asserted agent argument to the two write paths that lacked it. confirm_staging_edge accepts an optional JSON body, the new StagingEdgeConfirmRequest component, whose agent is recorded on the production edge; a bodyless confirm is unchanged, and dismiss, which records nothing, takes no body. A malformed agent in that body is refused as invalid_parameter (422). BatchIngestUploadMetadata in the Core API spec and IngestRequest in the CAS Application API spec gain agent, applied to every document and production edge the batch writes. The update_staging_edge and bulk_ingest_document MCP tools take agent too. The bulk_ingest_document description drops three passages the tool already states elsewhere.",
+          "for_callers": "Name the agent explicitly when confirming a staging edge or ingesting a batch: pass agent to update_staging_edge or bulk_ingest_document, send {\"agent\": \"...\"} as the body of a staging-edge confirm, or set agent in the batch-ingest metadata envelope. It is recorded as asserted with source parameter, in place of the agent the User-Agent names."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "Adds adapter_config to the Document component in the Core API spec: the adapter configuration the ingest request supplied, as given, or null when it supplied none. Ingest records it, a force re-ingest replaces it, and a supersession does not carry it forward. recompute_pipeline, worker recovery and the migration's re-projection of the text before the first heading now merge it over the vault's adapter defaults, so a re-projected document keeps the structure its request config gave it.",
+          "for_callers": "Documents now report adapter_config, the adapter configuration their ingest request supplied. recompute_pipeline re-projects with it, so a document ingested with a request-level config keeps that config's structure when recomputed rather than falling back to the vault's defaults alone."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "operator-adaptation"
+          ],
+          "summary": "The document surface's two keyword vectors now parse their text with angle brackets replaced by spaces, as the passage vector already does, so a term inside markup in a title or tag is indexed and matches a keyword query. The match vector still reads authored text only, and the rank vector reads derived text the same way. The stored text is unchanged. migrate_vault gains a seventh backfill, rebuild_document_surface_keyword_vectors, which rebuilds a vault's surface vectors built from the earlier expressions once and is a no-op thereafter; the migrate_vault descriptions in sage_core_api.openapi.yaml and the MCP tool catalog count it.",
+          "for_callers": "Keyword search now matches a term inside angle brackets in a document's title or tags, such as scan in \"Parsing <scan> reports\", once the vault has been migrated with migrate_vault, which reports rebuild_document_surface_keyword_vectors on that run."
+        },
+        {
+          "classification": "patch",
+          "summary": "States that get_document's content is base64 whatever body_form reports, in the Core API OpenAPI specification, the DocumentWithContent model and the MCP tool catalog. The body_form description now says it describes the source, not the encoding of content; the content field and both include_content parameter descriptions say a text source is base64 too. No behaviour changes, and no content_encoding field is added."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation"
+          ],
+          "summary": "The MCP tool catalog publishes each optional top-level parameter as its non-null form alone -- a bare type, or the inlined enum definition for a $ref -- instead of anyOf with a null arm, keeping its null default. Some MCP clients discard anyOf and presented these parameters with no type. Nested item schemas keep their null arms, and the server still accepts an explicit null. The free-text search.query, search.heading_path and read_section.heading_path parameters now read a JSON number as its string form. docs/fs/CLAUDE.md records the MCP input schema as the declared exception to the request null rule; the OpenAPI specifications are unchanged.",
+          "for_callers": "Optional MCP tool parameters now publish their type directly (for example search.query is type string), so leave a parameter out rather than sending null to mean no value; an explicit null is still accepted. An all-digit search query or heading path sent as a JSON number is now read as text instead of being refused."
+        },
+        {
+          "classification": "patch",
+          "summary": "Corrects migrate_vault result-field descriptions that contradicted the server's behaviour, in the Core API OpenAPI specification, the MigrationReport model and the MCP tool catalog. columns_added is described as always empty, retained for response shape. tier3_uniqueness_activations is described as listing every clean unique_keys declaration on every call, and the idempotence sentence on both surfaces now names it as the one list a no-op re-call does not report empty. No behaviour changes."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "migrate_vault's heading backfill no longer re-reads, on every call, a document it cannot bring current -- one whose retained source changed since it was indexed, is missing or cannot be projected, or whose format no registered adapter reads. It records such a document against the adapter that tried, and a later call skips it while that is still the adapter for its format. restore_vault_source_file clears the record, whether it writes the source back or finds it already intact, so the next call re-examines the document. A read the source store reported unavailable, or one that raised an operating-system fault the recorded path does not itself cause (nothing there, or a directory), is not recorded. MigrationReport gains documents_not_repaired, listing each such document with its reason on the call that finds it, where the server log was the only record before. The migrate_vault descriptions in sage_core_api.openapi.yaml and the MCP tool catalog say so.",
+          "for_callers": "migrate_vault now lists, in documents_not_repaired, each document whose passages it could not bring current, with the reason, once; later calls do not read it again until its retained source is restored with restore_vault_source_file."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "The provenance filter's created_by and last_modified_by accept a display name as well as a principal key. A value matches its key exactly and also every key whose latest display name in the vault equals it, ignoring case; the filter still executes on keys. A value that matched a name, or matched neither a key nor a name, is reported in the new hints.provenance_resolution, keyed by field, with the value, the matched keys, ambiguous when it matched more than one key, and nearest_names when nothing matched; an ambiguous or unmatched name also adds a warning. A value that matched only its key reports nothing, so existing responses are unchanged. FacetField gains created_by, last_modified_by, created_client, last_modified_client, created_agent and last_modified_agent, aggregated only when facet_fields names them; an agent field counts agents by name. FacetHit gains labels, which on a created_by or last_modified_by row maps each key to its latest display name, or to itself when it has none, and is null on every other row.",
+          "for_callers": "To find what a person wrote without knowing their key, filter on their display name, as filters={\"provenance\": {\"created_by\": \"<name>\"}}, and read hints.provenance_resolution for the keys it matched. To list the principals, clients or agents writing to a vault, request those fields with target=\"facets\" and facet_fields; a principal row's labels names each key."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "caller-adaptation",
+            "capability"
+          ],
+          "summary": "Write provenance keys a user by identifiers a rename leaves unchanged. Where a request authenticated as a user, created_by and last_modified_by record <tenant id>:<object id> rather than the token's preferred username; the token's subject stands in for a missing object id, and its issuer for a missing tenant, as <issuer>#<id>. An application is still recorded as app:<client id>, and without authentication the caller-supplied value or the vault owner is still recorded. The user's display name is recorded beside the key as a snapshot at write time, in the new created_by_name and last_modified_by_name on Document and created_by_name on Edge and EdgeHit; it is not a filter key. The provenance filter's created_by and last_modified_by match the key. The per-vault user registry is removed: the register_user operation, the forward-declared set_editors and get_editors operations, the User, UserType, RegisterUserRequest, SetEditorsRequest and EditorList components, and the invalid_user_id error code with its InvalidUserIdError and InvalidUserIdErrorDetail components. The ROOT Harness pipeline schema drops the editor_registered precondition check and the policy schema's operations enum drops register_user, set_editors and get_editors. migrate_vault drops the table the registry left in a vault's own schema, reporting drop_retired_users_table in backfills_applied when it did.",
+          "for_callers": "created_by and last_modified_by now hold a stable key such as <tenant id>:<object id> for a user, so a filter on them keeps matching a person across a rename; read created_by_name or last_modified_by_name for the name to show. Documents and edges written before this release keep the value recorded then and carry no display name. POST /sage_vaults/{vault_id}/users is gone; nothing consumed a registered user, and write attribution comes from your token."
+        },
+        {
+          "classification": "patch",
+          "summary": "The confirm_staging_edge operation description in the Core API specification and the update_staging_edge tool description in the MCP catalog now state that a confirmed edge's rationale_kind is derived from the prefix of its staging evidence, falling back to manual. Description text only.",
+          "for_callers": ""
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation"
+          ],
+          "summary": "Adds the structured_data source type (JSON, JSON Lines, YAML and TOML) to the SourceType enum in the Core API spec and to the adapter_defaults key set in the vault config schema. The source_type_unresolved refusal detail gains a required registered_extensions field mapping each registered source type to the extensions it is inferred from, in the Core API spec, its application API mirror and the packaged error contract. The ingest and batch-upload source_type descriptions now list each format with its extensions.",
+          "for_callers": "JSON, JSON Lines, YAML and TOML files now ingest directly as source type structured_data, inferred from .json, .jsonl, .yaml, .yml and .toml. A source_type_unresolved refusal now also carries registered_extensions, the extensions each registered source type is inferred from."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "caller-adaptation"
+          ],
+          "summary": "Every identifier, digest and date the server validates by shape now publishes that shape, on the REST contract and on the MCP tool input schemas alike: a document id the pattern ^[0-9a-f]{8}_[a-z0-9_]+$, a vault id ^[a-z0-9][a-z0-9_-]{0,63}$, an edge id format uuid, a document date format date, and a content hash ^(sha256:)?[0-9a-fA-F]{64}$ where a value is accepted and ^sha256:[0-9a-f]{64}$ where one is returned, except on RelocationPointer, which requests and responses share and which states the accepting pattern so it is published as one component. The shared VaultId and DocumentId parameter and schema components carry them, as do the request and response properties those types reach, the edge_id path parameters, and the vault_id, document_id, doc_id and edge_id parameters of every MCP tool that takes one. The server accepts and refuses exactly the values it did before, with the same error codes.",
+          "for_callers": "The published schemas now state the shape of each id, digest and date the server already required, so a client that validates against them can reject a malformed value before sending it. Nothing the server accepted is now refused, and refusals carry the same codes (invalid_document_id, invalid_vault_id, invalid_edge_id, invalid_sha256, invalid_document_date). A content hash is still accepted with or without its sha256: prefix and in either case, and is always returned in the canonical lowercase prefixed form."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "caller-adaptation",
+            "operator-adaptation"
+          ],
+          "summary": "The vault configuration drops the editor model it still described after the per-vault user registry was removed. vault_config.schema.json removes the access_control_defaults section and the vault.members roles, and VaultConfig and VaultIdentity drop the matching fields. UpdateVaultConfigRequest and the update_vault_config tool drop their access_control_defaults section, and the get_vault_config description no longer lists it. A stored configuration still carrying access_control_defaults, vault.members or source_adapters loads with the section ignored and logs a warning naming the vault. A create_vault configuration declaring one, or an update_vault_config vault section carrying members, is refused with vault_config_validation_error naming it; a top-level access_control_defaults or source_adapters on update is an undeclared parameter and refused as such. In the ROOT Harness orchestration API (0.2.0) and agent.schema.json, register_agent registers in ROOT Harness alone: an agent reaches SAGE under its own credential and asserts its agent_id as the agent name, the dual_write_failure response is removed, and no description refers to a SAGE user entity.",
+          "for_callers": "get_vault_config no longer returns access_control_defaults or vault.members, and update_vault_config no longer takes access_control_defaults; neither ever controlled who could write. A create_vault configuration that declares access_control_defaults, vault.members or source_adapters, or an update_vault_config vault section carrying members, is now refused with vault_config_validation_error naming it; remove it and resend. Sending access_control_defaults to update_vault_config is refused as an undeclared parameter. Operators: a vault whose stored configuration still carries one of these loads normally and logs a warning at startup; any update_vault_config call on that vault rewrites the stored configuration without it."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "Under a profile that authenticates callers, created_by on a new document and last_modified_by on every created, patched, superseded, lifecycle-transitioned or force re-ingested document record the authenticated principal, on the REST routes and the MCP tools alike: a user's stable key, <tenant id>:<object id>, or app:<client id> for an application. A caller-supplied created_by that differs is ignored, not refused, and IngestResponse gains warnings naming it; the MCP ingest_document result carries the same warnings when there are any. Without authentication the caller-supplied created_by is recorded and the vault owner is the default, as before, and update_metadata over REST now records the vault owner rather than a fixed placeholder. Lifecycle transitions and forced re-ingestion now stamp last_modified_by on either profile. The created_by and last_modified_by descriptions in sage_core_api.openapi.yaml and the MCP tool catalog say so. Existing documents are not rewritten.",
+          "for_callers": "On an authenticated deployment every write is now attributed to the signed-in user or application that made it, not to the vault owner. A created_by you pass is ignored there, and the ingest response's warnings says so."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "Every document write now records, beside the principal in created_by and last_modified_by, the client application its request came through (created_client, last_modified_client) and the agent that made it (created_agent, last_modified_agent). The client is derived from the validated token's client id and named through the new auth.client_names stack setting; no argument sets it, and it is null without authentication. The agent is an object carrying name, trust (always asserted) and source: the new optional agent argument on ingest_document, update_metadata, update_lifecycles and create_edges and their REST request bodies, whose MCP input schemas publish the same name pattern as the REST contract, otherwise the product the request's User-Agent names. Edges record created_by, created_client and created_agent at creation; an edge written outside a request records none. A new provenance search filter matches these fields exactly. The Document, Edge and EdgeHit schemas, the four request bodies, RetrievalFilters and the stack configuration schema gain the fields, and two components, AssertedAgent and ProvenanceFilter, are added.",
+          "for_callers": "get_document now shows which client application and which agent created and last modified a document, and search can filter on them with filters={\"provenance\": {...}}. The client comes from your token and cannot be set; the agent is whatever your client's User-Agent names, or what you pass as agent, and is always marked asserted. Documents and edges written before this release carry no client or agent value. Per-vault tier-3 conventions that record the writer are left in place: SAGE does not rewrite tier-3 metadata."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "operator-adaptation"
+          ],
+          "summary": "The structured_data source type now also reads XML, inferred from .xml, and the ingest and batch-upload source_type descriptions list the extension. XML is read with entity declarations and external references refused, and projects as its source text with a blank line between repeated elements. The passage keyword vector now parses content with its angle brackets replaced by spaces, so text inside markup, attribute values included, is indexed; migrate_vault rebuilds a vault's vector built from the earlier expression.",
+          "for_callers": "XML files now ingest directly as source type structured_data, inferred from .xml. Keyword search now matches text inside angle brackets, such as XML attribute values, in passages indexed after a vault is migrated."
+        }
+      ]
+    },
     {
       "release": "2.7",
       "date": "2026-09-23",
