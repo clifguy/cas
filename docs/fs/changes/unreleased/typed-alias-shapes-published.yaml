@@ -6,7 +6,9 @@ summary: >-
   schemas alike: a document id the pattern ^[0-9a-f]{8}_[a-z0-9_]+$, a vault
   id ^[a-z0-9][a-z0-9_-]{0,63}$, an edge or user id format uuid, a document
   date format date, and a content hash ^(sha256:)?[0-9a-fA-F]{64}$ where a
-  value is accepted and ^sha256:[0-9a-f]{64}$ where one is returned. The
+  value is accepted and ^sha256:[0-9a-f]{64}$ where one is returned, except
+  on RelocationPointer, which requests and responses share and which states
+  the accepting pattern so it is published as one component. The
   shared VaultId and DocumentId parameter and schema components carry them,
   as do the request and response properties those types reach, the edge_id
   path parameters, and the vault_id, document_id, doc_id and edge_id

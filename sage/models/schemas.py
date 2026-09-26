@@ -407,7 +407,11 @@ class RelocationPointer(BaseModel):
     storage binding's contract rather than asserted here.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    # Reached from requests and responses alike, and published as a single
+    # component in its accepting form: rendering each mode separately would
+    # split it, since ``source_content_hash`` states a different pattern per
+    # mode. The accepting pattern is true of every digest the server returns.
+    model_config = ConfigDict(extra="forbid", json_schema_mode_override="validation")
 
     vault_id: VaultIdStr = Field(
         description=(

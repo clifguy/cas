@@ -2751,7 +2751,9 @@ def test_yaml_shapes_match_pydantic(
     every property and parameter the alias types -- request bodies, response
     bodies, and path and query parameters alike. No allowlist: a field typed
     with an alias and published bare fails here, as does a YAML shape on a
-    field whose model states none.
+    field whose model states none. It compares the YAML with each model's own
+    rendering; that the served document renders each model once, as the YAML
+    does, is ``test_served_document_splits_no_component``'s.
     """
     assert sage_core_spec is not None and cas_app_spec is not None
     issues = [
@@ -2761,3 +2763,22 @@ def test_yaml_shapes_match_pydantic(
         *_route_param_shape_divergences(cas_app_spec, live_openapi, "cas_app_api"),
     ]
     assert not issues, "YAML shape diverges from the model:\n" + "\n".join(sorted(issues))
+
+
+def test_served_document_splits_no_component(live_openapi: dict):
+    """The served document publishes each model as one component, as the YAML does.
+
+    FastAPI renders a model reached from both a request and a response once
+    per mode, and when the two renderings differ it publishes them as
+    ``<Model>-Input`` and ``<Model>-Output``. The YAML never splits a
+    component, so a split is a served contract the authoritative one does not
+    state. A normalizing alias publishes a different pattern per mode, which
+    is how a split arises; a model carrying one on both sides pins a single
+    rendering.
+    """
+    split = sorted(
+        name
+        for name in (live_openapi.get("components") or {}).get("schemas") or {}
+        if name.endswith(("-Input", "-Output"))
+    )
+    assert not split, f"the served document splits these components by mode: {split}"
