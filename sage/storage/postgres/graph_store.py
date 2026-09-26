@@ -34,6 +34,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from sage.adapters.interfaces import (
+    ALL_FACET_FIELDS,
     DOCUMENT_FACET_FIELDS,
     NON_CANONICAL_SOURCE_PATH_PATTERN,
     FacetFieldCounts,
@@ -673,6 +674,10 @@ class PostgresGraphStore(GraphStore):
                 column = _PROVENANCE_FILTER_COLUMNS[key]
                 if value is None:
                     where_clauses.append(f"{column} IS NULL")
+                elif isinstance(value, tuple):
+                    # A principal value resolved to a set of keys.
+                    where_clauses.append(f"{column} = ANY(%s)")
+                    params.append(list(value))
                 else:
                     where_clauses.append(f"{column} = %s")
                     params.append(value)
@@ -1586,7 +1591,7 @@ class PostgresGraphStore(GraphStore):
         requested = (
             DOCUMENT_FACET_FIELDS
             if fields is None
-            else tuple(f for f in DOCUMENT_FACET_FIELDS if f in set(fields))
+            else tuple(f for f in ALL_FACET_FIELDS if f in set(fields))
         )
         facets: dict[str, FacetFieldCounts] = {}
         for field in requested:
@@ -1606,11 +1611,14 @@ class PostgresGraphStore(GraphStore):
                     "GROUP BY document_tags.tag"
                 )
             else:
+                # A provenance field reads through the same column expression
+                # its filter compares, so an agent aggregates by name.
+                column = _PROVENANCE_FILTER_COLUMNS.get(field, field)
                 inner_sql = (
-                    f"SELECT {field} AS value, COUNT(*) AS doc_count "  # noqa: S608 -- field from DOCUMENT_FACET_FIELDS
+                    f"SELECT {column} AS value, COUNT(*) AS doc_count "  # noqa: S608 -- column from ALL_FACET_FIELDS
                     "FROM documents "
-                    f"WHERE ({where_sql}) AND {field} IS NOT NULL "
-                    f"GROUP BY {field}"
+                    f"WHERE ({where_sql}) AND {column} IS NOT NULL "
+                    f"GROUP BY {column}"
                 )
             rows = await self._fetch_tuples(
                 f"SELECT value, doc_count, COUNT(*) OVER () FROM ({inner_sql}) AS facet_rows "  # noqa: S608 -- composed from builder-trusted parts
@@ -1628,6 +1636,24 @@ class PostgresGraphStore(GraphStore):
             params,
         )
         return facets, total
+
+    async def latest_principal_names(self) -> dict[str, str | None]:
+        with self._query_timer.measure("latest_principal_names"):
+            # One row per key: its named writes first, newest first, so an
+            # unnamed later write does not hide an earlier name. Timestamps are
+            # stored as ISO text and compared as timestamps, not as strings.
+            rows = await self._fetch_tuples(
+                "SELECT DISTINCT ON (key) key, name FROM ("
+                "SELECT created_by AS key, created_by_name AS name, created_at AS ts "
+                "FROM documents "
+                "UNION ALL SELECT last_modified_by, last_modified_by_name, updated_at "
+                "FROM documents "
+                "UNION ALL SELECT created_by, created_by_name, created_at "
+                "FROM edges WHERE created_by IS NOT NULL"
+                ") AS writes "
+                "ORDER BY key, name IS NULL, ts::timestamptz DESC"
+            )
+            return {row[0]: row[1] for row in rows}
 
     async def get_document_counts_by_field(self, field: str) -> dict[str, int]:
         with self._query_timer.measure("get_document_counts_by_field"):

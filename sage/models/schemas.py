@@ -16,6 +16,7 @@ from pydantic import (
     ConfigDict,
     Field,
     GetJsonSchemaHandler,
+    PrivateAttr,
     SerializeAsAny,
     TypeAdapter,
     model_validator,
@@ -3611,7 +3612,11 @@ class ProvenanceFilter(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     created_by: str | None = Field(
-        default=None, description="Stable key of the principal that created the document."
+        default=None,
+        description=(
+            "Stable key of the principal that created the document, or a display "
+            "name, matched case-insensitively to keys by their latest name."
+        ),
     )
     created_client: str | None = Field(
         default=None, description="Client the creating request came through."
@@ -3621,7 +3626,11 @@ class ProvenanceFilter(BaseModel):
     )
     last_modified_by: str | None = Field(
         default=None,
-        description="Stable key of the principal that made the most recent modification.",
+        description=(
+            "Stable key of the principal that made the most recent modification, "
+            "or a display name, matched case-insensitively to keys by their latest "
+            "name."
+        ),
     )
     last_modified_client: str | None = Field(
         default=None, description="Client the most recent modification came through."
@@ -3630,9 +3639,23 @@ class ProvenanceFilter(BaseModel):
         default=None, description="Name of the agent asserted at the most recent modification."
     )
 
+    # Principal field -> the keys its value resolved to. Set by the retrieval
+    # service before the filter reaches storage; never on the wire.
+    _resolved: dict[str, tuple[str, ...]] = PrivateAttr(default_factory=dict)
+
     def constraints(self) -> dict[str, str | None]:
         """The keys the caller set, with their values, null included."""
         return {key: getattr(self, key) for key in self.model_fields_set}
+
+    def resolved(self, keys: dict[str, tuple[str, ...]]) -> ProvenanceFilter:
+        """A copy whose principal fields execute on ``keys`` rather than the value given."""
+        copy = self.model_copy()
+        copy._resolved = dict(keys)
+        return copy
+
+    def store_constraints(self) -> dict[str, str | tuple[str, ...] | None]:
+        """The constraints storage executes: a resolved principal field as its key set."""
+        return {key: self._resolved.get(key, value) for key, value in self.constraints().items()}
 
 
 class RetrievalFilters(BaseModel):
@@ -3728,7 +3751,9 @@ class RetrievalFilters(BaseModel):
             "Write-provenance filter: every key given must match exactly. Keys: "
             "created_by, created_client, created_agent, last_modified_by, "
             "last_modified_client, last_modified_agent. An agent key matches the "
-            "agent's name; null matches a field that is null."
+            "agent's name; null matches a field that is null. created_by and "
+            "last_modified_by also accept a display name, resolved to keys and "
+            "reported in hints."
         ),
     )
     # Edge-only filter keys. Valid only when the DiscoverRequest
@@ -4009,9 +4034,9 @@ class DiscoverRequest(BaseModel):
         min_length=1,
         description=(
             "Facet fields to aggregate for the facets target. Any "
-            "subset of: doc_type, lifecycle_status, source_type, "
-            "pipeline_status, tags. Null (default) aggregates all "
-            "five. Rows return in that fixed field order regardless of "
+            "subset of the enumerated fields. Null (default) aggregates "
+            "doc_type, lifecycle_status, source_type, pipeline_status "
+            "and tags. Rows return in that fixed field order regardless of "
             "the order given here. Not valid for other targets."
         ),
     )
@@ -4575,7 +4600,8 @@ class FacetHit(BaseModel):
         description=(
             "The faceted document metadata field. One of the fixed facet "
             "field set: doc_type, lifecycle_status, source_type, "
-            "pipeline_status, tags."
+            "pipeline_status, tags, or a write-provenance field. An agent "
+            "field counts agents by name."
         )
     )
     values: dict[str, int] = Field(
@@ -4600,6 +4626,14 @@ class FacetHit(BaseModel):
             "response's total_available, which counts matching "
             "documents."
         )
+    )
+    labels: dict[str, str] | None = Field(
+        default=None,
+        description=(
+            "On a created_by or last_modified_by row, each key in values "
+            "mapped to its latest display name in the vault, or to itself "
+            "when it has none. Null on every other row."
+        ),
     )
 
 
@@ -4673,11 +4707,17 @@ class DiscoverResponse(BaseModel):
             "`response_size_bytes`, `budget_bytes`, and "
             "`recommended_facet_value_limit` (re-call at this cap to fit "
             "inline), the last omitted when no cap below the one in "
-            "force would help. Vocabulary warnings "
+            "force would help. Provenance resolution hint (fires when a "
+            "created_by or last_modified_by filter value matched a display "
+            "name, or matched neither a key nor a name): "
+            "`provenance_resolution`, keyed by field, each entry carrying "
+            "`value`, the matched `keys`, `ambiguous` when it matched "
+            "more than one key, and `nearest_names` when nothing matched. "
+            "Vocabulary warnings "
             "(all modes): `warnings`, a list of advisories naming any "
             "filter value outside this vault's configured doc_type or "
-            "lifecycle_status vocabulary. Absent when every filter value "
-            "is recognized."
+            "lifecycle_status vocabulary, and any ambiguous or unmatched "
+            "principal name. Absent when every filter value is recognized."
         ),
     )
     read_meta: ReadMeta = Field(

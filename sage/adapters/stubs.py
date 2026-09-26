@@ -722,6 +722,9 @@ class StubGraphStore(GraphStore):
     ) -> tuple[dict[str, FacetFieldCounts], int]:
         raise self._unsupported("query_document_facets")
 
+    async def latest_principal_names(self) -> dict[str, str | None]:
+        raise self._unsupported("latest_principal_names")
+
     async def find_documents_by_title(self, title: str) -> list[Document]:
         return [d for d in self._docs.values() if d.title == title]
 

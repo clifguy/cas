@@ -15641,7 +15641,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Search documents, edges, or facets; semantic, keyword, catalog, or deterministic modes.\n\nModes (for the default ``target=\"documents\"``):\n    semantic: Vector + optional BM25 fusion. Requires query.\n    keyword: BM25-only search. Requires query; ``query`` gives the syntax.\n    catalog: Filter-only enumeration -- the canonical way to list the\n        documents already in a vault. Metadata only, paged by limit +\n        offset; ``limit=0`` returns ``total_available`` alone.\n    deterministic: Exact heading-path extraction. Requires\n        document_id + heading_path.\n\nEdge enumeration:\n    ``target=\"edges\"`` returns edge rows, with the edge id\n    ``delete_edge`` needs, filtered by ``source_id``, ``target_id``\n    and ``edge_type``. A call omitting ``mode`` resolves to catalog;\n    naming a non-catalog mode is still refused. E.g.\n    ``filters={\"source_id\": \"<doc_id>\", \"edge_type\": \"references\"}``.\n\nFacet enumeration:\n    ``target=\"facets\"`` returns one row per field -- doc_type,\n    lifecycle_status, source_type, pipeline_status, tags -- with its\n    top values, their counts, and ``total_distinct``;\n    ``facet_value_limit`` sets the cap. A call omitting ``mode``\n    resolves to catalog; naming a non-catalog mode is still refused.\n    E.g. ``filters={\"doc_type\": \"ticket\"}``.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``misplaced_filters`` (400): a filter key given as a top-level argument\n- ``invalid_mode`` (400)\n- ``unknown_filter_key`` (400): a ``filters`` key that is not declared\n- ``invalid_filter_value`` (400): a value outside a closed vocabulary\n- ``invalid_filter_shape`` (400): a ``filters`` value of the wrong type\n- ``invalid_document_id`` (400): a malformed ``document_ids`` entry\n- ``mode_parameter_mismatch`` (400): a parameter the mode or target forbids\n- ``missing_query`` / ``missing_document_id`` / ``missing_heading_path`` (400)\n- ``invalid_parameter`` (422): a bound or type violation outside ``filters``\n- ``storage_query_failed`` (500): a defect to report\n",
+        "description": "Search documents, edges, or facets; semantic, keyword, catalog, or deterministic modes.\n\nModes (for the default ``target=\"documents\"``):\n    semantic: Vector + optional BM25 fusion. Requires query.\n    keyword: BM25-only search. Requires query; ``query`` gives the syntax.\n    catalog: Filter-only enumeration -- the canonical way to list the\n        documents already in a vault. Metadata only, paged by limit +\n        offset; ``limit=0`` returns ``total_available`` alone.\n    deterministic: Exact heading-path extraction. Requires\n        document_id + heading_path.\n\nEdge enumeration:\n    ``target=\"edges\"`` returns edge rows, with the id\n    ``delete_edge`` needs, filtered by ``source_id``, ``target_id``,\n    ``edge_type``. A call omitting ``mode`` resolves to catalog;\n    naming a non-catalog mode is still refused. E.g.\n    ``filters={\"source_id\": \"<doc_id>\", \"edge_type\": \"references\"}``.\n\nFacet enumeration:\n    ``target=\"facets\"`` returns a row per field (doc_type,\n    lifecycle_status, source_type, pipeline_status, tags) with\n    top values, counts and ``total_distinct``, capped by\n    ``facet_value_limit``. A call omitting ``mode``\n    resolves to catalog; naming a non-catalog mode is still refused.\n    ``created_by``/``last_modified_by`` take a display name and are\n    ``facet_fields``.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``misplaced_filters`` (400): a filter key given as a top-level argument\n- ``invalid_mode`` (400)\n- ``unknown_filter_key`` (400): a ``filters`` key that is not declared\n- ``invalid_filter_value`` (400): a value outside a closed vocabulary\n- ``invalid_filter_shape`` (400): a ``filters`` value of the wrong type\n- ``invalid_document_id`` (400): a malformed ``document_ids`` entry\n- ``mode_parameter_mismatch`` (400): a parameter the mode or target forbids\n- ``missing_query`` / ``missing_document_id`` / ``missing_heading_path`` (400)\n- ``invalid_parameter`` (422): a bound or type violation outside ``filters``\n- ``storage_query_failed`` (500): a defect to report\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -15669,14 +15669,20 @@
             },
             "facet_fields": {
               "default": null,
-              "description": "Facet fields to aggregate for the facets target. Any subset of: doc_type, lifecycle_status, source_type, pipeline_status, tags. Null (default) aggregates all five. Rows return in that fixed field order regardless of the order given here. Not valid for other targets.",
+              "description": "Facet fields to aggregate for the facets target. Any subset of the enumerated fields. Null (default) aggregates doc_type, lifecycle_status, source_type, pipeline_status and tags. Rows return in that fixed field order regardless of the order given here. Not valid for other targets.",
               "items": {
                 "enum": [
                   "doc_type",
                   "lifecycle_status",
                   "source_type",
                   "pipeline_status",
-                  "tags"
+                  "tags",
+                  "created_by",
+                  "last_modified_by",
+                  "created_client",
+                  "last_modified_client",
+                  "created_agent",
+                  "last_modified_agent"
                 ],
                 "type": "string"
               },

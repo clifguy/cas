@@ -1,0 +1,25 @@
+classification: minor
+category: [capability]
+summary: >-
+  The provenance filter's created_by and last_modified_by accept a display
+  name as well as a principal key. A value matches its key exactly and also
+  every key whose latest display name in the vault equals it, ignoring case;
+  the filter still executes on keys. A value that matched a name, or matched
+  neither a key nor a name, is reported in the new
+  hints.provenance_resolution, keyed by field, with the value, the matched
+  keys, ambiguous when it matched more than one key, and nearest_names
+  when nothing matched; an ambiguous or unmatched name also adds a warning.
+  A value that matched only its key reports nothing, so existing responses
+  are unchanged. FacetField gains created_by, last_modified_by,
+  created_client, last_modified_client, created_agent and
+  last_modified_agent, aggregated only when facet_fields names them; an agent
+  field counts agents by name. FacetHit gains labels, which on a created_by
+  or last_modified_by row maps each key to its latest display name, or to
+  itself when it has none, and is null on every other row.
+for_callers: >-
+  To find what a person wrote without knowing their key, filter on their
+  display name, as filters={"provenance": {"created_by": "<name>"}}, and read
+  hints.provenance_resolution for the keys it matched. To list the
+  principals, clients or agents writing to a vault, request those fields
+  with target="facets" and facet_fields; a principal row's labels names each
+  key.
