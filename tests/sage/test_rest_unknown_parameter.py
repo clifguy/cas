@@ -120,13 +120,6 @@ BODY_ROWS: list[tuple[str, str, str, type, dict[str, Any]]] = [
         {"items": [{"document_id": DOC_ID, "title": "t"}], "dry_run": True},
     ),
     (
-        "register_user",
-        "POST",
-        f"{VS}/users",
-        schemas.RegisterUserRequest,
-        {"display_name": "Someone", "user_type": "human"},
-    ),
-    (
         "create_edges",
         "POST",
         f"{VS}/edges",

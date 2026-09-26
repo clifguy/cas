@@ -13,6 +13,10 @@ that a request happens to start is created without it. Outside a request, and
 under a profile that does not authenticate callers, there is no actor, and the
 services fall back to the caller-supplied value or the vault owner.
 
+A human principal is recorded by a key that survives a rename: its tenant and
+object id. Its display name is recorded beside the key as a snapshot of what
+the token carried at write time, and is never used to identify the principal.
+
 Two further identities are bound alongside the principal and recorded with it
 (CAS-ADR-056). The *client* is the registered application the token was issued
 to, named through the deployment's client map; it is derived from the validated
@@ -75,21 +79,33 @@ _GENERIC_USER_AGENT_PRODUCTS = frozenset(
 )
 
 
-def principal_actor(principal: AuthenticatedPrincipal) -> str | None:
-    """The attribution string for a validated principal, or None if anonymous.
+def _is_delegated(principal: AuthenticatedPrincipal) -> bool:
+    """Whether a token acts for a user (it carries ``scp``) rather than an application."""
+    return "scp" in principal.claims
 
-    A delegated token (one that carries ``scp``) names a user: its
-    ``preferred_username``, else its ``oid``. An app-only token names a client
-    application: ``app:<client id>``, from ``azp``, or ``appid`` on a v1
-    token. ``sub`` is the last resort for either, since it is issued per
-    application rather than per user.
+
+def principal_actor(principal: AuthenticatedPrincipal) -> str | None:
+    """The stable attribution key for a validated principal, or None if anonymous.
+
+    A delegated token (one that carries ``scp``) names a user by identifiers
+    that a rename or a domain move leaves unchanged: ``<tid>:<oid>``, with
+    ``sub`` standing in where the token carries no ``oid``. The tenant, rather
+    than the issuer, qualifies the id because one tenant issues under more
+    than one issuer string; a token without ``tid`` is qualified by its issuer
+    as ``<iss>#<id>`` instead. An app-only token names a client application:
+    ``app:<client id>``, from ``azp``, or ``appid`` on a v1 token. ``sub`` is
+    the last resort for either.
     """
     if principal.anonymous:
         return None
     claims = principal.claims
-    if "scp" in claims:
-        user = claims.get("preferred_username") or claims.get("oid")
+    if _is_delegated(principal):
+        user = claims.get("oid") or claims.get("sub")
         if user:
+            if claims.get("tid"):
+                return f"{claims['tid']}:{user}"
+            if claims.get("iss"):
+                return f"{claims['iss']}#{user}"
             return str(user)
     else:
         client = claims.get("azp") or claims.get("appid")
@@ -98,12 +114,44 @@ def principal_actor(principal: AuthenticatedPrincipal) -> str | None:
     return principal.subject
 
 
+def principal_display_name(principal: AuthenticatedPrincipal) -> str | None:
+    """The name a delegated token shows for its user, or None.
+
+    ``preferred_username``, else ``name``. It is a snapshot of the token at
+    write time and never a key: the same principal can carry a different name
+    on its next write. An app-only or anonymous principal has none.
+    """
+    if principal.anonymous or not _is_delegated(principal):
+        return None
+    name = principal.claims.get("preferred_username") or principal.claims.get("name")
+    return str(name) if name else None
+
+
 def current_actor() -> str | None:
     """The attribution string for the request in progress, if it authenticated."""
     principal = request_principal.get()
     if principal is None:
         return None
     return principal_actor(principal)
+
+
+def current_actor_name() -> str | None:
+    """The display-name snapshot for the request in progress, if it names its user."""
+    principal = request_principal.get()
+    if principal is None:
+        return None
+    return principal_display_name(principal)
+
+
+def writer_name(writer: str | None) -> str | None:
+    """The display name to record beside ``writer``.
+
+    Only the authenticated principal has one: a caller-supplied value or the
+    vault owner written without authentication is recorded without a name.
+    """
+    if writer is None or writer != current_actor():
+        return None
+    return current_actor_name()
 
 
 def attributed_writer(caller_value: str | None, fallback: str) -> tuple[str, list[str]]:
@@ -212,7 +260,11 @@ def provenance_fields(prefix: str) -> dict[str, object]:
 
 def modifier_fields(writer: str) -> dict[str, object]:
     """The last-modification attribution for a write by ``writer``: principal, client, agent."""
-    return {"last_modified_by": writer, **provenance_fields("last_modified")}
+    return {
+        "last_modified_by": writer,
+        "last_modified_by_name": writer_name(writer),
+        **provenance_fields("last_modified"),
+    }
 
 
 def edge_attribution(owner: str) -> dict[str, object]:
@@ -224,5 +276,15 @@ def edge_attribution(owner: str) -> dict[str, object]:
     that request's identity unless it clears it.
     """
     if not in_request():
-        return {"created_by": None, "created_client": None, "created_agent": None}
-    return {"created_by": current_actor() or owner, **provenance_fields("created")}
+        return {
+            "created_by": None,
+            "created_by_name": None,
+            "created_client": None,
+            "created_agent": None,
+        }
+    writer = current_actor() or owner
+    return {
+        "created_by": writer,
+        "created_by_name": writer_name(writer),
+        **provenance_fields("created"),
+    }

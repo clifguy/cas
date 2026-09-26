@@ -153,13 +153,6 @@ class PipelineStatus(StrEnum):
     FAILED = "failed"
 
 
-class UserType(StrEnum):
-    """Actor type for provenance and access control."""
-
-    HUMAN = "human"
-    AGENT = "agent"
-
-
 class RetrievalMode(StrEnum):
     """Retrieval mode.
 

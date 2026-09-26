@@ -888,48 +888,6 @@
                 ],
                 "type": "object"
               },
-              "InvalidUserIdError": {
-                "additionalProperties": false,
-                "description": "The refusal envelope for this error code.",
-                "properties": {
-                  "detail": {
-                    "$ref": "#/$defs/InvalidUserIdErrorDetail"
-                  },
-                  "error": {
-                    "const": "invalid_user_id",
-                    "description": "Machine-readable error code selecting this envelope.",
-                    "type": "string"
-                  },
-                  "message": {
-                    "description": "Human-readable error description.",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "error",
-                  "message",
-                  "detail"
-                ],
-                "type": "object"
-              },
-              "InvalidUserIdErrorDetail": {
-                "additionalProperties": false,
-                "description": "Additional context for this refusal.",
-                "properties": {
-                  "expected": {
-                    "description": "Expected.",
-                    "type": "string"
-                  },
-                  "user_id": {
-                    "description": "User id."
-                  }
-                },
-                "required": [
-                  "user_id",
-                  "expected"
-                ],
-                "type": "object"
-              },
               "InvalidVaultIdError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -2575,7 +2533,6 @@
                 "invalid_lifecycle_transition": "#/$defs/InvalidLifecycleTransitionError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_sha256": "#/$defs/InvalidSha256Error",
-                "invalid_user_id": "#/$defs/InvalidUserIdError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
                 "legacy_form": "#/$defs/LegacyFormError",
                 "merged_from_validation": "#/$defs/MergedFromValidationError",
@@ -2674,9 +2631,6 @@
               },
               {
                 "$ref": "#/$defs/InvalidSha256Error"
-              },
-              {
-                "$ref": "#/$defs/InvalidUserIdError"
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
@@ -3906,48 +3860,6 @@
                 ],
                 "type": "object"
               },
-              "InvalidUserIdError": {
-                "additionalProperties": false,
-                "description": "The refusal envelope for this error code.",
-                "properties": {
-                  "detail": {
-                    "$ref": "#/$defs/InvalidUserIdErrorDetail"
-                  },
-                  "error": {
-                    "const": "invalid_user_id",
-                    "description": "Machine-readable error code selecting this envelope.",
-                    "type": "string"
-                  },
-                  "message": {
-                    "description": "Human-readable error description.",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "error",
-                  "message",
-                  "detail"
-                ],
-                "type": "object"
-              },
-              "InvalidUserIdErrorDetail": {
-                "additionalProperties": false,
-                "description": "Additional context for this refusal.",
-                "properties": {
-                  "expected": {
-                    "description": "Expected.",
-                    "type": "string"
-                  },
-                  "user_id": {
-                    "description": "User id."
-                  }
-                },
-                "required": [
-                  "user_id",
-                  "expected"
-                ],
-                "type": "object"
-              },
               "InvalidVaultIdError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -4497,7 +4409,6 @@
                 "invalid_edge_id": "#/$defs/InvalidEdgeIdError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_sha256": "#/$defs/InvalidSha256Error",
-                "invalid_user_id": "#/$defs/InvalidUserIdError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
                 "legacy_form": "#/$defs/LegacyFormError",
                 "merged_from_validation": "#/$defs/MergedFromValidationError",
@@ -4536,9 +4447,6 @@
               },
               {
                 "$ref": "#/$defs/InvalidSha256Error"
-              },
-              {
-                "$ref": "#/$defs/InvalidUserIdError"
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
@@ -6036,7 +5944,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Retrieve a document record with all metadata, lifecycle state, and\npipeline status. Optional delivery of the vault-local source file\nbytes supports the agentic read-modify-reingest round-trip.\n\nTwo mutually-exclusive delivery modes:\n- include_content=true: inline base64 bytes in the response.\n  Best for small files.\n- write_to_path=/abs/path: SAGE writes the bytes to the\n  filesystem path; response carries only metadata (written_to,\n  content_size, content_hash). Preferred for files that would\n  exceed MCP tool-result size ceilings.\n\nWrite provenance, for the creation and the most recent modification:\n``created_by`` / ``last_modified_by`` name the principal and\n``created_client`` / ``last_modified_client`` the client application,\nboth server-derived from the validated token where the request\nauthenticated; ``created_agent`` /\n``last_modified_agent`` are the agent the caller asserted, marked\n``trust: asserted`` and never verified.\n\nError modes (the two store codes only when bytes are requested):\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``invalid_document_id`` (400)\n- ``document_not_found`` (404): no document with that id.\n- ``content_file_missing`` (404): bytes requested; the vault-local\n  file is absent.\n- ``content_too_large`` (413)\n- ``content_delivery_conflict`` (400): both delivery modes set.\n- ``write_path_exists`` (409)\n- ``write_path_invalid`` (400)\n- ``vault_source_store_refused`` (502): resolve it at the store before\n  retrying; ``detail.store_status`` carries its status.\n- ``vault_source_store_unavailable`` (503): the same call may succeed\n  later.\n",
+        "description": "Retrieve a document record with all metadata, lifecycle state, and\npipeline status. Optional delivery of the vault-local source file\nbytes supports the agentic read-modify-reingest round-trip.\n\nTwo mutually-exclusive delivery modes:\n- include_content=true: inline base64 bytes in the response.\n  Best for small files.\n- write_to_path=/abs/path: SAGE writes the bytes to the\n  filesystem path; response carries only metadata (written_to,\n  content_size, content_hash). Preferred for files that would\n  exceed MCP tool-result size ceilings.\n\nWrite provenance, for the creation and the most recent modification:\n``created_by`` / ``last_modified_by`` key the principal stably and\n``created_client`` / ``last_modified_client`` name the client\napplication, both server-derived from the validated token where the\nrequest authenticated; ``created_by_name`` /\n``last_modified_by_name`` snapshot the user's display name, never a\nkey; ``created_agent`` /\n``last_modified_agent`` are the agent the caller asserted, marked\n``trust: asserted`` and never verified.\n\nError modes (the two store codes only when bytes are requested):\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``invalid_document_id`` (400)\n- ``document_not_found`` (404): no document with that id.\n- ``content_file_missing`` (404): bytes requested; the vault-local\n  file is absent.\n- ``content_too_large`` (413)\n- ``content_delivery_conflict`` (400): both delivery modes set.\n- ``write_path_exists`` (409)\n- ``write_path_invalid`` (400)\n- ``vault_source_store_refused`` (502): resolve it at the store before\n  retrying; ``detail.store_status`` carries its status.\n- ``vault_source_store_unavailable`` (503): the same call may succeed\n  later.\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -7210,48 +7118,6 @@
                   }
                 },
                 "required": [
-                  "expected"
-                ],
-                "type": "object"
-              },
-              "InvalidUserIdError": {
-                "additionalProperties": false,
-                "description": "The refusal envelope for this error code.",
-                "properties": {
-                  "detail": {
-                    "$ref": "#/$defs/InvalidUserIdErrorDetail"
-                  },
-                  "error": {
-                    "const": "invalid_user_id",
-                    "description": "Machine-readable error code selecting this envelope.",
-                    "type": "string"
-                  },
-                  "message": {
-                    "description": "Human-readable error description.",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "error",
-                  "message",
-                  "detail"
-                ],
-                "type": "object"
-              },
-              "InvalidUserIdErrorDetail": {
-                "additionalProperties": false,
-                "description": "Additional context for this refusal.",
-                "properties": {
-                  "expected": {
-                    "description": "Expected.",
-                    "type": "string"
-                  },
-                  "user_id": {
-                    "description": "User id."
-                  }
-                },
-                "required": [
-                  "user_id",
                   "expected"
                 ],
                 "type": "object"
@@ -9058,7 +8924,6 @@
                 "invalid_lifecycle_transition": "#/$defs/InvalidLifecycleTransitionError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_sha256": "#/$defs/InvalidSha256Error",
-                "invalid_user_id": "#/$defs/InvalidUserIdError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
                 "legacy_form": "#/$defs/LegacyFormError",
                 "lifecycle_state_not_applicable": "#/$defs/LifecycleStateNotApplicableError",
@@ -9154,9 +9019,6 @@
               },
               {
                 "$ref": "#/$defs/InvalidSha256Error"
-              },
-              {
-                "$ref": "#/$defs/InvalidUserIdError"
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
@@ -9302,7 +9164,7 @@
             },
             "created_by": {
               "default": null,
-              "description": "User ID of the actor initiating ingestion. Used for provenance tracking. Where the request authenticated, the authenticated principal is recorded instead, and a differing value here is ignored and named in the response's warnings. Without authentication, defaults to vault owner.",
+              "description": "Who is initiating ingestion, recorded as created_by. Where the request authenticated, the authenticated principal's stable key is recorded instead, and a differing value here is ignored and named in the response's warnings. Without authentication, defaults to vault owner.",
               "type": "string"
             },
             "doc_type": {
@@ -16993,48 +16855,6 @@
                 ],
                 "type": "object"
               },
-              "InvalidUserIdError": {
-                "additionalProperties": false,
-                "description": "The refusal envelope for this error code.",
-                "properties": {
-                  "detail": {
-                    "$ref": "#/$defs/InvalidUserIdErrorDetail"
-                  },
-                  "error": {
-                    "const": "invalid_user_id",
-                    "description": "Machine-readable error code selecting this envelope.",
-                    "type": "string"
-                  },
-                  "message": {
-                    "description": "Human-readable error description.",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "error",
-                  "message",
-                  "detail"
-                ],
-                "type": "object"
-              },
-              "InvalidUserIdErrorDetail": {
-                "additionalProperties": false,
-                "description": "Additional context for this refusal.",
-                "properties": {
-                  "expected": {
-                    "description": "Expected.",
-                    "type": "string"
-                  },
-                  "user_id": {
-                    "description": "User id."
-                  }
-                },
-                "required": [
-                  "user_id",
-                  "expected"
-                ],
-                "type": "object"
-              },
               "InvalidVaultIdError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -17696,7 +17516,6 @@
                 "invalid_lifecycle_transition": "#/$defs/InvalidLifecycleTransitionError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_sha256": "#/$defs/InvalidSha256Error",
-                "invalid_user_id": "#/$defs/InvalidUserIdError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
                 "legacy_form": "#/$defs/LegacyFormError",
                 "missing_document_identifier": "#/$defs/MissingDocumentIdentifierError",
@@ -17743,9 +17562,6 @@
               },
               {
                 "$ref": "#/$defs/InvalidSha256Error"
-              },
-              {
-                "$ref": "#/$defs/InvalidUserIdError"
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
@@ -18260,48 +18076,6 @@
                   "parameter",
                   "value",
                   "constraint"
-                ],
-                "type": "object"
-              },
-              "InvalidUserIdError": {
-                "additionalProperties": false,
-                "description": "The refusal envelope for this error code.",
-                "properties": {
-                  "detail": {
-                    "$ref": "#/$defs/InvalidUserIdErrorDetail"
-                  },
-                  "error": {
-                    "const": "invalid_user_id",
-                    "description": "Machine-readable error code selecting this envelope.",
-                    "type": "string"
-                  },
-                  "message": {
-                    "description": "Human-readable error description.",
-                    "type": "string"
-                  }
-                },
-                "required": [
-                  "error",
-                  "message",
-                  "detail"
-                ],
-                "type": "object"
-              },
-              "InvalidUserIdErrorDetail": {
-                "additionalProperties": false,
-                "description": "Additional context for this refusal.",
-                "properties": {
-                  "expected": {
-                    "description": "Expected.",
-                    "type": "string"
-                  },
-                  "user_id": {
-                    "description": "User id."
-                  }
-                },
-                "required": [
-                  "user_id",
-                  "expected"
                 ],
                 "type": "object"
               },
@@ -19171,7 +18945,6 @@
                 "invalid_document_date": "#/$defs/InvalidDocumentDateError",
                 "invalid_document_id": "#/$defs/InvalidDocumentIdError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
-                "invalid_user_id": "#/$defs/InvalidUserIdError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
                 "legacy_form": "#/$defs/LegacyFormError",
                 "lifecycle_state_not_applicable": "#/$defs/LifecycleStateNotApplicableError",
@@ -19212,9 +18985,6 @@
               },
               {
                 "$ref": "#/$defs/InvalidParameterError"
-              },
-              {
-                "$ref": "#/$defs/InvalidUserIdError"
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
@@ -22956,7 +22726,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Run the schema-migration surface's backfill and tier3-uniqueness scan.\n\nThe durable store provisions its schema externally, so\n``columns_added`` is always empty.\n\nSeven data backfills run; ``backfills_applied`` names each that changed\nrows. They clear the ``pipeline_error`` a recovered\nfailure left behind, reduce a stored ``source_path`` in a spelling\ningest no longer records to its plain form (each rewrite reported in\n``source_paths_normalized``; a path that walks out of the source tree\nis left as recorded), and bring stored passages and keyword vectors to\nthe current shape.\nOnly the heading backfill reads sources: a document whose source\nchanged since it was indexed or cannot be read is listed once in\n``documents_not_repaired`` and not read again until its source is\nrestored. Nothing is re-abstracted, and only the documents a backfill\nrewrites are re-embedded.\n\nIdempotent: a re-call with nothing left to repair reports no error\nand empty lists, except ``tier3_uniqueness_activations``, which\nre-lists each clean declaration.\n\n**The last backfill is expensive and exclusive, and runs once.** It\nrebuilds every index over the passage table, including the vector\nindex: expect minutes of exclusive access on a vault holding tens of\nthousands of passages.\n\nRun it with no pipeline work in flight: the call is refused while any\ningest, reabstract or recompute is queued or running on the vault,\nand those calls are refused while it runs. The exclusion covers this\nserver process only.\n\ntier3 uniqueness: each ``unique_keys`` declaration in vault config\nwhose data is clean gets a partial UNIQUE index, listed in\n``tier3_uniqueness_activations``; one whose data violates it is\nrecorded in ``tier3_uniqueness_collisions`` and not activated, and a\npreviously clean index is preserved. **Inspect both fields** on\nevery call.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``pipeline_work_in_flight`` (409): retry once it has drained\n- ``vault_migration_in_flight`` (409): another ``migrate_vault`` is running\n",
+        "description": "Run the schema-migration surface's backfill and tier3-uniqueness scan.\n\nThe durable store provisions its schema externally, so\n``columns_added`` is always empty.\n\n``backfills_applied`` names each data backfill that changed\nsomething. They clear the ``pipeline_error`` a recovered\nfailure left behind, reduce a stored ``source_path`` in a spelling\ningest no longer records to its plain form (each rewrite reported in\n``source_paths_normalized``; a path that walks out of the source tree\nis left as recorded), bring stored passages and keyword vectors to\nthe current shape, and drop a retired user table from the vault's\nschema.\nOnly the heading backfill reads sources: a document whose source\nchanged since it was indexed or cannot be read is listed once in\n``documents_not_repaired`` and not read again until its source is\nrestored. Nothing is re-abstracted, and only the documents a backfill\nrewrites are re-embedded.\n\nIdempotent: a re-call with nothing left to repair reports no error\nand empty lists, except ``tier3_uniqueness_activations``, which\nre-lists each clean declaration.\n\n**The passage-structure backfill is expensive, exclusive and\none-time.** It rebuilds every passage index, vector index included:\nexpect minutes of exclusive access at tens of thousands of passages.\n\nRun with no pipeline work in flight: this call is refused while any\ningest, reabstract or recompute is queued or running on the vault,\nand they are refused while it runs. The exclusion covers this\nserver process only.\n\ntier3 uniqueness: each ``unique_keys`` declaration in vault config\nwhose data is clean gets a partial UNIQUE index, listed in\n``tier3_uniqueness_activations``; one whose data violates it is\nrecorded in ``tier3_uniqueness_collisions`` and not activated, and a\npreviously clean index is preserved. **Inspect both fields** on\nevery call.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``pipeline_work_in_flight`` (409): retry once it has drained\n- ``vault_migration_in_flight`` (409): another ``migrate_vault`` is running\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {

@@ -36,7 +36,6 @@ from sage.models.schemas import (
     EdgeIdStr,
     PublishedShape,
     Sha256Str,
-    UserIdStr,
     VaultIdStr,
 )
 from tests.helpers.published_shape import published_shape_of
@@ -272,39 +271,6 @@ DOC_DATE_INVALID: dict[str, st.SearchStrategy[str]] = {
 
 
 # ---------------------------------------------------------------------------
-# UserIdStr -- uuid.UUID() constructor with normalize-to-canonical, identical
-# in shape and flavor to EdgeIdStr. Producing code is
-# ``id=str(uuid.uuid4())`` in sage/services/user_service.py; the validator
-# accepts urn-prefixed, brace-wrapped, hex-no-hyphens, and mixed-case input
-# and normalizes to canonical hyphenated lowercase.
-# ---------------------------------------------------------------------------
-
-USER_ID_VALID = st.uuids().map(str)
-
-USER_ID_NORMALIZE_FROM: dict[str, st.SearchStrategy[str]] = {
-    "no_hyphens_hex": st.uuids().map(lambda u: u.hex),
-    "urn_prefixed": st.uuids().map(lambda u: f"urn:uuid:{u}"),
-    "brace_wrapped": st.uuids().map(lambda u: f"{{{u}}}"),
-    "mixed_case": st.uuids().map(lambda u: str(u).upper()),
-}
-
-USER_ID_INVALID: dict[str, st.SearchStrategy[str]] = {
-    "truncated_uuid": st.uuids().map(_strip_one_hex_char),
-    "extended_uuid": st.tuples(st.uuids(), st.sampled_from(_HEX)).map(lambda t: f"{t[0]}{t[1]}"),
-    "non_hex_chars": st.tuples(st.uuids(), st.sampled_from(_NON_HEX_ALPHA)).map(
-        lambda t: _replace_first_hex_with_non_hex(t[0], t[1])
-    ),
-    "wrong_separator": st.uuids().map(lambda u: str(u).replace("-", "_")),
-    "random_text": st.text(
-        alphabet=st.characters(min_codepoint=0x20, max_codepoint=0x7E),
-        min_size=1,
-        max_size=50,
-    ).filter(_is_not_uuid),
-    "empty_string": st.just(""),
-}
-
-
-# ---------------------------------------------------------------------------
 # VaultIdStr -- regex ^[a-z0-9][a-z0-9_-]{0,63}$ (slug; reject flavor).
 # Vault id is a filesystem path segment under ~/sage_vaults/{vault_id}/.
 # ---------------------------------------------------------------------------
@@ -361,7 +327,6 @@ TYPED_ALIASES: tuple[AliasSpec, ...] = (
         DOC_DATE_VALID,
         DOC_DATE_INVALID,
     ),
-    AliasSpec("UserIdStr", TypeAdapter(UserIdStr), USER_ID_VALID, USER_ID_INVALID),
     AliasSpec("VaultIdStr", TypeAdapter(VaultIdStr), VAULT_ID_VALID, VAULT_ID_INVALID),
 )
 
@@ -447,26 +412,6 @@ def test_sha256_non_canonical_inputs_normalized_to_canonical(label: str) -> None
     inner()
 
 
-@pytest.mark.parametrize(
-    "label",
-    list(USER_ID_NORMALIZE_FROM.keys()),
-    ids=list(USER_ID_NORMALIZE_FROM.keys()),
-)
-def test_user_id_non_canonical_inputs_normalized_to_canonical(label: str) -> None:
-    """Non-canonical UUID input forms validate, but the result is canonical."""
-    adapter = TypeAdapter(UserIdStr)
-    strategy = USER_ID_NORMALIZE_FROM[label]
-
-    @given(strategy)
-    @ALIAS_SETTINGS
-    def inner(value: str) -> None:
-        result = adapter.validate_python(value)
-        assert result == str(uuid.UUID(value))
-        assert adapter.validate_python(result) == result
-
-    inner()
-
-
 def test_id_helper_outputs_validate() -> None:
     """The _id(name) helper used across the test suite produces conformant IDs."""
     adapter = TypeAdapter(DocumentIdStr)
@@ -541,7 +486,6 @@ def test_alias_roster_and_error_code_family_correspond() -> None:
 _NORMALIZE_FROM: dict[str, dict[str, st.SearchStrategy[str]]] = {
     "EdgeIdStr": EDGE_ID_NORMALIZE_FROM,
     "Sha256Str": SHA256_NORMALIZE_FROM,
-    "UserIdStr": USER_ID_NORMALIZE_FROM,
 }
 
 
@@ -639,7 +583,7 @@ def test_patterned_aliases_are_found() -> None:
     assert {s.name for s in _PATTERNED} >= {"DocumentIdStr", "Sha256Str", "VaultIdStr"}
 
 
-@pytest.mark.parametrize("name", ["EdgeIdStr", "UserIdStr"])
+@pytest.mark.parametrize("name", ["EdgeIdStr"])
 def test_uuid_format_is_what_the_alias_emits(name: str) -> None:
     """An alias publishing ``format: uuid`` accepts and emits canonical UUIDs."""
     assert _published_shape(name).format == "uuid"

@@ -618,7 +618,6 @@ _TYPED_ALIAS_FAMILY = [
     ("invalid_edge_id", "EdgeIdStr", "not-a-uuid", "edge_id"),
     ("invalid_sha256", "Sha256Str", "deadbeef", "sha256"),
     ("invalid_document_date", "DocumentDateStr", "2026-13-99", "document_date"),
-    ("invalid_user_id", "UserIdStr", "not-a-uuid", "user_id"),
 ]
 
 
@@ -667,8 +666,8 @@ def test_translate_validation_error_maps_typed_alias_family(
 def test_error_response_maps_typed_alias_family(code, alias_name, bad_value, detail_key):
     """The MCP choke point _error_response envelopes each family code (not the
     generic internal_error). This is the sole MCP-side coverage for
-    invalid_user_id and invalid_sha256, whose only direct surfaces are a model
-    field (no dedicated MCP tool param of their own)."""
+    invalid_sha256, whose only direct surface is a model field (no dedicated
+    MCP tool param of its own)."""
     from sage.mcp_server import _error_response
 
     result = _error_response(_alias_validation_error(alias_name, bad_value))
@@ -2346,19 +2345,18 @@ async def test_reload_vault_failure_releases_partially_allocated_resources(
 
     pre_count = _count_timing_threads()
 
-    # Patch UserService.bootstrap_owner to raise inside initialize_services.
-    # That method runs AFTER timing thread + graph store + content store have
+    # Make VaultConfigService's construction raise inside initialize_services.
+    # It runs AFTER timing thread + graph store + content store have
     # been constructed, so this exercises the late-stage cleanup path.
-    from sage.services.user_service import UserService
 
-    async def raising_bootstrap(self):
+    def raising_late_constructor(*args, **kwargs):
         raise SAGEError(
             code="schema_migration_required",
             message="simulated late-stage failure for T-0183 cleanup test",
             status_code=409,
         )
 
-    monkeypatch.setattr(UserService, "bootstrap_owner", raising_bootstrap)
+    monkeypatch.setattr("sage.mcp_init.VaultConfigService", raising_late_constructor)
 
     result = _parse(await reload_vault("test_vault"))
 

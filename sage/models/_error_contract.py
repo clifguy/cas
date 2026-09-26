@@ -1078,7 +1078,6 @@ SCHEMAS = json.loads(
         "invalid_parameter": "#/components/schemas/InvalidParameterError",
         "invalid_sha256": "#/components/schemas/InvalidSha256Error",
         "invalid_state": "#/components/schemas/InvalidStateError",
-        "invalid_user_id": "#/components/schemas/InvalidUserIdError",
         "invalid_vault_id": "#/components/schemas/InvalidVaultIdError",
         "legacy_form": "#/components/schemas/LegacyFormError",
         "lifecycle_state_not_applicable": "#/components/schemas/LifecycleStateNotApplicableError",
@@ -1296,9 +1295,6 @@ SCHEMAS = json.loads(
       },
       {
         "$ref": "#/components/schemas/InvalidStateError"
-      },
-      {
-        "$ref": "#/components/schemas/InvalidUserIdError"
       },
       {
         "$ref": "#/components/schemas/InvalidVaultIdError"
@@ -1543,7 +1539,7 @@ SCHEMAS = json.loads(
     ],
     "properties": {
       "code": {
-        "description": "Machine-readable error code (e.g., \"invalid_lifecycle_transition\", \"document_not_found\", \"editor_permission_denied\").",
+        "description": "Machine-readable error code (e.g., \"invalid_lifecycle_transition\", \"document_not_found\").",
         "type": "string"
       },
       "detail": {
@@ -1589,7 +1585,6 @@ SCHEMAS = json.loads(
         "invalid_lifecycle_transition",
         "invalid_parameter",
         "invalid_sha256",
-        "invalid_user_id",
         "invalid_vault_id",
         "legacy_form",
         "merged_from_validation",
@@ -1646,7 +1641,6 @@ SCHEMAS = json.loads(
         "invalid_edge_id",
         "invalid_parameter",
         "invalid_sha256",
-        "invalid_user_id",
         "invalid_vault_id",
         "legacy_form",
         "merged_from_validation",
@@ -1760,7 +1754,6 @@ SCHEMAS = json.loads(
         "invalid_lifecycle_transition",
         "invalid_parameter",
         "invalid_sha256",
-        "invalid_user_id",
         "invalid_vault_id",
         "legacy_form",
         "lifecycle_state_not_applicable",
@@ -2044,7 +2037,6 @@ SCHEMAS = json.loads(
         "invalid_lifecycle_transition",
         "invalid_parameter",
         "invalid_sha256",
-        "invalid_user_id",
         "invalid_vault_id",
         "legacy_form",
         "missing_document_identifier",
@@ -2067,7 +2059,6 @@ SCHEMAS = json.loads(
         "invalid_document_date",
         "invalid_document_id",
         "invalid_parameter",
-        "invalid_user_id",
         "invalid_vault_id",
         "legacy_form",
         "lifecycle_state_not_applicable",
@@ -2237,7 +2228,6 @@ SCHEMAS = json.loads(
             "invalid_parameter",
             "invalid_sha256",
             "invalid_state",
-            "invalid_user_id",
             "invalid_vault_id",
             "legacy_form",
             "lifecycle_state_not_applicable",
@@ -3281,51 +3271,6 @@ SCHEMAS = json.loads(
     "required": [
       "code",
       "message"
-    ],
-    "type": "object"
-  },
-  "InvalidUserIdError": {
-    "additionalProperties": false,
-    "description": "The refusal envelope for this error code.",
-    "properties": {
-      "code": {
-        "const": "invalid_user_id",
-        "description": "Machine-readable error code selecting this envelope.",
-        "type": "string"
-      },
-      "detail": {
-        "$ref": "#/components/schemas/InvalidUserIdErrorDetail"
-      },
-      "message": {
-        "description": "Human-readable error description.",
-        "type": "string"
-      },
-      "read_meta": {
-        "$ref": "#/components/schemas/ReadMeta"
-      }
-    },
-    "required": [
-      "code",
-      "message",
-      "detail"
-    ],
-    "type": "object"
-  },
-  "InvalidUserIdErrorDetail": {
-    "additionalProperties": false,
-    "description": "Additional context for this refusal.",
-    "properties": {
-      "expected": {
-        "description": "Expected.",
-        "type": "string"
-      },
-      "user_id": {
-        "description": "User id."
-      }
-    },
-    "required": [
-      "user_id",
-      "expected"
     ],
     "type": "object"
   },

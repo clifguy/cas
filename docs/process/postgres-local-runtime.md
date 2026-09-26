@@ -76,7 +76,7 @@ Verify:
 
 ```sh
 psql sage -c '\dx'   # vector, pgstattuple (and pg_repack if enabled)
-psql sage -c '\dt'   # documents, edges, staging_edges, users, document_tags, chunks
+psql sage -c '\dt'   # documents, edges, staging_edges, document_tags, chunks
 ```
 
 ## 5. A throwaway database for the test harness

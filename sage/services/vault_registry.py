@@ -253,8 +253,7 @@ class VaultRegistryService:
         """Create a new vault from a full config dict.
 
         Validates the config, creates the vault directories, writes
-        vault_config.yaml, initializes services, registers the vault, and
-        bootstraps the owner.
+        vault_config.yaml, initializes services, and registers the vault.
         """
         config = _validate_config(body.config)
         vault_id = config.vault.id
@@ -302,28 +301,12 @@ class VaultRegistryService:
                 abstraction_provider=stack_provider,
             )
             self._registry[vault_id] = services
-            await services.user_service.bootstrap_owner()
         except BaseException:
-            # Roll back the registry entry and any services that were
-            # constructed before the failure point, so the user can retry
-            # create_vault cleanly. The original exception propagates;
-            # rollback failures log and are swallowed.
-            registered = self._registry.pop(vault_id, None)
-            if registered is not None:
-                try:
-                    registered.close_timing()
-                except BaseException:
-                    logger.exception(
-                        "timing teardown failed during create_vault rollback for vault_id=%s",
-                        vault_id,
-                    )
-                try:
-                    await registered.close_storage()
-                except BaseException:
-                    logger.exception(
-                        "graph_store close failed during create_vault rollback for vault_id=%s",
-                        vault_id,
-                    )
+            # Restore the on-disk yaml so the user can retry create_vault
+            # cleanly. A failed initialize_services releases what it built
+            # itself, and nothing can fail once the services are registered.
+            # The original exception propagates; rollback failures log and
+            # are swallowed.
             try:
                 if old_yaml_bytes is None:
                     vault_source_store.delete_config(vault_id)

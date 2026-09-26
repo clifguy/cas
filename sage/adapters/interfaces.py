@@ -17,7 +17,7 @@ from typing import NamedTuple, TypedDict
 
 from sage.models.enums import ResolutionPolicy
 from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
-from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge, User
+from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge
 
 # The legacy document-level marker, in both the spellings a stored row carries
 # it in. It identified a per-document synthetic header row on the passage
@@ -1321,6 +1321,15 @@ class GraphStore(ABC):
         """
 
     @abstractmethod
+    async def drop_retired_users_table(self) -> bool:
+        """Drop the table a retired per-vault user registry left behind.
+
+        Returns whether there was one to drop, so a caller can report the
+        repair only when it did something. Idempotent: a second call returns
+        False.
+        """
+
+    @abstractmethod
     async def list_pending_metadata_documents(
         self,
         exclude_lifecycle_statuses: Sequence[str] = (),
@@ -1381,20 +1390,3 @@ class GraphStore(ABC):
     @abstractmethod
     async def head_with_hash_for_chain(self, target_id: str, edge_type: str = "supersedes") -> dict:
         """Return the chain head id and its source content hash for a target."""
-
-    # --- Users ---
-    @abstractmethod
-    async def insert_user(self, user: User) -> None:
-        """Persist a new user record."""
-
-    @abstractmethod
-    async def get_user(self, user_id: str) -> User | None:
-        """Return the user with this id, or None if absent."""
-
-    @abstractmethod
-    async def get_user_by_display_name(self, display_name: str) -> User | None:
-        """Return the user with this display name, or None if absent."""
-
-    @abstractmethod
-    async def list_users(self) -> list[User]:
-        """Return all user records."""

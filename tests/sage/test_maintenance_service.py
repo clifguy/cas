@@ -54,6 +54,7 @@ from sage.models.schemas import (
 from sage.services.maintenance import (
     BACKFILL_NON_CANONICAL_SOURCE_PATH,
     BACKFILL_STALE_PIPELINE_ERROR,
+    DROP_RETIRED_USERS_TABLE,
     MaintenanceService,
 )
 from sage.storage.tier3_uniqueness import tier3_unique_index_name
@@ -258,6 +259,87 @@ async def test_migrate_vault_reports_no_backfill_when_clean(
         _recovered_doc("doc-b", "T-0002", PipelineStatus.ABSTRACTION_COMPLETE)
     )
     assert (await maintenance.migrate_vault()).backfills_applied == [BACKFILL_STALE_PIPELINE_ERROR]
+
+
+# The registry table as releases that carried a per-vault user registry left it.
+_LEGACY_USERS_TABLE = """\
+CREATE TABLE users (
+    id text PRIMARY KEY,
+    display_name text NOT NULL,
+    user_type text NOT NULL CHECK (user_type IN ('human', 'agent')),
+    created_at text NOT NULL
+);
+"""
+
+
+async def test_migrate_vault_drops_the_retired_users_table(
+    graph_store, minimal_config, stub_content_store
+):
+    """MNT-005: the migration drops the retired per-vault user registry.
+
+    Anti-coincidental-pass: a freshly bootstrapped schema has no ``users``
+    table, so the legacy table is created first and its presence asserted;
+    without that the drop has nothing to do and the test proves nothing. The
+    second run pins the pass as idempotent and quiet on a clean vault.
+    """
+
+    async def users_table_present() -> bool:
+        async with graph_store._pool.connection() as conn:
+            cur = await conn.execute("SELECT to_regclass('users') IS NOT NULL")
+            return (await cur.fetchone())[0]
+
+    maintenance = _maintenance_for(graph_store, minimal_config, content_store=stub_content_store)
+    async with graph_store._pool.connection() as conn:
+        await conn.execute(_LEGACY_USERS_TABLE)
+        await conn.execute(
+            "INSERT INTO users VALUES ('u-1', 'Owner', 'human', '2026-01-01T00:00:00Z')"
+        )
+    try:
+        assert await users_table_present()
+
+        first = await maintenance.migrate_vault()
+        assert DROP_RETIRED_USERS_TABLE in first.backfills_applied
+        assert not await users_table_present()
+
+        second = await maintenance.migrate_vault()
+        assert DROP_RETIRED_USERS_TABLE not in second.backfills_applied
+    finally:
+        async with graph_store._pool.connection() as conn:
+            await conn.execute("DROP TABLE IF EXISTS users")
+
+
+async def test_migrate_vault_leaves_a_users_table_outside_the_vault_schema(
+    graph_store, minimal_config, stub_content_store
+):
+    """MNT-006: the retired-table drop reaches only the vault's own schema.
+
+    A vault connection's search path falls through to ``public``, so a probe or
+    drop by bare name finds a ``users`` table there once the vault's own is
+    gone. Anti-coincidental-pass: the vault schema has no ``users`` table and
+    the foreign one is created first and its presence asserted, so an
+    unqualified drop has exactly the table it must not touch to find.
+    """
+
+    async def public_users_present() -> bool:
+        async with graph_store._pool.connection() as conn:
+            cur = await conn.execute("SELECT to_regclass('public.users') IS NOT NULL")
+            return (await cur.fetchone())[0]
+
+    maintenance = _maintenance_for(graph_store, minimal_config, content_store=stub_content_store)
+    async with graph_store._pool.connection() as conn:
+        cur = await conn.execute("SELECT to_regclass(format('%I.users', current_schema())) IS NULL")
+        assert (await cur.fetchone())[0], "the vault schema must hold no users table"
+        await conn.execute("CREATE TABLE public.users (id text PRIMARY KEY)")
+    try:
+        assert await public_users_present()
+
+        report = await maintenance.migrate_vault()
+
+        assert DROP_RETIRED_USERS_TABLE not in report.backfills_applied
+        assert await public_users_present()
+    finally:
+        async with graph_store._pool.connection() as conn:
+            await conn.execute("DROP TABLE IF EXISTS public.users")
     assert (await maintenance.migrate_vault()).backfills_applied == []
 
 

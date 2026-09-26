@@ -190,7 +190,7 @@ async def test_c8_authorization_uniform_across_surfaces(monkeypatch) -> None:
     app = create_app(stack_config=_ENABLED)
     seen = set()
     async with _client(app) as c:
-        for path in ("/sage_vaults/test_vault/users", "/mcp", "/mcp_maint"):
+        for path in ("/sage_vaults/test_vault/documents", "/mcp", "/mcp_maint"):
             r = await c.get(path)
             seen.add((r.status_code, r.headers.get("www-authenticate")))
     assert len(seen) == 1, seen

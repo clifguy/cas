@@ -38,7 +38,6 @@ from sage.api.routers import (
     retrieval,
     staging_edges,
     transfer,
-    users,
     utilities,
     vaults,
 )
@@ -157,7 +156,6 @@ async def _initialize_services(app: FastAPI, config: VaultConfig, **overrides) -
     app.state.config = services.config
     app.state.graph_store = services.graph_store
     app.state.lock_manager = services.lock_manager
-    app.state.user_service = services.user_service
     app.state.lifecycle_service = services.lifecycle_service
     app.state.metadata_service = services.metadata_service
     app.state.ingestion_service = services.ingestion_service
@@ -866,7 +864,6 @@ def create_app(
         documents,
         lifecycle,
         metadata,
-        users,
         graph_ops,
         retrieval,
         utilities,

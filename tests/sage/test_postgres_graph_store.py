@@ -25,9 +25,8 @@ from sage.models.enums import (
     RationaleKind,
     ResolutionPolicy,
     SourceType,
-    UserType,
 )
-from sage.models.schemas import Document, Edge, StagingEdge, User
+from sage.models.schemas import Document, Edge, StagingEdge
 from sage.storage.tier3_uniqueness import Tier3UniqueViolation
 
 # Skips the whole module if psycopg is absent (the import below pulls it in).
@@ -138,6 +137,7 @@ def _pg_edge_row() -> dict:
         "synced_from_version": "00000004_doc_synced",
         "synced_from_content_hash": "sha256:" + "ab" * 32,
         "created_by": "sentinel-edge-writer",
+        "created_by_name": "sentinel-edge-writer-name",
         "created_client": "sentinel-edge-client",
         "created_agent": {"name": "sentinel-edge-agent", "trust": "asserted", "source": "header"},
     }
@@ -243,6 +243,8 @@ def test_pg_row_to_document_populates_every_field():
             "source_content_hash": "sha256:" + "12" * 32,
             "relocated_at": datetime(2026, 5, 19, 9, 0, tzinfo=timezone.utc).isoformat(),
         },
+        "created_by_name": "sentinel-name-created",
+        "last_modified_by_name": "sentinel-name-modified",
         "created_client": "sentinel-client-created",
         "created_agent": {"name": "sentinel-agent-c", "trust": "asserted", "source": "header"},
         "last_modified_client": "sentinel-client-modified",
@@ -262,6 +264,10 @@ def test_pg_row_to_document_populates_every_field():
         assert getattr(doc, field_name) is not None, (
             f"Document.{field_name} not populated by _row_to_document"
         )
+    assert (doc.created_by_name, doc.last_modified_by_name) == (
+        "sentinel-name-created",
+        "sentinel-name-modified",
+    )
     assert doc.source_content_hash != doc.stored_content_hash, (
         "the two hashes are distinct columns; the fixture must not let one stand in for the other"
     )
@@ -323,20 +329,6 @@ def test_pg_row_to_document_tolerates_a_row_without_the_stored_hash_column():
 
     assert doc.stored_content_hash is None
     assert doc.source_content_hash == "sha256:" + "ab" * 32
-
-
-def test_pg_row_to_user_populates_every_field():
-    row = {
-        "id": str(uuid.UUID(int=0xA11CE)),
-        "display_name": "Alice",
-        "user_type": UserType.HUMAN.value,
-        "created_at": datetime(2026, 5, 21, tzinfo=timezone.utc).isoformat(),
-    }
-    user = PostgresGraphStore._row_to_user(row)
-    for field_name in User.model_fields:
-        assert getattr(user, field_name) is not None, (
-            f"User.{field_name} not populated by _row_to_user"
-        )
 
 
 # ---------------------------------------------------------------------------

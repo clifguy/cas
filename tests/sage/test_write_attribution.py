@@ -3,9 +3,12 @@
 Under a profile that authenticates callers, ``created_by`` on a new document
 and ``last_modified_by`` on every created, patched, superseded or
 lifecycle-transitioned document record the principal whose credential made the
-write -- on the REST routes and the MCP tools alike. Without authentication a
-caller-supplied ``created_by`` is used and the vault owner is the default, and
-lifecycle transitions stamp the vault owner.
+write -- on the REST routes and the MCP tools alike. A human principal is
+keyed by its tenant and object id, which survive a rename; its display name is
+recorded beside the key in ``created_by_name`` and ``last_modified_by_name`` as
+a snapshot at write time. Without authentication a caller-supplied
+``created_by`` is used and the vault owner is the default, lifecycle
+transitions stamp the vault owner, and no display name is recorded.
 
 Anti-coincidental-pass discipline:
 
@@ -15,8 +18,12 @@ Anti-coincidental-pass discipline:
 * Every update test creates the document as one writer and modifies it as
   another, so a write that stamps nothing leaves the first writer's value in
   place and fails.
-* ``bob`` carries no ``preferred_username``: the ``oid`` fallback is exercised
-  end to end, and a derivation from ``sub`` fails.
+* ``alice`` carries both a ``preferred_username`` and an ``oid``, so a key
+  derived from the mutable name fails; ``alice-renamed`` shares her ``oid``
+  under another name, so a key derived from any mutable claim splits her
+  history and fails.
+* ``bob`` carries no display-name claim, so a snapshot copied from the key
+  fails, and a key derived from ``sub`` fails.
 * The multi-principal tests alternate principals request by request, so an
   identity captured per application, per vault or per MCP session fails.
 """
@@ -33,7 +40,12 @@ from starlette.types import Receive, Scope, Send
 from sage.app import create_app
 from sage.auth import AuthenticatedPrincipal, AuthMiddleware, NoAuthValidator
 from sage.config import SageCoreConfig, StackAuthConfig, VaultConfig
-from sage.request_identity import current_actor, principal_actor, request_principal
+from sage.request_identity import (
+    current_actor,
+    principal_actor,
+    principal_display_name,
+    request_principal,
+)
 from tests.helpers.write_attribution import (
     VAULT as _VAULT,
 )
@@ -52,20 +64,40 @@ from tests.helpers.write_attribution import (
 )
 
 _OWNER = "owner-o"
-_ALICE = "alice@example.org"
-_BOB = "oid-b"
+_TID = "tid-1"
+_ALICE = f"{_TID}:oid-a"
+_ALICE_NAME = "alice@example.org"
+_ALICE_NEW_NAME = "alice.new@example.org"
+_BOB = f"{_TID}:oid-b"
 _SVC = "app:client-1"
 
 _PRINCIPALS = {
     "alice-tok": AuthenticatedPrincipal(
         subject="sub-a",
         scopes=frozenset({"Sage.Access"}),
-        claims={"scp": "Sage.Access", "preferred_username": _ALICE, "oid": "oid-a", "sub": "sub-a"},
+        claims={
+            "scp": "Sage.Access",
+            "tid": _TID,
+            "preferred_username": _ALICE_NAME,
+            "oid": "oid-a",
+            "sub": "sub-a",
+        },
+    ),
+    "alice-renamed-tok": AuthenticatedPrincipal(
+        subject="sub-a2",
+        scopes=frozenset({"Sage.Access"}),
+        claims={
+            "scp": "Sage.Access",
+            "tid": _TID,
+            "preferred_username": _ALICE_NEW_NAME,
+            "oid": "oid-a",
+            "sub": "sub-a2",
+        },
     ),
     "bob-tok": AuthenticatedPrincipal(
         subject="sub-b",
         scopes=frozenset({"Sage.Access"}),
-        claims={"scp": "Sage.Access", "oid": _BOB, "sub": "sub-b"},
+        claims={"scp": "Sage.Access", "tid": _TID, "oid": "oid-b", "sub": "sub-b"},
     ),
     "svc-tok": AuthenticatedPrincipal(
         subject="sub-s",
@@ -145,20 +177,66 @@ async def _rest_post(app, token: str | None, path: str, body: dict) -> dict:
 # --------------------------------------------------------------------------
 
 
+_ISS = "https://login.example/tid-1/v2.0"
+
+
 @pytest.mark.parametrize(
     ("claims", "expected"),
     [
-        ({"scp": "x", "preferred_username": "u@x", "oid": "o", "sub": "s"}, "u@x"),
-        ({"scp": "x", "oid": "o", "sub": "s"}, "o"),
-        ({"scp": "x", "sub": "s"}, "s"),
-        ({"roles": ["r"], "azp": "client-1", "oid": "o", "sub": "s"}, "app:client-1"),
-        ({"roles": ["r"], "appid": "client-v1", "oid": "o", "sub": "s"}, "app:client-v1"),
+        (
+            {"scp": "x", "tid": "t", "iss": _ISS, "preferred_username": "u@x", "oid": "o"},
+            "t:o",
+        ),
+        ({"scp": "x", "tid": "t", "iss": _ISS, "oid": "o", "sub": "s"}, "t:o"),
+        ({"scp": "x", "tid": "t", "iss": _ISS, "preferred_username": "u@x", "sub": "s"}, "t:s"),
+        ({"scp": "x", "iss": _ISS, "preferred_username": "u@x", "oid": "o"}, f"{_ISS}#o"),
+        ({"scp": "x", "iss": _ISS, "sub": "s"}, f"{_ISS}#s"),
+        ({"roles": ["r"], "tid": "t", "azp": "client-1", "oid": "o"}, "app:client-1"),
+        ({"roles": ["r"], "tid": "t", "appid": "client-v1", "oid": "o"}, "app:client-v1"),
+        ({"roles": ["r"], "sub": "s"}, "s"),
     ],
-    ids=["delegated-upn", "delegated-oid", "delegated-sub", "app-azp", "app-v1-appid"],
+    ids=[
+        "delegated-tenant-oid-not-upn",
+        "delegated-tenant-oid-not-sub",
+        "delegated-tenant-sub-without-oid",
+        "delegated-issuer-oid-without-tid",
+        "delegated-issuer-sub-without-tid-or-oid",
+        "app-azp",
+        "app-v1-appid",
+        "no-client-falls-back-to-subject",
+    ],
 )
 def test_u1_principal_actor_derivation(claims: dict, expected: str) -> None:
     principal = AuthenticatedPrincipal(subject=claims.get("sub"), claims=claims)
     assert principal_actor(principal) == expected
+
+
+@pytest.mark.parametrize(
+    ("claims", "expected"),
+    [
+        ({"scp": "x", "tid": "t", "preferred_username": "u@x", "name": "U X", "oid": "o"}, "u@x"),
+        ({"scp": "x", "tid": "t", "name": "U X", "oid": "o"}, "U X"),
+        ({"scp": "x", "tid": "t", "oid": "o"}, None),
+        ({"roles": ["r"], "azp": "c", "preferred_username": "u@x", "name": "U X"}, None),
+    ],
+    ids=["delegated-upn", "delegated-name", "delegated-unnamed", "app-only-unnamed"],
+)
+def test_u1b_principal_display_name(claims: dict, expected: str | None) -> None:
+    principal = AuthenticatedPrincipal(subject=claims.get("sub"), claims=claims)
+    assert principal_display_name(principal) == expected
+
+
+def test_u1b_anonymous_principal_has_no_display_name() -> None:
+    assert principal_display_name(AuthenticatedPrincipal(subject=None, anonymous=True)) is None
+
+
+def test_u1c_a_rename_keeps_the_key_and_changes_the_snapshot() -> None:
+    before, after = _PRINCIPALS["alice-tok"], _PRINCIPALS["alice-renamed-tok"]
+    assert principal_actor(before) == principal_actor(after) == _ALICE
+    assert (principal_display_name(before), principal_display_name(after)) == (
+        _ALICE_NAME,
+        _ALICE_NEW_NAME,
+    )
 
 
 def test_u1_anonymous_principal_has_no_actor() -> None:
@@ -207,6 +285,8 @@ async def test_r1_ingest_records_the_principal(auth_app, tmp_vault_dir) -> None:
     doc = body["document"]
     assert doc["created_by"] == _ALICE
     assert doc["last_modified_by"] == _ALICE
+    assert doc["created_by_name"] == _ALICE_NAME
+    assert doc["last_modified_by_name"] == _ALICE_NAME
     assert body["warnings"] == []
 
 
@@ -228,6 +308,9 @@ async def test_r3_a_second_principal_is_attributed_to_itself(auth_app, tmp_vault
     assert first["document"]["created_by"] == _ALICE
     assert second["document"]["created_by"] == _BOB
     assert second["document"]["last_modified_by"] == _BOB
+    # An absent field is omitted from the wire.
+    assert second["document"].get("created_by_name") is None
+    assert second["document"].get("last_modified_by_name") is None
 
 
 async def test_r4_metadata_patch_stamps_the_patching_principal(auth_app, tmp_vault_dir) -> None:
@@ -238,6 +321,8 @@ async def test_r4_metadata_patch_stamps_the_patching_principal(auth_app, tmp_vau
     after = await _rest_get(auth_app, "bob-tok", doc["id"])
     assert after["last_modified_by"] == _BOB
     assert after["created_by"] == _ALICE
+    assert after["created_by_name"] == _ALICE_NAME
+    assert after.get("last_modified_by_name") is None
 
 
 async def test_r5_lifecycle_transition_stamps_the_principal(auth_app, tmp_vault_dir) -> None:
@@ -300,6 +385,8 @@ async def test_r8_batch_ingest_records_an_app_principal(auth_app) -> None:
     (doc,) = [d for d in docs if d.title == "Batch R8"]
     assert doc.created_by == _SVC
     assert doc.last_modified_by == _SVC
+    assert doc.created_by_name is None
+    assert doc.last_modified_by_name is None
 
 
 async def test_r9_force_reingest_stamps_the_principal(auth_app, tmp_vault_dir) -> None:
@@ -310,6 +397,76 @@ async def test_r9_force_reingest_stamps_the_principal(auth_app, tmp_vault_dir) -
     after = await _rest_get(auth_app, "bob-tok", doc["id"])
     assert after["last_modified_by"] == _BOB
     assert after["created_by"] == _ALICE
+
+
+async def test_r10_a_rename_does_not_split_the_principals_history(auth_app, tmp_vault_dir) -> None:
+    doc = (await _rest_ingest(auth_app, "alice-tok", _seed(tmp_vault_dir, "r10.md")))["document"]
+    other = (await _rest_ingest(auth_app, "bob-tok", _seed(tmp_vault_dir, "r10b.md")))["document"]
+    await _rest_post(
+        auth_app,
+        "alice-renamed-tok",
+        "/metadata",
+        {"items": [{"document_id": doc["id"], "title": "Renamed"}]},
+    )
+    after = await _rest_get(auth_app, "bob-tok", doc["id"])
+    assert after["created_by"] == after["last_modified_by"] == _ALICE
+    assert after["created_by_name"] == _ALICE_NAME
+    assert after["last_modified_by_name"] == _ALICE_NEW_NAME
+
+    async def found(provenance: dict) -> set[str]:
+        body = await _rest_post(
+            auth_app,
+            "bob-tok",
+            "/discover",
+            {"mode": "catalog", "limit": 100, "filters": {"provenance": provenance}},
+        )
+        return {hit["document"]["id"] for hit in body["results"]}
+
+    # Positive control: bob's document is excluded by the key, not by the filter failing.
+    assert await found({"created_by": _BOB}) == {other["id"]}
+    assert await found({"created_by": _ALICE}) == {doc["id"]}
+    assert await found({"last_modified_by": _ALICE}) == {doc["id"]}
+    assert await found({"created_by": _ALICE_NAME}) == set()
+
+
+async def test_r11_every_modification_path_records_the_modifiers_name(
+    auth_app, tmp_vault_dir
+) -> None:
+    # The modifier carries a name the creator's snapshot does not, so a path that
+    # records no name, or copies the creator's, fails its row.
+    completed = (await _rest_ingest(auth_app, "alice-tok", _seed(tmp_vault_dir, "r11a.md")))[
+        "document"
+    ]
+    await _rest_post(
+        auth_app,
+        "alice-renamed-tok",
+        "/lifecycles",
+        {"items": [{"document_id": completed["id"], "action": "complete"}]},
+    )
+
+    superseded = (await _rest_ingest(auth_app, "alice-tok", _seed(tmp_vault_dir, "r11b.md")))[
+        "document"
+    ]
+    await _rest_ingest(
+        auth_app,
+        "alice-renamed-tok",
+        _seed(tmp_vault_dir, "r11c.md"),
+        predecessor_id=superseded["id"],
+    )
+
+    source = _seed(tmp_vault_dir, "r11d.md")
+    reingested = (await _rest_ingest(auth_app, "alice-tok", source))["document"]
+    await _rest_ingest(auth_app, "alice-renamed-tok", source, force=True)
+
+    for label, doc_id in (
+        ("lifecycle", completed["id"]),
+        ("supersede", superseded["id"]),
+        ("force re-ingest", reingested["id"]),
+    ):
+        after = await _rest_get(auth_app, "bob-tok", doc_id)
+        assert after["last_modified_by"] == _ALICE, label
+        assert after["created_by_name"] == _ALICE_NAME, label
+        assert after["last_modified_by_name"] == _ALICE_NEW_NAME, label
 
 
 # --------------------------------------------------------------------------
@@ -332,6 +489,7 @@ async def test_p1_mcp_ingest_records_the_principal_and_warns_on_a_differing_call
             },
         )
         assert plain["created_by"] == _ALICE
+        assert plain["created_by_name"] == _ALICE_NAME
         assert "warnings" not in plain
 
         claimed = await _mcp_call(
@@ -430,6 +588,11 @@ async def test_n1_no_auth_uses_the_caller_value_or_the_owner(noauth_app, tmp_vau
     assert claimed["warnings"] == []
     unclaimed = await _rest_ingest(noauth_app, None, _seed(tmp_vault_dir, "n1b.md"))
     assert unclaimed["document"]["created_by"] == _OWNER
+    assert unclaimed["document"]["last_modified_by"] == _OWNER
+    # Neither the caller's value nor the owner is a display name.
+    for record in (claimed["document"], unclaimed["document"]):
+        assert record.get("created_by_name") is None
+        assert record.get("last_modified_by_name") is None
 
 
 async def test_n2_no_auth_metadata_patch_stamps_the_owner_on_both_surfaces(
@@ -454,8 +617,10 @@ async def test_n2_no_auth_metadata_patch_stamps_the_owner_on_both_surfaces(
             "/metadata",
             {"items": [{"document_id": via_rest["id"], "title": "R"}]},
         )
-        assert (await _rest_get(noauth_app, None, via_mcp["id"]))["last_modified_by"] == _OWNER
-        assert (await _rest_get(noauth_app, None, via_rest["id"]))["last_modified_by"] == _OWNER
+        for doc_id in (via_mcp["id"], via_rest["id"]):
+            after = await _rest_get(noauth_app, None, doc_id)
+            assert after["last_modified_by"] == _OWNER
+            assert after.get("last_modified_by_name") is None
 
 
 async def test_n3_no_auth_lifecycle_transition_stamps_the_owner(noauth_app, tmp_vault_dir) -> None:
@@ -543,3 +708,17 @@ def test_d1_ingest_created_by_description_states_the_principal_rule() -> None:
     description = tool.parameters["properties"]["created_by"]["description"]
     assert "authenticated principal" in description
     assert "Without authentication, defaults to vault owner." in description
+
+
+def test_d1_created_by_descriptions_state_the_stable_key() -> None:
+    app = create_app(stack_config=SageCoreConfig())
+    document = app.openapi()["components"]["schemas"]["Document"]["properties"]
+    created_by = document["created_by"]["description"]
+    assert "tenant" in created_by and "object id" in created_by
+    assert "preferred_username" not in created_by
+    for field in ("created_by_name", "last_modified_by_name"):
+        description = document[field]["description"]
+        assert "snapshot" in description and "never a key" in description, field
+    get_document = app.state.mcp_mounts["/mcp"]._tool_manager.get_tool("get_document")
+    for field in ("created_by_name", "last_modified_by_name"):
+        assert f"``{field}``" in get_document.description

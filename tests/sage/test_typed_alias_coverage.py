@@ -119,7 +119,6 @@ from sage.api.routers import metadata as fastapi_metadata_mod
 from sage.api.routers import pending_metadata as fastapi_pending_metadata_mod
 from sage.api.routers import retrieval as fastapi_retrieval_mod
 from sage.api.routers import staging_edges as fastapi_staging_edges_mod
-from sage.api.routers import users as fastapi_users_mod
 from sage.api.routers import utilities as fastapi_utilities_mod
 from sage.api.routers import vaults as fastapi_vaults_mod
 from sage.models import schemas as schemas_mod
@@ -128,7 +127,6 @@ from sage.models.schemas import (
     DocumentIdStr,
     EdgeIdStr,
     Sha256Str,
-    UserIdStr,
     VaultIdStr,
 )
 from tests.helpers.docstring_blocks import error_modes_block as _error_modes_block
@@ -156,7 +154,6 @@ SHAPE_REGISTRY: Final[dict[str, type]] = {
     "edge_id": EdgeIdStr,  # exact match — wins over *_id
     "vault_id": VaultIdStr,  # exact match — wins over *_id
     "hashes": Sha256Str,  # exact match — the bare-stem plural
-    "user_ids": UserIdStr,  # exact match — wins over *_ids
     "*_id": DocumentIdStr,
     "*_hash": Sha256Str,
     "*_date": DocumentDateStr,
@@ -194,7 +191,6 @@ _TYPED_VALIDATORS: Final[frozenset] = frozenset(
         schemas_mod._validate_edge_id,
         schemas_mod._validate_sha256,
         schemas_mod._validate_document_date,
-        schemas_mod._validate_user_id,
         schemas_mod._validate_vault_id,
     }
 )
@@ -335,8 +331,6 @@ def _alias_display_name(alias) -> str:
         return "Sha256Str"
     if alias is DocumentDateStr:
         return "DocumentDateStr"
-    if alias is UserIdStr:
-        return "UserIdStr"
     if alias is VaultIdStr:
         return "VaultIdStr"
     return str(alias)
@@ -385,7 +379,6 @@ _FASTAPI_ROUTER_MODULES: Final[tuple] = (
     fastapi_pending_metadata_mod,
     fastapi_retrieval_mod,
     fastapi_staging_edges_mod,
-    fastapi_users_mod,
     fastapi_utilities_mod,
     fastapi_vaults_mod,
     router_mod,  # app.backend.router
@@ -1123,7 +1116,6 @@ _TYPED_ALIAS_FAMILY_CONTRACT = [
     ("invalid_edge_id", EdgeIdStr, "not-a-uuid", "edge_id"),
     ("invalid_sha256", Sha256Str, "deadbeef", "sha256"),
     ("invalid_document_date", DocumentDateStr, "2026-13-99", "document_date"),
-    ("invalid_user_id", UserIdStr, "not-a-uuid", "user_id"),
 ]
 
 
@@ -1211,7 +1203,6 @@ def test_registry_enumerates_plural_collection_sites():
     for site in (
         ("RetrievalFilters", "document_ids"),
         ("HashCheckRequest", "hashes"),
-        ("SetEditorsRequest", "user_ids"),
         ("Tier3UniquenessCollision", "document_ids"),
     ):
         assert site in model_sites, f"{site} escaped the BaseModel gate; got {sorted(model_sites)}"

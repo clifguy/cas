@@ -58,9 +58,9 @@ def _shaped_aliases() -> dict[str, tuple[object, PublishedShape]]:
 
 _ALIASES = _shaped_aliases()
 
-# The six shape-bearing aliases carry a marker today. A floor rather than a
+# The five shape-bearing aliases carry a marker today. A floor rather than a
 # list, so an alias gaining a marker needs no edit and one losing it fails.
-MIN_SHAPED_ALIASES: int = 6
+MIN_SHAPED_ALIASES: int = 5
 
 
 def _non_null_arm(schema: dict[str, Any]) -> dict[str, Any]:

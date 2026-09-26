@@ -110,8 +110,10 @@ CREATE TABLE IF NOT EXISTS documents (
     stored_content_hash text,
     adapter_version text NOT NULL,
     created_by text NOT NULL,
+    created_by_name text,
     created_at text NOT NULL,
     last_modified_by text NOT NULL,
+    last_modified_by_name text,
     created_client text,
     created_agent jsonb,
     last_modified_client text,
@@ -134,15 +136,6 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 """
 
-USERS_TABLE = """\
-CREATE TABLE IF NOT EXISTS users (
-    id text PRIMARY KEY,
-    display_name text NOT NULL,
-    user_type text NOT NULL CHECK (user_type IN ('human', 'agent')),
-    created_at text NOT NULL
-);
-"""
-
 EDGES_TABLE = """\
 CREATE TABLE IF NOT EXISTS edges (
     id text PRIMARY KEY,
@@ -161,6 +154,7 @@ CREATE TABLE IF NOT EXISTS edges (
     synced_from_version text,
     synced_from_content_hash text,
     created_by text,
+    created_by_name text,
     created_client text,
     created_agent jsonb,
     FOREIGN KEY (source_id) REFERENCES documents(id),
@@ -364,7 +358,6 @@ CONTENT_INDEXES: tuple[str, ...] = (
 
 _TABLES: tuple[str, ...] = (
     DOCUMENTS_TABLE,
-    USERS_TABLE,
     EDGES_TABLE,
     STAGING_EDGES_TABLE,
     DOCUMENT_TAGS_TABLE,
@@ -427,6 +420,12 @@ ADDITIVE_COLUMNS: tuple[str, ...] = (
     "ALTER TABLE edges ADD COLUMN IF NOT EXISTS created_by text;",
     "ALTER TABLE edges ADD COLUMN IF NOT EXISTS created_client text;",
     "ALTER TABLE edges ADD COLUMN IF NOT EXISTS created_agent jsonb;",
+    # The principal's display name, recorded beside its stable key as a
+    # snapshot at write time (CAS-ADR-056). Null where no name was recorded,
+    # which is every row written before it was, so no backfill is needed.
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS created_by_name text;",
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS last_modified_by_name text;",
+    "ALTER TABLE edges ADD COLUMN IF NOT EXISTS created_by_name text;",
 )
 
 

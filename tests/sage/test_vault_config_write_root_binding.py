@@ -52,11 +52,6 @@ from sage.vault_source_binding import DocumentStoreVaultSourceStore, FilesystemV
 # ---------------------------------------------------------------------------
 
 
-class _FakeUserService:
-    async def bootstrap_owner(self) -> None:  # create_vault calls this post-register
-        pass
-
-
 class _FakeIngestionService:
     # _build_vault_summary iterates registered_adapters.items().
     registered_adapters: dict = {}
@@ -72,7 +67,6 @@ class _FakeCreatedGraphStore:
 class _FakeServices:
     def __init__(self) -> None:
         self.graph_store = _FakeCreatedGraphStore()
-        self.user_service = _FakeUserService()
         self.ingestion_service = _FakeIngestionService()
 
 

@@ -215,11 +215,12 @@ def test_the_gin_index_over_the_vector_is_defined_once():
 def test_graph_tables_present_and_typed():
     """The graph tables exist with their Postgres types and key constraints."""
     ddl = "\n".join(pgschema.ddl_statements())
-    for table in ("documents", "edges", "staging_edges", "users", "document_tags"):
+    for table in ("documents", "edges", "staging_edges", "document_tags"):
         assert f"CREATE TABLE IF NOT EXISTS {table}" in ddl
+    # The per-vault user registry is retired; a fresh schema carries no table for it.
+    assert "CREATE TABLE IF NOT EXISTS users" not in ddl
     assert "tags jsonb" in pgschema.DOCUMENTS_TABLE
     assert "tier3_metadata jsonb" in pgschema.DOCUMENTS_TABLE
-    assert "CHECK (user_type IN ('human', 'agent'))" in pgschema.USERS_TABLE
     nat = "\n".join(pgschema.UNIQUE_NATURAL_KEY_INDEXES)
     assert "idx_edges_uniq_natural_key" in nat
     assert "idx_staging_edges_uniq_natural_key" in nat
@@ -415,7 +416,6 @@ _EXPECTED_TABLES = {
     "documents",
     "edges",
     "staging_edges",
-    "users",
     "document_tags",
     "chunks",
     "document_surface",
@@ -482,6 +482,8 @@ async def test_bootstrap_is_idempotent(pg_dsn):
         ("stored_content_hash", "text"),
         ("adapter_config", "jsonb"),
         ("reprojection_skipped", "jsonb"),
+        ("created_by_name", "text"),
+        ("last_modified_by_name", "text"),
         ("created_client", "text"),
         ("created_agent", "jsonb"),
         ("last_modified_client", "text"),
@@ -547,6 +549,7 @@ async def test_bootstrap_adds_a_new_column_to_an_already_provisioned_schema(
     "column,declaration",
     [
         ("created_by", "text"),
+        ("created_by_name", "text"),
         ("created_client", "text"),
         ("created_agent", "jsonb"),
     ],

@@ -1,0 +1,31 @@
+classification: minor
+category: [caller-adaptation, capability]
+summary: >-
+  Write provenance keys a user by identifiers a rename leaves unchanged.
+  Where a request authenticated as a user, created_by and last_modified_by
+  record <tenant id>:<object id> rather than the token's preferred username;
+  the token's subject stands in for a missing object id, and its issuer for a
+  missing tenant, as <issuer>#<id>. An application is still recorded as
+  app:<client id>, and without authentication the caller-supplied value or
+  the vault owner is still recorded. The user's display name is recorded
+  beside the key as a snapshot at write time, in the new created_by_name and
+  last_modified_by_name on Document and created_by_name on Edge and EdgeHit;
+  it is not a filter key. The provenance filter's created_by and
+  last_modified_by match the key. The per-vault user registry is removed: the
+  register_user operation, the forward-declared set_editors and get_editors
+  operations, the User, UserType, RegisterUserRequest, SetEditorsRequest and
+  EditorList components, and the invalid_user_id error code with its
+  InvalidUserIdError and InvalidUserIdErrorDetail components. The ROOT Harness
+  pipeline schema drops the editor_registered precondition check and the
+  policy schema's operations enum drops register_user, set_editors and
+  get_editors. migrate_vault drops the table the registry left in a vault's
+  own schema, reporting drop_retired_users_table in backfills_applied when it
+  did.
+for_callers: >-
+  created_by and last_modified_by now hold a stable key such as
+  <tenant id>:<object id> for a user, so a filter on them keeps matching a
+  person across a rename; read created_by_name or last_modified_by_name for
+  the name to show. Documents and edges written before this release keep the
+  value recorded then and carry no display name. POST
+  /sage_vaults/{vault_id}/users is gone; nothing consumed a registered user,
+  and write attribution comes from your token.

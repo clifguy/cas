@@ -4,8 +4,8 @@ summary: >-
   Under a profile that authenticates callers, created_by on a new document and
   last_modified_by on every created, patched, superseded, lifecycle-transitioned
   or force re-ingested document record the authenticated principal, on the REST
-  routes and the MCP tools alike: a user's preferred username, else their
-  object id, or app:<client id> for an application. A caller-supplied
+  routes and the MCP tools alike: a user's stable key, <tenant id>:<object
+  id>, or app:<client id> for an application. A caller-supplied
   created_by that differs is ignored, not refused, and IngestResponse gains
   warnings naming it; the MCP ingest_document result carries the same warnings
   when there are any. Without authentication the caller-supplied created_by is

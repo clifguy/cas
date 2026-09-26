@@ -110,6 +110,7 @@ from sage.request_identity import (
     attributed_writer,
     modifier_fields,
     provenance_fields,
+    writer_name,
 )
 from sage.services._dry_run import doc_type_requirements
 from sage.services.caller_paths import caller_basename
@@ -1958,6 +1959,7 @@ class IngestionService:
                 stored_content_hash=stored_hash,
                 adapter_version=projection.adapter_version,
                 created_by=created_by,
+                created_by_name=writer_name(created_by),
                 created_at=now,
                 **provenance_fields("created"),
                 **modifier_fields(created_by),

@@ -121,9 +121,13 @@ export interface Document {
   source_content_hash: string;
   stored_content_hash?: string | null;
   adapter_version: string;
+  // The principal's stable key; the display name beside it is a snapshot
+  // taken at write time, never a key (CAS-ADR-056).
   created_by: string;
+  created_by_name?: string | null;
   created_at: string;
   last_modified_by: string;
+  last_modified_by_name?: string | null;
   // The client is server-derived from the validated token; the agent is
   // caller-asserted and never verified (CAS-ADR-056).
   created_client?: string | null;
@@ -232,6 +236,7 @@ export interface Edge {
   created_at: string;
   // Who created the edge, through which client, and the asserted agent.
   created_by?: string | null;
+  created_by_name?: string | null;
   created_client?: string | null;
   created_agent?: AssertedAgent | null;
   notes?: string | null;

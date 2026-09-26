@@ -94,11 +94,6 @@ class _FakeGraphStore:
         return 0
 
 
-class _FakeUserService:
-    async def bootstrap_owner(self) -> None:
-        pass
-
-
 class _FakeIngestionService:
     """Satisfies VaultRegistryService._build_vault_summary's iteration over
     ``services.ingestion_service.registered_adapters``, plus the abstraction-
@@ -118,14 +113,12 @@ class _FakeServices:
     the six drivers below: graph_store (close + list), config_path /
     from_declaration / content_store_factory / graph_store_factory / timing_thread
     (reload_vault_in_registry's close-and-reuse branch), close_timing and
-    close_storage (every teardown path calls them), user_service.bootstrap_owner
-    (VaultRegistryService.create_vault), ingestion_service (the same method's
-    _build_vault_summary)."""
+    close_storage (every teardown path calls them), and ingestion_service
+    (VaultRegistryService.create_vault's _build_vault_summary)."""
 
     def __init__(self, config: VaultConfig) -> None:
         self.config = config
         self.graph_store = _FakeGraphStore()
-        self.user_service = _FakeUserService()
         self.ingestion_service = _FakeIngestionService()
         self.timing_thread = None
         self.config_path: Path | None = None

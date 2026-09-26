@@ -472,7 +472,7 @@ async def test_update_config_rolls_back_yaml_when_inner_initialize_raises_late(
     isolated_vault_client, tmp_vault_dir, monkeypatch
 ):
     """A2: yaml rollback fires even when the inner allocator (i.e.
-    ``UserService.bootstrap_owner``, which runs late inside
+    ``VaultConfigService``'s construction, which runs late inside
     ``initialize_services``) raises.
 
     Distinguishes "rollback wired only to outer reload surface" from
@@ -485,7 +485,6 @@ async def test_update_config_rolls_back_yaml_when_inner_initialize_raises_late(
     import yaml as _yaml
 
     from sage.api.errors import SAGEError
-    from sage.services.user_service import UserService
 
     client, app, isolated_root = isolated_vault_client
 
@@ -495,14 +494,14 @@ async def test_update_config_rolls_back_yaml_when_inner_initialize_raises_late(
     pre_call_dict = _yaml.safe_load(config_path.read_text())
     assert pre_call_dict["vault"]["name"] == "Pre Late Failure"
 
-    async def raising_bootstrap(self):
+    def raising_late_constructor(*args, **kwargs):
         raise SAGEError(
             code="schema_migration_required",
             message="simulated late-stage failure inside initialize_services",
             status_code=409,
         )
 
-    monkeypatch.setattr(UserService, "bootstrap_owner", raising_bootstrap)
+    monkeypatch.setattr("sage.mcp_init.VaultConfigService", raising_late_constructor)
 
     resp = await client.put(
         "/sage_vaults/test_vault/config",
@@ -896,59 +895,6 @@ async def test_create_vault_rolls_back_yaml_on_initialize_failure(
 
     # (c) Vault not registered.
     assert new_vault_id not in app.state.vault_registry
-
-
-async def test_create_vault_rolls_back_when_bootstrap_owner_fails_post_register(
-    app, client, tmp_path, monkeypatch
-):
-    """D2: when ``bootstrap_owner`` raises after the new services are
-    already in the registry, both the registry entry and the on-disk yaml
-    are rolled back; the user can re-issue create_vault cleanly.
-
-    Trap (anti-coincidental): a write-then-allocate-then-register-then-
-    bootstrap sequence with no rollback leaves the vault half-registered
-    (services live in the registry, but no owner bootstrapped) and the
-    yaml on disk. Both asserts must hold.
-    """
-    from sage.api.errors import SAGEError
-    from sage.services.user_service import UserService
-
-    isolated_root = tmp_path / "sage_vaults"
-    monkeypatch.setattr("sage.vault_management._VAULTS_ROOT", isolated_root)
-
-    new_vault_id = "atomicity_bootstrap_target"
-
-    async def raising_bootstrap(self):
-        raise SAGEError(
-            code="schema_migration_required",
-            message="simulated late-stage bootstrap_owner failure",
-            status_code=409,
-        )
-
-    monkeypatch.setattr(UserService, "bootstrap_owner", raising_bootstrap)
-
-    config = VaultRegistryService.get_default_config(
-        new_vault_id, "Atomicity Bootstrap Target", "testuser"
-    )
-    config["vault"]["storage_root"] = str(tmp_path / new_vault_id / "sources")
-    config["vault"]["brain_root"] = str(tmp_path / new_vault_id / "brain")
-
-    resp = await client.post("/sage_vaults", json={"config": config})
-
-    assert resp.status_code == 409, resp.text
-    assert resp.json()["code"] == "schema_migration_required"
-
-    expected_yaml = isolated_root / new_vault_id / "vault_config.yaml"
-    assert not expected_yaml.exists(), (
-        "create_vault left orphan yaml after bootstrap_owner failed; "
-        "rollback must fire on post-register failures too"
-    )
-
-    assert new_vault_id not in app.state.vault_registry, (
-        "create_vault left a half-registered vault in the registry after "
-        "bootstrap_owner failed; the registry entry must be removed alongside "
-        "the yaml rollback"
-    )
 
 
 # ---------------------------------------------------------------------------
