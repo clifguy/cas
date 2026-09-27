@@ -1,8 +1,0 @@
-classification: patch
-summary: >-
-  The change-record schema gains deprecates, follows_deprecation and exemption,
-  so a record can declare a deprecation, name the deprecation an adaptation
-  follows, or claim an exemption from CAS-ADR-008 clause 8. The contract
-  comparison reports a newly marked deprecation, and the gate refuses a removal,
-  narrowed input or changed default that follows no ripe deprecation and claims
-  no exemption. No operation, tool, parameter or response changes.

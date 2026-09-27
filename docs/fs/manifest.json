@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Inventory and version tracking for the CAS Formal Substrate (CAS-ADR-008). Each artifact's version is the release MAJOR.MINOR in which it last changed, or null until a release first publishes it; no counter is assigned when a change is authored. revision_history is assembled per release: a change adds a numberless change record under changes/unreleased/, and the release step folds every unreleased record into one entry for the new release, newest first. Entries written before this scheme, which carry a substrate counter in their version field, follow the release entries and are kept verbatim.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-09-26",
+  "manifest_date": "2026-09-27",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -84,7 +84,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "3.0",
+      "version": "3.1",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -92,7 +92,7 @@
       "path": "cas_app_api.openapi.yaml",
       "title": "CAS Application API",
       "status": "draft",
-      "version": "3.0",
+      "version": "3.1",
       "role": "OpenAPI 3.1.0 specification for the CAS Application backend HTTP surface (mounted at the /app prefix). Defines directory scan and batch-ingest endpoints used by the CAS Application UI. Architecturally distinct from the SAGE Core API; the two specs are validated together by tests/sage/test_openapi_conformance.py and must respect URL-prefix boundaries (sage_core_api owns /sage_vaults/*, cas_app_api owns /app/*).",
       "instantiation_checklist_items": []
     },
@@ -100,7 +100,7 @@
       "path": "sage/sage_mcp_tools.catalog.json",
       "title": "SAGE MCP Tool Catalog",
       "status": "draft",
-      "version": "3.0",
+      "version": "3.1",
       "role": "The tools the SAGE MCP surfaces publish through tools/list: name, input and output schemas, annotations, and description, for the ordinary surface (/mcp) and the maintenance surface (/mcp_maint). Generated from the servers by scripts/dump_mcp_catalog.py and held to them by a test gate; the contract comparison reads it as the MCP half of the published contract.",
       "instantiation_checklist_items": []
     },
@@ -182,13 +182,31 @@
       "path": "changes/change_record.schema.json",
       "title": "Formal Substrate Change Record",
       "status": "draft",
-      "version": "2.4",
+      "version": "3.1",
       "role": "The per-change release classification record (patch or minor, with category and release-note text) that every change to the published contract adds under changes/unreleased/, and that the release step folds into revision_history.",
       "instantiation_checklist_items": []
     }
   ],
   "deferred": [],
   "revision_history": [
+    {
+      "release": "3.1",
+      "date": "2026-09-27",
+      "changes": [
+        {
+          "classification": "patch",
+          "summary": "The change-record schema gains deprecates, follows_deprecation and exemption, so a record can declare a deprecation, name the deprecation an adaptation follows, or claim an exemption from CAS-ADR-008 clause 8. The contract comparison reports a newly marked deprecation, and the gate refuses a removal, narrowed input or changed default that follows no ripe deprecation and claims no exemption. No operation, tool, parameter or response changes."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "verify_preconditions resolves depends_on through version chains as traverse does: edge collection shares traverse's chain-resolution pipeline (lineage seeding, anchor filter, retracts, merged_from tombstones), and each target is judged on the head of its supersedes chain. PreconditionCheck gains head_id; a target chain with more than one head reports actual \"forked (N heads)\", and one whose forward versions are all superseded (a cycle with no exit) \"cyclic (no head)\". Core API specification, MCP catalog and tool description updated together.",
+          "for_callers": "verify_preconditions now resolves dependencies through version chains: a superseded document inherits its predecessors' depends_on edges, and each dependency is judged on the head of the target's supersedes chain. Each row adds head_id (the version judged) beside target_id (the stored edge target), and a target whose chain has forked, or cycles with no head, is reported unsatisfied as \"forked (N heads)\" or \"cyclic (no head)\"."
+        }
+      ]
+    },
     {
       "release": "3.0",
       "date": "2026-09-26",
