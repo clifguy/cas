@@ -71,10 +71,6 @@
   ],
   "external_prerequisites": [
     {
-      "name": "sage-operations",
-      "requirement": "Retain compatible installed sage-operations; resolve served deployment and vault contracts. External sage adoption is separate."
-    },
-    {
       "name": "authenticated-sage",
       "requirement": "Live CAS authority and ticket access where selected."
     },

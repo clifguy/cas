@@ -69,6 +69,7 @@ VALIDATE_WORKFLOW_PATH = _REPO_ROOT / ".github" / "workflows" / "sharepoint-vali
 RUNBOOK_PATH = _REPO_ROOT / "docs" / "process" / "sharepoint-vault-source.md"
 POSTGRES_BOOTSTRAP_DOC_PATH = _REPO_ROOT / "docs" / "process" / "postgres-entra-bootstrap.md"
 SMOKE_PROCEDURE_PATH = _REPO_ROOT / "docs" / "development" / "operations" / "smoke-test.md"
+SAGE_MIGRATION_PATH = _REPO_ROOT / "docs" / "sage-skill" / "migration.md"
 CORE_CONFIG_SCHEMA_PATH = _REPO_ROOT / "docs" / "fs" / "sage" / "sage_core_config.schema.json"
 INFRA_DIR = _REPO_ROOT / "infra"
 MAIN_BICEP_PATH = INFRA_DIR / "main.bicep"
@@ -200,6 +201,7 @@ def _vault_id_anchors(root_default: str) -> dict[Path, tuple[tuple[re.Pattern[st
     capture group), for the given resolved root default."""
     return {
         SMOKE_PROCEDURE_PATH: ((_SMOKE_HOSTED_VAULT_RE, 1),),
+        SAGE_MIGRATION_PATH: ((_MENTION_VAULT_RE, 1),),
         SEED_CONFIG_PATH: ((_SEED_ID_LINE_RE, 1), (_SEED_HEADER_PATH_RE, 1), (_SEED_ROOTS_RE, 1)),
         SEED_SCRIPT_PATH: ((_SEED_UPLOAD_FOLDER_RE, 1),),
         VALIDATE_DRIVER_PATH: ((_DRIVER_DEFAULT_VAULT_RE, 1), (_DRIVER_HELP_VAULT_RE, 1)),

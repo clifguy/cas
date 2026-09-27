@@ -43,7 +43,10 @@ not proof that an external capability is installed or compatible. Before a step
 uses ticketing, Azure review or a specialized operation, resolve its actual skill,
 live provider, current policy and supported interface. A missing dependency stops
 that step, not unrelated local work. Keep the existing working transfer procedure
-until its separately verified replacement is adopted.
+until its separately verified replacement is adopted. New personal SAGE consumer
+packages follow the explicit build and cutover binding in
+[workflow distribution](distribution/README.md); this source selection does not
+replace an existing receipt-selected compatibility installation.
 
 Ticketing, Azure and specialized delivery remain sibling responsibilities; their
 interfaces are recorded in the selected repository guide and
