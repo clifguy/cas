@@ -64,7 +64,7 @@ The canonical `.claude/skills/cas-code-review/SKILL.md` and its existing pointer
 remain authoritative for code review.
 
 Operational use requires `.development-skills/activation-receipt.md`, a required
-binding intentionally absent from this candidate. It records the owner's exact
+binding. It records the owner's exact
 activation decision, installed manifest identity, canonical source identity and
 fresh live authority heads/readbacks after the coordinated cutover. Missing or
 unverified receipt blocks use, not preparation or independent review under the
