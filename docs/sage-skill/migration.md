@@ -62,3 +62,43 @@ fresh behavior covers the mapped scenario. Retain unresolved host/service findin
 and historical provenance. Specifically retire the generic predecessor re-anchoring
 advice only through authorized compatibility replacement, not by modifying memories
 while the old selected skill still teaches it. Preserve user workflow preferences.
+
+## Consumer adoption and cutover packet
+
+The CAS workflow declaration and supported personal-dependency build command are
+in [workflow distribution](../development/distribution/README.md). Prepare both
+runtime layouts from the reviewed shared revision there; keep the genuine CAS
+SAGE package independently sealed. Rehearse the two installers together in
+disposable roots, including unowned collisions, preservation, drift refusal and
+rollback. Run both actual runtime preflight adapters against those installations
+and verify their returned instruction paths, ownership and trusted identity.
+These disposable checks do not establish native host or authenticated acceptance.
+
+Before requesting cutover, retain outside discovery roots: the approved source
+revisions and manifest digests; complete packages and required repository
+procedures; a consumer ownership matrix; exact hash/mode inventories and backups;
+per-target read-only installer plans; exact proposed routing files and diffs;
+the expected transaction sequence, acceptance steps and rollback commands.
+Read-only plans do not reserve transaction IDs: capture each actual returned ID
+after apply and use only that exact ID for verify/recovery/rollback. A plan
+becomes stale when its observed target or package changes; regenerate and review
+the changed plan before apply. Preserve independent installer ownership.
+
+Thin routing selects the verified personal SAGE entry point, runtime and relevant
+references without duplicating their operational rules. Preserve deployment
+discovery, all project/vault restrictions, and migration-specific completeness
+requirements in dependent consumers. Inspect transfer entry points and the active
+chat-project migration consumer as well as global guides. Plugin payloads remain
+plugin-owned and are recorded separately from personal copies.
+
+Following separately authorized installation, fresh authenticated native sessions
+on Codex and Claude must each cover CAS and Development Skills contexts. Record
+native invocation and guide-directed loading separately, including selected
+absolute paths. Read live inventories/contracts and local `test` plus hosted
+`cloud_validation` vault configurations. Codex reads are processed through OpenAI;
+Claude reads through Anthropic. Capability, authentication or surface failures
+leave the respective acceptance pending; a catalog or executable is not proof.
+Separately initiated smoke tests exercise the matrix above; never delete either
+validation vault. Retirement of exact inventoried compatibility copies remains
+a further owner decision after all affected consumers and required host/live
+checks pass. Retain needed compatibility for blocked consumers.
