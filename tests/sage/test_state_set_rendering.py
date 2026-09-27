@@ -65,10 +65,29 @@ async def test_precondition_payload_and_supersede_error_render_identically(minim
     async def get_document(doc_id):
         return SimpleNamespace(id=doc_id) if doc_id == document_id else None
 
-    async def get_edges_by_source(source_id, edge_type):
-        return [SimpleNamespace(target_id="e5f6a7b8_doc_dependency")]
+    async def get_supersedes_lineage(doc_id):
+        return [doc_id]
 
-    store = SimpleNamespace(get_document=get_document, get_edges_by_source=get_edges_by_source)
+    async def traverse(start_id, edge_type, direction, depth):
+        return [
+            {
+                "edge_id": "0b7e4f0a-3c4e-4a55-9d6f-1f2d3c4b5a69",
+                "source_id": start_id,
+                "target_id": "e5f6a7b8_doc_dependency",
+                "edge_type": edge_type,
+                "depth": 1,
+            }
+        ]
+
+    async def chain_walk(start_id, edge_type):
+        return {"documents": [], "edges": []}
+
+    store = SimpleNamespace(
+        get_document=get_document,
+        get_supersedes_lineage=get_supersedes_lineage,
+        traverse=traverse,
+        chain_walk=chain_walk,
+    )
     service = GraphOpsService(store, minimal_config)
 
     result = await service.check_preconditions(document_id)

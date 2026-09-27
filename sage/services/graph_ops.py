@@ -131,6 +131,22 @@ class _LineageCache:
         return self._cache[doc_id]
 
 
+def _chain_adjacency(
+    edges: list[dict],
+) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Index chain-walk edges both ways: (source -> targets, target -> sources).
+
+    For ``supersedes`` the source is the newer version, so the second map
+    points each document at the versions that supersede it.
+    """
+    by_source: dict[str, set[str]] = {}
+    by_target: dict[str, set[str]] = {}
+    for e in edges:
+        by_source.setdefault(e["source_id"], set()).add(e["target_id"])
+        by_target.setdefault(e["target_id"], set()).add(e["source_id"])
+    return by_source, by_target
+
+
 class GraphOpsService:
     def __init__(
         self,
@@ -840,14 +856,28 @@ class GraphOpsService:
     # ------------------------------------------------------------------
 
     async def check_preconditions(self, document_id: str) -> PreconditionResult:
-        """Validate all depends_on targets for a document."""
+        """Validate all depends_on targets for a document.
+
+        Edges are collected with the same CAS-ADR-017 chain resolution
+        ``traverse`` applies, so a superseded document inherits its
+        predecessors' visible dependencies. Each target is then judged on
+        the head of its own supersedes chain; a chain with more than one
+        head is reported as a fork rather than resolved to either.
+        """
         document = await self._store.get_document(document_id)
         if document is None:
             raise DocumentNotFoundError(document_id)
 
-        depends_on_edges = await self._store.get_edges_by_source(
-            document_id, EdgeType.DEPENDS_ON.value
+        rows = await self._resolve_edge_rows(
+            TraverseRequest(
+                start_id=document_id,
+                edge_type=EdgeType.DEPENDS_ON,
+                direction=TraversalDirection.OUTBOUND,
+                depth=1,
+            ),
+            _LineageCache(self._store),
         )
+        target_ids = list(dict.fromkeys(row["target_id"] for row in rows))
 
         # Derived from the vault's declared states (BH-033 through BH-036),
         # so an opted-in domain state or an opted-out base state is honoured.
@@ -855,12 +885,25 @@ class GraphOpsService:
         required = render_state_set(satisfying)
 
         checks: list[PreconditionCheck] = []
-        for edge in depends_on_edges:
-            target = await self._store.get_document(edge.target_id)
-            if target is None:
+        for target_id in target_ids:
+            heads = await self._supersedes_heads(target_id)
+            if len(heads) > 1:
                 checks.append(
                     PreconditionCheck(
-                        target_id=edge.target_id,
+                        target_id=target_id,
+                        required=required,
+                        actual=f"forked ({len(heads)} heads)",
+                        satisfied=False,
+                    )
+                )
+                continue
+
+            (head_id,) = heads
+            head = await self._store.get_document(head_id)
+            if head is None:
+                checks.append(
+                    PreconditionCheck(
+                        target_id=target_id,
                         required=required,
                         actual="not found",
                         satisfied=False,
@@ -869,12 +912,13 @@ class GraphOpsService:
                 continue
 
             # Pipeline failure overrides lifecycle check (BH-023)
-            if target.pipeline_status == PipelineStatus.FAILED:
+            if head.pipeline_status == PipelineStatus.FAILED:
                 checks.append(
                     PreconditionCheck(
-                        target_id=edge.target_id,
-                        title=target.title,
-                        doc_type=target.doc_type,
+                        target_id=target_id,
+                        head_id=head_id,
+                        title=head.title,
+                        doc_type=head.doc_type,
                         required=required,
                         actual="failed (pipeline_incomplete)",
                         satisfied=False,
@@ -882,14 +926,15 @@ class GraphOpsService:
                 )
                 continue
 
-            satisfied = target.lifecycle_status in satisfying
+            satisfied = head.lifecycle_status in satisfying
             checks.append(
                 PreconditionCheck(
-                    target_id=edge.target_id,
-                    title=target.title,
-                    doc_type=target.doc_type,
+                    target_id=target_id,
+                    head_id=head_id,
+                    title=head.title,
+                    doc_type=head.doc_type,
                     required=required,
-                    actual=target.lifecycle_status,
+                    actual=head.lifecycle_status,
                     satisfied=satisfied,
                 )
             )
@@ -924,24 +969,7 @@ class GraphOpsService:
         cache = _LineageCache(self._store)
         recorder = _ResolutionPathRecorder() if request.debug else None
 
-        raw = await self._collect_raw_with_seeds(request, cache)
-
-        # Per-edge anchor filter (honors stored resolution_policy per CAS-ADR-017).
-        filtered: list[dict] = []
-        for row in raw:
-            if await self._edge_passes_anchor_filter(row, cache, recorder):
-                filtered.append(row)
-
-        # CAS-ADR-017 Chunk 5: retracts short-circuit. Only chain-resolved
-        # edges (transitive_source, transitive_both) are suppressible; the
-        # retracts primitive does not veto policy=none edges indiscriminately.
-        filtered = await self._apply_retracts(filtered, request.start_id, cache, recorder)
-
-        # CAS-ADR-017 Chunk 6: tombstone suppression. Edges whose
-        # `valid_until_version` sits strictly as an ancestor of the query
-        # start_id are dropped. Equal-to-start is kept (CR-034: historical
-        # query at the merge point still surfaces the edge).
-        filtered = await self._apply_tombstones(filtered, request.start_id, cache, recorder)
+        filtered = await self._resolve_edge_rows(request, cache, recorder)
 
         # Collapse multi-path traversal hits by doc_id. With the
         # UNIQUE (source_id, target_id, edge_type) constraint enforced
@@ -1076,6 +1104,62 @@ class GraphOpsService:
         )
         response.read_meta = response.read_meta.stamped(self._config.fingerprint())
         return response
+
+    async def _resolve_edge_rows(
+        self,
+        request: TraverseRequest,
+        cache: _LineageCache,
+        recorder: _ResolutionPathRecorder | None = None,
+    ) -> list[dict]:
+        """Return the edge rows visible from ``request.start_id`` (CAS-ADR-017).
+
+        The single chain-resolution pipeline behind every edge read that
+        honours version chains: lineage-seeded collection, then the anchor
+        filter, ``retracts`` suppression and ``merged_from`` tombstones.
+        """
+        raw = await self._collect_raw_with_seeds(request, cache)
+
+        # Per-edge anchor filter (honors stored resolution_policy per CAS-ADR-017).
+        filtered: list[dict] = []
+        for row in raw:
+            if await self._edge_passes_anchor_filter(row, cache, recorder):
+                filtered.append(row)
+
+        # CAS-ADR-017 Chunk 5: retracts short-circuit. Only chain-resolved
+        # edges (transitive_source, transitive_both) are suppressible; the
+        # retracts primitive does not veto policy=none edges indiscriminately.
+        filtered = await self._apply_retracts(filtered, request.start_id, cache, recorder)
+
+        # CAS-ADR-017 Chunk 6: tombstone suppression. Edges whose
+        # `valid_until_version` sits strictly as an ancestor of the query
+        # start_id are dropped. Equal-to-start is kept (CR-034: historical
+        # query at the merge point still surfaces the edge).
+        return await self._apply_tombstones(filtered, request.start_id, cache, recorder)
+
+    async def _supersedes_heads(self, doc_id: str) -> list[str]:
+        """Return the heads of ``doc_id``'s supersedes chain reachable forward.
+
+        Walks from ``doc_id`` toward newer versions only, so a branch that
+        forks from an older ancestor does not count as a head of this
+        document. A document never superseded is its own single head.
+        """
+        raw = await self._store.chain_walk(start_id=doc_id, edge_type=EdgeType.SUPERSEDES.value)
+        _, newer = _chain_adjacency(raw["edges"])
+
+        heads: list[str] = []
+        visited: set[str] = set()
+        frontier = [doc_id]
+        while frontier:
+            current = frontier.pop()
+            if current in visited:
+                continue
+            visited.add(current)
+            successors = newer.get(current)
+            if successors:
+                frontier.extend(sorted(successors))
+            else:
+                heads.append(current)
+        return sorted(heads)
 
     async def _apply_retracts(
         self,
@@ -1448,11 +1532,10 @@ class GraphOpsService:
 
         # Build adjacency: source_id -> set of target_ids
         # For supersedes: source supersedes target, so source is newer.
-        successors: dict[str, set[str]] = {d["doc_id"]: set() for d in documents}
-        predecessors: dict[str, set[str]] = {d["doc_id"]: set() for d in documents}
-        for e in edges:
-            successors.setdefault(e["source_id"], set()).add(e["target_id"])
-            predecessors.setdefault(e["target_id"], set()).add(e["source_id"])
+        successors, predecessors = _chain_adjacency(edges)
+        for d in doc_map:
+            successors.setdefault(d, set())
+            predecessors.setdefault(d, set())
 
         # Detect linearity: every node has at most 1 predecessor and 1 successor
         is_linear = all(len(successors[d]) <= 1 and len(predecessors[d]) <= 1 for d in doc_map)

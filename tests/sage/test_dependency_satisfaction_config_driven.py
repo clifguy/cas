@@ -188,19 +188,35 @@ async def test_required_string_derived_in_all_three_branches(extended_vault_conf
         failed_dep.id: failed_dep,
         archived_dep.id: archived_dep,
     }
-    edges = [
-        SimpleNamespace(target_id=_id("dep_missing")),
-        SimpleNamespace(target_id=failed_dep.id),
-        SimpleNamespace(target_id=archived_dep.id),
-    ]
+    target_ids = [_id("dep_missing"), failed_dep.id, archived_dep.id]
 
     async def get_document(doc_id):
         return docs.get(doc_id)
 
-    async def get_edges_by_source(source_id, edge_type):
-        return edges
+    async def get_supersedes_lineage(doc_id):
+        return [doc_id]
 
-    store = SimpleNamespace(get_document=get_document, get_edges_by_source=get_edges_by_source)
+    async def traverse(start_id, edge_type, direction, depth):
+        return [
+            {
+                "edge_id": str(uuid.uuid4()),
+                "source_id": start_id,
+                "target_id": target_id,
+                "edge_type": edge_type,
+                "depth": 1,
+            }
+            for target_id in target_ids
+        ]
+
+    async def chain_walk(start_id, edge_type):
+        return {"documents": [], "edges": []}
+
+    store = SimpleNamespace(
+        get_document=get_document,
+        get_supersedes_lineage=get_supersedes_lineage,
+        traverse=traverse,
+        chain_walk=chain_walk,
+    )
     service = GraphOpsService(store, config)
 
     result = await service.check_preconditions(document_id)
@@ -212,12 +228,12 @@ async def test_required_string_derived_in_all_three_branches(extended_vault_conf
         "archived",
     ]
 
-    # The two synthesized values are disclosed where a caller branching on
-    # `actual` would look. The third is a lifecycle status, which the
+    # The synthesized values are disclosed where a caller branching on
+    # `actual` would look. A lifecycle status is the other source, which the
     # description covers by naming the field's ordinary source rather than by
     # enumerating a vault-configurable set.
     described = PreconditionCheck.model_fields["actual"].description
-    for synthesized in ("not found", "failed (pipeline_incomplete)"):
+    for synthesized in ("not found", "failed (pipeline_incomplete)", "forked (N heads)"):
         assert synthesized in described, (
             f"check_preconditions can report actual={synthesized!r}, which the "
             f"published description does not name: {described!r}"

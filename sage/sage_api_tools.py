@@ -1395,18 +1395,16 @@ def register_sage_tools(
         """Check whether all depends_on targets for a document are
         satisfied (dependency-satisfying lifecycle, pipeline not failed).
 
-        Iterates the document's outbound ``depends_on`` edges; for each
-        target, verifies the lifecycle status is one the vault's
-        configuration declares dependency-satisfying and pipeline_status
-        not ``failed`` — a target still mid-pipeline is not rejected. A
-        target the vault does not hold is reported unsatisfied with
-        ``actual`` of "not found" rather than raising. Each row names its
-        target by ``title`` and ``doc_type`` as well as ``target_id``, both
-        null when the target is not found.
-        Returns ``satisfied`` boolean plus a
-        per-edge breakdown of failing reasons (e.g. predecessor still
-        in projection, target archived) so the caller can act on the
-        gap rather than re-querying each dependency.
+        Dependencies resolve through version chains as in ``traverse``: a
+        document inherits the ``depends_on`` edges of versions it supersedes,
+        and each target is judged on its supersedes-chain head, whose
+        lifecycle must be dependency-satisfying and pipeline_status not
+        ``failed`` (mid-pipeline is not rejected). Rows carry the stored
+        ``target_id`` and the ``head_id`` judged, with the head's ``title``
+        and ``doc_type``; all three are null when ``actual`` is "not found"
+        or "forked (N heads)", both unsatisfied rather than raised. Returns
+        ``satisfied`` plus the per-edge breakdown, so the caller can act on
+        the gap without re-querying each dependency.
 
         With no configuration the dependency-satisfying set is the engine
         default, ``active`` and ``completed``, so a target that is still
@@ -1422,11 +1420,9 @@ def register_sage_tools(
         or not, exactly as it would unscoped, whatever the doc_type of
         the document that depends on it.
 
-        This is not a mutation preview. A ``dry_run`` on a mutation
-        answers what that one call would do to committed state; this
-        answers whether a document's dependencies are in a state that
-        permits work to proceed, aggregated across every outbound
-        ``depends_on`` edge.
+        Not a mutation preview: a ``dry_run`` answers what one mutation
+        would do; this answers whether a document's dependencies permit
+        work to proceed.
 
         Error modes:
         - ``invalid_vault_id`` (400)

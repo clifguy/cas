@@ -487,6 +487,45 @@ async def test_check_preconditions_row_names_the_target_200(client, tmp_vault_di
     assert check["doc_type"] == dep["doc_type"]
 
 
+async def test_check_preconditions_row_names_the_chain_head_200(client, tmp_vault_dir):
+    """A superseded target is reported with its chain head over HTTP."""
+    sources = tmp_vault_dir / "sources" / "test"
+    (sources / "second.md").write_text("# Second\n\nMore content.")
+    (sources / "third.md").write_text("# Third\n\nNewer content.")
+    docs = []
+    for source in ("test/sample.md", "test/second.md", "test/third.md"):
+        resp = await client.post(
+            "/sage_vaults/test_vault/documents",
+            json={"source": source, "source_type": "markdown"},
+        )
+        assert resp.status_code == 201, resp.text
+        docs.append(resp.json()["document"])
+    doc, dep, head = docs
+    linked = await client.post(
+        "/sage_vaults/test_vault/edges",
+        json={
+            "items": [
+                {
+                    "source_id": doc["id"],
+                    "target_id": dep["id"],
+                    "edge_type": "depends_on",
+                    "source_valid_from_version": doc["id"],
+                    "target_valid_from_version": dep["id"],
+                },
+                {"source_id": head["id"], "target_id": dep["id"], "edge_type": "supersedes"},
+            ]
+        },
+    )
+    assert linked.json()["success_count"] == 2, linked.text
+
+    resp = await client.get(f"/sage_vaults/test_vault/preconditions/{doc['id']}")
+    assert resp.status_code == 200, resp.text
+    (check,) = resp.json()["checks"]
+    assert check["target_id"] == dep["id"]
+    assert check["head_id"] == head["id"]
+    assert check["title"] == head["title"]
+
+
 async def test_traverse_200(client):
     """POST /traverse returns traversal result."""
     resp1 = await client.post(

@@ -1385,6 +1385,33 @@ async def test_check_preconditions_row_names_the_target(vault_services):
     assert check["doc_type"] == dep["doc_type"]
 
 
+async def test_check_preconditions_row_names_the_chain_head(vault_services, tmp_vault_dir):
+    (tmp_vault_dir / "sources" / "test" / "third.md").write_text("# Third\n\nNewer content.")
+    doc = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))
+    dep = _parse(await ingest_document("test_vault", "test/second.md", "markdown"))
+    head = _parse(await ingest_document("test_vault", "test/third.md", "markdown"))
+    for doc_id in (doc["id"], dep["id"], head["id"]):
+        await _await_document_idle(vault_services, "test_vault", doc_id)
+    linked = await create_edge(
+        "test_vault",
+        doc["id"],
+        dep["id"],
+        "depends_on",
+        source_valid_from_version=doc["id"],
+        target_valid_from_version=dep["id"],
+    )
+    assert "error" not in linked, linked
+    superseded = await create_edge("test_vault", head["id"], dep["id"], "supersedes")
+    assert "error" not in superseded, superseded
+
+    result = _parse(await verify_preconditions("test_vault", doc["id"]))
+
+    (check,) = result["checks"]
+    assert check["target_id"] == dep["id"]
+    assert check["head_id"] == head["id"]
+    assert check["title"] == head["title"]
+
+
 # ---------------------------------------------------------------------------
 # Graph operations: traverse
 # ---------------------------------------------------------------------------

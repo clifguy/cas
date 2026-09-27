@@ -585,3 +585,42 @@ validator paths are exercised end-to-end.
 **Expected:** Edge is suppressed. The retracts primitive is one-sided per ADR-017 but the policy-level suppression rule is the same as for `transitive_source` / `transitive_both`: retracts anchored in the query start's supersedes lineage suppresses the target edge. Confirms `transitive_target` is a first-class suppressible policy.
 
 ---
+
+### TEST-SAGE-CR-054: check_preconditions judges a superseded target on its chain head
+
+**Category:** resolution
+**Policy:** `transitive_both` (depends_on)
+
+**Precondition:** fn depends_on t0; `t0 ← t1 ← t2`, t0 and t1 archived, t2 active. Variant: t0 completed, its successor t1 with a failed pipeline.
+
+**Input:** `check_preconditions(document_id=fn)`.
+
+**Expected:** One row, `target_id=t0`, `head_id=t2`, title and doc_type of t2, `actual: "active"`, satisfied. The variant is unsatisfied with `actual: "failed (pipeline_incomplete)"`: satisfaction is the head's, never the stored target's. An unsuperseded target is its own head (`head_id == target_id`).
+
+---
+
+### TEST-SAGE-CR-055: check_preconditions collects depends_on edges through the source lineage
+
+**Category:** resolution
+**Policy:** `transitive_both` (depends_on) + retracts
+
+**Precondition:** `s0 ← s1`. Case A: s0 depends_on an archived target. Case B: the edge is created on s1 instead. Case C: s0's edge is retracted by a retracts edge anchored at s1. Case D: s0 and s1 each depend_on the same target.
+
+**Input:** `check_preconditions(document_id=s1)` and, for B and C, `check_preconditions(document_id=s0)`.
+
+**Expected:** A: s1 inherits the edge, one unsatisfied row (not a vacuous `checks: []`). B: the edge is invisible from s0 and visible from s1. C: suppressed from s1, visible from s0. D: one row for the target. Collection is the same pipeline `traverse` uses.
+
+---
+
+### TEST-SAGE-CR-056: check_preconditions reports a forked target chain
+
+**Category:** resolution
+**Policy:** `transitive_both` (depends_on)
+
+**Precondition:** fn depends_on t0; t1a and t1b both supersede t0. Control: t0 and a sibling both supersede a common root, and t1 supersedes t0.
+
+**Input:** `check_preconditions(document_id=fn)`.
+
+**Expected:** Unsatisfied row with `actual: "forked (2 heads)"`, `head_id`, title and doc_type null; no head is picked. In the control only the target's own successors count, so the head is t1 and the row is satisfied.
+
+---
