@@ -723,7 +723,8 @@ logic that this is acceptable.
 **Category:** graph, response_contract
 **Decision:** Each check row carries the target's `title` and `doc_type` alongside
 `target_id`, taken from the read the check already makes of each target. Both are
-null when the vault does not hold the target.
+null when the vault does not hold the target. Where the target has been superseded
+they describe its chain head (see TEST-SAGE-CR-054).
 
 **Precondition:** doc_function depends_on doc_dep (title "Target Plan", doc_type
 `plan`). Paired control: a depends_on target the vault does not hold. A third case

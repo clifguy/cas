@@ -398,6 +398,7 @@ async def test_bh_036a_precondition_row_for_missing_target_carries_nulls(
     (check,) = result.checks
     assert check.actual == "not found"
     assert check.satisfied is False
+    assert check.head_id is None
     assert check.title is None
     assert check.doc_type is None
 

@@ -1,8 +1,8 @@
 {
   "title": "CAS Test Plan Manifest",
   "description": "Inventory of test specification files, their coverage targets, and implementation status. Follows the pattern of docs/fs/manifest.json.",
-  "manifest_version": "0.9.23",
-  "manifest_date": "2026-09-21",
+  "manifest_version": "0.9.24",
+  "manifest_date": "2026-09-26",
   "tiers": {
     "1": "Contract tests: schema validation and API contract shape verification, mechanically derived from the formal substrate.",
     "2": "Behavioral tests: semantic rules, error paths, lifecycle logic, policy enforcement. Requires design decisions.",
@@ -187,9 +187,9 @@
         "sage/services/graph_ops.py",
         "sage/storage/graph_store.py"
       ],
-      "test_count": 53,
+      "test_count": 56,
       "decision_date": "2026-04-18",
-      "notes": "CAS-ADR-017: chain-scoped edge resolution with anchor and retraction primitives. Seven sections: write-time invariant enforcement (CR-001 through CR-012, 12 tests); traverse honors policy + anchors (CR-013 through CR-022, 10 tests); retracts edge end-to-end (CR-023 through CR-028, 6 tests); merged_from + tombstoning (CR-029 through CR-036, 8 tests); resolution_path debug payload (CR-037 through CR-042, 6 tests); registry coverage and TBD handling (CR-043 through CR-045, 3 tests); transitive_target mirror policy (CR-046 through CR-053, 8 tests). Canonical worked example: Chain A a1..a8, Chain B b1..b4, covers edge anchored at a3/b2. CR-005 revised: transitive_source stores target_valid_from_version as null (null-means-not-applicable per the ADR), not auto-populated from target_id."
+      "notes": "CAS-ADR-017: chain-scoped edge resolution with anchor and retraction primitives. Seven sections: write-time invariant enforcement (CR-001 through CR-012, 12 tests); traverse honors policy + anchors (CR-013 through CR-022, 10 tests); retracts edge end-to-end (CR-023 through CR-028, 6 tests); merged_from + tombstoning (CR-029 through CR-036, 8 tests); resolution_path debug payload (CR-037 through CR-042, 6 tests); registry coverage and TBD handling (CR-043 through CR-045, 3 tests); transitive_target mirror policy (CR-046 through CR-053, 8 tests); check_preconditions resolves depends_on through version chains (CR-054 through CR-056, 3 tests). Canonical worked example: Chain A a1..a8, Chain B b1..b4, covers edge anchored at a3/b2. CR-005 revised: transitive_source stores target_valid_from_version as null (null-means-not-applicable per the ADR), not auto-populated from target_id."
     },
     {
       "path": "tests/app/batch_ingest_service_tests.md",
@@ -387,6 +387,11 @@
       "version": "0.9.23",
       "date": "2026-09-21",
       "summary": "Reconcile all active specification-heading counts: behavioral 136 -> 154, adapters 80 -> 172, frontend 56 -> 59, batch ingest service 19 -> 24, vault management 14 -> 15. tests/test_plan_manifest.py enforces every listed file and exact count: Markdown headings containing a TEST- identifier at any depth, excluding RETIRED headings, prose and fenced examples. Specification contents and historical entries are unchanged."
+    },
+    {
+      "version": "0.9.24",
+      "date": "2026-09-26",
+      "summary": "check_preconditions resolves depends_on through version chains (CAS-ADR-017). tests/sage/chain_resolution_tests.md gains TEST-SAGE-CR-054 (a superseded target is judged on its chain head), CR-055 (edges are collected through the source lineage with the traverse pipeline: inheritance, later anchors, retracts, one row per target) and CR-056 (a forked target chain is reported, not resolved), pinned in tests/sage/test_preconditions_chain_resolution.py. TEST-SAGE-BH-036a notes that title and doc_type describe the chain head. Chain resolution test count: 53 -> 56."
     }
   ]
 }

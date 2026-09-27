@@ -3550,16 +3550,32 @@ class ChainResponse(BaseModel):
 
 
 class PreconditionCheck(BaseModel):
-    target_id: DocumentIdStr = Field(description="Document ID of the dependency target.")
+    target_id: DocumentIdStr = Field(
+        description=(
+            "Document ID of the dependency target as the depends_on edge stores it, "
+            "which may be a superseded version."
+        )
+    )
+    head_id: DocumentIdStr | None = Field(
+        default=None,
+        description=(
+            "Head of the target's supersedes chain: the version the dependency is "
+            "judged on. Equals target_id when the target has not been superseded; "
+            "null when the vault does not hold the target or its chain has no single head."
+        ),
+    )
     title: str | None = Field(
         default=None,
-        description="Title of the dependency target; null when the vault does not hold it.",
+        description=(
+            "Title of the chain head the dependency is judged on; null when the vault "
+            "does not hold the target or its chain has no single head."
+        ),
     )
     doc_type: str | None = Field(
         default=None,
         description=(
-            "doc_type of the dependency target; null when the vault does not "
-            "hold it or the target has none."
+            "doc_type of the chain head the dependency is judged on; null when the "
+            "vault does not hold the target, its chain has no single head, or the head has none."
         ),
     )
     required: str = Field(
@@ -3572,10 +3588,13 @@ class PreconditionCheck(BaseModel):
     )
     actual: str = Field(
         description=(
-            'Actual state found: the target\'s lifecycle status (e.g., "active"), '
-            '"not found" when the vault does not hold the target, or '
-            '"failed (pipeline_incomplete)" when its pipeline failed, which is '
-            "reported ahead of the lifecycle status rather than alongside it."
+            'Actual state found: the chain head\'s lifecycle status (e.g., "active"), '
+            '"not found" when the vault does not hold the target, '
+            '"forked (N heads)" when more than one head is reachable forward from the '
+            'stored target, "cyclic (no head)" when every version reachable forward is '
+            'itself superseded (a cycle with no exit), or "failed (pipeline_incomplete)" '
+            "when the head's pipeline failed, which is reported ahead of the lifecycle "
+            "status rather than alongside it."
         )
     )
     satisfied: bool = Field(
