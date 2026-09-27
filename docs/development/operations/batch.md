@@ -1,7 +1,7 @@
 # /batch
 
 Selected candidate procedure. The required activation receipt blocks operational use until the coordinated cutover; see [authority transition](../authority-transition.md).
-Read [Codex runtime](references/codex-runtime.md) and [dependencies](references/dependencies.md).
+Read [Runtime selection](references/runtime.md) and [dependencies](references/dependencies.md).
 
 Operational skill for cohort planning + execution: take a set of templated CAS tickets, resolve every recurring design question once at the cohort level, persist the decisions as a vault-resident reference document, validate the end-to-end mechanism with a single-ticket pilot, pause at a structural dispatch gate, fire per-ticket subagents that each land their work as a draft PR, pause at a structural merge gate, then land every PR on main via `/merge`. End-to-end in a single session.
 
@@ -249,7 +249,7 @@ Dispatching a full cohort blind is the most expensive mistake in batch planning.
 
 Before pilot dispatch, record the verified primary checkout path, local HEAD and complete status, plus the freshly fetched remote default ref/tip, as separate ledger fields. Require the existing clean-checkout prerequisite; preserve that local baseline throughout the cohort.
 
-Construct the per-ticket subagent prompt from the §8.2 template with the first dispatch-order ticket id substituted. Dispatch one fresh `collaboration.spawn_agent` with `fork_turns="none"`, passing the rendered prompt as `message`. Record its returned agent id and await its completion before another dispatch. Use the session model/effort by default; this is an implementation worker, not an independent review pass.
+Construct the per-ticket subagent prompt from the §8.2 template with the first dispatch-order ticket id substituted. Dispatch one fresh worker through the selected host adapter and common worker lifecycle. Record its returned durable handle and await verified terminal completion before another dispatch. Use the session model/effort by default; this is an implementation worker, not an independent review pass.
 
 ### §6.2 Verify after the subagent returns
 
@@ -263,9 +263,9 @@ If `/merge` halts on a conflict, a CI failure, a dequeue, or a timeout during th
 
 The entire PR chain keys off the subagent's branch name carrying through to `/merge`. `/kickoff` provisions a named worktree on `codex/<descriptive-slug>`; `/commit` opens the PR on whatever branch is checked out; `/merge` resolves the PR by `gh pr view "$feature_branch"`. If the branch name is wrong, the chain breaks silently.
 
-Codex subagents share the filesystem and do not automatically provision a worktree. Give each worker the exact verified repository path and task scope; require `/kickoff` to provision/validate the task's own worktree before edits. Default new branch names to `codex/<descriptive-slug>`. Keep ticket identifiers in SAGE/PR/external evidence, never repository-committed paths or contents. Existing authorized task worktrees may be reused only after checking ownership, branch and state.
+Workers may share the filesystem; dispatch does not prove isolated worktree provisioning. Give each worker the exact verified repository path and task scope; require `/kickoff` to provision/validate the task's own worktree before edits. Default new branch names to `codex/<descriptive-slug>`. Keep ticket identifiers in SAGE/PR/external evidence, never repository-committed paths or contents. Existing authorized task worktrees may be reused only after checking ownership, branch and state.
 
-Key `/merge` to the worker's actual branch and PR after independently verifying them against Git and the forge. Keep the agent id, worktree, branch, head SHA and PR in the dispatch ledger. A discrepancy blocks that ticket; do not trust one self-reported string over conflicting tool evidence. Do not inspect or change Claude-style isolation settings.
+Key `/merge` to the worker's actual branch and PR after independently verifying them against Git and the forge. Keep the agent id, worktree, branch, head SHA and PR in the dispatch ledger. A discrepancy blocks that ticket; do not trust one self-reported string over conflicting tool evidence. Inspect the selected host's supported isolation contract and record actual evidence; never change permission or isolation settings to bypass a missing capability.
 
 
 
@@ -406,7 +406,7 @@ For each ticket in the post-pilot queue:
 
 1. **Pre-iteration sanity.** Preserve the primary checkout at its recorded pre-pilot local HEAD/status; it need not equal the remote pilot merge SHA. Freshly fetch the verified remote default ref and compare it with the expected remote tip recorded after the pilot. Unexpected local changes or remote drift halt per §12; never reset or fast-forward unrelated local work to satisfy this check. Workers provision from the verified remote base through kickoff.
 
-2. **Dispatch one worker.** Use `collaboration.spawn_agent` with a descriptive task name, `fork_turns="none"`, and `message` containing §8.2's prompt plus exact repository/worktree scope and existing authorization. Omit model/effort overrides for implementation. Await this worker's terminal state with current collaboration tools before starting another. A timeout/interruption is not completion; retain the handle and determine whether it is still writing before any takeover.
+2. **Dispatch one worker.** Use the selected host adapter and common worker lifecycle with §8.2's prompt, exact repository/worktree ownership and existing authorization. Use ordinary implementation settings. Await and verify terminal completion through supported host tools before starting another. A timeout/interruption is not completion; retain the handle and determine whether it is still writing before any takeover.
 
 3. **Parse the subagent return.** Locate the structured block:
 
@@ -641,7 +641,7 @@ Halt the cohort (do not dispatch or merge further) when any of these occur:
 
 ### §12.3 Stalled-subagent recovery (recover before halting)
 
-A missing status block or elapsed wait does not prove a worker is finished. Inspect the recorded agent handle with the available collaboration status tools. If still running, await it or communicate with it; do not start a second writer. A completed but incomplete worker can receive a focused follow-up through the current collaboration API. If recovery requires takeover, establish that the original worker and its execution sessions have stopped writing first.
+A missing status block or elapsed wait does not prove a worker is finished. Inspect the recorded agent handle with the selected host adapter's supported status tools. If still running, await it or communicate with it; do not start a second writer. A completed but incomplete worker can receive a focused follow-up through the selected host adapter's supported continuation mechanism. If recovery requires takeover, establish that the original worker and its execution sessions have stopped writing first.
 
 Use the dispatch ledger's exact registered worktree, branch and PR; verify against Git/forge state. Preserve existing changes, inspect commit/test evidence, and resume only the remaining authorized work. Do not repeat a commit or PR creation whose response was ambiguous without reconciliation. A fresh recovery worker gets the exact scope and no authoring history from unrelated tickets; it must verify completeness rather than accepting a claim that tests passed. Missing approval or unresolved implementation returns `blocked` with the durable state.
 
@@ -727,7 +727,7 @@ The skill does NOT invoke `/close-ticket` itself. This is the front-matter rule,
 **Dispatch phase / fan-out (§8):**
 - [ ] One active implementation subagent at a time; await and verify completion
 - [ ] Subagent prompt rendered from §8.2 template, passed verbatim (no improvisation)
-- [ ] Fresh Codex subagent dispatched with `fork_turns="none"`; explicit verified worktree scope
+- [ ] Fresh worker dispatched through the selected host adapter and common worker lifecycle; explicit verified worktree ownership and durable handle
 - [ ] STATUS parsed by grepping `^STATUS:`, not by inference
 - [ ] On `STATUS: pr_open` → record branch + PR in ledger; no local landing
 - [ ] On `STATUS: blocked` → halt; no further dispatches
@@ -782,7 +782,7 @@ A cohort parked at the MERGE GATE (§9) resumes the same way: "go ahead and merg
 When the §4.3 disjoint-edit-window invariant cannot be established, the foundation-ticket pattern can't restore it, AND rebase conflicts aren't mechanically resolvable under §11:
 
 - Abandon the batched dispatch pattern for this cohort.
-- The user runs each remaining cohort ticket in its own fresh Codex session.
+- The user runs each remaining cohort ticket in its own fresh supported-host session.
 - Each fresh session fetches the latest verified remote default state; `/kickoff` forks the worktree from current `origin/main`, so the PR rebases cleanly.
 - The §8.2 per-ticket subagent prompt template is repurposed as the fresh session's opening prompt.
 
@@ -797,7 +797,7 @@ This candidate must not be represented as a new released batch version.
 
 Historical genealogy is preserved in [historical provenance](references/batch-history.md).
 
-## Codex dispatch and recovery constraints
+## Host dispatch and recovery constraints
 
 The approved cohort decision sheet must state whether it covers implementation, commit/push/draft PR creation and the pilot merge. Structural DISPATCH and MERGE gates remain in force. A child still prepares its ticket-specific kickoff plan; existing approval skips only a repeated approval within its actual scope. Missing caller decisions return `blocked`. If `Auto-commit: no`, stop before commit/push/PR creation regardless of template completion demands.
 

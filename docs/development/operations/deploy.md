@@ -1,7 +1,7 @@
 # Deploy
 
 Selected candidate procedure. The required activation receipt blocks operational use until the coordinated cutover; see [authority transition](../authority-transition.md).
-Read [Codex runtime](references/codex-runtime.md) and [dependencies](references/dependencies.md).
+Read [Runtime selection](references/runtime.md) and [dependencies](references/dependencies.md).
 
 Drive a CAS cloud-profile tenant deploy from "operator wants to ship" to "the CI deploy run
 finished and here is its result." The skill is the trigger-and-watch surface over the authoritative
@@ -40,7 +40,7 @@ known domains.
 
 ## Preamble — anchor gh to the cas repo
 
-`gh` infers the repository from the current directory's git remote. Codex execution calls need an
+`gh` infers the repository from the current directory's git remote. Host execution calls need an
 explicit working directory; directory changes and shell variables may not persist between calls. Resolve the repo slug once and thread it through every `gh` call as
 `-R "$repo"` so no call depends on the ambient cwd:
 
@@ -87,7 +87,7 @@ Resolve `env` (e.g., `cor.org` → `cor-prod`). Detect the `--allow-red-main` fl
    - **No run after the discovery window:** halt with `CI_MISSING` and the exact SHA.
    - **Failed API/auth/parse read, identity mismatch or unrecognized status:** do not treat it as pending, absent or green. Retry transient reads at most three consecutive times within the same deadline, then halt with `CI_LOOKUP_FAILED` and the diagnostic. Authentication failures and identity mismatches halt immediately.
 
-   **Silent-loop mechanics for Codex:** use an available execution tool that returns a running session (for example `exec_command` with a short `yield_time_ms`), then await/poll that session using its supported continuation tool. Set all required repository, SHA, run and deadline values in that execution or pass them explicitly; do not rely on prior shell variables. The loop emits no per-tick stdout/stderr, but retains diagnostics and emits one terminal result with run identity. Do not use Claude-only background-tool arguments or assume process completion will automatically wake a finished assistant turn. Keep the task active until the result is received. Bounded waits of at most 60 seconds between assistant opportunities preserve cancellation and meaningful progress updates; do not narrate unchanged ticks. If the user cancels the wait, stop the local watcher and do not dispatch or cancel the remote CI run.
+   **Silent-loop mechanics:** use the selected host adapter's supported execution/waiting mechanism and retain its durable local watcher handle. Set repository, SHA, run and the original deadline explicitly on every invocation. Emit no per-tick stdout/stderr; retain diagnostics and one terminal result with run identity. Keep waits at most 60 seconds and report meaningful changes. Await actual completion; an ended assistant turn is not a wakeup mechanism. If cancellation is requested, stop the local watcher and do not dispatch or cancel remote CI. Missing waiting/status/cancellation capability blocks the dependent operation; never call another host's tools.
 
    **Dry-run:** perform one exact-SHA lookup and report green, pending, missing, failed or unavailable, plus the run URL when present. Do not start the wait loop. Show the would-be deployment command labeled with its blocked prerequisites; printing it is not a claim that dispatch is permitted.
 
@@ -136,7 +136,7 @@ may establish its eventual outcome, clearly separated from checked-revision succ
 
 ### Step 4 — Monitor to completion
 
-Launch a **silent** polling loop through the available Codex execution/session tools described
+Launch a **silent** polling loop through the selected host adapter execution/session mechanisms described
 in Step 1.3, mirroring the `/merge` wait-loop discipline: zero stdout on non-terminal ticks, exactly one terminal line. Poll
 `gh run view "$RUN_ID" --json status,conclusion` every ~30s. The deploy job's own timeout is 45 min;
 add build time, so set the loop ceiling to ~50 min (3000s).

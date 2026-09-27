@@ -82,7 +82,7 @@ unavailable verification mechanism; never turn an unreachable surface into succe
 
 ## Execution sequence and caller evidence
 
-Read [Codex runtime](references/codex-runtime.md) and [dependencies](references/dependencies.md).
+Read [Runtime selection](references/runtime.md) and [dependencies](references/dependencies.md).
 An explicit PR/commit selection overrides recent conversation pointers. With multiple
 changes, identify every selected change separately and map each diff to its surfaces.
 Read current cumulative diff, acceptance criteria, merge SHA and deployment status.
