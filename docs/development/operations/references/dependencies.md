@@ -36,3 +36,13 @@ failure-record discipline remain. CPML-finalize is preserved outside this packag
 Batch's historical versions describe provenance only. Its new release version is
 unset using the supported batch null-version exception. Installation, rollback and fresh installed discovery
 require a separately authorized coordinated authority cutover.
+
+## Runtime closure
+
+All specialized consumers enter [runtime selection](runtime.md). Deliver that file,
+[Codex mechanics](codex-runtime.md) and [Claude mechanics](claude-runtime.md) with
+the canonical repository revision. The selected compatible shared bundle must include
+its actual-host selector, both workflow adapters and reviewer asset. Read only the
+actual host adapter; missing closure blocks the affected operation. A selected existing
+activation receipt is not permission to replace the active package. Replacement and
+rollback require their named authorization and fresh destination drift verification.
