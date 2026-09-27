@@ -195,6 +195,31 @@ async def test_retracted_edge_is_not_counted(graph_store, graph_ops_service):
     assert before_retraction.satisfied is False
 
 
+async def test_merged_from_tombstone_ends_the_inherited_edge(graph_store, graph_ops_service):
+    """Past a merge boundary the merged-away chain's dependency is no longer seen."""
+    await graph_store.insert_document(_make_doc("s0", lifecycle_status="archived"))
+    await graph_store.insert_document(_make_doc("s1"))
+    await graph_store.insert_document(_make_doc("m1"))
+    await graph_store.insert_document(_make_doc("blocker", lifecycle_status="archived"))
+    await _supersede(graph_store, "s1", "s0", 1)
+    await _depend(graph_ops_service, "s0", "blocker")
+    await graph_ops_service._create_edge_strict(
+        LinkRequest(source_id=_id("m1"), target_id=_id("s1"), edge_type=EdgeType.MERGED_FROM)
+    )
+    # Added after the merge, so no tombstone: proves s2 does reach s1's lineage.
+    await graph_store.insert_document(_make_doc("later"))
+    await _depend(graph_ops_service, "s1", "later")
+    await graph_store.insert_document(_make_doc("s2"))
+    await _supersede(graph_store, "s2", "s1", 2)
+
+    at_boundary = await graph_ops_service.check_preconditions(_id("s1"))
+    past_boundary = await graph_ops_service.check_preconditions(_id("s2"))
+
+    assert sorted(c.target_id for c in at_boundary.checks) == sorted([_id("blocker"), _id("later")])
+    assert [c.target_id for c in past_boundary.checks] == [_id("later")]
+    assert past_boundary.satisfied is True
+
+
 async def test_forked_target_chain_is_reported_not_resolved(graph_store, graph_ops_service):
     """Two heads is a fork: the row names it and picks neither."""
     await graph_store.insert_document(_make_doc("fn"))

@@ -3591,9 +3591,10 @@ class PreconditionCheck(BaseModel):
             'Actual state found: the chain head\'s lifecycle status (e.g., "active"), '
             '"not found" when the vault does not hold the target, '
             '"forked (N heads)" when more than one head is reachable forward from the '
-            'stored target, "cyclic (no head)" when its supersedes chain loops back on '
-            'itself, or "failed (pipeline_incomplete)" when the head\'s pipeline failed, '
-            "which is reported ahead of the lifecycle status rather than alongside it."
+            'stored target, "cyclic (no head)" when every version reachable forward is '
+            'itself superseded (a cycle with no exit), or "failed (pipeline_incomplete)" '
+            "when the head's pipeline failed, which is reported ahead of the lifecycle "
+            "status rather than alongside it."
         )
     )
     satisfied: bool = Field(

@@ -888,8 +888,8 @@ class GraphOpsService:
         for target_id in target_ids:
             heads = await self._supersedes_heads(target_id)
             if not heads:
-                # Every version reachable forward is itself superseded: the
-                # chain loops back on itself and has no head to judge.
+                # Every version reachable forward is itself superseded, so
+                # the forward walk ends only in a cycle: no head to judge.
                 checks.append(
                     PreconditionCheck(
                         target_id=target_id,
@@ -1153,8 +1153,9 @@ class GraphOpsService:
 
         Walks from ``doc_id`` toward newer versions only, so a branch that
         forks from an older ancestor does not count as a head of this
-        document. A document never superseded is its own single head; a
-        chain that loops back on itself has none, and yields an empty list.
+        document. A document never superseded is its own single head; when
+        every version reachable forward is itself superseded (the walk ends
+        only in a cycle) there is none, and the list is empty.
         """
         raw = await self._store.chain_walk(start_id=doc_id, edge_type=EdgeType.SUPERSEDES.value)
         _, newer = _chain_adjacency(raw["edges"])

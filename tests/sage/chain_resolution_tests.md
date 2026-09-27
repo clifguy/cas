@@ -608,7 +608,7 @@ validator paths are exercised end-to-end.
 
 **Input:** `check_preconditions(document_id=s1)` and, for B and C, `check_preconditions(document_id=s0)`.
 
-**Expected:** A: s1 inherits the edge, one unsatisfied row (not a vacuous `checks: []`). B: the edge is invisible from s0 and visible from s1. C: suppressed from s1, visible from s0. D: one row for the target. Collection is the same pipeline `traverse` uses.
+**Expected:** A: s1 inherits the edge, one unsatisfied row (not a vacuous `checks: []`). B: the edge is invisible from s0 and visible from s1. C: suppressed from s1, visible from s0. D: one row for the target. Case E: m1 merged_from s1 and s2 later supersedes s1: the edge is visible at the boundary s1 and tombstoned from s2. Collection is the same pipeline `traverse` uses.
 
 ---
 
@@ -621,6 +621,6 @@ validator paths are exercised end-to-end.
 
 **Input:** `check_preconditions(document_id=fn)`.
 
-**Expected:** Unsatisfied row with `actual: "forked (2 heads)"`, `head_id`, title and doc_type null; no head is picked. In the control only the target's own successors count, so the head is t1 and the row is satisfied. A cycle (pa and pb each superseding the other) has no head: unsatisfied with `actual: "cyclic (no head)"` and nulls, never an error.
+**Expected:** Unsatisfied row with `actual: "forked (2 heads)"`, `head_id`, title and doc_type null; no head is picked. In the control only the target's own successors count, so the head is t1 and the row is satisfied. A cycle with no exit (pa and pb each superseding the other) has no head: unsatisfied with `actual: "cyclic (no head)"` and nulls, never an error.
 
 ---
