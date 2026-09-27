@@ -1,0 +1,70 @@
+{
+  "observed_on": "2026-09-27",
+  "copies": [
+    {
+      "host": "codex",
+      "location": "<personal-root>/skills/sage-operations",
+      "ownership": "existing personal installation, not owned by sage package",
+      "files": {
+        "SKILL.md": {
+          "sha256": "365b92dc42336809a31b8baa521d7af61fe0db22a11f1c7ae6285f4b0002c74d",
+          "mode": 420
+        },
+        "references/retrieval-and-reading.md": {
+          "sha256": "c6be0688ce1965f55470103372bc69ddbcf52e9179b1a2669de1704c01d8b73e",
+          "mode": 420
+        },
+        "references/triage.md": {
+          "sha256": "9108d4c23884f770c31fea5d78d2157679f7b3ab3ee6779f79b739dd59259e05",
+          "mode": 420
+        },
+        "references/writing-and-graph.md": {
+          "sha256": "6d507a07df01da925b9517ae0a23796c23cecda6f9adb4ded0052796538f208a",
+          "mode": 420
+        },
+        "agents/openai.yaml": {
+          "sha256": "6947b7ed4a4c488330253cc4861c311171ea09b2f0ce204c9b4f838e8b76f85c",
+          "mode": 420
+        }
+      },
+      "disposition": "retain pending separate cutover and fresh acceptance"
+    },
+    {
+      "host": "claude",
+      "location": "<personal-root>/skills/sage-operations",
+      "ownership": "existing personal installation, not owned by sage package",
+      "files": {
+        "SKILL.md": {
+          "sha256": "365b92dc42336809a31b8baa521d7af61fe0db22a11f1c7ae6285f4b0002c74d",
+          "mode": 420
+        },
+        "references/retrieval-and-reading.md": {
+          "sha256": "c6be0688ce1965f55470103372bc69ddbcf52e9179b1a2669de1704c01d8b73e",
+          "mode": 420
+        },
+        "references/triage.md": {
+          "sha256": "9108d4c23884f770c31fea5d78d2157679f7b3ab3ee6779f79b739dd59259e05",
+          "mode": 420
+        },
+        "references/writing-and-graph.md": {
+          "sha256": "6d507a07df01da925b9517ae0a23796c23cecda6f9adb4ded0052796538f208a",
+          "mode": 420
+        },
+        "agents/openai.yaml": {
+          "sha256": "6947b7ed4a4c488330253cc4861c311171ea09b2f0ce204c9b4f838e8b76f85c",
+          "mode": 420
+        }
+      },
+      "disposition": "retain pending separate cutover and fresh acceptance"
+    }
+  ],
+  "checked_absent": [
+    "codex personal sage",
+    "claude personal sage",
+    "shared agents sage/sage-operations",
+    "CAS agents sage/sage-operations",
+    "CAS Claude sage/sage-operations",
+    "Codex plugin cache sage/sage-operations"
+  ],
+  "limits": "Only configured local roots inspected; other machines and remotely managed catalogs require fresh inventory at cutover."
+}

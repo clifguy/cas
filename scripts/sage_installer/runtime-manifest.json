@@ -1,0 +1,21 @@
+{
+  "files": {
+    "package_safety.py": {
+      "mode": 420,
+      "sha256": "213f83caa1bc85a80a97fd76d08a0b85087aa77c6da82dad9a54318896609db0"
+    },
+    "standalone_layout.py": {
+      "mode": 420,
+      "sha256": "2842567b240ee979ad5953bf1b08ef05f118fe6fdef12e8753a63546bf66ecd9"
+    },
+    "transaction_engine.py": {
+      "mode": 420,
+      "sha256": "a91a7e3bfc21435be4ecc048e0b5b625a13dddfce66386edeeda12b7b9359c12"
+    }
+  },
+  "format": 1,
+  "source": {
+    "repository": "https://github.com/resurrectionit/development-skills",
+    "revision": "ce22c079cb88fc67e6865ddd9d7a9aa05df41f68"
+  }
+}
