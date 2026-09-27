@@ -217,6 +217,26 @@ async def test_forked_target_chain_is_reported_not_resolved(graph_store, graph_o
     assert result.satisfied is False
 
 
+async def test_cyclic_target_chain_is_reported_not_raised(graph_store, graph_ops_service):
+    """A supersedes cycle has no head: the row says so instead of erroring."""
+    await graph_store.insert_document(_make_doc("fn"))
+    await graph_store.insert_document(_make_doc("pa"))
+    await graph_store.insert_document(_make_doc("pb"))
+    await _supersede(graph_store, "pb", "pa", 1)
+    await _supersede(graph_store, "pa", "pb", 2)
+    await _depend(graph_ops_service, "fn", "pa")
+
+    result = await graph_ops_service.check_preconditions(_id("fn"))
+
+    (check,) = result.checks
+    assert check.target_id == _id("pa")
+    assert check.head_id is None
+    assert check.title is None
+    assert check.actual == "cyclic (no head)"
+    assert check.satisfied is False
+    assert result.satisfied is False
+
+
 async def test_fork_beside_the_target_does_not_count_as_its_fork(graph_store, graph_ops_service):
     """Only the target's own successors decide its head, not a sibling branch."""
     await graph_store.insert_document(_make_doc("fn"))

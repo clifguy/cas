@@ -233,7 +233,12 @@ async def test_required_string_derived_in_all_three_branches(extended_vault_conf
     # description covers by naming the field's ordinary source rather than by
     # enumerating a vault-configurable set.
     described = PreconditionCheck.model_fields["actual"].description
-    for synthesized in ("not found", "failed (pipeline_incomplete)", "forked (N heads)"):
+    for synthesized in (
+        "not found",
+        "failed (pipeline_incomplete)",
+        "forked (N heads)",
+        "cyclic (no head)",
+    ):
         assert synthesized in described, (
             f"check_preconditions can report actual={synthesized!r}, which the "
             f"published description does not name: {described!r}"

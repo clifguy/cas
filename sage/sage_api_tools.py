@@ -1401,8 +1401,9 @@ def register_sage_tools(
         lifecycle must be dependency-satisfying and pipeline_status not
         ``failed`` (mid-pipeline is not rejected). Rows carry the stored
         ``target_id`` and the ``head_id`` judged, with the head's ``title``
-        and ``doc_type``; all three are null when ``actual`` is "not found"
-        or "forked (N heads)", both unsatisfied rather than raised. Returns
+        and ``doc_type``; all three are null when ``actual`` is "not found",
+        "forked (N heads)" or "cyclic (no head)", all unsatisfied rather than
+        raised. Returns
         ``satisfied`` plus the per-edge breakdown, so the caller can act on
         the gap without re-querying each dependency.
 

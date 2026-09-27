@@ -621,6 +621,6 @@ validator paths are exercised end-to-end.
 
 **Input:** `check_preconditions(document_id=fn)`.
 
-**Expected:** Unsatisfied row with `actual: "forked (2 heads)"`, `head_id`, title and doc_type null; no head is picked. In the control only the target's own successors count, so the head is t1 and the row is satisfied.
+**Expected:** Unsatisfied row with `actual: "forked (2 heads)"`, `head_id`, title and doc_type null; no head is picked. In the control only the target's own successors count, so the head is t1 and the row is satisfied. A cycle (pa and pb each superseding the other) has no head: unsatisfied with `actual: "cyclic (no head)"` and nulls, never an error.
 
 ---

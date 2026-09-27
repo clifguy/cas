@@ -3561,21 +3561,21 @@ class PreconditionCheck(BaseModel):
         description=(
             "Head of the target's supersedes chain: the version the dependency is "
             "judged on. Equals target_id when the target has not been superseded; "
-            "null when the vault does not hold the target or its chain has forked."
+            "null when the vault does not hold the target or its chain has no single head."
         ),
     )
     title: str | None = Field(
         default=None,
         description=(
             "Title of the chain head the dependency is judged on; null when the vault "
-            "does not hold the target or its chain has forked."
+            "does not hold the target or its chain has no single head."
         ),
     )
     doc_type: str | None = Field(
         default=None,
         description=(
             "doc_type of the chain head the dependency is judged on; null when the "
-            "vault does not hold the target, its chain has forked, or the head has none."
+            "vault does not hold the target, its chain has no single head, or the head has none."
         ),
     )
     required: str = Field(
@@ -3590,8 +3590,9 @@ class PreconditionCheck(BaseModel):
         description=(
             'Actual state found: the chain head\'s lifecycle status (e.g., "active"), '
             '"not found" when the vault does not hold the target, '
-            '"forked (N heads)" when the target\'s supersedes chain has more than one '
-            'head, or "failed (pipeline_incomplete)" when the head\'s pipeline failed, '
+            '"forked (N heads)" when more than one head is reachable forward from the '
+            'stored target, "cyclic (no head)" when its supersedes chain loops back on '
+            'itself, or "failed (pipeline_incomplete)" when the head\'s pipeline failed, '
             "which is reported ahead of the lifecycle status rather than alongside it."
         )
     )

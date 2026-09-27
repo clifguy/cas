@@ -1688,8 +1688,8 @@ paths:
         `pipeline_status` not `failed` (mid-pipeline is not rejected).
         Rows carry the stored `target_id` and the `head_id` judged, with
         the head's `title` and `doc_type`; all three are null when
-        `actual` is "not found" or "forked (N heads)", both unsatisfied
-        rather than raised. Returns `satisfied` plus the per-edge
+        `actual` is "not found", "forked (N heads)" or "cyclic (no head)",
+        all unsatisfied rather than raised. Returns `satisfied` plus the per-edge
         breakdown, so the caller can act on the gap without re-querying
         each dependency.
 
@@ -8180,18 +8180,19 @@ components:
             Head of the target's supersedes chain: the version the
             dependency is judged on. Equals target_id when the target has
             not been superseded; null when the vault does not hold the
-            target or its chain has forked.
+            target or its chain has no single head.
         title:
           type: [string, "null"]
           description: >-
             Title of the chain head the dependency is judged on; null when
-            the vault does not hold the target or its chain has forked.
+            the vault does not hold the target or its chain has no single
+            head.
         doc_type:
           type: [string, "null"]
           description: >-
             doc_type of the chain head the dependency is judged on; null
-            when the vault does not hold the target, its chain has forked,
-            or the head has none.
+            when the vault does not hold the target, its chain has no
+            single head, or the head has none.
         required:
           type: string
           description: >-
@@ -8204,10 +8205,11 @@ components:
           description: >-
             Actual state found: the chain head's lifecycle status (e.g.,
             "active"), "not found" when the vault does not hold the target,
-            "forked (N heads)" when the target's supersedes chain has more
-            than one head, or "failed (pipeline_incomplete)" when the head's
-            pipeline failed, which is reported ahead of the lifecycle status
-            rather than alongside it.
+            "forked (N heads)" when more than one head is reachable forward
+            from the stored target, "cyclic (no head)" when its supersedes
+            chain loops back on itself, or "failed (pipeline_incomplete)"
+            when the head's pipeline failed, which is reported ahead of the
+            lifecycle status rather than alongside it.
         satisfied:
           type: boolean
           description: True when the actual state meets the required condition for this target.
