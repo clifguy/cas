@@ -141,6 +141,7 @@ async def _document_count() -> int:
         (StructuredDataAdapter, "broken.json", b'{"a": '),
         (StructuredDataAdapter, "broken.xml", b"<a><b></a>"),
         (StructuredDataAdapter, "broken.csv", b'id,note\nA,"unterminated\n'),
+        (StructuredDataAdapter, "broken.tsv", b'id\tnote\nA\t"unterminated\n'),
     ],
     ids=[
         "pdf",
@@ -154,6 +155,7 @@ async def _document_count() -> int:
         "structured-data",
         "structured-data-xml",
         "structured-data-csv",
+        "structured-data-tsv",
     ],
 )
 async def test_each_adapter_reports_an_unreadable_source_as_a_read_error(

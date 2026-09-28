@@ -34,8 +34,11 @@ so a quoted field spanning lines is never broken apart. An inserted blank
 line is a bare line feed whatever the file's line endings, since the passage
 splitter finds paragraphs at two consecutive line feeds. The extension names the
 delimiter -- comma for ``.csv``, tab for ``.tsv`` -- and nothing is sniffed.
-A row does not name its fields, so a passage after the first holds values
-without the header row's column names.
+A row opening with ``#`` is a row, since delimited text has no comments, and a
+line holding only spaces is a row too. A cell longer than the ``csv`` module's
+field limit is refused as unreadable rather than cut. A row does not name its
+fields, so a passage after the first holds values without the header row's
+column names.
 
 Computes SHA-256 of source file bytes for content_hash.
 """
@@ -273,7 +276,7 @@ def _delimited_text(source: str, delimiter: str) -> tuple[list[list[str]], str]:
         out: list[str] = []
         for index, line in enumerate(candidate_lines):
             if index in targets_set:
-                out.append(_paragraph_break(terminators[index - 1]))
+                out.append(_paragraph_break(_tail(out, 2)))
             out.append(line)
             if index < len(terminators):
                 out.append(terminators[index])
@@ -285,26 +288,35 @@ def _delimited_text(source: str, delimiter: str) -> tuple[list[list[str]], str]:
         False,
         lambda text: _delimited_rows(text, delimiter)[0] == rows,
         source,
-        comment_start=_no_comment,
         render=render,
+        insertion_points=lambda _lines, row_starts: row_starts,
     )
 
 
-def _paragraph_break(terminator: str) -> str:
-    """What goes after a line ending ``terminator`` to leave a blank line above the next row.
+def _tail(parts: list[str], size: int) -> str:
+    """The last ``size`` characters of ``parts`` joined, without joining them all."""
+    tail = ""
+    for part in reversed(parts):
+        tail = part + tail
+        if len(tail) >= size:
+            break
+    return tail[-size:]
+
+
+def _paragraph_break(before: str) -> str:
+    """What goes above a row, after ``before``, so a paragraph break precedes it.
 
     The passage splitter finds a paragraph only at two consecutive line feeds,
-    so the blank line is a bare line feed whatever the file's line endings:
-    one more after a terminator ending LF, two after a lone CR (the reader
-    takes CR LF as a single line end, and the second LF is the empty row). A
-    blank line holds no row, so its terminator carries no data.
+    so the break is made of bare line feeds whatever the file's line endings:
+    none where ``before`` already ends with two, one where it ends with one --
+    an LF or CRLF line end, or a blank line of the source's own under CRLF --
+    and two after a lone CR, since the reader takes CR LF as a single line end
+    and the second line feed is the empty row. A blank line holds no row, so
+    its terminator carries no data.
     """
-    return "\n" if terminator.endswith("\n") else "\n\n"
-
-
-def _no_comment(lines: list[str], index: int) -> int | None:
-    """Delimited text has no comments: a line opening with ``#`` is a row."""
-    return None
+    if before.endswith("\n\n"):
+        return ""
+    return "\n" if before.endswith("\n") else "\n\n"
 
 
 @dataclass
@@ -498,6 +510,7 @@ def _separate(
     source: str,
     comment_start: Callable[[list[str], int], int | None] = _hash_comment_start,
     render: Callable[[list[str], list[int]], str] | None = None,
+    insertion_points: Callable[[list[str], set[int]], set[int]] | None = None,
 ) -> str:
     """``lines`` with a blank line above each start, keeping only those ``agrees`` accepts.
 
@@ -507,9 +520,15 @@ def _separate(
     insertion that would change the data costs only itself. The kept set is
     checked once more as a whole, and the source is returned if even that fails.
     ``render`` joins the lines with the blank lines added; the default joins at
-    line feeds.
+    line feeds. ``insertion_points`` maps the starts to the lines a blank line
+    goes above; the default moves each above its leading comments and drops one
+    where a blank line is already present.
     """
     render = render or _render
+    if insertion_points is None:
+
+        def insertion_points(lines: list[str], starts: set[int]) -> set[int]:
+            return _insertion_points(lines, starts, indent_bound, comment_start)
 
     def accepted(candidates: list[int]) -> list[int]:
         if not candidates or agrees(render(lines, candidates)):
@@ -519,7 +538,7 @@ def _separate(
         middle = len(candidates) // 2
         return accepted(candidates[:middle]) + accepted(candidates[middle:])
 
-    kept = accepted(sorted(_insertion_points(lines, starts, indent_bound, comment_start)))
+    kept = accepted(sorted(insertion_points(lines, starts)))
     text = render(lines, kept)
     return text if agrees(text) else source
 

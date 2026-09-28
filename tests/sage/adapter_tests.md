@@ -3251,10 +3251,11 @@ CRLF line endings.
 
 **Artifact:** StructuredDataAdapter.project
 **Category:** refusal
-**Expected:** Malformed JSON, JSON Lines, YAML, TOML or XML, a CSV with an
-unterminated quoted field, bytes that are not UTF-8 in any format, and an
-extension none of the formats uses each raise `SourceReadError` naming the
-source.
+**Expected:** Malformed JSON, JSON Lines, YAML, TOML or XML, a CSV or TSV with
+an unterminated quoted field, a CSV cell longer than the `csv` module's field
+limit, bytes that are not UTF-8 in any format, and an extension none of the
+formats uses each raise `SourceReadError` naming the source. A claimed
+extension is refused by its parser, not as unclaimed.
 
 ### TEST-SAGE-AD-201: YAML is read without constructing objects
 
@@ -3406,10 +3407,12 @@ row's id and note in exactly one unit; the title is the filename stem.
 **Artifact:** StructuredDataAdapter.project
 **Category:** record boundary
 **Precondition:** A CSV whose middle row holds a quoted field containing two
-line breaks.
+line breaks, followed by a row opening with `#`.
 
 **Expected:** The row's id and the field's last line share one unit; no blank
-line is inserted inside the field; the projection parses to the source rows.
+line is inserted inside the field; the `#` row is a row, separated on both
+sides, not a comment carried with the row below; the projection parses to the
+source rows.
 
 ### TEST-SAGE-AD-217: The extension selects the delimiter
 
@@ -3448,11 +3451,16 @@ consecutive line feeds gives one unit per row in every case. The reader ends a
 line at CRLF, a lone CR or a lone LF, and row positions are counted the same
 way.
 
-### TEST-SAGE-AD-220: An empty row in the source is kept and not doubled
+### TEST-SAGE-AD-220: A blank line already in the source still separates
 
 **Artifact:** StructuredDataAdapter.project
 **Category:** record boundary
-**Expected:** A source with a blank line between two rows projects with that
-blank line as the separator, no second one above the row after it, and a blank
-line above every other row.
+**Precondition:** Rows with a blank line of the source's own between two of
+them and a line holding one space, terminated LF, CRLF and CR.
+
+**Expected:** Each parses back to the source rows, and splitting at two
+consecutive line feeds gives one unit per row in every case, the space-only
+line its own row. Under LF the source's blank line is the separator and nothing
+is added above the row after it; under CRLF and CR a line feed is added, since
+the source's blank line is not two consecutive line feeds.
 

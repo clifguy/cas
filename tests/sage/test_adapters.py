@@ -5923,6 +5923,9 @@ class TestStructuredDataAdapter:
             ("latin1.xml", b'<?xml version="1.0" encoding="ISO-8859-1"?><a>caf\xe9</a>'),
             ("broken.csv", b'id,note\nA,"unterminated\n'),
             ("latin1.csv", b"id,note\nA,caf\xe9\n"),
+            ("broken.tsv", b'id\tnote\nA\t"unterminated\n'),
+            ("latin1.tsv", b"id\tnote\nA\tcaf\xe9\n"),
+            ("huge-cell.csv", b"id,note\nA," + b"x" * (2**17 + 1) + b"\n"),
         ],
         ids=[
             "json",
@@ -5935,6 +5938,9 @@ class TestStructuredDataAdapter:
             "xml-not-utf8",
             "csv",
             "csv-not-utf8",
+            "tsv",
+            "tsv-not-utf8",
+            "cell-over-field-limit",
         ],
     )
     async def test_ad_200_an_unparseable_source_is_a_read_error(self, tmp_path, name, body):
@@ -6334,6 +6340,7 @@ class TestStructuredDataAdapter:
             "id,body,tail\n"
             "A,plain,end-a\n"
             'B,"first line\nsecond line\nthird line",end-b\n'
+            "# not a comment,plain,end-h\n"
             "C,plain,end-c\n"
         )
         _, result = await self._project(tmp_path, "notes.csv", source)
@@ -6344,7 +6351,10 @@ class TestStructuredDataAdapter:
         holding = [unit for unit in units if unit.startswith("B,")]
         assert len(holding) == 1, units
         assert "third line" in holding[0]
-        assert len(units) == 4
+        # A row opening with "#" is a row: delimited text has no comments, so it
+        # is separated from the rows on both sides of it.
+        assert "# not a comment,plain,end-h" in units
+        assert len(units) == 5
 
     async def test_ad_217_the_extension_selects_the_delimiter(self, tmp_path):
         """AD-217: ``.tsv`` is read tab-delimited; the same bytes as ``.csv`` are not.
@@ -6385,16 +6395,25 @@ class TestStructuredDataAdapter:
         units = result.text.split("\n\n")
         assert [unit.lstrip("\r\n")[:2] for unit in units] == ["id", "A,", "B,", "C,"]
 
-    async def test_ad_220_an_empty_row_in_the_source_is_kept_and_not_doubled(self, tmp_path):
-        """AD-220: A blank line the source already has is the row's separator.
+    @pytest.mark.parametrize("ending", ["\n", "\r\n", "\r"], ids=["lf", "crlf", "cr"])
+    async def test_ad_220_a_blank_line_already_in_the_source_still_separates(
+        self, tmp_path, ending
+    ):
+        """AD-220: A source's own blank line is kept, and is a paragraph break in every ending.
 
-        The row after it begins below the blank line, so no second blank line
-        goes above it, and the source's own blank line is not removed.
+        Under LF the blank line is already two consecutive line feeds, so nothing
+        is added above the row after it. Under CRLF or CR it is not, so a line
+        feed is added. A line holding only a space is a row, not a blank line,
+        and is separated like any other row.
         """
-        source = "id,note\nA,one\n\nB,two\nC,three\n"
+        source = ending.join(["id,note", "A,one", "", "B,two", " ", "C,three"]) + ending
         _, result = await self._project(tmp_path, "gap.csv", source)
 
-        assert result.text == "id,note\n\nA,one\n\nB,two\n\nC,three\n"
+        assert _delimited_rows(".csv", result.text) == _delimited_rows(".csv", source)
+        units = [unit.strip("\r\n") for unit in result.text.split("\n\n")]
+        assert units == ["id,note", "A,one", "B,two", " ", "C,three"], units
+        if ending == "\n":
+            assert result.text == "id,note\n\nA,one\n\nB,two\n\n \n\nC,three\n"
 
     async def test_ad_218_rows_are_not_divided_across_passages(self, tmp_path, ingestion_service):
         """AD-218: A CSV longer than the embedder bound divides between rows."""
