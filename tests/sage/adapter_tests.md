@@ -3153,7 +3153,8 @@ running vault after AD-188: stored before the refusal existed and loaded under
 ## 12. Structured-Data Source Adapter
 
 Covers `sage/source_adapters/structured_data_adapter.py`, which reads JSON,
-JSON Lines, YAML, TOML and XML, choosing the parser by extension. A data file's keys
+JSON Lines, YAML, TOML, XML, CSV and TSV, choosing the parser (and, for delimited
+text, the delimiter) by extension. A data file's keys
 are not a document's sections, so the projection has no headings; the whole
 file is one section, which the ingestion service divides at blank lines first.
 The adapter puts a blank line between records -- the members of a container
@@ -3240,16 +3241,20 @@ after it is still separated.
 
 **Artifact:** StructuredDataAdapter.project
 **Category:** round trip
-**Expected:** For each of `.json`, `.jsonl`, `.yaml`, `.yml` and `.toml`, parsing
-the projection yields the data parsing the source does, with no headings.
+**Expected:** For each of `.json`, `.jsonl`, `.yaml`, `.yml`, `.toml`, `.xml`,
+`.csv` and `.tsv`, parsing the projection yields the data parsing the source
+does, with no headings. For the delimited formats the data is the rows, empty
+rows excluded, and the fixtures carry a quoted delimiter, a doubled quote and
+CRLF line endings.
 
 ### TEST-SAGE-AD-200: An unparseable source is a read error
 
 **Artifact:** StructuredDataAdapter.project
 **Category:** refusal
-**Expected:** Malformed JSON, JSON Lines, YAML or TOML, bytes that are not UTF-8,
-and an extension none of the formats uses each raise `SourceReadError` naming
-the source.
+**Expected:** Malformed JSON, JSON Lines, YAML, TOML or XML, a CSV with an
+unterminated quoted field, bytes that are not UTF-8 in any format, and an
+extension none of the formats uses each raise `SourceReadError` naming the
+source.
 
 ### TEST-SAGE-AD-201: YAML is read without constructing objects
 
@@ -3385,3 +3390,69 @@ its blank line.
 child, including the text of markup inside it, with whitespace runs collapsed;
 a blank value, or neither, falls back to the filename stem. A declaration
 naming another encoding does not re-decode the UTF-8 text.
+
+### TEST-SAGE-AD-215: Each delimited row is one paragraph
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** happy path
+**Precondition:** A CSV file of a header row and thirteen data rows.
+
+**Expected:** No headings and no preamble; splitting the projection at blank
+lines gives fourteen units, one per row with the header its own unit, and each
+row's id and note in exactly one unit; the title is the filename stem.
+
+### TEST-SAGE-AD-216: A quoted field spanning lines stays with its row
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** record boundary
+**Precondition:** A CSV whose middle row holds a quoted field containing two
+line breaks.
+
+**Expected:** The row's id and the field's last line share one unit; no blank
+line is inserted inside the field; the projection parses to the source rows.
+
+### TEST-SAGE-AD-217: The extension selects the delimiter
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** dialect
+**Precondition:** Tab-separated bytes with a field holding a comma and a
+middle row whose second field is quoted around a line break, saved as `.tsv`
+and as `.csv`.
+
+**Expected:** As `.tsv`, the rows parse tab-delimited with the comma inside its
+field, the quoted field spans its line break whole, and each row is one
+blank-line unit. There is no sniffing: as `.csv` the quote sits mid-field and
+opens nothing, so a blank line falls between the field's two lines.
+
+### TEST-SAGE-AD-218: Rows are not divided across passages
+
+**Artifact:** `IngestionService._chunk_projection`
+**Category:** passage division
+**Precondition:** A CRLF-terminated CSV whose notes are quoted around a line
+break, and an embedder bound admitting about three rows.
+
+**Expected:** More than one passage; no row's id in two passages; each row's id
+and the second line of its note share a passage; the passages join back to the
+projection exactly. Each inserted blank line is a bare line feed, since the
+splitter finds a paragraph only at two consecutive line feeds.
+
+### TEST-SAGE-AD-219: Rows are separated whatever the line endings
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** line endings
+**Precondition:** The same rows, one holding a quoted field spanning two lines,
+terminated LF, CRLF and CR.
+
+**Expected:** Each parses back to the source rows, and splitting at two
+consecutive line feeds gives one unit per row in every case. The reader ends a
+line at CRLF, a lone CR or a lone LF, and row positions are counted the same
+way.
+
+### TEST-SAGE-AD-220: An empty row in the source is kept and not doubled
+
+**Artifact:** StructuredDataAdapter.project
+**Category:** record boundary
+**Expected:** A source with a blank line between two rows projects with that
+blank line as the separator, no second one above the row after it, and a blank
+line above every other row.
+

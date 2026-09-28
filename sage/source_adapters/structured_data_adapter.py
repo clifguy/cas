@@ -1,7 +1,7 @@
-"""Structured-data source adapter: JSON, JSON Lines, YAML, TOML and XML.
+"""Structured-data source adapter: JSON, JSON Lines, YAML, TOML, XML, CSV and TSV.
 
-The formats are all trees of records, so one adapter reads them all, choosing
-the parser by extension.
+The formats all hold records, so one adapter reads them all, choosing the
+parser by extension.
 
 The projection has no headings. A data file's keys are not a document's
 sections: a heading per key multiplies passages without giving a search anything
@@ -28,9 +28,19 @@ beside its children is prose, and nothing is inserted inside it, so a
 document-style file projects as it was written. XML is read with entity
 declarations and external references refused.
 
+CSV and TSV keep their text too. Each row is a record, and a blank line goes
+above every row after the first, placed where the parser says the row begins,
+so a quoted field spanning lines is never broken apart. An inserted blank
+line is a bare line feed whatever the file's line endings, since the passage
+splitter finds paragraphs at two consecutive line feeds. The extension names the
+delimiter -- comma for ``.csv``, tab for ``.tsv`` -- and nothing is sniffed.
+A row does not name its fields, so a passage after the first holds values
+without the header row's column names.
+
 Computes SHA-256 of source file bytes for content_hash.
 """
 
+import csv
 import hashlib
 import io
 import json
@@ -60,6 +70,8 @@ _JSON_LINES = ".jsonl"
 _YAML = (".yaml", ".yml")
 _TOML = ".toml"
 _XML = ".xml"
+# Delimited text, each extension with the delimiter it names.
+_DELIMITERS = {".csv": ",", ".tsv": "\t"}
 
 # A TOML table or array-of-tables header line, optionally followed by a comment.
 _TOML_HEADER = re.compile(r"[ \t]*\[\[?[^\[\]\n]+\]\]?[ \t]*(?:#.*)?\r?")
@@ -72,8 +84,8 @@ _INDENT = "  "
 
 
 class StructuredDataAdapter(SourceAdapter):
-    VERSION = "0.2.0"
-    EXTENSIONS = [_JSON, _JSON_LINES, *_YAML, _TOML, _XML]
+    VERSION = "0.3.0"
+    EXTENSIONS = [_JSON, _JSON_LINES, *_YAML, _TOML, _XML, *_DELIMITERS]
 
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
         raw_bytes = source_path.read_bytes()
@@ -99,6 +111,7 @@ class StructuredDataAdapter(SourceAdapter):
             yaml.YAMLError,
             SAXException,
             DefusedXmlException,
+            csv.Error,
         ) as exc:
             raise SourceReadError(
                 f"Structured-data source does not parse as {suffix[1:]}: {source_path}: {exc}"
@@ -139,6 +152,8 @@ def _project(suffix: str, source: str) -> tuple[object, str]:
     if suffix == _XML:
         root = _xml_parse(source)
         return root, _xml_text(source, root)
+    if suffix in _DELIMITERS:
+        return _delimited_text(source, _DELIMITERS[suffix])
     data = tomllib.loads(source)
     return data, _toml_text(source, data)
 
@@ -224,6 +239,72 @@ def _toml_text(source: str, data: dict) -> str:
     lines = source.split("\n")
     starts = {index for index, line in enumerate(lines) if _TOML_HEADER.fullmatch(line)}
     return _separate(lines, starts, False, lambda text: tomllib.loads(text) == data, source)
+
+
+def _delimited_rows(text: str, delimiter: str) -> tuple[list[list[str]], list[int]]:
+    """The non-empty rows of ``text``, and the line on which each begins.
+
+    A row begins on the line after the one the row before it ended on, as the
+    reader counts lines. An empty row -- a blank line -- is no record, so it is
+    neither returned nor separated.
+    """
+    reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter, strict=True)
+    rows: list[list[str]] = []
+    starts: list[int] = []
+    begins = 0
+    for row in reader:
+        if row:
+            rows.append(row)
+            starts.append(begins)
+        begins = reader.line_num
+    return rows, starts
+
+
+def _delimited_text(source: str, delimiter: str) -> tuple[list[list[str]], str]:
+    """The rows of ``source`` and ``source`` with a blank line above each row after the first."""
+    rows, starts = _delimited_rows(source, delimiter)
+    # Lines are divided where the reader divides them -- at CRLF, a lone CR, or
+    # a lone LF -- so a row's line number names the line it is on.
+    parts = _XML_LINE_END.split(source)
+    lines, terminators = parts[0::2], parts[1::2]
+
+    def render(candidate_lines: list[str], targets: list[int]) -> str:
+        targets_set = set(targets)
+        out: list[str] = []
+        for index, line in enumerate(candidate_lines):
+            if index in targets_set:
+                out.append(_paragraph_break(terminators[index - 1]))
+            out.append(line)
+            if index < len(terminators):
+                out.append(terminators[index])
+        return "".join(out)
+
+    return rows, _separate(
+        lines,
+        set(starts[1:]),
+        False,
+        lambda text: _delimited_rows(text, delimiter)[0] == rows,
+        source,
+        comment_start=_no_comment,
+        render=render,
+    )
+
+
+def _paragraph_break(terminator: str) -> str:
+    """What goes after a line ending ``terminator`` to leave a blank line above the next row.
+
+    The passage splitter finds a paragraph only at two consecutive line feeds,
+    so the blank line is a bare line feed whatever the file's line endings:
+    one more after a terminator ending LF, two after a lone CR (the reader
+    takes CR LF as a single line end, and the second LF is the empty row). A
+    blank line holds no row, so its terminator carries no data.
+    """
+    return "\n" if terminator.endswith("\n") else "\n\n"
+
+
+def _no_comment(lines: list[str], index: int) -> int | None:
+    """Delimited text has no comments: a line opening with ``#`` is a row."""
+    return None
 
 
 @dataclass

@@ -503,6 +503,9 @@ async def test_rejection_is_consistent_across_create_and_supersession(vault_serv
         ("LEDGER.JSON", SourceType.STRUCTURED_DATA),
         ("scan.xml", SourceType.STRUCTURED_DATA),
         ("SCAN.XML", SourceType.STRUCTURED_DATA),
+        ("table.csv", SourceType.STRUCTURED_DATA),
+        ("table.tsv", SourceType.STRUCTURED_DATA),
+        ("TABLE.CSV", SourceType.STRUCTURED_DATA),
         # Case-insensitive: callers paste paths from Finder and Windows alike.
         ("NOTES.MD", SourceType.MARKDOWN),
     ],

@@ -3930,3 +3930,32 @@ async def test_attribute_values_in_an_xml_passage_are_keyword_searchable(store, 
     ):
         results = await store.search_bm25(term, limit=10)
         assert [r.document_id for r in results] == [expected], term
+
+
+async def test_record_identifiers_in_a_csv_passage_are_keyword_searchable(store, tmp_path):
+    """A hyphenated id and a long numeric id held in CSV cells each find their own row.
+
+    The delimited counterpart of the JSON case above: the identifiers sit
+    between commas and quotes as the structured-data adapter projects them.
+    Siblings differ only in their last digits, so a match on a shared fragment
+    returns both and fails; an absent word is searched first as the control.
+    """
+    from sage.source_adapters.structured_data_adapter import StructuredDataAdapter
+
+    rows = [("REC-20260917-12", "731188072"), ("REC-20260917-13", "731188073")]
+    for identifier, serial in rows:
+        path = tmp_path / f"{identifier}.csv"
+        path.write_text(f'id,serial,note\n{identifier},{serial},"a note, quoted"\n')
+        projection = await StructuredDataAdapter().project(path)
+        await store.index_chunks(
+            identifier, [_chunk(identifier, content=projection.text, heading_path="")]
+        )
+
+    assert await store.search_bm25("quetzalcoatl", limit=10) == []
+    for query, expected in (
+        ("REC-20260917-12", "REC-20260917-12"),
+        ("731188072", "REC-20260917-12"),
+        ("REC-20260917-13", "REC-20260917-13"),
+    ):
+        results = await store.search_bm25(query, limit=10)
+        assert [r.document_id for r in results] == [expected], query

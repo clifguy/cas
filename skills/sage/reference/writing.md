@@ -48,8 +48,8 @@ Re-ingesting genuinely unchanged content is safe and is refused by hash, with
 the refusal naming the document that already holds those bytes. Treat that
 refusal as a skip signal, not as a failure.
 
-Ingest data files as they are. JSON, JSON Lines, YAML and TOML are a source
-format of their own, so do not convert one to Markdown first; the ingest
+Ingest data files as they are. JSON, JSON Lines, YAML, TOML, XML, CSV and TSV
+are a source format of their own, so do not convert one to Markdown first; the ingest
 tool's source-type description lists every format with the extensions it is
 inferred from.
 

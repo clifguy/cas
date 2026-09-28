@@ -84,6 +84,8 @@ export function sourceTypeForFilename(name: string): string | null {
     case 'yml':
     case 'toml':
     case 'xml':
+    case 'csv':
+    case 'tsv':
       return 'structured_data';
     default:
       return null;
