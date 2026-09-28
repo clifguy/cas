@@ -1,0 +1,14 @@
+classification: minor
+category: [capability]
+summary: >-
+  The structured_data source type now claims .csv and .tsv. Delimited text is
+  read with the delimiter its extension names (comma or tab, never sniffed) and
+  projected in full with no headings, a blank line between rows placed at the
+  parser's row starts so a quoted field spanning lines stays whole. The
+  source_type descriptions on the ingest tools, the batch-upload model and the
+  Core API specification, and the regenerated MCP tool catalog, name the two
+  extensions; the refusal detail's registered_extensions follows the registry.
+for_callers: >-
+  CSV and TSV files ingest directly as structured_data, inferred from the .csv
+  or .tsv extension. A passage after the first holds row values without the
+  header row's column names.

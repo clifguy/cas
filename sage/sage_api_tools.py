@@ -514,7 +514,7 @@ _INGEST_SOURCE = _ingest_param(
 _REGISTERED_SOURCE_FORMATS = (
     "markdown (.md, .markdown), docx (.docx, .dotx), xlsx (.xlsx), "
     "pptx (.pptx, .potx), pdf (.pdf) and "
-    "structured_data (.json, .jsonl, .yaml, .yml, .toml, .xml)"
+    "structured_data (.json, .jsonl, .yaml, .yml, .toml, .xml, .csv, .tsv)"
 )
 
 _INGEST_SOURCE_TYPE = _ingest_param(

@@ -5622,7 +5622,41 @@ def _parse_structured(suffix: str, text: str) -> object:
         return list(yaml.safe_load_all(text))
     if suffix == ".xml":
         return _xml_tree(text)
+    if suffix in (".csv", ".tsv"):
+        return _delimited_rows(suffix, text)
     return tomllib.loads(text)
+
+
+def _delimited_rows(suffix: str, text: str) -> list[list[str]]:
+    """``text``'s rows under the delimiter its extension names, empty rows excluded."""
+    import csv
+    import io
+
+    delimiter = "\t" if suffix == ".tsv" else ","
+    reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter, strict=True)
+    return [row for row in reader if row]
+
+
+def _csv_ledger(count: int = 13, delimiter: str = ",") -> str:
+    """A header row and ``count`` data rows, CRLF-terminated as spreadsheet exports are.
+
+    One field is quoted around the delimiter and a doubled quote; the note is
+    quoted around a line break, so a division at a line rather than a row
+    boundary separates a row's id from the note's second line.
+    """
+    rows = [delimiter.join(["id", "title", "serial", "note"])]
+    for i in range(1, count + 1):
+        rows.append(
+            delimiter.join(
+                [
+                    f"REC-{i:04d}",
+                    f'"Record {i}{delimiter} ""quoted"" title"',
+                    str(731187000 + i),
+                    f'"Distinct note number {i}\r\nexplaining the record in prose."',
+                ]
+            )
+        )
+    return "\r\n".join(rows) + "\r\n"
 
 
 def _xml_tree(text: str) -> tuple:
@@ -5684,6 +5718,8 @@ def _structured_source(suffix: str) -> str:
         return _YAML_LEDGER
     if suffix == ".xml":
         return _scan_report()
+    if suffix in (".csv", ".tsv"):
+        return _csv_ledger(3, "\t" if suffix == ".tsv" else ",")
     return _TOML_LEDGER
 
 
@@ -5863,7 +5899,9 @@ class TestStructuredDataAdapter:
         assert '"""\n[not a header]' in result.text
         assert '"""\n\n[[entries]]\nid = "B"' in result.text
 
-    @pytest.mark.parametrize("suffix", [".json", ".jsonl", ".yaml", ".yml", ".toml", ".xml"])
+    @pytest.mark.parametrize(
+        "suffix", [".json", ".jsonl", ".yaml", ".yml", ".toml", ".xml", ".csv", ".tsv"]
+    )
     async def test_ad_199_the_projection_parses_to_the_source_data(self, tmp_path, suffix):
         """AD-199: Parsing the projection yields the data parsing the source does."""
         source = _structured_source(suffix)
@@ -5883,6 +5921,11 @@ class TestStructuredDataAdapter:
             ("data.txt", b'{"a": 1}'),
             ("broken.xml", b"<a><b></a>"),
             ("latin1.xml", b'<?xml version="1.0" encoding="ISO-8859-1"?><a>caf\xe9</a>'),
+            ("broken.csv", b'id,note\nA,"unterminated\n'),
+            ("latin1.csv", b"id,note\nA,caf\xe9\n"),
+            ("broken.tsv", b'id\tnote\nA\t"unterminated\n'),
+            ("latin1.tsv", b"id\tnote\nA\tcaf\xe9\n"),
+            ("huge-cell.csv", b"id,note\nA," + b"x" * (2**17 + 1) + b"\n"),
         ],
         ids=[
             "json",
@@ -5893,6 +5936,11 @@ class TestStructuredDataAdapter:
             "unclaimed-extension",
             "xml",
             "xml-not-utf8",
+            "csv",
+            "csv-not-utf8",
+            "tsv",
+            "tsv-not-utf8",
+            "cell-over-field-limit",
         ],
     )
     async def test_ad_200_an_unparseable_source_is_a_read_error(self, tmp_path, name, body):
@@ -5907,6 +5955,10 @@ class TestStructuredDataAdapter:
             await self._project(tmp_path, name, body)
 
         assert str(tmp_path / name) in str(caught.value)
+        if name != "data.txt":
+            # A claimed extension reaches its parser: refusing it as unclaimed
+            # would pass here without the format being read at all.
+            assert "none of the extensions" not in str(caught.value)
 
     async def test_ad_206_an_unclaimed_extension_is_refused_rather_than_guessed(self, tmp_path):
         """AD-206: The refusal of an unclaimed extension names the extensions that select a parser.
@@ -6264,3 +6316,126 @@ class TestStructuredDataAdapter:
         _, result = await self._project(tmp_path, "fallback.xml", body)
 
         assert result.title == title
+
+    async def test_ad_215_each_delimited_row_is_one_paragraph(self, tmp_path):
+        """AD-215: A CSV projects one blank-line paragraph per row, no headings."""
+        source = _csv_ledger()
+        _, result = await self._project(tmp_path, "ledger.csv", source)
+
+        assert result.headings == []
+        assert result.preamble == ""
+        assert result.title == "ledger"
+        rows = _delimited_rows(".csv", source)
+        units = [unit for unit in result.text.split("\n\n") if unit.strip()]
+        assert len(units) == len(rows) == 14
+        assert units[0].startswith("id,title,serial,note")
+        for row in rows[1:]:
+            holding = [unit for unit in units if row[0] in unit]
+            assert len(holding) == 1, (row[0], holding)
+            assert row[3] in holding[0]
+
+    async def test_ad_216_a_quoted_field_spanning_lines_stays_with_its_row(self, tmp_path):
+        """AD-216: Blank lines go at row starts, never between the lines of one field."""
+        source = (
+            "id,body,tail\n"
+            "A,plain,end-a\n"
+            'B,"first line\nsecond line\nthird line",end-b\n'
+            "# not a comment,plain,end-h\n"
+            "C,plain,end-c\n"
+        )
+        _, result = await self._project(tmp_path, "notes.csv", source)
+
+        assert _delimited_rows(".csv", result.text) == _delimited_rows(".csv", source)
+        assert '"first line\nsecond line\nthird line",end-b' in result.text
+        units = result.text.split("\n\n")
+        holding = [unit for unit in units if unit.startswith("B,")]
+        assert len(holding) == 1, units
+        assert "third line" in holding[0]
+        # A row opening with "#" is a row: delimited text has no comments, so it
+        # is separated from the rows on both sides of it.
+        assert "# not a comment,plain,end-h" in units
+        assert len(units) == 5
+
+    async def test_ad_217_the_extension_selects_the_delimiter(self, tmp_path):
+        """AD-217: ``.tsv`` is read tab-delimited; the same bytes as ``.csv`` are not.
+
+        The middle row's second field is quoted around a line break. Tab-delimited,
+        the quote opens the field, so the row spans two lines and takes no blank
+        line inside it. Comma-delimited, the quote sits mid-field and opens
+        nothing, so the break ends a row and a blank line goes above the next.
+        """
+        source = 'id\tnote\tend\nA\tone, two\tend-a\nB\t"three\nfour"\tend-b\nC\tfive\tend-c\n'
+        _, as_tsv = await self._project(tmp_path, "data.tsv", source)
+        _, as_csv = await self._project(tmp_path, "data.csv", source)
+
+        assert _delimited_rows(".tsv", as_tsv.text) == [
+            ["id", "note", "end"],
+            ["A", "one, two", "end-a"],
+            ["B", "three\nfour", "end-b"],
+            ["C", "five", "end-c"],
+        ]
+        assert '"three\nfour"' in as_tsv.text
+        assert len(as_tsv.text.split("\n\n")) == 4
+        # No sniffing: read comma-delimited, the quote is literal and the row breaks.
+        assert '"three\n\nfour"' in as_csv.text
+
+    @pytest.mark.parametrize("ending", ["\n", "\r\n", "\r"], ids=["lf", "crlf", "cr"])
+    async def test_ad_219_rows_are_separated_whatever_the_line_endings(self, tmp_path, ending):
+        """AD-219: LF, CRLF and CR sources each gain a paragraph break above every row.
+
+        The reader ends a line at CRLF, a lone CR or a lone LF, so a split at
+        line feeds alone would disagree with it about where a CR-terminated row
+        begins. The paragraph break is two consecutive line feeds in every case,
+        which is what the passage splitter looks for.
+        """
+        source = ending.join(["id,note", "A,one", 'B,"two', 'lines"', "C,three"]) + ending
+        _, result = await self._project(tmp_path, "rows.csv", source)
+
+        assert _delimited_rows(".csv", result.text) == _delimited_rows(".csv", source)
+        units = result.text.split("\n\n")
+        assert [unit.lstrip("\r\n")[:2] for unit in units] == ["id", "A,", "B,", "C,"]
+
+    @pytest.mark.parametrize("ending", ["\n", "\r\n", "\r"], ids=["lf", "crlf", "cr"])
+    async def test_ad_220_a_blank_line_already_in_the_source_still_separates(
+        self, tmp_path, ending
+    ):
+        """AD-220: A source's own blank line is kept, and is a paragraph break in every ending.
+
+        Under LF the blank line is already two consecutive line feeds, so nothing
+        is added above the row after it. Under CRLF it is not, so one line feed
+        is added; under CR, two, since the reader takes CR LF as a single line
+        end. A line holding only a space is a row, not a blank line, and is
+        separated like any other row.
+        """
+        source = ending.join(["id,note", "A,one", "", "B,two", " ", "C,three"]) + ending
+        _, result = await self._project(tmp_path, "gap.csv", source)
+
+        assert _delimited_rows(".csv", result.text) == _delimited_rows(".csv", source)
+        units = [unit.strip("\r\n") for unit in result.text.split("\n\n")]
+        assert units == ["id,note", "A,one", "B,two", " ", "C,three"], units
+        expected = {
+            "\n": "id,note\n\nA,one\n\nB,two\n\n \n\nC,three\n",
+            "\r\n": "id,note\r\n\nA,one\r\n\r\n\nB,two\r\n\n \r\n\nC,three\r\n",
+            "\r": "id,note\r\n\nA,one\r\r\n\nB,two\r\n\n \r\n\nC,three\r",
+        }
+        assert result.text == expected[ending]
+
+    async def test_ad_218_rows_are_not_divided_across_passages(self, tmp_path, ingestion_service):
+        """AD-218: A CSV longer than the embedder bound divides between rows."""
+        from sage.adapters.stubs import StubEmbeddingProvider
+        from sage.services.passage_split import join_passages
+
+        source = _csv_ledger()
+        rows = _delimited_rows(".csv", source)[1:]
+        _, result = await self._project(tmp_path, "ledger.csv", source)
+        row_bytes = len(result.text.encode("utf-8")) // (len(rows) + 1)
+        ingestion_service._embedding = StubEmbeddingProvider(max_input_tokens=row_bytes * 3)
+
+        chunks = ingestion_service._chunk_projection("doc_csv_ledger", result)
+
+        assert len(chunks) > 1
+        for row in rows:
+            holding = [chunk for chunk in chunks if row[0] in chunk.content]
+            assert len(holding) == 1, (row[0], [c.chunk_index for c in holding])
+            assert row[3] in holding[0].content, row[0]
+        assert join_passages(chunks) == result.text
