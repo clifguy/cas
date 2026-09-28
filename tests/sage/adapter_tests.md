@@ -3461,6 +3461,8 @@ them and a line holding one space, terminated LF, CRLF and CR.
 **Expected:** Each parses back to the source rows, and splitting at two
 consecutive line feeds gives one unit per row in every case, the space-only
 line its own row. Under LF the source's blank line is the separator and nothing
-is added above the row after it; under CRLF and CR a line feed is added, since
-the source's blank line is not two consecutive line feeds.
+is added above the row after it; under CRLF one line feed is added and under CR
+two, since the source's blank line is not two consecutive line feeds and the
+reader takes CR LF as a single line end. The exact projection is pinned for
+each ending.
 

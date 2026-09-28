@@ -6402,9 +6402,10 @@ class TestStructuredDataAdapter:
         """AD-220: A source's own blank line is kept, and is a paragraph break in every ending.
 
         Under LF the blank line is already two consecutive line feeds, so nothing
-        is added above the row after it. Under CRLF or CR it is not, so a line
-        feed is added. A line holding only a space is a row, not a blank line,
-        and is separated like any other row.
+        is added above the row after it. Under CRLF it is not, so one line feed
+        is added; under CR, two, since the reader takes CR LF as a single line
+        end. A line holding only a space is a row, not a blank line, and is
+        separated like any other row.
         """
         source = ending.join(["id,note", "A,one", "", "B,two", " ", "C,three"]) + ending
         _, result = await self._project(tmp_path, "gap.csv", source)
@@ -6412,8 +6413,12 @@ class TestStructuredDataAdapter:
         assert _delimited_rows(".csv", result.text) == _delimited_rows(".csv", source)
         units = [unit.strip("\r\n") for unit in result.text.split("\n\n")]
         assert units == ["id,note", "A,one", "B,two", " ", "C,three"], units
-        if ending == "\n":
-            assert result.text == "id,note\n\nA,one\n\nB,two\n\n \n\nC,three\n"
+        expected = {
+            "\n": "id,note\n\nA,one\n\nB,two\n\n \n\nC,three\n",
+            "\r\n": "id,note\r\n\nA,one\r\n\r\n\nB,two\r\n\n \r\n\nC,three\r\n",
+            "\r": "id,note\r\n\nA,one\r\r\n\nB,two\r\n\n \r\n\nC,three\r",
+        }
+        assert result.text == expected[ending]
 
     async def test_ad_218_rows_are_not_divided_across_passages(self, tmp_path, ingestion_service):
         """AD-218: A CSV longer than the embedder bound divides between rows."""
