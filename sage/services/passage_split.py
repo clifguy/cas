@@ -23,12 +23,14 @@ from sage.adapters.interfaces import Chunk
 # separator stood.
 SECTION_SEPARATOR = "\n\n"
 
-# Division points in order of preference. Each boundary sits after the run of
-# newlines that forms it, so the run stays with the text it ends and every unit
-# concatenates back to the text it was cut from.
+# Division points in order of preference: a blank line, then a line end. A line
+# ends at CR LF, a lone CR or a lone LF, so a blank line is two consecutive line
+# ends of any kinds. Each boundary sits after the run of line ends that forms
+# it, so the run stays with the text it ends, a CR LF pair is never divided, and
+# every unit concatenates back to the text it was cut from.
 _BOUNDARIES: tuple[re.Pattern[str], ...] = (
-    re.compile(r"(?<=\n\n)(?!\n)"),
-    re.compile(r"(?<=\n)(?!\n)"),
+    re.compile(r"(?:(?<=\n\n)|(?<=[\r\n]\r\n)|(?<=[\r\n]\r))(?![\r\n])"),
+    re.compile(r"(?<=[\r\n])(?![\r\n])"),
 )
 
 
@@ -52,8 +54,12 @@ def split_passage(text: str, fits: Callable[[str], bool]) -> list[str]:
     divided only when it does not fit by itself, so a paragraph that fits is
     never split across pieces.
 
+    A line ends at CR LF, a lone CR or a lone LF, and a paragraph ends at a
+    blank line in any of those endings.
+
     The pieces concatenate to ``text`` exactly. A code point is the smallest
-    unit, so a piece never ends inside a UTF-8 sequence; and a code point that
+    unit, and a CR LF pair is taken as one, so a piece never ends inside a
+    UTF-8 sequence or between the two halves of a line end; and a unit that
     does not fit by itself is emitted alone, so the division terminates for
     any predicate.
 
@@ -81,13 +87,20 @@ def _units(text: str, fits: Callable[[str], bool], level: int) -> list[str]:
 
 
 def _code_point_units(text: str, fits: Callable[[str], bool]) -> list[str]:
-    """Cut a boundary-free text into the longest fitting runs of code points."""
+    """Cut a boundary-free text into the longest fitting runs of code points.
+
+    A CR LF pair is kept whole: a cut that would fall between its halves moves
+    before the pair, or past it when the pair opens the run.
+    """
     units: list[str] = []
     start = 0
     while start < len(text):
         length = _longest_fitting(len(text) - start, lambda n, s=start: fits(text[s : s + n]))
-        units.append(text[start : start + length])
-        start += length
+        end = start + length
+        if text[end - 1 : end + 1] == "\r\n":
+            end += 1 if length == 1 else -1
+        units.append(text[start:end])
+        start = end
     return units
 
 

@@ -31,8 +31,8 @@ declarations and external references refused.
 CSV and TSV keep their text too. Each row is a record, and a blank line goes
 above every row after the first, placed where the parser says the row begins,
 so a quoted field spanning lines is never broken apart. An inserted blank
-line is a bare line feed whatever the file's line endings, since the passage
-splitter finds paragraphs at two consecutive line feeds. The extension names the
+line is a bare line feed whatever the file's line endings, which the passage
+splitter takes as a paragraph break after any line end. The extension names the
 delimiter -- comma for ``.csv``, tab for ``.tsv`` -- and nothing is sniffed.
 A row opening with ``#`` is a row, since delimited text has no comments, and a
 line holding only spaces is a row too. A cell longer than the ``csv`` module's
@@ -306,8 +306,8 @@ def _tail(parts: list[str], size: int) -> str:
 def _paragraph_break(before: str) -> str:
     """What goes above a row, after ``before``, so a paragraph break precedes it.
 
-    The passage splitter finds a paragraph only at two consecutive line feeds,
-    so the break is made of bare line feeds whatever the file's line endings:
+    The break is made of bare line feeds whatever the file's line endings,
+    which the passage splitter takes as a blank line after any line end:
     none where ``before`` already ends with two, one where it ends with one --
     an LF or CRLF line end, or a blank line of the source's own under CRLF --
     and two after a lone CR, since the reader takes CR LF as a single line end
