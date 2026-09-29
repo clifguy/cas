@@ -5557,7 +5557,7 @@ class TestAdapterConfigRefusal:
         assert not isinstance(failed.value, AdapterConfigError)
 
 
-# ── Structured-data source adapter (AD-190 to AD-214) ───────────────
+# ── Structured-data source adapter (AD-190 to AD-214, AD-221) ───────────────
 
 
 def _ledger(count: int = 13) -> dict:
@@ -5735,7 +5735,7 @@ def _without_added_blank_lines(text: str, source: str) -> str:
 
 
 class TestStructuredDataAdapter:
-    """AD-190 to AD-214: JSON, JSON Lines, YAML, TOML and XML projected without headings."""
+    """AD-190 to AD-214, AD-221: JSON, JSON Lines, YAML, TOML and XML, projected headingless."""
 
     async def _project(self, tmp_path, name: str, body: str | bytes):
         from sage.source_adapters.structured_data_adapter import StructuredDataAdapter
@@ -6061,6 +6061,49 @@ class TestStructuredDataAdapter:
             )
             <= 3
         )
+        assert join_passages(chunks) == result.text
+
+    @pytest.mark.parametrize("ending", ["\n", "\r\n", "\r"], ids=["lf", "crlf", "cr"])
+    async def test_ad_221_xml_records_are_not_divided_across_passages(
+        self, tmp_path, ingestion_service, ending
+    ):
+        """AD-221: An XML record set divides between records whatever its line endings.
+
+        Each record spans several lines and the inserted blank lines take the
+        file's own terminator, so a splitter that sees a blank line only as two
+        consecutive line feeds packs lines of the next record into a passage.
+        LF is the control.
+        """
+        from sage.adapters.stubs import StubEmbeddingProvider
+        from sage.services.passage_split import join_passages
+
+        entries = _ledger()["entries"]
+        lines = ["<ledger>"]
+        for entry in entries:
+            lines.append(f'  <entry id="{entry["id"]}">')
+            lines.extend(f"    <{key}>{entry[key]}</{key}>" for key in ("title", "status", "note"))
+            lines.append("  </entry>")
+        lines.append("</ledger>")
+        source = ending.join(lines) + ending
+        _, result = await self._project(tmp_path, "ledger.xml", source.encode("utf-8"))
+        assert result.text.count(ending * 2) == len(entries) - 1
+        record_bytes = len(result.text.encode("utf-8")) // len(entries)
+        # Three and a half records: packing lines alone would carry half of the
+        # fourth record into a passage.
+        bound = record_bytes * 3 + record_bytes // 2
+        ingestion_service._embedding = StubEmbeddingProvider(max_input_tokens=bound)
+
+        chunks = ingestion_service._chunk_projection("doc_xml_ledger", result)
+
+        assert len(chunks) > 1
+        for entry in entries:
+            opening = f'<entry id="{entry["id"]}">'
+            holding = [chunk for chunk in chunks if opening in chunk.content]
+            assert len(holding) == 1, (entry["id"], [c.chunk_index for c in holding])
+            # The note is the record's last field, so a cut inside the record
+            # leaves the id and the note in different passages.
+            assert entry["note"] in holding[0].content, entry["id"]
+        assert not any(chunk.content.startswith("\n") for chunk in chunks)
         assert join_passages(chunks) == result.text
 
     async def test_ad_208_xml_keeps_its_text_and_separates_repeated_records(self, tmp_path):

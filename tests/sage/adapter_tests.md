@@ -3436,8 +3436,8 @@ break, and an embedder bound admitting about three rows.
 
 **Expected:** More than one passage; no row's id in two passages; each row's id
 and the second line of its note share a passage; the passages join back to the
-projection exactly. Each inserted blank line is a bare line feed, since the
-splitter finds a paragraph only at two consecutive line feeds.
+projection exactly. Each inserted blank line is a bare line feed, which the
+splitter takes as a paragraph break whatever the rows' own line endings.
 
 ### TEST-SAGE-AD-219: Rows are separated whatever the line endings
 
@@ -3466,3 +3466,16 @@ two, since the source's blank line is not two consecutive line feeds and the
 reader takes CR LF as a single line end. The exact projection is pinned for
 each ending.
 
+### TEST-SAGE-AD-221: XML records are not divided across passages in any line ending
+
+**Artifact:** `IngestionService._chunk_projection`
+**Category:** passage division
+**Precondition:** An XML record set, each record an element spanning several
+lines, terminated LF, CRLF and CR, and an embedder bound admitting about three
+records. The inserted blank lines take the file's own terminator.
+
+**Expected:** More than one passage in every ending; no record's id in two
+passages; each record's id and its closing tag share a passage; no passage
+begins with a line feed; the passages join back to the projection exactly. LF
+is the control: it passed before the splitter recognised CRLF and CR blank
+lines.
