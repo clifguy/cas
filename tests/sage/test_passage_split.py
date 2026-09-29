@@ -202,6 +202,33 @@ def test_paragraphs_divide_at_blank_lines_in_every_line_ending(ending: str) -> N
     assert [piece.removesuffix(ending * 2) for piece in pieces] == paragraphs
 
 
+@ENDINGS
+@pytest.mark.parametrize("room", ["run", "two-ends"])
+def test_a_run_of_blank_lines_stays_with_the_text_it_ends(ending: str, room: str) -> None:
+    """Two blank lines in a row are one boundary, after the whole run of line ends.
+
+    With room for the run, each paragraph is a piece. With room for only two
+    of its three line ends, a paragraph divides at its line end instead, and a
+    splitter that cuts inside the run strands the rest at the head of the
+    next piece, which packing cannot rejoin.
+    """
+    paragraphs = [
+        ending.join([f"record {i} opens " + "o" * 20, f"record {i} closes"]) for i in range(6)
+    ]
+    text = (ending * 3).join(paragraphs)
+    first_line = f"record 0 opens {'o' * 20}{ending}"
+    bound = len(paragraphs[0]) + 2 * len(ending)
+    fits = _fits_chars(bound + len(ending) + len(first_line) if room == "run" else bound)
+
+    pieces = split_passage(text, fits)
+
+    _assert_exact_and_fitting(text, pieces, fits)
+    assert not any(piece.startswith(("\r", "\n")) for piece in pieces)
+    assert all(piece.endswith(ending * 3) for piece in pieces if ending * 3 in piece)
+    if room == "run":
+        assert [piece.removesuffix(ending * 3) for piece in pieces] == paragraphs
+
+
 def test_the_crlf_example_divides_at_its_blank_line() -> None:
     text = "a1\r\na2\r\n\r\nb1\r\nb2"
 

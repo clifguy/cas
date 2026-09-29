@@ -6075,7 +6075,7 @@ class TestStructuredDataAdapter:
         LF is the control.
         """
         from sage.adapters.stubs import StubEmbeddingProvider
-        from sage.services.passage_split import join_passages
+        from sage.services.passage_split import embedding_input, join_passages
 
         entries = _ledger()["entries"]
         lines = ["<ledger>"]
@@ -6096,13 +6096,15 @@ class TestStructuredDataAdapter:
         chunks = ingestion_service._chunk_projection("doc_xml_ledger", result)
 
         assert len(chunks) > 1
+        counted = ingestion_service._embedding.count_tokens
+        assert all(counted(embedding_input(c.heading_path, c.content)) <= bound for c in chunks)
         for entry in entries:
             opening = f'<entry id="{entry["id"]}">'
             holding = [chunk for chunk in chunks if opening in chunk.content]
             assert len(holding) == 1, (entry["id"], [c.chunk_index for c in holding])
-            # The note is the record's last field, so a cut inside the record
-            # leaves the id and the note in different passages.
-            assert entry["note"] in holding[0].content, entry["id"]
+            # A cut inside the record leaves its closing tag in the next passage.
+            record = holding[0].content[holding[0].content.index(opening) :]
+            assert entry["note"] in record and "</entry>" in record, entry["id"]
         assert not any(chunk.content.startswith("\n") for chunk in chunks)
         assert join_passages(chunks) == result.text
 
