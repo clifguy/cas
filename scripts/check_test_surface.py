@@ -158,6 +158,19 @@ _CONFORMANCE_STREAMS: Final[str] = (
 )
 
 KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
+    ("tests/sage/test_mcp_logging.py::test_call_tool_logs_failure_and_reraises"): (
+        "inverted and renamed test_call_tool_logs_failure_and_returns_generic_envelope: "
+        "an unexpected exception now reaches the caller as a generic internal_error "
+        "envelope, with its text in the server log only"
+    ),
+    (
+        "tests/sage/test_fastmcp_strict_args.py::"
+        "test_t6_non_validation_error_tool_failure_still_propagates"
+    ): (
+        "renamed test_t6_non_validation_error_tool_failure_is_not_a_validation_envelope: "
+        "a tool-body failure now returns internal_error rather than propagating, and "
+        "the guard against translating it as a validation refusal is unchanged"
+    ),
     (
         "tests/sage/test_postgres_schema.py::"
         "test_bootstrap_adds_a_new_column_to_an_already_provisioned_schema"

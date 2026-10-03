@@ -92,10 +92,18 @@ class AuthError(Exception):
         configured so a client can discover where to obtain a token; the
         metadata document itself is served by the edge facade, not here.
         """
-        params = [f'error="{self.error}"', f'error_description="{self.description}"']
+        params = [
+            f"error={_quoted(self.error)}",
+            f"error_description={_quoted(self.description)}",
+        ]
         if self.resource_metadata_url is not None:
-            params.append(f'resource_metadata="{self.resource_metadata_url}"')
+            params.append(f"resource_metadata={_quoted(self.resource_metadata_url)}")
         return "Bearer " + ", ".join(params)
+
+
+def _quoted(value: str) -> str:
+    """Render ``value`` as an RFC 9110 quoted-string for a challenge parameter."""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 class TokenValidator(Protocol):
@@ -200,10 +208,14 @@ class EntraTokenValidator:
                 options={"require": ["exp", "iss", "aud"]},
             )
         except jwt.PyJWTError as exc:
+            # The library's reason names the claim that failed; it is
+            # diagnostic detail for the operator, so it goes to the log and the
+            # caller receives a fixed description.
+            logger.info("Bearer token rejected: %s", type(exc).__name__, exc_info=exc)
             raise AuthError(
                 401,
                 "invalid_token",
-                f"Token validation failed: {exc}",
+                "Token validation failed.",
                 resource_metadata_url=self._resource_metadata_url,
             ) from exc
 
@@ -339,9 +351,18 @@ class AuthMiddleware:
         self._exempt_prefixes = exempt_prefixes
 
     def _is_exempt(self, path: str) -> bool:
-        return path in self._exempt_paths or any(
-            path.startswith(prefix) for prefix in self._exempt_prefixes
-        )
+        if path in self._exempt_paths:
+            return True
+        # A prefix exemption covers exactly one further path segment -- the
+        # route parameter it exists for -- and never a dot segment, so the
+        # exemption cannot be stretched to a path the router would resolve
+        # elsewhere.
+        for prefix in self._exempt_prefixes:
+            if path.startswith(prefix):
+                rest = path[len(prefix) :]
+                if rest and "/" not in rest and rest not in (".", ".."):
+                    return True
+        return False
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http" or self._is_exempt(scope.get("path", "")):
@@ -372,3 +393,114 @@ class AuthMiddleware:
         finally:
             for var, token in reversed(bindings):
                 var.reset(token)
+
+
+#: Host names that address only this machine. A request naming any other host
+#: reached the process through a name the server cannot vouch for.
+LOOPBACK_HOSTNAMES: frozenset[str] = frozenset({"127.0.0.1", "localhost", "[::1]"})
+
+
+def _loopback_authority(authority: str) -> bool:
+    """Whether ``authority`` is ``<loopback name>`` or ``<loopback name>:<port>``."""
+    if authority.startswith("["):
+        end = authority.find("]")
+        if end == -1:
+            return False
+        host = authority[: end + 1]
+    else:
+        host = authority.partition(":")[0]
+    port = authority[len(host) :]
+    if port and not (port[0] == ":" and port[1:].isascii() and port[1:].isdigit()):
+        return False
+    return host.lower() in LOOPBACK_HOSTNAMES
+
+
+def is_loopback_host(value: str | None) -> bool:
+    """Whether a ``Host`` header value names a loopback host, with any port."""
+    if not value:
+        return False
+    return _loopback_authority(value)
+
+
+def is_loopback_origin(value: str | None) -> bool:
+    """Whether an ``Origin`` header value is an http(s) origin on a loopback host."""
+    if not value:
+        return False
+    scheme, sep, authority = value.partition("://")
+    if not sep or scheme.lower() not in ("http", "https"):
+        return False
+    if not authority or "/" in authority or "@" in authority:
+        return False
+    return _loopback_authority(authority)
+
+
+def _header(scope: Scope, name: bytes) -> str | None:
+    for key, value in scope.get("headers", []):
+        if key == name:
+            return value.decode("latin-1")
+    return None
+
+
+_REFUSAL_MESSAGE = (
+    "This server accepts requests only from this machine: the request must name "
+    "a loopback host and must not come from another site."
+)
+
+
+class LoopbackOriginGuard:
+    """Admit only same-machine, same-site requests to an unauthenticated server.
+
+    A server that authenticates no one has nothing but the request's origin to
+    decide whether to trust it. This pure-ASGI middleware, installed in front of
+    the whole application, refuses a request whose ``Host`` is not a loopback
+    name (``127.0.0.1``, ``localhost`` or ``[::1]``, any port), and a request
+    that a browser marks as coming from another site -- a non-loopback
+    ``Origin`` (including ``null``) or ``Sec-Fetch-Site: cross-site`` -- on any
+    method. The refusal is a 403 in the application's ``http_error`` envelope,
+    answered before the wrapped application runs.
+
+    It is installed only when authentication is disabled. Where callers
+    authenticate, the bearer token is the admission control, and a deployment
+    reached through a proxy legitimately arrives under a public host name.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    def _refusal_reason(self, scope: Scope) -> str | None:
+        host = _header(scope, b"host")
+        if not is_loopback_host(host):
+            return f"host {host!r}"
+        origin = _header(scope, b"origin")
+        if origin is not None and not is_loopback_origin(origin):
+            return f"origin {origin!r}"
+        if (_header(scope, b"sec-fetch-site") or "").strip().lower() == "cross-site":
+            return "sec-fetch-site 'cross-site'"
+        return None
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] not in ("http", "websocket"):
+            await self.app(scope, receive, send)
+            return
+        reason = self._refusal_reason(scope)
+        if reason is None:
+            await self.app(scope, receive, send)
+            return
+        logger.warning(
+            "Refused %s %s from a non-local origin: %s",
+            scope.get("method", "WEBSOCKET"),
+            scope.get("path", ""),
+            reason,
+        )
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        body = json.dumps(
+            {"code": "http_error", "message": _REFUSAL_MESSAGE, "detail": None}
+        ).encode("utf-8")
+        headers = [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode("latin-1")),
+        ]
+        await send({"type": "http.response.start", "status": 403, "headers": headers})
+        await send({"type": "http.response.body", "body": body})

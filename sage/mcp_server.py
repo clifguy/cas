@@ -14,6 +14,7 @@ mount via ``build_partitioned_server``.
 
 import json as _json
 import os
+import uuid
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from typing import Any
@@ -139,8 +140,32 @@ def _error_response(exc: SAGEError | ValueError) -> dict:
         if sage_err.detail is not None:
             payload["detail"] = sage_err.detail
     else:
-        payload = {"error": "internal_error", "message": str(exc)}
+        payload = _internal_error_payload(exc)
     return payload
+
+
+def _internal_error_payload(exc: BaseException, tool_name: str | None = None) -> dict:
+    """The generic ``internal_error`` envelope for an exception SAGE did not raise.
+
+    An unexpected exception's text describes the server's internals, so it is
+    logged here with a traceback under a fresh reference and the caller
+    receives only that reference, which an operator can find in the log.
+    """
+    reference = uuid.uuid4().hex
+    if tool_name is None:
+        _logging.getLogger(__name__).error(
+            "mcp internal error (reference %s)", reference, exc_info=exc
+        )
+    else:
+        _logging.getLogger(__name__).error(
+            "mcp tool failed: %s (reference %s)", tool_name, reference, exc_info=exc
+        )
+    return {"error": "internal_error", "message": f"Internal error (reference {reference})."}
+
+
+def _wire_payload(payload: dict) -> list[TextContent]:
+    """Wrap an envelope in the ``[TextContent(json)]`` shape FastMCP returns."""
+    return [TextContent(type="text", text=_json.dumps(payload))]
 
 
 # ---------------------------------------------------------------------------
@@ -259,9 +284,11 @@ def _argument_validation_envelope(
 # (127.0.0.1 / localhost / ::1 only) rejects every non-loopback Host with HTTP
 # 421 on the handshake -- i.e. every request that reaches an HTTP-mounted
 # surface through a proxy. SAGE's public edge authenticates at the JWT/identity
-# layer (CAS-ADR-034); DNS-rebinding is a browser-localhost threat model that
-# does not apply to that server-to-server path, so the SDK check is disabled
-# rather than left to 421 legitimate proxied traffic.
+# layer (CAS-ADR-034), so the SDK check is disabled rather than left to 421
+# legitimate proxied traffic. Where the process authenticates no one, the
+# served application is wrapped in sage.auth.LoopbackOriginGuard instead, which
+# applies the same loopback-host rule (and refuses cross-site requests) in
+# front of every surface, REST included, rather than the MCP mounts alone.
 _MCP_TRANSPORT_SECURITY = TransportSecuritySettings(enable_dns_rebinding_protection=False)
 
 
@@ -382,13 +409,19 @@ class _LoggingFastMCP(FastMCP):
             result = await super().call_tool(name, arguments)
         except ToolError as e:
             envelope = _argument_validation_envelope(name, e, self._tool_manager)
-            if envelope is None:
+            if envelope is not None:
+                result = envelope
+            elif isinstance(e.__cause__, SAGEError):
+                result = _wire_payload(_error_response(e.__cause__))
+            elif e.__cause__ is not None:
+                # FastMCP wraps an exception escaping a tool body in a
+                # ToolError whose text embeds the original message.
+                result = _wire_payload(_internal_error_payload(e.__cause__, name))
+            else:
                 logger.exception("mcp tool failed: %s", name)
                 raise
-            result = envelope
-        except Exception:
-            logger.exception("mcp tool failed: %s", name)
-            raise
+        except Exception as e:
+            result = _wire_payload(_internal_error_payload(e, name))
         error_kind = _envelope_error_kind(result)
         if error_kind is not None:
             logger.warning("mcp tool error: %s (%s)", name, error_kind)

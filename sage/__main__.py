@@ -26,7 +26,10 @@ for _hf_logger in ("httpx", "sentence_transformers"):
 # ruff: noqa: E402 -- imports below follow the deliberate pre-import side effects above
 import uvicorn
 
-from sage.app import MCP_HTTP_MOUNTS, create_app
+from sage.app import MCP_HTTP_MOUNTS, admission_guarded, create_app
+from sage.config import SageCoreConfig
+from sage.mcp_init import load_stack_config_or_default
+from sage.profiles import CLOUD_PROFILE
 
 #: JSON-RPC endpoint path of every mounted MCP surface, derived from the
 #: canonical mount list so a newly mounted surface is suppressed without a
@@ -280,19 +283,61 @@ def _build_parser() -> argparse.ArgumentParser:
         "--host", default="127.0.0.1", help="Uvicorn bind host (default: 127.0.0.1)."
     )
     parser.add_argument("--port", type=int, default=8000, help="Uvicorn port (default: 8000).")
+    parser.add_argument(
+        "--allow-unauthenticated-network",
+        action="store_true",
+        help=(
+            "Permit a non-loopback --host while authentication is disabled. "
+            "Requests must still name a loopback host and come from this machine."
+        ),
+    )
     return parser
+
+
+#: Bind hosts that listen on this machine's loopback interface only.
+_LOOPBACK_BIND_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def _check_startup_posture(
+    stack_config: SageCoreConfig, host: str, *, allow_unauthenticated_network: bool
+) -> None:
+    """Refuse a startup whose authentication posture does not fit its exposure.
+
+    The cloud profile is reached from the network by design, so it never starts
+    without authentication. A process that authenticates no one listens on
+    loopback unless the operator opts in to a wider bind explicitly.
+    """
+    auth_enabled = bool(stack_config.auth and stack_config.auth.enabled)
+    if auth_enabled:
+        return
+    if stack_config.profile == CLOUD_PROFILE:
+        raise SystemExit(
+            "SAGE refuses to start: the cloud profile requires an enabled 'auth' block "
+            "in the stack configuration."
+        )
+    if host.lower() not in _LOOPBACK_BIND_HOSTS and not allow_unauthenticated_network:
+        raise SystemExit(
+            f"SAGE refuses to bind {host!r}: authentication is disabled, so the server "
+            "listens on loopback only. Enable authentication, bind 127.0.0.1, or pass "
+            "--allow-unauthenticated-network to bind anyway."
+        )
 
 
 def main() -> None:
     args = _build_parser().parse_args()
     vault_root = _resolve_vault_root(args)
 
-    app = create_app(vault_root=vault_root)
+    stack_config = load_stack_config_or_default()
+    _check_startup_posture(
+        stack_config, args.host, allow_unauthenticated_network=args.allow_unauthenticated_network
+    )
+
+    app = create_app(vault_root=vault_root, stack_config=stack_config)
     access_filter = _DropMcpAccessLogs(auth_enabled=app.state.auth_enabled)
     log_config = copy.deepcopy(UVICORN_LOG_CONFIG)
     log_config["filters"]["drop_mcp_access"] = {"()": lambda: access_filter}
     try:
-        uvicorn.run(app, host=args.host, port=args.port, log_config=log_config)
+        uvicorn.run(admission_guarded(app), host=args.host, port=args.port, log_config=log_config)
     finally:
         access_filter.flush_summary()
 

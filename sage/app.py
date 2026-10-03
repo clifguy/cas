@@ -19,6 +19,7 @@ from fastapi import Depends, FastAPI
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 from starlette.routing import Route
+from starlette.types import ASGIApp
 
 from app.backend.auth.router import router as auth_router
 from app.backend.router import router as app_backend_router
@@ -41,7 +42,7 @@ from sage.api.routers import (
     utilities,
     vaults,
 )
-from sage.auth import AuthMiddleware
+from sage.auth import AuthMiddleware, LoopbackOriginGuard
 from sage.build_info import API_VERSION, BUILD_IDENTITY, RELEASE_VERSION
 from sage.capabilities import ocr_capability
 from sage.config import SageCoreConfig, StackAuthConfig, VaultConfig
@@ -611,6 +612,20 @@ def build_openapi_document(base: dict, auth: StackAuthConfig | None) -> dict:
     document["components"] = components
     document["security"] = [{_BEARER_SCHEME_NAME: []}]
     return document
+
+
+def admission_guarded(app: FastAPI) -> ASGIApp:
+    """Return the application the server process serves for ``app``.
+
+    Where the deployment authenticates no one, the application is wrapped in
+    :class:`~sage.auth.LoopbackOriginGuard`, so only same-machine, same-site
+    requests reach any surface -- REST and every MCP mount alike. Where callers
+    authenticate, ``app`` is served as is: the bearer token is the admission
+    control, and a proxied deployment arrives under a public host name.
+    """
+    if app.state.auth_enabled:
+        return app
+    return LoopbackOriginGuard(app)
 
 
 def create_app(

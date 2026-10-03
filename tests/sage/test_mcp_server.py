@@ -274,13 +274,32 @@ async def test_unknown_vault_lists_available(vault_services):
 # ---------------------------------------------------------------------------
 
 
-def test_error_response_value_error_returns_internal_error():
-    """A generic ValueError is not mislabeled as a vault-routing refusal."""
+def test_error_response_value_error_returns_internal_error(caplog):
+    """A generic ValueError is not mislabeled as a vault-routing refusal.
+
+    Its text is server-side detail: the caller receives a generic message with
+    a reference, and the log carries the exception under that same reference.
+    """
+    import logging
+    import re
+
     from sage.mcp_server import _error_response
 
-    result = _error_response(ValueError("boom"))
+    with caplog.at_level(logging.ERROR, logger="sage.mcp_server"):
+        result = _error_response(ValueError("boom-sentinel"))
+
     assert result["error"] == "internal_error"
-    assert result["message"] == "boom"
+    assert "boom-sentinel" not in result["message"]
+    assert "detail" not in result
+    match = re.fullmatch(r"Internal error \(reference ([0-9a-f]{32})\)\.", result["message"])
+    assert match, result
+    logged = [rec for rec in caplog.records if rec.name == "sage.mcp_server"]
+    assert any(
+        match.group(1) in rec.getMessage()
+        and rec.exc_info is not None
+        and "boom-sentinel" in str(rec.exc_info[1])
+        for rec in logged
+    ), [rec.getMessage() for rec in logged]
 
 
 def test_error_response_vault_not_found_carries_the_typed_envelope():

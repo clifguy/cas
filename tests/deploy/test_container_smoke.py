@@ -31,6 +31,16 @@ _PREBUILT_IMAGE: str | None = os.environ.get("SAGE_TEST_IMAGE")
 #: Version baked into the image. CI sets SAGE_TEST_IMAGE_VERSION to the real
 #: release; local dev uses an unmistakable sentinel distinct from any release.
 _VERSION: str = os.environ.get("SAGE_TEST_IMAGE_VERSION") or "9.9.9"
+
+#: Replaces the image's CMD for the boot smoke: the same bind and port, plus the
+#: opt-in an unauthenticated non-loopback bind requires.
+_UNAUTHENTICATED_NETWORK_ARGS: tuple[str, ...] = (
+    "--host",
+    "0.0.0.0",  # noqa: S104 -- the published port reaches the container on this bind
+    "--port",
+    "8000",
+    "--allow-unauthenticated-network",
+)
 #: Build identity baked into the image. CI sets SAGE_TEST_IMAGE_IDENTITY to the
 #: real short SHA; local dev uses an unmistakable sentinel.
 _IDENTITY: str = os.environ.get("SAGE_TEST_IMAGE_IDENTITY") or "cafe123"
@@ -224,7 +234,20 @@ def test_smk_001_boots_health_green_version_baked(image: str) -> None:
     url = f"http://127.0.0.1:{port}/health"
     subprocess.run(["docker", "rm", "-f", name], capture_output=True)
     subprocess.run(
-        ["docker", "run", "-d", "--name", name, *_platform_args(), "-p", f"{port}:8000", image],
+        [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            name,
+            *_platform_args(),
+            "-p",
+            f"{port}:8000",
+            image,
+            # The image's default configuration authenticates no one, so the
+            # non-loopback bind the published port needs is an explicit opt-in.
+            *_UNAUTHENTICATED_NETWORK_ARGS,
+        ],
         check=True,
     )
     try:
@@ -291,3 +314,16 @@ def test_rehearsal_seed_client_runs_in_image(image: str, binary: str) -> None:
         text=True,
     ).stdout
     assert "(PostgreSQL) 16." in out
+
+
+def test_smk_008_unauthenticated_image_refuses_default_network_bind(image: str) -> None:
+    """The image's own CMD binds a non-loopback interface; without authentication
+    configured and without the explicit opt-in, the process refuses to start."""
+    result = subprocess.run(
+        ["docker", "run", "--rm", *_platform_args(), image],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    assert result.returncode != 0, result.stdout + result.stderr
+    assert "--allow-unauthenticated-network" in result.stderr, result.stderr

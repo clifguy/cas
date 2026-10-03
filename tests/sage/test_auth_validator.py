@@ -147,3 +147,50 @@ async def test_b11_foreign_audience_still_rejected_with_list(keypair) -> None:
             await v.validate(_token(priv, aud=aud))
         assert ei.value.status_code == 401
         assert ei.value.error == "invalid_token"
+
+
+# ---------------------------------------------------------------------------
+# The challenge carries a fixed description; the library's text is logged.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"aud": "api://wrong"},
+        {"exp": int(time.time()) - 3600, "iat": int(time.time()) - 3660},
+        {"iss": 'https://evil.example/"quoted"'},
+    ],
+    ids=["audience", "expired", "issuer"],
+)
+async def test_b12_validation_failure_description_is_fixed(keypair, caplog, overrides) -> None:
+    import logging
+
+    priv, pub = keypair
+    with caplog.at_level(logging.INFO, logger="sage.auth"):
+        with pytest.raises(AuthError) as ei:
+            await _validator(pub).validate(_token(priv, **overrides))
+
+    assert ei.value.description == "Token validation failed."
+    assert ei.value.www_authenticate() == (
+        'Bearer error="invalid_token", error_description="Token validation failed."'
+    )
+    logged = [rec for rec in caplog.records if rec.name == "sage.auth"]
+    assert logged, "the library's reason must reach the server log"
+    assert any(
+        rec.exc_info is not None and isinstance(rec.exc_info[1], jwt.PyJWTError) for rec in logged
+    ), [rec.getMessage() for rec in logged]
+
+
+def test_b13_challenge_parameters_are_quoted_strings() -> None:
+    """Every quoted challenge parameter escapes the quote and backslash it may carry."""
+    exc = AuthError(
+        401,
+        'bad"error',
+        'say "hi" \\ there',
+        resource_metadata_url='https://x.example/"m"',
+    )
+    assert exc.www_authenticate() == (
+        'Bearer error="bad\\"error", error_description="say \\"hi\\" \\\\ there", '
+        'resource_metadata="https://x.example/\\"m\\""'
+    )
