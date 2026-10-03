@@ -26,12 +26,18 @@ from sage.api.errors import SAGEError
 
 router = APIRouter(tags=["proxy"])
 
-# The one proxied route whose body is relayed as a stream: SAGE's raw
-# source-byte delivery, whose payload can exceed any sensible in-memory
-# buffer. A full-path match on the GET method only -- any other route (or a
-# non-GET on a content-shaped path) keeps the buffered forward, so a future
-# route that merely ends in /content must opt in deliberately.
-_CONTENT_STREAM_PATH = re.compile(r"^/sage_vaults/[^/]+/documents/[^/]+/content$")
+# The proxied routes whose response is relayed as a stream, each a method and a
+# full-path match: SAGE's raw source-byte delivery, whose payload can exceed any
+# sensible in-memory buffer, and the two operations that answer with an event
+# stream, whose progress events must reach the SPA as they are emitted. Any
+# other route, or another method on one of these paths, keeps the buffered
+# forward, so a route that merely resembles one of these must opt in
+# deliberately.
+_STREAMED_ROUTES: tuple[tuple[str, re.Pattern[str]], ...] = (
+    ("GET", re.compile(r"^/sage_vaults/[^/]+/documents/[^/]+/content$")),
+    ("POST", re.compile(r"^/sage_vaults/[^/]+/documents:batch$")),
+    ("POST", re.compile(r"^/sage_vaults/[^/]+/maintenance/reabstract-deferred$")),
+)
 
 # Request headers forwarded upstream; every other header stays here. The
 # transport supplies its own Authorization and httpx recomputes the body
@@ -130,17 +136,20 @@ async def _forward_to_sage(
         for key, value in request.headers.items()
         if key.lower() in _FORWARDED_REQUEST_HEADERS
     }
-    if request.method == "GET" and _CONTENT_STREAM_PATH.fullmatch(upstream_path):
-        return await _stream_from_sage(
-            upstream_path, request, transport, session, forwarded_headers
-        )
     body = await request.body()
+    if any(
+        request.method == method and pattern.fullmatch(upstream_path)
+        for method, pattern in _STREAMED_ROUTES
+    ):
+        return await _stream_from_sage(
+            upstream_path, request, transport, session, forwarded_headers, body
+        )
     try:
         sage_response = await transport.request(
             request.method,
             upstream_path,
             session=session,
-            params=dict(request.query_params),
+            params=request.query_params.multi_items(),
             headers=forwarded_headers,
             content=body or None,
         )
@@ -182,8 +191,9 @@ async def _stream_from_sage(
     transport: SageTransport,
     session: Session,
     forwarded_headers: dict[str, str],
+    body: bytes,
 ) -> StreamingResponse:
-    """Relay one large-body SAGE response chunk-by-chunk, never buffering it.
+    """Relay one SAGE response chunk-by-chunk as it arrives, never buffering it.
 
     Opening the stream (connect + response headers) carries the same
     504/502 mapping as the buffered forward. Once the headers have been sent
@@ -199,8 +209,9 @@ async def _stream_from_sage(
             request.method,
             upstream_path,
             session=session,
-            params=dict(request.query_params),
+            params=request.query_params.multi_items(),
             headers=forwarded_headers,
+            content=body or None,
         )
     except httpx.TimeoutException as exc:
         raise SAGEError(
