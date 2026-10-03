@@ -34,7 +34,7 @@ dependencies = [
     # forward-looking ceiling: transformers 5.12 removes get_extended_attention_mask,
     # which nomic-embed-text's remote modeling code still calls at load time. The
     # bound turns a future float across 5.12 into a reviewable lock-time conflict
-    # instead of a startup AttributeError. Resolves to 5.9.0 today (no version move).
+    # instead of a startup AttributeError. Resolves to 5.11.0 today.
     "transformers>=5.9,<5.12",
     # Direct so [tool.uv.sources] can route it through the CPU wheel index on
     # Linux (the default PyPI build there is CUDA). Resolved exactly by uv.lock.

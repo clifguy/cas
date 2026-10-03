@@ -55,13 +55,20 @@ LOCK_TRACKED = ("torch", "psycopg", "psycopg-pool", "pgvector")
 # ``uv sync`` before the suite could pass.
 SECURITY_FLOORS: Final[dict[str, tuple[str, str]]] = {
     "aiohttp": ("3.14.3", "GHSA-cq5v-8q36-5273"),
+    "anyio": ("4.14.2", "GHSA-82r6-8w77-94w6"),
     "cryptography": ("50.0.0", "GHSA-g6cj-pr64-35w5"),
     "mcp": ("1.28.1", "GHSA-vj7q-gjh5-988w"),
+    "pyjwt": ("2.15.0", "GHSA-42vr-xj54-vc7v"),
+    "pypdf": ("6.19.0", "GHSA-php9-fj8v-98fj"),
+    "sentence-transformers": ("5.6.0", "GHSA-jhr6-gm9c-rqjv"),
     "setuptools": ("83.0.0", "GHSA-h35f-9h28-mq5c"),
     "torch": ("2.13.0", "GHSA-rrmf-rvhw-rf47"),
+    "transformers": ("5.10.0", "GHSA-xrqw-3rrv-vx5w"),
+    "urllib3": ("2.8.0", "GHSA-vxq7-64xx-v4gw"),
+    "virtualenv": ("21.7.13", "GHSA-p58f-9548-mpm2"),
 }
 
-# The last two floors above are one remediation, not two. torch 2.12.0 declares
+# The setuptools and torch floors above are one remediation, not two. torch 2.12.0 declares
 # ``setuptools<82``, so the setuptools fix was unreachable until torch moved;
 # torch 2.13.0 relaxes that to ``setuptools>=77.0.3``. setuptools is reached
 # only as a torch dependency, so a revert of the torch floor silently walks
