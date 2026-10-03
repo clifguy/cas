@@ -1,0 +1,14 @@
+# Vulnerabilities the container-image scan (build-images.yml) accepts.
+#
+# Every entry carries the reason it is accepted and an expiry date. An expired
+# entry stops suppressing, so the scan fails again and the acceptance has to be
+# renewed or the vulnerability fixed.
+vulnerabilities:
+  - id: CVE-2026-103111
+    statement: >-
+      pcre2 (libpcre2-8-0) in the python:3.14-slim base. The fixed Debian
+      package postdates the newest published base digest; taking it would mean
+      an apt-get upgrade in the image, which gives up the digest-pinned base's
+      property that two builds of one commit start from identical layers. A
+      base-image bump carrying the fix clears it.
+    expired_at: 2026-11-03

@@ -32,7 +32,7 @@ this repository's classification of every site into one class or the other.
 | Reads the declaration | Mechanism |
 |---|---|
 | `infra/modules/postgres.bicep`, replacement templates and migration driver | `loadJsonContent` at compile time |
-| `ci.yml`, `build-images.yml`, `dependabot-triage.yml`, `ruleset-drift.yml` | a `versions` prelude job's outputs |
+| `ci.yml`, `build-images.yml`, `dependabot-triage.yml`, `ruleset-drift.yml`, `security.yml` | a `versions` prelude job's outputs |
 | the test suite | `tests/helpers/versions.py` |
 
 A prelude job rather than a step because a service container's `image` resolves before any

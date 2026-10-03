@@ -1,0 +1,209 @@
+name: Security
+
+# Supply-chain and configuration scanners. Each job fails on a finding it has
+# not been told to accept, and every acceptance lives next to the job that
+# reads it, with its reason:
+#
+#   dependency-audit  Python packages resolved in uv.lock (pip-audit)
+#   npm-audit         production dependencies of the app/ SPA (npm audit)
+#   workflow-lint     GitHub Actions workflows (zizmor)
+#   iac-scan          the compiled Azure deployment template (Checkov)
+#   secret-history    the whole git history, every branch (gitleaks)
+#
+# Container images are scanned where they are built, in build-images.yml.
+# These jobs are not required checks; they run beside CI so a new finding is
+# visible on the pull request that introduces it, and weekly so an advisory
+# published against an unchanged lock is not missed.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 7 * * 1"  # Mondays 07:00 UTC
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  versions:
+    # Shared-component version manifest as job outputs, the same mechanism the
+    # other workflows use. See `docs/process/shared-version-parity.md`.
+    #
+    # Named apart from CI's `versions` job: a required status check is bound by
+    # check-run name, so a second `versions` here would join the required set.
+    name: security-versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      python: ${{ steps.declared.outputs.python }}
+      node: ${{ steps.declared.outputs.node }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: versions.json
+          sparse-checkout-cone-mode: false
+      - id: declared
+        run: |
+          set -euo pipefail
+          python="$(jq -er .python.version versions.json)"
+          node="$(jq -er .node.major versions.json)"
+          {
+            echo "python=$python"
+            echo "node=$node"
+          } >> "$GITHUB_OUTPUT"
+
+  dependency-audit:
+    # Audits every package the lock resolves, on every platform and across all
+    # extras, against the PyPI advisory database. The export is pinned versions
+    # without hashes, so pip-audit reads the list as given (--no-deps) instead of
+    # resolving it again. Two rewrites keep packages from dropping out unseen:
+    # environment markers are removed, since pip-audit skips any requirement
+    # whose marker does not match the runner (the darwin-only extras would never
+    # be audited); and local version labels are removed, since a `+cpu` build is
+    # not on PyPI and would be skipped as unauditable. --strict fails the job on
+    # any package it still cannot audit. No advisory is ignored; an accepted one
+    # would be an --ignore-vuln flag here, with its reason beside it.
+    needs: versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: ${{ needs.versions.outputs.python }}
+      - name: Export the locked dependency set
+        run: |
+          set -euo pipefail
+          uv export --locked --all-extras --no-hashes --no-emit-project --no-annotate \
+            -o "${RUNNER_TEMP}/export.txt"
+          grep -E '^[A-Za-z0-9]' "${RUNNER_TEMP}/export.txt" \
+            | sed -E 's/ *;.*$//; s/\+[A-Za-z0-9.]+$//' \
+            | sort -u > "${RUNNER_TEMP}/requirements.txt"
+          test -s "${RUNNER_TEMP}/requirements.txt"
+          wc -l < "${RUNNER_TEMP}/requirements.txt"
+      - name: Run pip-audit
+        env:
+          PIP_AUDIT_VERSION: "2.10.1"
+        run: |
+          set -euo pipefail
+          uvx "pip-audit==${PIP_AUDIT_VERSION}" \
+            -r "${RUNNER_TEMP}/requirements.txt" \
+            --disable-pip --no-deps --strict --progress-spinner off
+
+  npm-audit:
+    # Production dependencies only: dev tooling never reaches the built bundle.
+    needs: versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    defaults:
+      run:
+        working-directory: app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ needs.versions.outputs.node }}
+      - name: Run npm audit
+        run: npm audit --omit=dev --audit-level=high
+
+  workflow-lint:
+    # zizmor in offline mode, so no run depends on GitHub API quota. The online
+    # audits (impostor commits, known-vulnerable action versions) are for a
+    # local run with a token. Findings below medium severity are reported, not
+    # fatal.
+    needs: versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: ${{ needs.versions.outputs.python }}
+      - name: Run zizmor
+        env:
+          ZIZMOR_VERSION: "1.30.1"
+        run: |
+          set -euo pipefail
+          uvx "zizmor==${ZIZMOR_VERSION}" --offline --min-severity medium .github/workflows
+
+  iac-scan:
+    # Checkov reads the compiled ARM template rather than the Bicep sources:
+    # its Bicep parser cannot read several of the modules, and a file it cannot
+    # parse contributes no failed check, so a Bicep-mode scan would pass without
+    # having examined them. Its reach is still limited by its policy set, which
+    # covers the Key Vault, container registry, virtual network and API
+    # Management resources here but has no checks for PostgreSQL flexible
+    # servers, Container Apps or Log Analytics; those resources are parsed and
+    # not evaluated. infra/checkov-baseline.json holds the findings accepted
+    # pending an infrastructure decision; a new finding fails the job.
+    needs: versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: ${{ needs.versions.outputs.python }}
+      - name: Compile the deployment template
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/arm"
+          az bicep build --file infra/main.bicep --outfile "${RUNNER_TEMP}/arm/main.json"
+      - name: Run Checkov
+        env:
+          CHECKOV_VERSION: "3.3.22"
+        run: |
+          set -euo pipefail
+          uvx "checkov==${CHECKOV_VERSION}" -d "${RUNNER_TEMP}/arm" --framework arm \
+            --baseline infra/checkov-baseline.json --compact --quiet
+
+  secret-history:
+    # The CI gitleaks job scans only the commits each event introduces. This
+    # one scans every commit on every branch, so a rule added to gitleaks after
+    # a secret landed still finds it. Scheduled and manual runs only: a full
+    # scan cannot be attributed to the pull request under test.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install gitleaks (pinned)
+        env:
+          GITLEAKS_VERSION: "8.30.1"
+          GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+        run: |
+          set -euo pipefail
+          url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL "$url" -o "${RUNNER_TEMP}/gitleaks.tar.gz"
+          echo "${GITLEAKS_SHA256}  ${RUNNER_TEMP}/gitleaks.tar.gz" | sha256sum -c -
+          mkdir -p "${RUNNER_TEMP}/gitleaks"
+          tar -xzf "${RUNNER_TEMP}/gitleaks.tar.gz" -C "${RUNNER_TEMP}/gitleaks"
+      - name: Scan the full history
+        run: |
+          set -euo pipefail
+          # A clone with no history would scan one commit and pass.
+          commits=$(git rev-list --all --count)
+          if [ "$commits" -lt 2 ]; then
+            echo "history scan sees ${commits} commit(s); refusing to report a scan of an unfetched history" >&2
+            exit 1
+          fi
+          echo "scanning ${commits} commits"
+          "${RUNNER_TEMP}/gitleaks/gitleaks" git --redact --exit-code 2 --no-banner -v .

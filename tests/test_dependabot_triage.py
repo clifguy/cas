@@ -192,15 +192,25 @@ def test_workflow_has_schedule_and_dispatch() -> None:
 
 
 def test_workflow_least_privilege_permissions() -> None:
-    """W2: least-privilege — contents:read + issues:write, nothing more."""
+    """W2: least-privilege — contents:read everywhere; issues:write on the triage job only.
+
+    The workflow-level block is inherited by every job that declares none, so
+    the write scope lives on the one job that files the tracking issue.
+    """
     workflow = yaml.safe_load(WORKFLOW.read_text(encoding="utf-8"))
     perms = workflow.get("permissions") or {}
-    assert perms.get("contents") == "read"
-    assert perms.get("issues") == "write"
-    assert "id-token" not in perms, "no OIDC token needed"
-    assert "security-events" not in perms, (
-        "security-events does not grant Dependabot-alert read; do not request it"
-    )
+    assert perms == {"contents": "read"}, "workflow-level permissions must be read-only"
+    jobs = workflow.get("jobs") or {}
+    assert jobs["triage"].get("permissions") == {"contents": "read", "issues": "write"}
+    for name, job in jobs.items():
+        if name == "triage":
+            continue
+        assert "permissions" not in job or job["permissions"] == {"contents": "read"}, name
+    for scope in [perms, *(job.get("permissions") or {} for job in jobs.values())]:
+        assert "id-token" not in scope, "no OIDC token needed"
+        assert "security-events" not in scope, (
+            "security-events does not grant Dependabot-alert read; do not request it"
+        )
 
 
 def test_workflow_references_pat_secret_and_script() -> None:

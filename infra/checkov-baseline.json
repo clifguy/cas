@@ -1,0 +1,33 @@
+{
+    "failed_checks": [
+        {
+            "file": "/main.json",
+            "findings": [
+                {
+                    "resource": "Microsoft.ApiManagement/service.[variables('apimName')]",
+                    "check_ids": [
+                        "CKV_AZURE_107",
+                        "CKV_AZURE_174"
+                    ]
+                },
+                {
+                    "resource": "Microsoft.ContainerRegistry/registries.[variables('acrName')]",
+                    "check_ids": [
+                        "CKV_AZURE_139",
+                        "CKV_AZURE_163",
+                        "CKV_AZURE_166"
+                    ]
+                },
+                {
+                    "resource": "Microsoft.KeyVault/vaults.[variables('kvName')]",
+                    "check_ids": [
+                        "CKV_AZURE_109",
+                        "CKV_AZURE_110",
+                        "CKV_AZURE_189",
+                        "CKV_AZURE_42"
+                    ]
+                }
+            ]
+        }
+    ]
+}

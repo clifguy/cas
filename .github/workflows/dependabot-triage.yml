@@ -14,7 +14,6 @@ on:
 
 permissions:
   contents: read
-  issues: write
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -38,8 +37,9 @@ jobs:
     outputs:
       python: ${{ steps.declared.outputs.python }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           sparse-checkout: versions.json
           sparse-checkout-cone-mode: false
       - id: declared
@@ -51,8 +51,14 @@ jobs:
   triage:
     needs: versions
     runs-on: ubuntu-latest
+    # The only job that writes: it opens, updates or closes the tracking issue.
+    permissions:
+      contents: read
+      issues: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       # `prune-cache: true` is pinned rather than left to the action default:
       # setup-uv v9 flipped that default to false (astral-sh/setup-uv#967) to
       # ease load on PyPI, at the cost of a materially larger saved cache. The
@@ -61,7 +67,7 @@ jobs:
       # call site would crowd out entries other jobs depend on, and LRU eviction
       # would report nothing when it did. Drop the pin if the budget stops
       # binding; re-measure before assuming it has.
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
           prune-cache: true

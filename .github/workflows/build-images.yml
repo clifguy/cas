@@ -68,8 +68,9 @@ jobs:
       postgres_dev_major: ${{ steps.declared.outputs.postgres_dev_major }}
       python: ${{ steps.declared.outputs.python }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           sparse-checkout: versions.json
           sparse-checkout-cone-mode: false
       - id: declared
@@ -120,8 +121,9 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
           # Full history + tags so build_info's git describe can compute the
           # release version baked into the image as SAGE_BUILD_VERSION.
           fetch-depth: 0
@@ -136,7 +138,7 @@ jobs:
         # every call site would crowd out entries other jobs depend on, and LRU
         # eviction would report nothing when it did. Drop the pin if the budget
         # stops binding; re-measure before assuming it has.
-        uses: astral-sh/setup-uv@v10.2.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
         with:
           enable-cache: true
           prune-cache: true
@@ -162,7 +164,7 @@ jobs:
           echo "sage_build_identity=${SAGE_BUILD_IDENTITY}" >> "$GITHUB_OUTPUT"
           echo "image_tag=${IMAGE_TAG}" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-buildx-action@v4
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
       # The GitHub Actions cache backend authenticates with ACTIONS_RUNTIME_TOKEN
       # and ACTIONS_RESULTS_URL. The forge injects those into JavaScript actions
@@ -171,7 +173,7 @@ jobs:
       # nothing, reads nothing, and reports no error: caching that reads as
       # configured and never happens. Docker's documentation for the backend
       # calls out the manual exposure a hand-invoked buildx needs.
-      - uses: crazy-max/ghaction-github-runtime@v4
+      - uses: crazy-max/ghaction-github-runtime@04d248b84655b509d8c44dc1d6f990c879747487 # v4.0.0
 
       - name: Log in to Azure (OIDC)
         # Ahead of the builds, because the registry arm now pushes from inside
@@ -184,7 +186,7 @@ jobs:
           inputs.push
           && vars.AZURE_CLIENT_ID != ''
           && vars.ACR_LOGIN_SERVER != ''
-        uses: azure/login@v3
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
         with:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
@@ -279,6 +281,32 @@ jobs:
             args+=(--load -t cas-bff:ci)
           fi
           docker buildx build "${args[@]}" .
+
+      - name: Scan images for OS-package vulnerabilities
+        # Non-push arm only, against the two local tags the builds above loaded.
+        # OS packages only: the Python packages in each image come from uv.lock,
+        # which the Security workflow's dependency-audit job covers, and the
+        # SPA's npm dependencies are audited there too. Fails on a HIGH or
+        # CRITICAL vulnerability that has a fixed package version, unless
+        # .trivyignore.yaml accepts it with a reason and an expiry date.
+        if: ${{ !inputs.push }}
+        env:
+          TRIVY_VERSION: "0.75.0"
+          TRIVY_SHA256: "c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f"
+        run: |
+          set -euo pipefail
+          url="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          curl -sSfL "$url" -o "${RUNNER_TEMP}/trivy.tar.gz"
+          echo "${TRIVY_SHA256}  ${RUNNER_TEMP}/trivy.tar.gz" | sha256sum -c -
+          mkdir -p "${RUNNER_TEMP}/trivy"
+          tar -xzf "${RUNNER_TEMP}/trivy.tar.gz" -C "${RUNNER_TEMP}/trivy" trivy
+          for image in cas-sage:ci cas-bff:ci; do
+            echo "::group::trivy ${image}"
+            "${RUNNER_TEMP}/trivy/trivy" image --scanners vuln --pkg-types os \
+              --severity HIGH,CRITICAL --ignore-unfixed \
+              --ignorefile .trivyignore.yaml --exit-code 1 --no-progress "$image"
+            echo "::endgroup::"
+          done
 
       - name: Run container smoke tests (SAGE + BFF)
         # Non-push arm only. The deploy caller reaches this workflow solely for

@@ -36,7 +36,7 @@
 # while silently receiving no further updates. The `python-base` alias below is how
 # several stages share one definition point without hiding it from the updater.
 # `tests/deploy/test_dependabot_base_image_coverage.py` enforces this.
-FROM python:3.14-slim@sha256:cad9a2c871761c413caa6fdd6441c783451e740a48aaeba60ae62a8b53525ef6 AS python-base
+FROM python:3.14-slim@sha256:0741d101873c12ab927e6f8653feb8862b9bd58771177acb1b885b95141f91b4 AS python-base
 
 # uv drives the install from the committed lockfile (byte-identical to CI). It is
 # a stage rather than a bare `COPY --from=<image>` for the visibility reason above.
