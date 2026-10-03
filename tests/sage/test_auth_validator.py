@@ -229,3 +229,10 @@ async def test_b15_insufficient_scope_is_logged(keypair, caplog) -> None:
     assert "Other.Scope" not in ei.value.www_authenticate()
     messages = [rec.getMessage() for rec in caplog.records if rec.name == "sage.auth"]
     assert any("Other.Scope" in m and "Sage.Access" in m for m in messages), messages
+
+
+async def test_b16_scope_refusal_with_non_string_roles_is_still_403(keypair) -> None:
+    priv, pub = keypair
+    with pytest.raises(AuthError) as ei:
+        await _validator(pub).validate(_token(priv, scp="Other.Scope", roles=["Other", 7]))
+    assert ei.value.status_code == 403

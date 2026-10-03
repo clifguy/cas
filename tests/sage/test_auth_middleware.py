@@ -292,6 +292,8 @@ async def test_exempt_paths_reach_inner_without_token(path) -> None:
     [
         "/download/../sage_vaults",
         "/download/./x",
+        "/download/.",
+        "/download/..",
         "/download//x",
         "/download/a/b",
         "/download/",

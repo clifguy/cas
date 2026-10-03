@@ -237,6 +237,33 @@ async def test_call_tool_wrapped_unexpected_exception_returns_generic_envelope(c
     assert "secret-path-sentinel" in "".join(traceback.format_exception(*record.exc_info))
 
 
+async def test_call_tool_wrapped_sage_error_returns_its_typed_envelope(caplog, monkeypatch):
+    """A SAGE error escaping a tool body keeps its own code, not internal_error."""
+    from sage.api.errors import DocumentNotFoundError
+
+    mcp = _LoggingFastMCP("test")
+
+    async def fake_super_call(self, name, arguments):
+        try:
+            raise DocumentNotFoundError("deadbeef_missing")
+        except DocumentNotFoundError as exc:
+            raise ToolError(f"Error executing tool {name}: {exc}") from exc
+
+    monkeypatch.setattr("mcp.server.fastmcp.FastMCP.call_tool", fake_super_call)
+
+    with caplog.at_level(logging.INFO, logger="sage.mcp_server"):
+        result = await mcp.call_tool("get_document", {})
+
+    envelope = _wire_envelope(result)
+    assert envelope["error"] == "document_not_found", envelope
+    error_records = [
+        rec
+        for rec in caplog.records
+        if rec.name == "sage.mcp_server" and rec.levelno == logging.ERROR
+    ]
+    assert not error_records, [rec.getMessage() for rec in error_records]
+
+
 async def test_call_tool_argument_validation_tool_error_is_not_genericized(monkeypatch):
     """A ToolError caused by argument validation keeps its caller-actionable text."""
     mcp = _LoggingFastMCP("test")

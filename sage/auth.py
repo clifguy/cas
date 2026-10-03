@@ -228,8 +228,8 @@ class EntraTokenValidator:
             logger.info(
                 "Bearer token lacks a required scope or role: scopes=%s roles=%s "
                 "required_scopes=%s required_roles=%s",
-                sorted(scopes),
-                sorted(roles),
+                sorted(map(str, scopes)),
+                sorted(map(str, roles)),
                 sorted(self._required_scopes),
                 sorted(self._required_roles),
             )
