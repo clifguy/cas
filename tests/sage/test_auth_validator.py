@@ -194,3 +194,24 @@ def test_b13_challenge_parameters_are_quoted_strings() -> None:
         'Bearer error="bad\\"error", error_description="say \\"hi\\" \\\\ there", '
         'resource_metadata="https://x.example/\\"m\\""'
     )
+
+
+async def test_b14_unresolved_signing_key_is_logged(keypair, caplog) -> None:
+    import logging
+
+    priv, pub = keypair
+
+    def _resolver(_token):
+        raise RuntimeError("jwks-fetch-sentinel")
+
+    with caplog.at_level(logging.INFO, logger="sage.auth"):
+        with pytest.raises(AuthError) as ei:
+            await _validator(pub, signing_key_resolver=_resolver).validate(_token(priv))
+
+    assert ei.value.description == "Token signing key could not be resolved."
+    assert "jwks-fetch-sentinel" not in ei.value.www_authenticate()
+    assert any(
+        rec.exc_info is not None and "jwks-fetch-sentinel" in str(rec.exc_info[1])
+        for rec in caplog.records
+        if rec.name == "sage.auth"
+    )

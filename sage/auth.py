@@ -191,6 +191,7 @@ class EntraTokenValidator:
             # miss; offload the (blocking) resolver so the event loop is free.
             key = await anyio.to_thread.run_sync(self._resolve_key, token)
         except Exception as exc:
+            logger.info("Bearer token signing key unresolved: %s", type(exc).__name__, exc_info=exc)
             raise AuthError(
                 401,
                 "invalid_token",
@@ -442,15 +443,15 @@ def _header(scope: Scope, name: bytes) -> str | None:
 
 
 _REFUSAL_MESSAGE = (
-    "This server accepts requests only from this machine: the request must name "
-    "a loopback host and must not come from another site."
+    "This server runs without authentication and accepts only requests that name "
+    "a loopback host and do not come from another site."
 )
 
 
 class LoopbackOriginGuard:
-    """Admit only same-machine, same-site requests to an unauthenticated server.
+    """Admit only loopback-addressed, same-site requests to an unauthenticated server.
 
-    A server that authenticates no one has nothing but the request's origin to
+    A server that authenticates no one has nothing but the request's headers to
     decide whether to trust it. This pure-ASGI middleware, installed in front of
     the whole application, refuses a request whose ``Host`` is not a loopback
     name (``127.0.0.1``, ``localhost`` or ``[::1]``, any port), and a request
@@ -458,6 +459,13 @@ class LoopbackOriginGuard:
     ``Origin`` (including ``null``) or ``Sec-Fetch-Site: cross-site`` -- on any
     method. The refusal is a 403 in the application's ``http_error`` envelope,
     answered before the wrapped application runs.
+
+    The three loopback names are distinct sites to a browser, so a page served
+    from one of them that calls the server through another is refused as
+    cross-site; address the server by the name the page was served from. The
+    guard reads request headers only and does not authenticate the network
+    peer: it stops browser-mediated requests, and a server bound to a
+    non-loopback interface remains reachable by any client that can connect.
 
     It is installed only when authentication is disabled. Where callers
     authenticate, the bearer token is the admission control, and a deployment

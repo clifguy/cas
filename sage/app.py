@@ -618,7 +618,7 @@ def admission_guarded(app: FastAPI) -> ASGIApp:
     """Return the application the server process serves for ``app``.
 
     Where the deployment authenticates no one, the application is wrapped in
-    :class:`~sage.auth.LoopbackOriginGuard`, so only same-machine, same-site
+    :class:`~sage.auth.LoopbackOriginGuard`, so only loopback-addressed, same-site
     requests reach any surface -- REST and every MCP mount alike. Where callers
     authenticate, ``app`` is served as is: the bearer token is the admission
     control, and a proxied deployment arrives under a public host name.

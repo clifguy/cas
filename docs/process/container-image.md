@@ -55,8 +55,9 @@ it; map the platform's ingress target port to `8000`. The smoke-minimal config
 authenticates no one, so the image's own command refuses that bind and exits;
 the arguments above replace the command and opt in explicitly. Even then the
 server answers only requests addressed to a loopback host (`localhost`,
-`127.0.0.1`, `[::1]`) that do not come from another site, so publish the port
-on the host's loopback interface as shown. A configuration with authentication
+`127.0.0.1`, `[::1]`) that do not come from another site. That check reads
+request headers and does not authenticate the client, so publish the port on
+the host's loopback interface as shown. A configuration with authentication
 enabled needs no opt-in and has no such restriction.
 
 ## Configure for a cloud deployment

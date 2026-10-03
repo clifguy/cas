@@ -288,7 +288,9 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Permit a non-loopback --host while authentication is disabled. "
-            "Requests must still name a loopback host and come from this machine."
+            "Requests must still name a loopback host and must not come from another "
+            "site; nothing authenticates the network peer, so any client that can reach "
+            "the bound interface can send such a request."
         ),
     )
     return parser

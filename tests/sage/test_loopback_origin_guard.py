@@ -176,7 +176,7 @@ def test_lg_003_loopback_batch_reaches_the_route(client: TestClient) -> None:
     resp = client.post(
         "/sage_vaults/test/documents:batch",
         files={"files": ("note.md", b"# Note\n", "text/markdown")},
-        headers={"Origin": "http://localhost:5173", "Sec-Fetch-Site": "same-site"},
+        headers={"Origin": "http://127.0.0.1:5173", "Sec-Fetch-Site": "same-site"},
     )
     assert resp.status_code != 403, resp.text
     assert resp.json().get("code") != "http_error", resp.text
@@ -195,6 +195,24 @@ def test_lg_004_cross_site_get_refused(client: TestClient, value: str) -> None:
 
 def test_lg_004_foreign_origin_get_refused(client: TestClient) -> None:
     resp = client.get("/sage_vaults", headers={"Origin": "https://attacker.example"})
+    _assert_refused(resp)
+
+
+def test_lg_004_other_loopback_name_is_another_site(client: TestClient) -> None:
+    """A page on one loopback name calling the server through another is cross-site.
+
+    The browser marks the request ``cross-site`` although its ``Origin`` is a
+    loopback origin; the guard follows the browser's verdict.
+    """
+    resp = client.post(
+        "/mcp",
+        json=_INITIALIZE,
+        headers={
+            **_MCP_HEADERS,
+            "Origin": "http://localhost:5173",
+            "Sec-Fetch-Site": "cross-site",
+        },
+    )
     _assert_refused(resp)
 
 
