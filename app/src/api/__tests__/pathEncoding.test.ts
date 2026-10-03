@@ -37,12 +37,12 @@ vi.mock('../client', async () => {
 });
 
 // Identifiers carrying every character that would change a URL's structure if
-// interpolated raw: a separator, a query, a fragment, and a whole dot segment.
+// interpolated raw: a separator, a query and a fragment, beside dot runs.
 const VAULT = 'v/1?#';
-const DOC = '..';
+const DOC = 'a..b/..';
 const EDGE = 'e/f?g#h';
 const V = 'v%2F1%3F%23';
-const D = '%2E%2E';
+const D = 'a..b%2F..';
 const E = 'e%2Ff%3Fg%23h';
 
 const calledPaths = (): string[] =>
@@ -60,9 +60,8 @@ describe('pathSegment', () => {
     ['a/b', 'a%2Fb'],
     ['x?y', 'x%3Fy'],
     ['z#w', 'z%23w'],
-    ['.', '%2E'],
-    ['..', '%2E%2E'],
     ['a..b', 'a..b'],
+    ['../x', '..%2Fx'],
   ])('encodes %j as %j', (value, expected) => {
     expect(pathSegment(value)).toBe(expected);
   });

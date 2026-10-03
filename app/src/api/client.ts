@@ -14,14 +14,14 @@ export class ApiError extends Error {
 }
 
 /**
- * Encode one identifier for use as a single URL path segment. Beyond
- * encodeURIComponent, a segment that is wholly `.` or `..` has its dots
- * percent-encoded, since URL resolution would otherwise treat it as a
- * directory step rather than an identifier.
+ * Encode one identifier for use as a single URL path segment, so a `/`, `?`
+ * or `#` inside it cannot split the path or start a query or fragment. An
+ * identifier that is wholly `.` or `..` still reads as a directory step under
+ * URL resolution, however its dots are encoded; no SAGE identifier takes that
+ * form, and the backend refuses a path containing one.
  */
 export function pathSegment(value: string): string {
-  const encoded = encodeURIComponent(value);
-  return encoded === '.' || encoded === '..' ? encoded.replace(/\./g, '%2E') : encoded;
+  return encodeURIComponent(value);
 }
 
 // --- Session-expiry signal ---------------------------------------------------

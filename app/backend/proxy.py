@@ -78,9 +78,11 @@ def _upstream_path(request: Request) -> str:
 
     Each segment below the collection is percent-decoded and refused when it is
     empty or has a ``.`` or ``..`` component, whatever its encoding, then
-    re-encoded on its own, so an encoded separator cannot split it and no
-    segment can climb out of the collection when the HTTP client normalizes the
-    path. A refusal is the unrouted-path answer: such a path addresses no SAGE
+    re-encoded on its own, so the proxy forwards an encoded separator inside
+    its segment and no segment can climb out of the collection when the HTTP
+    client normalizes the path. SAGE's server decodes the path again before
+    routing; containment rests on the refusal and the final prefix check, not
+    on segment integrity there. A refusal is the unrouted-path answer: such a path addresses no SAGE
     operation.
     """
     raw = request.scope.get("raw_path") or request.url.path.encode()

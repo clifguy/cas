@@ -209,6 +209,28 @@ async def test_ctn_003c_proxy_refuses_a_literal_dot_segment_over_uvicorn():
     assert [r.url.raw_path for r in recorder] == [b"/sage_vaults/cas/stats"]
 
 
+async def test_ctn_003d_normalized_path_check_refuses_a_climb_on_its_own(monkeypatch):
+    """With the segment check disabled, the final check on the path the HTTP
+    client will send still refuses a dot-segment climb, and SAGE is not called.
+
+    Anti-coincidental-pass: the check is reachable only when the segment check
+    lets a dot segment through, so this test disables that layer to exercise
+    it; without the final check the request reaches SAGE outside the collection.
+    """
+    from app.backend import proxy
+
+    monkeypatch.setattr(proxy, "_is_dot_or_empty", lambda segment: False)
+    recorder: list[httpx.Request] = []
+    app = await _proxying_app(_recording_sage(recorder))
+
+    async with _sessioned_client(app) as client:
+        response = await client.get("/sage_vaults/cas/%2e%2e/%2e%2e/health")
+
+    assert response.status_code == 404, response.text
+    assert response.json()["code"] == "route_not_found"
+    assert recorder == []
+
+
 async def test_ctn_004_encoded_separators_stay_inside_their_segment():
     """An encoded ``/`` or ``?`` reaches SAGE still encoded; a literal ``:`` passes."""
     recorder: list[httpx.Request] = []
