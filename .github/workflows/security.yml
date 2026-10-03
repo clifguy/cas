@@ -34,6 +34,10 @@ jobs:
   versions:
     # Shared-component version manifest as job outputs, the same mechanism the
     # other workflows use. See `docs/process/shared-version-parity.md`.
+    #
+    # Named apart from CI's `versions` job: a required status check is bound by
+    # check-run name, so a second `versions` here would join the required set.
+    name: security-versions
     runs-on: ubuntu-latest
     timeout-minutes: 2
     outputs:
@@ -56,11 +60,16 @@ jobs:
           } >> "$GITHUB_OUTPUT"
 
   dependency-audit:
-    # Audits every package the lock resolves, across all extras, against the
-    # PyPI advisory database. The export is pinned versions without
-    # hashes, so pip-audit reads the list as given (--no-deps) instead of
-    # resolving it again. No advisory is ignored; an accepted one would be an
-    # --ignore-vuln flag here, with its reason beside it.
+    # Audits every package the lock resolves, on every platform and across all
+    # extras, against the PyPI advisory database. The export is pinned versions
+    # without hashes, so pip-audit reads the list as given (--no-deps) instead of
+    # resolving it again. Two rewrites keep packages from dropping out unseen:
+    # environment markers are removed, since pip-audit skips any requirement
+    # whose marker does not match the runner (the darwin-only extras would never
+    # be audited); and local version labels are removed, since a `+cpu` build is
+    # not on PyPI and would be skipped as unauditable. --strict fails the job on
+    # any package it still cannot audit. No advisory is ignored; an accepted one
+    # would be an --ignore-vuln flag here, with its reason beside it.
     needs: versions
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -74,9 +83,13 @@ jobs:
       - name: Export the locked dependency set
         run: |
           set -euo pipefail
-          uv export --locked --all-extras --no-hashes --no-emit-project \
-            -o "${RUNNER_TEMP}/requirements.txt"
+          uv export --locked --all-extras --no-hashes --no-emit-project --no-annotate \
+            -o "${RUNNER_TEMP}/export.txt"
+          grep -E '^[A-Za-z0-9]' "${RUNNER_TEMP}/export.txt" \
+            | sed -E 's/ *;.*$//; s/\+[A-Za-z0-9.]+$//' \
+            | sort -u > "${RUNNER_TEMP}/requirements.txt"
           test -s "${RUNNER_TEMP}/requirements.txt"
+          wc -l < "${RUNNER_TEMP}/requirements.txt"
       - name: Run pip-audit
         env:
           PIP_AUDIT_VERSION: "2.10.1"
@@ -84,7 +97,7 @@ jobs:
           set -euo pipefail
           uvx "pip-audit==${PIP_AUDIT_VERSION}" \
             -r "${RUNNER_TEMP}/requirements.txt" \
-            --disable-pip --no-deps --progress-spinner off
+            --disable-pip --no-deps --strict --progress-spinner off
 
   npm-audit:
     # Production dependencies only: dev tooling never reaches the built bundle.
@@ -130,8 +143,12 @@ jobs:
     # Checkov reads the compiled ARM template rather than the Bicep sources:
     # its Bicep parser cannot read several of the modules, and a file it cannot
     # parse contributes no failed check, so a Bicep-mode scan would pass without
-    # having examined them. infra/checkov-baseline.json holds the findings
-    # accepted pending an infrastructure decision; a new finding fails the job.
+    # having examined them. Its reach is still limited by its policy set, which
+    # covers the Key Vault, container registry, virtual network and API
+    # Management resources here but has no checks for PostgreSQL flexible
+    # servers, Container Apps or Log Analytics; those resources are parsed and
+    # not evaluated. infra/checkov-baseline.json holds the findings accepted
+    # pending an infrastructure decision; a new finding fails the job.
     needs: versions
     runs-on: ubuntu-latest
     timeout-minutes: 10
