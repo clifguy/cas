@@ -223,6 +223,16 @@ class EntraTokenValidator:
         scopes = _parse_scopes(claims.get("scp"))
         roles = frozenset(claims.get("roles") or [])
         if not self._is_authorized(scopes, roles):
+            # The fixed description names no scope or role; the operator needs
+            # what was presented against what is required.
+            logger.info(
+                "Bearer token lacks a required scope or role: scopes=%s roles=%s "
+                "required_scopes=%s required_roles=%s",
+                sorted(scopes),
+                sorted(roles),
+                sorted(self._required_scopes),
+                sorted(self._required_roles),
+            )
             raise AuthError(
                 403,
                 "insufficient_scope",

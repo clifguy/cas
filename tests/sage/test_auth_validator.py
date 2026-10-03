@@ -215,3 +215,17 @@ async def test_b14_unresolved_signing_key_is_logged(keypair, caplog) -> None:
         for rec in caplog.records
         if rec.name == "sage.auth"
     )
+
+
+async def test_b15_insufficient_scope_is_logged(keypair, caplog) -> None:
+    import logging
+
+    priv, pub = keypair
+    with caplog.at_level(logging.INFO, logger="sage.auth"):
+        with pytest.raises(AuthError) as ei:
+            await _validator(pub).validate(_token(priv, scp="Other.Scope"))
+
+    assert ei.value.description == "Token lacks a required scope or role."
+    assert "Other.Scope" not in ei.value.www_authenticate()
+    messages = [rec.getMessage() for rec in caplog.records if rec.name == "sage.auth"]
+    assert any("Other.Scope" in m and "Sage.Access" in m for m in messages), messages

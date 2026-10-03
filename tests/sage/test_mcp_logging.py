@@ -10,7 +10,7 @@ between tool outcomes in the console log:
 - unexpected exception → one INFO line plus one ERROR line
   (`mcp tool failed: <name> (reference <id>)`) with traceback, and the
   caller receives a generic `internal_error` envelope carrying only the
-  reference
+  reference; that envelope then adds the envelope-error WARNING line
 
 The envelope-error test exercises the *production* return shape that
 FastMCP's `_convert_to_content` produces: SAGE tool dicts are

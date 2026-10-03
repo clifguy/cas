@@ -308,8 +308,12 @@ class _LoggingFastMCP(FastMCP):
       caller unchanged. The envelope is detected via `_envelope_error_kind`,
       which handles the production `[TextContent(text=<json>)]` shape that
       FastMCP wraps SAGE dict returns into. []
-    - raised exception → INFO plus one ERROR line
-      (`mcp tool failed: <name>`) with traceback, and re-raise.
+    - unexpected exception (raised directly, or wrapped by FastMCP in a
+      ``ToolError`` whose cause is neither a ``ValidationError`` nor a
+      ``SAGEError``) → INFO plus one ERROR line
+      (`mcp tool failed: <name> (reference <id>)`) with traceback; the caller
+      receives a generic `internal_error` envelope carrying only the reference,
+      which then takes the envelope-error path and adds its WARNING line.
 
     The ``ToolError`` branch additionally checks whether the cause is an
     ``extra_forbidden`` Pydantic ``ValidationError`` — the signal that
