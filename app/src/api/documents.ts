@@ -1,4 +1,4 @@
-import { apiGet, apiPost } from './client';
+import { apiGet, apiPost, pathSegment } from './client';
 import type {
   BulkMetadataItemResult,
   BulkMetadataResponse,
@@ -10,7 +10,7 @@ import type {
 } from './types';
 
 export async function getDocument(vaultId: string, documentId: string): Promise<Document> {
-  return apiGet<Document>(`/sage_vaults/${vaultId}/documents/${documentId}`);
+  return apiGet<Document>(`/sage_vaults/${pathSegment(vaultId)}/documents/${pathSegment(documentId)}`);
 }
 
 export async function updateMetadata(
@@ -23,7 +23,7 @@ export async function updateMetadata(
   // by wrapping the body as a length-1 items collection and unwrapping the
   // per-item result envelope.
   const response = await apiPost<BulkMetadataResponse>(
-    `/sage_vaults/${vaultId}/metadata`,
+    `/sage_vaults/${pathSegment(vaultId)}/metadata`,
     { items: [{ document_id: documentId, ...body }] },
   );
   const item: BulkMetadataItemResult | undefined = response.results[0];
@@ -38,7 +38,7 @@ export async function openDocument(
   vaultId: string,
   documentId: string,
 ): Promise<OpenDocumentResponse> {
-  return apiPost<OpenDocumentResponse>(`/sage_vaults/${vaultId}/documents/${documentId}/open`, {});
+  return apiPost<OpenDocumentResponse>(`/sage_vaults/${pathSegment(vaultId)}/documents/${pathSegment(documentId)}/open`, {});
 }
 
 // Cloud-profile browser delivery: SAGE mints a short-lived, pre-authenticated
@@ -48,7 +48,7 @@ export async function getDocumentDownloadUrl(
   vaultId: string,
   documentId: string,
 ): Promise<DocumentDownloadUrlResponse> {
-  return apiGet<DocumentDownloadUrlResponse>(`/sage_vaults/${vaultId}/documents/${documentId}/download-url`);
+  return apiGet<DocumentDownloadUrlResponse>(`/sage_vaults/${pathSegment(vaultId)}/documents/${pathSegment(documentId)}/download-url`);
 }
 
 // Binding-agnostic browser delivery (CAS-ADR-043): the same-origin BFF streams
@@ -58,7 +58,7 @@ export async function getDocumentDownloadUrl(
 // navigation, which preserves the streamed, non-buffered delivery the proxy
 // provides (fetching to a Blob first would buffer the whole file in memory).
 export function documentContentUrl(vaultId: string, documentId: string): string {
-  return `/sage_vaults/${vaultId}/documents/${documentId}/content`;
+  return `/sage_vaults/${pathSegment(vaultId)}/documents/${pathSegment(documentId)}/content`;
 }
 
 // Regenerate a single document's semantic abstract. Fire-and-forget: SAGE
@@ -73,7 +73,7 @@ export async function reabstractDocument(
   documentId: string,
 ): Promise<ReabstractStartedResponse> {
   return apiPost<ReabstractStartedResponse>(
-    `/sage_vaults/${vaultId}/documents/${documentId}/reabstract`,
+    `/sage_vaults/${pathSegment(vaultId)}/documents/${pathSegment(documentId)}/reabstract`,
     {},
   );
 }

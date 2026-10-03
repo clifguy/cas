@@ -1,4 +1,4 @@
-import { apiGet, apiPost, apiPut } from './client';
+import { apiGet, apiPost, apiPut, pathSegment } from './client';
 import type {
   VaultListResponse,
   VaultSummary,
@@ -15,18 +15,18 @@ export async function listVaults(): Promise<VaultSummary[]> {
 }
 
 export async function getVaultStats(vaultId: string): Promise<VaultStats> {
-  return apiGet<VaultStats>(`/sage_vaults/${vaultId}/stats`);
+  return apiGet<VaultStats>(`/sage_vaults/${pathSegment(vaultId)}/stats`);
 }
 
 export async function getVaultConfig(vaultId: string): Promise<VaultConfig> {
-  return apiGet<VaultConfig>(`/sage_vaults/${vaultId}/config`);
+  return apiGet<VaultConfig>(`/sage_vaults/${pathSegment(vaultId)}/config`);
 }
 
 export async function updateVaultConfig(
   vaultId: string,
   sections: UpdateVaultConfigRequest,
 ): Promise<UpdateConfigResponse> {
-  return apiPut<UpdateConfigResponse>(`/sage_vaults/${vaultId}/config`, sections);
+  return apiPut<UpdateConfigResponse>(`/sage_vaults/${pathSegment(vaultId)}/config`, sections);
 }
 
 // The scaffold a vault with this id would be created with. Served rather

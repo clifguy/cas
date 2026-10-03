@@ -11,11 +11,13 @@ profile), SAGE answers these paths from its own routers and this proxy is unused
 from __future__ import annotations
 
 import re
+from urllib.parse import quote, unquote
 
 import httpx
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import Response, StreamingResponse
 from starlette.background import BackgroundTask
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.backend.auth.dependencies import require_session
 from app.backend.auth.session_store import Session
@@ -31,19 +33,65 @@ router = APIRouter(tags=["proxy"])
 # route that merely ends in /content must opt in deliberately.
 _CONTENT_STREAM_PATH = re.compile(r"^/sage_vaults/[^/]+/documents/[^/]+/content$")
 
-# Request headers never forwarded upstream: the transport supplies its own
-# Authorization; Host, Cookie, and the body-framing headers are connection- or
-# session-scoped and httpx recomputes the framing from the forwarded body.
-_DROP_REQUEST_HEADERS = frozenset(
-    {"host", "authorization", "cookie", "content-length", "connection"}
+# Request headers forwarded upstream; every other header stays here. The
+# transport supplies its own Authorization and httpx recomputes the body
+# framing. The SAGE routes reached here read only these from the SPA: the
+# body's media type (including a multipart boundary), the representation and
+# language the SPA accepts, and the user agent writes are attributed to.
+_FORWARDED_REQUEST_HEADERS = frozenset({"accept", "accept-language", "content-type", "user-agent"})
+
+# Response headers relayed back; every other header is dropped. httpx has
+# already decoded the body, so the upstream content-encoding, length and
+# transfer-encoding no longer describe the bytes being returned, and upstream
+# cookies or server identity have no meaning on this origin.
+_RELAYED_RESPONSE_HEADERS = frozenset(
+    {"content-type", "content-disposition", "cache-control", "www-authenticate", "allow"}
 )
 
-# Response headers dropped before relaying: httpx has already decoded the body,
-# so the upstream content-encoding/length/transfer-encoding no longer describe
-# the bytes being returned.
-_DROP_RESPONSE_HEADERS = frozenset(
-    {"content-length", "content-encoding", "transfer-encoding", "connection"}
-)
+_COLLECTION_PREFIX = "/sage_vaults/"
+
+# Characters left unescaped when a decoded path segment is re-encoded for the
+# upstream request: RFC 3986 ``pchar`` less the percent sign, so a segment such
+# as ``documents:batch`` is forwarded as written while a decoded ``/``, ``?`` or
+# ``#`` stays escaped inside its segment.
+_SEGMENT_SAFE = "!$&'()*+,;=:@-._~"
+
+
+def _is_dot_or_empty(segment: str) -> bool:
+    """Whether a decoded segment is empty or carries a ``.``/``..`` component.
+
+    A decoded segment may hold a ``/`` that arrived encoded; a dot component on
+    either side of it is refused too, so no decoding of the path reads as a
+    climb out of the collection.
+    """
+    return segment == "" or any(part in (".", "..") for part in segment.split("/"))
+
+
+def _upstream_path(request: Request) -> str:
+    """The SAGE path for a ``/sage_vaults/*`` request, built from its raw target.
+
+    Each segment below the collection is percent-decoded and refused when it is
+    empty or has a ``.`` or ``..`` component, whatever its encoding, then
+    re-encoded on its own, so an encoded separator cannot split it and no
+    segment can climb out of the collection when the HTTP client normalizes the
+    path. A refusal is the unrouted-path answer: such a path addresses no SAGE
+    operation.
+    """
+    raw = request.scope.get("raw_path") or request.url.path.encode()
+    raw_path = raw.decode("latin-1").split("?", 1)[0]
+    if not raw_path.startswith(_COLLECTION_PREFIX):
+        raise StarletteHTTPException(status_code=404)
+    segments = [unquote(segment) for segment in raw_path[len(_COLLECTION_PREFIX) :].split("/")]
+    if any(_is_dot_or_empty(segment) for segment in segments):
+        raise StarletteHTTPException(status_code=404)
+    upstream = _COLLECTION_PREFIX + "/".join(
+        quote(segment, safe=_SEGMENT_SAFE) for segment in segments
+    )
+    # The path as the HTTP client will send it, after its own normalization.
+    sent = httpx.URL(f"http://upstream{upstream}").raw_path
+    if not sent.startswith(_COLLECTION_PREFIX.encode()):
+        raise StarletteHTTPException(status_code=404)
+    return upstream
 
 
 def _get_transport(request: Request) -> SageTransport:
@@ -80,7 +128,7 @@ async def _forward_to_sage(
     forwarded_headers = {
         key: value
         for key, value in request.headers.items()
-        if key.lower() not in _DROP_REQUEST_HEADERS
+        if key.lower() in _FORWARDED_REQUEST_HEADERS
     }
     if request.method == "GET" and _CONTENT_STREAM_PATH.fullmatch(upstream_path):
         return await _stream_from_sage(
@@ -119,7 +167,7 @@ async def _forward_to_sage(
     relayed_headers = {
         key: value
         for key, value in sage_response.headers.items()
-        if key.lower() not in _DROP_RESPONSE_HEADERS
+        if key.lower() in _RELAYED_RESPONSE_HEADERS
     }
     return Response(
         content=sage_response.content,
@@ -140,8 +188,9 @@ async def _stream_from_sage(
     Opening the stream (connect + response headers) carries the same
     504/502 mapping as the buffered forward. Once the headers have been sent
     downstream, remapping is impossible by HTTP construction: a mid-stream
-    upstream failure truncates the response body, and the client observes the
-    truncation against the relayed Content-Length. The upstream response (and
+    upstream failure truncates the response body, and the client sees the body
+    end abnormally rather than complete; no Content-Length is relayed, since the
+    decoded bytes need not match the upstream one. The upstream response (and
     the binding's per-stream resources) are released by the background task,
     which runs after the last byte or on client disconnect.
     """
@@ -168,7 +217,7 @@ async def _stream_from_sage(
     relayed_headers = {
         key: value
         for key, value in sage_stream.headers.items()
-        if key.lower() not in _DROP_RESPONSE_HEADERS
+        if key.lower() in _RELAYED_RESPONSE_HEADERS
     }
     return StreamingResponse(
         sage_stream.stream,
@@ -206,5 +255,10 @@ async def proxy_sage(
     request: Request,
     session: Session = Depends(require_session),
 ) -> Response:
-    """Forward one ``/sage_vaults/*`` subpath call to SAGE under the user's identity."""
-    return await _forward_to_sage(f"/sage_vaults/{path}", request, session)
+    """Forward one ``/sage_vaults/*`` subpath call to SAGE under the user's identity.
+
+    The upstream path is rebuilt from the raw request target rather than taken
+    from the decoded ``path`` parameter, which has already lost the distinction
+    between a separator and an encoded one.
+    """
+    return await _forward_to_sage(_upstream_path(request), request, session)

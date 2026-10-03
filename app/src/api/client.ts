@@ -13,6 +13,17 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Encode one identifier for use as a single URL path segment. Beyond
+ * encodeURIComponent, a segment that is wholly `.` or `..` has its dots
+ * percent-encoded, since URL resolution would otherwise treat it as a
+ * directory step rather than an identifier.
+ */
+export function pathSegment(value: string): string {
+  const encoded = encodeURIComponent(value);
+  return encoded === '.' || encoded === '..' ? encoded.replace(/\./g, '%2E') : encoded;
+}
+
 // --- Session-expiry signal ---------------------------------------------------
 // A live session can lapse mid-use (the server-side session has a fixed TTL).
 // When that happens any data call comes back with the `auth_required` code; the

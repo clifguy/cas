@@ -8,7 +8,7 @@
 //   pipeline_status='abstraction_skipped'; returns total_available so the
 //   Maintenance panel can size the worklist without fetching rows.
 
-import { apiPost, apiStream, readSSEStream } from './client';
+import { apiPost, apiStream, readSSEStream, pathSegment } from './client';
 import type {
   DiscoverResponse,
   OptimizeContentStoreReport,
@@ -32,7 +32,7 @@ export async function startReabstract(
   includePdf: boolean = false,
 ): Promise<void> {
   const stream = await apiStream(
-    `/sage_vaults/${vaultId}/maintenance/reabstract-deferred`,
+    `/sage_vaults/${pathSegment(vaultId)}/maintenance/reabstract-deferred`,
     { include_pdf: includePdf },
     signal,
   );
@@ -53,7 +53,7 @@ export async function startReabstract(
  */
 export async function getDeferredCount(vaultId: string): Promise<number> {
   const resp = await apiPost<DiscoverResponse>(
-    `/sage_vaults/${vaultId}/discover`,
+    `/sage_vaults/${pathSegment(vaultId)}/discover`,
     {
       mode: 'catalog',
       filters: { pipeline_status: 'abstraction_skipped' },
@@ -74,7 +74,7 @@ export async function startOptimizeContentStore(
   vaultId: string,
 ): Promise<OptimizeContentStoreReport> {
   return apiPost<OptimizeContentStoreReport>(
-    `/sage_vaults/${vaultId}/maintenance/optimize-content-store`,
+    `/sage_vaults/${pathSegment(vaultId)}/maintenance/optimize-content-store`,
     {},
   );
 }

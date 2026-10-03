@@ -1,4 +1,4 @@
-import { apiGet, apiPost } from './client';
+import { apiGet, apiPost, pathSegment } from './client';
 import type {
   PendingMetadataPage,
   StagingEdge,
@@ -20,7 +20,7 @@ export async function listPendingMetadata(vaultId: string): Promise<PendingMetad
   let page: PendingMetadataPage;
   do {
     page = await apiGet<PendingMetadataPage>(
-      `/sage_vaults/${vaultId}/pending-metadata?limit=${PENDING_METADATA_PAGE_SIZE}` +
+      `/sage_vaults/${pathSegment(vaultId)}/pending-metadata?limit=${PENDING_METADATA_PAGE_SIZE}` +
         `&offset=${items.length}&response_mode=full`,
     );
     items.push(...page.items);
@@ -29,19 +29,19 @@ export async function listPendingMetadata(vaultId: string): Promise<PendingMetad
 }
 
 export async function listStagingEdges(vaultId: string): Promise<StagingEdge[]> {
-  return (await apiGet<StagingEdgeListResponse>(`/sage_vaults/${vaultId}/staging-edges`)).items;
+  return (await apiGet<StagingEdgeListResponse>(`/sage_vaults/${pathSegment(vaultId)}/staging-edges`)).items;
 }
 
 export async function confirmStagingEdge(
   vaultId: string,
   edgeId: string,
 ): Promise<StagingEdgeConfirmResponse> {
-  return apiPost<StagingEdgeConfirmResponse>(`/sage_vaults/${vaultId}/staging-edges/${edgeId}/confirm`, {});
+  return apiPost<StagingEdgeConfirmResponse>(`/sage_vaults/${pathSegment(vaultId)}/staging-edges/${pathSegment(edgeId)}/confirm`, {});
 }
 
 export async function dismissStagingEdge(
   vaultId: string,
   edgeId: string,
 ): Promise<StagingEdgeDismissResponse> {
-  return apiPost<StagingEdgeDismissResponse>(`/sage_vaults/${vaultId}/staging-edges/${edgeId}/dismiss`, {});
+  return apiPost<StagingEdgeDismissResponse>(`/sage_vaults/${pathSegment(vaultId)}/staging-edges/${pathSegment(edgeId)}/dismiss`, {});
 }

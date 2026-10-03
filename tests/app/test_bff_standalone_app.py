@@ -760,10 +760,6 @@ SESSION_EXEMPT_ROUTES: dict[str, str] = {
     "/health": "container liveness probe, constant and store-free",
     "/{spa_path:path}": "the SPA shell, which renders the sign-in surface",
     "/assets": "the SPA's static bundle",
-    "/openapi.json": "the generated schema of the published operations",
-    "/docs": "interactive documentation of the published operations",
-    "/docs/oauth2-redirect": "interactive documentation of the published operations",
-    "/redoc": "interactive documentation of the published operations",
 }
 
 
