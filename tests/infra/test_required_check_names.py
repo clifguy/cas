@@ -22,8 +22,11 @@ WORKFLOWS = ROOT / ".github" / "workflows"
 CI_WORKFLOW = "ci.yml"
 
 # Events whose check runs land on a pull request's head commit, where the
-# required contexts are evaluated.
+# required contexts are evaluated. A push lands there too whenever the pushed
+# branch is a pull request's head branch, so a push trigger counts unless its
+# branch filter admits only protected branches, which are never a head branch.
 PR_EVENTS = frozenset({"pull_request", "pull_request_target", "merge_group"})
+PROTECTED_BRANCHES = frozenset({"main"})
 
 
 def _required_contexts() -> set[str]:
@@ -33,14 +36,29 @@ def _required_contexts() -> set[str]:
     return {check["context"] for check in rule["parameters"]["required_status_checks"]}
 
 
-def _events(workflow: dict) -> set[str]:
+def _triggers(workflow: dict) -> dict:
     # PyYAML reads the bare key ``on`` as boolean True.
     on = workflow.get("on", workflow.get(True))
     if isinstance(on, str):
-        return {on}
+        return {on: None}
     if isinstance(on, list):
-        return set(on)
-    return set(on or {})
+        return dict.fromkeys(on)
+    return dict(on or {})
+
+
+def _push_reaches_pull_requests(config: dict | None) -> bool:
+    """A push trigger reaches PR head commits unless it admits only protected branches."""
+    branches = (config or {}).get("branches")
+    if branches is None or "branches-ignore" in (config or {}):
+        return True
+    return not set(branches) <= PROTECTED_BRANCHES
+
+
+def _reaches_pull_requests(workflow: dict) -> bool:
+    triggers = _triggers(workflow)
+    if set(triggers) & PR_EVENTS:
+        return True
+    return "push" in triggers and _push_reaches_pull_requests(triggers["push"])
 
 
 def _check_names(workflow: dict) -> dict[str, str]:
@@ -61,9 +79,17 @@ def _pr_workflows() -> list[Path]:
     paths = []
     for path in sorted(WORKFLOWS.glob("*.yml")):
         workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
-        if _events(workflow) & PR_EVENTS:
+        if _reaches_pull_requests(workflow):
             paths.append(path)
     return paths
+
+
+def test_push_restricted_to_protected_branches_is_exempt() -> None:
+    assert not _push_reaches_pull_requests({"branches": ["main"]})
+    assert _push_reaches_pull_requests(None)
+    assert _push_reaches_pull_requests({"branches": ["main", "release/*"]})
+    assert _push_reaches_pull_requests({"branches-ignore": ["gh-pages"]})
+    assert _push_reaches_pull_requests({"tags": ["v*"]})
 
 
 def test_required_contexts_are_known() -> None:
