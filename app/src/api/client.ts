@@ -13,6 +13,17 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Encode one identifier for use as a single URL path segment, so a `/`, `?`
+ * or `#` inside it cannot split the path or start a query or fragment. An
+ * identifier that is wholly `.` or `..` still reads as a directory step under
+ * URL resolution, however its dots are encoded; no SAGE identifier takes that
+ * form, and the backend refuses a path containing one.
+ */
+export function pathSegment(value: string): string {
+  return encodeURIComponent(value);
+}
+
 // --- Session-expiry signal ---------------------------------------------------
 // A live session can lapse mid-use (the server-side session has a fixed TTL).
 // When that happens any data call comes back with the `auth_required` code; the

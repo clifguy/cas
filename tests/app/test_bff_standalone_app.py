@@ -13,6 +13,7 @@ Test IDs follow APP-NNN (standalone APP).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import time
 
@@ -478,9 +479,10 @@ class _SpyTransport(SageTransport):
 
 
 async def test_app_015_only_content_route_streams():
-    """The streaming branch is scoped to GET on the document content route:
-    other paths -- and non-GET methods on a content-shaped path -- keep the
-    buffered `request()` port method.
+    """The streaming branch is scoped to its listed routes, each by method: GET
+    on the document content route streams, while other paths -- and non-GET
+    methods on a content-shaped path -- keep the buffered `request()` port
+    method. APP-027 covers the event-stream routes.
 
     Anti-coincidental-pass: a bare `/content` suffix match or a method-agnostic
     branch would route the POST (c) through `stream()`.
@@ -760,10 +762,6 @@ SESSION_EXEMPT_ROUTES: dict[str, str] = {
     "/health": "container liveness probe, constant and store-free",
     "/{spa_path:path}": "the SPA shell, which renders the sign-in surface",
     "/assets": "the SPA's static bundle",
-    "/openapi.json": "the generated schema of the published operations",
-    "/docs": "interactive documentation of the published operations",
-    "/docs/oauth2-redirect": "interactive documentation of the published operations",
-    "/redoc": "interactive documentation of the published operations",
 }
 
 
@@ -855,3 +853,106 @@ def test_app_024_co_located_router_is_not_session_gated(tmp_path):
     for path in ("/app/scan", "/app/ingest"):
         assert path in routes
         assert not _requires_session(routes[path]), path
+
+
+_EVENT_STREAM_ROUTES = [
+    "/sage_vaults/cas/documents:batch",
+    "/sage_vaults/cas/maintenance/reabstract-deferred",
+]
+
+
+@pytest.mark.parametrize("route", _EVENT_STREAM_ROUTES)
+async def test_app_027_event_stream_routes_relay_events_as_emitted(route):
+    """Over a real server, a proxied event-stream operation delivers its first
+    event to the browser while SAGE is still producing the rest, and forwards
+    the request body.
+
+    Anti-coincidental-pass: SAGE withholds its second event until the client has
+    read the first, so a proxy that buffers the response never returns the
+    first event and the read times out. The lifespan resets the auth context
+    and transport at startup, so both are installed once the server is up.
+    """
+    import http.client
+    import threading
+    from urllib.parse import urlsplit
+
+    from tests.deploy._stub_server import serve_uvicorn
+    from tests.helpers.bff_session import SESSION_ID, live_session
+
+    released = threading.Event()
+    received_bodies: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        received_bodies.append(request.content)
+
+        async def events():
+            yield b'data: {"n": 1}\n\n'
+            deadline = time.monotonic() + 10
+            while not released.is_set() and time.monotonic() < deadline:
+                await asyncio.sleep(0.01)
+            yield b'data: {"n": 2}\n\n'
+
+        return httpx.Response(200, content=events(), headers={"content-type": "text/event-stream"})
+
+    sage = httpx.AsyncClient(transport=httpx.MockTransport(handler), base_url="http://sage.test")
+    app = create_bff_app(stack_config=SageCoreConfig(profile="cloud"))
+    cookie = f"{_settings().session_cookie_name}={SESSION_ID}"
+
+    with serve_uvicorn(app) as base_url:
+        store = InMemorySessionStore()
+        await store.create_session(live_session())
+        app.state.bff_auth = BffAuthContext(settings=_settings(), oidc=_StubOidc(), store=store)
+        app.state.sage_transport = HttpSageTransport(
+            ObOSageClient("http://sage.test", _StubOidc(), client=sage)
+        )
+        parts = urlsplit(base_url)
+        conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=5)
+        try:
+            conn.request(
+                "POST",
+                route,
+                body=b'{"k": 1}',
+                headers={"Cookie": cookie, "Content-Type": "application/json"},
+            )
+            response = conn.getresponse()
+            first = response.read1()
+            released.set()
+            rest = response.read()
+        finally:
+            released.set()
+            conn.close()
+
+    assert response.status == 200
+    assert response.getheader("content-type", "").startswith("text/event-stream")
+    assert b'"n": 1' in first and b'"n": 2' not in first
+    assert b'"n": 2' in rest
+    assert received_bodies == [b'{"k": 1}']
+
+
+@pytest.mark.parametrize(
+    "path", ["/sage_vaults/cas/stats", "/sage_vaults/cas/documents/d1/content"]
+)
+async def test_app_028_proxy_forwards_every_value_of_a_repeated_query_name(path):
+    """A query name given more than once reaches SAGE with every value, in
+    order, on the buffered and the streamed path.
+
+    Anti-coincidental-pass: forwarding the query as a mapping keeps only the
+    last value.
+    """
+    recorder: list[httpx.Request] = []
+    app, settings = await _signed_in_app(
+        HttpSageTransport(
+            ObOSageClient("http://sage.test", _StubOidc(), client=_streaming_sage(recorder))
+        )
+    )
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://bff.test",
+        cookies={settings.session_cookie_name: "sid-1"},
+    ) as client:
+        response = await client.get(path, params=[("tag", "a"), ("tag", "b"), ("x", "1")])
+
+    assert response.status_code == 200
+    (upstream,) = recorder
+    assert upstream.url.query == b"tag=a&tag=b&x=1"

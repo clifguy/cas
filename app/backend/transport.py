@@ -20,7 +20,7 @@ registered against the generic profile registry in :mod:`sage.profiles`.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, cast
 
@@ -42,6 +42,10 @@ BFF_TRANSPORT_SEAM = "bff_sage_transport"
 #: never reaches a socket -- ASGITransport dispatches into the app object -- so
 #: the host is a placeholder, present only to satisfy URL construction.
 _ASGI_BASE_URL = "http://bff-inprocess.invalid"
+
+#: Query parameters for a SAGE call: a mapping, or name/value pairs in request
+#: order, which is how a name given more than once keeps every value.
+QueryParams = Mapping[str, Any] | Sequence[tuple[str, str]]
 
 
 @dataclass(frozen=True)
@@ -84,7 +88,7 @@ class SageTransport(ABC):
         path: str,
         *,
         session: Session | None = None,
-        params: Mapping[str, Any] | None = None,
+        params: QueryParams | None = None,
         headers: Mapping[str, str] | None = None,
         content: bytes | None = None,
     ) -> SageResponse:
@@ -104,16 +108,17 @@ class SageTransport(ABC):
         path: str,
         *,
         session: Session | None = None,
-        params: Mapping[str, Any] | None = None,
+        params: QueryParams | None = None,
         headers: Mapping[str, str] | None = None,
+        content: bytes | None = None,
     ) -> SageStreamingResponse:
-        """Issue ``method`` against SAGE ``path``, leaving the body unread.
+        """Issue ``method`` against SAGE ``path``, leaving the response body unread.
 
-        The streaming counterpart of ``request`` for large-body relays: the
-        returned response's body flows chunk-by-chunk, so no hop holds it
-        whole. Carries no request body -- it is a read path. The same
-        ``session`` semantics as ``request`` apply. Satisfiable by both
-        bindings, so it is part of the port contract (CAS-ADR-042).
+        The streaming counterpart of ``request`` for responses relayed as they
+        arrive -- a large body, or an event stream -- so no hop holds the
+        response whole. ``content`` is the request body, as for ``request``.
+        The same ``session`` semantics as ``request`` apply. Satisfiable by
+        both bindings, so it is part of the port contract (CAS-ADR-042).
         """
         ...
 
@@ -136,7 +141,7 @@ class HttpSageTransport(SageTransport):
         path: str,
         *,
         session: Session | None = None,
-        params: Mapping[str, Any] | None = None,
+        params: QueryParams | None = None,
         headers: Mapping[str, str] | None = None,
         content: bytes | None = None,
     ) -> SageResponse:
@@ -152,7 +157,7 @@ class HttpSageTransport(SageTransport):
             method,
             path,
             session,
-            params=dict(params) if params else None,
+            params=params or None,
             headers=dict(headers) if headers else None,
             content=content,
         )
@@ -168,8 +173,9 @@ class HttpSageTransport(SageTransport):
         path: str,
         *,
         session: Session | None = None,
-        params: Mapping[str, Any] | None = None,
+        params: QueryParams | None = None,
         headers: Mapping[str, str] | None = None,
+        content: bytes | None = None,
     ) -> SageStreamingResponse:
         if session is None:
             from sage.api.errors import SAGEError
@@ -183,8 +189,9 @@ class HttpSageTransport(SageTransport):
             method,
             path,
             session,
-            params=dict(params) if params else None,
+            params=params or None,
             headers=dict(headers) if headers else None,
+            content=content,
         )
         return SageStreamingResponse(
             status_code=response.status_code,
@@ -216,7 +223,7 @@ class InProcessSageTransport(SageTransport):
         path: str,
         *,
         session: Session | None = None,
-        params: Mapping[str, Any] | None = None,
+        params: QueryParams | None = None,
         headers: Mapping[str, str] | None = None,
         content: bytes | None = None,
     ) -> SageResponse:
@@ -225,7 +232,7 @@ class InProcessSageTransport(SageTransport):
             response = await client.request(
                 method,
                 path,
-                params=dict(params) if params else None,
+                params=params or None,
                 headers=dict(headers) if headers else None,
                 content=content,
             )
@@ -241,8 +248,9 @@ class InProcessSageTransport(SageTransport):
         path: str,
         *,
         session: Session | None = None,
-        params: Mapping[str, Any] | None = None,
+        params: QueryParams | None = None,
         headers: Mapping[str, str] | None = None,
+        content: bytes | None = None,
     ) -> SageStreamingResponse:
         # Unlike ``request``'s per-call ``async with``, the client is released
         # by the ``aclose`` closure rather than before returning: the caller
@@ -256,8 +264,9 @@ class InProcessSageTransport(SageTransport):
         request = client.build_request(
             method,
             path,
-            params=dict(params) if params else None,
+            params=params or None,
             headers=dict(headers) if headers else None,
+            content=content,
         )
         response = await client.send(request, stream=True)
 

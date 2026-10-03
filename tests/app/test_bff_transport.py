@@ -393,3 +393,64 @@ def test_tx_008_obo_client_builds_an_explicit_generous_timeout():
     assert timeout.write == 30.0
     assert timeout.connect == 5.0
     assert timeout.pool == 5.0
+
+
+def _echo_sage_app() -> FastAPI:
+    """A SAGE app answering one POST with the body and every query value it got,
+    once buffered and once as a stream."""
+    from fastapi.responses import StreamingResponse
+
+    app = FastAPI()
+
+    async def _echo(request: Request) -> bytes:
+        body = await request.body()
+        tags = ",".join(request.query_params.getlist("tag"))
+        return f"{body.decode()}|{tags}".encode()
+
+    @app.post("/sage_vaults/{vault}/echo")
+    async def echo(vault: str, request: Request) -> StreamingResponse:
+        payload = await _echo(request)
+
+        async def chunks():
+            yield payload
+
+        return StreamingResponse(chunks(), media_type="text/plain")
+
+    return app
+
+
+@pytest.mark.parametrize("port_method", ["request", "stream"])
+@pytest.mark.parametrize("binding", ["in-process", "http"])
+async def test_tx_013_bindings_forward_body_and_repeated_query_names(binding, port_method):
+    """Both bindings, through both port methods, deliver the request body and
+    every value of a query name given more than once, in order.
+
+    Anti-coincidental-pass: a binding that turns the parameters into a mapping
+    keeps one value per name, and a `stream()` that drops `content` delivers an
+    empty body.
+    """
+    app = _echo_sage_app()
+    if binding == "in-process":
+        transport: SageTransport = InProcessSageTransport(app)
+        kwargs: dict = {}
+    else:
+        client = httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://sage.test"
+        )
+        transport = HttpSageTransport(ObOSageClient("http://sage.test", _StubOidc(), client=client))
+        kwargs = {"session": _session()}
+    params = [("tag", "a"), ("tag", "b")]
+
+    if port_method == "request":
+        response = await transport.request(
+            "POST", "/sage_vaults/cas/echo", params=params, content=b"payload", **kwargs
+        )
+        body = response.content
+    else:
+        streamed = await transport.stream(
+            "POST", "/sage_vaults/cas/echo", params=params, content=b"payload", **kwargs
+        )
+        body = b"".join([chunk async for chunk in streamed.stream])
+        await streamed.aclose()
+
+    assert body == b"payload|a,b"

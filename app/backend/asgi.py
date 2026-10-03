@@ -7,23 +7,25 @@ keeps the backend mounted inside the SAGE app instead. It boots with no SAGE in
 process: there is no vault registry, so the directory-scan and bulk-ingest
 routes (a local-filesystem capability) report that they belong to the
 co-located profile rather than failing on the absent registry. Every route but
-sign-in, the health probe, the SPA itself, and the generated schema and
-interactive documentation of the published operations requires a signed-in
-session, as the SAGE reverse proxy does.
+sign-in, the health probe and the SPA itself requires a signed-in session, as
+the SAGE reverse proxy does. The app publishes no schema document or
+interactive documentation page of its own: the operations it serves are
+specified in the committed CAS Application API specification.
 
 The SPA bundle is mounted last, as a catch-all serving ``index.html`` for
 unmatched client routes, so the earlier API and health routes still match
-first.
+first. It serves only files that resolve inside the bundle directory.
 """
 
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.backend.auth.dependencies import require_session
 from app.backend.auth.router import router as auth_router
@@ -63,6 +65,16 @@ async def _assemble_transport(app: FastAPI, stack_cfg: SageCoreConfig) -> None:
 
     client = ObOSageClient(bff_auth.settings.sage_base_url, bff_auth.oidc)
     app.state.sage_transport = resolve_bff_transport(stack_cfg, oidc_client=client)
+
+
+def _escapes_bundle(spa_path: str) -> bool:
+    """Whether a requested SPA path can address nothing inside the bundle.
+
+    True for a path carrying a NUL, an absolute path (which a path join would
+    take in place of the bundle directory), and a path with a ``..`` segment.
+    """
+    relative = PurePosixPath(spa_path)
+    return "\x00" in spa_path or relative.is_absolute() or ".." in relative.parts
 
 
 def create_bff_app(
@@ -109,6 +121,13 @@ def create_bff_app(
         version=API_VERSION,
         description="CAS backend-for-frontend: SPA serving and SAGE access.",
         lifespan=lifespan,
+        # No generated schema document or documentation pages: the pages load
+        # third-party scripts on the session origin, and the operations are
+        # specified in the committed CAS Application API specification.
+        # ``app.openapi()`` still builds the document in process.
+        openapi_url=None,
+        docs_url=None,
+        redoc_url=None,
     )
 
     register_exception_handlers(app)
@@ -142,16 +161,25 @@ def create_bff_app(
     # Registered last, so the API, auth, proxy, and health routes match first.
     # Skipped when the bundle is absent (e.g. before the SPA is built).
     if spa.is_dir():
-        index_html = spa / "index.html"
-        assets_dir = spa / "assets"
+        spa_root = spa.resolve()
+        index_html = spa_root / "index.html"
+        assets_dir = spa_root / "assets"
         if assets_dir.is_dir():
             app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="spa-assets")
 
         @app.get("/{spa_path:path}", include_in_schema=False)
         async def _serve_spa(spa_path: str) -> FileResponse:
-            """Serve a real bundle file when one matches, else the SPA shell."""
-            candidate = spa / spa_path
-            if spa_path and candidate.is_file():
+            """Serve a bundle file when one matches, else the SPA shell.
+
+            A path that is absolute, carries a NUL, or has a ``..`` segment
+            addresses nothing in the bundle and is refused as an unrouted path.
+            Otherwise the candidate is served only when it resolves, symlinks
+            included, to a file inside the bundle directory.
+            """
+            if _escapes_bundle(spa_path):
+                raise StarletteHTTPException(status_code=404)
+            candidate = (spa_root / spa_path).resolve()
+            if spa_path and candidate.is_relative_to(spa_root) and candidate.is_file():
                 return FileResponse(candidate)
             return FileResponse(index_html)
 

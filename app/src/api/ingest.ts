@@ -1,4 +1,4 @@
-import { ApiError, apiPost, apiStream, apiUploadStream, readSSEStream } from './client';
+import { ApiError, apiPost, apiStream, apiUploadStream, readSSEStream, pathSegment } from './client';
 import type {
   ScanResponse,
   IngestFileItem,
@@ -133,7 +133,7 @@ export async function uploadBatchIngest(
   form.append('metadata', JSON.stringify(metadata));
 
   const stream = await apiUploadStream(
-    `/sage_vaults/${vaultId}/documents:batch`,
+    `/sage_vaults/${pathSegment(vaultId)}/documents:batch`,
     form,
     signal,
   );
