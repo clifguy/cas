@@ -44,7 +44,6 @@ import json
 import logging
 
 import pytest
-from mcp.server.fastmcp.exceptions import ToolError
 from mcp.server.fastmcp.utilities.func_metadata import ArgModelBase
 from mcp.types import TextContent
 from pydantic import ValidationError, create_model
@@ -220,14 +219,15 @@ async def test_t5_type_coercion_validation_error_becomes_envelope():
     assert "Arguments" not in json.dumps(envelope)
 
 
-async def test_t6_non_validation_error_tool_failure_still_propagates():
-    """ToolError whose cause is not ValidationError continues to propagate.
+async def test_t6_non_validation_error_tool_failure_is_not_a_validation_envelope():
+    """A ToolError whose cause is not a ValidationError is a tool-body failure.
 
-    Guards against the new ToolError arm in ``_LoggingFastMCP.call_tool``
-    swallowing tool-body failures. If the implementation routes every
-    ToolError through the translation helper without checking
-    ``__cause__``, the body's ``ValueError`` becomes an envelope and the
-    test fails at ``pytest.raises``.
+    Guards against the ToolError arm in ``_LoggingFastMCP.call_tool``
+    translating tool-body failures as argument-validation refusals. If the
+    implementation routed every ToolError through the translation helper
+    without checking ``__cause__``, the body's ``ValueError`` would surface as
+    ``invalid_parameter``; it is the generic ``internal_error`` instead, and
+    the body's message stays out of the caller's envelope.
     """
     mcp = _LoggingFastMCP("test_t6")
 
@@ -235,8 +235,10 @@ async def test_t6_non_validation_error_tool_failure_still_propagates():
     async def boom(x: str) -> dict:
         raise ValueError(f"boom: {x}")
 
-    with pytest.raises(ToolError):
-        await mcp.call_tool("boom", {"x": "ok"})
+    envelope = _decode_envelope(await mcp.call_tool("boom", {"x": "ok"}))
+
+    assert envelope["error"] == "internal_error", envelope
+    assert "boom" not in envelope["message"], envelope
 
 
 # ---------------------------------------------------------------------------

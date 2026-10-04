@@ -147,3 +147,92 @@ async def test_b11_foreign_audience_still_rejected_with_list(keypair) -> None:
             await v.validate(_token(priv, aud=aud))
         assert ei.value.status_code == 401
         assert ei.value.error == "invalid_token"
+
+
+# ---------------------------------------------------------------------------
+# The challenge carries a fixed description; the library's text is logged.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"aud": "api://wrong"},
+        {"exp": int(time.time()) - 3600, "iat": int(time.time()) - 3660},
+        {"iss": 'https://evil.example/"quoted"'},
+    ],
+    ids=["audience", "expired", "issuer"],
+)
+async def test_b12_validation_failure_description_is_fixed(keypair, caplog, overrides) -> None:
+    import logging
+
+    priv, pub = keypair
+    with caplog.at_level(logging.INFO, logger="sage.auth"):
+        with pytest.raises(AuthError) as ei:
+            await _validator(pub).validate(_token(priv, **overrides))
+
+    assert ei.value.description == "Token validation failed."
+    assert ei.value.www_authenticate() == (
+        'Bearer error="invalid_token", error_description="Token validation failed."'
+    )
+    logged = [rec for rec in caplog.records if rec.name == "sage.auth"]
+    assert logged, "the library's reason must reach the server log"
+    assert any(
+        rec.exc_info is not None and isinstance(rec.exc_info[1], jwt.PyJWTError) for rec in logged
+    ), [rec.getMessage() for rec in logged]
+
+
+def test_b13_challenge_parameters_are_quoted_strings() -> None:
+    """Every quoted challenge parameter escapes the quote and backslash it may carry."""
+    exc = AuthError(
+        401,
+        'bad"error',
+        'say "hi" \\ there',
+        resource_metadata_url='https://x.example/"m"',
+    )
+    assert exc.www_authenticate() == (
+        'Bearer error="bad\\"error", error_description="say \\"hi\\" \\\\ there", '
+        'resource_metadata="https://x.example/\\"m\\""'
+    )
+
+
+async def test_b14_unresolved_signing_key_is_logged(keypair, caplog) -> None:
+    import logging
+
+    priv, pub = keypair
+
+    def _resolver(_token):
+        raise RuntimeError("jwks-fetch-sentinel")
+
+    with caplog.at_level(logging.INFO, logger="sage.auth"):
+        with pytest.raises(AuthError) as ei:
+            await _validator(pub, signing_key_resolver=_resolver).validate(_token(priv))
+
+    assert ei.value.description == "Token signing key could not be resolved."
+    assert "jwks-fetch-sentinel" not in ei.value.www_authenticate()
+    assert any(
+        rec.exc_info is not None and "jwks-fetch-sentinel" in str(rec.exc_info[1])
+        for rec in caplog.records
+        if rec.name == "sage.auth"
+    )
+
+
+async def test_b15_insufficient_scope_is_logged(keypair, caplog) -> None:
+    import logging
+
+    priv, pub = keypair
+    with caplog.at_level(logging.INFO, logger="sage.auth"):
+        with pytest.raises(AuthError) as ei:
+            await _validator(pub).validate(_token(priv, scp="Other.Scope"))
+
+    assert ei.value.description == "Token lacks a required scope or role."
+    assert "Other.Scope" not in ei.value.www_authenticate()
+    messages = [rec.getMessage() for rec in caplog.records if rec.name == "sage.auth"]
+    assert any("Other.Scope" in m and "Sage.Access" in m for m in messages), messages
+
+
+async def test_b16_scope_refusal_with_non_string_roles_is_still_403(keypair) -> None:
+    priv, pub = keypair
+    with pytest.raises(AuthError) as ei:
+        await _validator(pub).validate(_token(priv, scp="Other.Scope", roles=["Other", 7]))
+    assert ei.value.status_code == 403

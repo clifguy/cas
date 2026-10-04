@@ -216,11 +216,10 @@ async def test_non_driver_exception_is_not_labelled_a_storage_failure(vault_serv
 
     monkeypatch.setattr(vault_services.graph_store, "_fetch_rows", raising_fetch_rows)
 
-    # It propagates rather than being converted, which is the pre-existing
-    # behaviour for a genuine defect and the correct one: only the driver's
-    # own refusal is a storage failure.
-    with pytest.raises(Exception) as excinfo:  # noqa: B017 -- transport wraps in ToolError
-        await mcp.call_tool("search", {"vault_id": "test_vault", "mode": "catalog"})
+    # A genuine defect is an internal error, not a storage failure: only the
+    # driver's own refusal earns that code. Its text stays server-side.
+    result = await mcp.call_tool("search", {"vault_id": "test_vault", "mode": "catalog"})
 
-    assert marker in str(excinfo.value)
-    assert "storage_query_failed" not in str(excinfo.value)
+    envelope = json.loads(result[0].text)
+    assert envelope["error"] == "internal_error", envelope
+    assert marker not in result[0].text

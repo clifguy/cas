@@ -67,7 +67,10 @@ docker run --rm ${plat_arg[@]+"${plat_arg[@]}"} -e HF_HUB_OFFLINE=1 -e TRANSFORM
 echo "    offline embedder load OK"
 
 echo "==> SMK-001: boots, binds non-loopback, health green, version baked"
-docker run -d --name "$name" ${plat_arg[@]+"${plat_arg[@]}"} -p "$port:8000" "$image" >/dev/null
+# The image's default configuration authenticates no one, so the non-loopback
+# bind the published port needs is an explicit opt-in.
+docker run -d --name "$name" ${plat_arg[@]+"${plat_arg[@]}"} -p "$port:8000" "$image" \
+  --host 0.0.0.0 --port 8000 --allow-unauthenticated-network >/dev/null
 body=""
 for _ in $(seq 1 60); do
   body="$(curl -fsS "http://127.0.0.1:$port/health" 2>/dev/null || true)"

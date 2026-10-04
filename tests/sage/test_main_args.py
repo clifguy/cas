@@ -16,7 +16,14 @@ from pathlib import Path
 
 import pytest
 
-from sage.__main__ import UVICORN_LOG_CONFIG, _build_parser, _resolve_vault_root
+import sage.__main__ as sage_main
+from sage.__main__ import (
+    UVICORN_LOG_CONFIG,
+    _build_parser,
+    _check_startup_posture,
+    _resolve_vault_root,
+)
+from sage.config import SageCoreConfig, StackAuthConfig
 
 # ---------------------------------------------------------------------------
 # Surface 3a: parser shape
@@ -259,3 +266,107 @@ def test_dictconfig_suppresses_mcp_sdk_info_but_keeps_warning(_isolated_logging_
         assert [r.getMessage() for r in captured] == ["genuine warning"], (
             f"{name} WARNING record must still propagate to the root handler"
         )
+
+
+# ---------------------------------------------------------------------------
+# Startup posture: an unauthenticated process stays on loopback, and the
+# cloud profile never starts without authentication.
+# ---------------------------------------------------------------------------
+
+_AUTH_ON = StackAuthConfig(enabled=True, tenant_id="tid", audience="api://sage")
+
+#: The all-interfaces bind the startup posture check exists to gate.
+_ALL_INTERFACES = "0.0.0.0"  # noqa: S104 -- a value under test, never bound
+
+
+@pytest.mark.parametrize("host", [_ALL_INTERFACES, "::", "192.168.1.20", "sage.example.org"])
+def test_sp_001_unauthenticated_non_loopback_bind_refused(host):
+    with pytest.raises(SystemExit) as exc:
+        _check_startup_posture(SageCoreConfig(), host, allow_unauthenticated_network=False)
+    assert exc.value.code not in (0, None)
+    assert "--allow-unauthenticated-network" in str(exc.value.code)
+
+
+@pytest.mark.parametrize("host", [_ALL_INTERFACES, "192.168.1.20"])
+def test_sp_002_opt_in_flag_permits_unauthenticated_non_loopback_bind(host):
+    _check_startup_posture(SageCoreConfig(), host, allow_unauthenticated_network=True)
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "::1", "LOCALHOST"])
+def test_sp_003_unauthenticated_loopback_bind_allowed(host):
+    _check_startup_posture(SageCoreConfig(), host, allow_unauthenticated_network=False)
+
+
+@pytest.mark.parametrize(
+    "auth", [None, StackAuthConfig(enabled=False)], ids=["auth-absent", "auth-disabled"]
+)
+@pytest.mark.parametrize("allow", [False, True])
+@pytest.mark.parametrize("host", ["127.0.0.1", _ALL_INTERFACES])
+def test_sp_004_cloud_profile_without_auth_refused(auth, allow, host):
+    cfg = SageCoreConfig(profile="cloud", auth=auth)
+    with pytest.raises(SystemExit) as exc:
+        _check_startup_posture(cfg, host, allow_unauthenticated_network=allow)
+    assert exc.value.code not in (0, None)
+    assert "cloud" in str(exc.value.code)
+
+
+@pytest.mark.parametrize("profile", ["cloud", "local"])
+def test_sp_005_authenticated_non_loopback_bind_allowed(profile):
+    cfg = SageCoreConfig(profile=profile, auth=_AUTH_ON)
+    _check_startup_posture(cfg, _ALL_INTERFACES, allow_unauthenticated_network=False)
+
+
+def test_sp_006_main_refuses_before_building_the_app(monkeypatch):
+    built = {"v": False}
+
+    def _create_app(**_kwargs):
+        built["v"] = True
+        raise AssertionError("create_app must not run on a refused posture")
+
+    monkeypatch.setattr("sys.argv", ["sage", "--host", _ALL_INTERFACES, "--vault-root", "/tmp/x"])
+    monkeypatch.setattr("sage.__main__.load_stack_config_or_default", SageCoreConfig)
+    monkeypatch.setattr("sage.__main__.create_app", _create_app)
+
+    with pytest.raises(SystemExit):
+        sage_main.main()
+    assert built["v"] is False
+
+
+def test_sp_006_main_serves_the_guarded_app_with_the_loaded_config(monkeypatch):
+    cfg = SageCoreConfig()
+    seen: dict = {}
+
+    class _State:
+        auth_enabled = False
+
+    class _App:
+        state = _State()
+
+    def _create_app(**kwargs):
+        seen["stack_config"] = kwargs.get("stack_config")
+        return _App()
+
+    def _guard(app):
+        seen["guarded"] = app
+        return "served-sentinel"
+
+    def _run(app, **_kwargs):
+        seen["served"] = app
+
+    monkeypatch.setattr("sys.argv", ["sage", "--vault-root", "/tmp/x"])
+    monkeypatch.setattr("sage.__main__.load_stack_config_or_default", lambda: cfg)
+    monkeypatch.setattr("sage.__main__.create_app", _create_app)
+    monkeypatch.setattr("sage.__main__.admission_guarded", _guard)
+    monkeypatch.setattr("sage.__main__.uvicorn.run", _run)
+
+    sage_main.main()
+
+    assert seen["stack_config"] is cfg
+    assert isinstance(seen["guarded"], _App)
+    assert seen["served"] == "served-sentinel"
+
+
+def test_parser_accepts_allow_unauthenticated_network_flag():
+    args = _build_parser().parse_args(["--allow-unauthenticated-network"])
+    assert args.allow_unauthenticated_network is True
+    assert _build_parser().parse_args([]).allow_unauthenticated_network is False

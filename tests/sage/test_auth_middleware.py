@@ -247,3 +247,72 @@ async def test_middleware_short_circuits_missing_token_before_inner() -> None:
     assert sent[0]["status"] == 401
     header_names = {name for name, _ in sent[0]["headers"]}
     assert b"www-authenticate" in header_names
+
+
+# --------------------------------------------------------------------------
+# Exemptions match exact path segments
+# --------------------------------------------------------------------------
+
+
+def _exempting_middleware(inner) -> AuthMiddleware:
+    """The middleware as ``create_app`` configures it, around ``inner``.
+
+    The exemption sets are read from the application's own middleware
+    registration rather than restated, so the cases below exercise the
+    exemptions production actually installs.
+    """
+    app = create_app(stack_config=_DISABLED)
+    (registration,) = [m for m in app.user_middleware if m.cls is AuthMiddleware]
+    return AuthMiddleware(
+        inner,
+        validator=_StubValidator(),
+        exempt_paths=registration.kwargs["exempt_paths"],
+        exempt_prefixes=registration.kwargs["exempt_prefixes"],
+    )
+
+
+@pytest.mark.parametrize("path", ["/health", "/upload", "/openapi.json", "/download/abc123"])
+async def test_exempt_paths_reach_inner_without_token(path) -> None:
+    reached = {"v": False}
+
+    async def inner(scope, receive, send):
+        reached["v"] = True
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    sent, _ = await _run(
+        _exempting_middleware(inner), {"type": "http", "path": path, "headers": []}
+    )
+    assert reached["v"] is True
+    assert sent[0]["status"] == 200
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/download/../sage_vaults",
+        "/download/./x",
+        "/download/.",
+        "/download/..",
+        "/download//x",
+        "/download/a/b",
+        "/download/",
+        "/download",
+        "/downloadx/a",
+        "/health/",
+        "/health/../sage_vaults",
+        "/sage_vaults/abc",
+        "/mcp/x",
+    ],
+)
+async def test_non_exact_segments_are_not_exempt(path) -> None:
+    reached = {"v": False}
+
+    async def inner(scope, receive, send):
+        reached["v"] = True
+
+    sent, _ = await _run(
+        _exempting_middleware(inner), {"type": "http", "path": path, "headers": []}
+    )
+    assert reached["v"] is False
+    assert sent[0]["status"] == 401
