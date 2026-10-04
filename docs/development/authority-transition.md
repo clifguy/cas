@@ -1,10 +1,11 @@
 # Development authority transition
 
-**Prepared activation candidate, not live adoption.** Guide and profile selection are
-prepared together. Required `.development-skills/activation-receipt.md` is absent,
-so selected operational routes fail closed. Candidate review proceeds under the
-still-effective pre-adoption live authority. No installation or SAGE supersession
-is performed by these repository edits.
+**Adopted.** The owner-authorized coordinated cutover is complete: guide and profile
+selection are live, and `.development-skills/activation-receipt.md` records the
+owner's decision, the installed bundle identity and the live authority readbacks.
+The receipt is ignored by Git, so it lives only in a checkout that was given one;
+a worktree without a verified receipt fails closed for the selected operational
+routes. No installation or SAGE supersession is performed by repository edits.
 
 ## Selected candidate bindings
 

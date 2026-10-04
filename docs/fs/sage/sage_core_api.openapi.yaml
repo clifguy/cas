@@ -12961,6 +12961,36 @@ components:
           $ref: '#/components/schemas/PipelineWorkInFlightErrorDetail'
       additionalProperties: false
       description: The refusal envelope for this error code.
+    RateLimitedErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - retry_after_seconds
+      properties:
+        retry_after_seconds:
+          type: integer
+          description: Seconds until the next attempt can be admitted.
+      description: Additional context for this refusal.
+    RateLimitedError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: rate_limited
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/RateLimitedErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
     ReabstractAlreadyInFlightErrorDetail:
       type: object
       additionalProperties: false
@@ -14965,6 +14995,7 @@ components:
             - path_traversal_denied
             - pipeline_incomplete
             - pipeline_work_in_flight
+            - rate_limited
             - reabstract_already_in_flight
             - reabstract_document_already_in_flight
             - recompute_pipeline_already_in_flight
@@ -15646,6 +15677,7 @@ components:
       - $ref: '#/components/schemas/PathTraversalDeniedError'
       - $ref: '#/components/schemas/PipelineIncompleteError'
       - $ref: '#/components/schemas/PipelineWorkInFlightError'
+      - $ref: '#/components/schemas/RateLimitedError'
       - $ref: '#/components/schemas/ReabstractAlreadyInFlightError'
       - $ref: '#/components/schemas/ReabstractDocumentAlreadyInFlightError'
       - $ref: '#/components/schemas/RecomputePipelineAlreadyInFlightError'
@@ -15774,6 +15806,7 @@ components:
           path_traversal_denied: '#/components/schemas/PathTraversalDeniedError'
           pipeline_incomplete: '#/components/schemas/PipelineIncompleteError'
           pipeline_work_in_flight: '#/components/schemas/PipelineWorkInFlightError'
+          rate_limited: '#/components/schemas/RateLimitedError'
           reabstract_already_in_flight: '#/components/schemas/ReabstractAlreadyInFlightError'
           reabstract_document_already_in_flight: '#/components/schemas/ReabstractDocumentAlreadyInFlightError'
           recompute_pipeline_already_in_flight: '#/components/schemas/RecomputePipelineAlreadyInFlightError'

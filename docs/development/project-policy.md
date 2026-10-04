@@ -1,6 +1,6 @@
 # CAS project policy
 
-Selected candidate procedure. The required activation receipt blocks operational use until the coordinated cutover; see [authority transition](authority-transition.md).
+Selected procedure. Operational use requires a verified `.development-skills/activation-receipt.md` in the intended worktree; see [authority transition](authority-transition.md).
 
 ## Responsibilities
 
@@ -59,9 +59,8 @@ the exact candidate, including both rename endpoints and authorized new paths.
 ## Approved candidate decisions
 
 The owner approved expanded substantive-review coverage, the shared three-round
-stopping rule and revised disposition-only D4. These rules take effect only with
-the coordinated authority transition and receipt. The pre-adoption live policy
-continues to govern review of this candidate until then.
+stopping rule and revised disposition-only D4. These rules took effect with the
+coordinated authority transition and govern wherever a verified receipt applies.
 
 ## Evidence boundary
 

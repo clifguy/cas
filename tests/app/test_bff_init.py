@@ -41,6 +41,7 @@ def _stub_settings():
         redirect_uri="r",
         session_cookie_name="sid",
         session_ttl_seconds=3600,
+        session_idle_seconds=3600,
     )
 
 

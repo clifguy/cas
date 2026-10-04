@@ -15,8 +15,10 @@ environment.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
+
+from app.backend.auth.rate_limit import LoginRateLimiter
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type checkers
     from app.backend.auth.oidc import OidcService
@@ -37,9 +39,18 @@ _REQUIRED = (_TENANT_ENV, _CLIENT_ID_ENV, _CLIENT_SECRET_ENV, _SAGE_APP_ID_URI_E
 
 DEFAULT_AUTHORITY_HOST = "https://login.microsoftonline.com"
 CALLBACK_PATH = "/app/auth/callback"
-SESSION_COOKIE_NAME = "cas_session"
+# The ``__Host-`` prefix makes the browser refuse the cookie unless it is
+# Secure, scoped to Path=/ and carries no Domain, so no sibling host or
+# insecure origin can set or shadow it.
+SESSION_COOKIE_NAME = "__Host-cas_session"
+# The session cookie's name before it took the prefix; sign-out still expires it.
+LEGACY_SESSION_COOKIE_NAME = "cas_session"
+# Binds an in-flight sign-in to the browser that began it: it carries a digest
+# of the flow's ``state``, and the callback refuses a ``state`` it does not match.
+LOGIN_BINDING_COOKIE_NAME = "__Host-cas_login"
 DEFAULT_POST_LOGIN_REDIRECT = "/"
 DEFAULT_SESSION_TTL_SECONDS = 8 * 60 * 60
+DEFAULT_SESSION_IDLE_SECONDS = 8 * 60 * 60
 
 
 @dataclass(frozen=True)
@@ -55,6 +66,7 @@ class BffAuthSettings:
     session_cookie_name: str = SESSION_COOKIE_NAME
     callback_path: str = CALLBACK_PATH
     session_ttl_seconds: int = DEFAULT_SESSION_TTL_SECONDS
+    session_idle_seconds: int = DEFAULT_SESSION_IDLE_SECONDS
     sage_base_url: str | None = None
 
     @property
@@ -100,3 +112,4 @@ class BffAuthContext:
     settings: BffAuthSettings
     oidc: OidcService
     store: SessionStore
+    login_limiter: LoginRateLimiter = field(default_factory=LoginRateLimiter)

@@ -1,6 +1,6 @@
 # CAS review records
 
-Selected candidate procedure. The required activation receipt blocks operational use until the coordinated cutover; see [authority transition](authority-transition.md).
+Selected procedure. Operational use requires a verified `.development-skills/activation-receipt.md` in the intended worktree; see [authority transition](authority-transition.md).
 
 ## Evidence and roles
 
@@ -95,8 +95,7 @@ Ask before round 4 and each later round. Resumes/handoffs/fixes do not reset the
 Every disposition ends with `**Cycle state:** <converged | not settled> — <signal>.`
 At not-settled round 2+, repeated CONFIRMED classes at a different site also carry
 `**Class:** <class> — the fix addressed <the instance | the class>.`
-These approved candidate rules require the coordinated activation receipt; until
-cutover, current work remains governed by the pre-adoption live CAS policy.
+These rules govern wherever a verified activation receipt applies.
 
 ## Merge consumer and retirement
 

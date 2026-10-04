@@ -1,6 +1,6 @@
 # CAS read-only triage
 
-Selected candidate procedure. The required activation receipt blocks operational use until the coordinated cutover; see [authority transition](../authority-transition.md).
+Selected procedure. Operational use requires a verified `.development-skills/activation-receipt.md` in the intended worktree; see [authority transition](../authority-transition.md).
 
 Use a supported project-policy read route and the explicit CAS procedure binding;
 never pass an unsupported `next` operation. Read live inventory/configuration and

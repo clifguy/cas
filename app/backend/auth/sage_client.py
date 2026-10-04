@@ -5,16 +5,21 @@ the user's session, so the user's identity reaches SAGE on every call and SAGE
 is never called as a service principal. This is the transport a standalone
 backend-for-frontend uses to reach SAGE over HTTP; the in-process deployment
 keeps its direct service calls.
+
+Acquiring the token may refresh it, which rotates the tokens in the session's
+cache; the client then writes the new cache back to the session store so the
+next request, on any replica, starts from the current refresh token.
 """
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import httpx
 
 from app.backend.auth.oidc import OidcService
-from app.backend.auth.session_store import Session
+from app.backend.auth.session_store import Session, SessionStore
 
 #: Explicit, generous request budget for the SAGE HTTP hop, replacing httpx's
 #: 5 s default read timeout. SAGE can answer a read slower than 5 s when a
@@ -34,13 +39,26 @@ class ObOSageClient:
         base_url: str,
         oidc: OidcService,
         *,
+        store: SessionStore | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._oidc = oidc
+        self._store = store
         self._client = client or httpx.AsyncClient(
             base_url=self._base_url, timeout=_DEFAULT_TIMEOUT
         )
+
+    async def _bearer(self, session: Session) -> str:
+        """Acquire the session's delegated token, persisting a changed cache.
+
+        The identity-provider call blocks, so it runs in a worker thread.
+        """
+        grant = await asyncio.to_thread(self._oidc.acquire_sage_token, session.token_cache)
+        if grant.token_cache is not None and self._store is not None:
+            await self._store.update_token_cache(session.session_id, grant.token_cache)
+            session.token_cache = grant.token_cache
+        return grant.access_token
 
     async def request(
         self, method: str, path: str, session: Session, **kwargs: Any
@@ -51,7 +69,7 @@ class ObOSageClient:
         token raises before any request is sent -- the client never falls back
         to an anonymous or service-principal call.
         """
-        token = self._oidc.acquire_sage_token(session.token_cache)
+        token = await self._bearer(session)
         headers = dict(kwargs.pop("headers", None) or {})
         headers["Authorization"] = f"Bearer {token}"
         return await self._client.request(method, path, headers=headers, **kwargs)
@@ -66,7 +84,7 @@ class ObOSageClient:
         response holds a live stream; the caller must ``aclose()`` it after
         consuming the body.
         """
-        token = self._oidc.acquire_sage_token(session.token_cache)
+        token = await self._bearer(session)
         headers = dict(kwargs.pop("headers", None) or {})
         headers["Authorization"] = f"Bearer {token}"
         request = self._client.build_request(method, path, headers=headers, **kwargs)

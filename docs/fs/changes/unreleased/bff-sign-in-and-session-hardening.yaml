@@ -1,0 +1,32 @@
+classification: minor
+category: [caller-adaptation]
+summary: >-
+  The hosted backend-for-frontend hardens interactive sign-in and its sessions.
+  Starting sign-in (begin_login) is rate-limited per client and answers a
+  client over the limit with the new rate_limited error (429), whose detail
+  carries retry_after_seconds and which also sets Retry-After; the family is
+  added to both OpenAPI specifications' typed error envelope and to the
+  packaged error contract, and SAGEError gains optional response headers to
+  carry it. begin_login also sets a short-lived __Host-cas_login cookie holding
+  a digest of the flow's state, and the callback completes only when that
+  cookie matches, so a sign-in finishes only in the browser that began it. The
+  session cookie is renamed __Host-cas_session; sign-out also expires the old
+  cas_session cookie. Sessions gain an idle timeout alongside the absolute
+  lifetime (both eight hours by default), expired pre-login records and
+  sessions are deleted as new ones are written, a refreshed token cache is
+  written back to its session, and the durable store encrypts the token cache
+  under a key derived from the client secret. Identity-provider discovery is
+  fetched once per process and identity-provider calls run off the event loop.
+for_callers: >-
+  Starting sign-in on a hosted CAS Application deployment can now be refused
+  with rate_limited (429) when one client starts too many sign-ins in a short
+  window; retry after detail.retry_after_seconds (also sent as Retry-After).
+  The sign-in callback now completes only in the browser that started the
+  sign-in. The session cookie is now named __Host-cas_session, so signed-in
+  users sign in once more after this release. Shipped without a deprecation
+  (security exposure).
+exemption:
+  kind: security-exposure
+  reason: >-
+    Keeping the old forms leaves sign-in open to unbounded unauthenticated
+    load and to completion in a browser other than the one that began it.

@@ -1,6 +1,6 @@
 # CAS smoke-test procedure
 
-Selected candidate procedure. The required activation receipt blocks operational use until the coordinated cutover; see [authority transition](../authority-transition.md).
+Selected procedure. Operational use requires a verified `.development-skills/activation-receipt.md` in the intended worktree; see [authority transition](../authority-transition.md).
 
 Resolve the intended PR/commit first from the explicit request or verified task
 context; read its cumulative change and acceptance behavior. Classify testability

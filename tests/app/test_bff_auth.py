@@ -19,7 +19,7 @@ from httpx import ASGITransport, AsyncClient
 from starlette.requests import Request
 
 from app.backend.auth.config import BffAuthContext, BffAuthSettings, load_bff_auth_settings
-from app.backend.auth.oidc import AuthError, LoginChallenge, LoginResult
+from app.backend.auth.oidc import AuthError, LoginChallenge, LoginResult, TokenGrant
 from app.backend.auth.sage_client import ObOSageClient
 from app.backend.auth.session_store import InMemorySessionStore, Session
 from app.backend.auth.urls import external_base_url
@@ -67,10 +67,10 @@ class StubOidcService:
             token_cache=_TOKEN_CACHE_SENTINEL,
         )
 
-    def acquire_sage_token(self, token_cache: str) -> str:
+    def acquire_sage_token(self, token_cache: str) -> TokenGrant:
         if not token_cache:
             raise AuthError("no delegated token in session")
-        return "sage-token"
+        return TokenGrant(access_token="sage-token", token_cache=None)
 
 
 @pytest.fixture
@@ -253,7 +253,7 @@ async def test_d1_callback_sets_cookie_and_redirects(auth_client):
     assert resp.headers["location"] == "/app/"
 
     set_cookie = resp.headers.get("set-cookie", "")
-    assert "cas_session=" in set_cookie
+    assert "__Host-cas_session=" in set_cookie
     lowered = set_cookie.lower()
     assert "httponly" in lowered
     assert "secure" in lowered
@@ -328,7 +328,7 @@ async def test_f3_logout_clears_session_and_cookie(auth_client):
     logout = await auth_client.post("/app/auth/logout")
     assert logout.status_code == 204
     # The cookie is cleared (expired Set-Cookie).
-    assert "cas_session=" in logout.headers.get("set-cookie", "")
+    assert "__Host-cas_session=" in logout.headers.get("set-cookie", "")
     # The session is gone; clear the jar so a stale cookie cannot mask it.
     auth_client.cookies.clear()
     follow_up = await auth_client.get("/app/auth/me")

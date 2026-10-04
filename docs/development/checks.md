@@ -1,6 +1,6 @@
 # CAS checks procedure
 
-Selected candidate procedure. The required activation receipt blocks operational use until the coordinated cutover; see [authority transition](authority-transition.md).
+Selected procedure. Operational use requires a verified `.development-skills/activation-receipt.md` in the intended worktree; see [authority transition](authority-transition.md).
 
 Use the intended worktree's guide and locked environment, not imports from another
 checkout. Provision with `uv sync --locked --extra test --extra mlx --extra dev --extra ocr`;
