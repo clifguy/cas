@@ -69,6 +69,10 @@ dependencies = [
     # with no Apple-Silicon constraint, so it stays in the base set; the
     # [crypto] extra pulls `cryptography` for the asymmetric verification path.
     "pyjwt[crypto]>=2.10",
+    # Authenticated encryption (Fernet, with an HKDF-derived key) of the
+    # backend-for-frontend's stored token caches. Already present through
+    # pyjwt[crypto]; named here because the session store imports it directly.
+    "cryptography>=46",
     # Managed-identity secret resolution for the cloud profile (CAS-ADR-042):
     # azure-identity mints the workload's managed-identity tokens (Key Vault
     # data-plane reads and the Postgres Entra access token), and

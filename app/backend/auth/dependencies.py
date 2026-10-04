@@ -16,6 +16,7 @@ from fastapi import Depends, Request
 
 from app.backend.auth.config import BffAuthContext, BffAuthSettings
 from app.backend.auth.oidc import OidcService
+from app.backend.auth.rate_limit import LoginRateLimiter
 from app.backend.auth.session_store import Session, SessionService, SessionStore
 from sage.api.errors import SAGEError
 
@@ -45,6 +46,11 @@ def get_session_store(request: Request) -> SessionStore:
 def get_oidc_service(request: Request) -> OidcService:
     """Resolve the OIDC service, or raise ``auth_not_configured``."""
     return _context(request).oidc
+
+
+def get_login_rate_limiter(request: Request) -> LoginRateLimiter:
+    """Resolve the sign-in rate limiter, or raise ``auth_not_configured``."""
+    return _context(request).login_limiter
 
 
 def get_session_service(request: Request) -> SessionService:

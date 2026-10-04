@@ -17,7 +17,7 @@ import httpx
 import pytest
 from fastapi import FastAPI, Request
 
-from app.backend.auth.oidc import AuthError
+from app.backend.auth.oidc import AuthError, TokenGrant
 from app.backend.auth.sage_client import ObOSageClient
 from app.backend.auth.session_store import Session
 from app.backend.transport import (
@@ -54,11 +54,11 @@ class _StubOidc:
         self._token = token
         self.calls: list[str] = []
 
-    def acquire_sage_token(self, token_cache: str) -> str:
+    def acquire_sage_token(self, token_cache: str) -> TokenGrant:
         self.calls.append(token_cache)
         if self._token is None:
             raise AuthError("no delegated token available")
-        return self._token
+        return TokenGrant(access_token=self._token, token_cache=None)
 
 
 def _mock_sage(

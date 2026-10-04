@@ -1,6 +1,6 @@
 # azure-deploy-review
 
-Selected candidate procedure. The required activation receipt blocks operational use until the coordinated cutover; see [authority transition](../authority-transition.md).
+Selected procedure. Operational use requires a verified `.development-skills/activation-receipt.md` in the intended worktree; see [authority transition](../authority-transition.md).
 Read [Runtime selection](references/runtime.md) and [dependencies](references/dependencies.md).
 
 A CAS-owned review pass for **Azure deployment surfaces**. It catches the class of failure that is expensive precisely because it is invisible to ordinary gates: a change that passes the linter, the unit tests, the IaC compile, and CI, yet is wrong — and is discovered only after a 15–40 minute build → deploy → converge → preflight cycle. The catalog below is distilled from real Azure-deploy failures; it is the judgment layer on top of whatever deterministic gates a repo already has.

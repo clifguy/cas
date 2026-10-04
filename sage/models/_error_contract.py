@@ -1102,6 +1102,7 @@ SCHEMAS = json.loads(
         "path_traversal_denied": "#/components/schemas/PathTraversalDeniedError",
         "pipeline_incomplete": "#/components/schemas/PipelineIncompleteError",
         "pipeline_work_in_flight": "#/components/schemas/PipelineWorkInFlightError",
+        "rate_limited": "#/components/schemas/RateLimitedError",
         "reabstract_already_in_flight": "#/components/schemas/ReabstractAlreadyInFlightError",
         "reabstract_document_already_in_flight": "#/components/schemas/ReabstractDocumentAlreadyInFlightError",
         "recompute_pipeline_already_in_flight": "#/components/schemas/RecomputePipelineAlreadyInFlightError",
@@ -1364,6 +1365,9 @@ SCHEMAS = json.loads(
       },
       {
         "$ref": "#/components/schemas/PipelineWorkInFlightError"
+      },
+      {
+        "$ref": "#/components/schemas/RateLimitedError"
       },
       {
         "$ref": "#/components/schemas/ReabstractAlreadyInFlightError"
@@ -2251,6 +2255,7 @@ SCHEMAS = json.loads(
             "path_traversal_denied",
             "pipeline_incomplete",
             "pipeline_work_in_flight",
+            "rate_limited",
             "reabstract_already_in_flight",
             "reabstract_document_already_in_flight",
             "recompute_pipeline_already_in_flight",
@@ -4317,6 +4322,47 @@ SCHEMAS = json.loads(
     },
     "required": [
       "vault_id"
+    ],
+    "type": "object"
+  },
+  "RateLimitedError": {
+    "additionalProperties": false,
+    "description": "The refusal envelope for this error code.",
+    "properties": {
+      "code": {
+        "const": "rate_limited",
+        "description": "Machine-readable error code selecting this envelope.",
+        "type": "string"
+      },
+      "detail": {
+        "$ref": "#/components/schemas/RateLimitedErrorDetail"
+      },
+      "message": {
+        "description": "Human-readable error description.",
+        "type": "string"
+      },
+      "read_meta": {
+        "$ref": "#/components/schemas/ReadMeta"
+      }
+    },
+    "required": [
+      "code",
+      "message",
+      "detail"
+    ],
+    "type": "object"
+  },
+  "RateLimitedErrorDetail": {
+    "additionalProperties": false,
+    "description": "Additional context for this refusal.",
+    "properties": {
+      "retry_after_seconds": {
+        "description": "Seconds until the next attempt can be admitted.",
+        "type": "integer"
+      }
+    },
+    "required": [
+      "retry_after_seconds"
     ],
     "type": "object"
   },

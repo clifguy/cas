@@ -63,7 +63,7 @@ async def _assemble_transport(app: FastAPI, stack_cfg: SageCoreConfig) -> None:
 
     from app.backend.auth.sage_client import ObOSageClient
 
-    client = ObOSageClient(bff_auth.settings.sage_base_url, bff_auth.oidc)
+    client = ObOSageClient(bff_auth.settings.sage_base_url, bff_auth.oidc, store=bff_auth.store)
     app.state.sage_transport = resolve_bff_transport(stack_cfg, oidc_client=client)
 
 

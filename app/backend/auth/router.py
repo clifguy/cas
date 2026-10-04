@@ -2,7 +2,8 @@
 
 GET  /app/auth/login    -- begin interactive sign-in; returns the identity
                            provider's authorization URL for the SPA to navigate
-                           the browser to.
+                           the browser to, and sets a short-lived cookie binding
+                           the sign-in to this browser. Rate-limited per client.
 GET  /app/auth/callback -- the identity provider's redirect target; exchanges
                            the authorization code, opens a server-side session,
                            sets the session cookie, and redirects the browser
@@ -18,29 +19,45 @@ service-as-load-bearer shape.
 
 from __future__ import annotations
 
+import asyncio
+import functools
+import hashlib
+import hmac
 import secrets
 import time
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse, Response
 
-from app.backend.auth.config import BffAuthSettings
+from app.backend.auth.config import (
+    LEGACY_SESSION_COOKIE_NAME,
+    LOGIN_BINDING_COOKIE_NAME,
+    BffAuthSettings,
+)
 from app.backend.auth.dependencies import (
     get_auth_settings,
+    get_login_rate_limiter,
     get_oidc_service,
     get_session_service,
     get_session_store,
 )
 from app.backend.auth.oidc import AuthError, OidcService
+from app.backend.auth.rate_limit import LoginRateLimiter, client_key
 from app.backend.auth.session_store import (
     PendingLogin,
     Session,
     SessionService,
     SessionStore,
+    derive_key,
 )
 from app.backend.auth.urls import callback_url
-from app.backend.models import LoginChallengeResponse, SessionInfoResponse, UserClaims
-from sage.api.errors import SAGEError
+from app.backend.models import (
+    ErrorResponse,
+    LoginChallengeResponse,
+    SessionInfoResponse,
+    UserClaims,
+)
+from sage.api.errors import RateLimitedError, SAGEError
 from sage.api.wire_route import WireRoute
 
 router = APIRouter(route_class=WireRoute, prefix="/app/auth", tags=["auth"])
@@ -50,22 +67,72 @@ router = APIRouter(route_class=WireRoute, prefix="/app/auth", tags=["auth"])
 _PENDING_TTL_SECONDS = 600
 
 
-@router.get("/login", response_model=LoginChallengeResponse, operation_id="begin_login")
+_BINDING_KEY_INFO = b"cas-bff-login-binding-v1"
+
+
+@functools.lru_cache(maxsize=4)
+def _binding_key(secret: str) -> bytes:
+    return derive_key(secret, _BINDING_KEY_INFO)
+
+
+def _state_digest(secret: str, state: str) -> str:
+    """The binding-cookie value for ``state``: an HMAC-SHA256 under a server key.
+
+    Keyed by a key derived from the client secret, so the value cannot be
+    computed from ``state`` alone, which travels in the authorization and
+    callback URLs.
+    """
+    return hmac.new(_binding_key(secret), state.encode(), hashlib.sha256).hexdigest()
+
+
+@router.get(
+    "/login",
+    response_model=LoginChallengeResponse,
+    operation_id="begin_login",
+    responses={
+        429: {
+            "model": ErrorResponse,
+            "description": (
+                "`rate_limited`: this client has started too many sign-ins recently. "
+                "Retry after `detail.retry_after_seconds`, also sent as the "
+                "`Retry-After` header."
+            ),
+        },
+    },
+)
 async def begin_login(
     request: Request,
+    response: Response,
     settings: BffAuthSettings = Depends(get_auth_settings),
     oidc: OidcService = Depends(get_oidc_service),
     store: SessionStore = Depends(get_session_store),
+    limiter: LoginRateLimiter = Depends(get_login_rate_limiter),
 ) -> LoginChallengeResponse:
-    """Begin interactive sign-in and return the authorization URL."""
+    """Begin interactive sign-in and return the authorization URL.
+
+    Each start replaces the browser's binding cookie, so when one browser starts
+    sign-in twice, only the latest flow completes.
+    """
+    retry_after = limiter.check(client_key(request))
+    if retry_after is not None:
+        raise RateLimitedError(retry_after)
     redirect_uri = callback_url(request, settings.callback_path)
-    challenge = oidc.begin_login(redirect_uri)
+    challenge = await asyncio.to_thread(oidc.begin_login, redirect_uri)
     await store.put_pending(
         PendingLogin(
             state=challenge.state,
             flow=challenge.flow,
             expires_at=time.time() + _PENDING_TTL_SECONDS,
         )
+    )
+    response.set_cookie(
+        LOGIN_BINDING_COOKIE_NAME,
+        _state_digest(settings.client_secret, challenge.state),
+        max_age=_PENDING_TTL_SECONDS,
+        httponly=True,
+        secure=True,
+        samesite="lax",
+        path="/",
     )
     return LoginChallengeResponse(
         authorization_url=challenge.authorization_url, state=challenge.state
@@ -86,12 +153,21 @@ async def auth_callback(
         raise SAGEError("auth_failed", message, 400)
 
     state = params.get("state")
-    pending = await store.take_pending(state) if state else None
+    # The sign-in must complete in the browser that began it: that browser holds
+    # the binding cookie for this state. Checked before the pending record is
+    # consumed, so a refused callback leaves the genuine sign-in completable.
+    # Compared as bytes: the header is decoded as latin-1, so the cookie can hold
+    # characters that a text comparison refuses.
+    binding = request.cookies.get(LOGIN_BINDING_COOKIE_NAME, "").encode()
+    expected = _state_digest(settings.client_secret, state).encode() if state else b""
+    if not state or not hmac.compare_digest(binding, expected):
+        raise SAGEError("invalid_state", "Missing or unrecognized sign-in state.", 400)
+    pending = await store.take_pending(state)
     if pending is None:
         raise SAGEError("invalid_state", "Missing or unrecognized sign-in state.", 400)
 
     try:
-        result = oidc.complete_login(pending.flow, params)
+        result = await asyncio.to_thread(oidc.complete_login, pending.flow, params)
     except AuthError as exc:
         raise SAGEError("auth_failed", str(exc), 400) from exc
 
@@ -106,6 +182,9 @@ async def auth_callback(
         )
     )
     response = RedirectResponse(settings.post_login_redirect, status_code=302)
+    response.delete_cookie(
+        LOGIN_BINDING_COOKIE_NAME, path="/", secure=True, httponly=True, samesite="lax"
+    )
     response.set_cookie(
         settings.session_cookie_name,
         session_id,
@@ -150,5 +229,8 @@ async def logout(
     session_id = request.cookies.get(settings.session_cookie_name)
     await sessions.terminate(session_id)
     response = Response(status_code=204)
-    response.delete_cookie(settings.session_cookie_name, path="/")
+    response.delete_cookie(
+        settings.session_cookie_name, path="/", secure=True, httponly=True, samesite="lax"
+    )
+    response.delete_cookie(LEGACY_SESSION_COOKIE_NAME, path="/")
     return response

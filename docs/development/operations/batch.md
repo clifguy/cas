@@ -1,6 +1,6 @@
 # /batch
 
-Selected candidate procedure. The required activation receipt blocks operational use until the coordinated cutover; see [authority transition](../authority-transition.md).
+Selected procedure. Operational use requires a verified `.development-skills/activation-receipt.md` in the intended worktree; see [authority transition](../authority-transition.md).
 Read [Runtime selection](references/runtime.md) and [dependencies](references/dependencies.md).
 
 Operational skill for cohort planning + execution: take a set of templated CAS tickets, resolve every recurring design question once at the cohort level, persist the decisions as a vault-resident reference document, validate the end-to-end mechanism with a single-ticket pilot, pause at a structural dispatch gate, fire per-ticket subagents that each land their work as a draft PR, pause at a structural merge gate, then land every PR on main via `/merge`. End-to-end in a single session.

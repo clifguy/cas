@@ -294,7 +294,7 @@ async def _initialize_bff_auth(app: FastAPI, stack_cfg: object) -> None:
     from psycopg.conninfo import make_conninfo
 
     from app.backend.auth.oidc import MsalOidcService
-    from app.backend.auth.session_store import PostgresSessionStore
+    from app.backend.auth.session_store import PostgresSessionStore, TokenCacheCipher
     from sage import profiles
     from sage.storage.postgres.pool import PostgresConnectionParams, build_conn_kwargs
 
@@ -320,6 +320,8 @@ async def _initialize_bff_auth(app: FastAPI, stack_cfg: object) -> None:
 
     store = PostgresSessionStore(
         make_conninfo(**build_conn_kwargs(params, conn_environ)),
+        cipher=TokenCacheCipher(settings.client_secret),
+        idle_seconds=settings.session_idle_seconds,
         connection_class=connection_class,
     )
     await store.open()

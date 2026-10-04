@@ -1,10 +1,11 @@
 # Development authority transition
 
-**Prepared activation candidate, not live adoption.** Guide and profile selection are
-prepared together. Required `.development-skills/activation-receipt.md` is absent,
-so selected operational routes fail closed. Candidate review proceeds under the
-still-effective pre-adoption live authority. No installation or SAGE supersession
-is performed by these repository edits.
+**Adopted.** The owner-authorized coordinated cutover is complete: guide and profile
+selection are live, and `.development-skills/activation-receipt.md` records the
+owner's decision, the installed bundle identity and the live authority readbacks.
+The receipt is ignored by Git, so it lives only in a checkout that was given one;
+a worktree without a verified receipt fails closed for the selected operational
+routes. No installation or SAGE supersession is performed by repository edits.
 
 ## Selected candidate bindings
 
@@ -78,13 +79,16 @@ write, cleanup or ticket closure is authorized by these candidates.
 
 ## Publishing the transition source
 
-The exact coordinated activation candidate can be published and merged through
-the retained pre-adoption workflow after separate owner authorization and its
-required exact-candidate review/check evidence. Refresh the still-effective live
-authorities at that boundary. This one-time route avoids requiring evidence of
-completed activation before the source can land. It does not apply to ordinary
-work using the newly selected workflow, supply a receipt, or authorize installation
-or live supersession. Source publication remains distinct from cutover.
+Spent: the transition source has been published, and this record is kept for
+history. The exact coordinated activation candidate was published and merged
+through the retained pre-adoption workflow under separate owner authorization and
+its exact-candidate review/check evidence, so that the source could land before
+activation existed. The route never applied to ordinary work using the selected
+workflow, never supplied a receipt, and never authorized installation or live
+supersession. Source publication remained distinct from cutover.
+
+The activation, rollback and receipt procedures in the neighboring sections remain
+in force for any later re-activation, rollback or receipt refresh.
 
 ## Cutover receipt
 

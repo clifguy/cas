@@ -16,6 +16,7 @@ from fastapi import FastAPI
 
 from app.backend.asgi import create_bff_app
 from app.backend.auth.config import BffAuthContext, BffAuthSettings
+from app.backend.auth.oidc import TokenGrant
 from app.backend.auth.session_store import InMemorySessionStore, Session
 from sage.config import SageCoreConfig
 
@@ -51,8 +52,8 @@ class StubOidc:
     def __init__(self, token: str = "delegated-token") -> None:  # noqa: S107 -- test fixture token, not a real secret
         self._token = token
 
-    def acquire_sage_token(self, token_cache: str) -> str:
-        return self._token
+    def acquire_sage_token(self, token_cache: str) -> TokenGrant:
+        return TokenGrant(access_token=self._token, token_cache=None)
 
 
 async def auth_app(*, with_session: bool) -> FastAPI:

@@ -21,12 +21,15 @@ from app.backend.auth.session_store import (
     PendingLogin,
     PostgresSessionStore,
     Session,
+    TokenCacheCipher,
 )
 
 # Presence flag for the class-level skip only. The live DSN each test connects
 # with comes from the ``pg_dsn`` fixture, read at runtime after the isolation
 # provisioner has rewritten SAGE_TEST_PG_DSN to this process's throwaway db.
 PG_DSN = os.environ.get("SAGE_TEST_PG_DSN")
+
+_CIPHER = TokenCacheCipher("test-client-secret")
 
 
 def _session(session_id: str, *, ttl: float = 100.0) -> Session:
@@ -107,14 +110,14 @@ class TestPostgresSessionStore:
 
     async def test_h1_roundtrip_across_fresh_instances(self, pg_dsn, schema):
         """A session written by one instance is read by a fresh one (scale-out)."""
-        writer = PostgresSessionStore(pg_dsn, schema=schema)
+        writer = PostgresSessionStore(pg_dsn, schema=schema, cipher=_CIPHER)
         await writer.open()
         try:
             await writer.create_session(_session("sid-1"))
         finally:
             await writer.close()
 
-        reader = PostgresSessionStore(pg_dsn, schema=schema)
+        reader = PostgresSessionStore(pg_dsn, schema=schema, cipher=_CIPHER)
         await reader.open()
         try:
             got = await reader.get_session("sid-1")
@@ -128,10 +131,10 @@ class TestPostgresSessionStore:
 
     async def test_h1b_bootstrap_is_idempotent(self, pg_dsn, schema):
         """Opening (and so bootstrapping) twice on one schema is a no-op."""
-        first = PostgresSessionStore(pg_dsn, schema=schema)
+        first = PostgresSessionStore(pg_dsn, schema=schema, cipher=_CIPHER)
         await first.open()
         await first.close()
-        second = PostgresSessionStore(pg_dsn, schema=schema)
+        second = PostgresSessionStore(pg_dsn, schema=schema, cipher=_CIPHER)
         await second.open()
         try:
             await second.create_session(_session("sid-2"))
@@ -141,7 +144,7 @@ class TestPostgresSessionStore:
             await _drop_schema(pg_dsn, schema)
 
     async def test_h3_expired_session_is_absent(self, pg_dsn, schema):
-        store = PostgresSessionStore(pg_dsn, schema=schema)
+        store = PostgresSessionStore(pg_dsn, schema=schema, cipher=_CIPHER)
         await store.open()
         try:
             await store.create_session(_session("sid-x", ttl=-1.0))
@@ -151,7 +154,7 @@ class TestPostgresSessionStore:
             await _drop_schema(pg_dsn, schema)
 
     async def test_pending_single_use(self, pg_dsn, schema):
-        store = PostgresSessionStore(pg_dsn, schema=schema)
+        store = PostgresSessionStore(pg_dsn, schema=schema, cipher=_CIPHER)
         await store.open()
         try:
             await store.put_pending(
@@ -202,7 +205,7 @@ class TestManagedIdentityConnectionClass:
         class _FakeClass:
             pass
 
-        store = PostgresSessionStore(_FAKE_CONNINFO, connection_class=_FakeClass)
+        store = PostgresSessionStore(_FAKE_CONNINFO, cipher=_CIPHER, connection_class=_FakeClass)
         monkeypatch.setattr(store, "_bootstrap", _async_noop)
         await store.open()
 
@@ -224,7 +227,7 @@ class TestManagedIdentityConnectionClass:
 
         monkeypatch.setattr(psycopg_pool, "AsyncConnectionPool", _FakePool)
 
-        store = PostgresSessionStore(_FAKE_CONNINFO)
+        store = PostgresSessionStore(_FAKE_CONNINFO, cipher=_CIPHER)
         monkeypatch.setattr(store, "_bootstrap", _async_noop)
         await store.open()
 
@@ -257,14 +260,16 @@ class TestManagedIdentityConnectionClass:
                 raise RuntimeError("token-connect-sentinel")
 
         # Cloud branch: connection_class is set → token class must be called.
-        cloud_store = PostgresSessionStore(_FAKE_CONNINFO, connection_class=_FakeTokenClass)
+        cloud_store = PostgresSessionStore(
+            _FAKE_CONNINFO, cipher=_CIPHER, connection_class=_FakeTokenClass
+        )
         with pytest.raises(RuntimeError, match="token-connect-sentinel"):
             await cloud_store._bootstrap()
         assert token_calls == ["token"]
         assert base_calls == []
 
         # Local branch: no connection_class → base psycopg.AsyncConnection is called.
-        local_store = PostgresSessionStore(_FAKE_CONNINFO)
+        local_store = PostgresSessionStore(_FAKE_CONNINFO, cipher=_CIPHER)
         with pytest.raises(RuntimeError, match="base-connect-sentinel"):
             await local_store._bootstrap()
         assert base_calls == ["base"]

@@ -42,6 +42,8 @@ class SAGEError(Exception):
         message: str,
         status_code: int,
         detail: dict | None = None,
+        *,
+        headers: dict[str, str] | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
@@ -51,6 +53,9 @@ class SAGEError(Exception):
         # its keys vary by code, so an empty dict says nothing the code has not.
         # Normalized here, once, so every renderer applies the plain null rule.
         self.detail = detail or None
+        # Response headers the refusal carries alongside its envelope, such as
+        # ``Retry-After`` on a rate-limit refusal.
+        self.headers = headers
 
 
 class DocumentNotFoundError(SAGEError):
@@ -1797,6 +1802,24 @@ class VaultAlreadyExistsError(SAGEError):
         )
 
 
+class RateLimitedError(SAGEError):
+    """429: the caller has exceeded a rate limit; retry after the given delay.
+
+    The delay is carried twice: in ``detail.retry_after_seconds`` for callers
+    reading the envelope and in the ``Retry-After`` header for HTTP clients
+    that honor it.
+    """
+
+    def __init__(self, retry_after_seconds: int) -> None:
+        super().__init__(
+            code="rate_limited",
+            message="Too many requests; retry after the delay given.",
+            status_code=429,
+            detail={"retry_after_seconds": retry_after_seconds},
+            headers={"Retry-After": str(retry_after_seconds)},
+        )
+
+
 class ReabstractAlreadyInFlightError(SAGEError):
     """409: a reabstract_deferred operation is already running on the vault.
 
@@ -3360,6 +3383,7 @@ def register_exception_handlers(app: FastAPI) -> None:
                     detail=exc.detail,
                 )
             ),
+            headers=exc.headers,
         )
 
     @app.exception_handler(RequestValidationError)

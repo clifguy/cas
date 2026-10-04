@@ -64,7 +64,7 @@ servers:
     description: Local profile (FastAPI).
 
 # No `securitySchemes` block, and no operation-level `security`. A hosted
-# deployment's backend-for-frontend requires the `cas_session` cookie opened by
+# deployment's backend-for-frontend requires the `__Host-cas_session` cookie opened by
 # the OIDC callback on `/app/scan` and `/app/ingest`, and refuses a request without a signed-in
 # session with `auth_required` 401 before its parameters are bound or refused, so
 # the refusal is the same whatever the request carries; the server hosting the
@@ -398,8 +398,11 @@ paths:
         Starts the confidential-client authorization-code flow and returns the
         identity-provider authorization URL the single-page app navigates the
         browser to. A short-lived pre-login record is held server-side so the
-        callback can validate the round-trip; no tokens are issued to the
-        browser here. Available only when the deployment is configured for
+        callback can validate the round-trip, and the response sets a
+        short-lived `__Host-cas_login` cookie binding the sign-in to this
+        browser: the callback completes only in the browser that began it. No
+        tokens are issued to the browser here. Sign-in starts are rate-limited
+        per client. Available only when the deployment is configured for
         interactive auth; otherwise returns 503 `auth_not_configured`.
       tags: [Auth]
       responses:
@@ -409,6 +412,15 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/LoginChallengeResponse"
+        "429":
+          description: >-
+            `rate_limited`: this client has started too many sign-ins recently.
+            Retry after `detail.retry_after_seconds`, also sent as the
+            `Retry-After` header.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
         "503":
           description: >-
             `auth_not_configured`: interactive sign-in is not configured for
@@ -3425,6 +3437,36 @@ components:
           $ref: '#/components/schemas/PipelineWorkInFlightErrorDetail'
       additionalProperties: false
       description: The refusal envelope for this error code.
+    RateLimitedErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - retry_after_seconds
+      properties:
+        retry_after_seconds:
+          type: integer
+          description: Seconds until the next attempt can be admitted.
+      description: Additional context for this refusal.
+    RateLimitedError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: rate_limited
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/RateLimitedErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
     ReabstractAlreadyInFlightErrorDetail:
       type: object
       additionalProperties: false
@@ -5429,6 +5471,7 @@ components:
             - path_traversal_denied
             - pipeline_incomplete
             - pipeline_work_in_flight
+            - rate_limited
             - reabstract_already_in_flight
             - reabstract_document_already_in_flight
             - recompute_pipeline_already_in_flight
@@ -6110,6 +6153,7 @@ components:
       - $ref: '#/components/schemas/PathTraversalDeniedError'
       - $ref: '#/components/schemas/PipelineIncompleteError'
       - $ref: '#/components/schemas/PipelineWorkInFlightError'
+      - $ref: '#/components/schemas/RateLimitedError'
       - $ref: '#/components/schemas/ReabstractAlreadyInFlightError'
       - $ref: '#/components/schemas/ReabstractDocumentAlreadyInFlightError'
       - $ref: '#/components/schemas/RecomputePipelineAlreadyInFlightError'
@@ -6238,6 +6282,7 @@ components:
           path_traversal_denied: '#/components/schemas/PathTraversalDeniedError'
           pipeline_incomplete: '#/components/schemas/PipelineIncompleteError'
           pipeline_work_in_flight: '#/components/schemas/PipelineWorkInFlightError'
+          rate_limited: '#/components/schemas/RateLimitedError'
           reabstract_already_in_flight: '#/components/schemas/ReabstractAlreadyInFlightError'
           reabstract_document_already_in_flight: '#/components/schemas/ReabstractDocumentAlreadyInFlightError'
           recompute_pipeline_already_in_flight: '#/components/schemas/RecomputePipelineAlreadyInFlightError'
