@@ -8,7 +8,7 @@ summary: >-
   added to both OpenAPI specifications' typed error envelope and to the
   packaged error contract, and SAGEError gains optional response headers to
   carry it. begin_login also sets a short-lived __Host-cas_login cookie holding
-  a digest of the flow's state, and the callback completes only when that
+  a keyed digest of the flow's state, and the callback completes only when that
   cookie matches, so a sign-in finishes only in the browser that began it. The
   session cookie is renamed __Host-cas_session; sign-out also expires the old
   cas_session cookie. Sessions gain an idle timeout alongside the absolute

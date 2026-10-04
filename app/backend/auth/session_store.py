@@ -35,6 +35,18 @@ TOUCH_INTERVAL_SECONDS = 60
 _KEY_DERIVATION_INFO = b"cas-bff-token-cache-v1"
 
 
+def derive_key(secret: str, info: bytes) -> bytes:
+    """Derive a 32-byte key from ``secret`` with HKDF-SHA256, separated by ``info``.
+
+    Distinct ``info`` values yield independent keys from the one secret, so each
+    use of a derived key is isolated from the others.
+    """
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.hazmat.primitives.kdf.hkdf import HKDF
+
+    return HKDF(algorithm=hashes.SHA256(), length=32, salt=None, info=info).derive(secret.encode())
+
+
 @dataclass
 class Session:
     """A signed-in user's durable server-side session.
@@ -74,12 +86,8 @@ class TokenCacheCipher:
 
     def __init__(self, secret: str) -> None:
         from cryptography.fernet import Fernet
-        from cryptography.hazmat.primitives import hashes
-        from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-        key = HKDF(
-            algorithm=hashes.SHA256(), length=32, salt=None, info=_KEY_DERIVATION_INFO
-        ).derive(secret.encode())
+        key = derive_key(secret, _KEY_DERIVATION_INFO)
         self._fernet = Fernet(base64.urlsafe_b64encode(key))
 
     def encrypt(self, plaintext: str) -> str:
@@ -272,6 +280,8 @@ class PostgresSessionStore(SessionStore):
             "ADD COLUMN IF NOT EXISTS last_seen_at double precision NOT NULL DEFAULT 0",
             f'CREATE INDEX IF NOT EXISTS "sessions_expires_at_idx" '  # noqa: S608
             f'ON "{schema}"."sessions" (expires_at)',
+            f'CREATE INDEX IF NOT EXISTS "sessions_last_seen_at_idx" '  # noqa: S608
+            f'ON "{schema}"."sessions" (last_seen_at)',
             f'CREATE TABLE IF NOT EXISTS "{schema}"."pending_logins" ('  # noqa: S608
             "state text PRIMARY KEY, flow jsonb NOT NULL, expires_at double precision NOT NULL)",
             f'CREATE INDEX IF NOT EXISTS "pending_logins_expires_at_idx" '  # noqa: S608

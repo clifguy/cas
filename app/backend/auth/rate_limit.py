@@ -11,6 +11,10 @@ The client key is the address the container ingress appends to
 ``X-Forwarded-For``: the rightmost entry, which a client cannot forge because
 the ingress writes it. Entries to its left are client-supplied and ignored.
 Without the header (a direct, unproxied request) the peer address is the key.
+This trusts the header unconditionally, so it holds only where every request
+reaches the backend through an ingress that appends to it, as the hosted
+profile's external container ingress does. Behind no appending proxy the
+header is client-supplied and the key is whatever the caller sends.
 """
 
 from __future__ import annotations

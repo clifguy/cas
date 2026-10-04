@@ -20,6 +20,7 @@ service-as-load-bearer shape.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hashlib
 import hmac
 import secrets
@@ -47,6 +48,7 @@ from app.backend.auth.session_store import (
     Session,
     SessionService,
     SessionStore,
+    derive_key,
 )
 from app.backend.auth.urls import callback_url
 from app.backend.models import (
@@ -65,9 +67,22 @@ router = APIRouter(route_class=WireRoute, prefix="/app/auth", tags=["auth"])
 _PENDING_TTL_SECONDS = 600
 
 
-def _state_digest(state: str) -> str:
-    """The binding-cookie value for ``state``: its SHA-256 hex digest."""
-    return hashlib.sha256(state.encode()).hexdigest()
+_BINDING_KEY_INFO = b"cas-bff-login-binding-v1"
+
+
+@functools.lru_cache(maxsize=4)
+def _binding_key(secret: str) -> bytes:
+    return derive_key(secret, _BINDING_KEY_INFO)
+
+
+def _state_digest(secret: str, state: str) -> str:
+    """The binding-cookie value for ``state``: an HMAC-SHA256 under a server key.
+
+    Keyed by a key derived from the client secret, so the value cannot be
+    computed from ``state`` alone, which travels in the authorization and
+    callback URLs.
+    """
+    return hmac.new(_binding_key(secret), state.encode(), hashlib.sha256).hexdigest()
 
 
 @router.get(
@@ -93,7 +108,11 @@ async def begin_login(
     store: SessionStore = Depends(get_session_store),
     limiter: LoginRateLimiter = Depends(get_login_rate_limiter),
 ) -> LoginChallengeResponse:
-    """Begin interactive sign-in and return the authorization URL."""
+    """Begin interactive sign-in and return the authorization URL.
+
+    Each start replaces the browser's binding cookie, so when one browser starts
+    sign-in twice, only the latest flow completes.
+    """
     retry_after = limiter.check(client_key(request))
     if retry_after is not None:
         raise RateLimitedError(retry_after)
@@ -108,7 +127,7 @@ async def begin_login(
     )
     response.set_cookie(
         LOGIN_BINDING_COOKIE_NAME,
-        _state_digest(challenge.state),
+        _state_digest(settings.client_secret, challenge.state),
         max_age=_PENDING_TTL_SECONDS,
         httponly=True,
         secure=True,
@@ -137,8 +156,11 @@ async def auth_callback(
     # The sign-in must complete in the browser that began it: that browser holds
     # the binding cookie for this state. Checked before the pending record is
     # consumed, so a refused callback leaves the genuine sign-in completable.
-    binding = request.cookies.get(LOGIN_BINDING_COOKIE_NAME, "")
-    if not state or not hmac.compare_digest(binding, _state_digest(state)):
+    # Compared as bytes: the header is decoded as latin-1, so the cookie can hold
+    # characters that a text comparison refuses.
+    binding = request.cookies.get(LOGIN_BINDING_COOKIE_NAME, "").encode()
+    expected = _state_digest(settings.client_secret, state).encode() if state else b""
+    if not state or not hmac.compare_digest(binding, expected):
         raise SAGEError("invalid_state", "Missing or unrecognized sign-in state.", 400)
     pending = await store.take_pending(state)
     if pending is None:

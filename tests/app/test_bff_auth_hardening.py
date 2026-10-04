@@ -1,6 +1,6 @@
 """Hardening of the backend-for-frontend sign-in and session lifecycle.
 
-Specified in ``tests/app/bff_auth_hardening_tests.md`` (AH-001 through AH-015).
+Specified in ``tests/app/bff_auth_hardening_tests.md`` (AH-001 through AH-016).
 The identity provider is a stub except in AH-001, which drives the real MSAL
 library against a counting HTTP client; nothing here reaches a network. The
 Postgres cases run against the disposable test database and skip without
@@ -143,8 +143,14 @@ def _attributes(set_cookie: str) -> dict[str, str]:
     return attributes
 
 
-def _state_digest(state: str) -> str:
-    return hashlib.sha256(state.encode()).hexdigest()
+def _state_digest(state: str, secret: str = _SECRET) -> str:
+    """The binding value the server issues: an HMAC of ``state`` under its derived key."""
+    import hmac
+
+    from app.backend.auth.session_store import derive_key
+
+    key = derive_key(secret, b"cas-bff-login-binding-v1")
+    return hmac.new(key, state.encode(), hashlib.sha256).hexdigest()
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +340,9 @@ async def test_ah_005_sign_in_is_rate_limited_per_client():
     first = {"x-forwarded-for": "203.0.113.7"}
     other = {"x-forwarded-for": "198.51.100.9"}
     async with _browser(app) as browser:
-        for _ in range(10):
+        assert (await browser.get("/app/auth/login", headers=first)).status_code == 200
+        clock.now += 30  # the first start ages out of the window 30 s from now
+        for _ in range(9):
             assert (await browser.get("/app/auth/login", headers=first)).status_code == 200
         calls_before = len(oidc.calls)
 
@@ -343,13 +351,13 @@ async def test_ah_005_sign_in_is_rate_limited_per_client():
         body = refused.json()
         assert body["code"] == "rate_limited"
         retry_after = body["detail"]["retry_after_seconds"]
-        assert 0 < retry_after <= 60
+        assert retry_after == 30
         assert refused.headers["retry-after"] == str(retry_after)
         assert len(oidc.calls) == calls_before  # refused before the provider is called
 
         assert (await browser.get("/app/auth/login", headers=other)).status_code == 200
 
-        clock.now += 61
+        clock.now += 31
         assert (await browser.get("/app/auth/login", headers=first)).status_code == 200
 
 
@@ -436,11 +444,17 @@ async def test_ah_008_callback_from_another_browser_is_refused():
         assert bare.status_code == 400
         assert bare.json()["code"] == "invalid_state"
 
-        # Another browser's binding cookie.
-        attacker.cookies.set(LOGIN_BINDING_COOKIE_NAME, _state_digest("other-state"))
-        foreign = await attacker.get(f"/app/auth/callback?code=c&state={state}")
-        assert foreign.status_code == 400
-        assert foreign.json()["code"] == "invalid_state"
+        # Another browser's binding cookie, an unkeyed digest of this state (which
+        # the callback URL reveals), and a digest under a different key.
+        for forged in (
+            _state_digest("other-state"),
+            hashlib.sha256(state.encode()).hexdigest(),
+            _state_digest(state, secret="another-secret"),
+        ):
+            attacker.cookies.set(LOGIN_BINDING_COOKIE_NAME, forged)
+            foreign = await attacker.get(f"/app/auth/callback?code=c&state={state}")
+            assert foreign.status_code == 400, forged
+            assert foreign.json()["code"] == "invalid_state"
 
         assert store._sessions == {}  # noqa: SLF001 -- no session opened
         assert state in store._pending  # noqa: SLF001 -- pending record left in place
@@ -449,6 +463,20 @@ async def test_ah_008_callback_from_another_browser_is_refused():
         own = await victim.get(f"/app/auth/callback?code=c&state={state}")
         assert own.status_code == 302
         assert len(store._sessions) == 1  # noqa: SLF001
+
+
+async def test_ah_008b_non_ascii_binding_cookie_is_refused_not_an_error():
+    app, store, _oidc = await _auth_app()
+    async with _browser(app) as browser:
+        state = (await browser.get("/app/auth/login")).json()["state"]
+        browser.cookies.clear()
+        refused = await browser.get(
+            f"/app/auth/callback?code=c&state={state}",
+            headers=[(b"cookie", LOGIN_BINDING_COOKIE_NAME.encode() + b"=\xc3\xa9")],
+        )
+    assert refused.status_code == 400
+    assert refused.json()["code"] == "invalid_state"
+    assert state in store._pending  # noqa: SLF001
 
 
 async def test_ah_009_successful_callback_expires_the_binding_cookie():
@@ -561,6 +589,39 @@ async def test_ah_012c_standalone_app_wires_the_store_into_the_sage_client():
     await _assemble_transport(app, SageCoreConfig(profile="cloud"))
     transport = app.state.sage_transport
     assert transport._client._store is store  # noqa: SLF001 -- wiring introspection
+
+
+class _FakeMsalApplication:
+    """Stands in for the MSAL application around a real serializable cache."""
+
+    def __init__(self, cache: Any, *, changes_cache: bool) -> None:
+        self._cache = cache
+        self._changes_cache = changes_cache
+
+    def get_accounts(self) -> list[dict[str, str]]:
+        return [{"home_account_id": "user-1"}]
+
+    def acquire_token_silent(self, scopes: list[str], account: Any) -> dict[str, str]:
+        if self._changes_cache:
+            # What a refresh does: it rewrites the tokens the cache holds.
+            self._cache.has_state_changed = True
+        return {"access_token": "fresh-token"}
+
+
+@pytest.mark.parametrize("changes_cache", [True, False])
+def test_ah_012d_token_grant_carries_the_cache_only_when_it_changed(monkeypatch, changes_cache):
+    service = MsalOidcService(_settings())
+    monkeypatch.setattr(
+        service,
+        "_application",
+        lambda cache=None: _FakeMsalApplication(cache, changes_cache=changes_cache),
+    )
+    grant = service.acquire_sage_token("")
+    assert grant.access_token == "fresh-token"
+    if changes_cache:
+        assert isinstance(grant.token_cache, str) and grant.token_cache
+    else:
+        assert grant.token_cache is None
 
 
 # ---------------------------------------------------------------------------
@@ -758,6 +819,9 @@ class TestPostgresHardening:
         )
         expiry_indexed = {table for table, definition in indexes if "(expires_at)" in definition}
         assert expiry_indexed == {"sessions", "pending_logins"}
+        assert any(
+            table == "sessions" and "(last_seen_at)" in definition for table, definition in indexes
+        )
 
         store = await self._store(pg_dsn, schema)
         try:
