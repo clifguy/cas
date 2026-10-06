@@ -48,6 +48,11 @@ jobs:
       # Shared across the two phase steps so post-restart reads the pre-restart probe.
       # github.workspace (not runner.temp, which is step-only) is valid in job env.
       SP_VALIDATE_STATE_FILE: ${{ github.workspace }}/spvalidate-state.json
+      # The deploy identity's coordinates, for renewing the federated sign-in
+      # after the recycle wait (deploy/azure-federated-signin.sh).
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -105,13 +110,16 @@ jobs:
           exit 1
 
       - name: Post-restart validation
-        # Re-mint after the recycle wait so the token cannot have gone stale. The
-        # driver re-discovers the vault, re-reads the probe, and re-audits the source
+        # Mint after the recycle wait so the token cannot have gone stale. The CLI
+        # may serve a cached token, but a fresh mint re-presents the federated
+        # sign-in's client assertion, which the wait can outlast, so the sign-in
+        # is renewed first. The driver re-discovers the vault, re-reads the probe, and re-audits the source
         # from SharePoint -- proving nothing relied on a local copy. --timeout 180
         # for the same reason as pre-restart (Graph round-trip + a just-restarted,
         # model-reloading container on the first read).
         run: |
           set -euo pipefail
+          bash deploy/azure-federated-signin.sh --if-stale
           AUTH_TOKEN="$(az account get-access-token \
             --scope "$SAGE_AUDIENCE/.default" --query accessToken -o tsv)" \
             python3 deploy/sharepoint_validate.py --phase post-restart --timeout 180 \

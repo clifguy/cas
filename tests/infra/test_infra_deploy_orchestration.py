@@ -346,6 +346,95 @@ def test_preflight_wires_resource_token_probe() -> None:
     )
 
 
+def _step_runs(step: dict, command: str) -> bool:
+    """Whether a step's uncommented ``run:`` script invokes ``command``."""
+    return command in _uncommented_run_text({"steps": [step]})
+
+
+def _is_azure_login(step: dict) -> bool:
+    return str(step.get("uses") or "").startswith("azure/login@")
+
+
+def _post_deploy_sign_in_problem(steps: list[dict]) -> str | None:
+    """Why the post-deploy steps lack a fresh Azure sign-in, or None when they have one.
+
+    A federated sign-in's client assertion is accepted for a few minutes (plus the
+    token issuer's clock-skew allowance), and every token minted for a new scope
+    re-presents it. The preflight mints new-scope tokens (the SAGE audience, then
+    one per advertised resource), so it must follow a sign-in made after the
+    long-running stages, not the one the job opened with. The check requires an
+    ``azure/login`` step as the only step between app-tier convergence and the
+    preflight, signing in as the same identity as the job's first sign-in, and
+    unconditional, so a failed sign-in stops the job before the fence release.
+    """
+    converge = next(
+        (i for i, s in enumerate(steps) if _step_runs(s, "python3 deploy/converge-apps.py")), None
+    )
+    preflight = next(
+        (i for i, s in enumerate(steps) if _step_runs(s, "deploy/cloud-preflight.sh")), None
+    )
+    if converge is None or preflight is None or converge > preflight:
+        return "the deploy job must converge the app tier and then run the preflight"
+    between = steps[converge + 1 : preflight]
+    if len(between) != 1 or not _is_azure_login(between[0]):
+        return (
+            "the post-deploy preflight gate must be immediately preceded by a fresh "
+            "azure/login step, placed after app-tier convergence; found "
+            f"{[s.get('name') or s.get('uses') for s in between]!r} between them"
+        )
+    relogin = between[0]
+    first = next((s for s in steps if _is_azure_login(s)), None)
+    if first is relogin or first is None:
+        return "the job must sign in to Azure before the deployment stages as well"
+    if relogin.get("uses") != first.get("uses") or relogin.get("with") != first.get("with"):
+        return "the fresh sign-in must use the same pinned action and identity as the first"
+    if "if" in relogin or relogin.get("continue-on-error"):
+        return "the fresh sign-in must be unconditional and must fail the job when it fails"
+    return None
+
+
+def test_post_deploy_steps_follow_a_fresh_sign_in() -> None:
+    """The preflight and the fence release run on a sign-in made after convergence.
+
+    The job's first sign-in is minutes old by then; a slow apply or bootstrap
+    pushes it past the assertion's validity, the preflight cannot mint its token,
+    and the fence release behind it never runs.
+    """
+    problem = _post_deploy_sign_in_problem(_deploy_job(_load())["steps"])
+    assert problem is None, problem
+
+
+def test_fresh_sign_in_check_rejects_a_missing_or_misplaced_sign_in() -> None:
+    """Control for the gate above: it fails on each way the fresh sign-in can be lost."""
+    steps = _deploy_job(_load())["steps"]
+    assert _post_deploy_sign_in_problem(steps) is None
+    relogin_index = [i for i, s in enumerate(steps) if _is_azure_login(s)][-1]
+    relogin = steps[relogin_index]
+    converge = next(
+        i for i, s in enumerate(steps) if _step_runs(s, "python3 deploy/converge-apps.py")
+    )
+    without = steps[:relogin_index] + steps[relogin_index + 1 :]
+    early = without[:converge] + [relogin] + without[converge:]
+    other_identity = [
+        {**s, "with": {**s["with"], "client-id": "${{ vars.OTHER_CLIENT_ID }}"}}
+        if s is relogin
+        else s
+        for s in steps
+    ]
+    conditional = [{**s, "if": "always()"} if s is relogin else s for s in steps]
+    tolerated = [{**s, "continue-on-error": True} if s is relogin else s for s in steps]
+    for label, mutated in (
+        ("removed", without),
+        ("moved before convergence", early),
+        ("different identity", other_identity),
+        ("conditional", conditional),
+        ("failure tolerated", tolerated),
+    ):
+        assert _post_deploy_sign_in_problem(mutated) is not None, (
+            f"the fresh sign-in check passed with the sign-in {label}"
+        )
+
+
 def test_uncommented_run_text_strips_comment_lines() -> None:
     """A command named only in a shell comment is absent from the scanned text, so a
     comment cannot be mistaken for a real invocation. Without this, the re.search mint

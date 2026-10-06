@@ -39,6 +39,11 @@ jobs:
       MIGRATION_ACTION: ${{ inputs.action }}
       REHEARSAL_RUN_ID: ${{ inputs.rehearsal_run_id }}
       MIGRATION_CONFIRM: ${{ inputs.confirm }}
+      # The deploy identity's coordinates, for renewing the federated sign-in
+      # before each Azure call the driver makes (deploy/azure-federated-signin.sh).
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
     steps:
       - name: Require main
         run: test "$GITHUB_REF" = refs/heads/main

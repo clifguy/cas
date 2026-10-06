@@ -353,7 +353,13 @@ failure that makes everything look "as predicted"). It **reports; it never
 fixes** — a verification artifact, not a deploy step.
 
 The deploy pipeline runs it as the final stage, minting the bearer token from the
-deploy identity. The harness is tenant-parameterized — no environment-specific
+deploy identity. It signs in to Azure again immediately before the preflight: the
+federated sign-in's client assertion is accepted for only a few minutes, every
+token minted for a new scope re-presents it, and the apply and bootstrap stages
+can outlast it. Workflows that wait within a single step, or mint a token after
+a long wait (the maintenance, Postgres migration and SharePoint validation
+workflows), renew the sign-in from inside the step with [`deploy/azure-federated-signin.sh`](../../deploy/azure-federated-signin.sh)
+instead. The harness is tenant-parameterized — no environment-specific
 value is baked in. To run it by hand, supply the tenant's public host and an
 operator-obtained bearer token by environment; the probe never mints a token of
 its own:
