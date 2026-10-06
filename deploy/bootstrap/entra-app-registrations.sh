@@ -3,15 +3,80 @@
 # depends on (CAS-ADR-042): SAGE as an OAuth resource server, the CAS BFF as a
 # confidential client that calls SAGE on-behalf-of an interactive user, and the
 # public MCP client (auth-code + PKCE, no secret) the DCR-compatibility facade
-# registers back at /register (CAS-ADR-042) -- then gate both clients' sign-in
-# on membership in the single SAGE access-provisioning group (CAS-ADR-044).
+# registers back at /register (CAS-ADR-042) -- then gate the SAGE resource and
+# both clients on membership in the single SAGE access-provisioning group
+# (CAS-ADR-044). Gating the resource is what makes the gate hold for every
+# client, including Azure CLI and any app a user signs in through; gating the
+# two clients refuses a non-member at their own sign-in as well.
 # This is the executable substance of docs/process/entra-app-registrations.md.
 #
 # One-time per tenant, run by an operator with directory-admin rights. Idempotent:
-# every create is guarded by a lookup, and the scope/role ids are stable across
-# runs when passed in the environment. On success it emits the sageAudience,
+# every create and every assignment is guarded by a lookup, and the scope/role
+# ids are stable across runs when passed in the environment. Directory objects
+# are selected by exact display name, and a run stops on any failed call rather
+# than continuing past it. On success it emits the sageAudience,
 # bffOidcClientId, and mcpClientId coordinates for the deployment parameter set.
 set -euo pipefail
+
+# Print the single value an `az ... list` call returns, or nothing when it
+# returns none; stop the run when it returns more than one. Callers pass an
+# exact OData filter -- `--display-name` matches by prefix, so a look-alike such
+# as "<name>-old" could otherwise be selected -- and a `[].<field>` query.
+#
+# These helpers run inside command substitutions, where bash does not apply
+# `set -e`, so each failure exits explicitly: a failed lookup must stop the run,
+# never read as "absent" and lead to a duplicate create.
+lookup_one() {
+  local what="$1"
+  shift
+  local found
+  found="$("$@" -o tsv)" || exit 1
+  if [ "$(printf '%s' "${found}" | grep -c .)" -gt 1 ]; then
+    echo "ERROR: expected exactly one ${what}, found several; resolve the duplicate" \
+      "in the directory before re-running." >&2
+    exit 1
+  fi
+  printf '%s' "${found}"
+}
+
+# Print the object id of the service principal for an application, creating it
+# when the application has none.
+ensure_sp() {
+  local app_id="$1" sp_id
+  sp_id="$(lookup_one "service principal for ${app_id}" \
+    az ad sp list --filter "appId eq '${app_id}'" --query '[].id')" || exit 1
+  if [ -z "${sp_id}" ]; then
+    sp_id="$(az ad sp create --id "${app_id}" --query id -o tsv)" || exit 1
+  fi
+  printf '%s' "${sp_id}"
+}
+
+# Gate a service principal on the provisioning group (CAS-ADR-044): assign the
+# group to the given app role unless that assignment already exists, then
+# require app-role assignment -- in that order, so the gate never engages
+# before its allowlist exists. The existence check is what keeps a re-run
+# idempotent; a failed call stops the run instead of being tolerated.
+ensure_group_gate() {
+  local sp_id="$1" app_role_id="$2" existing
+  existing="$(az rest --method GET \
+    --url "https://graph.microsoft.com/v1.0/servicePrincipals/${sp_id}/appRoleAssignedTo" \
+    --query "value[?principalId=='${PROVISIONING_GROUP_ID}' && appRoleId=='${app_role_id}'].id" \
+    -o tsv)"
+  if [ -z "${existing}" ]; then
+    az rest --method POST \
+      --url "https://graph.microsoft.com/v1.0/servicePrincipals/${sp_id}/appRoleAssignedTo" \
+      --headers 'Content-Type=application/json' \
+      --body "{
+        \"principalId\": \"${PROVISIONING_GROUP_ID}\",
+        \"resourceId\": \"${sp_id}\",
+        \"appRoleId\": \"${app_role_id}\"
+      }" >/dev/null
+  fi
+  az rest --method PATCH \
+    --url "https://graph.microsoft.com/v1.0/servicePrincipals/${sp_id}" \
+    --headers 'Content-Type=application/json' \
+    --body '{"appRoleAssignmentRequired": true}'
+}
 
 # The BFF cloud hostname and OIDC callback path the redirect URI is built from.
 # BFF_HOSTNAME is the default ingress FQDN until the custom domain is bound;
@@ -32,8 +97,8 @@ AUTH_CALLBACK_PATH="${AUTH_CALLBACK_PATH:-auth/callback}"
 : "${SAGE_PUBLIC_HOSTNAME:?set SAGE_PUBLIC_HOSTNAME to the public SAGE hostname (e.g. sage.<base-domain>)}"
 
 # 1. SAGE resource-server registration (lookup-then-create keeps it idempotent).
-SAGE_APP_ID="$(az ad app list --display-name sage-resource-server \
-  --query '[0].appId' -o tsv)"
+SAGE_APP_ID="$(lookup_one "application named sage-resource-server" \
+  az ad app list --filter "displayName eq 'sage-resource-server'" --query '[].appId')"
 if [ -z "${SAGE_APP_ID}" ]; then
   SAGE_APP_ID="$(az ad app create --display-name sage-resource-server \
     --sign-in-audience AzureADMyOrg --query appId -o tsv)"
@@ -61,16 +126,28 @@ fi
 az ad app update --id "${SAGE_APP_ID}" \
   --identifier-uris "api://${SAGE_APP_ID}" "https://${SAGE_PUBLIC_HOSTNAME}" \
     "https://${SAGE_PUBLIC_HOSTNAME}/mcp" "https://${SAGE_PUBLIC_HOSTNAME}/mcp_maint"
-az ad sp create --id "${SAGE_APP_ID}" 2>/dev/null || true
+SAGE_SP_ID="$(ensure_sp "${SAGE_APP_ID}")"
 
 # Expose the single delegated scope and app role that authorize both the REST
 # and MCP surfaces, and pin the access-token version to v2 so a token minted for
 # this resource via the /.default scope endpoint carries the tenant's v2.0 issuer
-# -- the issuer APIM validate-jwt and the SAGE backend require. Generate the
-# scope/role ids once; keep them stable across runs by passing ACCESS_SCOPE_ID /
-# SAGE_READER_ROLE_ID in the environment.
+# -- the issuer APIM validate-jwt and the SAGE backend require. The scope and
+# role ids are generated once: a re-run reuses the ids the registration already
+# carries (or ACCESS_SCOPE_ID / SAGE_READER_ROLE_ID from the environment), since
+# the PATCH below replaces both collections and a fresh id would orphan every
+# consent grant and role assignment made against the old one.
+#
+# Sage.Access is admin-consent-only ("type": "Admin"): every supported client is
+# either admin-consented below (the BFF and the public MCP client) or
+# pre-authorized (Azure CLI), so none needs a user's own consent, and a
+# user-consentable scope would let any member grant an arbitrary app delegated
+# SAGE access.
 SAGE_OBJECT_ID="$(az ad app show --id "${SAGE_APP_ID}" --query id -o tsv)"
+ACCESS_SCOPE_ID="${ACCESS_SCOPE_ID:-$(az ad app show --id "${SAGE_APP_ID}" \
+  --query "api.oauth2PermissionScopes[?value=='Sage.Access'].id | [0]" -o tsv)}"
 ACCESS_SCOPE_ID="${ACCESS_SCOPE_ID:-$(uuidgen)}"
+SAGE_READER_ROLE_ID="${SAGE_READER_ROLE_ID:-$(az ad app show --id "${SAGE_APP_ID}" \
+  --query "appRoles[?value=='Sage.Reader'].id | [0]" -o tsv)}"
 SAGE_READER_ROLE_ID="${SAGE_READER_ROLE_ID:-$(uuidgen)}"
 
 # Pre-authorize Azure CLI on the SAGE resource server (folded into the api PATCH
@@ -131,7 +208,7 @@ az rest --method PATCH \
       \"oauth2PermissionScopes\": [{
         \"id\": \"${ACCESS_SCOPE_ID}\",
         \"value\": \"Sage.Access\",
-        \"type\": \"User\",
+        \"type\": \"Admin\",
         \"adminConsentDisplayName\": \"Access SAGE\",
         \"adminConsentDescription\": \"Access SAGE on behalf of the signed-in user.\",
         \"isEnabled\": true
@@ -153,26 +230,45 @@ az rest --method PATCH \
 
 # 2. The single SAGE access-provisioning group (CAS-ADR-044): binary membership,
 # uniform across every interactive surface (browser and agent alike). Every
-# client-gating step below assigns this same group to its own service
-# principal's default-access role; lookup-then-create so whichever step runs
-# first on a fresh tenant creates it, the rest reconcile.
+# gating step below assigns this same group to its own service principal;
+# lookup-then-create so whichever step runs first on a fresh tenant creates it,
+# the rest reconcile.
 PROVISIONING_GROUP_NAME="${PROVISIONING_GROUP_NAME:-cas-sage-users}"
-PROVISIONING_GROUP_ID="$(az ad group list --display-name "${PROVISIONING_GROUP_NAME}" \
-  --query '[0].id' -o tsv)"
+# The name is matched inside a quoted OData literal; a quote in it would end the
+# literal early and let the filter select some other group.
+case "${PROVISIONING_GROUP_NAME}" in
+  *"'"*)
+    echo "ERROR: PROVISIONING_GROUP_NAME must not contain a single quote." >&2
+    exit 1
+    ;;
+esac
+PROVISIONING_GROUP_ID="$(lookup_one "group named ${PROVISIONING_GROUP_NAME}" \
+  az ad group list --filter "displayName eq '${PROVISIONING_GROUP_NAME}'" --query '[].id')"
 if [ -z "${PROVISIONING_GROUP_ID}" ]; then
   PROVISIONING_GROUP_ID="$(az ad group create --display-name "${PROVISIONING_GROUP_NAME}" \
     --mail-nickname "${PROVISIONING_GROUP_NAME}" --query id -o tsv)"
 fi
 
+# 2a. Gate the SAGE resource itself on the group. With assignment required on
+# the resource, Entra issues a token for the SAGE audience only to an assigned
+# principal, whichever client requests it -- the BFF's on-behalf-of exchange,
+# the public MCP client, Azure CLI, or an application acting as itself. The
+# group is assigned to Sage.Reader, the role the registration declares for
+# users; an application principal (the CI deploy identity) holds its own
+# Sage.Reader assignment, granted separately, which keeps its client-credentials
+# path working.
+ensure_group_gate "${SAGE_SP_ID}" "${SAGE_READER_ROLE_ID}"
+
 # The default-access app role id is the well-known all-zero Microsoft Graph
 # sentinel used to assign a principal to an application that defines no custom
 # app roles -- built from repeated '0's rather than written as a literal so
 # this durable script carries no GUID-shaped literal. Computed once, reused by
-# every client-gating step below.
+# both client-gating steps below.
 DEFAULT_ACCESS_APP_ROLE_ID="$(printf '0%.0s' {1..8})-$(printf '0%.0s' {1..4})-$(printf '0%.0s' {1..4})-$(printf '0%.0s' {1..4})-$(printf '0%.0s' {1..12})"
 
 # 3. CAS BFF confidential-client registration (lookup-then-create).
-BFF_APP_ID="$(az ad app list --display-name cas-bff --query '[0].appId' -o tsv)"
+BFF_APP_ID="$(lookup_one "application named cas-bff" \
+  az ad app list --filter "displayName eq 'cas-bff'" --query '[].appId')"
 if [ -z "${BFF_APP_ID}" ]; then
   BFF_APP_ID="$(az ad app create --display-name cas-bff \
     --sign-in-audience AzureADMyOrg \
@@ -182,8 +278,7 @@ else
   az ad app update --id "${BFF_APP_ID}" \
     --web-redirect-uris "https://${BFF_HOSTNAME}/${AUTH_CALLBACK_PATH}"
 fi
-BFF_SP_ID="$(az ad sp create --id "${BFF_APP_ID}" --query id -o tsv 2>/dev/null || \
-  az ad sp show --id "${BFF_APP_ID}" --query id -o tsv)"
+BFF_SP_ID="$(ensure_sp "${BFF_APP_ID}")"
 
 # Grant the BFF the delegated API permission onto SAGE, then admin-consent it —
 # this is what makes the on-behalf-of exchange possible.
@@ -192,22 +287,9 @@ az ad app permission add --id "${BFF_APP_ID}" \
   --api-permissions "${ACCESS_SCOPE_ID}=Scope"
 az ad app permission admin-consent --id "${BFF_APP_ID}"
 
-# Gate the BFF on the single provisioning group (CAS-ADR-044): assign the
-# group to its default-access role, then require app-role assignment -- in
-# that order, so the gate never engages before its allowlist exists.
-az rest --method POST \
-  --url "https://graph.microsoft.com/v1.0/servicePrincipals/${BFF_SP_ID}/appRoleAssignedTo" \
-  --headers 'Content-Type=application/json' \
-  --body "{
-    \"principalId\": \"${PROVISIONING_GROUP_ID}\",
-    \"resourceId\": \"${BFF_SP_ID}\",
-    \"appRoleId\": \"${DEFAULT_ACCESS_APP_ROLE_ID}\"
-  }" || true  # tolerate an already-present assignment on re-run
-
-az rest --method PATCH \
-  --url "https://graph.microsoft.com/v1.0/servicePrincipals/${BFF_SP_ID}" \
-  --headers 'Content-Type=application/json' \
-  --body '{"appRoleAssignmentRequired": true}'
+# Gate the BFF's own sign-in on the single provisioning group (CAS-ADR-044),
+# through its default-access role.
+ensure_group_gate "${BFF_SP_ID}" "${DEFAULT_ACCESS_APP_ROLE_ID}"
 
 # 4. Public MCP client registration (lookup-then-create): auth-code + PKCE, no
 # secret -- the DCR-compatibility facade's /register operation echoes this app
@@ -219,7 +301,8 @@ az rest --method PATCH \
 # browser-context Desktop client uses for its auth-code/PKCE callback; the flag
 # is a declarative full-set replace, so registering both here keeps a re-bootstrap
 # from dropping the loopback.
-MCP_CLIENT_APP_ID="$(az ad app list --display-name cas-mcp-client --query '[0].appId' -o tsv)"
+MCP_CLIENT_APP_ID="$(lookup_one "application named cas-mcp-client" \
+  az ad app list --filter "displayName eq 'cas-mcp-client'" --query '[].appId')"
 if [ -z "${MCP_CLIENT_APP_ID}" ]; then
   MCP_CLIENT_APP_ID="$(az ad app create --display-name cas-mcp-client \
     --sign-in-audience AzureADMyOrg \
@@ -229,8 +312,7 @@ else
   az ad app update --id "${MCP_CLIENT_APP_ID}" \
     --public-client-redirect-uris "${MCP_CLIENT_REDIRECT_URI}" "http://localhost/callback"
 fi
-MCP_CLIENT_SP_ID="$(az ad sp create --id "${MCP_CLIENT_APP_ID}" --query id -o tsv 2>/dev/null || \
-  az ad sp show --id "${MCP_CLIENT_APP_ID}" --query id -o tsv)"
+MCP_CLIENT_SP_ID="$(ensure_sp "${MCP_CLIENT_APP_ID}")"
 
 # Grant the same delegated SAGE.Access scope the BFF holds; the admin-consent
 # below records the tenant consent for this SAGE.Access grant. It does NOT
@@ -249,8 +331,8 @@ az ad app permission add --id "${MCP_CLIENT_APP_ID}" \
 # principal; Graph's app id and the offline_access scope id are resolved from the
 # tenant at run time, never hardcoded, keeping this durable script free of
 # GUID-shaped literals.
-GRAPH_APP_ID="$(az ad sp list --filter "displayName eq 'Microsoft Graph'" \
-  --query '[0].appId' -o tsv)"
+GRAPH_APP_ID="$(lookup_one "service principal named Microsoft Graph" \
+  az ad sp list --filter "displayName eq 'Microsoft Graph'" --query '[].appId')"
 OFFLINE_ACCESS_SCOPE_ID="$(az ad sp show --id "${GRAPH_APP_ID}" \
   --query "oauth2PermissionScopes[?value=='offline_access'].id | [0]" -o tsv)"
 az ad app permission add --id "${MCP_CLIENT_APP_ID}" \
@@ -271,30 +353,11 @@ az ad app permission grant --id "${MCP_CLIENT_APP_ID}" \
   --api "${GRAPH_APP_ID}" \
   --scope offline_access
 
-# Gate the public client on the single provisioning group (CAS-ADR-044): require
-# app-role assignment on its service principal, then assign the group to its
-# default-access role.
-#
-# This POSTs to the appRoleAssignments collection rather than appRoleAssignedTo
-# (used by the BFF gate above) -- documented as the *principal's* own collection,
-# which would suggest it requires principalId to equal this SP. Verified against
-# a live tenant: Graph accepts this body (principalId = group, resourceId = this
-# SP) on either collection. Don't swap to appRoleAssignedTo on the strength of the
-# documented contract alone -- the two are not proven equivalent in the other
-# direction, and this shape is confirmed working.
-az rest --method PATCH \
-  --url "https://graph.microsoft.com/v1.0/servicePrincipals/${MCP_CLIENT_SP_ID}" \
-  --headers 'Content-Type=application/json' \
-  --body '{"appRoleAssignmentRequired": true}'
-
-az rest --method POST \
-  --url "https://graph.microsoft.com/v1.0/servicePrincipals/${MCP_CLIENT_SP_ID}/appRoleAssignments" \
-  --headers 'Content-Type=application/json' \
-  --body "{
-    \"principalId\": \"${PROVISIONING_GROUP_ID}\",
-    \"resourceId\": \"${MCP_CLIENT_SP_ID}\",
-    \"appRoleId\": \"${DEFAULT_ACCESS_APP_ROLE_ID}\"
-  }" || true  # tolerate an already-present assignment on re-run
+# Gate the public client's own sign-in on the single provisioning group
+# (CAS-ADR-044), through its default-access role. The assignment goes to the
+# resource's appRoleAssignedTo collection, the same request shape (group as
+# principal, this service principal as resource) the BFF gate uses.
+ensure_group_gate "${MCP_CLIENT_SP_ID}" "${DEFAULT_ACCESS_APP_ROLE_ID}"
 
 # Emit the coordinates for the deployment parameter set (main.bicepparam).
 echo "# Paste into the tenant parameter set:"

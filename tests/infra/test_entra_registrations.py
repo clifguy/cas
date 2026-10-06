@@ -276,12 +276,13 @@ def _sage_reader_member_types(text: str) -> set[str]:
 
     Both the runbook and the script embed the Graph PATCH body as escaped JSON
     inside a shell string, so backslash-escaped quotes are normalised before
-    matching. The span is anchored between ``appRoles`` and ``Sage.Reader`` --
-    ``allowedMemberTypes`` precedes ``value`` in the role object -- so an
-    ``allowedMemberTypes`` belonging to some other role could never satisfy it.
+    matching. The span is anchored between the ``"appRoles": [`` JSON key and
+    ``Sage.Reader`` -- ``allowedMemberTypes`` precedes ``value`` in the role
+    object -- so an ``allowedMemberTypes`` belonging to some other role, or an
+    ``appRoles`` mention in a ``--query`` expression, could never satisfy it.
     """
     plain = text.replace('\\"', '"')
-    role = re.search(r"appRoles(.*?)Sage\.Reader", plain, re.S)
+    role = re.search(r'"appRoles"\s*:\s*\[(.*?)Sage\.Reader', plain, re.S)
     if role is None:
         return set()
     array = re.search(r'"allowedMemberTypes"\s*:\s*\[([^\]]*)\]', role.group(1))
@@ -313,3 +314,35 @@ def test_sage_reader_role_accepts_application_principals() -> None:
             "assignable to a service principal, and so what makes the advertised "
             f"client_credentials grant honorable; got {sorted(member_types)!r}"
         )
+
+
+def test_runbook_gates_sage_resource() -> None:
+    """The runbook documents the access-group gate at the SAGE resource itself
+    (CAS-ADR-044) -- the group assigned on the SAGE service principal's
+    ``appRoleAssignedTo`` collection and ``appRoleAssignmentRequired`` set on
+    that same principal -- and ``Sage.Access`` declared admin-consent-only.
+
+    Anchored on the codified command and JSON forms, scoped to the resource-gate
+    subsection, so a gate documented only for the two clients cannot satisfy it.
+    """
+    text = _runbook_text()
+    match = re.search(
+        r"^#{2,3}\s+Gating the SAGE resource.*?(?=^#{2,3}\s|\Z)",
+        text,
+        re.MULTILINE | re.DOTALL,
+    )
+    assert match, 'runbook must carry a "Gating the SAGE resource" subsection'
+    section = match.group(0)
+    assert "servicePrincipals/${SAGE_SP_ID}/appRoleAssignedTo" in section, (
+        "the section must assign the group on the SAGE service principal"
+    )
+    assert "SAGE_READER_ROLE_ID" in section, "the group must be assigned to Sage.Reader"
+    assert re.search(
+        r'servicePrincipals/\$\{SAGE_SP_ID\}"[^`]*?appRoleAssignmentRequired\\?"\s*:\s*true',
+        section,
+        re.DOTALL,
+    ), "the section must require assignment on the SAGE service principal"
+    plain = text.replace('\\"', '"')
+    assert re.search(r'"value"\s*:\s*"Sage\.Access",\s*"type"\s*:\s*"Admin"', plain), (
+        'runbook must declare Sage.Access with "type": "Admin"'
+    )

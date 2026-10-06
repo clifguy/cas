@@ -17,10 +17,13 @@ against a tenant is out of scope for CI, exactly as the runbook gate
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
+import sys
+import uuid
 from pathlib import Path
 from typing import Final
 
@@ -234,9 +237,9 @@ def test_entra_script_creates_public_client_registration() -> None:
         "the MCP client must register via --public-client-redirect-uris "
         "(auth-code + PKCE, no secret) — not --web-redirect-uris"
     )
-    assert text.count("az ad sp create") >= 2, (
-        "entra script must create a service principal for the public MCP client too"
-    )
+    assert any(
+        '"${MCP_CLIENT_APP_ID}"' in call for call in _uncommented_invocations(text, "ensure_sp")
+    ), "entra script must ensure a service principal for the public MCP client too"
     assert text.count("az ad app permission add") >= 2, (
         "the public MCP client must be granted the delegated SAGE.Access scope"
     )
@@ -446,56 +449,65 @@ def test_entra_script_shares_default_access_role_id() -> None:
     )
 
 
+def _gate_invocations(text: str) -> list[str]:
+    """The uncommented ``ensure_group_gate`` calls, excluding its definition."""
+    return [
+        call
+        for call in _uncommented_invocations(text, "ensure_group_gate")
+        if not call.startswith("ensure_group_gate()")
+    ]
+
+
+def _gate_helper_body(text: str) -> str:
+    match = re.search(r"^ensure_group_gate\(\) \{\n(.*?)^\}", text, re.MULTILINE | re.DOTALL)
+    assert match, "entra script must define the ensure_group_gate helper"
+    return match.group(1)
+
+
 def test_entra_script_gates_bff_on_group() -> None:
     """The BFF confidential client is gated by the same provisioning group as
-    the public MCP client (CAS-ADR-044): its service principal requires
-    app-role assignment, and the provisioning group is assigned to it before
-    the requirement engages, so the gate never locks out an empty allowlist.
+    the public MCP client and the SAGE resource (CAS-ADR-044), through the one
+    gate helper: the group is assigned to the BFF's default-access role on its
+    appRoleAssignedTo collection, then app-role assignment is required -- in
+    that order, so the gate never locks out an empty allowlist.
+
+    The executed bootstrap tests observe the resulting directory state and the
+    call order; this anchors the codified form the runbook mirrors.
     """
     text = _text(ENTRA)
-    assert text.count("appRoleAssignmentRequired") >= 2, (
-        "entra script must gate both the BFF and the public MCP client on appRoleAssignmentRequired"
-    )
-    assert "appRoleAssignedTo" in text, (
-        "entra script must assign the provisioning group to the BFF's "
-        "default-access app role via the servicePrincipals appRoleAssignedTo endpoint"
-    )
+    assert any(
+        '"${BFF_SP_ID}"' in call and '"${DEFAULT_ACCESS_APP_ROLE_ID}"' in call
+        for call in _gate_invocations(text)
+    ), "entra script must gate the BFF service principal on its default-access role"
+    body = _gate_helper_body(text)
     # Anchor on the request body, never prose: the assignment carries the
-    # principalId/resourceId/appRoleId triple, targeting the shared group. The
-    # body is a multi-line JSON literal, so window a few lines after the
-    # endpoint reference rather than requiring all three keys on one line.
-    lines = text.splitlines()
-    idx = next(i for i, line in enumerate(lines) if "appRoleAssignedTo" in line)
-    block = "\n".join(lines[idx : idx + 8])
-    assert "principalId" in block and "resourceId" in block and "appRoleId" in block, (
-        "the BFF assignment body must carry the principalId/resourceId/appRoleId triple"
+    # principalId/resourceId/appRoleId triple, targeting the shared group.
+    assert "appRoleAssignedTo" in body, "the gate must assign via appRoleAssignedTo"
+    for key in ("principalId", "resourceId", "appRoleId", "PROVISIONING_GROUP_ID"):
+        assert key in body, f"the gate's assignment body must carry {key}"
+    assert re.search(r'appRoleAssignmentRequired"\s*:\s*true', body), (
+        'the gate must PATCH "appRoleAssignmentRequired": true'
     )
-    assert "PROVISIONING_GROUP_ID" in block, "the BFF assignment must target PROVISIONING_GROUP_ID"
-    # Fail safe on a live tenant: assign the group BEFORE requiring assignment,
-    # so a fresh tenant is never locked out by an empty allowlist.
-    assert text.index("appRoleAssignedTo") < text.index("appRoleAssignmentRequired"), (
-        "the BFF's group assignment must precede appRoleAssignmentRequired, so the "
+    assert body.index("--method POST") < body.index("appRoleAssignmentRequired"), (
+        "the group assignment must precede appRoleAssignmentRequired, so the "
         "gate never engages before its allowlist exists"
     )
 
 
 def test_entra_script_gates_public_client_on_group() -> None:
     """The public MCP client is gated by the same provisioning group as the
-    browser client (CAS-ADR-044): its service principal requires app-role
-    assignment, and the provisioning group is assigned to it.
+    browser client and the SAGE resource (CAS-ADR-044), through the same gate
+    helper on its default-access role.
     """
     text = _text(ENTRA)
-    assert "appRoleAssignmentRequired" in text, (
-        "entra script must set appRoleAssignmentRequired on the public MCP client's "
-        "service principal"
-    )
-    assert "true" in re.search(r"appRoleAssignmentRequired[^\n]*", text).group(0), (
-        "appRoleAssignmentRequired must be set to true"
-    )
-    assert "appRoleAssignments" in text, (
-        "entra script must assign the provisioning group to the public MCP client's "
-        "default-access app role"
-    )
+    assert any(
+        '"${MCP_CLIENT_SP_ID}"' in call and '"${DEFAULT_ACCESS_APP_ROLE_ID}"' in call
+        for call in _gate_invocations(text)
+    ), "entra script must gate the public MCP client's service principal on its default-access role"
+    assert any(
+        '"${SAGE_SP_ID}"' in call and '"${SAGE_READER_ROLE_ID}"' in call
+        for call in _gate_invocations(text)
+    ), "entra script must gate the SAGE resource service principal on the Sage.Reader role"
 
 
 def test_entra_script_emits_mcp_client_id_coordinate() -> None:
@@ -507,6 +519,354 @@ def test_entra_script_emits_mcp_client_id_coordinate() -> None:
         line.strip() for line in _text(ENTRA).splitlines() if line.lstrip().startswith("echo")
     )
     assert "mcpClientId" in echoed, "entra script must echo the mcpClientId coordinate"
+
+
+# --- Executed Entra bootstrap -------------------------------------------------
+#
+# The structural checks above read the script; these run it, under bash, against
+# a stateful stand-in for the Azure CLI's Entra surface (``_fake_entra_az.py``)
+# that holds a model directory: applications, service principals, groups and
+# app-role assignments. Assertions read the final directory state and the
+# recorded call sequence, so they observe what a run actually does to a tenant.
+
+FAKE_ENTRA_AZ: Final[Path] = Path(__file__).with_name("_fake_entra_az.py")
+_SAGE_APP: Final[str] = "sage-resource-server"
+_BFF_APP: Final[str] = "cas-bff"
+_MCP_APP: Final[str] = "cas-mcp-client"
+_GROUP: Final[str] = "cas-sage-users"
+
+
+def _seed_directory() -> dict:
+    """A tenant holding only Microsoft Graph's first-party service principal."""
+    return {
+        "apps": [],
+        "sps": [
+            {
+                "id": str(uuid.uuid4()),
+                "appId": str(uuid.uuid4()),
+                "displayName": "Microsoft Graph",
+                "appRoleAssignmentRequired": False,
+                "oauth2PermissionScopes": [{"id": str(uuid.uuid4()), "value": "offline_access"}],
+            }
+        ],
+        "groups": [],
+        "assignments": [],
+        "faults": [],
+    }
+
+
+def _run_entra(
+    tmp_path: Path, state: dict, env: dict[str, str] | None = None, *, bare_ids: bool = False
+) -> tuple:
+    """Run the Entra bootstrap against ``state``; return (result, calls, final state).
+
+    ``state`` is persisted between runs in ``tmp_path``, so calling this twice
+    re-runs the bootstrap against the directory the first run left behind. The
+    scope and role ids are passed in the environment, as an operator following
+    the runbook does, unless ``bare_ids`` leaves the script to resolve them.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(exist_ok=True)
+    az = bin_dir / "az"
+    az.write_text(f"#!{sys.executable} -IS\n" + FAKE_ENTRA_AZ.read_text())
+    az.chmod(0o755)
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps(state))
+    calls_path = tmp_path / "calls.jsonl"
+    calls_path.write_text("")
+    ids_path = tmp_path / "ids.json"
+    if not ids_path.exists():
+        ids_path.write_text(json.dumps({"scope": str(uuid.uuid4()), "role": str(uuid.uuid4())}))
+    ids = json.loads(ids_path.read_text())
+    result = subprocess.run(
+        ["bash", str(ENTRA)],
+        cwd=REPO_ROOT,
+        env={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "HOME": str(tmp_path),
+            "AZURE_STATE": str(state_path),
+            "AZURE_CALLS": str(calls_path),
+            "BFF_HOSTNAME": "bff.example.test",
+            "MCP_CLIENT_REDIRECT_URI": "http://127.0.0.1/callback",
+            "SAGE_PUBLIC_HOSTNAME": "sage.example.test",
+            **({} if bare_ids else {"ACCESS_SCOPE_ID": ids["scope"]}),
+            **({} if bare_ids else {"SAGE_READER_ROLE_ID": ids["role"]}),
+            **(env or {}),
+        },
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
+    return result, calls, json.loads(state_path.read_text())
+
+
+def _app(state: dict, name: str) -> dict:
+    matches = [a for a in state["apps"] if a["displayName"] == name]
+    assert len(matches) == 1, f"expected exactly one {name} application, found {len(matches)}"
+    return matches[0]
+
+
+def _sp_of(state: dict, name: str) -> dict:
+    app_id = _app(state, name)["appId"]
+    matches = [s for s in state["sps"] if s["appId"] == app_id]
+    assert len(matches) == 1, f"expected exactly one {name} service principal, found {len(matches)}"
+    return matches[0]
+
+
+def _group(state: dict, name: str = _GROUP) -> dict:
+    matches = [g for g in state["groups"] if g["displayName"] == name]
+    assert len(matches) == 1, f"expected exactly one {name} group, found {len(matches)}"
+    return matches[0]
+
+
+def _rest_calls(calls: list[list[str]], method: str, url_suffix: str) -> list[int]:
+    """Indices of ``az rest`` calls with ``method`` whose URL ends in ``url_suffix``."""
+    out = []
+    for i, call in enumerate(calls):
+        if call[:1] != ["rest"]:
+            continue
+        url = call[call.index("--url") + 1] if "--url" in call else call[call.index("--uri") + 1]
+        if call[call.index("--method") + 1].upper() == method and url.endswith(url_suffix):
+            out.append(i)
+    return out
+
+
+def _requirement_patches(calls: list[list[str]], sp_id: str) -> list[int]:
+    return [
+        i
+        for i in _rest_calls(calls, "PATCH", f"/servicePrincipals/{sp_id}")
+        if "appRoleAssignmentRequired" in calls[i][calls[i].index("--body") + 1]
+    ]
+
+
+def _assignment_posts(calls: list[list[str]], sp_id: str) -> list[int]:
+    return _rest_calls(calls, "POST", f"/servicePrincipals/{sp_id}/appRoleAssignedTo") + (
+        _rest_calls(calls, "POST", f"/servicePrincipals/{sp_id}/appRoleAssignments")
+    )
+
+
+def test_entra_bootstrap_gates_sage_resource_on_group(tmp_path: Path) -> None:
+    """The access-group gate holds at the SAGE resource itself (CAS-ADR-044).
+
+    Gating only the two client registrations leaves every other client --
+    Azure CLI, which the bootstrap pre-authorizes, or any app a user consents
+    to -- able to obtain a token for the SAGE audience. A run must leave the
+    SAGE service principal requiring assignment, with the access group
+    assigned to the Sage.Reader role (the role it declares for users). On every
+    gated principal the assignment lands before the requirement, so the gate
+    never engages ahead of its allowlist.
+    """
+    result, calls, state = _run_entra(tmp_path, _seed_directory())
+    assert result.returncode == 0, result.stderr
+    sage_sp = _sp_of(state, _SAGE_APP)
+    group = _group(state)
+    reader_role = next(
+        r["id"] for r in _app(state, _SAGE_APP)["appRoles"] if r["value"] == "Sage.Reader"
+    )
+    assert sage_sp["appRoleAssignmentRequired"] is True, (
+        "the SAGE resource service principal must require app-role assignment"
+    )
+    assert any(
+        a["resourceId"] == sage_sp["id"]
+        and a["principalId"] == group["id"]
+        and a["appRoleId"] == reader_role
+        for a in state["assignments"]
+    ), "the access group must be assigned to the SAGE resource's Sage.Reader role"
+    for name in (_SAGE_APP, _BFF_APP, _MCP_APP):
+        sp = _sp_of(state, name)
+        assert sp["appRoleAssignmentRequired"] is True, f"{name} must require assignment"
+        posts, patches = _assignment_posts(calls, sp["id"]), _requirement_patches(calls, sp["id"])
+        assert posts and patches, f"{name}: expected an assignment and a requirement call"
+        assert max(posts) < min(patches), (
+            f"{name}: the group assignment must land before assignment is required"
+        )
+
+
+def test_entra_bootstrap_rerun_converges(tmp_path: Path) -> None:
+    """A re-run reconciles by lookup, not by tolerating failures.
+
+    The second run against the directory the first left behind succeeds,
+    creates no further applications, service principals, groups or
+    assignments, and issues no assignment POST at all -- it finds each
+    assignment already present rather than retrying it and discarding the
+    error.
+    """
+    first, _, state = _run_entra(tmp_path, _seed_directory())
+    assert first.returncode == 0, first.stderr
+    second, calls, rerun = _run_entra(tmp_path, state)
+    assert second.returncode == 0, second.stderr
+    for key in ("apps", "sps", "groups", "assignments"):
+        assert len(rerun[key]) == len(state[key]), f"a re-run must not add {key}"
+    posts = [i for i in _rest_calls(calls, "POST", "") if "appRoleAssign" in " ".join(calls[i])]
+    assert posts == [], "a re-run must find existing assignments instead of re-posting them"
+
+
+def test_entra_bootstrap_rerun_keeps_scope_and_role_ids(tmp_path: Path) -> None:
+    """A re-run without the ids in the environment keeps the live ones.
+
+    The registration PATCH replaces the scope and role collections, so minting
+    fresh ids on a re-run would orphan the access group's Sage.Reader
+    assignment and every consent grant. The second run must reuse the ids the
+    registration already carries, leaving the existing assignment valid.
+    """
+    first, _, state = _run_entra(tmp_path, _seed_directory(), bare_ids=True)
+    assert first.returncode == 0, first.stderr
+    app = _app(state, _SAGE_APP)
+    scope_id = app["api"]["oauth2PermissionScopes"][0]["id"]
+    role_id = app["appRoles"][0]["id"]
+    second, _, rerun = _run_entra(tmp_path, state, bare_ids=True)
+    assert second.returncode == 0, second.stderr
+    app = _app(rerun, _SAGE_APP)
+    assert [s["id"] for s in app["api"]["oauth2PermissionScopes"]] == [scope_id]
+    assert [r["id"] for r in app["appRoles"]] == [role_id]
+    sage_sp = _sp_of(rerun, _SAGE_APP)
+    assert [a["appRoleId"] for a in rerun["assignments"] if a["resourceId"] == sage_sp["id"]] == [
+        role_id
+    ], "the group's Sage.Reader assignment must still name the live role"
+
+
+def test_entra_bootstrap_ignores_lookalike_display_names(tmp_path: Path) -> None:
+    """Directory objects are selected by exact display name.
+
+    A prefix match would pick ``sage-resource-server-old`` or
+    ``cas-sage-users-legacy`` on a tenant that holds them; the run must leave
+    such look-alikes untouched and act only on the exactly-named objects.
+    """
+    state = _seed_directory()
+    lookalike_app = {
+        "appId": str(uuid.uuid4()),
+        "id": str(uuid.uuid4()),
+        "displayName": f"{_SAGE_APP}-old",
+        "identifierUris": [],
+        "api": {},
+        "appRoles": [],
+    }
+    lookalike_group = {"id": str(uuid.uuid4()), "displayName": f"{_GROUP}-legacy"}
+    state["apps"].append(lookalike_app)
+    state["groups"].append(lookalike_group)
+    before = dict(lookalike_app)
+
+    result, calls, final = _run_entra(tmp_path, state)
+    assert result.returncode == 0, result.stderr
+    after = next(a for a in final["apps"] if a["id"] == lookalike_app["id"])
+    assert after == before, "the look-alike application must not be modified"
+    assert not any(a["principalId"] == lookalike_group["id"] for a in final["assignments"]), (
+        "the look-alike group must not be assigned to anything"
+    )
+    _app(final, _SAGE_APP)
+    group = _group(final)
+    assert any(a["principalId"] == group["id"] for a in final["assignments"])
+
+
+def test_entra_bootstrap_refuses_duplicate_exact_names(tmp_path: Path) -> None:
+    """Two objects with the same exact name stop the run before any gate write.
+
+    Picking either one could gate SAGE on the wrong group, so the run exits
+    non-zero, names the ambiguity, and records no assignment or
+    assignment-requirement call.
+    """
+    state = _seed_directory()
+    state["groups"] += [
+        {"id": str(uuid.uuid4()), "displayName": _GROUP},
+        {"id": str(uuid.uuid4()), "displayName": _GROUP},
+    ]
+    result, calls, _ = _run_entra(tmp_path, state)
+    assert result.returncode != 0, "duplicate exact-name groups must stop the run"
+    assert _GROUP in result.stderr and "exactly one" in result.stderr, result.stderr
+    gate_calls = [c for c in calls if c[:1] == ["rest"] and ("appRoleAssign" in " ".join(c))]
+    assert gate_calls == [], f"no gate write may happen on an ambiguous lookup: {gate_calls}"
+
+
+def test_entra_bootstrap_rejects_quoted_group_name(tmp_path: Path) -> None:
+    """A group name carrying a single quote is refused before any lookup uses it.
+
+    The name is spliced into a quoted OData ``eq`` literal, so a quote would end
+    the literal and let the rest of the value rewrite the filter -- for example
+    selecting a different, existing group. The run stops before any group
+    lookup and before any gate write.
+    """
+    state = _seed_directory()
+    other = {"id": str(uuid.uuid4()), "displayName": "other-group"}
+    state["groups"].append(other)
+    result, calls, _ = _run_entra(
+        tmp_path,
+        state,
+        env={"PROVISIONING_GROUP_NAME": "missing' or displayName eq 'other-group"},
+    )
+    assert result.returncode != 0, "a quoted group name must stop the run"
+    assert "single quote" in result.stderr, result.stderr
+    assert not [c for c in calls if c[:3] == ["ad", "group", "list"]], (
+        "the quoted name must never reach a group lookup"
+    )
+    assert not [c for c in calls if "appRoleAssign" in " ".join(c)]
+
+
+def test_entra_bootstrap_stops_on_unexpected_error(tmp_path: Path) -> None:
+    """An assignment failure aborts the run; it is never swallowed.
+
+    The BFF's group assignment is refused with an authorization error. The run
+    must exit non-zero and must not go on to require assignment on that
+    principal, since the gate's allowlist was never written.
+    """
+    # Build a converged tenant, then withdraw the BFF's gate and refuse its
+    # re-assignment, so the re-run reaches that write and is denied there.
+    first, _, built = _run_entra(tmp_path, _seed_directory())
+    assert first.returncode == 0, first.stderr
+    bff_sp = _sp_of(built, _BFF_APP)
+    built["assignments"] = [a for a in built["assignments"] if a["resourceId"] != bff_sp["id"]]
+    bff_sp["appRoleAssignmentRequired"] = False
+    built["faults"] = [
+        {
+            "contains": ["POST", f"/servicePrincipals/{bff_sp['id']}/appRoleAssign"],
+            "message": "Authorization_RequestDenied: Insufficient privileges.",
+            "code": 1,
+        }
+    ]
+    result, calls, final = _run_entra(tmp_path, built)
+    assert result.returncode != 0, "a refused assignment must fail the run"
+    assert _sp_of(final, _BFF_APP)["appRoleAssignmentRequired"] is False
+    assert _requirement_patches(calls, bff_sp["id"]) == [], (
+        "assignment must not be required after its allowlist write failed"
+    )
+
+
+def test_entra_bootstrap_stops_when_a_lookup_fails(tmp_path: Path) -> None:
+    """A failed lookup stops the run; it never reads as "not found".
+
+    On a converged tenant the lookup for the BFF registration fails. Treating
+    the empty output as absence would create a second ``cas-bff``; the run must
+    exit non-zero instead and leave the directory's applications unchanged.
+    """
+    first, _, built = _run_entra(tmp_path, _seed_directory())
+    assert first.returncode == 0, first.stderr
+    built["faults"] = [
+        {
+            "contains": ["ad", "app", "list", "displayName eq 'cas-bff'"],
+            "message": "Service unavailable.",
+            "code": 1,
+        }
+    ]
+    result, _, final = _run_entra(tmp_path, built)
+    assert result.returncode != 0, "a failed lookup must fail the run"
+    assert [a["displayName"] for a in final["apps"]] == [a["displayName"] for a in built["apps"]], (
+        "a failed lookup must not lead to creating the application again"
+    )
+
+
+def test_entra_bootstrap_sage_access_is_admin_consent_only(tmp_path: Path) -> None:
+    """``Sage.Access`` is admin-consent-only.
+
+    Every supported client is either admin-consented (the BFF and the public
+    MCP client) or pre-authorized (Azure CLI), so none needs a user to consent.
+    A user-consentable scope would let any member grant an arbitrary app
+    delegated SAGE access.
+    """
+    result, _, state = _run_entra(tmp_path, _seed_directory())
+    assert result.returncode == 0, result.stderr
+    scopes = _app(state, _SAGE_APP)["api"]["oauth2PermissionScopes"]
+    access = [s for s in scopes if s["value"] == "Sage.Access"]
+    assert len(access) == 1 and access[0]["type"] == "Admin", access
 
 
 def test_kv_secrets_script_reads_secrets_from_env_not_args() -> None:

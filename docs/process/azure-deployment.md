@@ -209,9 +209,11 @@ a v2 `.default` token for the SAGE audience and reads `/sage_vaults` to prove th
 backend is reachable. That token clears the APIM edge on issuer and audience
 alone, but the SAGE backend additionally requires the token to carry a configured
 role or scope. A service principal acquires no delegated scope, so the deploy
-identity must hold an **application role** on the SAGE resource server, or the
-preflight's authenticated read is rejected — and the `.default` mint can itself
-fail when the principal holds no permission on SAGE at all.
+identity must hold an **application role** on the SAGE resource server. The
+SAGE resource requires app-role assignment (the access-group gate in the
+[Entra bootstrap](entra-app-registrations.md)), so without this grant Entra
+refuses the deploy identity's `.default` mint outright and the preflight cannot
+obtain a token at all.
 
 Grant the **read-only `Sage.Reader`** application role — the minimal role the
 preflight read needs. This is **least-privilege**: `Sage.Reader` confers read
@@ -222,21 +224,29 @@ after the [Entra app-registrations bootstrap](entra-app-registrations.md)
 service principal owns the role:
 
 ```bash
-SAGE_APP_ID="$(az ad app list --display-name sage-resource-server --query '[0].appId' -o tsv)"
+SAGE_APP_ID="$(az ad app list --filter "displayName eq 'sage-resource-server'" \
+  --query '[].appId' -o tsv)"
 SAGE_SP_ID="$(az ad sp list --filter "appId eq '${SAGE_APP_ID}'" --query '[0].id' -o tsv)"
 SAGE_READER_ROLE_ID="$(az ad sp show --id "${SAGE_SP_ID}" \
   --query "appRoles[?value=='Sage.Reader'].id | [0]" -o tsv)"
 DEPLOY_SP_ID="$(az ad sp list --filter "appId eq '${APP_ID}'" --query '[0].id' -o tsv)"
 
-az rest --method POST \
-  --uri "https://graph.microsoft.com/v1.0/servicePrincipals/${DEPLOY_SP_ID}/appRoleAssignments" \
-  --body "{\"principalId\":\"${DEPLOY_SP_ID}\",\"resourceId\":\"${SAGE_SP_ID}\",\"appRoleId\":\"${SAGE_READER_ROLE_ID}\"}" \
-  2>/dev/null || true
+EXISTING="$(az rest --method GET \
+  --uri "https://graph.microsoft.com/v1.0/servicePrincipals/${SAGE_SP_ID}/appRoleAssignedTo" \
+  --query "value[?principalId=='${DEPLOY_SP_ID}' && appRoleId=='${SAGE_READER_ROLE_ID}'].id" \
+  -o tsv)"
+if [ -z "$EXISTING" ]; then
+  az rest --method POST \
+    --uri "https://graph.microsoft.com/v1.0/servicePrincipals/${DEPLOY_SP_ID}/appRoleAssignments" \
+    --body "{\"principalId\":\"${DEPLOY_SP_ID}\",\"resourceId\":\"${SAGE_SP_ID}\",\"appRoleId\":\"${SAGE_READER_ROLE_ID}\"}"
+fi
 ```
 
-The grant is idempotent — re-running tolerates a pre-existing assignment
-(`|| true`) — so a re-provision or a fresh-tenant bring-up reaches the same state
-without a manual hand-grant.
+The grant is idempotent — the lookup finds a pre-existing assignment and skips
+the POST — so a re-provision or a fresh-tenant bring-up reaches the same state
+without a manual hand-grant, and a failed POST surfaces instead of being
+discarded. `SAGE_APP_ID` is found by exact display name; check that it resolved
+to one value.
 
 ## Container images and the ACR push
 

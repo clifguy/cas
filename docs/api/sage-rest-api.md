@@ -81,7 +81,8 @@ Two things gate the second row, and neither is a code change on your side:
 2. **Your service principal must be granted the `Sage.Reader` app role.**
    Admitting application principals to the role does not assign it to anyone.
    This is a per-principal, per-deployment grant, exactly like the group
-   membership an interactive user needs (§1.3).
+   membership an interactive user needs (§1.3). Without it, the
+   client-credentials token request itself is refused.
 
 Design against the advertised metadata, not against this paragraph: a client
 that reads `grant_types_supported` and falls back to the interactive flow when
@@ -104,16 +105,29 @@ get wrong anyway:
 
 ### 1.3 Registration succeeds and access still fails
 
-The SAGE application sets `appRoleAssignmentRequired: true`, and access is
-provisioned by membership in a single group per deployment (`cas-sage-users` by
-default). Because each deployment lives in its own Entra tenant, **access to
-one deployment grants nothing on another** — you need a separate assignment for
-each.
+Access is provisioned by membership in a single group per deployment
+(`cas-sage-users` by default). The SAGE application sets
+`appRoleAssignmentRequired: true`, and the group is assigned to its `Sage.Reader`
+role. So Entra issues a token for the SAGE audience only to a member,
+whichever client asks for it: the CAS web client, the MCP connector, Azure CLI
+(`az account get-access-token`), or your own application. Because each
+deployment lives in its own Entra tenant, **access to one deployment grants
+nothing on another** — you need a separate assignment for each.
 
-Registration and sign-in will therefore appear to work for a principal that has
-no access — you get a client, you see a login page — and authorization fails
-afterward. **If you get a token but every call returns 403, you need a group
-assignment, not a code fix.** Ask the SAGE operator.
+Registration, and even the start of sign-in, will therefore appear to work for a
+principal that has no access: you get a client and you see a login page. The
+refusal comes at token issuance, as `AADSTS50105` (the signed-in user is not
+assigned to the application). **That error means you need a group assignment,
+not a code fix.** Ask the SAGE operator.
+
+The same holds for the machine path in §1.1. An application acting as itself
+gets a token only once its service principal holds the `Sage.Reader` app role;
+without that, the client-credentials request is refused.
+
+The `Sage.Access` scope is admin-consent-only. Use the deployment's own
+registered clients (the web client, the MCP connector via `POST /register`, or
+Azure CLI). A third-party application cannot be granted delegated access by a
+user's own consent; it needs the operator to consent it for the tenant.
 
 ---
 
