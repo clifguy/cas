@@ -143,12 +143,17 @@ def _app_by_app_id(state: dict, app_id: str) -> dict:
 
 
 def _sp_view(state: dict, sp: dict) -> dict:
-    """A service principal as Graph reports it: it mirrors its app's roles and scopes."""
+    """A service principal as Graph reports it: it mirrors its app's roles and scopes.
+
+    The delegated scopes an application declares under ``api`` surface at the
+    top level of its service principal, so every ``*Scopes`` collection is
+    lifted from ``api`` as is.
+    """
     view = dict(sp)
     app = next((a for a in state["apps"] if a["appId"] == sp["appId"]), None)
     if app is not None:
         view["appRoles"] = app.get("appRoles", [])
-        view["oauth2PermissionScopes"] = app.get("api", {}).get("oauth2PermissionScopes", [])
+        view.update({k: v for k, v in app.get("api", {}).items() if k.endswith("Scopes")})
     return view
 
 
