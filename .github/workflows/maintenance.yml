@@ -116,6 +116,11 @@ jobs:
       APPLY: ${{ inputs.apply }}
       SNAPSHOT: ${{ inputs.snapshot }}
       REASON: ${{ inputs.reason }}
+      # The deploy identity's coordinates, for renewing the federated sign-in
+      # during the long wait below (deploy/azure-federated-signin.sh).
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -243,6 +248,10 @@ jobs:
           MAINTENANCE_SUCCEEDED=false
           STATUS=""
           while [ "$(date +%s)" -lt "$POLL_DEADLINE" ]; do
+            # The wait outlasts the job's federated sign-in, whose client
+            # assertion the CLI re-presents whenever its cached token expires;
+            # renew it once it is a few minutes old.
+            bash deploy/azure-federated-signin.sh --if-stale
             STATUS="$(az containerapp job execution show \
               --name "$MAINTENANCE_JOB" --resource-group "$RESOURCE_GROUP_NAME" \
               --job-execution-name "$EXECUTION" --query properties.status -o tsv)"
@@ -268,6 +277,8 @@ jobs:
             if [ -n "$LOG_CUSTOMER_ID" ]; then
               echo "system logs from Log Analytics (waiting for ingestion):"
               sleep 120
+              # A token for a new scope re-presents the sign-in's assertion.
+              bash deploy/azure-federated-signin.sh --if-stale
               az monitor log-analytics query --workspace "$LOG_CUSTOMER_ID" \
                 --analytics-query "ContainerAppSystemLogs_CL | where JobName_s == '$MAINTENANCE_JOB' | where TimeGenerated > ago(2h) | order by TimeGenerated asc | project TimeGenerated, Log_s | take 200" \
                 --output table || true

@@ -17,12 +17,21 @@ from typing import Any, Callable
 
 Azure = Callable[..., Any]
 ROOT = Path(__file__).resolve().parents[1]
+SIGNIN = ROOT / "deploy" / "azure-federated-signin.sh"
 
 
 def azure(*args: str) -> Any:
     executable = shutil.which("az")
     if executable is None:
         raise RuntimeError("Azure CLI is required")
+    # A job wait outlasts the federated sign-in's client assertion, which the
+    # CLI re-presents whenever it mints a token. Renew the sign-in before each
+    # call; the helper does nothing while the sign-in is recent, or outside CI.
+    subprocess.run(  # noqa: S603 -- fixed argument array, never shell evaluation
+        [shutil.which("bash") or "bash", str(SIGNIN), "--if-stale"],
+        check=True,
+        timeout=300,
+    )
     # Arguments are separate strings; deployment values never enter a shell.
     result = subprocess.run(  # noqa: S603
         [executable, *args, "--output", "json", "--only-show-errors"],
