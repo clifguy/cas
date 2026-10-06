@@ -48,6 +48,8 @@ class TokenEndpoint:
     url: str
     requests: list[dict[str, str]] = field(default_factory=list)
     status: int = 200
+    # Answer this many requests with a 503 before answering normally.
+    fail_first: int = 0
 
 
 @pytest.fixture
@@ -67,7 +69,10 @@ def token_endpoint() -> Iterator[TokenEndpoint]:
                     }
                 )
                 body = json.dumps({"value": FEDERATED_TOKEN}).encode()
-                self.send_response(endpoint.status)
+                status = endpoint.status
+                if len(endpoint.requests) <= endpoint.fail_first:
+                    status = 503
+                self.send_response(status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
@@ -100,6 +105,8 @@ def _fake_az(bin_dir: Path, calls: Path) -> None:
         "#!/usr/bin/env python3\n"
         "import json, os, sys\n"
         f"open({str(calls)!r}, 'a').write(json.dumps(sys.argv[1:]) + '\\n')\n"
+        f"n = sum(1 for _ in open({str(calls)!r}))\n"
+        "if n <= int(os.environ.get('FAKE_AZ_EXIT_FIRST', '0')): sys.exit(1)\n"
         "sys.exit(int(os.environ.get('FAKE_AZ_EXIT', '0')))\n"
     )
     az.chmod(0o755)
@@ -113,6 +120,7 @@ def _run(
     stamp_age: int | None = None,
     drop: tuple[str, ...] = (),
     az_exit: int = 0,
+    az_exit_first: int = 0,
 ) -> Run:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(exist_ok=True)
@@ -132,6 +140,7 @@ def _run(
         "AZURE_TENANT_ID": "tenant-coordinate",
         "AZURE_SUBSCRIPTION_ID": "subscription-coordinate",
         "FAKE_AZ_EXIT": str(az_exit),
+        "FAKE_AZ_EXIT_FIRST": str(az_exit_first),
     }
     if endpoint is not None:
         env["ACTIONS_ID_TOKEN_REQUEST_URL"] = endpoint.url
@@ -294,12 +303,43 @@ def test_a_failed_token_request_fails_without_signing_in(
 
 
 @BASHES
+def test_a_transient_token_failure_is_retried(
+    tmp_path: Path, bash: str, token_endpoint: TokenEndpoint
+) -> None:
+    """One failed request does not abort the long wait the helper runs inside."""
+    token_endpoint.fail_first = 1
+    run = _run(tmp_path, bash, "--if-stale", endpoint=token_endpoint, stamp_age=600)
+    assert run.returncode == 0, run.stderr
+    assert len(token_endpoint.requests) == 2
+    assert [call[0] for call in run.az_calls] == ["login", "account"]
+
+
+@BASHES
+def test_retries_are_bounded(tmp_path: Path, bash: str, token_endpoint: TokenEndpoint) -> None:
+    token_endpoint.status = 500
+    run = _run(tmp_path, bash, endpoint=token_endpoint)
+    assert run.returncode != 0
+    assert len(token_endpoint.requests) == 3
+    assert run.az_calls == []
+
+
+@BASHES
+def test_a_transient_sign_in_failure_is_retried(
+    tmp_path: Path, bash: str, token_endpoint: TokenEndpoint
+) -> None:
+    run = _run(tmp_path, bash, endpoint=token_endpoint, az_exit_first=1)
+    assert run.returncode == 0, run.stderr
+    assert [call[0] for call in run.az_calls] == ["login", "login", "account"]
+    assert len(token_endpoint.requests) == 2, "each attempt uses a freshly requested token"
+
+
+@BASHES
 def test_a_failed_sign_in_fails_and_keeps_the_old_stamp(
     tmp_path: Path, bash: str, token_endpoint: TokenEndpoint
 ) -> None:
     run = _run(tmp_path, bash, "--if-stale", endpoint=token_endpoint, stamp_age=600, az_exit=1)
     assert run.returncode != 0
-    assert [call[0] for call in run.az_calls] == ["login"]
+    assert [call[0] for call in run.az_calls] == ["login"] * 3
     assert abs(int(run.stamp.read_text()) - (time.time() - 600)) < 30, (
         "a failed sign-in must not be recorded as a fresh one"
     )

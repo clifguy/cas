@@ -346,9 +346,9 @@ The deploy pipeline runs it as the final stage, minting the bearer token from th
 deploy identity. It signs in to Azure again immediately before the preflight: the
 federated sign-in's client assertion is accepted for only a few minutes, every
 token minted for a new scope re-presents it, and the apply and bootstrap stages
-can outlast it. Workflows that wait on an in-VNet job within a single step (the
-maintenance and Postgres migration workflows) renew the sign-in from inside that
-step with [`deploy/azure-federated-signin.sh`](../../deploy/azure-federated-signin.sh)
+can outlast it. Workflows that wait within a single step, or mint a token after
+a long wait (the maintenance, Postgres migration and SharePoint validation
+workflows), renew the sign-in from inside the step with [`deploy/azure-federated-signin.sh`](../../deploy/azure-federated-signin.sh)
 instead. The harness is tenant-parameterized — no environment-specific
 value is baked in. To run it by hand, supply the tenant's public host and an
 operator-obtained bearer token by environment; the probe never mints a token of

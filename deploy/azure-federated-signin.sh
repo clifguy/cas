@@ -63,21 +63,38 @@ if [ "${if_stale}" = true ] && [ -f "${stamp}" ]; then
   esac
 fi
 
-# The request URL already carries a query string; the audience is the one
-# Entra's workload identity federation exchanges.
-response="$(curl --silent --show-error --fail \
-  --header "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
-  "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange")"
-token="$(printf '%s' "${response}" \
-  | python3 -c 'import json, sys; print(json.load(sys.stdin)["value"])')"
-if [ -z "${token}" ]; then
-  echo "azure-federated-signin.sh: the OIDC provider returned no token" >&2
-  exit 1
-fi
-# Registers the token with the runner's log masking before anything could echo it.
-echo "::add-mask::${token}"
+# One sign-in from a freshly requested token. Runs inside an `if`, where bash
+# suspends `set -e`, so every step returns its own failure.
+sign_in() {
+  local response token
+  # The request URL already carries a query string; the audience is the one
+  # Entra's workload identity federation exchanges.
+  response="$(curl --silent --show-error --fail \
+    --header "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+    "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange")" || return 1
+  token="$(printf '%s' "${response}" \
+    | python3 -c 'import json, sys; print(json.load(sys.stdin)["value"])')" || return 1
+  if [ -z "${token}" ]; then
+    echo "azure-federated-signin.sh: the OIDC provider returned no token" >&2
+    return 1
+  fi
+  # Registers the token with the runner's log masking before anything could echo it.
+  echo "::add-mask::${token}"
+  az login --service-principal --username "${AZURE_CLIENT_ID}" \
+    --tenant "${AZURE_TENANT_ID}" --federated-token "${token}" --output none || return 1
+  az account set --subscription "${AZURE_SUBSCRIPTION_ID}" || return 1
+}
 
-az login --service-principal --username "${AZURE_CLIENT_ID}" \
-  --tenant "${AZURE_TENANT_ID}" --federated-token "${token}" --output none
-az account set --subscription "${AZURE_SUBSCRIPTION_ID}"
+# A transient failure must not abort the long wait this runs inside. The
+# previous sign-in is at most the renewal age old, so three attempts five
+# seconds apart still finish well inside the assertion's lifetime.
+attempt=1
+until sign_in; do
+  if [ "${attempt}" -ge 3 ]; then
+    echo "azure-federated-signin.sh: sign-in failed after ${attempt} attempts" >&2
+    exit 1
+  fi
+  attempt=$((attempt + 1))
+  sleep 5
+done
 printf '%s\n' "${now}" >"${stamp}"

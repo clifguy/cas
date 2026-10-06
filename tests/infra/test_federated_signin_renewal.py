@@ -89,6 +89,17 @@ def _log_query_problem(run: str) -> str | None:
     return None
 
 
+def _mint_problem(run: str) -> str | None:
+    """Why a step's token mint does not follow a renewal in the same step."""
+    commands = _commands(run)
+    mint = next((i for i, c in enumerate(commands) if "az account get-access-token" in c), None)
+    if mint is None:
+        return "no token mint found"
+    if not any(c == RENEW for c in commands[:mint]):
+        return f"`{RENEW}` must run before the step's token mint"
+    return None
+
+
 def _coordinates_problem(job: dict) -> str | None:
     env = job.get("env") or {}
     missing = {k: v for k, v in COORDINATES.items() if env.get(k) != v}
@@ -114,9 +125,23 @@ def test_maintenance_log_query_follows_a_renewal() -> None:
     assert problem is None, problem
 
 
+def test_sharepoint_post_restart_mint_follows_a_renewal() -> None:
+    """The post-restart phase mints after the revision recycle wait, which can
+    outlast the job's sign-in; a mint that needs the assertion must find it fresh.
+    """
+    steps = _job("sharepoint-validate.yml", "validate")["steps"]
+    run = next(s["run"] for s in steps if "--phase post-restart" in s.get("run", ""))
+    problem = _mint_problem(run)
+    assert problem is None, problem
+
+
 @pytest.mark.parametrize(
     ("workflow", "job"),
-    [("maintenance.yml", "maintenance"), ("postgres-migration.yml", "migration")],
+    [
+        ("maintenance.yml", "maintenance"),
+        ("postgres-migration.yml", "migration"),
+        ("sharepoint-validate.yml", "validate"),
+    ],
 )
 def test_renewing_jobs_carry_the_identity_coordinates(workflow: str, job: str) -> None:
     """The renewal helper fails loudly in CI without these, so a job that renews
@@ -194,6 +219,14 @@ def test_poll_loop_detector_rejects(label: str, script: str) -> None:
 )
 def test_log_query_detector_rejects(label: str, script: str) -> None:
     assert _log_query_problem(script) is not None, label
+
+
+def test_mint_detector_rejects_a_missing_or_late_renewal() -> None:
+    mint = 'TOKEN="$(az account get-access-token --scope "$A/.default" -o tsv)" \\\n  run-it'
+    assert _mint_problem(f"set -e\n{RENEW}\n{mint}\n") is None
+    assert _mint_problem(f"set -e\n{mint}\n") is not None
+    assert _mint_problem(f"set -e\n{mint}\n{RENEW}\n") is not None
+    assert _mint_problem(f"set -e\n# {RENEW}\n{mint}\n") is not None
 
 
 def test_coordinates_detector_rejects_a_missing_or_wrong_coordinate() -> None:
