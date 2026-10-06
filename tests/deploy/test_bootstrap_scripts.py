@@ -566,7 +566,7 @@ def _run_entra(
     the runbook does, unless ``bare_ids`` leaves the script to resolve them.
     """
     bin_dir = tmp_path / "bin"
-    bin_dir.mkdir(exist_ok=True)
+    bin_dir.mkdir(parents=True, exist_ok=True)
     az = bin_dir / "az"
     az.write_text(f"#!{sys.executable} -IS\n" + FAKE_ENTRA_AZ.read_text())
     az.chmod(0o755)
@@ -700,6 +700,66 @@ def test_entra_bootstrap_rerun_converges(tmp_path: Path) -> None:
         assert len(rerun[key]) == len(state[key]), f"a re-run must not add {key}"
     posts = [i for i in _rest_calls(calls, "POST", "") if "appRoleAssign" in " ".join(calls[i])]
     assert posts == [], "a re-run must find existing assignments instead of re-posting them"
+
+
+def test_entra_bootstrap_assigns_the_intended_role_beside_another(tmp_path: Path) -> None:
+    """An assignment of the group to a different role does not count as the gate.
+
+    On a tenant where the group already holds some other role on the SAGE
+    principal, the run must still assign it ``Sage.Reader``: the existence
+    check matches the role as well as the principal and resource.
+    """
+    first, _, built = _run_entra(tmp_path, _seed_directory())
+    assert first.returncode == 0, first.stderr
+    sage_sp = _sp_of(built, _SAGE_APP)
+    reader_role = next(
+        r["id"] for r in _app(built, _SAGE_APP)["appRoles"] if r["value"] == "Sage.Reader"
+    )
+    for assignment in built["assignments"]:
+        if assignment["resourceId"] == sage_sp["id"]:
+            assignment["appRoleId"] = "-".join("0" * n for n in (8, 4, 4, 4, 12))
+    result, _, final = _run_entra(tmp_path, built)
+    assert result.returncode == 0, result.stderr
+    roles = [a["appRoleId"] for a in final["assignments"] if a["resourceId"] == sage_sp["id"]]
+    assert reader_role in roles, "the group must hold Sage.Reader on the SAGE principal"
+
+
+def test_entra_bootstrap_warns_without_application_reader(tmp_path: Path) -> None:
+    """The run reports when no application principal holds Sage.Reader.
+
+    Requiring assignment on the resource stops an application without the
+    role from obtaining a token, so a tenant whose deploy identity was never
+    granted gets a warning; one whose deploy identity holds the role does not.
+    The warning does not fail the run, because a fresh tenant grants the
+    deploy identity only after this bootstrap.
+    """
+    first, _, built = _run_entra(tmp_path / "fresh", _seed_directory())
+    assert first.returncode == 0, first.stderr
+    assert "no application principal holds Sage.Reader" in first.stderr
+
+    sage_sp = _sp_of(built, _SAGE_APP)
+    reader_role = next(
+        r["id"] for r in _app(built, _SAGE_APP)["appRoles"] if r["value"] == "Sage.Reader"
+    )
+    application = {
+        "id": str(uuid.uuid4()),
+        "principalId": str(uuid.uuid4()),
+        "principalType": "ServicePrincipal",
+        "resourceId": sage_sp["id"],
+        "appRoleId": "-".join("0" * n for n in (8, 4, 4, 4, 12)),
+    }
+    built["assignments"].append(application)
+    (tmp_path / "fresh" / "ids.json").rename(tmp_path / "ids.json")
+    other_role, _, built = _run_entra(tmp_path, built)
+    assert other_role.returncode == 0, other_role.stderr
+    assert "no application principal holds Sage.Reader" in other_role.stderr, (
+        "an application holding some other role does not satisfy the check"
+    )
+
+    next(a for a in built["assignments"] if a["id"] == application["id"])["appRoleId"] = reader_role
+    granted, _, _ = _run_entra(tmp_path, built)
+    assert granted.returncode == 0, granted.stderr
+    assert "no application principal holds Sage.Reader" not in granted.stderr
 
 
 def test_entra_bootstrap_rerun_keeps_scope_and_role_ids(tmp_path: Path) -> None:

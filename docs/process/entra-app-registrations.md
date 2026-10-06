@@ -371,12 +371,15 @@ Every gate in this procedure has the same three steps:
 3. Only then require assignment.
 
 The order means the gate never engages before its allowlist exists, and the
-lookup keeps a re-run from re-posting an assignment that already exists.
+lookup keeps a re-run from re-posting an assignment that already exists. The
+lookup reads the group's own assignments: `az rest` returns one page, and the
+access group holds only a handful of assignments, where a resource may hold
+many.
 
 ```bash
 EXISTING="$(az rest --method GET \
-  --url "https://graph.microsoft.com/v1.0/servicePrincipals/${SAGE_SP_ID}/appRoleAssignedTo" \
-  --query "value[?principalId=='${PROVISIONING_GROUP_ID}' && appRoleId=='${SAGE_READER_ROLE_ID}'].id" \
+  --url "https://graph.microsoft.com/v1.0/groups/${PROVISIONING_GROUP_ID}/appRoleAssignments" \
+  --query "value[?resourceId=='${SAGE_SP_ID}' && appRoleId=='${SAGE_READER_ROLE_ID}'].id" \
   -o tsv)"
 if [ -z "$EXISTING" ]; then
   az rest --method POST \
@@ -394,6 +397,11 @@ az rest --method PATCH \
   --headers 'Content-Type=application/json' \
   --body '{"appRoleAssignmentRequired": true}'
 ```
+
+Before engaging the gate, the codified script warns on standard error when no
+application principal holds `Sage.Reader` on the resource. The warning is
+expected on a fresh tenant, where the deploy identity is granted after this
+bootstrap. On an existing tenant it means CI would lose access.
 
 The resource gate does not affect the CI deploy identity. It reaches SAGE
 app-only, through its own `Sage.Reader` assignment (see
@@ -473,8 +481,8 @@ exists.
 
 ```bash
 EXISTING="$(az rest --method GET \
-  --url "https://graph.microsoft.com/v1.0/servicePrincipals/${BFF_SP_ID}/appRoleAssignedTo" \
-  --query "value[?principalId=='${PROVISIONING_GROUP_ID}' && appRoleId=='<default-access app role id>'].id" \
+  --url "https://graph.microsoft.com/v1.0/groups/${PROVISIONING_GROUP_ID}/appRoleAssignments" \
+  --query "value[?resourceId=='${BFF_SP_ID}' && appRoleId=='<default-access app role id>'].id" \
   -o tsv)"
 if [ -z "$EXISTING" ]; then
   az rest --method POST \
@@ -585,8 +593,8 @@ uses on a live tenant.
 
 ```bash
 EXISTING="$(az rest --method GET \
-  --url "https://graph.microsoft.com/v1.0/servicePrincipals/${MCP_CLIENT_SP_ID}/appRoleAssignedTo" \
-  --query "value[?principalId=='${PROVISIONING_GROUP_ID}' && appRoleId=='<default-access app role id>'].id" \
+  --url "https://graph.microsoft.com/v1.0/groups/${PROVISIONING_GROUP_ID}/appRoleAssignments" \
+  --query "value[?resourceId=='${MCP_CLIENT_SP_ID}' && appRoleId=='<default-access app role id>'].id" \
   -o tsv)"
 if [ -z "$EXISTING" ]; then
   az rest --method POST \

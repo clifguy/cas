@@ -55,12 +55,16 @@ ensure_sp() {
 # group to the given app role unless that assignment already exists, then
 # require app-role assignment -- in that order, so the gate never engages
 # before its allowlist exists. The existence check is what keeps a re-run
-# idempotent; a failed call stops the run instead of being tolerated.
+# idempotent; a failed call stops the run instead of being tolerated. It reads
+# the group's own assignments rather than the principal's: `az rest` returns a
+# single page, and the access group holds a handful of assignments where a
+# resource may hold many. Were an assignment ever past that page, the POST is
+# refused as a duplicate and the run stops before requiring assignment.
 ensure_group_gate() {
   local sp_id="$1" app_role_id="$2" existing
   existing="$(az rest --method GET \
-    --url "https://graph.microsoft.com/v1.0/servicePrincipals/${sp_id}/appRoleAssignedTo" \
-    --query "value[?principalId=='${PROVISIONING_GROUP_ID}' && appRoleId=='${app_role_id}'].id" \
+    --url "https://graph.microsoft.com/v1.0/groups/${PROVISIONING_GROUP_ID}/appRoleAssignments" \
+    --query "value[?resourceId=='${sp_id}' && appRoleId=='${app_role_id}'].id" \
     -o tsv)"
   if [ -z "${existing}" ]; then
     az rest --method POST \
@@ -257,6 +261,20 @@ fi
 # users; an application principal (the CI deploy identity) holds its own
 # Sage.Reader assignment, granted separately, which keeps its client-credentials
 # path working.
+#
+# Requiring assignment stops any application principal without that grant from
+# obtaining a token. A fresh tenant has none yet (the deploy identity is granted
+# after this bootstrap), so their absence is reported rather than refused.
+APP_READERS="$(az rest --method GET \
+  --url "https://graph.microsoft.com/v1.0/servicePrincipals/${SAGE_SP_ID}/appRoleAssignedTo" \
+  --query "value[?principalType=='ServicePrincipal' && appRoleId=='${SAGE_READER_ROLE_ID}'].id" \
+  -o tsv)"
+if [ -z "${APP_READERS}" ]; then
+  echo "WARNING: no application principal holds Sage.Reader on the SAGE resource." \
+    "Once assignment is required, an application without it (the CI deploy" \
+    "identity included) cannot obtain a SAGE token; grant it as described in" \
+    "docs/process/azure-deployment.md." >&2
+fi
 ensure_group_gate "${SAGE_SP_ID}" "${SAGE_READER_ROLE_ID}"
 
 # The default-access app role id is the well-known all-zero Microsoft Graph

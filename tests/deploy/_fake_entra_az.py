@@ -219,7 +219,8 @@ def _ad(state: dict, args: list[str]) -> Any:
 
 
 _REST_RE = re.compile(
-    r"^https://graph\.microsoft\.com/v1\.0/(applications|servicePrincipals)/([^/]+)(?:/(appRoleAssignedTo|appRoleAssignments))?$"
+    r"^https://graph\.microsoft\.com/v1\.0/(applications|servicePrincipals|groups)/([^/]+)"
+    r"(?:/(appRoleAssignedTo|appRoleAssignments))?$"
 )
 
 
@@ -244,6 +245,12 @@ def _rest(state: dict, args: list[str]) -> Any:
             else:
                 app[key] = value
         return None
+    if collection == "groups":
+        if method != "GET" or sub != "appRoleAssignments":
+            raise AssertionError(f"fake az: unsupported {method} on a group")
+        if not any(g["id"] == object_id for g in state["groups"]):
+            raise AzError(f"Resource '{object_id}' does not exist.", 3)
+        return {"value": [a for a in state["assignments"] if a["principalId"] == object_id]}
     sp = next((s for s in state["sps"] if s["id"] == object_id), None)
     if sp is None:
         raise AzError(f"Resource '{object_id}' does not exist.", 3)
@@ -269,17 +276,23 @@ def _rest(state: dict, args: list[str]) -> Any:
     existing = {(a["principalId"], a["resourceId"], a["appRoleId"]) for a in state["assignments"]}
     if key in existing:
         raise AzError("Permission being assigned already exists on the object.", 1)
-    assignment = {"id": _new_id(), **body}
+    assignment = {"id": _new_id(), "principalType": "Group", **body}
     state["assignments"].append(assignment)
     return assignment
 
 
-def _token() -> dict:
+def _cli_session_reply() -> dict:
+    """``account get-access-token``'s reply: an unsigned JWT naming Azure CLI as client.
+
+    It is synthetic and verifies nothing; the bootstrap only decodes its
+    ``appid`` claim.
+    """
+
     def segment(obj: dict) -> str:
         return base64.urlsafe_b64encode(json.dumps(obj).encode()).decode().rstrip("=")
 
     claims = {"appid": AZURE_CLI_APP_ID}
-    return {"accessToken": f"{segment({'alg': 'none'})}.{segment(claims)}.sig"}
+    return {"accessToken": f"{segment({'alg': 'none'})}.{segment(claims)}.unsigned"}
 
 
 def fake_azure() -> None:
@@ -299,7 +312,7 @@ def fake_azure() -> None:
         elif args[0] == "rest":
             result = _rest(state, args)
         elif args[:2] == ["account", "get-access-token"]:
-            result = _token()
+            result = _cli_session_reply()
         else:
             raise AssertionError(f"fake az: unsupported call {args!r}")
     except AzError as exc:
