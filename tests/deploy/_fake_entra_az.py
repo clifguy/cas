@@ -281,18 +281,28 @@ def _rest(state: dict, args: list[str]) -> Any:
     return assignment
 
 
-def _cli_session_reply() -> dict:
-    """``account get-access-token``'s reply: an unsigned JWT naming Azure CLI as client.
+def _cli_client_assertion() -> str:
+    """An unsigned, synthetic JWT naming Azure CLI as the client application.
 
-    It is synthetic and verifies nothing; the bootstrap only decodes its
-    ``appid`` claim.
+    It verifies nothing; the bootstrap reads only its ``appid`` claim.
     """
 
     def segment(obj: dict) -> str:
         return base64.urlsafe_b64encode(json.dumps(obj).encode()).decode().rstrip("=")
 
     claims = {"appid": AZURE_CLI_APP_ID}
-    return {"accessToken": f"{segment({'alg': 'none'})}.{segment(claims)}.unsigned"}
+    return f"{segment({'alg': 'none'})}.{segment(claims)}.unsigned"
+
+
+def _cli_reply(args: list[str]) -> None:
+    """Answer ``account get-access-token`` in the one form the bootstrap requests.
+
+    The bootstrap asks for the JWT field alone as plain text, so the reply is
+    that single line; any other projection is outside what this stand-in models.
+    """
+    if _arg(args, "--query") != "accessToken" or _arg(args, "-o") != "tsv":
+        raise AssertionError(f"fake az: unsupported get-access-token form {args!r}")
+    sys.stdout.write(_cli_client_assertion() + "\n")
 
 
 def fake_azure() -> None:
@@ -312,7 +322,8 @@ def fake_azure() -> None:
         elif args[0] == "rest":
             result = _rest(state, args)
         elif args[:2] == ["account", "get-access-token"]:
-            result = _cli_session_reply()
+            _cli_reply(args)
+            return
         else:
             raise AssertionError(f"fake az: unsupported call {args!r}")
     except AzError as exc:
