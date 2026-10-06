@@ -350,3 +350,56 @@ def test_failed_mode_update_never_starts_or_stops_apps() -> None:
         for c in az.calls
     )
     assert az.fence == ""
+
+
+def test_every_azure_call_renews_a_stale_federated_sign_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The real Azure boundary renews the sign-in before each az call.
+
+    The driver waits on in-VNet jobs for longer than a federated sign-in's
+    assertion is accepted, so the call that follows a long wait must not depend
+    on the job's first sign-in. The renewal helper is a no-op until the sign-in
+    is stale, which makes calling it before every az invocation cheap.
+    """
+    module = driver()
+    calls: list[list[str]] = []
+
+    class Done:
+        stdout = '{"ok": true}'
+
+    def record(argv: list[str], **_: Any) -> Done:
+        calls.append(list(argv))
+        return Done()
+
+    monkeypatch.setattr(module.shutil, "which", lambda name: f"/fake/{name}")
+    monkeypatch.setattr(module.subprocess, "run", record)
+    assert module.azure("group", "show", "--name", "group") == {"ok": True}
+    assert module.azure("monitor", "log-analytics", "query") == {"ok": True}
+    renew = ["/fake/bash", str(ROOT / "deploy/azure-federated-signin.sh"), "--if-stale"]
+    assert calls == [
+        renew,
+        ["/fake/az", "group", "show", "--name", "group", "--output", "json", "--only-show-errors"],
+        renew,
+        ["/fake/az", "monitor", "log-analytics", "query", "--output", "json", "--only-show-errors"],
+    ]
+
+
+def test_a_failed_sign_in_renewal_stops_before_the_azure_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = driver()
+    calls: list[list[str]] = []
+
+    def record(argv: list[str], **kwargs: Any) -> Any:
+        calls.append(list(argv))
+        if argv[1].endswith("azure-federated-signin.sh"):
+            assert kwargs.get("check") is True, "a failed renewal must raise"
+            raise module.subprocess.CalledProcessError(1, argv)
+        raise AssertionError("az ran after a failed renewal")
+
+    monkeypatch.setattr(module.shutil, "which", lambda name: f"/fake/{name}")
+    monkeypatch.setattr(module.subprocess, "run", record)
+    with pytest.raises(module.subprocess.CalledProcessError):
+        module.azure("group", "show", "--name", "group")
+    assert len(calls) == 1
