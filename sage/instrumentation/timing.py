@@ -37,8 +37,9 @@ class TimingConfig(BaseModel):
     log_path: str | None = Field(
         default=None,
         description=(
-            "Absolute path for the per-vault timing log. When null "
-            "(default), mcp_init resolves to ``{brain_root}/timing.log``."
+            "Absolute path for the per-vault timing log, under the server's "
+            "vault root. When null (default), mcp_init resolves to "
+            "``{brain_root}/timing.log``."
         ),
     )
     emit_threshold_ms: float = Field(

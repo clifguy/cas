@@ -21,6 +21,7 @@ from sage.source_adapters.base import (
     ProjectionResult,
     SourceAdapter,
     SourceReadError,
+    check_zip_package,
     optional_positive_int,
     positive_int,
 )
@@ -29,6 +30,45 @@ from sage.source_adapters.base import (
 _DEFAULT_SHEET_NAMES = {"Sheet", "Sheet1"}
 
 _DEFAULT_PREVIEW_ROWS = 5
+
+# Fixed bounds on reading a sheet. A sheet's declared dimension is not trusted
+# to size its rows: rows are read lazily, at most this many columns wide, and
+# counted up to a ceiling past which the count is reported as a lower bound.
+_MAX_COLUMNS = 256
+_MAX_ROWS_SCANNED = 100_000
+
+
+def _scan_sheet(ws, keep: int) -> tuple[list[tuple], int, int, bool]:
+    """Read a read-only sheet lazily within the fixed bounds.
+
+    Returns the first ``keep`` rows, the number of rows up to the last one
+    holding a value, the number of columns up to the last one holding a value,
+    and whether the scan stopped at the row ceiling. Both bounds are passed to
+    the reader explicitly, so neither a row's width nor the number of rows read
+    comes from the sheet's declared dimension.
+    """
+    kept: list[tuple] = []
+    num_rows = 0
+    num_cols = 0
+    scanned = 0
+    # The reader yields one shared tuple for every row absent from the sheet;
+    # recognizing it by identity keeps a long gap from costing a scan per row.
+    gap: tuple | None = None
+    for scanned, row in enumerate(
+        ws.iter_rows(max_row=_MAX_ROWS_SCANNED, max_col=_MAX_COLUMNS, values_only=True),
+        start=1,
+    ):
+        if len(kept) < keep:
+            kept.append(row)
+        if row is gap:
+            continue
+        last = next((i for i in range(len(row) - 1, -1, -1) if row[i] is not None), -1)
+        if last < 0:
+            gap = row
+        if last >= 0:
+            num_rows = scanned
+            num_cols = max(num_cols, last + 1)
+    return kept[:num_rows], num_rows, num_cols, scanned >= _MAX_ROWS_SCANNED
 
 
 class XlsxAdapter(SourceAdapter):
@@ -50,6 +90,7 @@ class XlsxAdapter(SourceAdapter):
         raw_bytes = source_path.read_bytes()
         content_hash = hashlib.sha256(raw_bytes).hexdigest()
 
+        check_zip_package(source_path)
         try:
             wb = load_workbook(source_path, read_only=True, data_only=True)
         except (zipfile.BadZipFile, KeyError, InvalidFileException) as exc:
@@ -64,11 +105,7 @@ class XlsxAdapter(SourceAdapter):
 
             for sheet_name in sheets_to_process:
                 ws = wb[sheet_name]
-                rows = list(ws.iter_rows(values_only=True))
-
-                # Compute dimensions from actual data
-                num_rows = len(rows)
-                num_cols = max((len(r) for r in rows), default=0) if rows else 0
+                rows, num_rows, num_cols, truncated = _scan_sheet(ws, 1 + preview_rows)
 
                 dimensions_meta[sheet_name] = {
                     "rows": num_rows,
@@ -76,12 +113,13 @@ class XlsxAdapter(SourceAdapter):
                 }
 
                 content_lines: list[str] = []
-                content_lines.append(f"{num_rows} rows x {num_cols} columns")
+                row_count = f"at least {num_rows}" if truncated else f"{num_rows}"
+                content_lines.append(f"{row_count} rows x {num_cols} columns")
                 content_lines.append("")
 
                 if rows:
                     # First row as header
-                    header_row = rows[0]
+                    header_row = rows[0][:num_cols]
                     header_cells = [str(c) if c is not None else "" for c in header_row]
                     content_lines.append("| " + " | ".join(header_cells) + " |")
                     content_lines.append("| " + " | ".join("---" for _ in header_cells) + " |")
@@ -89,7 +127,7 @@ class XlsxAdapter(SourceAdapter):
                     # Preview data rows
                     data_rows = rows[1 : 1 + preview_rows]
                     for row in data_rows:
-                        cells = [str(c) if c is not None else "" for c in row]
+                        cells = [str(c) if c is not None else "" for c in row[:num_cols]]
                         content_lines.append("| " + " | ".join(cells) + " |")
 
                     omitted = num_rows - 1 - len(data_rows)

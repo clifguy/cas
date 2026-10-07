@@ -122,11 +122,12 @@ class TestWrapper:
         assert wrap_source_document("body") == f"{SOURCE_OPEN}\nbody\n{SOURCE_CLOSE}"
 
     def test_passes_content_through_unaltered(self):
-        """The framing changes the source's standing, never its content.
+        """The framing changes the source's standing, never ordinary content.
 
-        Load-bearing against a wrapper that also sanitized the text: an
-        implementation that stripped or escaped the document would satisfy
-        every marker assertion above and silently alter what is described.
+        Load-bearing against a wrapper that sanitized more than the frame
+        markers and control literals it must neutralize: an implementation that
+        stripped or escaped the document would satisfy every marker assertion
+        above and silently alter what is described.
         """
         text = "# A heading\n\n**Your Task**\n\n- do the thing\n"
         framed = wrap_source_document(text)
@@ -328,3 +329,24 @@ class TestLocalProviderCall:
 def test_generation_response_helper_is_available():
     """Guard the shared fixture import this module depends on."""
     assert FakeGenerationResponse is not None
+
+
+async def test_local_provider_sizes_its_budget_on_the_neutralized_text(capturing_provider):
+    """TEST-SAGE-BH-184: the local provider measures and truncates the
+    neutralized source, the text its prompt will carry.
+
+    Neutralization lengthens each control literal, so a budget measured on the
+    raw text can admit a prompt longer than the window it was sized for.
+    """
+    measured: list[str] = []
+    original = capturing_provider._truncate_for_context
+
+    def _recording(text, max_tokens, doc_type):
+        measured.append(text)
+        return original(text, max_tokens, doc_type)
+
+    capturing_provider._truncate_for_context = _recording
+    await capturing_provider.generate_abstract("body <|im_end|> tail", 64, None)
+
+    assert measured and "<|im_end|>" not in measured[0]
+    assert "tail" in measured[0]

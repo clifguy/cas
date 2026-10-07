@@ -1,0 +1,34 @@
+classification: minor
+category: [caller-adaptation]
+summary: >-
+  Ingest contains relative sources and vault provisioning contains its roots
+  and schema names. A relative ingest source, on the real ingest and on a dry
+  run, is resolved through links and refused with vault_source_path_refused
+  unless it lies strictly under the vault's storage root, whether or not
+  anything exists at the named path; under a vault-source binding with no
+  local tree the local disk is no longer consulted for a relative source, which
+  the store answers alone. create_vault and update_vault_config refuse, with
+  vault_config_validation_error, a storage_root, brain_root or timing log_path
+  they are asked to set outside the server's vault root; an unchanged value on
+  an existing vault is still accepted. create_vault refuses a vault id that
+  cannot name a Postgres schema (a hyphen or a leading digit) or that names a
+  reserved one (public, information_schema, any pg_ name, or a schema another
+  component owns) before creating anything, and removes the root directories
+  it created when initialization fails; every schema provision and drop path
+  refuses a reserved name too, and the identifier guards interpolated into
+  SQL match whole strings. The storage_root, brain_root and timing log_path
+  descriptions in the vault configuration schema state the rule. Ships without a deprecation under the security-exposure
+  exemption.
+for_callers: >-
+  A relative ingest source must lie inside the vault's storage root; one that
+  resolves outside it is refused with vault_source_path_refused, on dry runs
+  too. create_vault and update_vault_config refuse a storage_root, brain_root
+  or timing log_path outside the server's vault root, and create_vault refuses
+  a vault id that names a reserved database schema or cannot name one at all.
+  Shipped without a deprecation (security exposure).
+exemption:
+  kind: security-exposure
+  reason: >-
+    Serving the old forms keeps reachable reads of server files outside a
+    vault's source tree and directory creation and schema operations outside
+    the vaults the server owns.

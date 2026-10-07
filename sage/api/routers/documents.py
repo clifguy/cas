@@ -8,11 +8,10 @@ mutually-exclusive content-delivery modes:
   exceed MCP tool-result size ceilings.
 """
 
-from urllib.parse import quote
-
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
+from sage.api._disposition import attachment_disposition
 from sage.api.dependencies import (
     get_documents_service,
     get_ingestion_service,
@@ -301,13 +300,7 @@ async def get_document_content(
     promised Content-Length instead.
     """
     delivery = await service.get_document_content(document_id)
-    filename = delivery.filename.replace("\\", "_").replace('"', "_")
-    disposition = f'attachment; filename="{filename}"'
-    if not filename.isascii():
-        disposition = (
-            f'attachment; filename="{filename.encode("ascii", "replace").decode()}"; '
-            f"filename*=UTF-8''{quote(filename)}"
-        )
+    disposition = attachment_disposition(delivery.filename)
     return StreamingResponse(
         delivery.chunks,
         media_type=delivery.media_type,

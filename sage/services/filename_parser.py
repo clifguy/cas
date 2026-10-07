@@ -42,8 +42,25 @@ _TRAILING_VERSION_RE = re.compile(
     r"$"
 )
 # Finder-style duplication noise at end of stem: " copy", " copy 2", " (1)".
-# Stripped from the stem before version extraction; not preserved.
-_TRAILING_FINDER_NOISE_RE = re.compile(r"(?:[_ ]+(?:copy(?:\s+\d+)?|\(\d+\)))+\s*$")
+# Stripped from the stem before version extraction; not preserved. Matched
+# against the reversed stem and anchored at its start, so the match is found
+# in one left-to-right pass rather than by trying every position of the stem.
+_REVERSED_FINDER_NOISE_RE = re.compile(r"\s*(?:(?:(?:\d+\s+)?ypoc|\)\d+\()[_ ]+)+")
+# Stems longer than this are returned as their own title, unparsed: no real
+# filename approaches it, and every pattern below then runs on bounded input.
+_MAX_PARSED_STEM_LENGTH = 1024
+
+
+def _strip_finder_noise(stem: str) -> str:
+    """``stem`` without its trailing Finder duplication noise, if any.
+
+    Noise is one or more groups of separators followed by ``copy``, ``copy
+    <n>`` or ``(<n>)``, then optional trailing whitespace.
+    """
+    match = _REVERSED_FINDER_NOISE_RE.match(stem[::-1])
+    return stem[: len(stem) - match.end()] if match else stem
+
+
 # Post-split date: a segment that is exactly YYYY-MM-DD. Catches dates
 # that appear after a project prefix (e.g. EXAMPLE_2026-01-06_Title).
 _SEGMENT_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -135,6 +152,8 @@ class FilenameParser:
         Phase 2 (post-split): segment classification for project, codes,
         and title, which are reliably delimited by the configured separator.
         """
+        if len(filename_stem) > _MAX_PARSED_STEM_LENGTH:
+            return ParsedMetadata(title=filename_stem)
         stem = filename_stem
         date: str | None = None
         version: str | None = None
@@ -148,9 +167,7 @@ class FilenameParser:
             stem = date_m.group(2)
 
         # Strip Finder-style duplication noise before version extraction
-        noise_m = _TRAILING_FINDER_NOISE_RE.search(stem)
-        if noise_m:
-            stem = stem[: noise_m.start()]
+        stem = _strip_finder_noise(stem)
 
         # Trailing version: v-prefix, may span multiple separator-
         # delimited segments (e.g. v2_3, v10.4.1, V3_2). An optional
@@ -197,7 +214,7 @@ class FilenameParser:
         for seg in remaining:
             if self._is_code(seg):
                 codes.append(seg)
-            elif date is None and _SEGMENT_DATE_RE.match(seg):
+            elif date is None and _SEGMENT_DATE_RE.fullmatch(seg):
                 date = seg
             else:
                 still_remaining.append(seg)

@@ -13,12 +13,12 @@ import hashlib
 import mimetypes
 from collections.abc import AsyncIterator, Iterator
 from pathlib import Path
-from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import StreamingResponse
 from starlette.requests import ClientDisconnect
 
+from sage.api._disposition import attachment_disposition
 from sage.api.dependencies import get_transfer_service
 from sage.api.errors import (
     ContentFileMissingError,
@@ -216,13 +216,8 @@ async def transfer_download(
             raise ContentFileMissingError(entry.document_id, entry.source_path)
         chunks = source_store.iter_source(entry.vault_id, storage_root, entry.source_path)
 
-    filename = entry.filename.replace("\\", "_").replace('"', "_")
-    disposition = f'attachment; filename="{filename}"'
-    if not filename.isascii():
-        disposition = (
-            f'attachment; filename="{filename.encode("ascii", "replace").decode()}"; '
-            f"filename*=UTF-8''{quote(filename)}"
-        )
+    disposition = attachment_disposition(entry.filename)
+    filename = entry.filename
     return StreamingResponse(
         chunks,
         media_type=mimetypes.guess_type(filename)[0] or "application/octet-stream",

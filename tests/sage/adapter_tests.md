@@ -3479,3 +3479,117 @@ passages; each record's id and its closing tag share a passage; no passage
 begins with a line feed; the passages join back to the projection exactly. LF
 is the control: it passed before the splitter recognised CRLF and CR blank
 lines.
+
+## 13. Parser Resource Bounds and Off-Loop Projection
+
+### TEST-SAGE-AD-222: A workbook's declared dimension does not size its rows
+
+**Artifact:** `XlsxAdapter.project`
+**Category:** resource bound
+**Precondition:** 1,500 one-cell rows under a sheet declaring the maximum dimension.
+
+**Expected:** Peak traced memory under 64 MiB; dimensions report 1,500 rows and 1 column; the row line reads `1500 rows x 1 columns`, not a lower bound.
+
+### TEST-SAGE-AD-223: The row scan stops at its ceiling and reports a lower bound
+
+**Artifact:** `XlsxAdapter.project`
+**Category:** resource bound
+**Precondition:** The row ceiling lowered to 100 over a 150-row sheet.
+
+**Expected:** Dimensions report 100 rows and the text reads `at least 100 rows`.
+
+### TEST-SAGE-AD-224: A package with an extreme compression ratio is refused
+
+**Artifact:** `check_zip_package via the docx, pptx and xlsx adapters`
+**Category:** resource bound
+**Precondition:** An ordinary package of each kind with a 4 MiB member of zero bytes added.
+
+**Expected:** `SourceReadError` from `project` for each kind.
+
+### TEST-SAGE-AD-225: A package over the total uncompressed limit is refused
+
+**Artifact:** `check_zip_package via the docx, pptx and xlsx adapters`
+**Category:** resource bound
+**Precondition:** The total limit lowered to 64 KiB and a 128 KiB incompressible member added.
+
+**Expected:** `SourceReadError` from `project` for each kind.
+
+### TEST-SAGE-AD-226: Ordinary packages pass the decompression check
+
+**Artifact:** `check_zip_package`
+**Category:** resource bound (control)
+**Precondition:** An ordinary docx, pptx and xlsx.
+
+**Expected:** The check returns without raising.
+
+### TEST-SAGE-AD-227: TOML separation is bounded on header-shaped string lines
+
+**Artifact:** `StructuredDataAdapter.project`
+**Category:** resource bound
+**Precondition:** A TOML file whose multi-line string holds 3,000 header-shaped lines, followed by one real table.
+
+**Expected:** Projection completes in under 3 s and keeps the real table.
+
+### TEST-SAGE-AD-228: TOML separation still separates ordinary tables
+
+**Artifact:** `StructuredDataAdapter.project`
+**Category:** resource bound (control)
+**Precondition:** An ordinary TOML file with two tables.
+
+**Expected:** A blank line stands above each table.
+
+### TEST-SAGE-AD-229: Stripping filename duplication noise is linear
+
+**Artifact:** `filename_parser._strip_finder_noise`
+**Category:** resource bound
+**Precondition:** A stem of 20,000 repetitions of ` copy` followed by `x`.
+
+**Expected:** Completes in under 0.5 s.
+
+### TEST-SAGE-AD-230: The linear noise strip matches the pattern it replaces
+
+**Artifact:** `filename_parser._strip_finder_noise`
+**Category:** equivalence
+**Precondition:** Stems composed from the pattern's own pieces (property test).
+
+**Expected:** The result equals the stem cut at the original trailing-noise pattern's match.
+
+### TEST-SAGE-AD-231: An overlong filename stem is not parsed
+
+**Artifact:** `FilenameParser.parse`
+**Category:** resource bound
+**Precondition:** A stem past the parse bound carrying a date and a version, and a short one carrying both.
+
+**Expected:** The long stem comes back as its own title with nothing extracted, quickly; the short one is parsed.
+
+### TEST-SAGE-AD-232: Projection runs on a worker thread
+
+**Artifact:** `ingestion._run_projection`
+**Category:** event loop
+**Precondition:** An adapter recording the thread its projection runs on.
+
+**Expected:** The thread name starts `sage-project`.
+
+### TEST-SAGE-AD-233: /health is served while a projection blocks
+
+**Artifact:** `ingestion._run_projection, /health`
+**Category:** event loop
+**Precondition:** An adapter blocking on an event released only after /health answers.
+
+**Expected:** /health answers 200 and the projection then completes with the event set.
+
+### TEST-SAGE-AD-234: Row width is capped at the column ceiling
+
+**Artifact:** `XlsxAdapter.project`
+**Category:** resource bound
+**Precondition:** 50 rows each holding a value in the first and the last sheet column.
+
+**Expected:** The reported column count is at most the ceiling, and is 1.
+
+### TEST-SAGE-AD-235: Every projection site in the ingestion service runs through the worker
+
+**Artifact:** `ingestion module source`
+**Category:** event loop
+**Precondition:** The module's syntax tree.
+
+**Expected:** No `await <x>.project(...)`; at least four `_run_projection` calls.

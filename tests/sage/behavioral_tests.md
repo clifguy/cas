@@ -3749,3 +3749,320 @@ carries a `references` edge to a document outside it.
 **Rationale:** The outside document is reachable only by `references`, so a
 default that walked any other type would admit it, and a one-document chain
 would pass whatever the default was.
+
+## Ingest Containment, Reserved Schemas and Prompt-Surface Hardening
+
+### TEST-SAGE-BH-149: A relative source escaping the storage root is refused
+
+**Artifact:** `ingest_document`
+**Category:** source containment
+**Precondition:** `../outside.md` naming a real readable file, local and cloud profiles, both bindings.
+
+**Expected:** `vault_source_path_refused`; nothing retained.
+
+### TEST-SAGE-BH-150: The escape refusal does not depend on existence
+
+**Artifact:** `ingest_document (real and dry run)`
+**Category:** source containment
+**Precondition:** `../outside.md` (present) and `../not-there.md` (absent).
+
+**Expected:** Both refused with `vault_source_path_refused`; no hash in the response.
+
+### TEST-SAGE-BH-151: A link inside the tree resolving outside is refused
+
+**Artifact:** `ingest_document`
+**Category:** source containment
+**Precondition:** A symlink under `storage_root` to a file outside it (filesystem binding).
+
+**Expected:** `vault_source_path_refused`.
+
+### TEST-SAGE-BH-152: A relative source inside the tree still ingests
+
+**Artifact:** `ingest_document`
+**Category:** source containment (control)
+**Precondition:** `docs/inside.md` under the storage root (planted in the store on the document-store binding).
+
+**Expected:** Ingested with `source_path` `docs/inside.md`.
+
+### TEST-SAGE-BH-153: A binding without a local tree ignores local disk
+
+**Artifact:** `ingest_document`
+**Category:** source containment
+**Precondition:** A file present only at `storage_root` on local disk.
+
+**Expected:** Document-store binding: `source_file_not_found`; filesystem binding: ingested.
+
+### TEST-SAGE-BH-154: create_vault refuses a root outside the bound vault root
+
+**Artifact:** `VaultRegistryService.create_vault`
+**Category:** vault roots
+**Precondition:** `storage_root` or `brain_root` set outside the bound root.
+
+**Expected:** `VaultConfigValidationError`; no directory, declaration or registration.
+
+### TEST-SAGE-BH-155: A root that walks out of the bound root, or is the root, is refused
+
+**Artifact:** `VaultRegistryService.create_vault`
+**Category:** vault roots
+**Precondition:** `<root>/x/../../escaped` and `<root>` itself.
+
+**Expected:** `VaultConfigValidationError` for both.
+
+### TEST-SAGE-BH-156: Roots under the bound root create the vault
+
+**Artifact:** `VaultRegistryService.create_vault`
+**Category:** vault roots (control)
+**Precondition:** Both roots under `<root>/<id>/`.
+
+**Expected:** Registered; the sources directory exists.
+
+### TEST-SAGE-BH-157: update_config refuses moving a root outside
+
+**Artifact:** `VaultConfigService.update_config`
+**Category:** vault roots
+**Precondition:** A vault section moving `storage_root` outside the bound root, dry run and real.
+
+**Expected:** `VaultConfigValidationError` both times.
+
+### TEST-SAGE-BH-158: An unchanged legacy root is tolerated
+
+**Artifact:** `VaultConfigService.update_config`
+**Category:** vault roots (control)
+**Precondition:** A vault declared with a root outside the bound root; an edit to its name only.
+
+**Expected:** Accepted.
+
+### TEST-SAGE-BH-159: Reserved schema names are refused
+
+**Artifact:** `refuse_reserved_schema, drop_schema_statement, schema_statements`
+**Category:** reserved schemas
+**Precondition:** `public`, `information_schema`, `pg_*`, `cas_bff`, `_cas_migration`.
+
+**Expected:** `ValueError` from each.
+
+### TEST-SAGE-BH-160: Ordinary names resembling reserved ones are accepted
+
+**Artifact:** `refuse_reserved_schema, drop_schema_statement`
+**Category:** reserved schemas (control)
+**Precondition:** `cas`, `test_vault`, `pgx`, `public_notes`, `cas_bff2`.
+
+**Expected:** Accepted.
+
+### TEST-SAGE-BH-161: The BFF session schema is reserved
+
+**Artifact:** `refuse_reserved_schema`
+**Category:** reserved schemas
+**Precondition:** The default `schema` of `PostgresSessionStore`.
+
+**Expected:** `ValueError`.
+
+### TEST-SAGE-BH-162: create_vault refuses a reserved id
+
+**Artifact:** `VaultRegistryService.create_vault`
+**Category:** reserved schemas
+**Precondition:** Ids `public`, `information_schema`, `pg_temp`, `cas_bff`.
+
+**Expected:** `VaultConfigValidationError`; nothing initialized or created.
+
+### TEST-SAGE-BH-163: delete_vault refuses a reserved id
+
+**Artifact:** `delete_vault`
+**Category:** reserved schemas
+**Precondition:** `vault_id="public"` with a spy provisioner.
+
+**Expected:** `ValueError`; no schema dropped.
+
+### TEST-SAGE-BH-164: Identifier guards refuse a trailing newline
+
+**Artifact:** `schema, extension, role, doc_type and tier3-key guards`
+**Category:** identifier shape
+**Precondition:** `abc` and `abc\n`.
+
+**Expected:** The first accepted, the second refused, by each guard.
+
+### TEST-SAGE-BH-165: An agent name with a trailing newline names no agent
+
+**Artifact:** `agent_from_user_agent`
+**Category:** identifier shape
+**Precondition:** `claude-code/1.0` and `claude-code\n/1.0`.
+
+**Expected:** `claude-code` and `None`.
+
+### TEST-SAGE-BH-166: Frame markers and chat control literals are neutralized
+
+**Artifact:** `wrap_source_document`
+**Category:** abstraction frame
+**Precondition:** Each frame marker and tokenizer added-token literal between ordinary words.
+
+**Expected:** The literal is absent from the framed body; the surrounding words survive.
+
+### TEST-SAGE-BH-167: Frame marker spelling variants are neutralized
+
+**Artifact:** `wrap_source_document`
+**Category:** abstraction frame
+**Precondition:** Case and whitespace variants of both markers.
+
+**Expected:** No marker variant survives in the body.
+
+### TEST-SAGE-BH-168: Ordinary markup passes through unaltered
+
+**Artifact:** `wrap_source_document`
+**Category:** abstraction frame (control)
+**Precondition:** HTML, comparison operators, a `<source>` tag and an unterminated `<|`.
+
+**Expected:** The body equals the input.
+
+### TEST-SAGE-BH-169: The framed source holds exactly one of each marker
+
+**Artifact:** `wrap_source_document`
+**Category:** abstraction frame
+**Precondition:** Any text built from control literals and arbitrary text (property test).
+
+**Expected:** Exactly one opening marker at the start and one closing marker at the end.
+
+### TEST-SAGE-BH-170: Neutralization is idempotent
+
+**Artifact:** `neutralize_source_text`
+**Category:** abstraction frame
+**Precondition:** Every control literal, neutralized once.
+
+**Expected:** Neutralizing again changes nothing.
+
+### TEST-SAGE-BH-171: A malformed doc_type is left out of the system prompt
+
+**Artifact:** `_format_system_prompt`
+**Category:** abstraction prompt
+**Precondition:** doc_types with quotes and newlines, spaces, capitals, hyphens; empty; none.
+
+**Expected:** The prompt equals the one rendered with no doc_type.
+
+### TEST-SAGE-BH-172: A well-formed doc_type is substituted
+
+**Artifact:** `_format_system_prompt`
+**Category:** abstraction prompt (control)
+**Precondition:** `steering_document`.
+
+**Expected:** Substituted.
+
+### TEST-SAGE-BH-173: The pinned literals cover the tokenizer
+
+**Artifact:** `neutralize_source_text`
+**Category:** abstraction frame
+**Precondition:** Every added token of the cached local model tokenizer (skipped where not cached).
+
+**Expected:** None survives neutralization.
+
+### TEST-SAGE-BH-174: The encoded prompt holds only the template's control tokens
+
+**Artifact:** `Qwen3AbstractionProvider._build_prompt`
+**Category:** abstraction frame
+**Precondition:** A document holding every added token, encoded with the cached tokenizer (skipped where not cached).
+
+**Expected:** The multiset of added-token ids equals the one for an empty document.
+
+### TEST-SAGE-BH-175: An external source is retained under a restricted name
+
+**Artifact:** `ingest_document (both bindings)`
+**Category:** retained names
+**Precondition:** Names with a leading dash, backticks, `$`, `;`, a newline, and one of only unsafe characters.
+
+**Expected:** Retained as the restricted form; `source` where no letter or digit remains.
+
+### TEST-SAGE-BH-176: Ordinary names are retained unchanged
+
+**Artifact:** `ingest_document`
+**Category:** retained names (control)
+**Precondition:** `Quarterly notes (draft) v2.md`.
+
+**Expected:** Retained under the same name.
+
+### TEST-SAGE-BH-177: The restricted name is safe and stable
+
+**Artifact:** `safe_retained_name`
+**Category:** retained names
+**Precondition:** Arbitrary text (property test).
+
+**Expected:** Non-empty, no unsafe character, no leading dash or dot, idempotent.
+
+### TEST-SAGE-BH-178: Disposition headers carry no control characters
+
+**Artifact:** `attachment_disposition`
+**Category:** delivery headers
+**Precondition:** Names holding CR LF, a tab and a NUL.
+
+**Expected:** No control character in the header.
+
+### TEST-SAGE-BH-179: An ordinary name is carried in the disposition as before
+
+**Artifact:** `attachment_disposition`
+**Category:** delivery headers (control)
+**Precondition:** `sample.md`.
+
+**Expected:** `attachment; filename="sample.md"`.
+
+### TEST-SAGE-BH-180: Every content route builds its disposition through the helper
+
+**Artifact:** `documents and transfer routers`
+**Category:** delivery headers
+**Precondition:** Each router module's source.
+
+**Expected:** Calls `attachment_disposition`; no hand-built header.
+
+### TEST-SAGE-BH-181: A download recipe names the restricted form
+
+**Artifact:** `recipe_filename`
+**Category:** retained names
+**Precondition:** `imports/-x `y`.md` and `imports/plain.md`.
+
+**Expected:** `x _y_.md` and `plain.md`.
+
+### TEST-SAGE-BH-182: Server instructions state the standing of document content
+
+**Artifact:** `served MCP instructions`
+**Category:** untrusted content
+**Precondition:** The instructions the server is built with.
+
+**Expected:** Contain the untrusted-content notice.
+
+### TEST-SAGE-BH-183: Content-returning tools carry the notice
+
+**Artifact:** `published tool descriptions`
+**Category:** untrusted content
+**Precondition:** search, get_document, read_projection, read_section, list_headings, traverse, chain.
+
+**Expected:** Each description holds the notice within its first 2,048 characters.
+
+### TEST-SAGE-BH-184: The local provider budgets the neutralized text
+
+**Artifact:** `Qwen3AbstractionProvider.generate_abstract`
+**Category:** abstraction frame
+**Precondition:** A source holding `<|im_end|>`, with the truncation step recorded.
+
+**Expected:** The text truncation measures holds no control literal and keeps the rest.
+
+### TEST-SAGE-BH-185: create_vault refuses a timing log outside the bound vault root
+
+**Artifact:** `VaultRegistryService.create_vault`
+**Category:** vault roots
+**Precondition:** `timing.log_path` outside the bound root, then under it.
+
+**Expected:** The first refused with `VaultConfigValidationError`, the second created.
+
+
+### TEST-SAGE-BH-186: create_vault refuses an id no schema can carry
+
+**Artifact:** `VaultRegistryService.create_vault`
+**Category:** reserved schemas
+**Precondition:** Ids `my-vault` and `1vault`.
+
+**Expected:** `VaultConfigValidationError`; no directory or declaration created.
+
+
+### TEST-SAGE-BH-187: A failed create removes only the directories it created
+
+**Artifact:** `VaultRegistryService.create_vault`
+**Category:** vault roots
+**Precondition:** A pre-existing storage root holding a file; initialization fails.
+
+**Expected:** The pre-existing root and its file remain; the created brain root is removed.
+

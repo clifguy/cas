@@ -15,10 +15,15 @@ SAGEServices bundles.
 from __future__ import annotations
 
 import logging
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
-from sage.api.errors import VaultAlreadyExistsError, VaultNotFoundError
+from sage.api.errors import (
+    VaultAlreadyExistsError,
+    VaultConfigValidationError,
+    VaultNotFoundError,
+)
 from sage.config import VaultConfig, without_null_retired_sections
 from sage.models.schemas import (
     CreateVaultRequest,
@@ -31,6 +36,7 @@ from sage.models.schemas import (
 )
 from sage.vault_management import (
     CONFIG_FAILURES,
+    _assert_roots_within_bound_root,
     _atomic_write_bytes,
     _validate_config,
     bound_vault_root,
@@ -41,6 +47,21 @@ logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from sage.mcp_init import SAGEServices
+
+
+def _refuse_reserved_vault_id(vault_id: str) -> None:
+    """Refuse a vault id no vault schema can be named by.
+
+    A vault's schema is named by its id, so an id that is not a schema
+    identifier, or spells a schema the database or another component owns, is
+    refused before anything is created.
+    """
+    from sage.storage.postgres.schema import refuse_reserved_schema
+
+    try:
+        refuse_reserved_schema(vault_id)
+    except ValueError as exc:
+        raise VaultConfigValidationError([f"vault.id {vault_id!r}: {exc}"]) from exc
 
 
 class VaultRegistryService:
@@ -260,6 +281,8 @@ class VaultRegistryService:
         body.config = without_null_retired_sections(body.config)
         config = _validate_config(body.config)
         vault_id = config.vault.id
+        _refuse_reserved_vault_id(vault_id)
+        _assert_roots_within_bound_root(config)
 
         if vault_id in self._registry:
             raise VaultAlreadyExistsError(vault_id)
@@ -283,8 +306,18 @@ class VaultRegistryService:
         )
 
         config_path = vault_source_store.config_locator(vault_id)
-        Path(config.vault.storage_root).expanduser().mkdir(parents=True, exist_ok=True)
-        Path(config.vault.brain_root).expanduser().mkdir(parents=True, exist_ok=True)
+        # Only the roots this call brings into existence are its to remove if
+        # initialization fails; one that already existed is left as found.
+        created_roots = [
+            root
+            for root in (
+                Path(config.vault.storage_root).expanduser(),
+                Path(config.vault.brain_root).expanduser(),
+            )
+            if not root.exists()
+        ]
+        for root in created_roots:
+            root.mkdir(parents=True, exist_ok=True)
 
         # Snapshot the pre-write yaml bytes (almost always None, since this
         # path runs only for a vault_id absent from the registry) so a
@@ -315,6 +348,8 @@ class VaultRegistryService:
                     vault_source_store.delete_config(vault_id)
                 elif config_path is not None:
                     _atomic_write_bytes(config_path, old_yaml_bytes)
+                for root in created_roots:
+                    shutil.rmtree(root, ignore_errors=True)
             except BaseException:
                 logger.exception(
                     "rollback of vault_config.yaml failed after create_vault "

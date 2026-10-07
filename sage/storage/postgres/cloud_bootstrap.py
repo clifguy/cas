@@ -70,7 +70,7 @@ _ROLE_NAME_RE: Final[re.Pattern[str]] = re.compile(r"^[a-z][a-z0-9-]{1,126}$")
 
 def validate_role_name(name: str) -> str:
     """Return ``name`` if it is a safe managed-identity role identifier, else raise."""
-    if not isinstance(name, str) or not _ROLE_NAME_RE.match(name):
+    if not isinstance(name, str) or not _ROLE_NAME_RE.fullmatch(name):
         raise ValueError(
             f"role name {name!r} is not a safe managed-identity identifier "
             "(lowercase letters, digits, and hyphens; must start with a letter)"

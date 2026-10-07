@@ -13,15 +13,34 @@ than directions to carry out. That standing is a property of how the call is
 constructed, not an inference the model is left to draw from the text.
 """
 
+import re
+
 #: Markers bounding the source document within the user turn. Fixed rather
 #: than generated per call: generation runs under greedy decoding, and a
 #: per-call nonce would make the prompt — and so the abstract — a function of
 #: something other than the document, forfeiting the determinism the
-#: abstraction path depends on. The residual risk is a source containing the
-#: closing marker verbatim, which CAS-ADR-020 accepts in naming the boundary
-#: a mitigation rather than a proof.
+#: abstraction path depends on. A source containing a marker verbatim is
+#: neutralized before framing (``neutralize_source_text``), so it cannot close
+#: or reopen its own boundary.
 SOURCE_OPEN = "<source_document>"
 SOURCE_CLOSE = "</source_document>"
+
+#: The opening angle bracket of every literal that could act on the frame or
+#: the chat template rather than be read as text: the frame's own markers in
+#: any case or spacing, a chat model's control sequences (``<|...|>``), and the
+#: reasoning, tool and speech tags a chat vocabulary maps to single tokens.
+_FRAME_BREAKING = re.compile(
+    r"<(?=\s*/?\s*source_document\s*>"
+    r"|\|[^|<>\s]{1,64}\|>"
+    r"|/?(?:think|tool_call|tool_response)>"
+    r"|tts_[a-z_]{1,32}>)",
+    re.IGNORECASE,
+)
+#: What replaces that bracket: the fullwidth form, which reads the same to a
+#: person and is an ordinary character to a tokenizer.
+_NEUTRAL_BRACKET = "\uff1c"
+
+_DOC_TYPE_SHAPE = re.compile(r"[a-z][a-z0-9_]*")
 
 SYSTEM_PROMPT_TEMPLATE = (
     "An autonomous agent has discovered this document via search and will "
@@ -65,20 +84,38 @@ SYSTEM_PROMPT_TEMPLATE = (
 
 
 def _format_system_prompt(doc_type: str | None) -> str:
-    """Render the system prompt with optional doc_type substitution."""
-    if doc_type:
+    """Render the system prompt with optional doc_type substitution.
+
+    Only a doc_type shaped as a plain lowercase identifier is substituted; any
+    other value is left out, so configuration text cannot reach the
+    instructions.
+    """
+    if doc_type and _DOC_TYPE_SHAPE.fullmatch(doc_type):
         clause = f', type ("{doc_type}")'
     else:
         clause = ""
     return SYSTEM_PROMPT_TEMPLATE.format(doc_type_clause=clause)
 
 
+def neutralize_source_text(text: str) -> str:
+    """``text`` with every frame-breaking literal rendered inert.
+
+    Replaces the opening bracket of each frame marker and chat control literal
+    with its fullwidth form, so the document cannot end its own boundary or
+    open a turn, and leaves every other character as it was. Deterministic and
+    idempotent; a provider measuring its input budget measures the neutralized
+    text, which is what it sends.
+    """
+    return _FRAME_BREAKING.sub(_NEUTRAL_BRACKET, text)
+
+
 def wrap_source_document(text: str) -> str:
     """Frame document text as delimited data for the model's user turn.
 
     Every provider sends the source through this function, so none can
-    present a document undelimited (CAS-ADR-020). The text is passed through
+    present a document undelimited (CAS-ADR-020). The text is neutralized
+    first (:func:`neutralize_source_text`) and otherwise passed through
     unaltered: the framing changes the document's standing within the call,
-    never its content.
+    never what it says.
     """
-    return f"{SOURCE_OPEN}\n{text}\n{SOURCE_CLOSE}"
+    return f"{SOURCE_OPEN}\n{neutralize_source_text(text)}\n{SOURCE_CLOSE}"

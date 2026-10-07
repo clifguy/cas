@@ -13,6 +13,7 @@ from httpx import ASGITransport, AsyncClient
 from sage.app import _initialize_services, create_app
 from sage.config import VaultConfig
 from sage.services.vault_registry import VaultRegistryService
+from sage.vault_management import bound_vault_root
 from tests.helpers.pipeline_wait import drain_vaults
 
 
@@ -657,9 +658,10 @@ async def test_update_config_rollback_failure_does_not_mask_original_exception(
 async def test_create_vault_201(client, tmp_path):
     """Create a new vault with default config."""
     config = VaultRegistryService.get_default_config("new_vault", "New Vault", "testuser")
-    # Override paths to use tmp_path
-    config["vault"]["storage_root"] = str(tmp_path / "new_vault" / "sources")
-    config["vault"]["brain_root"] = str(tmp_path / "new_vault" / "brain")
+    # Roots under the (test-redirected) vault root, as create_vault requires.
+    root = bound_vault_root()
+    config["vault"]["storage_root"] = str(root / "new_vault" / "sources")
+    config["vault"]["brain_root"] = str(root / "new_vault" / "brain")
 
     resp = await client.post("/sage_vaults", json={"config": config})
     assert resp.status_code == 201
@@ -676,8 +678,8 @@ async def test_create_vault_201(client, tmp_path):
 async def test_create_vault_409_exists(client, tmp_path):
     """Duplicate vault_id returns 409."""
     config = VaultRegistryService.get_default_config("test_vault", "Dup", "testuser")
-    config["vault"]["storage_root"] = str(tmp_path / "dup" / "sources")
-    config["vault"]["brain_root"] = str(tmp_path / "dup" / "brain")
+    config["vault"]["storage_root"] = str(bound_vault_root() / "dup" / "sources")
+    config["vault"]["brain_root"] = str(bound_vault_root() / "dup" / "brain")
 
     resp = await client.post("/sage_vaults", json={"config": config})
     assert resp.status_code == 409
@@ -877,8 +879,8 @@ async def test_create_vault_rolls_back_yaml_on_initialize_failure(
     config = VaultRegistryService.get_default_config(
         new_vault_id, "Atomicity Create Target", "testuser"
     )
-    config["vault"]["storage_root"] = str(tmp_path / new_vault_id / "sources")
-    config["vault"]["brain_root"] = str(tmp_path / new_vault_id / "brain")
+    config["vault"]["storage_root"] = str(isolated_root / new_vault_id / "sources")
+    config["vault"]["brain_root"] = str(isolated_root / new_vault_id / "brain")
 
     resp = await client.post("/sage_vaults", json={"config": config})
 

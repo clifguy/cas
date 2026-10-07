@@ -21,6 +21,7 @@ import shutil
 import tempfile
 import time
 from collections.abc import Callable, Iterator, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -202,6 +203,39 @@ abstraction_timing_logger = logging.getLogger("sage.abstraction.timing")
 # separate finding class) are recorded only, the abstract stored
 # unmodified, while their error rates await adjudicated measurement.
 abstraction_faithfulness_logger = logging.getLogger("sage.abstraction.faithfulness")
+
+
+# Projection parses the source in the adapter's own code, which blocks, so it
+# runs on a worker thread rather than the event loop: a slow or large source
+# then delays other projections but not the server's other requests. One
+# worker keeps a single source parsed, and held in memory, at a time, the peak
+# projection ran at when it shared the event loop.
+_PROJECTION_EXECUTOR: ThreadPoolExecutor | None = None
+
+
+def _projection_executor() -> ThreadPoolExecutor:
+    global _PROJECTION_EXECUTOR
+    if _PROJECTION_EXECUTOR is None:
+        _PROJECTION_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-project")
+    return _PROJECTION_EXECUTOR
+
+
+async def _run_projection(
+    adapter: "SourceAdapter", project_path: Path, config: dict | None
+) -> "ProjectionResult":
+    """Run ``adapter.project`` on a projection worker thread and return its result.
+
+    The adapter's coroutine is driven to completion on its own event loop in
+    the worker, under a copy of the caller's context, so request-scoped
+    context variables read the same there. Its exceptions propagate unchanged.
+    """
+    context = contextvars.copy_context()
+
+    def project() -> "ProjectionResult":
+        return asyncio.run(adapter.project(project_path, config))
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_projection_executor(), context.run, project)
 
 
 @dataclass
@@ -1491,7 +1525,11 @@ class IngestionService:
         # the first irreversible act of an ingest and the one a preview is
         # asked not to perform.
         if request.dry_run:
-            return await self._preview_ingest(request, predecessor, caller_source)
+            # Under the same refusal translation as the real path, so a source
+            # the containment check refuses reaches a dry-run caller as the
+            # typed refusal rather than an internal error.
+            with _refuse_retention_as(caller_source or request.source):
+                return await self._preview_ingest(request, predecessor, caller_source)
 
         # Resolve the source through the vault-source store, not a raw local
         # Path.exists() gate (CAS-ADR-043). Under a non-filesystem binding the
@@ -1565,8 +1603,11 @@ class IngestionService:
                 # backend-resident source (the post-restart cloud condition) is
                 # projected rather than rejected as missing.
                 source_path = storage_root / request.source
-                if source_path.exists():
-                    source_path = source_path.resolve()
+                local_source = self._contained_local_source(
+                    vault_source_store, storage_root, request.source, reported_source
+                )
+                if local_source is not None:
+                    source_path = local_source
                     delivered_hash = hash_file(source_path)
                 elif vault_source_store.source_exists(
                     self._config.vault.id, storage_root, request.source
@@ -1665,7 +1706,7 @@ class IngestionService:
                 _translate_projection_failure(project_path, reported_source),
                 _refuse_adapter_config(request.source_type),
             ):
-                projection = await adapter.project(project_path, merged_config)
+                projection = await _run_projection(adapter, project_path, merged_config)
 
         # Parse filename per vault config (CAS-ADR-015) only when the caller
         # opts in to review (CAS-ADR-021). Default ingests are caller-
@@ -2126,9 +2167,11 @@ class IngestionService:
             source_path = source_input.resolve()
             delivered_hash = hash_file(source_path)
         else:
-            local_candidate = storage_root / request.source
-            if local_candidate.exists():
-                source_path = local_candidate.resolve()
+            local_candidate = self._contained_local_source(
+                vault_source_store, storage_root, request.source, reported_source
+            )
+            if local_candidate is not None:
+                source_path = local_candidate
                 delivered_hash = hash_file(source_path)
             elif vault_source_store.source_exists(
                 self._config.vault.id, storage_root, request.source
@@ -2839,7 +2882,7 @@ class IngestionService:
                     _translate_projection_failure(project_path, doc.source_path),
                     _refuse_adapter_config(doc.source_type),
                 ):
-                    projection = await adapter.project(project_path, merged_config)
+                    projection = await _run_projection(adapter, project_path, merged_config)
             await self._store.update_document(
                 document_id,
                 {
@@ -2898,7 +2941,7 @@ class IngestionService:
             # than as a response, which makes the respelling matter more, not
             # less: a stamped message outlives the call that produced it.
             with _translate_projection_failure(project_path, doc.source_path):
-                projection = await adapter.project(project_path, merged_config)
+                projection = await _run_projection(adapter, project_path, merged_config)
         now = datetime.now(timezone.utc)
         await self._store.update_document(
             document_id,
@@ -3021,6 +3064,40 @@ class IngestionService:
             self._config.vault.id, storage_root, source_path, delivered_hash
         ), True
 
+    def _contained_local_source(
+        self,
+        store: "VaultSourceStore",
+        storage_root: Path,
+        source: str,
+        reported_source: str,
+    ) -> Path | None:
+        """Resolve a relative source on the local tree, or ``None``.
+
+        A relative source names a location in the vault's source tree, so
+        before anything reads it the path is resolved through links and
+        required to land strictly under ``storage_root``; one that does not
+        is refused with :class:`VaultRootEscapeError` whether or not anything
+        exists there, so the refusal says nothing about the host's files.
+        A binding with no local tree (no config locator) keeps every source
+        in its store, so the local disk is not consulted at all: the path is
+        held to the plain vault-relative shape the store addresses, refusing
+        a walk out of the tree before any lookup, and ``None`` sends the
+        caller to the store-resident branch. ``None`` likewise when the
+        contained path holds no file.
+        """
+        from sage.vault_source_binding import (
+            normalize_vault_relative,
+            resolve_and_assert_within_root,
+        )
+
+        if store.config_locator(self._config.vault.id) is None:
+            normalize_vault_relative(source)
+            return None
+        resolved = resolve_and_assert_within_root(
+            storage_root / source, storage_root, display=reported_source
+        )
+        return resolved if resolved.exists() else None
+
     @contextlib.contextmanager
     def _project_source(
         self, store: "VaultSourceStore", storage_root: Path, source_path: str
@@ -3036,11 +3113,11 @@ class IngestionService:
         projection through the port keeps projection and chunk repair working
         under the document-store binding (CAS-ADR-043).
         """
+        vault_id = self._config.vault.id
         local = storage_root / source_path
-        if local.exists():
+        if store.config_locator(vault_id) is not None and local.exists():
             yield local
             return
-        vault_id = self._config.vault.id
         if not store.source_exists(vault_id, storage_root, source_path):
             raise SourceFileNotFoundError(source_path)
         data = store.read_source(vault_id, storage_root, source_path)
@@ -3856,7 +3933,7 @@ class IngestionService:
             with self._project_source(
                 vault_source_store, storage_root, doc.source_path
             ) as project_path:
-                projection = await adapter.project(project_path, merged_config)
+                projection = await _run_projection(adapter, project_path, merged_config)
         except Exception as exc:
             return await self._preamble_skipped(
                 document_id,

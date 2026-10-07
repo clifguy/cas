@@ -34,6 +34,7 @@ import errno
 import hashlib
 import logging
 import os
+import re
 import shutil
 import stat
 import sys
@@ -836,7 +837,9 @@ class FilesystemVaultSourceStore(VaultSourceStore):
         # An internal source is homed where it already sits; anything else lands
         # in ``imports/`` under its own name.
         internal = self._internal_relative(storage_root, source_path)
-        return internal if internal is not None else f"imports/{source_path.name}"
+        if internal is not None:
+            return internal
+        return f"imports/{safe_retained_name(source_path.name)}"
 
     def retain_source(
         self,
@@ -878,7 +881,8 @@ class FilesystemVaultSourceStore(VaultSourceStore):
             else:
                 # Different content: disambiguate with the 8-char content hash.
                 token = _disambiguation_token(content_hash)
-                dest = imports_dir / f"{source_path.stem}_{token}{source_path.suffix}"
+                safe = PurePosixPath(safe_retained_name(source_path.name))
+                dest = imports_dir / f"{safe.stem}_{token}{safe.suffix}"
 
         # The destination is settled, so it is guarded once. Both outcomes need
         # the same assurance about the same path and differ only in what they
@@ -1120,7 +1124,7 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
         # filesystem locator, so there is no "already inside the tree" case to
         # preserve. ``storage_root`` is unused, as it is for every other source
         # operation here.
-        return f"imports/{source_path.name}"
+        return f"imports/{safe_retained_name(source_path.name)}"
 
     def retain_source(
         self,
@@ -1162,7 +1166,8 @@ class DocumentStoreVaultSourceStore(VaultSourceStore):
             # the caller, which does hold that record, before it ever calls this
             # method (see ``planned_source_path``).
             token = _disambiguation_token(content_hash)
-            rel = f"imports/{source_path.stem}_{token}{source_path.suffix}"
+            safe = PurePosixPath(safe_retained_name(source_path.name))
+            rel = f"imports/{safe.stem}_{token}{safe.suffix}"
         client.upload_source(vault_id, rel, source_path)  # type: ignore[attr-defined]
         return rel
 
@@ -1313,3 +1318,24 @@ def build_stack_vault_source_store(
 
     root = vault_root if vault_root is not None else default_vault_root()
     return FilesystemVaultSourceStore(root)
+
+
+# Characters a retained basename may not carry: controls, and those a shell
+# acts on even inside double quotes or at a word's start. A caller-chosen name
+# reaches other callers as a download filename, which some place in commands.
+_UNSAFE_NAME_CHARS = re.compile(r"[\x00-\x1f\x7f`$;&|<>*?!'\"\\]")
+
+
+def safe_retained_name(name: str) -> str:
+    """``name`` restricted to a form safe to hand to another caller.
+
+    Each unsafe character becomes ``_``, and leading dashes, dots and spaces are
+    removed so the name can be read as neither an option nor a hidden file. A
+    stem left with no letter or digit becomes ``source``; the suffix keeps its
+    restricted form. Idempotent.
+    """
+    path = PurePosixPath(_UNSAFE_NAME_CHARS.sub("_", name.replace("/", "_")))
+    stem, suffix = path.stem.lstrip("-. "), path.suffix
+    if not any(c.isalnum() for c in stem):
+        stem = "source"
+    return f"{stem}{suffix}"
