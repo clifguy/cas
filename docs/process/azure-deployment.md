@@ -233,7 +233,11 @@ the gate on the deploy identity. Set:
   and `main` already requires a pull request; it would only stall every run on a
   manual approval. Adding one is harmless: the check neither requires nor
   refuses it. The maintenance workflow's destructive commands carry their own
-  retyped confirmation.
+  retyped confirmation. This rests on there being one actor, the repository
+  owner, whose credentials every agent uses, and on `main` requiring a pull
+  request with no approvals. If another person gains write access, or `main`
+  starts requiring an approving review, revisit it: a reviewer then becomes a
+  second party rather than a click.
 
 The [`ruleset-drift`](../../.github/workflows/ruleset-drift.yml) workflow checks
 these on a schedule for every environment in the repository and fails when the
