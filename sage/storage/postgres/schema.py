@@ -57,7 +57,7 @@ _IDENTIFIER_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 
 def _validate_identifier(name: str, kind: str) -> str:
-    if not isinstance(name, str) or not _IDENTIFIER_RE.match(name):
+    if not isinstance(name, str) or not _IDENTIFIER_RE.fullmatch(name):
         raise ValueError(f"{kind} {name!r} is not a safe lowercase identifier")
     return name
 
@@ -65,6 +65,28 @@ def _validate_identifier(name: str, kind: str) -> str:
 def validate_schema_name(name: str) -> str:
     """Return ``name`` if it is a safe schema identifier, else raise."""
     return _validate_identifier(name, "schema name")
+
+
+# Schemas a vault may never be named after: the database's own namespaces, the
+# shared extension schema, and the schemas other components of this system own
+# in the same database (the BFF's session store, the migration bookkeeping).
+RESERVED_SCHEMA_NAMES: frozenset[str] = frozenset(
+    {"public", "information_schema", "cas_bff", "_cas_migration"}
+)
+RESERVED_SCHEMA_PREFIX = "pg_"
+
+
+def refuse_reserved_schema(name: str) -> str:
+    """Return ``name`` if it is a safe schema identifier a vault may use, else raise.
+
+    The guard on every path that provisions or drops a vault's schema, which
+    is named by the vault id. Kept apart from :func:`validate_schema_name`,
+    which the components owning a reserved schema use to validate their own.
+    """
+    validate_schema_name(name)
+    if name in RESERVED_SCHEMA_NAMES or name.startswith(RESERVED_SCHEMA_PREFIX):
+        raise ValueError(f"schema name {name!r} is reserved and cannot name a vault")
+    return name
 
 
 def validate_extension(name: str) -> str:
@@ -571,14 +593,11 @@ def schema_statements(
     lacks, so the workload must rely on an out-of-band administrator having
     created them (CAS-ADR-042).
     """
-    validate_schema_name(schema)
-    if schema == "public":
-        raise ValueError(
-            "refusing to provision SAGE tables into the shared 'public' schema: "
-            "tenancy is one schema per vault (CAS-ADR-042) and 'public' carries "
-            "extension objects only -- a SAGE table there would mask a dropped "
-            "vault schema behind the per-vault search_path fallback"
-        )
+    # Tenancy is one schema per vault (CAS-ADR-042). 'public' carries extension
+    # objects only -- a SAGE table there would mask a dropped vault schema behind
+    # the per-vault search_path fallback -- and the other reserved schemas belong
+    # to the database or to other components.
+    refuse_reserved_schema(schema)
     statements = [f'CREATE SCHEMA IF NOT EXISTS "{schema}"']  # noqa: S608
     if create_extensions:
         statements += [
@@ -672,7 +691,7 @@ def drop_schema_statement(schema: str) -> str:
     can emit ``DROP DATABASE``, which would destroy every vault's schema in the
     shared database (CAS-ADR-042).
     """
-    validate_schema_name(schema)
+    refuse_reserved_schema(schema)
     return f'DROP SCHEMA IF EXISTS "{schema}" CASCADE'  # noqa: S608
 
 

@@ -53,6 +53,7 @@ from sage.source_adapters.base import (
     ProjectionResult,
     SourceAdapter,
     SourceReadError,
+    check_zip_package,
     positive_int,
     respell_created_path,
 )
@@ -248,6 +249,7 @@ def _open_presentation(source_path: Path) -> Presentation:
     file with that one entry rewritten; every other part is untouched, so
     the rest of the adapter is unaffected.
     """
+    check_zip_package(source_path)
     try:
         with zipfile.ZipFile(source_path) as package:
             content_types = package.read("[Content_Types].xml")

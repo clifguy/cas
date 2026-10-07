@@ -72,6 +72,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import subprocess
 import sys
 from collections.abc import Callable
@@ -79,6 +80,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from sage.models.schemas import VAULT_ID_PATTERN
+from sage.storage.postgres.schema import refuse_reserved_schema
 from sage.vault_source_binding import (
     DiscoveredVault,
     VaultRootEscapeError,
@@ -91,6 +94,7 @@ if TYPE_CHECKING:
     from sage.vault_source_binding import VaultSourceStore
 
 _TIMESTAMP_FORMAT = "%Y%m%dT%H%M%SZ"
+_VAULT_ID_RE = re.compile(VAULT_ID_PATTERN)
 
 
 def default_deletions_dir() -> Path:
@@ -210,6 +214,12 @@ async def delete_vault(
     schema is already gone, so a re-run after a partial failure completes cleanly --
     even with the default snapshot ON.
     """
+    # The id names a filesystem segment and the schema to drop, so it is held to
+    # the vault-id shape and refused if it names a reserved schema before any
+    # path is joined or anything is planned.
+    if not _VAULT_ID_RE.fullmatch(vault_id):
+        raise ValueError(f"{vault_id!r} is not a well-formed vault id")
+    refuse_reserved_schema(vault_id)
     config_path = source_store.config_locator(vault_id)
     config = None
     if config_path is not None and config_path.exists():

@@ -630,7 +630,7 @@ def mint_download_recipe_for_source(
     from sage.models.schemas import DownloadRecipe
 
     base_url, ttl_seconds, _ = _transfer_coordinates()
-    filename = staging_name(source_path, "download")
+    filename = recipe_filename(source_path)
     minted = get_transfer_store().mint_download_source(
         vault_id,
         document_id=document_id,
@@ -909,3 +909,15 @@ def caller_local_delivery(
                 # what it set out to do was not the work the token was
                 # delivered for.
                 store.return_upload(entry)
+
+
+def recipe_filename(source_path: str) -> str:
+    """The filename a source download recipe names: the restricted basename.
+
+    A document retained before names were restricted, or retained in place
+    under the caller's own spelling, may carry characters another caller's
+    shell would act on; the recipe hands that caller only the restricted form.
+    """
+    from sage.vault_source_binding import safe_retained_name
+
+    return safe_retained_name(staging_name(source_path, "download"))

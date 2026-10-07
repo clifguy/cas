@@ -1,0 +1,28 @@
+classification: minor
+category: [caller-adaptation]
+summary: >-
+  Source parsing is bounded in memory and time and runs off the event loop.
+  docx, pptx and xlsx packages are checked against fixed decompression limits
+  (total uncompressed size, member count, and the compression ratio of large
+  members) before any parser opens them, and a package over a limit is refused
+  as source_unreadable. A workbook sheet is read lazily within a fixed column
+  ceiling and row-scan ceiling, so its declared dimension no longer sizes the
+  read; the reported row and column counts run to the last row and column
+  holding a value, and a sheet past the row ceiling reports its count as a
+  lower bound. The structured-data separation pass spends a fixed parse budget
+  and falls back to the unseparated source text when it is exhausted. The
+  filename parser strips trailing duplication noise in linear time and returns
+  a stem past a fixed length as its own title, unparsed. Adapter projection
+  runs on a single worker thread rather than the event loop, so a slow source no
+  longer delays the server's other requests. Ships without a deprecation under
+  the security-exposure exemption.
+for_callers: >-
+  An Office package whose contents would decompress past fixed size or ratio
+  limits is refused with source_unreadable. Workbook row and column counts in
+  projections now run to the last cell holding a value rather than the sheet's
+  declared extent. Shipped without a deprecation (security exposure).
+exemption:
+  kind: security-exposure
+  reason: >-
+    Serving the old forms lets a small upload exhaust the server's memory or
+    stall every request it is serving.

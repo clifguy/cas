@@ -547,14 +547,15 @@ class VaultIdentity(BaseModel):
     storage_root: str = Field(
         description=(
             "Root directory for source files managed by this vault. "
-            "Absolute path. Must be outside cloud-synced directories."
+            "Absolute path under the server's vault root. Must be outside "
+            "cloud-synced directories."
         )
     )
     brain_root: str = Field(
         description=(
             "Directory holding this vault's local runtime artifacts (e.g. "
-            "the timing log). Absolute path. Must be outside cloud-synced "
-            "directories."
+            "the timing log). Absolute path under the server's vault root. "
+            "Must be outside cloud-synced directories."
         )
     )
     visibility: str = Field(description="Access scope for this vault.")

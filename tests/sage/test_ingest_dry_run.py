@@ -1869,6 +1869,10 @@ async def test_preview_parses_the_filename_of_a_store_resident_source(
     """
 
     class _StoreResident:
+        def config_locator(self, vault_id):
+            # A store with no local tree, so the local branch is never read.
+            return None
+
         def source_exists(self, vault_id, storage_root, source):
             return True
 

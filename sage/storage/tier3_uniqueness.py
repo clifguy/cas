@@ -54,10 +54,11 @@ class Tier3UniqueIndexBlockedError(RuntimeError):
 
 
 # Defense-in-depth gate for the doc_type and field tokens
-# interpolated into the tier3 partial UNIQUE index DDL. doc_type already
-# matches `^[a-z][a-z0-9_]*$` by vault-config schema; the cross-field
-# validator in sage.config restricts unique_keys entries to declared
-# metadata_schema properties.
+# interpolated into the tier3 partial UNIQUE index DDL. The published
+# document-type schema gives doc_type the shape `^[a-z][a-z0-9_]*$`, but the
+# vault-config model does not enforce it, so the DDL builder checks it itself;
+# the cross-field validator in sage.config restricts unique_keys entries to
+# declared metadata_schema properties.
 TIER3_UNIQUE_INDEX_PREFIX = "idx_tier3_unique_"
 
 

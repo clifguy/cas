@@ -142,6 +142,44 @@ def _validate_config(config_dict: dict) -> VaultConfig:
         raise config_refusal(exc) from exc
 
 
+def _assert_roots_within_bound_root(
+    config: VaultConfig, previous: VaultConfig | None = None
+) -> None:
+    """Require each vault root a request sets to lie under the bound vault root.
+
+    ``storage_root`` and ``brain_root`` name where the server creates
+    directories and reads source bytes, and ``timing.log_path`` names a file it
+    opens and writes, so a request may only place them strictly under
+    :func:`bound_vault_root`, resolved through links. Against a
+    ``previous`` configuration only a root the request changes is held to the
+    rule, so a vault declared before it keeps accepting edits to its other
+    settings. Raises :class:`VaultConfigValidationError` naming each offending
+    field, before anything is created or written.
+    """
+    from sage.vault_source_binding import VaultRootEscapeError, resolve_and_assert_within_root
+
+    root = bound_vault_root()
+    errors: list[str] = []
+
+    def paths(cfg: VaultConfig) -> dict[str, str | None]:
+        return {
+            "vault.storage_root": cfg.vault.storage_root,
+            "vault.brain_root": cfg.vault.brain_root,
+            "timing.log_path": cfg.timing.log_path,
+        }
+
+    before = paths(previous) if previous is not None else {}
+    for field, value in paths(config).items():
+        if value is None or (field in before and value == before[field]):
+            continue
+        try:
+            resolve_and_assert_within_root(Path(value), root, display=value)
+        except VaultRootEscapeError:
+            errors.append(f"{field} must lie under the server's vault root")
+    if errors:
+        raise VaultConfigValidationError(errors)
+
+
 def _write_config_yaml(config_path: Path, config_dict: dict) -> None:
     """Atomically write a config dict to YAML (temp file + rename)."""
     config_path.parent.mkdir(parents=True, exist_ok=True)

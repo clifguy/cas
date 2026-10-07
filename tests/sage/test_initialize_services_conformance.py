@@ -324,8 +324,8 @@ async def _drive_vault_registry_create_vault(
     cfg = copy.deepcopy(minimal_vault_config_dict)
     cfg["vault"]["id"] = "vault_a"
     cfg["vault"]["name"] = "Vault A"
-    cfg["vault"]["storage_root"] = str(tmp_path / "vault_a_sources")
-    cfg["vault"]["brain_root"] = str(tmp_path / "vault_a_brain")
+    cfg["vault"]["storage_root"] = str(vaults_dir / "vault_a" / "sources")
+    cfg["vault"]["brain_root"] = str(vaults_dir / "vault_a" / "brain")
 
     captured: list[dict] = []
 

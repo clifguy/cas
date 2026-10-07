@@ -83,6 +83,11 @@ _COMMENT = re.compile(r"[ \t]*#")
 _XML_COMMENT = re.compile(r"[ \t]*<!--(?:(?!-->).)*-->[ \t]*\r?$")
 # An XML line end: the parser ends a line at CRLF, a lone CR, or a lone LF.
 _XML_LINE_END = re.compile(r"(\r\n|\r|\n)")
+# The most re-parses the separation pass may spend checking where blank lines
+# can go. An ordinary file needs two; each refused insertion costs about two
+# per halving step, so a file with many refused candidates falls back to its
+# unseparated text rather than re-parsing once per candidate.
+_SEPARATION_PARSE_BUDGET = 64
 _INDENT = "  "
 
 
@@ -530,17 +535,35 @@ def _separate(
         def insertion_points(lines: list[str], starts: set[int]) -> set[int]:
             return _insertion_points(lines, starts, indent_bound, comment_start)
 
+    # Each check re-parses the whole text, so the halving is held to a fixed
+    # number of them; once it is spent the source is returned unseparated.
+    budget = _SEPARATION_PARSE_BUDGET
+
+    def checked(text: str) -> bool:
+        nonlocal budget
+        if budget <= 0:
+            raise _BudgetSpent
+        budget -= 1
+        return agrees(text)
+
     def accepted(candidates: list[int]) -> list[int]:
-        if not candidates or agrees(render(lines, candidates)):
+        if not candidates or checked(render(lines, candidates)):
             return candidates
         if len(candidates) == 1:
             return []
         middle = len(candidates) // 2
         return accepted(candidates[:middle]) + accepted(candidates[middle:])
 
-    kept = accepted(sorted(insertion_points(lines, starts)))
-    text = render(lines, kept)
-    return text if agrees(text) else source
+    try:
+        kept = accepted(sorted(insertion_points(lines, starts)))
+        text = render(lines, kept)
+        return text if checked(text) else source
+    except _BudgetSpent:
+        return source
+
+
+class _BudgetSpent(Exception):
+    """The separation pass spent its parse budget."""
 
 
 def _insertion_points(

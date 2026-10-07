@@ -211,10 +211,10 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
         content_timer: QueryTimer | NullQueryTimer = NULL_QUERY_TIMER,
         migrate: bool = False,
     ) -> VaultStorageHandle:
-        from sage.storage.postgres.schema import validate_schema_name
+        from sage.storage.postgres.schema import refuse_reserved_schema
 
         try:
-            validate_schema_name(vault_id)
+            refuse_reserved_schema(vault_id)
         except ValueError as exc:
             raise ValueError(
                 f"vault id {vault_id!r} is not usable as a Postgres schema name "
@@ -263,9 +263,9 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
         from psycopg.conninfo import make_conninfo
 
         from sage.storage.postgres.pool import build_conn_kwargs
-        from sage.storage.postgres.schema import drop_schema, validate_schema_name
+        from sage.storage.postgres.schema import drop_schema, refuse_reserved_schema
 
-        validate_schema_name(vault_id)
+        refuse_reserved_schema(vault_id)
         conninfo = make_conninfo(**build_conn_kwargs(self._connection_params(), self._conn_environ))
         conn_class = self._connection_class or psycopg.AsyncConnection
         async with await conn_class.connect(conninfo, autocommit=True) as conn:
