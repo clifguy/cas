@@ -82,6 +82,46 @@ ensure_group_gate() {
     --body '{"appRoleAssignmentRequired": true}'
 }
 
+# Print each distinct non-empty argument once, one per line, in first-seen order.
+unique_lines() {
+  local uri kept seen
+  local -a out=()
+  for uri in "$@"; do
+    [ -n "${uri}" ] || continue
+    seen=0
+    for kept in ${out[@]+"${out[@]}"}; do
+      if [ "${kept}" = "${uri}" ]; then
+        seen=1
+        break
+      fi
+    done
+    [ "${seen}" -eq 1 ] || out+=("${uri}")
+  done
+  for uri in ${out[@]+"${out[@]}"}; do
+    printf '%s\n' "${uri}"
+  done
+}
+
+# Print the redirect URIs an application should carry on one platform: every URI
+# it already holds, in its current order, followed by each required URI it
+# lacks. The redirect-URI flags of `az ad app update` replace the whole
+# collection, so writing this union back adds what the bootstrap needs and
+# never removes a URI registered since -- a desktop MCP client's per-port
+# loopback, say. Removing one is a deliberate operator step, described in
+# docs/process/entra-app-registrations.md. Takes the application id, the
+# platform's redirect-URI path in the application object
+# (publicClient.redirectUris or web.redirectUris), and the required URIs.
+merged_redirect_uris() {
+  local app_id="$1" path="$2" live uri
+  local -a current=()
+  shift 2
+  live="$(az ad app show --id "${app_id}" --query "${path}" -o tsv)" || exit 1
+  while IFS= read -r uri; do
+    current+=("${uri}")
+  done <<<"${live}"
+  unique_lines ${current[@]+"${current[@]}"} "$@"
+}
+
 # The BFF cloud hostname and OIDC callback path the redirect URI is built from.
 # BFF_HOSTNAME is the default ingress FQDN until the custom domain is bound;
 # AUTH_CALLBACK_PATH is fixed by the BFF login implementation.
@@ -90,9 +130,38 @@ AUTH_CALLBACK_PATH="${AUTH_CALLBACK_PATH:-auth/callback}"
 
 # The public MCP client's registered redirect URI(s) -- resolved against the
 # chosen default MCP client's current documentation (a loopback or custom-scheme
-# callback), not a CAS-controlled hostname. Comma-separated if the client needs
-# more than one.
+# callback), not a CAS-controlled hostname. A comma-separated list registers one
+# entry per URI; whitespace around an entry is ignored, and an empty entry (a
+# doubled or trailing comma) stops the run before any directory call. The
+# http://localhost/callback loopback a browser-context desktop client uses for
+# its auth-code/PKCE callback is always added.
 : "${MCP_CLIENT_REDIRECT_URI:?set MCP_CLIENT_REDIRECT_URI to the MCP client registered redirect URI (see docs/process/entra-app-registrations.md)}"
+# `read` consumes a single line, so a value spanning several is refused rather
+# than silently cut at its first newline. The appended comma keeps a trailing
+# empty entry visible: `read -a` drops one empty final field, which is then the
+# added one alone.
+case "${MCP_CLIENT_REDIRECT_URI}" in
+  *$'\n'*)
+    echo "ERROR: MCP_CLIENT_REDIRECT_URI must be one line; separate URIs with commas." >&2
+    exit 1
+    ;;
+esac
+IFS=',' read -r -a MCP_REDIRECT_ENTRIES <<<"${MCP_CLIENT_REDIRECT_URI},"
+MCP_REQUIRED_INPUT=()
+for entry in "${MCP_REDIRECT_ENTRIES[@]}"; do
+  entry="${entry#"${entry%%[![:space:]]*}"}"
+  entry="${entry%"${entry##*[![:space:]]}"}"
+  if [ -z "${entry}" ]; then
+    echo "ERROR: MCP_CLIENT_REDIRECT_URI has an empty entry; separate URIs with" \
+      "single commas and no trailing comma." >&2
+    exit 1
+  fi
+  MCP_REQUIRED_INPUT+=("${entry}")
+done
+MCP_REQUIRED_REDIRECTS=()
+while IFS= read -r uri; do
+  MCP_REQUIRED_REDIRECTS+=("${uri}")
+done <<<"$(unique_lines "${MCP_REQUIRED_INPUT[@]}" "http://localhost/callback")"
 
 # The public SAGE hostname (the sage custom domain, e.g. sage.<base-domain>).
 # Registered below as an https identifier URI on the resource server so the
@@ -284,17 +353,26 @@ ensure_group_gate "${SAGE_SP_ID}" "${SAGE_READER_ROLE_ID}"
 # both client-gating steps below.
 DEFAULT_ACCESS_APP_ROLE_ID="$(printf '0%.0s' {1..8})-$(printf '0%.0s' {1..4})-$(printf '0%.0s' {1..4})-$(printf '0%.0s' {1..4})-$(printf '0%.0s' {1..12})"
 
-# 3. CAS BFF confidential-client registration (lookup-then-create).
+# 3. CAS BFF confidential-client registration (lookup-then-create). A new
+# registration gets the single OIDC callback; an existing one keeps the web
+# redirect URIs it holds and gains the callback if it lacks it, so a hostname
+# change leaves the old callback in place until an operator removes it.
+BFF_CALLBACK_URI="https://${BFF_HOSTNAME}/${AUTH_CALLBACK_PATH}"
 BFF_APP_ID="$(lookup_one "application named cas-bff" \
   az ad app list --filter "displayName eq 'cas-bff'" --query '[].appId')"
 if [ -z "${BFF_APP_ID}" ]; then
   BFF_APP_ID="$(az ad app create --display-name cas-bff \
     --sign-in-audience AzureADMyOrg \
-    --web-redirect-uris "https://${BFF_HOSTNAME}/${AUTH_CALLBACK_PATH}" \
+    --web-redirect-uris "${BFF_CALLBACK_URI}" \
     --query appId -o tsv)"
 else
+  BFF_MERGED="$(merged_redirect_uris "${BFF_APP_ID}" web.redirectUris "${BFF_CALLBACK_URI}")"
+  BFF_REDIRECTS=()
+  while IFS= read -r uri; do
+    BFF_REDIRECTS+=("${uri}")
+  done <<<"${BFF_MERGED}"
   az ad app update --id "${BFF_APP_ID}" \
-    --web-redirect-uris "https://${BFF_HOSTNAME}/${AUTH_CALLBACK_PATH}"
+    --web-redirect-uris "${BFF_REDIRECTS[@]}"
 fi
 BFF_SP_ID="$(ensure_sp "${BFF_APP_ID}")"
 
@@ -314,21 +392,26 @@ ensure_group_gate "${BFF_SP_ID}" "${DEFAULT_ACCESS_APP_ROLE_ID}"
 # id back to a default MCP client, since Entra offers no real Dynamic Client
 # Registration (CAS-ADR-042). --public-client-redirect-uris registers
 # the public-client platform (never --web-redirect-uris, which implies a
-# confidential client that would need a secret). The set carries both the
-# env-resolved primary redirect and the http://localhost/callback loopback a
-# browser-context Desktop client uses for its auth-code/PKCE callback; the flag
-# is a declarative full-set replace, so registering both here keeps a re-bootstrap
-# from dropping the loopback.
+# confidential client that would need a secret). A new registration gets
+# exactly the required set (the MCP_CLIENT_REDIRECT_URI entries and the
+# http://localhost/callback loopback); an existing one keeps every redirect URI
+# it holds and gains any required one it lacks.
 MCP_CLIENT_APP_ID="$(lookup_one "application named cas-mcp-client" \
   az ad app list --filter "displayName eq 'cas-mcp-client'" --query '[].appId')"
 if [ -z "${MCP_CLIENT_APP_ID}" ]; then
   MCP_CLIENT_APP_ID="$(az ad app create --display-name cas-mcp-client \
     --sign-in-audience AzureADMyOrg \
-    --public-client-redirect-uris "${MCP_CLIENT_REDIRECT_URI}" "http://localhost/callback" \
+    --public-client-redirect-uris "${MCP_REQUIRED_REDIRECTS[@]}" \
     --query appId -o tsv)"
 else
+  MCP_MERGED="$(merged_redirect_uris "${MCP_CLIENT_APP_ID}" publicClient.redirectUris \
+    "${MCP_REQUIRED_REDIRECTS[@]}")"
+  MCP_REDIRECTS=()
+  while IFS= read -r uri; do
+    MCP_REDIRECTS+=("${uri}")
+  done <<<"${MCP_MERGED}"
   az ad app update --id "${MCP_CLIENT_APP_ID}" \
-    --public-client-redirect-uris "${MCP_CLIENT_REDIRECT_URI}" "http://localhost/callback"
+    --public-client-redirect-uris "${MCP_REDIRECTS[@]}"
 fi
 MCP_CLIENT_SP_ID="$(ensure_sp "${MCP_CLIENT_APP_ID}")"
 
