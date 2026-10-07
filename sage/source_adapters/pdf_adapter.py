@@ -24,6 +24,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -84,6 +85,12 @@ def _decode_safe_cid(text: str) -> str:
     return _CID_PATTERN.sub(_replace, text)
 
 
+# Held for the whole suppression: it swaps process-wide state (``sys.stderr``
+# and two loggers' levels), and projections run on worker threads, so two
+# overlapping suppressions would each restore what the other installed.
+_NOISE_LOCK = threading.Lock()
+
+
 @contextlib.contextmanager
 def _suppress_pdf_noise() -> Iterator[None]:
     """Suppress stderr + pdfminer/pypdf logger noise during PDF parsing.
@@ -93,6 +100,11 @@ def _suppress_pdf_noise() -> Iterator[None]:
     pdfminer that are non-actionable for content extraction. We scope
     suppression to the parsing call so other tooling remains verbose.
     """
+    with _NOISE_LOCK:
+        yield from _suppressed_pdf_noise()
+
+
+def _suppressed_pdf_noise() -> Iterator[None]:
     pdfminer_logger = logging.getLogger("pdfminer")
     pypdf_logger = logging.getLogger("pypdf")
     original_pdfminer_level = pdfminer_logger.level

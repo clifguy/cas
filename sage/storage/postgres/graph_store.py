@@ -242,9 +242,9 @@ def _tier3_equality_predicate(key: str, value: object) -> tuple[str, list[object
 
 def _validate_tier3_identifier(doc_type: str, field: str) -> None:
     """Fence the tier3 identifiers interpolated into ``->>`` and index DDL."""
-    if not _DOC_TYPE_FORMAT.match(doc_type):
+    if not _DOC_TYPE_FORMAT.fullmatch(doc_type):
         raise ValueError(f"Invalid doc_type identifier for tier3 index DDL: {doc_type!r}")
-    if not _TIER3_KEY_FORMAT.match(field):
+    if not _TIER3_KEY_FORMAT.fullmatch(field):
         raise ValueError(f"Invalid tier3 field identifier for index DDL: {field!r}")
 
 
@@ -454,7 +454,7 @@ class PostgresGraphStore(GraphStore):
         if not index_name.startswith(prefix):
             return  # a different doc_type's index fired
         field = index_name[len(prefix) :]
-        if not _TIER3_KEY_FORMAT.match(field):
+        if not _TIER3_KEY_FORMAT.fullmatch(field):
             return
         if not doc.tier3_metadata or field not in doc.tier3_metadata:
             return

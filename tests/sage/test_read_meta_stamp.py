@@ -490,12 +490,12 @@ async def _second_vault(app, client, monkeypatch, tmp_path) -> tuple[str, str]:
 
     monkeypatch.setattr("sage.vault_management._VAULTS_ROOT", tmp_path / "sage_vaults")
     config = VaultRegistryService.get_default_config("other_vault", "Other", "testuser")
-    config["vault"]["storage_root"] = str(tmp_path / "other_vault" / "sources")
-    config["vault"]["brain_root"] = str(tmp_path / "other_vault" / "brain")
+    config["vault"]["storage_root"] = str(tmp_path / "sage_vaults" / "other_vault" / "sources")
+    config["vault"]["brain_root"] = str(tmp_path / "sage_vaults" / "other_vault" / "brain")
     created = await client.post("/sage_vaults", json={"config": config})
     assert created.status_code == 201, created.text
 
-    sources = tmp_path / "other_vault" / "sources" / "notes"
+    sources = tmp_path / "sage_vaults" / "other_vault" / "sources" / "notes"
     sources.mkdir(parents=True, exist_ok=True)
     (sources / "other.md").write_text("# Other Document\n\nOther content.")
     resp = await client.post(

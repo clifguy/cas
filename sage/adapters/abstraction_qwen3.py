@@ -16,6 +16,7 @@ from typing import Any, NamedTuple
 from sage.adapters.abstraction_prompt import (
     SYSTEM_PROMPT_TEMPLATE,  # noqa: F401 -- re-exported for callers importing from this module
     _format_system_prompt,
+    neutralize_source_text,
     wrap_source_document,
 )
 from sage.adapters.abstraction_utils import (
@@ -612,6 +613,9 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         # Edge guard (AD-027, AD-030)
         if not text or not text.strip():
             raise RuntimeError("Cannot generate abstract from empty document text")
+        # Neutralized before the context budget is measured, so truncation
+        # sizes the text the prompt will actually carry.
+        text = neutralize_source_text(text)
 
         async with _generation_lock:
             # Preflight unified-memory check (guardrail 1).

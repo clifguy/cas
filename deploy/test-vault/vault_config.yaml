@@ -17,12 +17,13 @@
 # is defense in depth rather than the one thing standing between this vault and
 # an unconfirmed delete.
 #
-# This is a disposable validation vault. storage_root and brain_root are
-# required by the vault-config schema but inert under the cloud bindings (source
-# bytes live in the document store, graph and content state in Postgres); they
-# are set to container-writable paths so the per-vault init that materializes
-# them succeeds. Abstraction is enabled to exercise the
-# hosted-model roundtrip end to end.
+# This is a disposable validation vault. Under the cloud bindings source bytes
+# live in the document store and graph and content state in Postgres, but
+# storage_root and brain_root are not inert: the per-vault init creates both,
+# local runtime artifacts land under brain_root, and they must lie under the
+# server's vault root, which a vault-config write enforces. They are set to
+# container-writable paths under that root. Abstraction is enabled to exercise
+# the hosted-model roundtrip end to end.
 vault:
   id: cloud_validation
   name: Cloud validation vault

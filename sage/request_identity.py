@@ -198,7 +198,7 @@ def agent_from_user_agent(user_agent: str | None) -> str | None:
     if not user_agent:
         return None
     product = user_agent.strip().split(" ", 1)[0].split("/", 1)[0].lower()
-    if product in _GENERIC_USER_AGENT_PRODUCTS or not _AGENT_NAME.match(product):
+    if product in _GENERIC_USER_AGENT_PRODUCTS or not _AGENT_NAME.fullmatch(product):
         return None
     return product
 

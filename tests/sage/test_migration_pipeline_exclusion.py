@@ -9,6 +9,7 @@ predicate it is there to reject.
 """
 
 import asyncio
+import threading
 from datetime import datetime, timezone
 
 import pytest
@@ -74,14 +75,20 @@ class _GatedEmbedder(StubEmbeddingProvider):
 
 
 class _GatedAdapter(MarkdownAdapter):
+    """Holds projection until released.
+
+    Projection runs on a worker thread with its own event loop, so the gate is
+    a thread event rather than one bound to the test's loop.
+    """
+
     def __init__(self) -> None:
         super().__init__()
-        self.entered = asyncio.Event()
-        self.gate = asyncio.Event()
+        self.entered = threading.Event()
+        self.gate = threading.Event()
 
     async def project(self, path, config):
         self.entered.set()
-        await self.gate.wait()
+        self.gate.wait(timeout=10.0)
         return await super().project(path, config)
 
 
@@ -217,7 +224,7 @@ async def test_refused_while_an_ingest_projects_before_any_claim(
     request = IngestRequest(source="samples/projecting.md", source_type=SourceType.MARKDOWN)
 
     task = asyncio.create_task(ingestion_service.ingest(request, wait_for_pipeline=False))
-    await asyncio.wait_for(adapter.entered.wait(), timeout=2.0)
+    assert await asyncio.to_thread(adapter.entered.wait, 2.0)
 
     with pytest.raises(PipelineWorkInFlightError) as excinfo:
         await maintenance.migrate_vault()

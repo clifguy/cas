@@ -744,7 +744,7 @@ _IDENT_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
 
 def _validate_schema(schema: str) -> str:
     """Return ``schema`` if it is a safe lowercase SQL identifier."""
-    if not _IDENT_RE.match(schema):
+    if not _IDENT_RE.fullmatch(schema):
         raise ValueError(f"schema name {schema!r} is not a safe identifier")
     return schema
 

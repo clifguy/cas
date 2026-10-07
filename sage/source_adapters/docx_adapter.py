@@ -35,6 +35,7 @@ from sage.source_adapters.base import (
     ProjectionResult,
     SourceAdapter,
     SourceReadError,
+    check_zip_package,
     extract_adr_id_from_filename,
     respell_created_path,
 )
@@ -495,6 +496,7 @@ class DocxAdapter(SourceAdapter):
         the [Content_Types].xml entry. The body XML and all other parts are
         unchanged, so the rest of the adapter is unaffected.
         """
+        check_zip_package(source_path)
         if not is_template:
             try:
                 return Document(str(source_path))

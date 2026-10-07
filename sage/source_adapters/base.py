@@ -234,3 +234,48 @@ class SourceAdapter(ABC):
     @abstractmethod
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
         """Read source file and produce structured projection."""
+
+
+# Fixed decompression limits for zip-packaged sources (docx, pptx, xlsx),
+# checked against the archive's directory before any parser inflates a member:
+# the total uncompressed size, the member count, and the ratio of a large
+# member's uncompressed to compressed size. Each sits well above what an
+# ordinary office document reaches.
+_MAX_PACKAGE_UNCOMPRESSED_BYTES = 256 * 1024 * 1024
+_MAX_PACKAGE_MEMBERS = 10_000
+_MAX_MEMBER_RATIO = 100
+_RATIO_CHECKED_FROM_BYTES = 1024 * 1024
+
+
+def check_zip_package(path: Path) -> None:
+    """Refuse a zip package whose declared sizes exceed the decompression limits.
+
+    Reads only the archive's central directory, so the check costs nothing in
+    proportion to what the members would inflate to. Raises
+    :class:`SourceReadError` for a package over any limit. A file that is not a
+    readable zip archive passes, so the adapter's own open reports it as it
+    always has; a failure to read the file is a plain ``ValueError``.
+    """
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            members = archive.infolist()
+    except zipfile.BadZipFile:
+        return
+    except OSError as exc:
+        # This process failing to reach the file, not the file: a plain
+        # ValueError, as the adapters report the same failure.
+        raise ValueError(f"Failed to read package {path}: {exc}") from exc
+    if len(members) > _MAX_PACKAGE_MEMBERS:
+        raise SourceReadError(f"Package {path} has more members than the limit allows")
+    total = 0
+    for member in members:
+        total += member.file_size
+        if (
+            member.file_size >= _RATIO_CHECKED_FROM_BYTES
+            and member.file_size > _MAX_MEMBER_RATIO * max(member.compress_size, 1)
+        ):
+            raise SourceReadError(f"Package {path} has a member past the compression-ratio limit")
+    if total > _MAX_PACKAGE_UNCOMPRESSED_BYTES:
+        raise SourceReadError(f"Package {path} exceeds the uncompressed-size limit")
