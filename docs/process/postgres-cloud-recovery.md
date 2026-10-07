@@ -451,6 +451,11 @@ leaves the serving server untouched. It is driven by
 deployment's outputs and its bootstrap job. The driver never connects to a
 database; every database read happens inside the verification job.
 
+Run it from an operator session with rights at subscription scope, not as the
+deploy identity. The geo-redundant drill creates and deletes a resource group of
+its own, and the deploy identity's grant stops at the tenant's resource group
+(see [`azure-deployment.md`](azure-deployment.md), per-tenant setup step 3).
+
 ### Bracket the recovery point before restoring
 
 Choose the recovery point first and make it falsifiable. Write one document to the

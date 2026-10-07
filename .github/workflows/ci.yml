@@ -441,6 +441,11 @@ jobs:
     uses: ./.github/workflows/build-images.yml
     with:
       push: false
+    # A reusable workflow can only narrow what its caller grants, and the called
+    # `build` job requests id-token for its push arm. This caller never takes that
+    # arm, but must still grant the token or the call fails to start. The token it
+    # could mint names a branch or pull-request subject, which the deploy
+    # identity's environment-only federated credentials do not accept.
     permissions:
       contents: read
       id-token: write

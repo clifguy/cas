@@ -40,9 +40,9 @@ on:
 
 # OIDC: the push authenticates with the tenant's Entra workload identity
 # federated to this repository's GitHub OIDC token. No client secret is stored.
+# Only the `build` job, which signs in on the push arm, requests the token.
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   versions:
@@ -87,6 +87,9 @@ jobs:
     needs: versions
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
     # Bind the tenant's Environment only when pushing, so the env-scoped registry
     # and deploy-identity variables resolve; the build-only (CI) call binds none.
     environment: ${{ inputs.push && inputs.environment || '' }}

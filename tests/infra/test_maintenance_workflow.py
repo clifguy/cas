@@ -144,8 +144,8 @@ def test_bound_to_environment_approval_gate() -> None:
 def test_oidc_login_no_stored_secret() -> None:
     """OIDC federated login (id-token: write + azure/login), never a stored secret."""
     workflow = _load()
-    perms = workflow.get("permissions") or {}
-    assert perms.get("id-token") == "write", "the workflow must request an OIDC id-token"
+    perms = _maintenance_job(workflow).get("permissions") or {}
+    assert perms.get("id-token") == "write", "the signing-in job must request an OIDC id-token"
     uses = [s.get("uses", "") for s in (_maintenance_job(workflow).get("steps") or [])]
     assert any(u.startswith("azure/login") for u in uses), "the job must log in via azure/login"
 

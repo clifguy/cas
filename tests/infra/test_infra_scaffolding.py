@@ -145,8 +145,8 @@ def test_infra_workflow_oidc_posture() -> None:
     raw = WORKFLOW.read_text(encoding="utf-8")
     workflow = yaml.safe_load(raw)
 
-    permissions = workflow.get("permissions") or {}
-    assert permissions.get("id-token") == "write", "workflow must request id-token: write for OIDC"
+    permissions = workflow["jobs"]["deploy"].get("permissions") or {}
+    assert permissions.get("id-token") == "write", "deploy must request id-token: write for OIDC"
 
     lowered = raw.lower()
     for forbidden in ("client-secret", "client_secret", "azure_client_secret", "creds:"):

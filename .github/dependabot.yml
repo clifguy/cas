@@ -21,6 +21,17 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 5
 
+  # The security workflow's tools install from hash-locked requirements compiled
+  # from requirements/security/*.in. Version updates here are expected to
+  # regenerate the compiled file, hashes included; check that on the first such
+  # pull request. A bump that leaves a hash stale fails the --require-hashes
+  # install rather than running unverified code, so the failure is loud.
+  - package-ecosystem: "pip"
+    directory: "/requirements/security"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 3
+
   # The two root Dockerfiles digest-pin every base image they resolve, so that
   # two builds of one commit start from the same bases — the property the deploy
   # path leans on when it accepts an image on the strength of a CI run that

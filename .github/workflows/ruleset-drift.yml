@@ -14,6 +14,12 @@ name: Ruleset drift
 # rather than an empty list; the check names it as uncovered on every run
 # instead of comparing it. Granting administration scope would require a stored
 # token, since it is not a permission a workflow can declare.
+#
+# The same run checks the deployment environments (scripts/check_environment_drift.py):
+# every environment must require a reviewer, admit only `main`, and refuse
+# administrator bypass. Those settings gate the federated deploy credential and,
+# like the ruleset, change without a commit. Every field the check reads is
+# returned at the same `contents: read` scope.
 
 on:
   schedule:
@@ -78,6 +84,13 @@ jobs:
           python-version: ${{ needs.versions.outputs.python }}
       - run: uv sync --locked
       - run: .venv/bin/python -m scripts.check_ruleset_drift
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Runs whether or not the ruleset comparison failed, so one run reports
+      # both kinds of drift.
+      - run: .venv/bin/python -m scripts.check_environment_drift
+        if: ${{ !cancelled() }}
         env:
           GH_REPO: ${{ github.repository }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
