@@ -1040,7 +1040,7 @@ _STATEMENT_TIMEOUT_MESSAGE = "statement timeout"
 class StatementTimeoutError(SAGEError):
     """503: the request's database work ran past the server's time limit.
 
-    The request pools bound every statement; one that runs longer is
+    The per-vault pools bound every statement; one that runs longer is
     cancelled. The caller can narrow the request or retry it later, so this
     is a typed, retryable answer rather than ``internal_error``.
     """
@@ -1063,7 +1063,10 @@ def statement_timeout_error(exc: BaseException) -> StatementTimeoutError | None:
 
     Matched by SQLSTATE and the server's primary message rather than driver
     class, so the request surfaces need no storage-driver import. Any other
-    cancellation stays an unexpected error.
+    cancellation stays an unexpected error. The message match assumes the
+    server reports in English (``lc_messages`` C or an English locale); under
+    another language a timeout falls back to the unexpected-error answer
+    rather than being mislabelled.
     """
     seen: set[int] = set()
     current: BaseException | None = exc

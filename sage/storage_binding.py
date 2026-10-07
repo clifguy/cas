@@ -173,8 +173,9 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
         """Connection parameters under the profile's coordinates.
 
         ``request_pool`` adds the configured statement timeout, which bounds
-        the statements request handlers issue; plain provisioning
-        connections (schema bootstrap, drops, audit writes) stay unbounded.
+        the statements on the per-vault pool that request handling and
+        background pipeline work share; plain provisioning connections
+        (schema bootstrap, drops, audit writes) stay unbounded.
         """
         from sage.storage.postgres.pool import PostgresConnectionParams
 
