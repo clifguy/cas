@@ -93,7 +93,7 @@ def test_dispatch_selects_tenant_environment() -> None:
         "workflow_dispatch must take an `environment` input selecting the tenant"
     )
     env = _job_environment(_deploy_job(workflow))
-    assert env is not None, "the deploy job must bind a GitHub Environment (the approval gate)"
+    assert env is not None, "the deploy job must bind a GitHub Environment (the deployment gate)"
     assert "inputs.environment" in env, (
         f"the deploy environment must be the dispatch-selected tenant, not a literal: {env!r}"
     )

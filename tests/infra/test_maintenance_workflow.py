@@ -4,8 +4,9 @@ Locks the shape of ``.github/workflows/maintenance.yml`` — the dispatch-only p
 that starts the already-deployed in-VNet maintenance job (CAS-ADR-043/034/029).
 The irreversible operations in SAGE (whole-vault teardown, document purge) stay off
 the reachable API surface and off the routine deploy pipeline: they run only on an
-explicit operator dispatch, under a tenant Environment's required-reviewer approval
-gate, with the command selector and the per-invocation request threaded to the job
+explicit operator dispatch from ``main``, under the tenant Environment's ``main``-only
+branch policy and a retyped confirmation for a destructive command, with the
+command selector and the per-invocation request threaded to the job
 as env-var overrides. This workflow does not apply infrastructure — the job is
 deployed by infra.yml — so it must not carry a Bicep apply.
 
@@ -134,10 +135,10 @@ def test_dispatch_inputs_present() -> None:
 
 def test_bound_to_environment_approval_gate() -> None:
     """The maintenance job binds the dispatch-selected tenant Environment, whose
-    required reviewer is the approval gate."""
+    `main`-only branch policy gates which runs reach the deploy identity."""
     job = _maintenance_job(_load())
     assert _job_environment(job) == "${{ inputs.environment }}", (
-        "the maintenance job must bind environment: ${{ inputs.environment }} (approval gate)"
+        "the maintenance job must bind environment: ${{ inputs.environment }} (deployment gate)"
     )
 
 

@@ -158,6 +158,16 @@ _CONFORMANCE_STREAMS: Final[str] = (
 )
 
 KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
+    ("tests/infra/test_environment_drift.py::test_missing_reviewer_rule_is_a_violation"): (
+        "replaced by test_reviewer_rule_is_optional: deployment environments no longer "
+        "require a reviewer, only the main-only branch policy and no admin bypass"
+    ),
+    (
+        "tests/infra/test_environment_drift.py::test_reviewer_rule_with_no_reviewers_is_a_violation"
+    ): (
+        "replaced by test_reviewer_rule_is_optional[empty-reviewer-rule]: an empty "
+        "reviewer rule is now as acceptable as none"
+    ),
     ("tests/sage/test_mcp_logging.py::test_call_tool_logs_failure_and_reraises"): (
         "inverted and renamed test_call_tool_logs_failure_and_returns_generic_envelope: "
         "an unexpected exception now reaches the caller as a generic internal_error "

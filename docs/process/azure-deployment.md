@@ -46,8 +46,8 @@ vehicle — every stage is idempotent — so a multi-pass bring-up is re-running
 workflow, not hand-running deploys.
 
 The PR and push-to-`main` runs are **validate-only** (`az bicep build`); the
-apply happens only on dispatch, gated behind the selected Environment's required
-reviewer and its `main`-only deployment-branch policy (per-tenant setup step 4).
+apply happens only on dispatch, gated behind the selected Environment's
+`main`-only deployment-branch policy (per-tenant setup step 4).
 
 The break-glass fallback — a manual apply from a clean checkout, not a
 hand-patched working copy — runs the same template directly, passing the same
@@ -220,19 +220,25 @@ leaves the identity unable to assign roles until the next run.
 In the repository's **Settings → Environments**, create an environment named
 `${ENVIRONMENT}`; its name must match the federated subject from step 2. Every
 job that signs in to Azure binds this environment, so its protection rules are
-the gate on the deploy identity. Set all three:
+the gate on the deploy identity. Set:
 
-- **Required reviewers:** yourself at least (self-review is acceptable), so every
-  run that binds the environment waits for an approval.
 - **Deployment branches:** *Selected branches and tags*, with the single branch
   rule `main`. Not *Protected branches only*, which admits any branch a ruleset
-  protects.
-- **Allow administrators to bypass configured protection rules:** off.
+  protects. This is what keeps code on any other branch from the credential.
+- **Allow administrators to bypass configured protection rules:** off, so an
+  administrator cannot push a run past any protection rule added later, such as
+  a wait timer, a reviewer or a custom rule.
+- **No required reviewer.** A reviewer cannot stop a caller that holds the
+  owner's credentials, which can approve a pending deployment through the API,
+  and `main` already requires a pull request; it would only stall every run on a
+  manual approval. Adding one is harmless: the check neither requires nor
+  refuses it. The maintenance workflow's destructive commands carry their own
+  retyped confirmation.
 
 The [`ruleset-drift`](../../.github/workflows/ruleset-drift.yml) workflow checks
-these on a schedule for every environment in the repository and fails when a
-required reviewer, the `main`-only branch policy, or the bypass setting is
-missing. An environment nothing uses is either protected the same way or deleted.
+these on a schedule for every environment in the repository and fails when the
+`main`-only branch policy is missing or administrator bypass is on. An
+environment nothing uses is either protected the same way or deleted.
 
 Then set the tenant's parameter set as **environment-scoped variables** (not
 secrets — these are non-sensitive identifiers — and not repository-wide, so each
