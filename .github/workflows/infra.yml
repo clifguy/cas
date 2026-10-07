@@ -75,14 +75,14 @@ jobs:
 
   deploy:
     # Apply the deployment and converge the tenant. Bound to the dispatch-selected
-    # tenant Environment (its required reviewer is the approval gate; its
+    # tenant Environment (its `main`-only branch policy is the gate; its
     # environment-scoped variables carry the deploy identity and the parameter
     # set). Never runs on a PR.
     needs: [validate, build]
     # Dispatch-only. The deploy identity and parameter set are environment-scoped
     # variables, which GitHub does NOT expose to a job-level `if` — gating here on
     # `vars.AZURE_CLIENT_ID` would evaluate empty and skip the apply forever. The
-    # real gate is the environment binding (its required reviewer) plus azure/login,
+    # real gate is the environment binding (its `main`-only branch policy) plus azure/login,
     # which fails loudly if the tenant's identity is not configured.
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest

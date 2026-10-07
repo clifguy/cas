@@ -3,9 +3,9 @@ name: maintenance
 # Out-of-band cloud vault maintenance (CAS-ADR-043/034/029). The irreversible
 # operations in SAGE — whole-vault teardown and document purge — stay OFF the
 # reachable API surface and off the routine deploy pipeline: they run only when an
-# operator dispatches this workflow, selects the tenant Environment (whose required
-# reviewer is the approval gate) and the command, and supplies the per-invocation
-# request. The bulk reabstract command rides the same path for a different reason:
+# operator dispatches this workflow from `main` (the tenant Environment admits no
+# other branch), selects the Environment and the command, and supplies the
+# per-invocation request, retyping its confirmation for a destructive command. The bulk reabstract command rides the same path for a different reason:
 # it destroys nothing, but it runs for tens of minutes against a whole vault, which
 # is well past any synchronous call's ceiling. The workflow does not apply
 # infrastructure — the in-VNet maintenance job is already deployed by infra.yml
@@ -101,9 +101,8 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    # The environment binding is the approval gate: its required reviewer must
-    # approve before the job runs, and its scoped variables carry the identity and
-    # the resource-group coordinate.
+    # The environment binding is the gate: it admits only a run from `main`, and
+    # its scoped variables carry the identity and the resource-group coordinate.
     environment: ${{ inputs.environment }}
     env:
       ENVIRONMENT_NAME: ${{ vars.ENVIRONMENT_NAME }}

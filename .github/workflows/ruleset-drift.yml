@@ -16,8 +16,7 @@ name: Ruleset drift
 # token, since it is not a permission a workflow can declare.
 #
 # The same run checks the deployment environments (scripts/check_environment_drift.py):
-# every environment must require a reviewer, admit only `main`, and refuse
-# administrator bypass. Those settings gate the federated deploy credential and,
+# every environment must admit only `main` and refuse administrator bypass. Those settings gate the federated deploy credential and,
 # like the ruleset, change without a commit. Every field the check reads is
 # returned at the same `contents: read` scope.
 

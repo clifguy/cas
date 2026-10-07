@@ -4,16 +4,19 @@
 Each workflow that signs in to Azure binds a GitHub deployment environment, and
 the deploy identity's federated credential trusts tokens minted for that
 environment and nothing else. The environment's protection rules are therefore
-what stands between a pushed branch and a token the cloud accepts. Three rules
+what stands between a pushed branch and a token the cloud accepts. Two rules
 are required of every environment the repository has:
 
-* **required-reviewer** -- a required-reviewers rule naming at least one
-  reviewer, so a deployment waits for a person.
 * **branch-policy** -- a custom deployment-branch policy admitting exactly the
   ``main`` branch. The "protected branches" mode is not accepted: it admits any
   branch a ruleset protects, which is a wider set than ``main`` alone.
 * **admin-bypass** -- ``can_admins_bypass`` is false, so an administrator's
-  credential cannot skip the reviewer either.
+  credential cannot push a run past any protection rule added later, such as a
+  wait timer, a reviewer or a custom rule.
+
+A required reviewer is deliberately not required, nor refused. It cannot stop a
+caller that holds the owner's credentials, which can approve a pending
+deployment through the API, so the branch policy carries the gate.
 
 These live in repository settings, which carry no commit, so only a read of the
 live settings can see one removed. The ruleset-drift workflow runs this check on
@@ -73,14 +76,6 @@ def check_environment(env: dict[str, Any]) -> list[Violation]:
     """Every required rule this environment fails."""
     name = str(env.get("name", "<unnamed>"))
     found: list[Violation] = []
-
-    reviewer_rules = [
-        rule
-        for rule in env.get("protection_rules") or []
-        if isinstance(rule, dict) and rule.get("type") == "required_reviewers"
-    ]
-    if not any(rule.get("reviewers") for rule in reviewer_rules):
-        found.append(Violation(name, "required-reviewer", reviewer_rules))
 
     policy = env.get("deployment_branch_policy")
     branches = sorted(

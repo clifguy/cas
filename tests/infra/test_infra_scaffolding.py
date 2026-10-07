@@ -140,7 +140,7 @@ def test_main_bicep_exports_orchestration_outputs() -> None:
 def test_infra_workflow_oidc_posture() -> None:
     """The deploy workflow uses GitHub OIDC (no stored secret), gates the PR
     run on ``infra/**`` changes, binds the dispatch-selected tenant Environment
-    as its approval gate, and reads its deploy identity from a GitHub variable.
+    as its deployment gate, and reads its deploy identity from a GitHub variable.
     """
     raw = WORKFLOW.read_text(encoding="utf-8")
     workflow = yaml.safe_load(raw)
@@ -162,14 +162,14 @@ def test_infra_workflow_oidc_posture() -> None:
 
     # The deploy is per-tenant: an operator triggers it and selects the tenant's
     # Environment by a workflow_dispatch input, and the apply job binds that
-    # selected environment as the approval gate — never a hardcoded tenant.
+    # selected environment as the deployment gate — never a hardcoded tenant.
     dispatch = _on_block(workflow).get("workflow_dispatch") or {}
     assert "environment" in (dispatch.get("inputs") or {}), (
         "workflow_dispatch must declare the tenant `environment` input"
     )
     jobs = workflow.get("jobs") or {}
     bound = [e for e in (_job_environment(job) for job in jobs.values()) if e]
-    assert bound, "a job must bind a GitHub Environment (the approval gate)"
+    assert bound, "a job must bind a GitHub Environment (the deployment gate)"
     assert any("inputs.environment" in e for e in bound), (
         "the apply job must bind the dispatch-selected tenant environment, not a literal"
     )

@@ -3,8 +3,9 @@
 Every workflow that signs in to Azure binds a GitHub deployment environment, and
 the environment is what the deploy identity's federated credential trusts. Its
 protection rules are therefore the gate between a pushed branch and a token the
-cloud accepts: a required reviewer, a deployment-branch policy admitting only
-``main``, and no administrator bypass. Those rules live in repository settings,
+cloud accepts: a deployment-branch policy admitting only ``main``, and no
+administrator bypass of any rule added later. A required reviewer is
+optional: it is neither required nor refused. Those rules live in repository settings,
 which carry no commit, so only a scheduled read of the live settings can notice
 one being removed. ``scripts/check_environment_drift.py`` is that read, run from
 the ruleset-drift workflow.
@@ -72,15 +73,7 @@ def _compliant(name: str = "tenant-prod") -> dict[str, Any]:
             "protected_branches": False,
             "custom_branch_policies": True,
         },
-        "protection_rules": [
-            {
-                "id": 10,
-                "type": "required_reviewers",
-                "prevent_self_review": False,
-                "reviewers": [{"type": "User", "reviewer": {"login": "owner", "id": 7}}],
-            },
-            {"id": 11, "type": "branch_policy"},
-        ],
+        "protection_rules": [{"id": 11, "type": "branch_policy"}],
         "branch_policies": [{"id": 12, "name": "main", "type": "branch"}],
     }
 
@@ -99,22 +92,23 @@ def test_compliant_environment_has_no_violations() -> None:
     assert check_environment(_compliant()) == []
 
 
-def test_missing_reviewer_rule_is_a_violation() -> None:
-    """E1: no required-reviewers rule means any branch that may deploy, deploys."""
+@pytest.mark.parametrize(
+    "reviewers",
+    [None, [], [{"type": "User", "reviewer": {"login": "owner", "id": 7}}]],
+    ids=["no-reviewer-rule", "empty-reviewer-rule", "reviewer"],
+)
+def test_reviewer_rule_is_optional(reviewers: list[dict[str, Any]] | None) -> None:
+    """E1: a required reviewer is neither required nor refused. The branch
+    policy is what keeps other branches from the credential; a reviewer cannot
+    stop a caller holding the owner's credentials, who can approve through the
+    API."""
     env = _compliant()
-    env["protection_rules"] = [
-        r for r in env["protection_rules"] if r["type"] != "required_reviewers"
-    ]
+    if reviewers is not None:
+        env["protection_rules"].append(
+            {"id": 10, "type": "required_reviewers", "reviewers": reviewers}
+        )
 
-    assert _rules(check_environment(env)) == {"required-reviewer"}
-
-
-def test_reviewer_rule_with_no_reviewers_is_a_violation() -> None:
-    """E2: a rule naming nobody gates nothing, though its type is present."""
-    env = _compliant()
-    env["protection_rules"][0]["reviewers"] = []
-
-    assert _rules(check_environment(env)) == {"required-reviewer"}
+    assert check_environment(env) == []
 
 
 def test_absent_branch_policy_is_a_violation() -> None:
@@ -175,7 +169,8 @@ def test_branch_policy_without_a_type_is_a_violation() -> None:
 
 
 def test_admin_bypass_is_a_violation() -> None:
-    """E7: bypass lets an administrator's credential skip the reviewer."""
+    """E7: bypass would let an administrator's credential push a run past any
+    protection rule added later."""
     env = _compliant()
     env["can_admins_bypass"] = True
 
@@ -330,11 +325,11 @@ def test_workflow_runs_the_environment_check_with_a_token() -> None:
 
 
 def test_runbook_states_the_environment_gate() -> None:
-    """W2: the deployment runbook states the three protections the check
-    enforces and names the workflow that verifies them."""
+    """W2: the deployment runbook states the protections the check enforces,
+    the decision not to require a reviewer, and the workflow that verifies them."""
     text = DEPLOYMENT_DOC.read_text(encoding="utf-8")
 
-    for phrase in ("required reviewer", "`main`", "bypass", WORKFLOW.name):
+    for phrase in ("No required reviewer", "`main`", "bypass", WORKFLOW.name):
         assert phrase in text, f"runbook must mention {phrase!r}"
 
 
