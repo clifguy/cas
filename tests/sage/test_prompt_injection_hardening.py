@@ -180,6 +180,7 @@ _CONTENT_TOOLS = [
     "list_headings",
     "traverse",
     "chain",
+    "list_pending_metadata",
 ]
 
 
@@ -203,3 +204,21 @@ def test_content_returning_tools_carry_the_notice(tool):
 
     description = published_tool(tool).description
     assert UNTRUSTED_CONTENT_NOTICE in description[:2048]
+
+
+@pytest.mark.parametrize("run", [" ", "\n", "\t "])
+def test_neutralization_is_linear_on_whitespace_runs(run):
+    """TEST-SAGE-BH-188: neutralizing a bracket followed by a long whitespace
+    run finishes quickly.
+
+    A marker pattern that can split one whitespace run between two optional
+    spans tries every split at the bracket, quadratic in the run's length; the
+    source reaching it is the whole projection, before any truncation.
+    """
+    import time
+
+    text = "<" + run * 40000 + "x"
+
+    started = time.perf_counter()
+    neutralize_source_text(text)
+    assert time.perf_counter() - started < 0.5

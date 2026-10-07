@@ -42,23 +42,61 @@ _TRAILING_VERSION_RE = re.compile(
     r"$"
 )
 # Finder-style duplication noise at end of stem: " copy", " copy 2", " (1)".
-# Stripped from the stem before version extraction; not preserved. Matched
-# against the reversed stem and anchored at its start, so the match is found
-# in one left-to-right pass rather than by trying every position of the stem.
-_REVERSED_FINDER_NOISE_RE = re.compile(r"\s*(?:(?:(?:\d+\s+)?ypoc|\)\d+\()[_ ]+)+")
+# Stripped from the stem before version extraction; not preserved. Each group
+# is one or more ``_``/space separators followed by ``copy``, ``copy <n>`` or
+# ``(<n>)``; groups may repeat, and trailing whitespace may follow the last.
 # Stems longer than this are returned as their own title, unparsed: no real
 # filename approaches it, and every pattern below then runs on bounded input.
 _MAX_PARSED_STEM_LENGTH = 1024
 
 
+def _noise_group_start(stem: str, end: int) -> int | None:
+    """Start of a duplication-noise group ending at ``end``, or ``None``.
+
+    Read right to left in one pass: the ``copy``, ``copy <n>`` or ``(<n>)``
+    token, then every separator before it, which must number at least one.
+    """
+    i = end
+    if i > 0 and stem[i - 1] == ")":
+        j = i - 1
+        while j > 0 and stem[j - 1].isdecimal():
+            j -= 1
+        if j == i - 1 or j == 0 or stem[j - 1] != "(":
+            return None
+        token = j - 1
+    else:
+        j = i
+        while j > 0 and stem[j - 1].isdecimal():
+            j -= 1
+        if j < i:
+            k = j
+            while k > 0 and stem[k - 1].isspace():
+                k -= 1
+            if k == j:
+                return None
+            j = k
+        if not stem.startswith("copy", j - 4) or j < 4:
+            return None
+        token = j - 4
+    start = token
+    while start > 0 and stem[start - 1] in "_ ":
+        start -= 1
+    return start if start < token else None
+
+
 def _strip_finder_noise(stem: str) -> str:
     """``stem`` without its trailing Finder duplication noise, if any.
 
-    Noise is one or more groups of separators followed by ``copy``, ``copy
-    <n>`` or ``(<n>)``, then optional trailing whitespace.
+    Linear in the stem's length: trailing whitespace is skipped once, then
+    noise groups are peeled from the right until one does not match.
     """
-    match = _REVERSED_FINDER_NOISE_RE.match(stem[::-1])
-    return stem[: len(stem) - match.end()] if match else stem
+    end = len(stem)
+    while end > 0 and stem[end - 1].isspace():
+        end -= 1
+    cut = None
+    while (start := _noise_group_start(stem, end)) is not None:
+        cut = end = start
+    return stem[:cut] if cut is not None else stem
 
 
 # Post-split date: a segment that is exactly YYYY-MM-DD. Catches dates

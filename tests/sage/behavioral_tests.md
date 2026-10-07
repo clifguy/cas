@@ -4066,3 +4066,20 @@ would pass whatever the default was.
 
 **Expected:** The pre-existing root and its file remain; the created brain root is removed.
 
+### TEST-SAGE-BH-188: Neutralization is linear on whitespace runs
+
+**Artifact:** `neutralize_source_text`
+**Category:** abstraction frame
+**Precondition:** A bracket followed by 40,000 spaces, newlines, or tab-space pairs.
+
+**Expected:** Completes in under 0.5 s.
+
+
+### TEST-SAGE-BH-189: Projection reads the store, not local disk, without a local tree
+
+**Artifact:** `IngestionService._project_source`
+**Category:** source containment
+**Precondition:** A store-resident source and a different file at the same path on local disk.
+
+**Expected:** Document-store binding projects the store copy; filesystem binding projects its tree.
+

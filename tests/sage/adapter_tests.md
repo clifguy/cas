@@ -3558,9 +3558,9 @@ lines.
 
 **Artifact:** `FilenameParser.parse`
 **Category:** resource bound
-**Precondition:** A stem past the parse bound carrying a date and a version, and a short one carrying both.
+**Precondition:** Stems of 1,025 and 1,024 characters carrying a date and a version, and a short one.
 
-**Expected:** The long stem comes back as its own title with nothing extracted, quickly; the short one is parsed.
+**Expected:** The 1,025-character stem comes back as its own title with nothing extracted, quickly; the 1,024-character and short stems are parsed.
 
 ### TEST-SAGE-AD-232: Projection runs on a worker thread
 
@@ -3593,3 +3593,12 @@ lines.
 **Precondition:** The module's syntax tree.
 
 **Expected:** No `await <x>.project(...)`; at least four `_run_projection` calls.
+
+### TEST-SAGE-AD-236: A package over the member limit is refused
+
+**Artifact:** `check_zip_package via the docx, pptx and xlsx adapters`
+**Category:** resource bound
+**Precondition:** The member limit lowered to five past an ordinary package's count and ten tiny members added.
+
+**Expected:** `SourceReadError` from `project` for each kind.
+

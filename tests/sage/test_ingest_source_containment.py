@@ -177,3 +177,37 @@ async def test_store_without_a_local_tree_ignores_local_disk(vault):
         assert result.get("error") == "source_file_not_found", result
     else:
         assert "error" not in result, result
+
+
+async def test_projection_reads_the_store_not_local_disk_without_a_local_tree(vault):
+    """TEST-SAGE-BH-189: under the document-store binding a store-resident
+    source is projected from the store even when a different file sits at
+    the same path on local disk; the filesystem binding projects its tree.
+
+    The two copies differ, so the projected text names which one was read.
+    """
+    from sage.mcp_server import get_document, read_projection
+    from tests.helpers.pipeline_wait import await_tool_idle
+
+    services, config, handle = vault
+    local = Path(config.vault.storage_root) / "docs" / "both.md"
+    local.parent.mkdir(parents=True, exist_ok=True)
+    local.write_text("# Both\n\nFrom local disk.\n")
+    if handle.backend == "document_store":
+        handle.write_retained_bytes(
+            config.vault.storage_root, "docs/both.md", b"# Both\n\nFrom the store.\n"
+        )
+
+    result = _parse(await ingest_document(_VAULT_ID, "docs/both.md", "markdown"))
+    assert "error" not in result, result
+
+    async def fetch():
+        return _parse(await get_document(_VAULT_ID, result["id"]))
+
+    await await_tool_idle(fetch, result["id"], service=services.ingestion_service)
+    text = _parse(await read_projection(_VAULT_ID, result["id"]))["projection_text"]
+
+    if handle.backend == "document_store":
+        assert "From the store." in text and "From local disk." not in text
+    else:
+        assert "From local disk." in text

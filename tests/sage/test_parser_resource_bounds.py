@@ -20,7 +20,7 @@ import zipfile
 from pathlib import Path
 
 import pytest
-from hypothesis import given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 
 from sage.services import filename_parser
@@ -220,6 +220,26 @@ async def test_package_over_the_total_uncompressed_limit_is_refused(tmp_path, ki
 
 
 @pytest.mark.parametrize("kind", list(_PACKAGES))
+async def test_package_over_the_member_limit_is_refused(tmp_path, kind, monkeypatch):
+    """TEST-SAGE-AD-236: a package with more members than the member limit
+    is refused, with the limit lowered so the fixture stays small.
+
+    The added members are tiny and compress normally, so neither the total nor
+    the ratio limit can be what refuses it.
+    """
+    build, adapter = _PACKAGES[kind]
+    path = build(tmp_path)
+    with zipfile.ZipFile(path) as archive:
+        present = len(archive.infolist())
+    monkeypatch.setattr(adapter_base, "_MAX_PACKAGE_MEMBERS", present + 5)
+    for i in range(10):
+        _add_member(path, f"customXml/item{i}.xml", b"<x/>")
+
+    with pytest.raises(SourceReadError):
+        await adapter().project(path)
+
+
+@pytest.mark.parametrize("kind", list(_PACKAGES))
 def test_ordinary_packages_pass_the_check(tmp_path, kind):
     """TEST-SAGE-AD-226 (control): an ordinary package passes, so the limits
     do not refuse what the adapters were built for.
@@ -290,10 +310,17 @@ _ORIGINAL_NOISE_RE = re.compile(r"(?:[_ ]+(?:copy(?:\s+\d+)?|\(\d+\)))+\s*$")
 @settings(max_examples=300, deadline=None)
 @given(
     st.lists(
-        st.sampled_from(["a", "_", " ", "copy", " copy", "_copy 2", " (3)", "(1)", "2", "\t", "x"]),
+        st.sampled_from(
+            ["a", "_", " ", "copy", " copy", "_copy 2", " (3)", "(1)", "()", "(", ")"]
+            + ["2", "\u0663", "\t", "\u2003", "copy\n7", "x"]
+        ),
         max_size=12,
     ).map("".join)
 )
+@example("a ()")
+@example("a copy2")
+@example("a_copy ()")
+@example("a copy\u20037 (2)  ")
 def test_finder_noise_strip_matches_the_pattern_it_replaces(stem):
     """TEST-SAGE-AD-230: the linear strip removes exactly what the trailing
     noise pattern matched, on stems built from the pattern's own pieces.
@@ -304,17 +331,22 @@ def test_finder_noise_strip_matches_the_pattern_it_replaces(stem):
 
 
 def test_overlong_filename_is_not_parsed():
-    """TEST-SAGE-AD-231: a stem longer than the parse bound comes back as its
-    own title with nothing extracted, and quickly; one at the bound is parsed.
+    """TEST-SAGE-AD-231: a stem of 1,025 characters comes back as its own
+    title with nothing extracted, and quickly; one of 1,024 is parsed.
     """
     parser = FilenameParser({"filename_extraction": {"separator": "_"}})
-    bound = filename_parser._MAX_PARSED_STEM_LENGTH
-    long_stem = "2026-01-01_" + "a" * bound + "_v2"
+    # A literal length rather than one read from the bound, so raising the
+    # bound turns this red: 1,025 characters, one past it.
+    long_stem = "2026-01-01_" + "a" * 1011 + "_v2"
+    assert len(long_stem) == 1025
 
     started = time.perf_counter()
     parsed = parser.parse(long_stem)
     assert time.perf_counter() - started < 0.5
     assert parsed.title == long_stem and parsed.date is None and parsed.version is None
+
+    at_bound = parser.parse("2026-01-01_" + "a" * 1010 + "_v2")
+    assert at_bound.date == "2026-01-01"
 
     short = parser.parse("2026-01-01_Title_v2")
     assert short.date == "2026-01-01" and short.version is not None

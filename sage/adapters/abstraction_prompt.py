@@ -30,7 +30,7 @@ SOURCE_CLOSE = "</source_document>"
 #: any case or spacing, a chat model's control sequences (``<|...|>``), and the
 #: reasoning, tool and speech tags a chat vocabulary maps to single tokens.
 _FRAME_BREAKING = re.compile(
-    r"<(?=\s*/?\s*source_document\s*>"
+    r"<(?=\s*(?:/\s*)?source_document\s*>"
     r"|\|[^|<>\s]{1,64}\|>"
     r"|/?(?:think|tool_call|tool_response)>"
     r"|tts_[a-z_]{1,32}>)",
