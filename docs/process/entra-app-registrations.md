@@ -67,8 +67,9 @@ You will also choose placeholders that downstream work fixes concretely:
 - `<BFF_HOSTNAME>` — the cloud hostname the BFF is reachable at. It is fixed when
   the container ingress and the custom domain are provisioned; until then use the
   default ingress FQDN.
-- `<AUTH_CALLBACK_PATH>` — the BFF's OIDC redirect path (for example
-  `/auth/callback`); it is fixed by the BFF login implementation.
+- `<AUTH_CALLBACK_PATH>` — the BFF's OIDC redirect path, `app/auth/callback`.
+  It is fixed by the BFF login implementation (`CALLBACK_PATH` in
+  `app/backend/auth/config.py`), and the codified script defaults to it.
 - `<MCP_CLIENT_REDIRECT_URI>` — the public MCP client's registered redirect
   URI(s) (a loopback or custom-scheme callback, not a CAS-controlled hostname);
   resolved against the chosen default MCP client's current documentation, not
@@ -456,7 +457,7 @@ if [ -z "$BFF_APP_ID" ]; then
     --web-redirect-uris "$BFF_CALLBACK_URI" \
     --query appId -o tsv)"
 else
-  LIVE="$(az ad app show --id "$BFF_APP_ID" --query web.redirectUris -o tsv)"
+  LIVE="$(az ad app show --id "$BFF_APP_ID" --query web.redirectUris -o tsv)" || exit 1
   BFF_REDIRECTS=()
   while IFS= read -r uri; do BFF_REDIRECTS+=("$uri"); done \
     <<<"$(printf '%s\n' "$LIVE" "$BFF_CALLBACK_URI" | awk 'NF && !seen[$0]++')"
@@ -538,7 +539,8 @@ if [ -z "$MCP_CLIENT_APP_ID" ]; then
     --public-client-redirect-uris "${MCP_REQUIRED_REDIRECTS[@]}" \
     --query appId -o tsv)"
 else
-  LIVE="$(az ad app show --id "$MCP_CLIENT_APP_ID" --query publicClient.redirectUris -o tsv)"
+  LIVE="$(az ad app show --id "$MCP_CLIENT_APP_ID" --query publicClient.redirectUris -o tsv)" \
+    || exit 1
   MCP_REDIRECTS=()
   while IFS= read -r uri; do MCP_REDIRECTS+=("$uri"); done \
     <<<"$(printf '%s\n' "$LIVE" "${MCP_REQUIRED_REDIRECTS[@]}" | awk 'NF && !seen[$0]++')"
@@ -647,7 +649,15 @@ since, including loopbacks that desktop MCP clients rely on. So, on an existing
 registration, the script reads the live set first and writes back the union: the
 URIs already registered, in their current order, then each required URI that is
 missing. A re-run adds and never removes. If the live set cannot be read, the run
-stops rather than writing the required URIs alone.
+stops rather than writing the required URIs alone. The script reads the whole
+platform object and requires a `redirectUris` list in it, which Graph reports
+even when it is empty. A query path that matches nothing exits 0 with no
+output, so reading the list directly could not tell a mistyped or renamed field
+from an empty platform.
+
+The §3 and §4 command blocks are fragments of the codified script and show the
+read in its simpler list form. Their `|| exit 1` ends the run on a failed read,
+as the script does. Run them as a script, not pasted into an interactive shell.
 
 One consequence is that a superseded URI stays registered. After `BFF_HOSTNAME`
 moves from the default ingress FQDN to the custom domain, for example, the old
@@ -657,7 +667,8 @@ callback stays on `cas-bff` until it is removed.
 
 Removal is an explicit operator step, never a side effect of a re-run. Read the
 current set, drop the URI, write back the full remaining set with the same flag,
-and read it back:
+and read it back. The guards make it safe to paste into an interactive shell:
+nothing is written unless the read succeeded and at least one URI remains.
 
 ```bash
 APP_ID="<application id>"                     # $BFF_APP_ID or $MCP_CLIENT_APP_ID
@@ -665,12 +676,20 @@ FIELD="web.redirectUris"                      # publicClient.redirectUris for th
 FLAG="--web-redirect-uris"                    # --public-client-redirect-uris for the MCP client
 REMOVE="https://<old BFF hostname>/<AUTH_CALLBACK_PATH>"
 
-KEEP=()
-while IFS= read -r uri; do
-  [ -n "$uri" ] && [ "$uri" != "$REMOVE" ] && KEEP+=("$uri")
-done <<<"$(az ad app show --id "$APP_ID" --query "$FIELD" -o tsv)"
-az ad app update --id "$APP_ID" "$FLAG" "${KEEP[@]}"
-az ad app show --id "$APP_ID" --query "$FIELD" -o tsv
+if CURRENT="$(az ad app show --id "$APP_ID" --query "$FIELD" -o tsv)" && [ -n "$CURRENT" ]; then
+  KEEP=()
+  while IFS= read -r uri; do
+    if [ -n "$uri" ] && [ "$uri" != "$REMOVE" ]; then KEEP+=("$uri"); fi
+  done <<<"$CURRENT"
+  if [ "${#KEEP[@]}" -gt 0 ]; then
+    az ad app update --id "$APP_ID" "$FLAG" "${KEEP[@]}"
+    az ad app show --id "$APP_ID" --query "$FIELD" -o tsv
+  else
+    echo "Removing it would leave the platform empty; nothing was changed." >&2
+  fi
+else
+  echo "Could not read $FIELD (failed, or the field is absent); nothing was changed." >&2
+fi
 ```
 
 Do not remove a URI the bootstrap requires: the next re-run adds it back. Do not

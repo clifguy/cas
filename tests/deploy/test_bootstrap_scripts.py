@@ -341,7 +341,7 @@ def test_entra_script_registers_mcp_loopback_redirect() -> None:
         "an existing MCP client registration must receive the merged set"
     )
     assert re.search(
-        r'merged_redirect_uris "\$\{MCP_CLIENT_APP_ID\}" publicClient\.redirectUris'
+        r'merged_redirect_uris "\$\{MCP_CLIENT_APP_ID\}" publicClient'
         r'\s*\\?\s*"\$\{MCP_REQUIRED_REDIRECTS\[@\]\}"',
         text,
     ), "the merged set must union the live public-client set with the required set"
@@ -943,18 +943,31 @@ def test_entra_bootstrap_sage_access_is_admin_consent_only(tmp_path: Path) -> No
 
 
 _LOOPBACK: Final[str] = "http://localhost/callback"
-_BFF_CALLBACK: Final[str] = "https://bff.example.test/auth/callback"
+_BFF_CALLBACK: Final[str] = "https://bff.example.test/app/auth/callback"
 
 
 def _redirects(state: dict, name: str, platform: str) -> list[str]:
     return _app(state, name)[platform]["redirectUris"]
 
 
-def _directory_writes(calls: list[list[str]]) -> list[list[str]]:
-    """The calls that change the directory: app writes and every ``az rest`` call."""
-    return [c for c in calls if c[:3] in (["ad", "app", "create"], ["ad", "app", "update"])] + [
-        c for c in calls if c[:1] == ["rest"]
-    ]
+def test_entra_script_default_callback_path_matches_the_bff() -> None:
+    """The bootstrap's default ``AUTH_CALLBACK_PATH`` is the path the BFF serves.
+
+    The BFF's OIDC callback route is ``CALLBACK_PATH`` in its auth config. A
+    default that differs registers a callback the BFF never answers, and since
+    a re-run keeps every live redirect URI, a wrong one would accumulate
+    beside the right one rather than replace it.
+    """
+    from app.backend.auth.config import CALLBACK_PATH
+
+    match = re.search(
+        r'^AUTH_CALLBACK_PATH="\$\{AUTH_CALLBACK_PATH:-([^}]*)\}"$', _text(ENTRA), re.M
+    )
+    assert match, "entra script must default AUTH_CALLBACK_PATH"
+    assert "/" + match.group(1) == CALLBACK_PATH, (
+        f"the default {match.group(1)!r} must be the BFF's CALLBACK_PATH {CALLBACK_PATH!r} "
+        "without its leading slash"
+    )
 
 
 def test_entra_bootstrap_first_run_registers_exact_redirect_set(tmp_path: Path) -> None:
@@ -986,7 +999,7 @@ def test_entra_bootstrap_rerun_keeps_existing_redirect_uris(tmp_path: Path) -> N
         "http://127.0.0.1:53682/callback/first",
         "http://127.0.0.1:61017/callback/second",
     ]
-    extra_bff = "https://bff-old.example.test/auth/callback"
+    extra_bff = "https://bff-old.example.test/app/auth/callback"
     _app(built, _MCP_APP)["publicClient"]["redirectUris"] += extra_mcp
     _app(built, _BFF_APP)["web"]["redirectUris"].append(extra_bff)
     result, _, rerun = _run_entra(tmp_path, built)
@@ -1037,11 +1050,11 @@ def test_entra_bootstrap_splits_comma_separated_mcp_redirects(tmp_path: Path) ->
 
 
 def test_entra_bootstrap_rejects_empty_mcp_redirect_entry(tmp_path: Path) -> None:
-    """An empty entry in ``MCP_CLIENT_REDIRECT_URI`` stops the run before any write.
+    """An empty entry in ``MCP_CLIENT_REDIRECT_URI`` stops the run before any az call.
 
     A doubled or trailing comma is a typo, not a request to register an empty
     URI, and a multi-line value would otherwise be cut at its first newline;
-    the run refuses both before touching the directory.
+    the run refuses both before it calls the directory at all.
     """
     for value in (
         "http://127.0.0.1/callback,,https://claude.ai/api/mcp/auth_callback",
@@ -1053,7 +1066,7 @@ def test_entra_bootstrap_rejects_empty_mcp_redirect_entry(tmp_path: Path) -> Non
         )
         assert result.returncode != 0, f"{value!r} must be refused"
         assert "MCP_CLIENT_REDIRECT_URI" in result.stderr, result.stderr
-        assert _directory_writes(calls) == [], f"{value!r}: no directory write may happen"
+        assert calls == [], f"{value!r}: no az call may happen"
         assert final["apps"] == []
 
 
@@ -1069,7 +1082,7 @@ def test_entra_bootstrap_stops_when_redirect_read_fails(tmp_path: Path) -> None:
     _app(built, _MCP_APP)["publicClient"]["redirectUris"].append(extra)
     built["faults"] = [
         {
-            "contains": ["ad", "app", "show", "publicClient.redirectUris"],
+            "contains": ["ad", "app", "show", "--query publicClient"],
             "message": "Service unavailable.",
             "code": 1,
         }
@@ -1077,11 +1090,45 @@ def test_entra_bootstrap_stops_when_redirect_read_fails(tmp_path: Path) -> None:
     result, calls, final = _run_entra(tmp_path, built)
     assert result.returncode != 0, "a failed redirect read must fail the run"
     assert extra in _redirects(final, _MCP_APP, "publicClient")
-    assert not [
+    assert not _public_client_writes(calls), (
+        "the public-client set must not be written after its read failed"
+    )
+
+
+def _public_client_writes(calls: list[list[str]]) -> list[list[str]]:
+    return [
         c
         for c in calls
         if c[:3] == ["ad", "app", "update"] and "--public-client-redirect-uris" in c
-    ], "the public-client set must not be written after its read failed"
+    ]
+
+
+@pytest.mark.parametrize(
+    "platform",
+    [None, {}, {"redirectUris": None}, {"redirectUris": "http://127.0.0.1/callback"}],
+    ids=["absent", "no-redirect-uris", "null-list", "not-a-list"],
+)
+def test_entra_bootstrap_refuses_an_unreadable_redirect_platform(
+    tmp_path: Path, platform: dict | None
+) -> None:
+    """A read that yields no redirect-URI list stops the run; it never reads as empty.
+
+    The read itself succeeds here, so only the shape of what it returns can
+    tell an empty platform from a field the query did not find. A query path
+    that matches nothing exits 0 with no output, and writing the required set
+    back over it would delete every live URI.
+    """
+    first, _, built = _run_entra(tmp_path, _seed_directory())
+    assert first.returncode == 0, first.stderr
+    app = _app(built, _MCP_APP)
+    if platform is None:
+        del app["publicClient"]
+    else:
+        app["publicClient"] = platform
+    result, calls, _ = _run_entra(tmp_path, built)
+    assert result.returncode != 0, "an unreadable redirect platform must fail the run"
+    assert "refusing to overwrite" in result.stderr, result.stderr
+    assert not _public_client_writes(calls), "the public-client set must not be written"
 
 
 def test_kv_secrets_script_reads_secrets_from_env_not_args() -> None:

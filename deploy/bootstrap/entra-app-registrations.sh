@@ -109,13 +109,33 @@ unique_lines() {
 # never removes a URI registered since -- a desktop MCP client's per-port
 # loopback, say. Removing one is a deliberate operator step, described in
 # docs/process/entra-app-registrations.md. Takes the application id, the
-# platform's redirect-URI path in the application object
-# (publicClient.redirectUris or web.redirectUris), and the required URIs.
+# platform object in the application (publicClient or web), and the required
+# URIs.
+#
+# The platform object is read whole and must carry a redirectUris list, which
+# Graph reports even when it is empty. A query path that matches nothing prints
+# nothing and still exits 0, so reading the list alone could not tell a
+# mistyped or renamed field from an empty platform, and the union written back
+# would delete every live URI. Anything but a list of strings stops the run.
 merged_redirect_uris() {
-  local app_id="$1" path="$2" live uri
+  local app_id="$1" platform="$2" live uri
   local -a current=()
   shift 2
-  live="$(az ad app show --id "${app_id}" --query "${path}" -o tsv)" || exit 1
+  live="$(az ad app show --id "${app_id}" --query "${platform}" -o json)" || exit 1
+  live="$(printf '%s' "${live}" | python3 -c '
+import json, sys
+try:
+    uris = json.load(sys.stdin)["redirectUris"]
+except (ValueError, TypeError, KeyError):
+    sys.exit(1)
+if not isinstance(uris, list) or not all(isinstance(u, str) for u in uris):
+    sys.exit(1)
+print("\n".join(uris))
+')" || {
+    echo "ERROR: could not read the ${platform} redirect URIs of application" \
+      "${app_id}; refusing to overwrite them." >&2
+    exit 1
+  }
   while IFS= read -r uri; do
     current+=("${uri}")
   done <<<"${live}"
@@ -124,9 +144,11 @@ merged_redirect_uris() {
 
 # The BFF cloud hostname and OIDC callback path the redirect URI is built from.
 # BFF_HOSTNAME is the default ingress FQDN until the custom domain is bound;
-# AUTH_CALLBACK_PATH is fixed by the BFF login implementation.
+# AUTH_CALLBACK_PATH is fixed by the BFF login implementation (CALLBACK_PATH in
+# app/backend/auth/config.py, without its leading slash), so the default is that
+# path; override it only for a BFF built with a different one.
 : "${BFF_HOSTNAME:?set BFF_HOSTNAME to the BFF cloud hostname (e.g. the default ingress FQDN)}"
-AUTH_CALLBACK_PATH="${AUTH_CALLBACK_PATH:-auth/callback}"
+AUTH_CALLBACK_PATH="${AUTH_CALLBACK_PATH:-app/auth/callback}"
 
 # The public MCP client's registered redirect URI(s) -- resolved against the
 # chosen default MCP client's current documentation (a loopback or custom-scheme
@@ -366,7 +388,7 @@ if [ -z "${BFF_APP_ID}" ]; then
     --web-redirect-uris "${BFF_CALLBACK_URI}" \
     --query appId -o tsv)"
 else
-  BFF_MERGED="$(merged_redirect_uris "${BFF_APP_ID}" web.redirectUris "${BFF_CALLBACK_URI}")"
+  BFF_MERGED="$(merged_redirect_uris "${BFF_APP_ID}" web "${BFF_CALLBACK_URI}")"
   BFF_REDIRECTS=()
   while IFS= read -r uri; do
     BFF_REDIRECTS+=("${uri}")
@@ -404,7 +426,7 @@ if [ -z "${MCP_CLIENT_APP_ID}" ]; then
     --public-client-redirect-uris "${MCP_REQUIRED_REDIRECTS[@]}" \
     --query appId -o tsv)"
 else
-  MCP_MERGED="$(merged_redirect_uris "${MCP_CLIENT_APP_ID}" publicClient.redirectUris \
+  MCP_MERGED="$(merged_redirect_uris "${MCP_CLIENT_APP_ID}" publicClient \
     "${MCP_REQUIRED_REDIRECTS[@]}")"
   MCP_REDIRECTS=()
   while IFS= read -r uri; do
