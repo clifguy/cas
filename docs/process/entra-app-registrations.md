@@ -14,8 +14,12 @@ that model:
   through the DCR-compatibility facade at the SAGE edge (CAS-ADR-042), since
   Entra offers no real Dynamic Client Registration (RFC 7591).
 
-Both interactive clients — the BFF and the public MCP client — gate sign-in on
-membership in a single provisioning group (CAS-ADR-044).
+Access is gated on membership in a single provisioning group (CAS-ADR-044), at
+the **SAGE resource** itself and at both interactive clients — the BFF and the
+public MCP client. The resource gate is what makes it hold for every client:
+Entra issues a token for the SAGE audience only to a principal assigned to the
+SAGE application, whichever client asks — the BFF, the MCP client, Azure CLI,
+or any other app.
 
 This runbook is the procedure that creates those registrations and the sign-in
 gate. The concrete auth binding for the `cloud` profile is enumerated in the
@@ -80,9 +84,18 @@ custom-domain identity, and the two MCP-mount forms of that identity — and
 create its service principal. The lookup-then-create guard makes the step
 idempotent.
 
+Every lookup in this procedure selects a directory object by **exact** display
+name with an OData filter and expects at most one match. `--display-name`
+matches by *prefix*, so it could pick up a look-alike such as
+`sage-resource-server-old`; and if two objects carry the exact name, the
+codified script stops rather than guess between them. Resolve the duplicate in
+the directory before re-running. The script also stops on any failed `az` call
+instead of continuing past it, so a failed lookup can never read as "absent"
+and create a duplicate.
+
 ```bash
-SAGE_APP_ID="$(az ad app list --display-name sage-resource-server \
-  --query '[0].appId' -o tsv)"
+SAGE_APP_ID="$(az ad app list --filter "displayName eq 'sage-resource-server'" \
+  --query '[].appId' -o tsv)"
 if [ -z "$SAGE_APP_ID" ]; then
   SAGE_APP_ID="$(az ad app create --display-name sage-resource-server \
     --sign-in-audience AzureADMyOrg --query appId -o tsv)"
@@ -91,7 +104,10 @@ fi
 az ad app update --id "$SAGE_APP_ID" \
   --identifier-uris "api://${SAGE_APP_ID}" "https://${SAGE_PUBLIC_HOSTNAME}" \
     "https://${SAGE_PUBLIC_HOSTNAME}/mcp" "https://${SAGE_PUBLIC_HOSTNAME}/mcp_maint"
-az ad sp create --id "$SAGE_APP_ID" 2>/dev/null || true
+SAGE_SP_ID="$(az ad sp list --filter "appId eq '${SAGE_APP_ID}'" --query '[].id' -o tsv)"
+if [ -z "$SAGE_SP_ID" ]; then
+  SAGE_SP_ID="$(az ad sp create --id "$SAGE_APP_ID" --query id -o tsv)"
+fi
 ```
 
 The identifier URIs serve different callers. `api://<SAGE_APP_ID>` is the
@@ -140,12 +156,11 @@ the edge advertises a resource the directory does not hold, and a standards
 client steered to it dead-ends at `/authorize` with `invalid_target` while
 every app-scoped probe stays green. The post-deploy preflight's
 advertised-resources registration check fails on exactly this gap. To close
-it, do **not** re-run the whole script — several of its Graph writes are
-declarative full-set replaces whose scope and role ids regenerate, orphaning
-live role assignments. Run only the `az ad app update --identifier-uris`
-invocation above, passing all four URIs: it replaces the one `identifierUris`
-collection (plain strings, no generated ids) and touches nothing else. Then
-verify by reading the collection back:
+it, run only the `az ad app update --identifier-uris` invocation above,
+passing all four URIs: it replaces the one `identifierUris` collection (plain
+strings, no generated ids) and touches nothing else. A whole-script re-run is
+safe too — it reuses the live scope and role ids — but it re-applies every other
+step as well. Then verify by reading the collection back:
 
 ```bash
 az ad app show --id "$SAGE_APP_ID" --query identifierUris -o json
@@ -174,12 +189,18 @@ one identity.
 
 Expose the delegated scope and the app role, and pin the resource's access-token
 version to **v2**. `requestedAccessTokenVersion`, `oauth2PermissionScopes`, and
-`appRoles` are set in one Graph `PATCH`; generate the ids once and keep them so
-re-runs are stable.
+`appRoles` are set in one Graph `PATCH`. That `PATCH` replaces both collections,
+so the ids are generated once and then reused. A fresh id on a re-run would
+orphan every consent grant and role assignment made against the old one, so the
+re-run reads the ids the registration already carries.
 
 ```bash
 SAGE_OBJECT_ID="$(az ad app show --id "$SAGE_APP_ID" --query id -o tsv)"
+ACCESS_SCOPE_ID="${ACCESS_SCOPE_ID:-$(az ad app show --id "$SAGE_APP_ID" \
+  --query "api.oauth2PermissionScopes[?value=='Sage.Access'].id | [0]" -o tsv)}"
 ACCESS_SCOPE_ID="${ACCESS_SCOPE_ID:-$(uuidgen)}"
+SAGE_READER_ROLE_ID="${SAGE_READER_ROLE_ID:-$(az ad app show --id "$SAGE_APP_ID" \
+  --query "appRoles[?value=='Sage.Reader'].id | [0]" -o tsv)}"
 SAGE_READER_ROLE_ID="${SAGE_READER_ROLE_ID:-$(uuidgen)}"
 
 az rest --method PATCH \
@@ -191,7 +212,7 @@ az rest --method PATCH \
       \"oauth2PermissionScopes\": [{
         \"id\": \"${ACCESS_SCOPE_ID}\",
         \"value\": \"Sage.Access\",
-        \"type\": \"User\",
+        \"type\": \"Admin\",
         \"adminConsentDisplayName\": \"Access SAGE\",
         \"adminConsentDescription\": \"Access SAGE on behalf of the signed-in user.\",
         \"isEnabled\": true
@@ -212,6 +233,19 @@ The single `Sage.Access` delegated scope (and the `Sage.Reader` app role) is the
 authorization unit for **both** the REST surface and the MCP surface — SAGE does
 not mint a separate scope per surface. Surface-specific authorization is enforced
 in SAGE's token-validation layer, not by separate registrations here.
+
+`Sage.Access` is **admin-consent-only** (`"type": "Admin"`). Every supported
+client is either admin-consented (the BFF in §3, the public MCP client in §4) or
+pre-authorized (Azure CLI, below), so none of them needs a user's own consent.
+If the scope were user-consentable, any member could grant an arbitrary app
+delegated SAGE access.
+
+`Sage.Reader` admits both member types. `User` is what lets the access group be
+assigned to it (see *Gating the SAGE resource* in §2). `Application` is what lets
+an application principal hold it and so obtain a client-credentials token, which
+is the **app-only** path (CAS-ADR-042). That path needs a per-principal
+`Sage.Reader` assignment, as the CI deploy identity has (see
+[`azure-deployment.md`](azure-deployment.md)).
 
 `requestedAccessTokenVersion: 2` pins the resource to **v2** access tokens. A
 token minted for this audience via the `/.default` scope endpoint — which the
@@ -284,30 +318,104 @@ ride on that merge behavior at all. Either way `preAuthorizedApplications` is a
 addition to this list must include this Azure CLI entry or the write will drop
 it.
 
-This grants **delegated** (signed-in user) access only: any operator with
-`Sage.Access` consent can mint a SAGE token through their own `az login`
-session without a per-app consent screen, the same shape of access the BFF's
+This grants **delegated** (signed-in user) access only. A member of the
+provisioning group can mint a SAGE token through their own `az login` session
+without a per-app consent screen. That is the same shape of access the BFF's
 on-behalf-of exchange and the public MCP client already get through their own
-registrations in §3 and §4. It changes nothing about app-only
-(client-credentials) access, which SAGE does not otherwise support.
+registrations in §3 and §4.
+
+Pre-authorization does **not** bypass the group gate. Because the SAGE resource
+requires assignment (§2), Entra refuses a non-member's request at token issuance
+(`AADSTS50105`), whichever client makes it. Pre-authorization also changes
+nothing about app-only (client-credentials) access, which is governed by the
+`Sage.Reader` role assignment described above.
 
 ## 2. SAGE access-provisioning group (CAS-ADR-044)
 
 A single directory security group gates SAGE access: membership is **binary**
 and **SAGE-wide**, enforced uniformly across every interactive surface — the
-browser client and the public MCP client alike (CAS-ADR-044). Every
-client-gating step below (§3, §4) assigns this **same** group, lookup-then-create;
-whichever step runs first on a fresh tenant creates it, the others reconcile.
+browser client and the public MCP client alike (CAS-ADR-044). Every gating step
+— the SAGE resource below, the BFF in §3 and the MCP client in §4 — assigns this
+**same** group, lookup-then-create; whichever step runs first on a fresh tenant
+creates it, the others reconcile.
 
 ```bash
 PROVISIONING_GROUP_NAME="${PROVISIONING_GROUP_NAME:-cas-sage-users}"
-PROVISIONING_GROUP_ID="$(az ad group list --display-name "$PROVISIONING_GROUP_NAME" \
-  --query '[0].id' -o tsv)"
+PROVISIONING_GROUP_ID="$(az ad group list \
+  --filter "displayName eq '${PROVISIONING_GROUP_NAME}'" --query '[].id' -o tsv)"
 if [ -z "$PROVISIONING_GROUP_ID" ]; then
   PROVISIONING_GROUP_ID="$(az ad group create --display-name "$PROVISIONING_GROUP_NAME" \
     --mail-nickname "$PROVISIONING_GROUP_NAME" --query id -o tsv)"
 fi
 ```
+
+### Gating the SAGE resource
+
+Gate the SAGE resource service principal on the group. With assignment required
+on the resource, Entra issues a token for the SAGE audience only to an assigned
+principal. That covers every route to a token: the BFF's on-behalf-of exchange,
+the public MCP client, Azure CLI, an app a member signs in through, or an
+application acting as itself. A non-member is refused at token issuance
+(`AADSTS50105`). An application principal without a `Sage.Reader` assignment is
+refused in the same way.
+
+The group is assigned to `Sage.Reader`, the role the registration declares for
+users. (The all-zero default-access role used for the two clients below is for
+applications that declare no roles.) As a result, members' delegated tokens
+carry `roles: ["Sage.Reader"]` alongside the `Sage.Access` scope. SAGE accepts
+either one, so this changes nothing about what a member can do.
+
+Every gate in this procedure has the same three steps:
+1. Look for the assignment.
+2. Assign the group if the assignment is absent.
+3. Only then require assignment.
+
+The order means the gate never engages before its allowlist exists, and the
+lookup keeps a re-run from re-posting an assignment that already exists. The
+lookup reads the group's own assignments: `az rest` returns one page, and the
+access group holds only a handful of assignments, where a resource may hold
+many.
+
+```bash
+EXISTING="$(az rest --method GET \
+  --url "https://graph.microsoft.com/v1.0/groups/${PROVISIONING_GROUP_ID}/appRoleAssignments" \
+  --query "value[?resourceId=='${SAGE_SP_ID}' && appRoleId=='${SAGE_READER_ROLE_ID}'].id" \
+  -o tsv)"
+if [ -z "$EXISTING" ]; then
+  az rest --method POST \
+    --url "https://graph.microsoft.com/v1.0/servicePrincipals/${SAGE_SP_ID}/appRoleAssignedTo" \
+    --headers 'Content-Type=application/json' \
+    --body "{
+      \"principalId\": \"${PROVISIONING_GROUP_ID}\",
+      \"resourceId\": \"${SAGE_SP_ID}\",
+      \"appRoleId\": \"${SAGE_READER_ROLE_ID}\"
+    }"
+fi
+
+az rest --method PATCH \
+  --url "https://graph.microsoft.com/v1.0/servicePrincipals/${SAGE_SP_ID}" \
+  --headers 'Content-Type=application/json' \
+  --body '{"appRoleAssignmentRequired": true}'
+```
+
+Before engaging the gate, the codified script warns on standard error when no
+application principal holds `Sage.Reader` on the resource. The warning is
+expected on a fresh tenant, where the deploy identity is granted after this
+bootstrap. On an existing tenant it means CI would lose access.
+
+The resource gate does not affect the CI deploy identity. It reaches SAGE
+app-only, through its own `Sage.Reader` assignment (see
+[`azure-deployment.md`](azure-deployment.md)), and that assignment is what lets
+it keep minting tokens.
+
+**Applying the gate to an existing tenant.** On a tenant provisioned before the
+resource gate existed, re-run the codified script as an interactive directory
+admin with the same `BFF_HOSTNAME`, `MCP_CLIENT_REDIRECT_URI` and
+`SAGE_PUBLIC_HOSTNAME` it was first run with. It reuses the live scope and role
+ids, finds the existing client assignments, adds the resource assignment,
+requires assignment on the resource, and switches `Sage.Access` to
+admin-consent-only. Before the re-run, confirm that the deploy identity holds
+its `Sage.Reader` assignment, or CI preflight can no longer obtain a token.
 
 ### Provisioning users
 
@@ -332,7 +440,7 @@ Create (or reuse) the BFF application as a confidential client, with its redirec
 URI templated to the cloud hostname.
 
 ```bash
-BFF_APP_ID="$(az ad app list --display-name cas-bff --query '[0].appId' -o tsv)"
+BFF_APP_ID="$(az ad app list --filter "displayName eq 'cas-bff'" --query '[].appId' -o tsv)"
 if [ -z "$BFF_APP_ID" ]; then
   BFF_APP_ID="$(az ad app create --display-name cas-bff \
     --sign-in-audience AzureADMyOrg \
@@ -342,8 +450,10 @@ else
   az ad app update --id "$BFF_APP_ID" \
     --web-redirect-uris "https://<BFF_HOSTNAME>/<AUTH_CALLBACK_PATH>"
 fi
-BFF_SP_ID="$(az ad sp create --id "$BFF_APP_ID" --query id -o tsv 2>/dev/null || \
-  az ad sp show --id "$BFF_APP_ID" --query id -o tsv)"
+BFF_SP_ID="$(az ad sp list --filter "appId eq '${BFF_APP_ID}'" --query '[].id' -o tsv)"
+if [ -z "$BFF_SP_ID" ]; then
+  BFF_SP_ID="$(az ad sp create --id "$BFF_APP_ID" --query id -o tsv)"
+fi
 ```
 
 Grant the BFF the delegated API permission onto the SAGE resource server, then
@@ -363,19 +473,27 @@ which means a client secret or certificate. Custody of that credential (Key Vaul
 plus a managed identity) is handled by the secrets capability of the cloud
 profile, not by this registration step — do **not** store a secret in the repo.
 
-Gate the BFF on the single provisioning group (CAS-ADR-044): assign the group to
-its default-access role, then require app-role assignment — in that order, so
-the gate never engages before its allowlist exists.
+Gate the BFF's own sign-in on the single provisioning group (CAS-ADR-044). The
+steps are the same as the SAGE resource gate in §2: look for the assignment,
+assign the group to the BFF's default-access role if it is absent, then require
+app-role assignment. The order means the gate never engages before its allowlist
+exists.
 
 ```bash
-az rest --method POST \
-  --url "https://graph.microsoft.com/v1.0/servicePrincipals/${BFF_SP_ID}/appRoleAssignedTo" \
-  --headers 'Content-Type=application/json' \
-  --body "{
-    \"principalId\": \"${PROVISIONING_GROUP_ID}\",
-    \"resourceId\": \"${BFF_SP_ID}\",
-    \"appRoleId\": \"<default-access app role id>\"
-  }"
+EXISTING="$(az rest --method GET \
+  --url "https://graph.microsoft.com/v1.0/groups/${PROVISIONING_GROUP_ID}/appRoleAssignments" \
+  --query "value[?resourceId=='${BFF_SP_ID}' && appRoleId=='<default-access app role id>'].id" \
+  -o tsv)"
+if [ -z "$EXISTING" ]; then
+  az rest --method POST \
+    --url "https://graph.microsoft.com/v1.0/servicePrincipals/${BFF_SP_ID}/appRoleAssignedTo" \
+    --headers 'Content-Type=application/json' \
+    --body "{
+      \"principalId\": \"${PROVISIONING_GROUP_ID}\",
+      \"resourceId\": \"${BFF_SP_ID}\",
+      \"appRoleId\": \"<default-access app role id>\"
+    }"
+fi
 
 az rest --method PATCH \
   --url "https://graph.microsoft.com/v1.0/servicePrincipals/${BFF_SP_ID}" \
@@ -398,7 +516,8 @@ design notes for how the discovery-and-registration leg is intercepted while
 `authorize`/`token` stay pointed at Entra's real endpoints.
 
 ```bash
-MCP_CLIENT_APP_ID="$(az ad app list --display-name cas-mcp-client --query '[0].appId' -o tsv)"
+MCP_CLIENT_APP_ID="$(az ad app list --filter "displayName eq 'cas-mcp-client'" \
+  --query '[].appId' -o tsv)"
 if [ -z "$MCP_CLIENT_APP_ID" ]; then
   MCP_CLIENT_APP_ID="$(az ad app create --display-name cas-mcp-client \
     --sign-in-audience AzureADMyOrg \
@@ -408,8 +527,11 @@ else
   az ad app update --id "$MCP_CLIENT_APP_ID" \
     --public-client-redirect-uris "<MCP_CLIENT_REDIRECT_URI>" "http://localhost/callback"
 fi
-MCP_CLIENT_SP_ID="$(az ad sp create --id "$MCP_CLIENT_APP_ID" --query id -o tsv 2>/dev/null || \
-  az ad sp show --id "$MCP_CLIENT_APP_ID" --query id -o tsv)"
+MCP_CLIENT_SP_ID="$(az ad sp list --filter "appId eq '${MCP_CLIENT_APP_ID}'" \
+  --query '[].id' -o tsv)"
+if [ -z "$MCP_CLIENT_SP_ID" ]; then
+  MCP_CLIENT_SP_ID="$(az ad sp create --id "$MCP_CLIENT_APP_ID" --query id -o tsv)"
+fi
 ```
 
 `--public-client-redirect-uris` registers the public-client redirect-uri
@@ -447,7 +569,7 @@ az ad app permission add --id "$MCP_CLIENT_APP_ID" \
   --api-permissions "${ACCESS_SCOPE_ID}=Scope"
 
 GRAPH_APP_ID="$(az ad sp list --filter "displayName eq 'Microsoft Graph'" \
-  --query '[0].appId' -o tsv)"
+  --query '[].appId' -o tsv)"
 OFFLINE_ACCESS_SCOPE_ID="$(az ad sp show --id "$GRAPH_APP_ID" \
   --query "oauth2PermissionScopes[?value=='offline_access'].id | [0]" -o tsv)"
 az ad app permission add --id "$MCP_CLIENT_APP_ID" \
@@ -463,33 +585,32 @@ az ad app permission grant --id "$MCP_CLIENT_APP_ID" \
   --scope offline_access
 ```
 
-Finally, gate the client on the single provisioning group (CAS-ADR-044): require
-app-role assignment on its service principal, then assign the group to its
-default-access app role — the same body shape applied to the browser client,
-though posted to the `appRoleAssignments` collection rather than
-`appRoleAssignedTo`. Documentation for `appRoleAssignments` describes it as the
-*principal's* own collection, which would suggest a POST here requires
-`principalId` to equal this SP — it doesn't turn out that way in practice: this
-call was verified against a live tenant, and Graph accepts the identical body
-(`principalId` = group, `resourceId` = this SP) on either collection. Don't
-switch this to `appRoleAssignedTo` on the strength of the documented contract
-alone without re-verifying live; the two collections aren't proven equivalent in
-the reverse direction.
+Finally, gate the client's own sign-in on the single provisioning group
+(CAS-ADR-044), using the same steps and the same `appRoleAssignedTo` collection
+as the BFF in §3, with the default-access role. The request shape (group as
+principal, this service principal as resource) is the one the BFF gate already
+uses on a live tenant.
 
 ```bash
+EXISTING="$(az rest --method GET \
+  --url "https://graph.microsoft.com/v1.0/groups/${PROVISIONING_GROUP_ID}/appRoleAssignments" \
+  --query "value[?resourceId=='${MCP_CLIENT_SP_ID}' && appRoleId=='<default-access app role id>'].id" \
+  -o tsv)"
+if [ -z "$EXISTING" ]; then
+  az rest --method POST \
+    --url "https://graph.microsoft.com/v1.0/servicePrincipals/${MCP_CLIENT_SP_ID}/appRoleAssignedTo" \
+    --headers 'Content-Type=application/json' \
+    --body "{
+      \"principalId\": \"${PROVISIONING_GROUP_ID}\",
+      \"resourceId\": \"${MCP_CLIENT_SP_ID}\",
+      \"appRoleId\": \"<default-access app role id>\"
+    }"
+fi
+
 az rest --method PATCH \
   --url "https://graph.microsoft.com/v1.0/servicePrincipals/${MCP_CLIENT_SP_ID}" \
   --headers 'Content-Type=application/json' \
   --body '{"appRoleAssignmentRequired": true}'
-
-az rest --method POST \
-  --url "https://graph.microsoft.com/v1.0/servicePrincipals/${MCP_CLIENT_SP_ID}/appRoleAssignments" \
-  --headers 'Content-Type=application/json' \
-  --body "{
-    \"principalId\": \"${PROVISIONING_GROUP_ID}\",
-    \"resourceId\": \"${MCP_CLIENT_SP_ID}\",
-    \"appRoleId\": \"<default-access app role id>\"
-  }"
 ```
 
 The `appRoleId` here is the well-known all-zero Microsoft Graph sentinel used to
@@ -505,7 +626,8 @@ and MCP alike — validates the **same** Entra-issued token against that one
 audience and that one issuer, so authorization is **uniform** across surfaces.
 There is a **single issuer**: a token minted for the resource server is honored
 identically on the REST and MCP surfaces, and the delegated user identity carried
-by the BFF's on-behalf-of token reaches SAGE on every path.
+by the BFF's on-behalf-of token reaches SAGE on every path. Who may obtain such a
+token is settled before any surface sees it, at the resource's group gate (§2).
 
 ## What this procedure does NOT do
 

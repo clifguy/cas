@@ -32,8 +32,8 @@ One-time setup:
 
 1. Ask Clif to provision a **service principal** for your app and **grant it the
    `Sage.Reader` app role** on the cor.org deployment. The role assignment is a
-   per-principal grant — without it a perfectly valid token still returns `403`,
-   and it is not something you can self-serve.
+   per-principal grant — without it Entra refuses the token request itself, and
+   it is not something you can self-serve.
 2. Store the principal's `client_id` and secret as environment variables (never
    in code).
 
@@ -96,9 +96,14 @@ knowing up front:
 
 - **`401`** — no token, or an expired one. You're caching too long or minting
   wrong; re-mint.
-- **`403`** — a valid token whose principal lacks the role grant. For your app's
-  service principal that means step 1 above hasn't been done; ping Clif. It is
-  never a code fix.
+- **A refused token request** (`AADSTS50105` for a person, a refusal of the
+  client-credentials request for an app) — the principal has no access to this
+  deployment: a person is not in its access group, or your app's service
+  principal lacks the `Sage.Reader` role (step 1 above). Ping Clif. It is never a
+  code fix.
+- **`403`** — a token for the SAGE audience that carries neither the
+  `Sage.Access` scope nor the `Sage.Reader` role. The supported paths above never
+  mint one, so report it rather than retrying.
 
 ## Notes
 
