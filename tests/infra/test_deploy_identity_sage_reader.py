@@ -32,8 +32,8 @@ RUNBOOK: Final[Path] = REPO_ROOT / "docs" / "process" / "azure-deployment.md"
 
 # The heading that opens the grant subsection. The assertions below are scoped to
 # the text between this heading and the next same-or-higher-level heading, so a
-# match cannot be satisfied by the runbook's pre-existing "least-privilege"
-# sentence about the Contributor / User Access Administrator pair.
+# match cannot be satisfied by the runbook's role-assignment step, which also
+# discusses what the deploy identity may reach.
 _GRANT_HEADING: Final[str] = "Grant the deploy identity read on SAGE"
 
 # A subscription / tenant / client / object id is a GUID; none may be hardcoded

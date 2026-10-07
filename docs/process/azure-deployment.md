@@ -47,7 +47,7 @@ workflow, not hand-running deploys.
 
 The PR and push-to-`main` runs are **validate-only** (`az bicep build`); the
 apply happens only on dispatch, gated behind the selected Environment's required
-reviewer.
+reviewer and its `main`-only deployment-branch policy (per-tenant setup step 4).
 
 The break-glass fallback — a manual apply from a clean checkout, not a
 hand-patched working copy — runs the same template directly, passing the same
@@ -84,6 +84,8 @@ and pick the Environment name you will deploy under:
 REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner)"   # <OWNER>/<REPO>
 ENVIRONMENT="<env>"             # the tenant's GitHub Environment name
 SUBSCRIPTION_ID="<SUBSCRIPTION_ID>"
+RESOURCE_GROUP_NAME="<resourceGroupName>"
+LOCATION="<region>"             # the tenant's `location` deployment parameter
 ```
 
 ### 1. Create the Entra application
@@ -114,46 +116,123 @@ az ad app federated-credential create --id "$APP_ID" --parameters "{
 
 The subject, shown as a placeholder, is `repo:<OWNER>/<REPO>:environment:<env>`.
 
+Create the Environment and set its protection rules (step 4) before the first
+deploy that uses this credential, and keep the two names identical. The
+credential trusts whatever environment carries that name, and nothing here or in
+the role script checks that the environment exists or is protected; the
+scheduled environment check verifies the protections of every environment that
+does exist. Order matters because GitHub creates a missing environment, with no
+protection rules, the first time a job names it; one created that way stays
+unprotected until the next scheduled check reports it.
+
+Add **no other subject** — no `ref:` (branch or tag) and no `pull_request`
+subject. Only an environment subject puts the token behind the Environment's
+protection rules (step 4); a branch subject would let a run that never binds the
+Environment sign in as the deploy identity. The role script in step 3 refuses
+to run while the application carries any other subject, and its `--show` mode
+prints the subjects for the record.
+
 ### 3. Assign the deployment roles
 
-The deploy identity creates the resource group and the resources within it —
+The deploy identity creates the resources in the tenant's resource group —
 **and** the role assignments those resources carry (the Key Vault module grants
-the SAGE and CAS BFF managed identities data-plane read on the vault, and the
-container-app module grants them `AcrPull`) **and** the relational store's
-`CanNotDelete` lock. Creating a resource needs `Contributor`; creating a role
-assignment needs `Microsoft.Authorization/roleAssignments/write` and creating the
-lock needs `Microsoft.Authorization/locks/write`, neither of which `Contributor`
-includes — its `notActions` exclude `Microsoft.Authorization/*/Write` wholesale.
-The deploy therefore needs both capabilities, or it fails with
+the SAGE and CAS BFF managed identities data-plane read on the vault, the
+container-app and bootstrap modules grant `AcrPull`, and the API Management
+module grants `Monitoring Metrics Publisher`) **and** the relational store's
+`CanNotDelete` lock. `Contributor` creates resources but excludes
+`Microsoft.Authorization/*/Write` wholesale, so the role assignments and the
+lock each need a grant of their own, or the deploy fails with
 `AuthorizationFailed` on the first module that assigns a role or declares a lock.
 
-Grant `Contributor` **and** `User Access Administrator` at the subscription
-scope — the least-privilege built-in pair that can both create the resource
-group and assign roles within it (`Owner` is the single-role alternative, but
-broader than required). Once the group exists you may narrow later deployments
-to a resource-group-scoped assignment of the same pair. The `Contributor` half
-also covers the Log Analytics workspace query actions
-(`Microsoft.OperationalInsights/workspaces/query/read` and the per-table reads)
-that the maintenance workflow's failure diagnostics use, so the diagnostics
-path needs no additional role.
+[`deploy/bootstrap/deploy-identity-roles.sh`](../../deploy/bootstrap/deploy-identity-roles.sh)
+grants exactly that, and nothing at subscription scope beyond what a
+subscription-scope deployment needs:
+
+| Role | Scope | Why |
+|---|---|---|
+| `CAS deployment orchestrator (<subscription>)` (custom: read, write, delete, validate and what-if on `Microsoft.Resources/deployments`, and their operation reads) | subscription | `main.bicep` deploys at subscription scope; every resource the deployment touches is still authorized against the grants below |
+| `Contributor` | resource group | the resources themselves, the resource-group update, and the Log Analytics query reads the maintenance diagnostics use |
+| `Role Based Access Control Administrator`, conditioned | resource group | the templates' own role assignments: the condition admits only the role definitions the templates assign, granted to service principals |
+| `CAS deployment lock operator (<subscription>)` (custom: read, write and delete on `Microsoft.Authorization/locks`) | resource group | the relational store's delete lock |
+
+The identity can therefore neither create resource groups nor change any
+resource outside its own, and cannot grant itself or anyone else a role the
+templates do not assign. One reach remains at subscription scope: on a shared
+subscription it can read, and delete the records of, other subscription-scope
+deployments. It cannot cancel one, and a deployment record is history, not a
+resource. The custom role names carry the subscription id because role names are
+unique per directory.
+
+The script also does what the identity no longer may, under your rights: it
+registers every resource provider the templates use (a subscription that has
+never used one would otherwise fail the first deploy with
+`MissingSubscriptionRegistration`) and creates the resource group when it is
+absent. A custom role that already exists is checked against the expected
+actions, and the run stops if one was widened by hand. A module that starts
+assigning a new role, or deploying a resource from a new provider, must add it
+to the script's `ASSIGNABLE_ROLES` or `RESOURCE_PROVIDERS`;
+`tests/deploy/test_deploy_identity_roles.py` fails until it does, and the
+script replaces the conditioned assignment on its next run.
 
 ```bash
-az role assignment create \
-  --assignee "$APP_ID" \
-  --role Contributor \
-  --scope "/subscriptions/${SUBSCRIPTION_ID}"
-az role assignment create \
-  --assignee "$APP_ID" \
-  --role "User Access Administrator" \
-  --scope "/subscriptions/${SUBSCRIPTION_ID}"
+APP_ID="$APP_ID" SUBSCRIPTION_ID="$SUBSCRIPTION_ID" \
+  RESOURCE_GROUP_NAME="$RESOURCE_GROUP_NAME" LOCATION="$LOCATION" \
+  deploy/bootstrap/deploy-identity-roles.sh
 ```
+
+The script is idempotent. A newly created custom role can take a minute to
+propagate; if an assignment fails on a role it has just created, re-run it.
+
+**Moving an existing tenant to this grant.** A tenant bootstrapped before this
+grant holds `Contributor` and `User Access Administrator` at subscription scope,
+or one of the alternatives earlier versions of this runbook offered: `Owner`, the
+same pair at the resource group, or `AcrPush` on the registry. Run the script,
+dispatch a deploy and let it pass the preflight with both sets in place, then
+remove everything outside the narrowed set and deploy once more to show the
+narrowed set suffices on its own:
+
+```bash
+APP_ID="$APP_ID" SUBSCRIPTION_ID="$SUBSCRIPTION_ID" \
+  RESOURCE_GROUP_NAME="$RESOURCE_GROUP_NAME" \
+  deploy/bootstrap/deploy-identity-roles.sh --remove-legacy
+```
+
+`--remove-legacy` refuses unless all four narrowed assignments are in place,
+the conditioned one with its current condition, and then removes every other
+assignment the identity holds in the subscription. An assignment inherited from a
+management group above it is reported and fails the run instead, since it has to
+be removed at its own scope. Record the result with `--show`,
+which lists the identity's federated credentials and assignments and exits
+non-zero while any assignment outside the narrowed set remains, inherited ones
+included. Every read names the subscription, so it does not matter which
+subscription your CLI session currently points at.
+
+Azure may store a condition in a normalized form. If it does, three things
+follow, all failing closed: a re-run replaces the conditioned assignment every
+time, `--remove-legacy` refuses because it cannot find the assignment with the
+expected condition, and `--show` reports that assignment as outside the
+narrowed set. Compare the stored condition with the one the script builds. The
+replacement deletes and then re-creates the assignment, so an interrupted run
+leaves the identity unable to assign roles until the next run.
 
 ### 4. Create the Environment and set its variables
 
 In the repository's **Settings → Environments**, create an environment named
-`${ENVIRONMENT}` and add yourself as a required reviewer; the `deploy` job binds
-this environment, so every apply waits for your approval, and its name must match
-the federated subject from step 2.
+`${ENVIRONMENT}`; its name must match the federated subject from step 2. Every
+job that signs in to Azure binds this environment, so its protection rules are
+the gate on the deploy identity. Set all three:
+
+- **Required reviewers:** yourself at least (self-review is acceptable), so every
+  run that binds the environment waits for an approval.
+- **Deployment branches:** *Selected branches and tags*, with the single branch
+  rule `main`. Not *Protected branches only*, which admits any branch a ruleset
+  protects.
+- **Allow administrators to bypass configured protection rules:** off.
+
+The [`ruleset-drift`](../../.github/workflows/ruleset-drift.yml) workflow checks
+these on a schedule for every environment in the repository and fails when a
+required reviewer, the `main`-only branch policy, or the bypass setting is
+missing. An environment nothing uses is either protected the same way or deleted.
 
 Then set the tenant's parameter set as **environment-scoped variables** (not
 secrets — these are non-sensitive identifiers — and not repository-wide, so each
@@ -320,16 +399,9 @@ The registry's admin user is disabled by design (see
 [`infra/modules/foundation.bicep`](../../infra/modules/foundation.bicep)), so
 the push authenticates via the OIDC deploy identity rather than a stored
 credential — `az acr login` exchanges the workload-identity token for a registry
-token. The subscription-scope `Contributor` role assigned in the bootstrap
-already grants data-plane push, so the push works as soon as the variable above
-is set. **If you later narrow that grant** — the bootstrap's §3 anticipates
-scoping it down once the resource group exists — re-grant push explicitly with
-the least-privilege `AcrPush` data role scoped to the registry:
-
-```bash
-ACR_ID="$(az acr show --name "${ACR_LOGIN_SERVER%%.*}" --query id -o tsv)"
-az role assignment create --assignee "$APP_ID" --role AcrPush --scope "$ACR_ID"
-```
+token. The resource-group `Contributor` role assigned in the bootstrap (§3)
+covers push to the registry in that group, so the push works as soon as the
+variable above is set.
 
 ## Post-deploy preflight gate
 
@@ -426,8 +498,9 @@ Adding a tenant is configuration, not a code change: there is no per-tenant file
 in the repository and no workflow edit.
 
 1. Run the [per-tenant setup](#per-tenant-setup-one-time) for the new tenant —
-   create its deploy identity and federated credential, assign the roles, and
-   create its GitHub Environment with its variable set.
+   create its deploy identity and its environment-subject federated credential,
+   run the role script (which creates the resource group), and create its
+   protected GitHub Environment with its variable set.
 2. Dispatch the `infra` workflow against the new Environment. The first run may
    leave the image push dormant (the registry does not exist yet); set
    `ACR_LOGIN_SERVER` from the deploy output and re-trigger.

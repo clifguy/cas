@@ -1,0 +1,5 @@
+# Hash-locked install for the pip-audit job in .github/workflows/security.yml.
+# Regenerate pip-audit.txt after changing this pin:
+#   uv pip compile requirements/security/pip-audit.in --generate-hashes --universal \
+#     --python-version <versions.json python> -o requirements/security/pip-audit.txt
+pip-audit==2.10.1

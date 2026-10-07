@@ -26,11 +26,13 @@ concurrency:
   cancel-in-progress: false
 permissions:
   contents: read
-  id-token: write
 jobs:
   migration:
     runs-on: ubuntu-latest
     timeout-minutes: 300
+    permissions:
+      contents: read
+      id-token: write
     environment: ${{ inputs.environment }}
     env:
       ENVIRONMENT_NAME: ${{ vars.ENVIRONMENT_NAME }}

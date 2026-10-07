@@ -265,11 +265,17 @@ def test_no_hardcoded_identity_in_workflow() -> None:
 
 
 def test_oidc_posture_preserved() -> None:
-    """The workflow requests the OIDC token and carries no stored client secret."""
+    """The deploy job requests the OIDC token and carries no stored client
+    secret. The grant sits on the job that signs in, not the workflow, so the
+    PR-reachable ``validate`` job never holds it."""
     workflow = _load()
     raw = WORKFLOW.read_text(encoding="utf-8")
-    permissions = workflow.get("permissions") or {}
-    assert permissions.get("id-token") == "write", "workflow must request id-token: write for OIDC"
+    deploy_permissions = (workflow["jobs"]["deploy"].get("permissions")) or {}
+    assert deploy_permissions.get("id-token") == "write", "deploy must request id-token: write"
+    assert "id-token" not in (workflow.get("permissions") or {}), (
+        "id-token must not be granted at workflow level"
+    )
+    assert "id-token" not in (workflow["jobs"]["validate"].get("permissions") or {})
     lowered = raw.lower()
     for forbidden in ("client-secret", "client_secret", "azure_client_secret", "creds:"):
         assert forbidden not in lowered, (

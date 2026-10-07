@@ -36,15 +36,11 @@ concurrency:
 
 # OIDC: the deploy identity is a Microsoft Entra workload identity federated to
 # this repository's GitHub OIDC token. No client secret is stored. The id-token
-# write permission lets the workflow request that token.
-#
-# It is granted at workflow level, so the credential-free `validate` job holds
-# it too. Narrowing it to the jobs that sign in changes the deploy path's OIDC
-# wiring, which only a live dispatch can verify; until that is done the
-# workflow-lint finding is accepted here.
+# write permission that lets a job request that token is granted only on the
+# jobs that sign in (`build`, through the reusable build, and `deploy`), so the
+# PR-reachable `validate` job never holds it.
 permissions:
   contents: read
-  id-token: write # zizmor: ignore[excessive-permissions]
 
 jobs:
   validate:
@@ -95,6 +91,9 @@ jobs:
     # the preflight gate — with headroom, so the bootstrap wait expiring reports
     # its own failure rather than the runner killing the job mid-poll.
     timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write
     environment: ${{ inputs.environment }}
     env:
       # The tenant's parameter set — every coordinate is an environment-scoped

@@ -86,9 +86,9 @@ concurrency:
   cancel-in-progress: false
 
 # OIDC: the tenant's federated deploy identity requests a token; no stored secret.
+# The token is requested by the job that signs in, below.
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   maintenance:
@@ -98,6 +98,9 @@ jobs:
     # Without that reserve the runner kills the job the moment the poll expires,
     # in exactly the hang the diagnostics were written for.
     timeout-minutes: 140
+    permissions:
+      contents: read
+      id-token: write
     # The environment binding is the approval gate: its required reviewer must
     # approve before the job runs, and its scoped variables carry the identity and
     # the resource-group coordinate.

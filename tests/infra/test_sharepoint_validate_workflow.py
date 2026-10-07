@@ -121,7 +121,8 @@ def test_oidc_posture() -> None:
     """
     workflow = _load()
     raw = WORKFLOW.read_text(encoding="utf-8")
-    permissions = workflow.get("permissions") or {}
+    (job,) = (workflow.get("jobs") or {}).values()
+    permissions = job.get("permissions") or {}
     assert permissions.get("id-token") == "write", "harness must request id-token: write for OIDC"
     assert permissions.get("contents") == "read", "harness needs only contents: read"
     lowered = raw.lower()

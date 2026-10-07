@@ -35,7 +35,8 @@ ENTRA: Final[Path] = BOOTSTRAP_DIR / "entra-app-registrations.sh"
 KEY_VAULT: Final[Path] = BOOTSTRAP_DIR / "load-key-vault-secrets.sh"
 VAULT_SEED: Final[Path] = BOOTSTRAP_DIR / "seed-vault-source.sh"
 DNS: Final[Path] = BOOTSTRAP_DIR / "emit-dns-records.sh"
-SCRIPTS: Final[tuple[Path, ...]] = (ENTRA, KEY_VAULT, VAULT_SEED, DNS)
+DEPLOY_IDENTITY: Final[Path] = BOOTSTRAP_DIR / "deploy-identity-roles.sh"
+SCRIPTS: Final[tuple[Path, ...]] = (ENTRA, KEY_VAULT, VAULT_SEED, DNS, DEPLOY_IDENTITY)
 
 PROCESS_DIR: Final[Path] = REPO_ROOT / "docs" / "process"
 STAGES_DOC: Final[Path] = PROCESS_DIR / "cloud-deploy-stages.md"
@@ -47,6 +48,7 @@ _RUNBOOK_TO_SCRIPT: Final[dict[str, str]] = {
     "key-vault-secrets.md": "load-key-vault-secrets.sh",
     "sharepoint-vault-source.md": "seed-vault-source.sh",
     "custom-domains-dns.md": "emit-dns-records.sh",
+    "azure-deployment.md": "deploy-identity-roles.sh",
 }
 
 _GUID_RE: Final[re.Pattern[str]] = re.compile(
