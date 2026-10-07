@@ -309,31 +309,42 @@ def test_entra_script_explicitly_grants_offline_access_consent() -> None:
 
 
 def test_entra_script_registers_mcp_loopback_redirect() -> None:
-    """The public MCP client registers the Desktop loopback redirect
-    (``http://localhost/callback``) alongside its primary env-resolved redirect
-    URI, so a re-bootstrap converges on the full canonical set and never drops the
-    loopback a browser-context Desktop client needs for its auth-code/PKCE callback
-    (CAS-ADR-042). ``--public-client-redirect-uris`` is a declarative full-set
-    replace, so both must be passed together on every invocation.
+    """The public MCP client's required redirect set is built from the
+    env-resolved ``MCP_CLIENT_REDIRECT_URI`` entries plus the desktop loopback
+    (``http://localhost/callback``) a browser-context client needs for its
+    auth-code/PKCE callback (CAS-ADR-042), and every
+    ``--public-client-redirect-uris`` invocation writes a set derived from it:
+    the required set itself on create, its union with the live set on update.
+
+    The executed bootstrap tests observe the registered URIs; this anchors the
+    codified form the runbook mirrors.
     """
     text = _text(ENTRA)
-    assert "http://localhost/callback" in text, (
-        "entra script must register the Desktop loopback redirect http://localhost/callback "
-        "on the public MCP client, so a re-bootstrap does not drop the URI added live"
+    required = re.search(
+        r"<<<\"\$\(unique_lines \"\$\{MCP_REQUIRED_INPUT\[@\]\}\" \"http://localhost/callback\"\)\"",
+        text,
     )
-    redirect_lines = [
-        line
-        for line in text.splitlines()
-        if "--public-client-redirect-uris" in line and not line.lstrip().startswith("#")
-    ]
-    assert redirect_lines, "entra script must pass --public-client-redirect-uris"
-    assert all(
-        "MCP_CLIENT_REDIRECT_URI" in line and "localhost/callback" in line
-        for line in redirect_lines
-    ), (
-        "every --public-client-redirect-uris invocation (create and update) must register "
-        "both the primary ${MCP_CLIENT_REDIRECT_URI} and the http://localhost/callback loopback"
+    assert required, (
+        "the required MCP redirect set must be the MCP_CLIENT_REDIRECT_URI entries "
+        "plus the http://localhost/callback loopback"
     )
+    assert '<<<"${MCP_CLIENT_REDIRECT_URI},"' in text, (
+        "MCP_REQUIRED_INPUT must be split from MCP_CLIENT_REDIRECT_URI"
+    )
+    invocations = _uncommented_invocations(text, "--public-client-redirect-uris")
+    assert len(invocations) == 2, "expected one create and one update invocation"
+    create, update = invocations
+    assert create.startswith('--public-client-redirect-uris "${MCP_REQUIRED_REDIRECTS[@]}"'), (
+        "a new MCP client registration must receive exactly the required set"
+    )
+    assert update.startswith('--public-client-redirect-uris "${MCP_REDIRECTS[@]}"'), (
+        "an existing MCP client registration must receive the merged set"
+    )
+    assert re.search(
+        r'merged_redirect_uris "\$\{MCP_CLIENT_APP_ID\}" publicClient'
+        r'\s*\\?\s*"\$\{MCP_REQUIRED_REDIRECTS\[@\]\}"',
+        text,
+    ), "the merged set must union the live public-client set with the required set"
 
 
 def test_entra_script_declares_all_sage_identifier_uris() -> None:
@@ -929,6 +940,195 @@ def test_entra_bootstrap_sage_access_is_admin_consent_only(tmp_path: Path) -> No
     scopes = _app(state, _SAGE_APP)["api"]["oauth2PermissionScopes"]
     access = [s for s in scopes if s["value"] == "Sage.Access"]
     assert len(access) == 1 and access[0]["type"] == "Admin", access
+
+
+_LOOPBACK: Final[str] = "http://localhost/callback"
+_BFF_CALLBACK: Final[str] = "https://bff.example.test/app/auth/callback"
+
+
+def _redirects(state: dict, name: str, platform: str) -> list[str]:
+    return _app(state, name)[platform]["redirectUris"]
+
+
+def test_entra_script_default_callback_path_matches_the_bff() -> None:
+    """The bootstrap's default ``AUTH_CALLBACK_PATH`` is the path the BFF serves.
+
+    The BFF's OIDC callback route is ``CALLBACK_PATH`` in its auth config. A
+    default that differs registers a callback the BFF never answers, and since
+    a re-run keeps every live redirect URI, a wrong one would accumulate
+    beside the right one rather than replace it.
+    """
+    from app.backend.auth.config import CALLBACK_PATH
+
+    match = re.search(
+        r'^AUTH_CALLBACK_PATH="\$\{AUTH_CALLBACK_PATH:-([^}]*)\}"$', _text(ENTRA), re.M
+    )
+    assert match, "entra script must default AUTH_CALLBACK_PATH"
+    assert "/" + match.group(1) == CALLBACK_PATH, (
+        f"the default {match.group(1)!r} must be the BFF's CALLBACK_PATH {CALLBACK_PATH!r} "
+        "without its leading slash"
+    )
+
+
+def test_entra_bootstrap_first_run_registers_exact_redirect_set(tmp_path: Path) -> None:
+    """On an empty tenant each client receives exactly the redirect URIs it requires.
+
+    The public MCP client gets its configured redirect and the
+    ``http://localhost/callback`` loopback; the BFF gets its single OIDC
+    callback. Nothing else is registered on either platform.
+    """
+    result, _, state = _run_entra(tmp_path, _seed_directory())
+    assert result.returncode == 0, result.stderr
+    assert _redirects(state, _MCP_APP, "publicClient") == ["http://127.0.0.1/callback", _LOOPBACK]
+    assert _redirects(state, _MCP_APP, "web") == [], "the MCP client must stay a public client"
+    assert _redirects(state, _BFF_APP, "web") == [_BFF_CALLBACK]
+    assert _redirects(state, _BFF_APP, "publicClient") == []
+
+
+def test_entra_bootstrap_rerun_keeps_existing_redirect_uris(tmp_path: Path) -> None:
+    """A re-run adds the required redirect URIs and removes none.
+
+    The redirect-URI flags replace their whole collection, so a re-run that
+    wrote only the required set would delete every URI a client registered
+    later -- such as the per-port loopbacks a desktop MCP client adds. The
+    re-run must keep those, keep the required URIs, and list none twice.
+    """
+    first, _, built = _run_entra(tmp_path, _seed_directory())
+    assert first.returncode == 0, first.stderr
+    extra_mcp = [
+        "http://127.0.0.1:53682/callback/first",
+        "http://127.0.0.1:61017/callback/second",
+    ]
+    extra_bff = "https://bff-old.example.test/app/auth/callback"
+    _app(built, _MCP_APP)["publicClient"]["redirectUris"] += extra_mcp
+    _app(built, _BFF_APP)["web"]["redirectUris"].append(extra_bff)
+    result, _, rerun = _run_entra(tmp_path, built)
+    assert result.returncode == 0, result.stderr
+    mcp = _redirects(rerun, _MCP_APP, "publicClient")
+    assert mcp == ["http://127.0.0.1/callback", _LOOPBACK, *extra_mcp], mcp
+    bff = _redirects(rerun, _BFF_APP, "web")
+    assert bff == [_BFF_CALLBACK, extra_bff], bff
+
+
+def test_entra_bootstrap_rerun_restores_a_missing_required_redirect(tmp_path: Path) -> None:
+    """A re-run adds back a required redirect URI that is missing, beside the extras."""
+    first, _, built = _run_entra(tmp_path, _seed_directory())
+    assert first.returncode == 0, first.stderr
+    extra = "http://127.0.0.1:53682/callback/first"
+    _app(built, _MCP_APP)["publicClient"]["redirectUris"] = [extra]
+    result, _, rerun = _run_entra(tmp_path, built)
+    assert result.returncode == 0, result.stderr
+    assert _redirects(rerun, _MCP_APP, "publicClient") == [
+        extra,
+        "http://127.0.0.1/callback",
+        _LOOPBACK,
+    ]
+
+
+def test_entra_bootstrap_splits_comma_separated_mcp_redirects(tmp_path: Path) -> None:
+    """A comma-separated ``MCP_CLIENT_REDIRECT_URI`` registers one entry per URI.
+
+    Whitespace around each entry is trimmed, and a URI repeated in the list,
+    or equal to the loopback the script adds itself, is registered once.
+    """
+    result, _, state = _run_entra(
+        tmp_path,
+        _seed_directory(),
+        {
+            "MCP_CLIENT_REDIRECT_URI": (
+                "https://claude.ai/api/mcp/auth_callback, http://127.0.0.1/callback,"
+                f"{_LOOPBACK},https://claude.ai/api/mcp/auth_callback"
+            )
+        },
+    )
+    assert result.returncode == 0, result.stderr
+    assert _redirects(state, _MCP_APP, "publicClient") == [
+        "https://claude.ai/api/mcp/auth_callback",
+        "http://127.0.0.1/callback",
+        _LOOPBACK,
+    ]
+
+
+def test_entra_bootstrap_rejects_empty_mcp_redirect_entry(tmp_path: Path) -> None:
+    """An empty entry in ``MCP_CLIENT_REDIRECT_URI`` stops the run before any az call.
+
+    A doubled or trailing comma is a typo, not a request to register an empty
+    URI, and a multi-line value would otherwise be cut at its first newline;
+    the run refuses both before it calls the directory at all.
+    """
+    for value in (
+        "http://127.0.0.1/callback,,https://claude.ai/api/mcp/auth_callback",
+        "a, ",
+        "http://127.0.0.1/callback\nhttps://claude.ai/api/mcp/auth_callback",
+    ):
+        result, calls, final = _run_entra(
+            tmp_path, _seed_directory(), {"MCP_CLIENT_REDIRECT_URI": value}
+        )
+        assert result.returncode != 0, f"{value!r} must be refused"
+        assert "MCP_CLIENT_REDIRECT_URI" in result.stderr, result.stderr
+        assert calls == [], f"{value!r}: no az call may happen"
+        assert final["apps"] == []
+
+
+def test_entra_bootstrap_stops_when_redirect_read_fails(tmp_path: Path) -> None:
+    """A failed read of the live redirect set stops the run; it never reads as empty.
+
+    Reading the set as empty would write back the required URIs alone and
+    delete every other one -- the loss the merge exists to prevent.
+    """
+    first, _, built = _run_entra(tmp_path, _seed_directory())
+    assert first.returncode == 0, first.stderr
+    extra = "http://127.0.0.1:53682/callback/first"
+    _app(built, _MCP_APP)["publicClient"]["redirectUris"].append(extra)
+    built["faults"] = [
+        {
+            "contains": ["ad", "app", "show", "--query publicClient"],
+            "message": "Service unavailable.",
+            "code": 1,
+        }
+    ]
+    result, calls, final = _run_entra(tmp_path, built)
+    assert result.returncode != 0, "a failed redirect read must fail the run"
+    assert extra in _redirects(final, _MCP_APP, "publicClient")
+    assert not _public_client_writes(calls), (
+        "the public-client set must not be written after its read failed"
+    )
+
+
+def _public_client_writes(calls: list[list[str]]) -> list[list[str]]:
+    return [
+        c
+        for c in calls
+        if c[:3] == ["ad", "app", "update"] and "--public-client-redirect-uris" in c
+    ]
+
+
+@pytest.mark.parametrize(
+    "platform",
+    [None, {}, {"redirectUris": None}, {"redirectUris": "http://127.0.0.1/callback"}],
+    ids=["absent", "no-redirect-uris", "null-list", "not-a-list"],
+)
+def test_entra_bootstrap_refuses_an_unreadable_redirect_platform(
+    tmp_path: Path, platform: dict | None
+) -> None:
+    """A read that yields no redirect-URI list stops the run; it never reads as empty.
+
+    The read itself succeeds here, so only the shape of what it returns can
+    tell an empty platform from a field the query did not find. A query path
+    that matches nothing exits 0 with no output, and writing the required set
+    back over it would delete every live URI.
+    """
+    first, _, built = _run_entra(tmp_path, _seed_directory())
+    assert first.returncode == 0, first.stderr
+    app = _app(built, _MCP_APP)
+    if platform is None:
+        del app["publicClient"]
+    else:
+        app["publicClient"] = platform
+    result, calls, _ = _run_entra(tmp_path, built)
+    assert result.returncode != 0, "an unreadable redirect platform must fail the run"
+    assert "refusing to overwrite" in result.stderr, result.stderr
+    assert not _public_client_writes(calls), "the public-client set must not be written"
 
 
 def test_kv_secrets_script_reads_secrets_from_env_not_args() -> None:

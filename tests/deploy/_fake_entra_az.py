@@ -135,6 +135,21 @@ def _new_id() -> str:
     return str(uuid.uuid4())
 
 
+# Each redirect-URI flag and the Graph platform object whose ``redirectUris``
+# it writes. The flag replaces that collection wholesale, on create and update
+# alike, as the real CLI does.
+_REDIRECT_FLAGS = (
+    ("--web-redirect-uris", "web"),
+    ("--public-client-redirect-uris", "publicClient"),
+)
+
+
+def _set_redirects(app: dict, args: list[str]) -> None:
+    for flag, platform in _REDIRECT_FLAGS:
+        if flag in args:
+            app.setdefault(platform, {})["redirectUris"] = _values(args, flag)
+
+
 def _app_by_app_id(state: dict, app_id: str) -> dict:
     for app in state["apps"]:
         if app["appId"] == app_id:
@@ -180,20 +195,19 @@ def _ad(state: dict, args: list[str]) -> Any:
                 "identifierUris": [],
                 "api": {},
                 "appRoles": [],
+                "web": {"redirectUris": []},
+                "publicClient": {"redirectUris": []},
             }
+            _set_redirects(app, args)
             state["apps"].append(app)
             return app
         app = _app_by_app_id(state, _arg(args, "--id"))
         if verb == "show":
             return app
         if verb == "update":
-            for flag, key in (
-                ("--identifier-uris", "identifierUris"),
-                ("--web-redirect-uris", "webRedirectUris"),
-                ("--public-client-redirect-uris", "publicClientRedirectUris"),
-            ):
-                if flag in args:
-                    app[key] = _values(args, flag)
+            if "--identifier-uris" in args:
+                app["identifierUris"] = _values(args, "--identifier-uris")
+            _set_redirects(app, args)
             return None
     if kind == "sp":
         if verb == "list":
