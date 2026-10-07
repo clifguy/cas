@@ -56,6 +56,7 @@ from sage.api.errors import (
     SAGEError,
     UnknownParameterError,
     VaultNotFoundError,
+    statement_timeout_error,
     unknown_parameter_names,
     validation_error_envelope,
 )
@@ -149,8 +150,17 @@ def _internal_error_payload(exc: BaseException, tool_name: str | None = None) ->
 
     An unexpected exception's text describes the server's internals, so it is
     logged here with a traceback under a fresh reference and the caller
-    receives only that reference, which an operator can find in the log.
+    receives only that reference, which an operator can find in the log. A
+    database statement the statement timeout cancelled is answered with the
+    typed ``statement_timeout`` envelope instead.
     """
+    timeout = statement_timeout_error(exc)
+    if timeout is not None:
+        _logging.getLogger(__name__).warning(
+            "mcp tool %s: database statement cancelled by the statement timeout",
+            tool_name or "(unknown)",
+        )
+        return {"error": timeout.code, "message": timeout.message}
     reference = uuid.uuid4().hex
     if tool_name is None:
         _logging.getLogger(__name__).error(

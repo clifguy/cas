@@ -11,13 +11,17 @@ summary: >-
   (default 60), applied as a session statement_timeout on the request
   connection pools. Content-store optimize, the vault-migration table rewrites
   and the tier3 unique-index build lift it for their own statements.
-  Document updates now refuse a key that is not a documents column.
+  A statement the timeout cancels answers the new cross-cutting error code
+  statement_timeout (503) on REST, MCP and the CAS Application API mirror,
+  declared beside internal_error. Document updates now refuse a key that is
+  not a documents column.
 for_callers: >-
   traverse accepts depth up to 50 (was 1000) and returns truncated: true when
   the walk hit the server's row limit, in which case narrow it by edge_type,
   direction or depth. Operators may set postgres.statement_timeout_seconds
   (default 60) to bound any one SQL statement a request issues; a statement
-  that runs longer fails its request. The depth limit ships without a
+  that runs longer fails its request with statement_timeout (503), which a
+  caller may retry or answer by narrowing the request. The depth limit ships without a
   deprecation period because the old ceiling was a security exposure.
 exemption:
   kind: security-exposure

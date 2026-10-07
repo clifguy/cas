@@ -1655,6 +1655,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "SupersedeTargetNotActiveError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -2550,6 +2578,7 @@
                 "source_type_unresolved": "#/$defs/SourceTypeUnresolvedError",
                 "source_unreadable": "#/$defs/SourceUnreadableError",
                 "stale_chain_head": "#/$defs/StaleChainHeadError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "supersede_target_not_active": "#/$defs/SupersedeTargetNotActiveError",
                 "synced_from_inapplicable_edge_type": "#/$defs/SyncedFromInapplicableEdgeTypeError",
                 "synced_from_version_not_in_source_chain": "#/$defs/SyncedFromVersionNotInSourceChainError",
@@ -2682,6 +2711,9 @@
               },
               {
                 "$ref": "#/$defs/StaleChainHeadError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/SupersedeTargetNotActiveError"
@@ -3288,6 +3320,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -3399,6 +3459,7 @@
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
                 "missing_document_identifier": "#/$defs/MissingDocumentIdentifierError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
@@ -3425,6 +3486,9 @@
               },
               {
                 "$ref": "#/$defs/MissingDocumentIdentifierError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -4072,6 +4136,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "SyncedFromInapplicableEdgeTypeError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -4414,6 +4506,7 @@
                 "merged_from_validation": "#/$defs/MergedFromValidationError",
                 "retract_target_not_edge": "#/$defs/RetractTargetNotEdgeError",
                 "self_referential_edge": "#/$defs/SelfReferentialEdgeError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "synced_from_inapplicable_edge_type": "#/$defs/SyncedFromInapplicableEdgeTypeError",
                 "synced_from_version_not_in_source_chain": "#/$defs/SyncedFromVersionNotInSourceChainError",
                 "tbd_policy_edge": "#/$defs/TbdPolicyEdgeError",
@@ -4462,6 +4555,9 @@
               },
               {
                 "$ref": "#/$defs/SelfReferentialEdgeError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/SyncedFromInapplicableEdgeTypeError"
@@ -4886,6 +4982,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -4995,6 +5119,7 @@
                 "invalid_edge_id": "#/$defs/InvalidEdgeIdError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
@@ -5015,6 +5140,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -5554,6 +5682,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "TransferEndpointNotConfiguredError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -5872,6 +6028,7 @@
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
                 "missing_document_identifier": "#/$defs/MissingDocumentIdentifierError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "transfer_endpoint_not_configured": "#/$defs/TransferEndpointNotConfiguredError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError",
@@ -5915,6 +6072,9 @@
               },
               {
                 "$ref": "#/$defs/MissingDocumentIdentifierError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/TransferEndpointNotConfiguredError"
@@ -6138,6 +6298,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -6246,6 +6434,7 @@
                 "internal_error": "#/$defs/InternalErrorError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
@@ -6263,6 +6452,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -8048,6 +8240,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "SupersedeTargetNotActiveError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -8944,6 +9164,7 @@
                 "source_type_unresolved": "#/$defs/SourceTypeUnresolvedError",
                 "source_unreadable": "#/$defs/SourceUnreadableError",
                 "stale_chain_head": "#/$defs/StaleChainHeadError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "supersede_target_not_active": "#/$defs/SupersedeTargetNotActiveError",
                 "synced_from_inapplicable_edge_type": "#/$defs/SyncedFromInapplicableEdgeTypeError",
                 "synced_from_version_not_in_source_chain": "#/$defs/SyncedFromVersionNotInSourceChainError",
@@ -9079,6 +9300,9 @@
               },
               {
                 "$ref": "#/$defs/StaleChainHeadError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/SupersedeTargetNotActiveError"
@@ -9486,6 +9710,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -9595,6 +9847,7 @@
                 "invalid_directory": "#/$defs/InvalidDirectoryError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
@@ -9615,6 +9868,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -10020,6 +10276,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -10132,6 +10416,7 @@
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
                 "missing_document_identifier": "#/$defs/MissingDocumentIdentifierError",
                 "no_projection": "#/$defs/NoProjectionError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
@@ -10161,6 +10446,9 @@
               },
               {
                 "$ref": "#/$defs/NoProjectionError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -10331,6 +10619,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -10438,6 +10754,7 @@
                 "internal_error": "#/$defs/InternalErrorError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
@@ -10452,6 +10769,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -10625,6 +10945,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -10732,6 +11080,7 @@
                 "internal_error": "#/$defs/InternalErrorError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
@@ -10746,6 +11095,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -10862,6 +11214,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -10922,6 +11302,7 @@
               "mapping": {
                 "internal_error": "#/$defs/InternalErrorError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError"
               },
               "propertyName": "error"
@@ -10932,6 +11313,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidParameterError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -11358,6 +11742,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "TransferEndpointNotConfiguredError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -11674,6 +12086,7 @@
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
                 "missing_document_identifier": "#/$defs/MissingDocumentIdentifierError",
                 "no_projection": "#/$defs/NoProjectionError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "transfer_endpoint_not_configured": "#/$defs/TransferEndpointNotConfiguredError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError",
@@ -11711,6 +12124,9 @@
               },
               {
                 "$ref": "#/$defs/NoProjectionError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/TransferEndpointNotConfiguredError"
@@ -12205,6 +12621,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -12318,6 +12762,7 @@
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
                 "missing_document_identifier": "#/$defs/MissingDocumentIdentifierError",
                 "no_projection": "#/$defs/NoProjectionError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
@@ -12350,6 +12795,9 @@
               },
               {
                 "$ref": "#/$defs/NoProjectionError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -12956,6 +13404,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "SyncedFromInapplicableEdgeTypeError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -13337,6 +13813,7 @@
                 "retract_target_not_edge": "#/$defs/RetractTargetNotEdgeError",
                 "self_referential_edge": "#/$defs/SelfReferentialEdgeError",
                 "source_file_not_found": "#/$defs/SourceFileNotFoundError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "synced_from_inapplicable_edge_type": "#/$defs/SyncedFromInapplicableEdgeTypeError",
                 "synced_from_version_not_in_source_chain": "#/$defs/SyncedFromVersionNotInSourceChainError",
                 "tbd_policy_edge": "#/$defs/TbdPolicyEdgeError",
@@ -13387,6 +13864,9 @@
               },
               {
                 "$ref": "#/$defs/SourceFileNotFoundError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/SyncedFromInapplicableEdgeTypeError"
@@ -14053,6 +14533,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "SyncedFromInapplicableEdgeTypeError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -14435,6 +14943,7 @@
                 "self_referential_edge": "#/$defs/SelfReferentialEdgeError",
                 "source_file_not_found": "#/$defs/SourceFileNotFoundError",
                 "source_unreadable": "#/$defs/SourceUnreadableError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "synced_from_inapplicable_edge_type": "#/$defs/SyncedFromInapplicableEdgeTypeError",
                 "synced_from_version_not_in_source_chain": "#/$defs/SyncedFromVersionNotInSourceChainError",
                 "tbd_policy_edge": "#/$defs/TbdPolicyEdgeError",
@@ -14488,6 +14997,9 @@
               },
               {
                 "$ref": "#/$defs/SourceUnreadableError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/SyncedFromInapplicableEdgeTypeError"
@@ -15297,6 +15809,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "StorageQueryFailedError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -15562,6 +16102,7 @@
                 "missing_query": "#/$defs/MissingQueryError",
                 "mode_parameter_mismatch": "#/$defs/ModeParameterMismatchError",
                 "pipeline_incomplete": "#/$defs/PipelineIncompleteError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "storage_query_failed": "#/$defs/StorageQueryFailedError",
                 "tier3_schema_violation": "#/$defs/Tier3SchemaViolationError",
                 "unknown_filter_key": "#/$defs/UnknownFilterKeyError",
@@ -15618,6 +16159,9 @@
               },
               {
                 "$ref": "#/$defs/PipelineIncompleteError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/StorageQueryFailedError"
@@ -16150,6 +16694,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "TbdPolicyEdgeError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -16299,6 +16871,7 @@
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
                 "missing_document_identifier": "#/$defs/MissingDocumentIdentifierError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "tbd_policy_edge": "#/$defs/TbdPolicyEdgeError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
@@ -16326,6 +16899,9 @@
               },
               {
                 "$ref": "#/$defs/MissingDocumentIdentifierError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/TbdPolicyEdgeError"
@@ -17158,6 +17734,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "SupersedeTargetNotActiveError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -17529,6 +18133,7 @@
                 "missing_successor_id": "#/$defs/MissingSuccessorIdError",
                 "relocated_to_provenance_mismatch": "#/$defs/RelocatedToProvenanceMismatchError",
                 "reserved_transition": "#/$defs/ReservedTransitionError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "supersede_target_not_active": "#/$defs/SupersedeTargetNotActiveError",
                 "undeclared_key": "#/$defs/UndeclaredKeyError",
                 "unexpected_relocated_to": "#/$defs/UnexpectedRelocatedToError",
@@ -17589,6 +18194,9 @@
               },
               {
                 "$ref": "#/$defs/ReservedTransitionError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/SupersedeTargetNotActiveError"
@@ -18358,6 +18966,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "TagPatchOverlapError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -18957,6 +19593,7 @@
                 "missing_document_identifier": "#/$defs/MissingDocumentIdentifierError",
                 "patch_empty": "#/$defs/PatchEmptyError",
                 "stale_read": "#/$defs/StaleReadError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "tag_patch_overlap": "#/$defs/TagPatchOverlapError",
                 "tags_add_conflict": "#/$defs/TagsAddConflictError",
                 "tags_remove_conflict": "#/$defs/TagsRemoveConflictError",
@@ -19009,6 +19646,9 @@
               },
               {
                 "$ref": "#/$defs/StaleReadError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/TagPatchOverlapError"
@@ -19543,6 +20183,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -19653,6 +20321,7 @@
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
                 "staging_edge_not_found": "#/$defs/StagingEdgeNotFoundError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
@@ -19676,6 +20345,9 @@
               },
               {
                 "$ref": "#/$defs/StagingEdgeNotFoundError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -19898,6 +20570,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -20006,6 +20706,7 @@
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_sha256": "#/$defs/InvalidSha256Error",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
@@ -20023,6 +20724,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -20297,6 +21001,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -20406,6 +21138,7 @@
                 "invalid_document_id": "#/$defs/InvalidDocumentIdError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
@@ -20426,6 +21159,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -20547,6 +21283,34 @@
                   "parameter",
                   "value",
                   "constraint"
+                ],
+                "type": "object"
+              },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
                 ],
                 "type": "object"
               },
@@ -20689,6 +21453,7 @@
               "mapping": {
                 "internal_error": "#/$defs/InternalErrorError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_already_exists": "#/$defs/VaultAlreadyExistsError",
                 "vault_config_validation_error": "#/$defs/VaultConfigValidationErrorError"
@@ -20701,6 +21466,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidParameterError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -21132,6 +21900,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -21245,6 +22041,7 @@
                 "no_projection": "#/$defs/NoProjectionError",
                 "output_path_invalid": "#/$defs/OutputPathInvalidError",
                 "path_traversal_denied": "#/$defs/PathTraversalDeniedError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
@@ -21277,6 +22074,9 @@
               },
               {
                 "$ref": "#/$defs/PathTraversalDeniedError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -21447,6 +22247,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -21508,6 +22336,7 @@
                 "internal_error": "#/$defs/InternalErrorError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError"
               },
               "propertyName": "error"
@@ -21521,6 +22350,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -21634,6 +22466,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -21694,6 +22554,7 @@
               "mapping": {
                 "internal_error": "#/$defs/InternalErrorError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError"
               },
               "propertyName": "error"
@@ -21704,6 +22565,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidParameterError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -21850,6 +22714,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -21957,6 +22849,7 @@
                 "internal_error": "#/$defs/InternalErrorError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
@@ -21971,6 +22864,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -22129,6 +23025,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -22236,6 +23160,7 @@
                 "internal_error": "#/$defs/InternalErrorError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
@@ -22250,6 +23175,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -22537,6 +23465,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -22690,6 +23646,7 @@
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
                 "pipeline_work_in_flight": "#/$defs/PipelineWorkInFlightError",
                 "source_file_not_found": "#/$defs/SourceFileNotFoundError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_migration_in_flight": "#/$defs/VaultMigrationInFlightError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
@@ -22714,6 +23671,9 @@
               },
               {
                 "$ref": "#/$defs/SourceFileNotFoundError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -22876,6 +23836,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -22983,6 +23971,7 @@
                 "internal_error": "#/$defs/InternalErrorError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
@@ -22997,6 +23986,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -23598,6 +24590,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "SyncedFromInapplicableEdgeTypeError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -23979,6 +24999,7 @@
                 "retract_target_not_edge": "#/$defs/RetractTargetNotEdgeError",
                 "self_referential_edge": "#/$defs/SelfReferentialEdgeError",
                 "source_file_not_found": "#/$defs/SourceFileNotFoundError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "synced_from_inapplicable_edge_type": "#/$defs/SyncedFromInapplicableEdgeTypeError",
                 "synced_from_version_not_in_source_chain": "#/$defs/SyncedFromVersionNotInSourceChainError",
                 "tbd_policy_edge": "#/$defs/TbdPolicyEdgeError",
@@ -24029,6 +25050,9 @@
               },
               {
                 "$ref": "#/$defs/SourceFileNotFoundError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/SyncedFromInapplicableEdgeTypeError"
@@ -24254,6 +25278,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -24362,6 +25414,7 @@
                 "internal_error": "#/$defs/InternalErrorError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
@@ -24379,6 +25432,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -24538,6 +25594,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -24686,6 +25770,7 @@
                 "internal_error": "#/$defs/InternalErrorError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_config_validation_error": "#/$defs/VaultConfigValidationErrorError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
@@ -24701,6 +25786,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -25324,6 +26412,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "TransferEndpointNotConfiguredError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -25667,6 +26783,7 @@
                 "restore_target_unresolved": "#/$defs/RestoreTargetUnresolvedError",
                 "source_digest_mismatch": "#/$defs/SourceDigestMismatchError",
                 "source_file_not_found": "#/$defs/SourceFileNotFoundError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "transfer_endpoint_not_configured": "#/$defs/TransferEndpointNotConfiguredError",
                 "transfer_not_staged": "#/$defs/TransferNotStagedError",
                 "transfer_token_invalid": "#/$defs/TransferTokenInvalidError",
@@ -25717,6 +26834,9 @@
               },
               {
                 "$ref": "#/$defs/SourceFileNotFoundError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/TransferEndpointNotConfiguredError"
@@ -25957,6 +27077,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -26106,6 +27254,7 @@
                 "internal_error": "#/$defs/InternalErrorError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_config_validation_error": "#/$defs/VaultConfigValidationErrorError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
@@ -26124,6 +27273,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -26344,6 +27496,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -26451,6 +27631,7 @@
                 "internal_error": "#/$defs/InternalErrorError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
@@ -26465,6 +27646,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -26732,6 +27916,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -26936,6 +28148,7 @@
                 "internal_error": "#/$defs/InternalErrorError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError",
                 "vault_source_store_refused": "#/$defs/VaultSourceStoreRefusedError",
@@ -26961,6 +28174,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -27203,6 +28419,34 @@
                 ],
                 "type": "object"
               },
+              "StatementTimeoutError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "description": "No additional context is emitted for this error.",
+                    "maxProperties": 0,
+                    "type": [
+                      "object",
+                      "null"
+                    ]
+                  },
+                  "error": {
+                    "const": "statement_timeout",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -27406,6 +28650,7 @@
                 "invalid_document_id": "#/$defs/InvalidDocumentIdError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
+                "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_not_found": "#/$defs/VaultNotFoundError",
                 "vault_source_store_refused": "#/$defs/VaultSourceStoreRefusedError",
@@ -27428,6 +28673,9 @@
               },
               {
                 "$ref": "#/$defs/InvalidVaultIdError"
+              },
+              {
+                "$ref": "#/$defs/StatementTimeoutError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"

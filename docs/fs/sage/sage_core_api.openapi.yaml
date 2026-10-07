@@ -87,16 +87,18 @@ info:
     `{"error": "invalid_token", "error_description": "..."}`.
 
 
-    Application errors (400, 404, 405, 409, 413, 422, 500) come from the API
+    Application errors (400, 404, 405, 409, 413, 422, 500, 503) come from the API
     itself and carry `{"code": ..., "message": ..., "detail": {...}}`. Branch on
     `code`, never on `message`. `detail` is omitted when empty and its keys vary
     by `code`. The per-operation response descriptions below name the `code`
-    values each operation can return. Three codes can answer any request,
+    values each operation can return. Four codes can answer any request,
     because they are raised before or after an operation rather than by it:
     `route_not_found` (404) for a path no operation serves,
     `method_not_allowed` (405, with an `Allow` header) for a method the path
-    does not accept, and `internal_error` (500) for a response the server
-    built that its own contract does not admit. Any other status the framework
+    does not accept, `internal_error` (500) for a response the server
+    built that its own contract does not admit, and `statement_timeout` (503)
+    for a request whose database work ran past the server's time limit and
+    was cancelled; narrow the request or retry it later. Any other status the framework
     raises outside an operation answers `http_error`, with the status's reason
     phrase as `message`.
 
@@ -11668,6 +11670,29 @@ components:
           $ref: '#/components/schemas/IdenticalContentSupersedeErrorDetail'
       additionalProperties: false
       description: The refusal envelope for this error code.
+    StatementTimeoutError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: statement_timeout
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
     InternalErrorError:
       type: object
       required:
@@ -15042,6 +15067,7 @@ components:
             - staging_edge_not_found
             - stale_chain_head
             - stale_read
+            - statement_timeout
             - storage_query_failed
             - supersede_target_not_active
             - synced_from_inapplicable_edge_type
@@ -15129,6 +15155,7 @@ components:
         - source_type_unresolved
         - source_unreadable
         - stale_chain_head
+        - statement_timeout
         - supersede_target_not_active
         - synced_from_inapplicable_edge_type
         - synced_from_version_not_in_source_chain
@@ -15155,6 +15182,7 @@ components:
         - invalid_parameter
         - invalid_vault_id
         - missing_document_identifier
+        - statement_timeout
         - unknown_parameter
         - vault_not_found
         create_edges:
@@ -15171,6 +15199,7 @@ components:
         - merged_from_validation
         - retract_target_not_edge
         - self_referential_edge
+        - statement_timeout
         - synced_from_inapplicable_edge_type
         - synced_from_version_not_in_source_chain
         - tbd_policy_edge
@@ -15180,6 +15209,7 @@ components:
         create_vault:
         - internal_error
         - invalid_parameter
+        - statement_timeout
         - unknown_parameter
         - vault_already_exists
         - vault_config_validation_error
@@ -15189,6 +15219,7 @@ components:
         - invalid_edge_id
         - invalid_parameter
         - invalid_vault_id
+        - statement_timeout
         - unknown_parameter
         - vault_not_found
         export_projection:
@@ -15201,12 +15232,14 @@ components:
         - no_projection
         - output_path_invalid
         - path_traversal_denied
+        - statement_timeout
         - unknown_parameter
         - vault_not_found
         get_default_vault_config:
         - internal_error
         - invalid_parameter
         - invalid_vault_id
+        - statement_timeout
         - unknown_parameter
         get_document:
         - ambiguous_document_identifier
@@ -15220,6 +15253,7 @@ components:
         - invalid_parameter
         - invalid_vault_id
         - missing_document_identifier
+        - statement_timeout
         - transfer_endpoint_not_configured
         - unknown_parameter
         - vault_not_found
@@ -15232,22 +15266,26 @@ components:
         - internal_error
         - invalid_parameter
         - invalid_vault_id
+        - statement_timeout
         - unknown_parameter
         - vault_not_found
         get_stack_config:
         - internal_error
         - invalid_parameter
+        - statement_timeout
         - unknown_parameter
         get_vault_config:
         - internal_error
         - invalid_parameter
         - invalid_vault_id
+        - statement_timeout
         - unknown_parameter
         - vault_not_found
         get_vault_stats:
         - internal_error
         - invalid_parameter
         - invalid_vault_id
+        - statement_timeout
         - unknown_parameter
         - vault_not_found
         ingest_document:
@@ -15289,6 +15327,7 @@ components:
         - source_type_unresolved
         - source_unreadable
         - stale_chain_head
+        - statement_timeout
         - supersede_target_not_active
         - synced_from_inapplicable_edge_type
         - synced_from_version_not_in_source_chain
@@ -15313,6 +15352,7 @@ components:
         - invalid_directory
         - invalid_parameter
         - invalid_vault_id
+        - statement_timeout
         - unknown_parameter
         - vault_not_found
         list_headings:
@@ -15324,23 +15364,27 @@ components:
         - invalid_vault_id
         - missing_document_identifier
         - no_projection
+        - statement_timeout
         - unknown_parameter
         - vault_not_found
         list_pending_metadata:
         - internal_error
         - invalid_parameter
         - invalid_vault_id
+        - statement_timeout
         - unknown_parameter
         - vault_not_found
         list_staging_edges:
         - internal_error
         - invalid_parameter
         - invalid_vault_id
+        - statement_timeout
         - unknown_parameter
         - vault_not_found
         list_vaults:
         - internal_error
         - invalid_parameter
+        - statement_timeout
         - unknown_parameter
         migrate_vault:
         - force_reingest_path_mismatch
@@ -15349,6 +15393,7 @@ components:
         - invalid_vault_id
         - pipeline_work_in_flight
         - source_file_not_found
+        - statement_timeout
         - unknown_parameter
         - vault_migration_in_flight
         - vault_not_found
@@ -15356,6 +15401,7 @@ components:
         - internal_error
         - invalid_parameter
         - invalid_vault_id
+        - statement_timeout
         - unknown_parameter
         - vault_not_found
         read_projection:
@@ -15368,6 +15414,7 @@ components:
         - invalid_vault_id
         - missing_document_identifier
         - no_projection
+        - statement_timeout
         - transfer_endpoint_not_configured
         - unknown_parameter
         - vault_not_found
@@ -15385,6 +15432,7 @@ components:
         - invalid_vault_id
         - missing_document_identifier
         - no_projection
+        - statement_timeout
         - unknown_parameter
         - vault_not_found
         recompute_abstract:
@@ -15401,6 +15449,7 @@ components:
         - retract_target_not_edge
         - self_referential_edge
         - source_file_not_found
+        - statement_timeout
         - synced_from_inapplicable_edge_type
         - synced_from_version_not_in_source_chain
         - tbd_policy_edge
@@ -15423,6 +15472,7 @@ components:
         - retract_target_not_edge
         - self_referential_edge
         - source_file_not_found
+        - statement_timeout
         - synced_from_inapplicable_edge_type
         - synced_from_version_not_in_source_chain
         - tbd_policy_edge
@@ -15446,6 +15496,7 @@ components:
         - self_referential_edge
         - source_file_not_found
         - source_unreadable
+        - statement_timeout
         - synced_from_inapplicable_edge_type
         - synced_from_version_not_in_source_chain
         - tbd_policy_edge
@@ -15459,12 +15510,14 @@ components:
         - internal_error
         - invalid_parameter
         - invalid_vault_id
+        - statement_timeout
         - unknown_parameter
         - vault_not_found
         reload_vault:
         - internal_error
         - invalid_parameter
         - invalid_vault_id
+        - statement_timeout
         - unknown_parameter
         - vault_config_validation_error
         - vault_not_found
@@ -15482,6 +15535,7 @@ components:
         - restore_target_unresolved
         - source_digest_mismatch
         - source_file_not_found
+        - statement_timeout
         - transfer_endpoint_not_configured
         - transfer_not_staged
         - transfer_token_invalid
@@ -15507,6 +15561,7 @@ components:
         - missing_query
         - mode_parameter_mismatch
         - pipeline_incomplete
+        - statement_timeout
         - storage_query_failed
         - tier3_schema_violation
         - unknown_filter_key
@@ -15520,6 +15575,7 @@ components:
         - invalid_parameter
         - invalid_vault_id
         - missing_document_identifier
+        - statement_timeout
         - tbd_policy_edge
         - unknown_parameter
         - vault_not_found
@@ -15541,6 +15597,7 @@ components:
         - missing_successor_id
         - relocated_to_provenance_mismatch
         - reserved_transition
+        - statement_timeout
         - supersede_target_not_active
         - undeclared_key
         - unexpected_relocated_to
@@ -15561,6 +15618,7 @@ components:
         - missing_document_identifier
         - patch_empty
         - stale_read
+        - statement_timeout
         - tag_patch_overlap
         - tags_add_conflict
         - tags_remove_conflict
@@ -15578,6 +15636,7 @@ components:
         - invalid_parameter
         - invalid_vault_id
         - staging_edge_not_found
+        - statement_timeout
         - unknown_parameter
         - vault_not_found
         update_vault_config:
@@ -15585,6 +15644,7 @@ components:
         - internal_error
         - invalid_parameter
         - invalid_vault_id
+        - statement_timeout
         - unknown_parameter
         - vault_config_validation_error
         - vault_not_found
@@ -15593,6 +15653,7 @@ components:
         - invalid_parameter
         - invalid_sha256
         - invalid_vault_id
+        - statement_timeout
         - unknown_parameter
         - vault_not_found
         verify_preconditions:
@@ -15601,12 +15662,14 @@ components:
         - invalid_document_id
         - invalid_parameter
         - invalid_vault_id
+        - statement_timeout
         - unknown_parameter
         - vault_not_found
         verify_vault_drift:
         - internal_error
         - invalid_parameter
         - invalid_vault_id
+        - statement_timeout
         - unknown_parameter
         - vault_not_found
         verify_vault_retrieval:
@@ -15616,6 +15679,7 @@ components:
         - internal_error
         - invalid_parameter
         - invalid_vault_id
+        - statement_timeout
         - unknown_parameter
         - vault_not_found
         - vault_source_store_refused
@@ -15626,6 +15690,7 @@ components:
         - invalid_document_id
         - invalid_parameter
         - invalid_vault_id
+        - statement_timeout
         - unknown_parameter
         - vault_not_found
         - vault_source_store_refused
@@ -15663,6 +15728,7 @@ components:
       - $ref: '#/components/schemas/HttpErrorError'
       - $ref: '#/components/schemas/IdenticalContentSupersedeError'
       - $ref: '#/components/schemas/InternalErrorError'
+      - $ref: '#/components/schemas/StatementTimeoutError'
       - $ref: '#/components/schemas/InvalidActionError'
       - $ref: '#/components/schemas/InvalidBatchMetadataError'
       - $ref: '#/components/schemas/InvalidDirectoryError'
@@ -15792,6 +15858,7 @@ components:
           http_error: '#/components/schemas/HttpErrorError'
           identical_content_supersede: '#/components/schemas/IdenticalContentSupersedeError'
           internal_error: '#/components/schemas/InternalErrorError'
+          statement_timeout: '#/components/schemas/StatementTimeoutError'
           invalid_action: '#/components/schemas/InvalidActionError'
           invalid_batch_metadata: '#/components/schemas/InvalidBatchMetadataError'
           invalid_directory: '#/components/schemas/InvalidDirectoryError'

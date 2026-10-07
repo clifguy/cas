@@ -3833,3 +3833,23 @@ async def test_search_deterministic_reads_text_before_the_first_heading_by_the_e
     assert "Heading body." not in hit["chunk_content"]
     assert hit.get("heading_path") is None
     assert omitted["error"] == "missing_heading_path"
+
+
+async def test_traverse_statement_timeout_reaches_the_caller_typed(
+    vault_services, monkeypatch, tool_payload
+):
+    """A database statement cancelled mid-traverse answers ``statement_timeout``
+    through the tool, not ``internal_error``."""
+    import psycopg
+
+    from sage.services.graph_ops import GraphOpsService
+
+    async def cancelled(self, request):
+        raise psycopg.errors.QueryCanceled("canceling statement due to statement timeout")
+
+    monkeypatch.setattr(GraphOpsService, "traverse", cancelled)
+    doc_id = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))["id"]
+    result = tool_payload(
+        await _mcp.mcp.call_tool("traverse", {"vault_id": "test_vault", "start_id": doc_id})
+    )
+    assert result["error"] == "statement_timeout", result

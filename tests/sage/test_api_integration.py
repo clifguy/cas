@@ -1219,3 +1219,28 @@ async def test_edge_id_route_rejects_non_uuid_400(client, method, path, bad_inpu
     body = resp.json()
     assert body["code"] == "invalid_edge_id", body
     assert body["detail"]["edge_id"] == bad_input, body
+
+
+async def test_traverse_statement_timeout_answers_503(app, client, monkeypatch):
+    """A database statement cancelled mid-traverse answers 503
+    ``statement_timeout`` in the error envelope."""
+    import psycopg
+
+    from sage.services.graph_ops import GraphOpsService
+
+    async def cancelled(self, request):
+        raise psycopg.errors.QueryCanceled("canceling statement due to statement timeout")
+
+    resp = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "source_type": "markdown"},
+    )
+    doc_id = resp.json()["document"]["id"]
+    monkeypatch.setattr(GraphOpsService, "traverse", cancelled)
+    # The server answers and then re-raises for its own error log; do not let
+    # the test transport surface that re-raise as the response.
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as raw:
+        timed_out = await raw.post("/sage_vaults/test_vault/traverse", json={"start_id": doc_id})
+    assert timed_out.status_code == 503
+    assert timed_out.json()["code"] == "statement_timeout"

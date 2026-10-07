@@ -591,6 +591,8 @@ class PostgresGraphStore(GraphStore):
                     f"LIMIT %s OFFSET %s",
                     [*params, limit, offset],
                 )
+            except pg_errors.QueryCanceled:
+                raise  # a timeout, not a refused query; the surfaces type it
             except pg_errors.Error as exc:
                 raise StorageQueryError("query_documents", str(exc)) from exc
             return [self._row_to_document(r) for r in rows], total_count
@@ -776,6 +778,8 @@ class PostgresGraphStore(GraphStore):
                     "LIMIT %s",
                     [*admits_params, *where_params, *order_params, limit],
                 )
+            except pg_errors.QueryCanceled:
+                raise  # a timeout, not a refused query; the surfaces type it
             except pg_errors.Error as exc:
                 raise StorageQueryError(operation, str(exc)) from exc
             return [self._row_to_document(r) for r in rows]
@@ -1581,6 +1585,8 @@ class PostgresGraphStore(GraphStore):
             # driver's wording is not the caller's to receive.
             try:
                 return await self._collect_document_facets(where_sql, params, fields, value_limit)
+            except pg_errors.QueryCanceled:
+                raise  # a timeout, not a refused query; the surfaces type it
             except pg_errors.Error as exc:
                 raise StorageQueryError("query_document_facets", str(exc)) from exc
 

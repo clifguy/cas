@@ -1125,6 +1125,7 @@ SCHEMAS = json.loads(
         "staging_edge_not_found": "#/components/schemas/StagingEdgeNotFoundError",
         "stale_chain_head": "#/components/schemas/StaleChainHeadError",
         "stale_read": "#/components/schemas/StaleReadError",
+        "statement_timeout": "#/components/schemas/StatementTimeoutError",
         "storage_query_failed": "#/components/schemas/StorageQueryFailedError",
         "supersede_target_not_active": "#/components/schemas/SupersedeTargetNotActiveError",
         "synced_from_inapplicable_edge_type": "#/components/schemas/SyncedFromInapplicableEdgeTypeError",
@@ -1254,6 +1255,9 @@ SCHEMAS = json.loads(
       },
       {
         "$ref": "#/components/schemas/InternalErrorError"
+      },
+      {
+        "$ref": "#/components/schemas/StatementTimeoutError"
       },
       {
         "$ref": "#/components/schemas/InvalidActionError"
@@ -1606,6 +1610,7 @@ SCHEMAS = json.loads(
         "source_type_unresolved",
         "source_unreadable",
         "stale_chain_head",
+        "statement_timeout",
         "supersede_target_not_active",
         "synced_from_inapplicable_edge_type",
         "synced_from_version_not_in_source_chain",
@@ -1633,6 +1638,7 @@ SCHEMAS = json.loads(
         "invalid_parameter",
         "invalid_vault_id",
         "missing_document_identifier",
+        "statement_timeout",
         "unknown_parameter",
         "vault_not_found"
       ],
@@ -1650,6 +1656,7 @@ SCHEMAS = json.loads(
         "merged_from_validation",
         "retract_target_not_edge",
         "self_referential_edge",
+        "statement_timeout",
         "synced_from_inapplicable_edge_type",
         "synced_from_version_not_in_source_chain",
         "tbd_policy_edge",
@@ -1660,6 +1667,7 @@ SCHEMAS = json.loads(
       "create_vault": [
         "internal_error",
         "invalid_parameter",
+        "statement_timeout",
         "unknown_parameter",
         "vault_already_exists",
         "vault_config_validation_error"
@@ -1670,6 +1678,7 @@ SCHEMAS = json.loads(
         "invalid_edge_id",
         "invalid_parameter",
         "invalid_vault_id",
+        "statement_timeout",
         "unknown_parameter",
         "vault_not_found"
       ],
@@ -1683,6 +1692,7 @@ SCHEMAS = json.loads(
         "no_projection",
         "output_path_invalid",
         "path_traversal_denied",
+        "statement_timeout",
         "unknown_parameter",
         "vault_not_found"
       ],
@@ -1690,6 +1700,7 @@ SCHEMAS = json.loads(
         "internal_error",
         "invalid_parameter",
         "invalid_vault_id",
+        "statement_timeout",
         "unknown_parameter"
       ],
       "get_document": [
@@ -1704,6 +1715,7 @@ SCHEMAS = json.loads(
         "invalid_parameter",
         "invalid_vault_id",
         "missing_document_identifier",
+        "statement_timeout",
         "transfer_endpoint_not_configured",
         "unknown_parameter",
         "vault_not_found",
@@ -1717,18 +1729,21 @@ SCHEMAS = json.loads(
         "internal_error",
         "invalid_parameter",
         "invalid_vault_id",
+        "statement_timeout",
         "unknown_parameter",
         "vault_not_found"
       ],
       "get_stack_config": [
         "internal_error",
         "invalid_parameter",
+        "statement_timeout",
         "unknown_parameter"
       ],
       "get_vault_config": [
         "internal_error",
         "invalid_parameter",
         "invalid_vault_id",
+        "statement_timeout",
         "unknown_parameter",
         "vault_not_found"
       ],
@@ -1736,6 +1751,7 @@ SCHEMAS = json.loads(
         "internal_error",
         "invalid_parameter",
         "invalid_vault_id",
+        "statement_timeout",
         "unknown_parameter",
         "vault_not_found"
       ],
@@ -1778,6 +1794,7 @@ SCHEMAS = json.loads(
         "source_type_unresolved",
         "source_unreadable",
         "stale_chain_head",
+        "statement_timeout",
         "supersede_target_not_active",
         "synced_from_inapplicable_edge_type",
         "synced_from_version_not_in_source_chain",
@@ -1803,6 +1820,7 @@ SCHEMAS = json.loads(
         "invalid_directory",
         "invalid_parameter",
         "invalid_vault_id",
+        "statement_timeout",
         "unknown_parameter",
         "vault_not_found"
       ],
@@ -1815,6 +1833,7 @@ SCHEMAS = json.loads(
         "invalid_vault_id",
         "missing_document_identifier",
         "no_projection",
+        "statement_timeout",
         "unknown_parameter",
         "vault_not_found"
       ],
@@ -1822,6 +1841,7 @@ SCHEMAS = json.loads(
         "internal_error",
         "invalid_parameter",
         "invalid_vault_id",
+        "statement_timeout",
         "unknown_parameter",
         "vault_not_found"
       ],
@@ -1829,12 +1849,14 @@ SCHEMAS = json.loads(
         "internal_error",
         "invalid_parameter",
         "invalid_vault_id",
+        "statement_timeout",
         "unknown_parameter",
         "vault_not_found"
       ],
       "list_vaults": [
         "internal_error",
         "invalid_parameter",
+        "statement_timeout",
         "unknown_parameter"
       ],
       "migrate_vault": [
@@ -1844,6 +1866,7 @@ SCHEMAS = json.loads(
         "invalid_vault_id",
         "pipeline_work_in_flight",
         "source_file_not_found",
+        "statement_timeout",
         "unknown_parameter",
         "vault_migration_in_flight",
         "vault_not_found"
@@ -1852,6 +1875,7 @@ SCHEMAS = json.loads(
         "internal_error",
         "invalid_parameter",
         "invalid_vault_id",
+        "statement_timeout",
         "unknown_parameter",
         "vault_not_found"
       ],
@@ -1865,6 +1889,7 @@ SCHEMAS = json.loads(
         "invalid_vault_id",
         "missing_document_identifier",
         "no_projection",
+        "statement_timeout",
         "transfer_endpoint_not_configured",
         "unknown_parameter",
         "vault_not_found",
@@ -1883,6 +1908,7 @@ SCHEMAS = json.loads(
         "invalid_vault_id",
         "missing_document_identifier",
         "no_projection",
+        "statement_timeout",
         "unknown_parameter",
         "vault_not_found"
       ],
@@ -1900,6 +1926,7 @@ SCHEMAS = json.loads(
         "retract_target_not_edge",
         "self_referential_edge",
         "source_file_not_found",
+        "statement_timeout",
         "synced_from_inapplicable_edge_type",
         "synced_from_version_not_in_source_chain",
         "tbd_policy_edge",
@@ -1923,6 +1950,7 @@ SCHEMAS = json.loads(
         "retract_target_not_edge",
         "self_referential_edge",
         "source_file_not_found",
+        "statement_timeout",
         "synced_from_inapplicable_edge_type",
         "synced_from_version_not_in_source_chain",
         "tbd_policy_edge",
@@ -1947,6 +1975,7 @@ SCHEMAS = json.loads(
         "self_referential_edge",
         "source_file_not_found",
         "source_unreadable",
+        "statement_timeout",
         "synced_from_inapplicable_edge_type",
         "synced_from_version_not_in_source_chain",
         "tbd_policy_edge",
@@ -1961,6 +1990,7 @@ SCHEMAS = json.loads(
         "internal_error",
         "invalid_parameter",
         "invalid_vault_id",
+        "statement_timeout",
         "unknown_parameter",
         "vault_not_found"
       ],
@@ -1968,6 +1998,7 @@ SCHEMAS = json.loads(
         "internal_error",
         "invalid_parameter",
         "invalid_vault_id",
+        "statement_timeout",
         "unknown_parameter",
         "vault_config_validation_error",
         "vault_not_found"
@@ -1986,6 +2017,7 @@ SCHEMAS = json.loads(
         "restore_target_unresolved",
         "source_digest_mismatch",
         "source_file_not_found",
+        "statement_timeout",
         "transfer_endpoint_not_configured",
         "transfer_not_staged",
         "transfer_token_invalid",
@@ -2012,6 +2044,7 @@ SCHEMAS = json.loads(
         "missing_query",
         "mode_parameter_mismatch",
         "pipeline_incomplete",
+        "statement_timeout",
         "storage_query_failed",
         "tier3_schema_violation",
         "unknown_filter_key",
@@ -2026,6 +2059,7 @@ SCHEMAS = json.loads(
         "invalid_parameter",
         "invalid_vault_id",
         "missing_document_identifier",
+        "statement_timeout",
         "tbd_policy_edge",
         "unknown_parameter",
         "vault_not_found"
@@ -2048,6 +2082,7 @@ SCHEMAS = json.loads(
         "missing_successor_id",
         "relocated_to_provenance_mismatch",
         "reserved_transition",
+        "statement_timeout",
         "supersede_target_not_active",
         "undeclared_key",
         "unexpected_relocated_to",
@@ -2069,6 +2104,7 @@ SCHEMAS = json.loads(
         "missing_document_identifier",
         "patch_empty",
         "stale_read",
+        "statement_timeout",
         "tag_patch_overlap",
         "tags_add_conflict",
         "tags_remove_conflict",
@@ -2087,6 +2123,7 @@ SCHEMAS = json.loads(
         "invalid_parameter",
         "invalid_vault_id",
         "staging_edge_not_found",
+        "statement_timeout",
         "unknown_parameter",
         "vault_not_found"
       ],
@@ -2095,6 +2132,7 @@ SCHEMAS = json.loads(
         "internal_error",
         "invalid_parameter",
         "invalid_vault_id",
+        "statement_timeout",
         "unknown_parameter",
         "vault_config_validation_error",
         "vault_not_found"
@@ -2104,6 +2142,7 @@ SCHEMAS = json.loads(
         "invalid_parameter",
         "invalid_sha256",
         "invalid_vault_id",
+        "statement_timeout",
         "unknown_parameter",
         "vault_not_found"
       ],
@@ -2113,6 +2152,7 @@ SCHEMAS = json.loads(
         "invalid_document_id",
         "invalid_parameter",
         "invalid_vault_id",
+        "statement_timeout",
         "unknown_parameter",
         "vault_not_found"
       ],
@@ -2120,6 +2160,7 @@ SCHEMAS = json.loads(
         "internal_error",
         "invalid_parameter",
         "invalid_vault_id",
+        "statement_timeout",
         "unknown_parameter",
         "vault_not_found"
       ],
@@ -2130,6 +2171,7 @@ SCHEMAS = json.loads(
         "internal_error",
         "invalid_parameter",
         "invalid_vault_id",
+        "statement_timeout",
         "unknown_parameter",
         "vault_not_found",
         "vault_source_store_refused",
@@ -2141,6 +2183,7 @@ SCHEMAS = json.loads(
         "invalid_document_id",
         "invalid_parameter",
         "invalid_vault_id",
+        "statement_timeout",
         "unknown_parameter",
         "vault_not_found",
         "vault_source_store_refused",
@@ -2279,6 +2322,7 @@ SCHEMAS = json.loads(
             "staging_edge_not_found",
             "stale_chain_head",
             "stale_read",
+            "statement_timeout",
             "storage_query_failed",
             "supersede_target_not_active",
             "synced_from_inapplicable_edge_type",
@@ -5465,6 +5509,37 @@ SCHEMAS = json.loads(
       "document_id",
       "expected_version",
       "current_version"
+    ],
+    "type": "object"
+  },
+  "StatementTimeoutError": {
+    "additionalProperties": false,
+    "description": "The refusal envelope for this error code.",
+    "properties": {
+      "code": {
+        "const": "statement_timeout",
+        "description": "Machine-readable error code selecting this envelope.",
+        "type": "string"
+      },
+      "detail": {
+        "description": "No additional context is emitted for this error.",
+        "maxProperties": 0,
+        "type": [
+          "object",
+          "null"
+        ]
+      },
+      "message": {
+        "description": "Human-readable error description.",
+        "type": "string"
+      },
+      "read_meta": {
+        "$ref": "#/components/schemas/ReadMeta"
+      }
+    },
+    "required": [
+      "code",
+      "message"
     ],
     "type": "object"
   },

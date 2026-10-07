@@ -623,3 +623,88 @@ async def test_traverse_does_not_extend_a_self_loop_on_the_start_document(graph_
     assert len(rows) == _expected_rows("e1", pairs, 5)
     self_loop = [r for r in rows if r["source_id"] == r["target_id"]]
     assert [r["depth"] for r in self_loop] == [1]
+
+
+# ---------------------------------------------------------------------------
+# A cancelled statement reaches callers as ``statement_timeout``
+# ---------------------------------------------------------------------------
+
+
+async def test_a_pool_timeout_cancellation_maps_to_statement_timeout(pg_dsn, pg_schema):
+    from sage.api.errors import statement_timeout_error
+
+    pool = pool_from_conninfo(
+        pg_dsn, search_path=f"{pg_schema},public", max_size=1, statement_timeout_ms=200
+    )
+    await pool.open()
+    try:
+        async with pool.connection() as conn:
+            with pytest.raises(psycopg.errors.QueryCanceled) as caught:
+                await conn.execute("SELECT pg_sleep(2)")
+    finally:
+        await pool.close()
+    mapped = statement_timeout_error(caught.value)
+    assert mapped is not None and (mapped.code, mapped.status_code) == ("statement_timeout", 503)
+    try:
+        raise RuntimeError("wrapped") from caught.value
+    except RuntimeError as wrapped:
+        assert statement_timeout_error(wrapped) is not None
+    assert statement_timeout_error(RuntimeError("other")) is None
+
+
+async def test_catalog_query_lets_a_timeout_through_untranslated(pg_dsn, pg_schema):
+    """A cancelled catalog query is a timeout, not a refused query, so it is
+    not reported as ``storage_query_failed``."""
+    from sage.adapters.interfaces import StorageQueryError
+    from sage.storage.postgres.graph_store import PostgresGraphStore
+
+    pool = pool_from_conninfo(
+        pg_dsn, search_path=f"{pg_schema},public", max_size=1, statement_timeout_ms=300
+    )
+    await pool.open()
+    holder = await psycopg.AsyncConnection.connect(pg_dsn, options=f"-c search_path={pg_schema}")
+    try:
+        await holder.execute("LOCK TABLE documents IN ACCESS EXCLUSIVE MODE")
+        with pytest.raises(psycopg.errors.QueryCanceled) as caught:
+            await PostgresGraphStore(pool).query_documents()
+        assert not isinstance(caught.value, StorageQueryError)
+    finally:
+        await holder.rollback()
+        await holder.close()
+        await pool.close()
+
+
+def test_rest_answers_a_cancelled_statement_with_statement_timeout():
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from sage.api.errors import register_exception_handlers
+
+    app = FastAPI()
+    register_exception_handlers(app)
+
+    @app.get("/cancelled")
+    async def cancelled() -> None:
+        raise psycopg.errors.QueryCanceled("canceling statement due to statement timeout")
+
+    @app.get("/broken")
+    async def broken() -> None:
+        raise RuntimeError("boom")
+
+    client = TestClient(app, raise_server_exceptions=False)
+    timed_out = client.get("/cancelled")
+    assert timed_out.status_code == 503
+    assert timed_out.json()["code"] == "statement_timeout"
+    other = client.get("/broken")
+    assert (other.status_code, other.text) == (500, "Internal Server Error")
+    assert other.headers["content-type"].startswith("text/plain")
+
+
+def test_mcp_answers_a_cancelled_statement_with_statement_timeout():
+    from sage.mcp_server import _internal_error_payload
+
+    payload = _internal_error_payload(
+        psycopg.errors.QueryCanceled("canceling statement due to statement timeout"), "traverse"
+    )
+    assert payload["error"] == "statement_timeout"
+    assert _internal_error_payload(RuntimeError("boom"), "traverse")["error"] == "internal_error"
