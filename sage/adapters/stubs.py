@@ -1030,7 +1030,12 @@ class StubGraphStore(GraphStore):
 
     # --- Traversal ---
     async def traverse(
-        self, start_id: str, edge_type: str | None, direction: str, depth: int
+        self,
+        start_id: str,
+        edge_type: str | None,
+        direction: str,
+        depth: int,
+        row_limit: int | None = None,
     ) -> list[dict]:
         raise self._unsupported("traverse")
 

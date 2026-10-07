@@ -1410,9 +1410,19 @@ class GraphStore(ABC):
     # --- Traversal ---
     @abstractmethod
     async def traverse(
-        self, start_id: str, edge_type: str | None, direction: str, depth: int
+        self,
+        start_id: str,
+        edge_type: str | None,
+        direction: str,
+        depth: int,
+        row_limit: int | None = None,
     ) -> list[dict]:
-        """Walk the edge graph from a start document with chain-scoped resolution."""
+        """Walk the edge graph from a start document.
+
+        A document already on a row's path ends that path rather than
+        extending it. With ``row_limit``, at most ``row_limit + 1`` rows are
+        returned; more than ``row_limit`` means the walk was cut short.
+        """
 
     @abstractmethod
     async def chain_walk(self, start_id: str, edge_type: str) -> list[dict]:

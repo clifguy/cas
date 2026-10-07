@@ -542,6 +542,25 @@ async def test_traverse_200(client):
     body = resp2.json()
     assert body["start_id"] == doc_id
     assert isinstance(body["nodes"], list)
+    assert body["truncated"] is False
+
+
+async def test_traverse_depth_ceiling_is_fifty(client):
+    """POST /traverse accepts depth 50 and refuses 51 with 422."""
+    resp = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "source_type": "markdown"},
+    )
+    doc_id = resp.json()["document"]["id"]
+
+    ok = await client.post(
+        "/sage_vaults/test_vault/traverse", json={"start_id": doc_id, "depth": 50}
+    )
+    assert ok.status_code == 200
+    refused = await client.post(
+        "/sage_vaults/test_vault/traverse", json={"start_id": doc_id, "depth": 51}
+    )
+    assert refused.status_code == 422
 
 
 async def test_chain_defaults_edge_type_to_supersedes_200(app, client):

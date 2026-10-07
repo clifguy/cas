@@ -16343,7 +16343,7 @@
           "openWorldHint": false,
           "readOnlyHint": true
         },
-        "description": "Walk the document graph from a starting document.\n\nTraversal honors chain-scoped edge resolution: anchor fields\ndetermine which edges are visible from the query version's lineage;\n`retracts` edges can suppress downstream edges; `merged_from`\ntombstones suppress predecessor-chain edges downstream of the\ntermination point.\n\n**Outbound dedup on ``transitive_both`` edges.** For\n``transitive_both`` edge types (``covers``, ``references``,\n``bundles_with``, ``depends_on``, ``instantiated_from``), outbound\ntraversal deduplicates by target document: at most one\nrepresentative edge per (source-chain, target) pair is returned,\nchain-scoped resolution selecting the winner from the query\nposition's lineage. Distinct edges from different chain members\npointing at the same target are masked. To enumerate every edge into\na target chain, traverse **inbound** from the target instead.\n``edge_counts.{edge_type}`` reflects total visible edges from the\nquery position including masked ones; if ``edge_counts >\nlen(nodes)`` the result has masked siblings. ``supersedes`` is\npoint-to-point and not subject to this dedup; the rule applies only\nto the five ``transitive_both`` types.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``invalid_document_id`` (400)\n",
+        "description": "Walk the document graph from a starting document.\n\nTraversal honors chain-scoped edge resolution: anchor fields\ndetermine which edges are visible from the query version's lineage;\n`retracts` edges can suppress downstream edges; `merged_from`\ntombstones suppress predecessor-chain edges downstream of the\ntermination point.\n\n**Outbound dedup on ``transitive_both`` edges.** For\n``transitive_both`` edge types (``covers``, ``references``,\n``bundles_with``, ``depends_on``, ``instantiated_from``), outbound\ntraversal deduplicates by target document: at most one\nrepresentative edge per (source-chain, target) pair is returned,\nchain-scoped resolution selecting the winner from the query\nposition's lineage. Distinct edges from different chain members\npointing at the same target are masked. To enumerate every edge into\na target chain, traverse **inbound** from the target instead.\n``edge_counts.{edge_type}`` reflects total visible edges from the\nquery position including masked ones; if ``edge_counts >\nlen(nodes)`` the result has masked siblings. ``supersedes`` is\npoint-to-point and not subject to this dedup.\n\nA walk stops at a server row limit and then sets ``truncated``;\n``nodes`` and ``edge_counts`` are incomplete, so narrow it by\n``edge_type``, ``direction`` or ``depth``.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``invalid_document_id`` (400)\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -16354,7 +16354,7 @@
             },
             "depth": {
               "default": 3,
-              "description": "Maximum traversal depth. Range 1-1000.",
+              "description": "Maximum traversal depth. Range 1-50.",
               "type": "integer"
             },
             "direction": {

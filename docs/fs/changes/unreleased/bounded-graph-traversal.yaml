@@ -1,0 +1,27 @@
+classification: minor
+category: [capability, caller-adaptation]
+summary: >-
+  Bounds the cost of a graph traversal. The traverse walk no longer continues
+  through a document already on its path (the edge that reaches it is still
+  reported), and a single call collects at most a fixed number of raw edge rows
+  across all of its walks; TraverseResponse gains a truncated flag reporting a
+  walk the limit cut short. The traverse depth ceiling drops from 1000 to 50 on
+  REST and MCP (TraverseRequest.depth maximum; the MCP catalog note follows).
+  The stack configuration's postgres block gains statement_timeout_seconds
+  (default 60), applied as a session statement_timeout on the request
+  connection pools. Content-store optimize, the vault-migration table rewrites
+  and the tier3 unique-index build lift it for their own statements.
+  Document updates now refuse a key that is not a documents column.
+for_callers: >-
+  traverse accepts depth up to 50 (was 1000) and returns truncated: true when
+  the walk hit the server's row limit, in which case narrow it by edge_type,
+  direction or depth. Operators may set postgres.statement_timeout_seconds
+  (default 60) to bound any one SQL statement a request issues; a statement
+  that runs longer fails its request. The depth limit ships without a
+  deprecation period because the old ceiling was a security exposure.
+exemption:
+  kind: security-exposure
+  reason: >-
+    Serving the old depth ceiling keeps a request able to drive an unbounded
+    amount of database and server work, so it cannot be served alongside the
+    new limit.

@@ -1303,6 +1303,18 @@ class StackPostgresConfig(BaseModel):
         default=10,
         description="Maximum number of connections the async pool will open.",
     )
+    statement_timeout_seconds: int = Field(
+        default=60,
+        ge=1,
+        le=2147483,
+        description=(
+            "Upper bound, in seconds, on any one SQL statement issued on the "
+            "request connection pools. A statement that runs longer is "
+            "cancelled and its request fails. Schema provisioning, "
+            "content-store optimize, vault migration rewrites and "
+            "unique-index builds lift the bound for their own statements."
+        ),
+    )
     extensions: list[str] = Field(
         default_factory=lambda: ["vector", "pgstattuple"],
         description=(

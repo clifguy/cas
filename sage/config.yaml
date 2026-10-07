@@ -131,6 +131,7 @@ postgres:
   sslmode: null         # e.g. "require" for a managed hosted endpoint
   min_pool_size: 1
   max_pool_size: 10
+  statement_timeout_seconds: 60   # per statement on the request pools
   extensions:
     - vector
     - pgstattuple

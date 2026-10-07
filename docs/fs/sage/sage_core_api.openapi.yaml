@@ -1519,8 +1519,12 @@ paths:
         total visible edges from the query position, including those
         masked by dedup; if `edge_counts > len(nodes)`, the result has
         masked siblings. `supersedes` is point-to-point and not subject
-        to this dedup; the rule applies only to the five
-        `transitive_both` edge types.
+        to this dedup.
+
+
+        A walk stops at a server row limit and then sets `truncated`;
+        `nodes` and `edge_counts` are incomplete, so narrow it by
+        `edge_type`, `direction` or `depth`.
       tags: [Graph]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -6402,7 +6406,7 @@ components:
         depth:
           type: integer
           minimum: 1
-          maximum: 1000
+          maximum: 50
           default: 3
           description: Maximum traversal depth.
         debug:
@@ -7977,6 +7981,11 @@ components:
             Present only when the request set `debug: true`; otherwise
             null / omitted. Useful for diagnosing why an expected edge
             was suppressed or why an unexpected edge surfaced.
+        truncated:
+          type: boolean
+          default: false
+          description: >-
+            True when the walk reached the server's row limit and stopped early. `nodes` and their `edge_counts` are then incomplete; narrow the walk with `edge_type`, `direction`, or a smaller `depth`.
         read_meta:
           $ref: "#/components/schemas/ReadMeta"
 

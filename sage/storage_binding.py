@@ -167,7 +167,15 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
         self._conn_environ = None if read_env_password else {}
         self._create_extensions = create_extensions
 
-    def _connection_params(self, search_path: str | None = None) -> PostgresConnectionParams:
+    def _connection_params(
+        self, search_path: str | None = None, *, request_pool: bool = False
+    ) -> PostgresConnectionParams:
+        """Connection parameters under the profile's coordinates.
+
+        ``request_pool`` adds the configured statement timeout, which bounds
+        the statements request handlers issue; plain provisioning
+        connections (schema bootstrap, drops, audit writes) stay unbounded.
+        """
         from sage.storage.postgres.pool import PostgresConnectionParams
 
         pg = self.postgres_config
@@ -180,6 +188,7 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
             search_path=search_path,
             min_pool_size=pg.min_pool_size,
             max_pool_size=pg.max_pool_size,
+            statement_timeout_ms=(pg.statement_timeout_seconds * 1000 if request_pool else None),
         )
 
     async def _bootstrap(self, vault_id: str) -> None:
@@ -226,7 +235,7 @@ class PostgresVaultStorageProvisioner(VaultStorageProvisioner):
 
         await self._bootstrap(vault_id)
         pool = create_pool(
-            self._connection_params(search_path=f"{vault_id},public"),
+            self._connection_params(search_path=f"{vault_id},public", request_pool=True),
             connection_class=self._connection_class,
             environ=self._conn_environ,
         )

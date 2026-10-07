@@ -595,6 +595,18 @@ async def test_malformed_document_id_yields_invalid_document_id(invoke, vault_se
     assert "not-a-doc-id" in result["message"]
 
 
+async def test_traverse_depth_ceiling_is_fifty(vault_services):
+    """The MCP traverse tool accepts depth 50, reports ``truncated``, and
+    refuses depth 51 with a structured error."""
+    doc_id = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))["id"]
+
+    ok = _parse(await traverse("test_vault", start_id=doc_id, depth=50))
+    assert ok["truncated"] is False
+    refused = _parse(await traverse("test_vault", start_id=doc_id, depth=51))
+    assert "error" in refused, f"got: {refused!r}"
+    assert "depth" in json.dumps(refused)
+
+
 async def test_read_path_three_way_error_distinctness(vault_services):
     """A malformed id, a well-formed-but-absent id, and a genuine internal
     error are three distinct, distinguishable shapes on the read path. The
