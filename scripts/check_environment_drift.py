@@ -152,13 +152,14 @@ def _get(endpoint: str) -> dict[str, Any]:
 def fetch_live_environments(repo: str | None) -> list[dict[str, Any]]:
     """Each environment, with its deployment-branch policies folded in.
 
-    Refuses a listing shorter than the total the forge reports, so a page that
-    was not read cannot pass as an environment that does not exist.
+    Refuses a listing shorter than the total the forge reports, or one that
+    reports no total, so a page that was not read cannot pass as an environment
+    that does not exist.
     """
     base = f"repos/{repo}" if repo else "repos/{owner}/{repo}"
     listing = _get(f"{base}/environments{_PAGE}")
     environments = list(listing.get("environments") or [])
-    if len(environments) != listing.get("total_count", len(environments)):
+    if len(environments) != listing.get("total_count"):
         raise RuntimeError(
             f"environment listing incomplete: read {len(environments)} of "
             f"{listing.get('total_count')}"
@@ -167,7 +168,7 @@ def fetch_live_environments(repo: str | None) -> list[dict[str, Any]]:
         name = quote(str(env["name"]), safe="")
         policies = _get(f"{base}/environments/{name}/deployment-branch-policies{_PAGE}")
         branch_policies = list(policies.get("branch_policies") or [])
-        if len(branch_policies) != policies.get("total_count", len(branch_policies)):
+        if len(branch_policies) != policies.get("total_count"):
             raise RuntimeError(f"branch-policy listing for {env['name']} incomplete")
         env["branch_policies"] = branch_policies
     return environments

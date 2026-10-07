@@ -116,6 +116,15 @@ az ad app federated-credential create --id "$APP_ID" --parameters "{
 
 The subject, shown as a placeholder, is `repo:<OWNER>/<REPO>:environment:<env>`.
 
+Create the Environment and set its protection rules (step 4) before the first
+deploy that uses this credential, and keep the two names identical. The
+credential trusts whatever environment carries that name, and nothing here or in
+the role script checks that the environment exists or is protected; the
+scheduled environment check verifies the protections of every environment that
+does exist. Order matters because GitHub creates a missing environment, with no
+protection rules, the first time a job names it; one created that way stays
+unprotected until the next scheduled check reports it.
+
 Add **no other subject** — no `ref:` (branch or tag) and no `pull_request`
 subject. Only an environment subject puts the token behind the Environment's
 protection rules (step 4); a branch subject would let a run that never binds the
@@ -198,10 +207,13 @@ non-zero while any assignment outside the narrowed set remains, inherited ones
 included. Every read names the subscription, so it does not matter which
 subscription your CLI session currently points at.
 
-Azure may store a condition in a normalized form. If a re-run replaces the
-conditioned assignment every time, compare its stored condition with the one
-the script builds; the replacement deletes and then re-creates it, so an
-interrupted run leaves the identity unable to assign roles until the next run.
+Azure may store a condition in a normalized form. If it does, three things
+follow, all failing closed: a re-run replaces the conditioned assignment every
+time, `--remove-legacy` refuses because it cannot find the assignment with the
+expected condition, and `--show` reports that assignment as outside the
+narrowed set. Compare the stored condition with the one the script builds. The
+replacement deletes and then re-creates the assignment, so an interrupted run
+leaves the identity unable to assign roles until the next run.
 
 ### 4. Create the Environment and set its variables
 

@@ -5,8 +5,8 @@ its argument vector to ``$AZURE_CALLS`` and answers from, or writes to, the JSON
 model in ``$AZURE_STATE``: built-in role definitions by name, custom role
 definitions, role assignments, resource groups, registered resource providers
 and the deploy application's federated credentials. Built-in role ids are
-derived from the role name, so no GUID-shaped literal appears in the repository
-and the test can still recompute them.
+derived from the role name, so this stand-in carries no GUID-shaped literal and
+the test can still recompute them.
 
 ``--query`` is answered for exactly the expressions the script sends, each
 rendered the way the real CLI renders it with ``-o tsv``; an unrecognised query
@@ -29,7 +29,12 @@ _CREDENTIAL_ROWS = (
     "[].join('|', [subject || '', issuer || '', claimsMatchingExpression.value || ''])"
 )
 _ASSIGNMENT_ROWS = "[].join('|', [id, roleDefinitionName || '', scope, condition || ''])"
-_ROLE_ACTIONS = "[0].permissions[0].actions | sort(@) | join(',', @)"
+_ROLE_SHAPE = (
+    "[0].join('|', [to_string(length(permissions)), "
+    "join(',', sort(permissions[0].actions)), join(',', permissions[0].notActions), "
+    "join(',', permissions[0].dataActions), join(',', permissions[0].notDataActions), "
+    "join(',', assignableScopes)])"
+)
 
 
 def builtin_role_id(name: str) -> str:
@@ -105,8 +110,23 @@ def main(argv: list[str]) -> int:
             ]
             if query == "[0].name":
                 _lines([hits[0]["name"]] if hits else [])
-            elif query == _ROLE_ACTIONS:
-                _lines([",".join(sorted(hits[0]["actions"]))] if hits else [])
+            elif query == _ROLE_SHAPE:
+                if hits:
+                    d = hits[0]
+                    _lines(
+                        [
+                            "|".join(
+                                [
+                                    str(d.get("blocks", 1)),
+                                    ",".join(sorted(d["actions"])),
+                                    ",".join(d.get("notActions", [])),
+                                    ",".join(d.get("dataActions", [])),
+                                    ",".join(d.get("notDataActions", [])),
+                                    ",".join(d["assignableScopes"]),
+                                ]
+                            )
+                        ]
+                    )
             else:
                 return _unknown(argv)
         elif query == "[0].name":

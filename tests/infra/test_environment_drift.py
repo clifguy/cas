@@ -292,6 +292,16 @@ def test_fetch_folds_branch_policies_into_each_environment(
     with pytest.raises(RuntimeError, match="incomplete"):
         fetch_live_environments("owner/repo")
 
+    # A listing that reports no total is not evidence it was read in full.
+    policies["total_count"] = 1
+    del listing["total_count"]
+    with pytest.raises(RuntimeError, match="incomplete"):
+        fetch_live_environments("owner/repo")
+    listing["total_count"] = 1
+    del policies["total_count"]
+    with pytest.raises(RuntimeError, match="incomplete"):
+        fetch_live_environments("owner/repo")
+
 
 # ---------------------------------------------------------------------------
 # The gate: the scheduled workflow runs it, the runbook names it

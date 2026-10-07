@@ -164,13 +164,18 @@ custom_role_id() {
     --query "[0].name" -o tsv
 }
 
+ROLE_SHAPE_QUERY="[0].join('|', [to_string(length(permissions)), \
+join(',', sort(permissions[0].actions)), join(',', permissions[0].notActions), \
+join(',', permissions[0].dataActions), join(',', permissions[0].notDataActions), \
+join(',', assignableScopes)])"
+
 joined() {
   local IFS=","
   printf '%s' "$*"
 }
 
 ensure_custom_role() {
-  local name="$1" description="$2" id actions json
+  local name="$1" description="$2" id shape expected json
   shift 2
   id="$(custom_role_id "$name")"
   if [ -z "$id" ]; then
@@ -185,11 +190,15 @@ ensure_custom_role() {
     fi
   fi
   # A role that exists is verified, not trusted: one widened by hand would
-  # otherwise survive every re-run.
-  actions="$(az role definition list --custom-role-only true --name "$name" --scope "$SUB_SCOPE" \
-    --query "[0].permissions[0].actions | sort(@) | join(',', @)" -o tsv)"
-  if [ "$actions" != "$(joined "$@")" ]; then
-    echo "ERROR: role '$name' grants [$actions], expected [$(joined "$@")]; correct it or delete it and re-run" >&2
+  # otherwise survive every re-run. The whole grant is compared -- the number of
+  # permission blocks, the actions, any not-actions, any data actions and the
+  # assignable scopes -- since widening can come through any of them.
+  shape="$(az role definition list --custom-role-only true --name "$name" --scope "$SUB_SCOPE" \
+    --query "$ROLE_SHAPE_QUERY" -o tsv)"
+  expected="1|$(joined "$@")||||$SUB_SCOPE"
+  if [ "$shape" != "$expected" ]; then
+    echo "ERROR: role '$name' is [$shape], expected [$expected]" \
+      "(blocks|actions|notActions|dataActions|notDataActions|scopes); correct it or delete it and re-run" >&2
     return 1
   fi
   printf '%s\n' "$id"

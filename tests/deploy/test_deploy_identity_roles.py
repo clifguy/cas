@@ -352,19 +352,36 @@ def test_custom_roles_carry_only_their_actions(tmp_path: Path) -> None:
     assert all(d["assignableScopes"] == [_SUB] for d in state["custom_roles"])
 
 
-def test_existing_widened_role_is_refused(tmp_path: Path) -> None:
-    """G2b: a custom role already present is verified, not trusted; one widened
-    by hand stops the run before anything is assigned with it."""
+@pytest.mark.parametrize(
+    ("field", "value", "reported"),
+    [
+        ("actions", ["Microsoft.Resources/deployments/cancel/action"], "cancel/action"),
+        ("dataActions", ["Microsoft.Storage/storageAccounts/*"], "storageAccounts"),
+        ("notDataActions", ["Microsoft.KeyVault/vaults/*"], "vaults"),
+        ("assignableScopes", ["/subscriptions/other"], "/subscriptions/other"),
+        ("blocks", 2, "2|"),
+    ],
+    ids=["action", "data-action", "not-data-action", "assignable-scope", "second-block"],
+)
+def test_existing_widened_role_is_refused(
+    tmp_path: Path, field: str, value: Any, reported: str
+) -> None:
+    """G2b: a custom role already present is verified, not trusted; one changed
+    by hand -- in its actions, data actions, scopes or permission blocks -- stops
+    the run before anything is assigned with it."""
     state = _granted(tmp_path)
     for definition in state["custom_roles"]:
         if definition["roleName"] == _ORCHESTRATOR:
-            definition["actions"].append("Microsoft.Resources/deployments/cancel/action")
+            if isinstance(value, list):
+                definition[field] = [*definition.get(field, []), *value]
+            else:
+                definition[field] = value
     state["assignments"] = [a for a in state["assignments"] if a["role"] != _ORCHESTRATOR]
 
     result, _, after = _run(tmp_path, state)
 
     assert result.returncode != 0
-    assert "cancel/action" in result.stderr
+    assert reported in result.stderr
     assert (_ORCHESTRATOR, _SUB) not in _held(after)
 
 
