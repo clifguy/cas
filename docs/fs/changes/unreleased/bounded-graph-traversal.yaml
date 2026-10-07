@@ -8,8 +8,8 @@ summary: >-
   walk the limit cut short. The traverse depth ceiling drops from 1000 to 50 on
   REST and MCP (TraverseRequest.depth maximum; the MCP catalog note follows).
   The stack configuration's postgres block gains statement_timeout_seconds
-  (default 60), applied as a session statement_timeout on the request
-  connection pools. Content-store optimize, the vault-migration table rewrites
+  (default 60), applied as a session statement_timeout on the per-vault
+  connection pools that request handling and background pipeline work share. Content-store optimize, the vault-migration table rewrites
   and the tier3 unique-index build lift it for their own statements.
   A statement the timeout cancels answers the new cross-cutting error code
   statement_timeout (503) on REST, MCP and the CAS Application API mirror,

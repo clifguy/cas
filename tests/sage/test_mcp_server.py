@@ -3840,12 +3840,11 @@ async def test_traverse_statement_timeout_reaches_the_caller_typed(
 ):
     """A database statement cancelled mid-traverse answers ``statement_timeout``
     through the tool, not ``internal_error``."""
-    import psycopg
-
     from sage.services.graph_ops import GraphOpsService
+    from tests.helpers.statement_timeout import TimedOutStatement
 
     async def cancelled(self, request):
-        raise psycopg.errors.QueryCanceled("canceling statement due to statement timeout")
+        raise TimedOutStatement()
 
     monkeypatch.setattr(GraphOpsService, "traverse", cancelled)
     doc_id = _parse(await ingest_document("test_vault", "test/sample.md", "markdown"))["id"]

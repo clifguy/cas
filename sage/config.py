@@ -1310,8 +1310,9 @@ class StackPostgresConfig(BaseModel):
         le=2147483,
         description=(
             "Upper bound, in seconds, on any one SQL statement issued on the "
-            "request connection pools. A statement that runs longer is "
-            "cancelled and its request fails. Schema provisioning, "
+            "per-vault connection pools that request handling and background "
+            "pipeline work share. A statement that runs longer is cancelled "
+            "and its request or task fails. Schema provisioning, "
             "content-store optimize, vault migration rewrites and "
             "unique-index builds lift the bound for their own statements."
         ),

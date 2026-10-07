@@ -1224,12 +1224,11 @@ async def test_edge_id_route_rejects_non_uuid_400(client, method, path, bad_inpu
 async def test_traverse_statement_timeout_answers_503(app, client, monkeypatch):
     """A database statement cancelled mid-traverse answers 503
     ``statement_timeout`` in the error envelope."""
-    import psycopg
-
     from sage.services.graph_ops import GraphOpsService
+    from tests.helpers.statement_timeout import TimedOutStatement
 
     async def cancelled(self, request):
-        raise psycopg.errors.QueryCanceled("canceling statement due to statement timeout")
+        raise TimedOutStatement()
 
     resp = await client.post(
         "/sage_vaults/test_vault/documents",

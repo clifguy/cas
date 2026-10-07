@@ -1030,9 +1030,11 @@ class StorageQueryFailedError(SAGEError):
         )
 
 
-# SQLSTATE ``query_canceled``: the server cancelled a statement, here because
-# it ran past the request pool's statement timeout.
+# SQLSTATE ``query_canceled`` covers every server-side cancellation, an
+# operator's cancel among them; the primary message names the statement
+# timeout only when that is the cause.
 _QUERY_CANCELED_SQLSTATE = "57014"
+_STATEMENT_TIMEOUT_MESSAGE = "statement timeout"
 
 
 class StatementTimeoutError(SAGEError):
@@ -1056,16 +1058,23 @@ class StatementTimeoutError(SAGEError):
 
 def statement_timeout_error(exc: BaseException) -> StatementTimeoutError | None:
     """The public error for ``exc`` when it, or an exception it chains from,
-    is a cancelled database statement; otherwise ``None``.
+    is a database statement the statement timeout cancelled; otherwise
+    ``None``.
 
-    Matched by SQLSTATE rather than driver class, so the request surfaces
-    need no storage-driver import.
+    Matched by SQLSTATE and the server's primary message rather than driver
+    class, so the request surfaces need no storage-driver import. Any other
+    cancellation stays an unexpected error.
     """
     seen: set[int] = set()
     current: BaseException | None = exc
     while current is not None and id(current) not in seen:
         seen.add(id(current))
-        if getattr(current, "sqlstate", None) == _QUERY_CANCELED_SQLSTATE:
+        diag = getattr(current, "diag", None)
+        primary = getattr(diag, "message_primary", None) or ""
+        if (
+            getattr(current, "sqlstate", None) == _QUERY_CANCELED_SQLSTATE
+            and _STATEMENT_TIMEOUT_MESSAGE in primary
+        ):
             return StatementTimeoutError()
         current = current.__cause__ or current.__context__
     return None
