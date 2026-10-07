@@ -439,3 +439,28 @@ async def test_health_is_served_while_a_projection_blocks():
 
     assert health.status_code == 200
     assert await projection is True
+
+
+async def test_projection_sees_the_callers_context_variables():
+    """TEST-SAGE-AD-237: the projection worker runs under a copy of the
+    caller's context, so a context variable set by the request is visible to
+    the adapter, and an adapter's exception reaches the caller unchanged.
+    """
+    import contextvars
+
+    from sage.services.ingestion import _run_projection
+
+    marker: contextvars.ContextVar[str] = contextvars.ContextVar("marker", default="unset")
+    marker.set("request")
+
+    class _Reading:
+        async def project(self, source_path, config=None):
+            return marker.get()
+
+    class _Failing:
+        async def project(self, source_path, config=None):
+            raise KeyError("adapter failure")
+
+    assert await _run_projection(_Reading(), Path("x.md"), None) == "request"
+    with pytest.raises(KeyError, match="adapter failure"):
+        await _run_projection(_Failing(), Path("x.md"), None)

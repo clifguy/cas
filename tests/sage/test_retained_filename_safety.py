@@ -140,3 +140,21 @@ def test_download_recipe_names_the_restricted_form():
 
     assert recipe_filename("imports/-x `y`.md") == "x _y_.md"
     assert recipe_filename("imports/plain.md") == "plain.md"
+
+
+async def test_a_colliding_name_is_restricted_too(vault, tmp_path):
+    """TEST-SAGE-BH-193: a second external file under the same unsafe name,
+    with different bytes, is retained under the restricted stem with its
+    disambiguating suffix, on both bindings.
+    """
+    first = await _ingest_external(tmp_path, "-rf `id`.md")
+    other = tmp_path / "inbox2"
+    other.mkdir()
+    src = other / "-rf `id`.md"
+    src.write_text("# Other\n\nDifferent bytes.\n")
+    second = await ingest_document(_VAULT_ID, str(src), "markdown")
+    second = second if isinstance(second, dict) else json.loads(second)
+
+    assert first["source_path"] == "imports/rf _id_.md"
+    assert second["source_path"].startswith("imports/rf _id__")
+    assert not (_UNSAFE & set(second["source_path"]))

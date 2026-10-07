@@ -131,3 +131,64 @@ def test_agent_name_from_user_agent_refuses_a_trailing_newline():
     """
     assert agent_from_user_agent("claude-code/1.0") == "claude-code"
     assert agent_from_user_agent("claude-code\n/1.0") is None
+
+
+class _NoConnection:
+    """A connection class that fails the test if the provisioner connects."""
+
+    @classmethod
+    async def connect(cls, *args, **kwargs):
+        raise AssertionError("the provisioner connected before refusing the name")
+
+
+@pytest.mark.parametrize("operation", ["open", "drop"])
+async def test_the_provisioner_refuses_a_reserved_name_before_connecting(tmp_path, operation):
+    """TEST-SAGE-BH-190: the storage provisioner refuses a reserved vault id
+    on provision and on drop, naming it reserved, before opening a connection.
+    """
+    from sage.config import SageCoreConfig
+    from sage.storage_binding import PostgresVaultStorageProvisioner
+
+    provisioner = PostgresVaultStorageProvisioner(
+        SageCoreConfig().postgres, connection_class=_NoConnection
+    )
+
+    with pytest.raises(ValueError, match="reserved"):
+        if operation == "open":
+            await provisioner.open_vault_storage(
+                "public", tmp_path, need_graph=True, need_content=True
+            )
+        else:
+            await provisioner.drop_vault_schema("public")
+
+
+@pytest.mark.parametrize(
+    "check",
+    [
+        pytest.param(
+            lambda v: __import__(
+                "sage.utils.keyword_fidelity_eval", fromlist=["_validate_schema"]
+            )._validate_schema(v),
+            id="eval-schema",
+        ),
+    ],
+)
+def test_remaining_identifier_guards_refuse_a_trailing_newline(check):
+    """TEST-SAGE-BH-191: the evaluation tool's schema guard refuses a trailing
+    newline and accepts the same name without one.
+    """
+    check("abc")
+    with pytest.raises(ValueError):
+        check("abc\n")
+
+
+def test_a_date_segment_with_a_trailing_newline_is_not_a_date():
+    """TEST-SAGE-BH-192: a filename segment that is a date followed by a
+    newline is not extracted as the date.
+    """
+    from sage.services.filename_parser import FilenameParser
+
+    parser = FilenameParser({"filename_extraction": {"separator": "_"}})
+
+    assert parser.parse("Proj_2026-01-02_Title").date == "2026-01-02"
+    assert parser.parse("Proj_2026-01-02\n_Title").date is None

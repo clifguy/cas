@@ -3602,3 +3602,11 @@ lines.
 
 **Expected:** `SourceReadError` from `project` for each kind.
 
+### TEST-SAGE-AD-237: Projection sees the caller's context variables
+
+**Artifact:** `ingestion._run_projection`
+**Category:** event loop
+**Precondition:** A context variable set by the caller; an adapter that reads it and one that raises.
+
+**Expected:** The adapter reads the caller's value; the adapter's `KeyError` reaches the caller unchanged.
+

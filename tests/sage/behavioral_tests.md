@@ -4083,3 +4083,38 @@ would pass whatever the default was.
 
 **Expected:** Document-store binding projects the store copy; filesystem binding projects its tree.
 
+### TEST-SAGE-BH-190: The provisioner refuses a reserved name before connecting
+
+**Artifact:** `PostgresVaultStorageProvisioner`
+**Category:** reserved schemas
+**Precondition:** Vault id `public` on provision and on drop, with a connection class that fails if used.
+
+**Expected:** `ValueError` naming the name reserved; no connection attempted.
+
+
+### TEST-SAGE-BH-191: The evaluation tool's schema guard refuses a trailing newline
+
+**Artifact:** `keyword_fidelity_eval._validate_schema`
+**Category:** identifier shape
+**Precondition:** `abc` and `abc\n`.
+
+**Expected:** The first accepted, the second refused.
+
+
+### TEST-SAGE-BH-192: A date segment with a trailing newline is not a date
+
+**Artifact:** `FilenameParser.parse`
+**Category:** identifier shape
+**Precondition:** `Proj_2026-01-02_Title` and the same with a newline after the date.
+
+**Expected:** The first yields the date; the second yields none.
+
+
+### TEST-SAGE-BH-193: A colliding unsafe name is restricted too
+
+**Artifact:** `ingest_document (both bindings)`
+**Category:** retained names
+**Precondition:** Two external files with different bytes under the same unsafe name.
+
+**Expected:** The first is retained under the restricted name; the second under the restricted stem with a disambiguating suffix, with no unsafe character.
+
