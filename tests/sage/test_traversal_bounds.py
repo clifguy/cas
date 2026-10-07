@@ -610,3 +610,16 @@ async def test_migration_lock_wait_is_not_bounded_by_the_pool_timeout(
     finally:
         await holder.close()
         await pool.close()
+
+
+async def test_traverse_does_not_extend_a_self_loop_on_the_start_document(graph_store):
+    """An edge from the start document to itself is reported once and ends its
+    path at the first step."""
+    pairs = [("e1", "e1"), ("e1", "e2"), ("e2", "e1")]
+    await _seed(graph_store, ["e1", "e2"], pairs)
+    rows = await graph_store.traverse(
+        start_id=_id("e1"), edge_type="references", direction="outbound", depth=5
+    )
+    assert len(rows) == _expected_rows("e1", pairs, 5)
+    self_loop = [r for r in rows if r["source_id"] == r["target_id"]]
+    assert [r["depth"] for r in self_loop] == [1]
