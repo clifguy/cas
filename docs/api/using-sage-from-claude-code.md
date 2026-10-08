@@ -37,15 +37,21 @@ One-time setup:
 2. Store the principal's `client_id` and secret as environment variables (never
    in code).
 
-Then your app mints its own tokens, forever, from that secret:
+Then your app mints its own tokens, forever, from that secret. The token
+endpoint and the resource to request a token for are advertised by the
+deployment itself, so read them from its metadata rather than copying them
+from anywhere:
 
 ```bash
-curl -s -X POST \
-  "https://login.microsoftonline.com/ac771f28-72d5-4e2e-8751-ce45165efc64/oauth2/v2.0/token" \
+SAGE=https://sage.cor.org
+TOKEN_URL="$(curl -s "$SAGE/.well-known/oauth-authorization-server" | jq -r .token_endpoint)"
+SCOPE="$(curl -s "$SAGE/.well-known/oauth-protected-resource" | jq -r .resource)/.default"
+
+curl -s -X POST "$TOKEN_URL" \
   -d "grant_type=client_credentials" \
   -d "client_id=$SAGE_CLIENT_ID" \
   -d "client_secret=$SAGE_CLIENT_SECRET" \
-  -d "scope=api://ab32d173-6043-4b81-af68-54830d806689/.default"
+  -d "scope=$SCOPE"
 ```
 
 The response carries `access_token` and `expires_in`. Cache the token and
@@ -62,15 +68,17 @@ again — no re-login. Mint on demand instead of pasting a static value:
 
 ```bash
 sage-token() { az account get-access-token \
-  --scope "api://ab32d173-6043-4b81-af68-54830d806689/.default" \
+  --scope "https://sage.cor.org/.default" \
   --query accessToken -o tsv; }
 # curl -H "Authorization: Bearer $(sage-token)" https://sage.cor.org/...
 ```
 
-> The tenant id, audience (`api://ab32d173…`), and scope above are all
-> advertised at `https://sage.cor.org/.well-known/oauth-authorization-server` —
-> read them there rather than trusting this page if you ever target a different
-> deployment.
+> The scope is the deployment's advertised resource with `/.default`
+> appended. The resource is listed at
+> `https://sage.cor.org/.well-known/oauth-protected-resource`, and the token
+> endpoint, which names the tenant, at
+> `https://sage.cor.org/.well-known/oauth-authorization-server`. Read both
+> there if you ever target a different deployment.
 
 ## 2. Hand Claude Code this prompt
 

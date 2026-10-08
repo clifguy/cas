@@ -18,9 +18,20 @@ build/
 coverage.xml
 htmlcov/
 
-# Environment
+# Environment and local credentials. These hold secrets or machine-specific
+# settings and are ignored here, not only by a contributor's own excludes, so a
+# fresh clone cannot commit them.
 .env
+.env.*
+!.env.example
+*.pem
+*.key
+.mcp.json
 CLAUDE.local.md
+**/.claude/settings.local.json
+
+# Workflow activation receipt: local evidence for one checkout, never shared
+/.development-skills/activation-receipt.md
 
 # Claude Code scratch (worktrees created by EnterWorktree)
 .claude/worktrees/

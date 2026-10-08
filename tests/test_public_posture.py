@@ -7,13 +7,12 @@ and enforced at commit time by the ``cas-code-review`` skill §P1. This test
 is the substrate-level counterpart: a deterministic gate that fails the
 build whenever a forbidden pattern reappears in a tracked file.
 
-Twelve invariants are checked. The numbering is the gate's own and is not
-contiguous: T9 has never been assigned, and T11 is described below but
-has no test function yet.
+The numbering is the gate's own and is not contiguous: T9 has never been
+assigned, and T11 is described below but has no test function yet.
 
   T1. Use-case-specific terms (PIM, theology, patent, prosecution) must
       not appear in ``.py`` / ``.yaml`` / ``.yml`` / ``.json`` / ``.md``
-      / ``.ts`` / ``.tsx`` files in scope (see :data:`_EXCLUDED_TOP_LEVEL_DIRS`).
+      / ``.ts`` / ``.tsx`` files in scope (see :data:`_EXCLUDED_PREFIXES`).
       Regex tuned per-term: PIM uses both word boundaries because the
       three-letter token would otherwise match ``pimple``/``pimento``;
       ``\\btheolog`` and ``\\b(patent|prosecution)`` drop the trailing
@@ -26,8 +25,10 @@ has no test function yet.
       ``#`` comments. Distinguished from string literals by AST + tokenize
       parsing. ``CAS-ADR-N`` is preserved (regex does not overlap).
 
-  T3. ``/Users/clifguy/`` filesystem paths must not appear in any tracked
-      file in scope (see :data:`_EXCLUDED_TOP_LEVEL_DIRS`).
+  T3. No tracked file in scope (see :data:`_EXCLUDED_PREFIXES`) names a
+      home directory -- ``/Users/<name>/`` or ``/home/<name>/`` -- unless
+      ``<name>`` is one of the placeholders fixtures use
+      (:data:`_PLACEHOLDER_HOME_NAMES`).
 
   T4. SDLC scaffolding phrases ("decision sheet", "dispatcher prompt",
       "subagent contract", "work plan") must not appear in ``.py``
@@ -71,20 +72,35 @@ has no test function yet.
        subscript targets are documented exclusions rather than oversights
        — see ``_binding_violations``.
 
-Scope — top-level directories excluded from T1/T3/T4/T12/T13/T14:
+Scope — trees excluded from T1/T3/T4/T12/T13/T14/T19:
 
 - ``domains/`` is the executor-defined home for use-case-specific configs.
   The establishing cleanup deletes ``domains/pim_health/`` entirely;
   any future domain subtree is expected to be use-case-specific by
   design, so the gate scopes around it.
-- ``.claude/`` is Claude Code workspace tooling — skill definitions,
-  settings, agent prompts. It is tracked, but its content includes
-  documents like ``cas-code-review/SKILL.md`` that must quote the
-  forbidden patterns in order to explain what the skill catches. The
-  commit-time enforcement provided by the ``cas-code-review`` skill
-  still applies to ``.claude/`` files because it reads the diff
-  regardless of path — this gate is the substrate backstop for product
-  code, not workspace tooling.
+- ``.claude/skills/cas-code-review/`` holds the commit-time review
+  procedure, which must quote the forbidden patterns in order to explain
+  what it catches. That review reads every diff regardless of path, so it
+  covers its own file. The rest of ``.claude/`` -- workspace settings and
+  launch configuration -- is in scope like any other tracked file.
+
+  T17. The tracked ``.gitignore`` alone ignores the files that commonly
+       hold local credentials or machine-specific settings (local Claude
+       settings, the workflow activation receipt, ``.env.*``, ``*.pem``,
+       ``*.key``, ``.mcp.json``), so a fresh clone with no machine-level
+       excludes cannot commit them. Checked with ``git check-ignore`` in a
+       scratch repository holding only that file.
+
+  T18. No tracked file carries a build, database, archive or key-material
+       extension (:data:`_ARTIFACT_SUFFIXES`), and none exceeds
+       :data:`_MAX_TRACKED_BYTES` unless :data:`OVERSIZE_ALLOWLIST` names it.
+
+  T19. No tracked file in scope carries a GUID other than a public
+       constant (:data:`PUBLIC_GUID_ALLOWLIST`: built-in role ids, a
+       namespace, documentation examples) or a patterned fixture value
+       (:func:`_is_patterned_guid`). A tenant, client or application id is
+       resolved at run time, never written down. A GUID assembled from
+       pieces at run time is beyond a text scan; review covers it.
 
   T5. ``README.md`` exists at repo root.
 
@@ -101,11 +117,10 @@ Scope — top-level directories excluded from T1/T3/T4/T12/T13/T14:
 
   T11. ``CLAUDE.md`` is the public stub (under 4096 bytes).
 
-The six allowlist constants near the top of the module follow the
-pattern of ``KNOWN_VIOLATIONS`` in ``tests/sage/test_typed_alias_coverage.py``
-and ``MCP_ONLY_ARGUMENTS`` in ``tests/sage/surface_divergences.py``.
-All six are empty at the close of the establishing cleanup. Every
-entry added later requires a 1-line rationale.
+The allowlist constants near the top of the module follow the pattern of
+``KNOWN_VIOLATIONS`` in ``tests/sage/test_typed_alias_coverage.py`` and
+``MCP_ONLY_ARGUMENTS`` in ``tests/sage/surface_divergences.py``. Every
+entry requires a 1-line rationale.
 
 Anti-coincidental-pass coverage:
 
@@ -176,11 +191,13 @@ from __future__ import annotations
 
 import ast
 import re
+import shutil
 import subprocess
 import textwrap
 import tokenize
+import uuid
 from collections.abc import Iterable
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Final
 
 import pytest
@@ -277,6 +294,79 @@ _BUILD_ARTIFACTS: Final[frozenset[str]] = frozenset(
     {".coverage", "coverage.xml", "repo_file_inventory.xlsx"}
 )
 
+# Extensions no tracked file may carry (T18): compiled code, databases,
+# coverage and log output, archives and packages, and key or certificate
+# material. Compared case-insensitively against the final suffix.
+_ARTIFACT_SUFFIXES: Final[frozenset[str]] = frozenset(
+    {
+        ".pyc",
+        ".pyo",
+        ".so",
+        ".dylib",
+        ".db",
+        ".sqlite",
+        ".sqlite3",
+        ".log",
+        ".zip",
+        ".tar",
+        ".gz",
+        ".tgz",
+        ".whl",
+        ".egg",
+        ".pem",
+        ".key",
+        ".p12",
+        ".pfx",
+        ".crt",
+        ".der",
+        ".jks",
+        ".keystore",
+    }
+)
+
+# Largest tracked file allowed without an allowlist entry (T18). The
+# generated MCP catalog is the largest legitimate file and sits well under it.
+_MAX_TRACKED_BYTES: Final[int] = 2 * 1024 * 1024
+
+# Home-directory names that appear in fixtures and examples as stand-ins
+# (T3). Any other name after ``/Users/`` or ``/home/`` is someone's machine.
+_PLACEHOLDER_HOME_NAMES: Final[frozenset[str]] = frozenset(
+    {"me", "user", "u", "x", "runner", "<name>", "<user>", "you"}
+)
+# Container service accounts' home directories, named by the images (T3).
+_SERVICE_HOME_NAMES: Final[frozenset[str]] = frozenset({"sage", "bff"})
+# A home directory with or without a trailing slash: ``cd /Users/<name>`` names
+# a machine as surely as ``/Users/<name>/repos`` does.
+_HOME_PATH_RE: Final[re.Pattern[str]] = re.compile(r"/(?:Users|home)/([A-Za-z0-9._-]+)")
+
+_GUID_RE: Final[re.Pattern[str]] = re.compile(
+    r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}(?![0-9A-Fa-f])"
+)
+
+# Paths the tracked ``.gitignore`` must ignore (T17), and controls it must
+# not: each sentinel is a file that commonly holds a local credential or a
+# machine-specific setting; each control is a path that must stay trackable,
+# whether or not a file is committed there today (``.env.example`` is the
+# template name the ``.env.*`` rule exempts).
+_IGNORED_SENTINELS: Final[tuple[str, ...]] = (
+    ".claude/settings.local.json",
+    ".development-skills/activation-receipt.md",
+    ".env",
+    ".env.local",
+    ".env.production",
+    "deploy/tls/server.pem",
+    "deploy/tls/wildcard.key",
+    ".mcp.json",
+    "app/.mcp.json",
+)
+_TRACKABLE_CONTROLS: Final[tuple[str, ...]] = (
+    ".claude/settings.json",
+    ".development-skills/project.json",
+    ".env.example",
+    "app/src/main.tsx",
+    "deploy/bootstrap/load-key-vault-secrets.sh",
+)
+
 # Prose run into a file-extension or attribute token, e.g. ``rejects.dotx``
 # where ``rejects .dotx`` was meant. Four arms, because a bare ``word.ext``
 # match cannot tell damaged prose from an ordinary filename:
@@ -358,6 +448,27 @@ BINDING_TOKEN_ALLOWLIST: Final[dict[str, list[str]]] = {}
 # ``TICKET_REF_ALLOWLIST`` because both arms attribute hits to lines.
 PUBLISHED_TICKET_REF_ALLOWLIST: Final[dict[str, list[int]]] = {}
 
+# GUID (lower case) → 1-line rationale (T19). Only public constants belong
+# here: values that identify nothing in any tenant.
+PUBLIC_GUID_ALLOWLIST: Final[dict[str, str]] = {
+    "7f951dda-4ed3-4680-a7ca-43fe172d538d": "built-in Azure role: AcrPull",
+    "4633458b-17de-408a-b874-0445c86b69e6": "built-in Azure role: Key Vault Secrets User",
+    "db79e9a7-68ee-4b58-9aeb-b90e7c24fcba": "built-in Azure role: Key Vault Certificate User",
+    "3913510d-42f4-4e42-8a64-420c390055eb": "built-in Azure role: Monitoring Metrics Publisher",
+    "8e3af657-a8ff-443c-a75c-2fe8c4bcb635": "built-in Azure role: Owner",
+    "3913510d-42f4-4e42-8a64-420c390d0215": (
+        "deliberately wrong role id quoted as the example of a failed deploy"
+    ),
+    "11fb06fb-712d-4ddd-98c7-e71bbd588830": "UUIDv5 namespace for ARM resource names",
+    "123e4567-e89b-12d3-a456-426614174000": "RFC 4122 documentation example",
+    "12345678-90ab-cdef-1234-567890abcdef": "counting-sequence documentation example",
+    "0b7e4f0a-3c4e-4a55-9d6f-1f2d3c4b5a69": "synthetic edge id in a rendering fixture",
+}
+
+# path (relative to repo root) → 1-line rationale for a file over the T18
+# size limit.
+OVERSIZE_ALLOWLIST: Final[dict[str, str]] = {}
+
 # path (relative to repo root) → list of line numbers where a
 # word-fused extension token is allowlisted. Line-keyed like
 # ``TICKET_REF_ALLOWLIST`` because T16 attributes hits to the docstring
@@ -386,24 +497,19 @@ def _tracked_files() -> list[Path]:
     return [REPO_ROOT / line for line in result.stdout.splitlines() if line]
 
 
-# Top-level directory names that are out of scope for the public-posture
-# gate.
+# Trees out of scope for the public-posture gate, as repository-relative
+# directory prefixes.
 #
 # - ``domains/`` is the executor-defined home for use-case-specific
 #   configs. The establishing cleanup deletes ``domains/pim_health/``
 #   entirely; any future domain subtree is expected to be use-case-
 #   specific by design, so the gate scopes around it.
-# - ``.claude/`` is Claude Code workspace tooling — skill definitions,
-#   settings, agent prompts. It is tracked (so it ships in the public
-#   repo), but its content includes documents like
-#   ``cas-code-review/SKILL.md`` that must quote the forbidden patterns
-#   in order to explain what the skill catches. The commit-time
-#   enforcement provided by the ``cas-code-review`` skill still applies
-#   to ``.claude/`` files because it reads the diff regardless of path —
-#   this gate is the substrate backstop for product code, not workspace
-#   tooling.
+# - ``.claude/skills/cas-code-review/`` is the commit-time review
+#   procedure. It must quote the forbidden patterns in order to explain
+#   what it catches, and that review reads every diff regardless of path,
+#   so it covers its own file. The rest of ``.claude/`` is in scope.
 # The .agents/ tree holds pointer entry points only and remains in scope.
-_EXCLUDED_TOP_LEVEL_DIRS: Final[frozenset[str]] = frozenset({"domains", ".claude"})
+_EXCLUDED_PREFIXES: Final[tuple[str, ...]] = ("domains/", ".claude/skills/cas-code-review/")
 
 # The gate test file itself is self-referential — it MUST contain the
 # forbidden patterns (in its regex constants, its module docstring
@@ -420,10 +526,9 @@ def _is_excluded(path: Path) -> bool:
         rel = path.relative_to(REPO_ROOT)
     except ValueError:
         return False
-    parts = rel.parts
-    if not parts:
+    if not rel.parts:
         return False
-    if parts[0] in _EXCLUDED_TOP_LEVEL_DIRS:
+    if any(rel.as_posix().startswith(prefix) for prefix in _EXCLUDED_PREFIXES):
         return True
     return str(rel) in _EXCLUDED_FILES
 
@@ -870,40 +975,56 @@ def test_no_ticket_refs_in_py_durable_surfaces() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_no_personal_filesystem_paths() -> None:
-    """T3: ``/Users/clifguy/`` must not appear in any tracked file outside
-    the excluded top-level directories (``domains/``, ``.claude/``).
-    """
-    pathspec_excludes = [f":(exclude){d}/" for d in sorted(_EXCLUDED_TOP_LEVEL_DIRS)]
-    pathspec_excludes += [f":(exclude){f}" for f in sorted(_EXCLUDED_FILES)]
-    result = subprocess.run(
-        ["git", "grep", "-n", "-F", "/Users/clifguy/", "--", *pathspec_excludes],
-        cwd=REPO_ROOT,
-        capture_output=True,
-        text=True,
-    )
-    # git grep returns 0 on match, 1 on no match, >1 on error.
-    if result.returncode > 1:
-        pytest.fail(f"git grep failed (rc={result.returncode}): {result.stderr.strip()}")
-    if result.returncode == 1:
-        return  # zero hits → pass
-
-    violations: list[tuple[str, int, str]] = []
-    for line in result.stdout.splitlines():
-        parts = line.split(":", 2)
-        if len(parts) < 3:
-            continue
-        path, lineno_str, match = parts
-        try:
-            line_no = int(lineno_str)
-        except ValueError:
-            continue
+def _home_path_violations(lines: list[tuple[str, int, str]]) -> list[tuple[str, int, str]]:
+    """Each ``(path, line, text)`` naming a home directory that is not a placeholder."""
+    violations = []
+    for path, line_no, text in lines:
         if line_no in PERSONAL_PATH_ALLOWLIST.get(path, []):
             continue
-        violations.append((path, line_no, match.strip()[:120]))
+        for match in _HOME_PATH_RE.finditer(text):
+            if match.group(1) not in _PLACEHOLDER_HOME_NAMES | _SERVICE_HOME_NAMES:
+                violations.append((path, line_no, match.group(0)))
+    return violations
 
+
+def _scoped_text_lines() -> list[tuple[str, int, str]]:
+    """Every line of every tracked, in-scope, non-binary file."""
+    out = []
+    for path in _tracked_files():
+        if _is_excluded(path) or not path.is_file():
+            continue
+        data = path.read_bytes()
+        if b"\x00" in data:
+            continue
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        text = data.decode("utf-8", errors="replace")
+        out.extend((rel, n, line) for n, line in enumerate(text.splitlines(), start=1))
+    return out
+
+
+def test_no_personal_filesystem_paths() -> None:
+    """T3: no tracked file in scope names someone's home directory."""
+    violations = _home_path_violations(_scoped_text_lines())
     if violations:
         pytest.fail(_format_violations(violations, header="T3 personal-path"))
+
+
+def test_t3_detector_separates_people_from_placeholders() -> None:
+    """T3 control: a real-looking home directory is caught on either
+    platform, a placeholder is not, and the allowlist is honoured by line.
+    """
+    lines = [
+        ("a.md", 1, "see /Users/alice/repos/x"),
+        ("a.md", 2, "or /home/bob/projects"),
+        ("a.md", 3, "fixture /Users/me/./note.md and /home/user/outside.md"),
+        ("a.md", 4, "no trailing slash: cd /Users/carol"),
+        ("a.md", 5, "service account HOME=/home/sage"),
+    ]
+    assert _home_path_violations(lines) == [
+        ("a.md", 1, "/Users/alice"),
+        ("a.md", 2, "/home/bob"),
+        ("a.md", 4, "/Users/carol"),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -989,9 +1110,9 @@ def test_no_ticket_or_use_case_terms_in_tracked_names() -> None:
     use-case term.
 
     The counterpart to T1/T2, which scan the same two classes in file
-    *contents*. Scope matches T1/T3/T4 — ``domains/`` and ``.claude/``
-    are excluded, as is this gate file, whose own name is fine but whose
-    exclusion keeps the scan uniform.
+    *contents*. Scope matches T1/T3/T4 — the trees in
+    ``_EXCLUDED_PREFIXES`` are excluded, as is this gate file, whose own
+    name is fine but whose exclusion keeps the scan uniform.
     """
     rel_paths = [
         str(path.relative_to(REPO_ROOT)) for path in _tracked_files() if not _is_excluded(path)
@@ -1015,7 +1136,7 @@ def test_no_ticket_ids_in_python_identifiers() -> None:
     already covered it; only the enforcement was missing.
 
     Scope matches T1/T3/T4/T12 via ``_tracked_files_with_suffixes``, which
-    excludes ``domains/``, ``.claude/``, and this gate file. Unparseable
+    excludes the trees in ``_EXCLUDED_PREFIXES`` and this gate file. Unparseable
     modules are skipped: a file that cannot be parsed fails its own
     collection loudly and is a different problem.
     """
@@ -1057,7 +1178,7 @@ def test_no_ticket_ids_in_python_bindings() -> None:
     without loosening the other.
 
     Scope matches T1/T3/T4/T12/T13 via ``_tracked_files_with_suffixes``,
-    which excludes ``domains/``, ``.claude/``, and this gate file.
+    which excludes the trees in ``_EXCLUDED_PREFIXES`` and this gate file.
     Unparseable modules are skipped: a file that cannot be parsed fails its
     own collection loudly and is a different problem.
     """
@@ -1194,6 +1315,160 @@ def test_no_word_fused_extension_tokens() -> None:
 
     if violations:
         pytest.fail(_format_violations(violations, header="T16 fused-extension"))
+
+
+# ---------------------------------------------------------------------------
+# T17 — Tracked ignore rules
+# ---------------------------------------------------------------------------
+
+
+def _ignored_in_fresh_clone(paths: tuple[str, ...], tmp_path: Path) -> set[str]:
+    """Which of ``paths`` the tracked ``.gitignore`` alone ignores.
+
+    Runs ``git check-ignore`` in a scratch repository holding only a copy of
+    that file, with the global excludes file disabled, so neither this
+    machine's excludes nor this checkout's ``info/exclude`` can contribute.
+    """
+    scratch = tmp_path / "fresh-clone"
+    scratch.mkdir()
+    subprocess.run(["git", "init", "-q", str(scratch)], check=True)
+    (scratch / ".git" / "info" / "exclude").write_text("")
+    shutil.copyfile(REPO_ROOT / ".gitignore", scratch / ".gitignore")
+    result = subprocess.run(
+        ["git", "-c", "core.excludesFile=/dev/null", "check-ignore", "--no-index", *paths],
+        cwd=scratch,
+        capture_output=True,
+        text=True,
+    )
+    # check-ignore exits 0 when some path is ignored, 1 when none is.
+    if result.returncode > 1:
+        pytest.fail(f"git check-ignore failed: {result.stderr.strip()}")
+    return set(result.stdout.splitlines())
+
+
+def test_tracked_gitignore_ignores_local_credential_files(tmp_path: Path) -> None:
+    """T17: the tracked ``.gitignore`` alone ignores every sentinel, and
+    none of the trackable controls beside them.
+    """
+    ignored = _ignored_in_fresh_clone(_IGNORED_SENTINELS + _TRACKABLE_CONTROLS, tmp_path)
+    missing = sorted(set(_IGNORED_SENTINELS) - ignored)
+    assert not missing, f"tracked .gitignore does not ignore: {missing}"
+    overreach = sorted(set(_TRACKABLE_CONTROLS) & ignored)
+    assert not overreach, f"tracked .gitignore ignores files that must stay trackable: {overreach}"
+
+
+# ---------------------------------------------------------------------------
+# T18 — Tracked artifact extensions and size
+# ---------------------------------------------------------------------------
+
+
+def _artifact_violations(entries: list[tuple[str, int]]) -> list[str]:
+    """Each ``(path, size)`` with an artifact extension or over the size limit."""
+    out = []
+    for rel, size in entries:
+        if PurePosixPath(rel).suffix.lower() in _ARTIFACT_SUFFIXES:
+            out.append(f"{rel}: artifact extension")
+        elif size > _MAX_TRACKED_BYTES and rel not in OVERSIZE_ALLOWLIST:
+            out.append(f"{rel}: {size} bytes")
+    return out
+
+
+def test_no_tracked_artifacts_by_extension_or_size() -> None:
+    """T18: no tracked file is a build artifact, database, archive or key
+    material by extension, and none is oversized without a rationale.
+    """
+    entries = [
+        (path.relative_to(REPO_ROOT).as_posix(), path.stat().st_size)
+        for path in _tracked_files()
+        if path.is_file()
+    ]
+    violations = _artifact_violations(entries)
+    assert not violations, "tracked artifacts:\n" + "\n".join(violations)
+
+
+def test_t18_detector_catches_suffix_case_and_size() -> None:
+    """T18 control: an artifact suffix in any case and an oversized file are
+    caught; an ordinary file and an allowlisted size are not.
+    """
+    big = _MAX_TRACKED_BYTES + 1
+    assert _artifact_violations(
+        [
+            ("deploy/tls/server.PEM", 10),
+            ("cache/x.pyc", 10),
+            ("data/blob.json", big),
+            ("sage/app.py", 10),
+        ]
+    ) == [
+        "deploy/tls/server.PEM: artifact extension",
+        "cache/x.pyc: artifact extension",
+        f"data/blob.json: {big} bytes",
+    ]
+
+
+# ---------------------------------------------------------------------------
+# T19 — GUIDs
+# ---------------------------------------------------------------------------
+
+
+def _is_patterned_guid(guid: str) -> bool:
+    """Whether a GUID is a hand-written fixture value rather than an identity.
+
+    Fixture values repeat a few digits (``11111111-1111-4111-8111-...``,
+    ``00000000-0000-4000-8000-00000000000a``); a generated identifier spreads
+    over most of the sixteen hex digits with no digit dominating.
+    """
+    digits = guid.replace("-", "").lower()
+    commonest = max(digits.count(c) for c in set(digits))
+    return len(set(digits)) <= 5 or commonest >= len(digits) // 2
+
+
+def _guid_violations(lines: list[tuple[str, int, str]]) -> list[tuple[str, int, str]]:
+    violations = []
+    for path, line_no, text in lines:
+        for match in _GUID_RE.finditer(text):
+            guid = match.group(0).lower()
+            if guid in PUBLIC_GUID_ALLOWLIST or _is_patterned_guid(guid):
+                continue
+            violations.append((path, line_no, guid))
+    return violations
+
+
+def test_no_identity_guids_in_tracked_files() -> None:
+    """T19: every GUID in a tracked file in scope is a public constant or a
+    patterned fixture value; no tenant, client or application id is written
+    down.
+    """
+    violations = _guid_violations(_scoped_text_lines())
+    if violations:
+        pytest.fail(_format_violations(violations, header="T19 identity-GUID"))
+
+
+def test_t19_detector_separates_identities_from_fixtures() -> None:
+    """T19 control: generated GUIDs are caught in either case, patterned
+    fixtures and allowlisted constants are not, and a GUID run into other hex
+    digits is not mistaken for one.
+    """
+    generated = [str(uuid.uuid4()) for _ in range(50)]
+    lines = [("a.md", n, f"id {g}") for n, g in enumerate(generated, start=1)]
+    lines.append(("a.md", 99, f"upper {generated[0].upper()}"))
+    flagged = _guid_violations(lines)
+    assert len(flagged) == 51
+    assert not _guid_violations(
+        [
+            (
+                "b.md",
+                1,
+                "00000000-0000-4000-8000-00000000000a 11111111-2222-3333-4444-555555555555",
+            ),
+            (
+                "b.md",
+                2,
+                "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee 0123abcd-0000-4000-8000-000000000000",
+            ),
+            ("b.md", 3, "role 7f951dda-4ed3-4680-a7ca-43fe172d538d"),
+            ("b.md", 4, "hex run f" + generated[1] + "0"),
+        ]
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1676,8 +1951,7 @@ def test_t13_scan_scope_is_non_empty_and_honours_exclusions() -> None:
 
     assert len(scanned) > 100, f"T13 would scan only {len(scanned)} file(s); enumeration is broken"
     assert "tests/test_collection_integrity.py" in scanned, "a real test module is out of scope"
-    assert not any(rel.startswith("domains/") for rel in scanned)
-    assert not any(rel.startswith(".claude/") for rel in scanned)
+    assert not any(rel.startswith(_EXCLUDED_PREFIXES) for rel in scanned)
     assert "tests/test_public_posture.py" not in scanned, "the gate must not scan itself"
 
 
@@ -2295,8 +2569,7 @@ def test_t15_scan_scope_is_non_empty_and_honours_exclusions() -> None:
     assert not any(rel.startswith("tests/") for rel in py_scanned), (
         "the test tree is in scope; fixture and simulated-error literals would be swept"
     )
-    assert not any(rel.startswith("domains/") for rel in py_scanned)
-    assert not any(rel.startswith(".claude/") for rel in py_scanned)
+    assert not any(rel.startswith(_EXCLUDED_PREFIXES) for rel in py_scanned)
 
     substrate_scanned = {
         str(p.relative_to(REPO_ROOT))
@@ -2310,7 +2583,9 @@ def test_t15_scan_scope_is_non_empty_and_honours_exclusions() -> None:
         "the manifest is out of scope; its revision history was decided IN scope"
     )
     assert "docs/fs/sage/vault_config.schema.json" in substrate_scanned
-    assert not any(rel.startswith((".claude/", "domains/")) for rel in substrate_scanned)
+    assert not any(rel.startswith(_EXCLUDED_PREFIXES) for rel in substrate_scanned)
+    # Workspace settings outside the review procedure's own tree are scanned.
+    assert ".claude/settings.json" in substrate_scanned, ".claude/ settings are out of scope"
     # Change records are published prose that the release step folds into the
     # manifest and then deletes, so the directory may hold none at a given
     # commit. The scope decision is asserted on the enumeration's own predicate
