@@ -333,7 +333,11 @@ _MAX_TRACKED_BYTES: Final[int] = 2 * 1024 * 1024
 _PLACEHOLDER_HOME_NAMES: Final[frozenset[str]] = frozenset(
     {"me", "user", "u", "x", "runner", "<name>", "<user>", "you"}
 )
-_HOME_PATH_RE: Final[re.Pattern[str]] = re.compile(r"/(?:Users|home)/([^/\s`'\"]+)/")
+# Container service accounts' home directories, named by the images (T3).
+_SERVICE_HOME_NAMES: Final[frozenset[str]] = frozenset({"sage", "bff"})
+# A home directory with or without a trailing slash: ``cd /Users/<name>`` names
+# a machine as surely as ``/Users/<name>/repos`` does.
+_HOME_PATH_RE: Final[re.Pattern[str]] = re.compile(r"/(?:Users|home)/([A-Za-z0-9._-]+)")
 
 _GUID_RE: Final[re.Pattern[str]] = re.compile(
     r"(?<![0-9A-Fa-f])[0-9A-Fa-f]{8}-(?:[0-9A-Fa-f]{4}-){3}[0-9A-Fa-f]{12}(?![0-9A-Fa-f])"
@@ -341,7 +345,9 @@ _GUID_RE: Final[re.Pattern[str]] = re.compile(
 
 # Paths the tracked ``.gitignore`` must ignore (T17), and controls it must
 # not: each sentinel is a file that commonly holds a local credential or a
-# machine-specific setting.
+# machine-specific setting; each control is a path that must stay trackable,
+# whether or not a file is committed there today (``.env.example`` is the
+# template name the ``.env.*`` rule exempts).
 _IGNORED_SENTINELS: Final[tuple[str, ...]] = (
     ".claude/settings.local.json",
     ".development-skills/activation-receipt.md",
@@ -353,7 +359,7 @@ _IGNORED_SENTINELS: Final[tuple[str, ...]] = (
     ".mcp.json",
     "app/.mcp.json",
 )
-_TRACKED_CONTROLS: Final[tuple[str, ...]] = (
+_TRACKABLE_CONTROLS: Final[tuple[str, ...]] = (
     ".claude/settings.json",
     ".development-skills/project.json",
     ".env.example",
@@ -976,7 +982,7 @@ def _home_path_violations(lines: list[tuple[str, int, str]]) -> list[tuple[str, 
         if line_no in PERSONAL_PATH_ALLOWLIST.get(path, []):
             continue
         for match in _HOME_PATH_RE.finditer(text):
-            if match.group(1) not in _PLACEHOLDER_HOME_NAMES:
+            if match.group(1) not in _PLACEHOLDER_HOME_NAMES | _SERVICE_HOME_NAMES:
                 violations.append((path, line_no, match.group(0)))
     return violations
 
@@ -1011,11 +1017,13 @@ def test_t3_detector_separates_people_from_placeholders() -> None:
         ("a.md", 1, "see /Users/alice/repos/x"),
         ("a.md", 2, "or /home/bob/projects"),
         ("a.md", 3, "fixture /Users/me/./note.md and /home/user/outside.md"),
-        ("a.md", 4, "no trailing slash /Users/carol"),
+        ("a.md", 4, "no trailing slash: cd /Users/carol"),
+        ("a.md", 5, "service account HOME=/home/sage"),
     ]
     assert _home_path_violations(lines) == [
-        ("a.md", 1, "/Users/alice/"),
-        ("a.md", 2, "/home/bob/"),
+        ("a.md", 1, "/Users/alice"),
+        ("a.md", 2, "/home/bob"),
+        ("a.md", 4, "/Users/carol"),
     ]
 
 
@@ -1102,9 +1110,9 @@ def test_no_ticket_or_use_case_terms_in_tracked_names() -> None:
     use-case term.
 
     The counterpart to T1/T2, which scan the same two classes in file
-    *contents*. Scope matches T1/T3/T4 — ``domains/`` and ``.claude/``
-    are excluded, as is this gate file, whose own name is fine but whose
-    exclusion keeps the scan uniform.
+    *contents*. Scope matches T1/T3/T4 — the trees in
+    ``_EXCLUDED_PREFIXES`` are excluded, as is this gate file, whose own
+    name is fine but whose exclusion keeps the scan uniform.
     """
     rel_paths = [
         str(path.relative_to(REPO_ROOT)) for path in _tracked_files() if not _is_excluded(path)
@@ -1128,7 +1136,7 @@ def test_no_ticket_ids_in_python_identifiers() -> None:
     already covered it; only the enforcement was missing.
 
     Scope matches T1/T3/T4/T12 via ``_tracked_files_with_suffixes``, which
-    excludes ``domains/``, ``.claude/``, and this gate file. Unparseable
+    excludes the trees in ``_EXCLUDED_PREFIXES`` and this gate file. Unparseable
     modules are skipped: a file that cannot be parsed fails its own
     collection loudly and is a different problem.
     """
@@ -1170,7 +1178,7 @@ def test_no_ticket_ids_in_python_bindings() -> None:
     without loosening the other.
 
     Scope matches T1/T3/T4/T12/T13 via ``_tracked_files_with_suffixes``,
-    which excludes ``domains/``, ``.claude/``, and this gate file.
+    which excludes the trees in ``_EXCLUDED_PREFIXES`` and this gate file.
     Unparseable modules are skipped: a file that cannot be parsed fails its
     own collection loudly and is a different problem.
     """
@@ -1340,12 +1348,12 @@ def _ignored_in_fresh_clone(paths: tuple[str, ...], tmp_path: Path) -> set[str]:
 
 def test_tracked_gitignore_ignores_local_credential_files(tmp_path: Path) -> None:
     """T17: the tracked ``.gitignore`` alone ignores every sentinel, and
-    none of the tracked controls beside them.
+    none of the trackable controls beside them.
     """
-    ignored = _ignored_in_fresh_clone(_IGNORED_SENTINELS + _TRACKED_CONTROLS, tmp_path)
+    ignored = _ignored_in_fresh_clone(_IGNORED_SENTINELS + _TRACKABLE_CONTROLS, tmp_path)
     missing = sorted(set(_IGNORED_SENTINELS) - ignored)
     assert not missing, f"tracked .gitignore does not ignore: {missing}"
-    overreach = sorted(set(_TRACKED_CONTROLS) & ignored)
+    overreach = sorted(set(_TRACKABLE_CONTROLS) & ignored)
     assert not overreach, f"tracked .gitignore ignores files that must stay trackable: {overreach}"
 
 
@@ -1943,8 +1951,7 @@ def test_t13_scan_scope_is_non_empty_and_honours_exclusions() -> None:
 
     assert len(scanned) > 100, f"T13 would scan only {len(scanned)} file(s); enumeration is broken"
     assert "tests/test_collection_integrity.py" in scanned, "a real test module is out of scope"
-    assert not any(rel.startswith("domains/") for rel in scanned)
-    assert not any(rel.startswith(".claude/") for rel in scanned)
+    assert not any(rel.startswith(_EXCLUDED_PREFIXES) for rel in scanned)
     assert "tests/test_public_posture.py" not in scanned, "the gate must not scan itself"
 
 
