@@ -3337,7 +3337,7 @@ class TraverseRequest(BaseModel):
     depth: int = Field(
         default=3,
         ge=1,
-        le=1000,
+        le=50,
         description="Maximum traversal depth.",
     )
     debug: bool = Field(
@@ -3413,6 +3413,15 @@ class TraverseResponse(BaseModel):
             "only when the request set `debug: true`; otherwise null / "
             "omitted. Useful for diagnosing why an expected edge was "
             "suppressed or why an unexpected edge surfaced."
+        ),
+    )
+    truncated: bool = Field(
+        default=False,
+        description=(
+            "True when the walk reached the server's row limit and stopped "
+            "early. `nodes` and their `edge_counts` are then incomplete; "
+            "narrow the walk with `edge_type`, `direction`, or a smaller "
+            "`depth`."
         ),
     )
     read_meta: ReadMeta = Field(

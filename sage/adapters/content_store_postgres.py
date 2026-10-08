@@ -657,6 +657,9 @@ class PostgresContentStore(ContentStore):
         """
         with self._query_timer.measure("rebuild_document_surface_vector"):
             async with self._pool.connection() as conn, conn.transaction():
+                # A full-table rewrite can outlast the pool's statement timeout;
+                # lift it for this transaction only, the lock wait included.
+                await conn.execute("SET LOCAL statement_timeout = 0")
                 await conn.execute("LOCK TABLE document_surface IN SHARE UPDATE EXCLUSIVE MODE")
                 if await self._surface_vector_is_current(conn):
                     return False
@@ -710,6 +713,9 @@ class PostgresContentStore(ContentStore):
         with self._query_timer.measure("migrate_indexed_structure", params={"pairs": len(derived)}):
             written = 0
             async with self._pool.connection() as conn, conn.transaction():
+                # A full-table rewrite can outlast the pool's statement timeout;
+                # lift it for this transaction only, the lock wait included.
+                await conn.execute("SET LOCAL statement_timeout = 0")
                 await conn.execute("LOCK TABLE chunks IN SHARE UPDATE EXCLUSIVE MODE")
                 rebuilding = not await self._vector_is_current(conn)
                 drop, add, index = CHUNKS_TSV_REBUILD
@@ -1487,17 +1493,23 @@ class PostgresContentStore(ContentStore):
         has no Postgres analog: VACUUM has no age threshold and reclaims every
         eligible dead tuple, a superset of the LanceDB age-based pruning.
         Runs on an autocommit connection (VACUUM cannot run inside a
-        transaction block).
+        transaction block). A full rewrite can outlast the pool's statement
+        timeout, so the timeout is lifted for this connection's work and
+        restored before the connection returns to the pool.
         """
         del cleanup_older_than  # no Postgres age-threshold analog; see docstring
         with self._query_timer.measure("optimize"):
             async with self._pool.connection() as conn:
                 await conn.set_autocommit(True)
-                pre = await self._bloat_snapshot(conn)
-                present = await self._present_surfaces(conn, _CONTENT_STORE_SURFACES)
-                if present:
-                    await conn.execute(f"VACUUM (FULL, ANALYZE) {', '.join(present)}")
-                post = await self._bloat_snapshot(conn)
+                await conn.execute("SET statement_timeout = 0")
+                try:
+                    pre = await self._bloat_snapshot(conn)
+                    present = await self._present_surfaces(conn, _CONTENT_STORE_SURFACES)
+                    if present:
+                        await conn.execute(f"VACUUM (FULL, ANALYZE) {', '.join(present)}")
+                    post = await self._bloat_snapshot(conn)
+                finally:
+                    await conn.execute("RESET statement_timeout")
             return ContentStoreOptimizeSnapshot(
                 pre_bytes=pre["bytes"],
                 post_bytes=post["bytes"],

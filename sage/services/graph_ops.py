@@ -60,6 +60,11 @@ from sage.storage.edge_provenance import derive_rationale_kind
 
 logger = logging.getLogger(__name__)
 
+# The raw edge rows one ``traverse`` call may collect across all of its walks,
+# before rows are collapsed per document. Past it the response is marked
+# ``truncated``.
+TRAVERSE_ROW_CAP = 10_000
+
 
 class _ResolutionPathRecorder:
     """Per-request collector for CAS-ADR-017 resolution_path debug events.
@@ -868,7 +873,7 @@ class GraphOpsService:
         if document is None:
             raise DocumentNotFoundError(document_id)
 
-        rows = await self._resolve_edge_rows(
+        rows, _ = await self._resolve_edge_rows(
             TraverseRequest(
                 start_id=document_id,
                 edge_type=EdgeType.DEPENDS_ON,
@@ -981,7 +986,9 @@ class GraphOpsService:
         cache = _LineageCache(self._store)
         recorder = _ResolutionPathRecorder() if request.debug else None
 
-        filtered = await self._resolve_edge_rows(request, cache, recorder)
+        filtered, truncated = await self._resolve_edge_rows(
+            request, cache, recorder, row_cap=TRAVERSE_ROW_CAP
+        )
 
         # Collapse multi-path traversal hits by doc_id. With the
         # UNIQUE (source_id, target_id, edge_type) constraint enforced
@@ -1113,6 +1120,7 @@ class GraphOpsService:
             start_id=request.start_id,
             nodes=nodes,
             resolution_path=recorder.entries if recorder is not None else None,
+            truncated=truncated,
         )
         response.read_meta = response.read_meta.stamped(self._config.fingerprint())
         return response
@@ -1122,14 +1130,17 @@ class GraphOpsService:
         request: TraverseRequest,
         cache: _LineageCache,
         recorder: _ResolutionPathRecorder | None = None,
-    ) -> list[dict]:
+        row_cap: int | None = None,
+    ) -> tuple[list[dict], bool]:
         """Return the edge rows visible from ``request.start_id`` (CAS-ADR-017).
 
         The single chain-resolution pipeline behind every edge read that
         honours version chains: lineage-seeded collection, then the anchor
         filter, ``retracts`` suppression and ``merged_from`` tombstones.
+        ``row_cap`` bounds the raw rows collected; the returned flag reports
+        whether it cut the collection short.
         """
-        raw = await self._collect_raw_with_seeds(request, cache)
+        raw, truncated = await self._collect_raw_with_seeds(request, cache, row_cap)
 
         # Per-edge anchor filter (honors stored resolution_policy per CAS-ADR-017).
         filtered: list[dict] = []
@@ -1146,7 +1157,8 @@ class GraphOpsService:
         # `valid_until_version` sits strictly as an ancestor of the query
         # start_id are dropped. Equal-to-start is kept (CR-034: historical
         # query at the merge point still surfaces the edge).
-        return await self._apply_tombstones(filtered, request.start_id, cache, recorder)
+        filtered = await self._apply_tombstones(filtered, request.start_id, cache, recorder)
+        return filtered, truncated
 
     async def _supersedes_heads(self, doc_id: str) -> list[str]:
         """Return the heads of ``doc_id``'s supersedes chain reachable forward.
@@ -1306,8 +1318,8 @@ class GraphOpsService:
         return ResolutionPolicy.NONE
 
     async def _collect_raw_with_seeds(
-        self, request: TraverseRequest, cache: _LineageCache
-    ) -> list[dict]:
+        self, request: TraverseRequest, cache: _LineageCache, row_cap: int | None = None
+    ) -> tuple[list[dict], bool]:
         """Run direction-split, policy-driven multi-seed traversal.
 
         For direction=both we split into outbound and inbound phases so
@@ -1315,6 +1327,9 @@ class GraphOpsService:
         `transitive_source` inbound, where the target is frozen and the
         seed must not expand). Rows are deduped across seeds by
         edge_id, keeping the smallest observed depth.
+
+        ``row_cap`` is one budget across every seed and phase. When a walk
+        exhausts it, collection stops and the second element is True.
         """
         if request.direction == TraversalDirection.BOTH:
             phases: list[TraversalDirection] = [
@@ -1327,22 +1342,31 @@ class GraphOpsService:
         edge_type_filter = request.edge_type.value if request.edge_type else None
 
         raw_by_edge: dict[str, dict] = {}
+        remaining = row_cap
         for phase in phases:
             seeds = await self._determine_seeds(request.start_id, request.edge_type, phase, cache)
             for seed in seeds:
+                limit = {} if remaining is None else {"row_limit": remaining}
                 rows = await self._store.traverse(
                     start_id=seed,
                     edge_type=edge_type_filter,
                     direction=phase.value,
                     depth=request.depth,
+                    **limit,
                 )
+                truncated = remaining is not None and len(rows) > remaining
+                if remaining is not None:
+                    rows = rows[:remaining]
+                    remaining -= len(rows)
                 for row in rows:
                     eid = row["edge_id"]
                     existing = raw_by_edge.get(eid)
                     if existing is None or row["depth"] < existing["depth"]:
                         raw_by_edge[eid] = row
+                if truncated:
+                    return list(raw_by_edge.values()), True
 
-        return list(raw_by_edge.values())
+        return list(raw_by_edge.values()), False
 
     async def _determine_seeds(
         self,

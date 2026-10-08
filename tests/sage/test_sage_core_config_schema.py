@@ -256,6 +256,7 @@ def test_sch_s_011_postgres_full_block_agrees_schema_and_model():
         "sslmode": "require",
         "min_pool_size": 2,
         "max_pool_size": 20,
+        "statement_timeout_seconds": 30,
         "extensions": ["vector", "pgstattuple", "pg_repack"],
     }
     jsonschema.validate({"postgres": block}, _stack_schema())

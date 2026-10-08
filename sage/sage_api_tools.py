@@ -1500,8 +1500,9 @@ def register_sage_tools(
         ``edge_counts.{edge_type}`` reflects total visible edges from the
         query position including masked ones; if ``edge_counts >
         len(nodes)`` the result has masked siblings. ``supersedes`` is
-        point-to-point and not subject to this dedup; the rule applies only
-        to the five ``transitive_both`` types.
+        point-to-point and not subject to this dedup.
+
+        ``truncated`` marks a walk cut short at a server row limit.
 
         Error modes:
         - ``invalid_vault_id`` (400)

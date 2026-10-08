@@ -35,7 +35,8 @@ class PostgresConnectionParams:
 
     A superset of the stack-config ``postgres`` block: it adds the optional
     ``search_path`` (used by the test harness to bind a disposable schema) and
-    leaves the password out entirely -- that is read from the environment by
+    ``statement_timeout_ms`` (null leaves the server default), and leaves the
+    password out entirely -- that is read from the environment by
     :func:`build_conn_kwargs`.
     """
 
@@ -47,6 +48,7 @@ class PostgresConnectionParams:
     search_path: str | None = None
     min_pool_size: int = 1
     max_pool_size: int = 10
+    statement_timeout_ms: int | None = None
 
 
 def build_conn_kwargs(
@@ -59,8 +61,8 @@ def build_conn_kwargs(
     libpq falls back to the local unix socket; a null ``user`` is omitted so
     libpq falls back to the operating-system user. The password is read only from
     ``$SAGE_PG_PASSWORD`` -- never from ``params`` -- so no credential can be
-    sourced from configuration. ``search_path``, when set, is passed through the
-    libpq ``options`` startup parameter.
+    sourced from configuration. ``search_path`` and ``statement_timeout_ms``,
+    when set, are passed through the libpq ``options`` startup parameter.
     """
     env = os.environ if environ is None else environ
     kwargs: dict[str, str] = {"dbname": params.database, "port": str(params.port)}
@@ -73,9 +75,25 @@ def build_conn_kwargs(
     password = env.get(PASSWORD_ENV_VAR)
     if password:
         kwargs["password"] = password
-    if params.search_path is not None:
-        kwargs["options"] = f"-c search_path={params.search_path}"
+    options = _startup_options(params.search_path, params.statement_timeout_ms)
+    if options:
+        kwargs["options"] = options
     return kwargs
+
+
+def _startup_options(search_path: str | None, statement_timeout_ms: int | None) -> str:
+    """Compose the libpq ``options`` startup parameter.
+
+    ``statement_timeout`` set here is the session default for every statement
+    on the connection; a statement that legitimately runs longer lifts it for
+    itself with ``SET``/``RESET`` on that connection.
+    """
+    parts = []
+    if search_path is not None:
+        parts.append(f"-c search_path={search_path}")
+    if statement_timeout_ms is not None:
+        parts.append(f"-c statement_timeout={int(statement_timeout_ms)}")
+    return " ".join(parts)
 
 
 async def configure_connection(conn) -> None:
@@ -138,6 +156,7 @@ def pool_from_conninfo(
     search_path: str | None = None,
     min_size: int = 1,
     max_size: int = 10,
+    statement_timeout_ms: int | None = None,
 ) -> AsyncConnectionPool:
     """Build (unopened) an ``AsyncConnectionPool`` from a raw libpq conninfo/URL.
 
@@ -149,6 +168,7 @@ def pool_from_conninfo(
     from psycopg.conninfo import conninfo_to_dict, make_conninfo
 
     parsed = conninfo_to_dict(conninfo)
-    if search_path is not None:
-        parsed["options"] = f"-c search_path={search_path}"
+    options = _startup_options(search_path, statement_timeout_ms)
+    if options:
+        parsed["options"] = options
     return _build_pool(make_conninfo(**parsed), min_size=min_size, max_size=max_size)

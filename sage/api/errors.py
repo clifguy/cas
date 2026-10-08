@@ -15,7 +15,7 @@ from typing import Final
 from fastapi import FastAPI, Request
 from fastapi.dependencies.utils import get_flat_dependant
 from fastapi.exceptions import RequestValidationError, ResponseValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, ValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -1028,6 +1028,59 @@ class StorageQueryFailedError(SAGEError):
             500,
             {"operation": operation},
         )
+
+
+# SQLSTATE ``query_canceled`` covers every server-side cancellation, an
+# operator's cancel among them; the primary message names the statement
+# timeout only when that is the cause.
+_QUERY_CANCELED_SQLSTATE = "57014"
+_STATEMENT_TIMEOUT_MESSAGE = "statement timeout"
+
+
+class StatementTimeoutError(SAGEError):
+    """503: the request's database work ran past the server's time limit.
+
+    The per-vault pools bound every statement; one that runs longer is
+    cancelled. The caller can narrow the request or retry it later, so this
+    is a typed, retryable answer rather than ``internal_error``.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            "statement_timeout",
+            (
+                "The request's database work ran past the server's time limit "
+                "and was cancelled. Narrow the request or retry it later."
+            ),
+            503,
+        )
+
+
+def statement_timeout_error(exc: BaseException) -> StatementTimeoutError | None:
+    """The public error for ``exc`` when it, or an exception it chains from,
+    is a database statement the statement timeout cancelled; otherwise
+    ``None``.
+
+    Matched by SQLSTATE and the server's primary message rather than driver
+    class, so the request surfaces need no storage-driver import. Any other
+    cancellation stays an unexpected error. The message match assumes the
+    server reports in English (``lc_messages`` C or an English locale); under
+    another language a timeout falls back to the unexpected-error answer
+    rather than being mislabelled.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        diag = getattr(current, "diag", None)
+        primary = getattr(diag, "message_primary", None) or ""
+        if (
+            getattr(current, "sqlstate", None) == _QUERY_CANCELED_SQLSTATE
+            and _STATEMENT_TIMEOUT_MESSAGE in primary
+        ):
+            return StatementTimeoutError()
+        current = current.__cause__ or current.__context__
+    return None
 
 
 class UnknownFilterKeyError(SAGEError):
@@ -3370,6 +3423,25 @@ def register_exception_handlers(app: FastAPI) -> None:
                     message="The server built a response its published contract does not admit.",
                 )
             ),
+        )
+
+    @app.exception_handler(Exception)
+    async def unhandled_error_handler(request: Request, exc: Exception) -> Response:
+        """Answer a cancelled database statement with ``statement_timeout``.
+
+        Any other unhandled exception keeps the framework's plain 500.
+        """
+        timeout = statement_timeout_error(exc)
+        if timeout is None:
+            return PlainTextResponse("Internal Server Error", status_code=500)
+        _logger.warning(
+            "%s %s: database statement cancelled by the statement timeout",
+            request.method,
+            request.url.path,
+        )
+        return JSONResponse(
+            status_code=timeout.status_code,
+            content=to_wire(ErrorResponse(code=timeout.code, message=timeout.message)),
         )
 
     @app.exception_handler(SAGEError)

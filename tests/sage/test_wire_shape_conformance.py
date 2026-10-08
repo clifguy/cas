@@ -110,6 +110,7 @@ CAS_APP_SPEC_PATH = _REPO_ROOT / "docs" / "fs" / "cas_app_api.openapi.yaml"
 _SENTINEL_TRAVERSE_BODY: Final[dict] = {
     "start_id": "0123abcd_sentinel",
     "nodes": [],
+    "truncated": False,
     "read_meta": {"success": True, "body_present": False, "server_build": VERSION_WITH_BUILD},
 }
 

@@ -59,6 +59,7 @@ from sage.models.schemas import (
     RelocationPointer,
     StagingEdge,
 )
+from sage.storage.postgres.schema import DOCUMENT_COLUMNS
 from sage.storage.tier3_uniqueness import (
     TIER3_UNIQUE_INDEX_PREFIX,
     Tier3UniqueIndexBlockedError,
@@ -509,9 +510,14 @@ class PostgresGraphStore(GraphStore):
 
         ``updates`` is a private copy the caller may mutate; collection and
         boolean fields are adapted in place to their Postgres wire forms.
+        A key that is not a documents column is refused before any SQL runs,
+        since the keys are interpolated into the SET clause.
         """
         if not updates:
             return
+        unknown = sorted(set(updates) - DOCUMENT_COLUMNS)
+        if unknown:
+            raise ValueError(f"not a documents column: {', '.join(unknown)}")
         new_tags: list[str] | None = updates["tags"] if "tags" in updates else None
         if "tags" in updates:
             updates["tags"] = Jsonb(updates["tags"])
@@ -541,7 +547,7 @@ class PostgresGraphStore(GraphStore):
         values = list(updates.values())
         values.append(doc_id)
         await conn.execute(
-            f"UPDATE documents SET {set_clause} WHERE id = %s",  # noqa: S608 -- keys are trusted dict keys; values are %s params
+            f"UPDATE documents SET {set_clause} WHERE id = %s",  # noqa: S608 -- keys are checked against DOCUMENT_COLUMNS; values are %s params
             values,
         )
         if new_tags is not None:
@@ -585,6 +591,8 @@ class PostgresGraphStore(GraphStore):
                     f"LIMIT %s OFFSET %s",
                     [*params, limit, offset],
                 )
+            except pg_errors.QueryCanceled:
+                raise  # a timeout, not a refused query; the surfaces type it
             except pg_errors.Error as exc:
                 raise StorageQueryError("query_documents", str(exc)) from exc
             return [self._row_to_document(r) for r in rows], total_count
@@ -770,6 +778,8 @@ class PostgresGraphStore(GraphStore):
                     "LIMIT %s",
                     [*admits_params, *where_params, *order_params, limit],
                 )
+            except pg_errors.QueryCanceled:
+                raise  # a timeout, not a refused query; the surfaces type it
             except pg_errors.Error as exc:
                 raise StorageQueryError(operation, str(exc)) from exc
             return [self._row_to_document(r) for r in rows]
@@ -856,7 +866,13 @@ class PostgresGraphStore(GraphStore):
     async def ensure_tier3_unique_index(self, doc_type: str, field: str) -> None:
         _validate_tier3_identifier(doc_type, field)
         try:
-            await self._execute(tier3_unique_index_ddl_pg(doc_type, field))
+            # Building the index scans the whole documents table, which can
+            # outlast the pool's statement timeout; lift it for this
+            # transaction only.
+            self._check_open()
+            async with self._pool.connection() as conn, conn.transaction():
+                await conn.execute("SET LOCAL statement_timeout = 0")
+                await conn.execute(tier3_unique_index_ddl_pg(doc_type, field))
         except pg_errors.UniqueViolation as exc:
             raise Tier3UniqueIndexBlockedError(
                 doc_type=doc_type,
@@ -1569,6 +1585,8 @@ class PostgresGraphStore(GraphStore):
             # driver's wording is not the caller's to receive.
             try:
                 return await self._collect_document_facets(where_sql, params, fields, value_limit)
+            except pg_errors.QueryCanceled:
+                raise  # a timeout, not a refused query; the surfaces type it
             except pg_errors.Error as exc:
                 raise StorageQueryError("query_document_facets", str(exc)) from exc
 
@@ -1808,11 +1826,25 @@ class PostgresGraphStore(GraphStore):
     # ------------------------------------------------------------------
 
     async def traverse(
-        self, start_id: str, edge_type: str | None, direction: str, depth: int
+        self,
+        start_id: str,
+        edge_type: str | None,
+        direction: str,
+        depth: int,
+        row_limit: int | None = None,
     ) -> list[dict]:
+        """Walk edges from ``start_id`` up to ``depth`` hops.
+
+        Each row carries the documents on its path. A row whose document is
+        already on that path is returned -- the closing edge stays visible --
+        but is not extended, so a cycle cannot be walked repeatedly. With
+        ``row_limit`` the walk stops after ``row_limit + 1`` rows; the extra
+        row tells the caller the walk was cut short. The recursion is
+        evaluated level by level, so the rows a limit drops are the deepest.
+        """
         with self._query_timer.measure("traverse"):
             self._check_open()
-            type_filter = " AND e.edge_type = %s" if edge_type else ""
+            type_filter = " AND e.edge_type = %(edge_type)s" if edge_type else ""
             edge_cols = (
                 "e.id AS edge_id, "
                 "e.edge_type, e.created_at AS edge_created_at, "
@@ -1825,57 +1857,49 @@ class PostgresGraphStore(GraphStore):
                 "e.created_agent AS edge_created_agent, "
                 "e.created_by_name AS edge_created_by_name"
             )
-            params: list = []
             if direction == "outbound":
-                follow = "e.target_id"
-                seed_match, recurse_join = "e.source_id = %s", "e.source_id = t.doc_id"
+                seed_follow = recurse_follow = "e.target_id"
+                seed_match, recurse_join = "e.source_id = %(start)s", "e.source_id = t.doc_id"
             elif direction == "inbound":
-                follow = "e.source_id"
-                seed_match, recurse_join = "e.target_id = %s", "e.target_id = t.doc_id"
+                seed_follow = recurse_follow = "e.source_id"
+                seed_match, recurse_join = "e.target_id = %(start)s", "e.target_id = t.doc_id"
             else:  # both -- single self-reference; follow the far endpoint
-                follow = "CASE WHEN e.source_id = %s THEN e.target_id ELSE e.source_id END"
-                seed_match = "(e.source_id = %s OR e.target_id = %s)"
-                recurse_join = "(e.source_id = t.doc_id OR e.target_id = t.doc_id)"
-
-            if direction == "both":
-                seed_follow = follow  # references one %s (start_id)
+                seed_follow = (
+                    "CASE WHEN e.source_id = %(start)s THEN e.target_id ELSE e.source_id END"
+                )
                 recurse_follow = (
                     "CASE WHEN e.source_id = t.doc_id THEN e.target_id ELSE e.source_id END"
                 )
-                seed = (
-                    f"SELECT {edge_cols}, {seed_follow} AS doc_id, 1 AS depth "  # noqa: S608 -- trusted builders; values are %s
-                    f"FROM edges e WHERE {seed_match}{type_filter}"
-                )
-                recurse = (
-                    f"SELECT {edge_cols}, {recurse_follow} AS doc_id, t.depth + 1 AS depth "  # noqa: S608 -- trusted builders; values are %s
-                    f"FROM edges e INNER JOIN traversal t ON {recurse_join} "
-                    f"WHERE t.depth < %s{type_filter}"
-                )
-                params += [start_id, start_id, start_id]  # seed_follow CASE + seed_match OR
-                if edge_type:
-                    params.append(edge_type)
-                params += [depth]
-                if edge_type:
-                    params.append(edge_type)
-            else:
-                seed = (
-                    f"SELECT {edge_cols}, {follow} AS doc_id, 1 AS depth "  # noqa: S608 -- trusted builders; values are %s
-                    f"FROM edges e WHERE {seed_match}{type_filter}"
-                )
-                recurse = (
-                    f"SELECT {edge_cols}, {follow} AS doc_id, t.depth + 1 AS depth "  # noqa: S608 -- trusted builders; values are %s
-                    f"FROM edges e INNER JOIN traversal t ON {recurse_join} "
-                    f"WHERE t.depth < %s{type_filter}"
-                )
-                params += [start_id]
-                if edge_type:
-                    params.append(edge_type)
-                params += [depth]
-                if edge_type:
-                    params.append(edge_type)
+                seed_match = "(e.source_id = %(start)s OR e.target_id = %(start)s)"
+                recurse_join = "(e.source_id = t.doc_id OR e.target_id = t.doc_id)"
+
+            seed = (
+                f"SELECT {edge_cols}, {seed_follow} AS doc_id, 1 AS depth, "  # noqa: S608 -- trusted builders; values are bound
+                f"ARRAY[%(start)s::text, {seed_follow}] AS path, "
+                f"{seed_follow} = %(start)s AS closes "
+                f"FROM edges e WHERE {seed_match}{type_filter} "
+                f"AND {seed_follow} IS NOT NULL"
+            )
+            recurse = (
+                f"SELECT {edge_cols}, {recurse_follow} AS doc_id, t.depth + 1 AS depth, "  # noqa: S608 -- trusted builders; values are bound
+                f"t.path || {recurse_follow}, "
+                f"{recurse_follow} = ANY(t.path) AS closes "
+                f"FROM edges e INNER JOIN traversal t ON {recurse_join} "
+                f"WHERE t.depth < %(depth)s AND NOT t.closes{type_filter} "
+                f"AND {recurse_follow} IS NOT NULL"
+            )
+            walked = "traversal"
+            if row_limit is not None:
+                walked = "(SELECT * FROM traversal LIMIT %(row_limit)s)"
+            params = {
+                "start": start_id,
+                "edge_type": edge_type,
+                "depth": depth,
+                "row_limit": None if row_limit is None else row_limit + 1,
+            }
 
             sql = (
-                f"WITH RECURSIVE traversal AS (\n"  # noqa: S608 -- fragments are trusted column/predicate builders; values are %s
+                f"WITH RECURSIVE traversal AS (\n"  # noqa: S608 -- fragments are trusted column/predicate builders; values are bound
                 f"  {seed}\n"
                 f"  UNION ALL\n"
                 f"  {recurse}\n"
@@ -1888,7 +1912,7 @@ class PostgresGraphStore(GraphStore):
                 f"d.source_modified_at AS d_source_modified_at, "
                 f"d.relocated_from AS d_relocated_from, "
                 f"d.relocated_to AS d_relocated_to "
-                f"FROM traversal t "
+                f"FROM {walked} t "
                 f"INNER JOIN documents d ON t.doc_id = d.id"
             )
             rows = await self._fetch_rows(sql, params)

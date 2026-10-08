@@ -158,6 +158,12 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 """
 
+# The documents column names, read from the DDL above so the two cannot
+# drift. Writers that compose a column list from caller keys check it here.
+DOCUMENT_COLUMNS: frozenset[str] = frozenset(
+    re.findall(r"^    ([a-z_][a-z0-9_]*) ", DOCUMENTS_TABLE, flags=re.MULTILINE)
+)
+
 EDGES_TABLE = """\
 CREATE TABLE IF NOT EXISTS edges (
     id text PRIMARY KEY,

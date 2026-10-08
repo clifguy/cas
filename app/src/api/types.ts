@@ -401,6 +401,8 @@ export interface TraverseResponse {
   nodes: TraversalNode[];
   // Populated only when the request set `debug: true`.
   resolution_path?: ResolutionPathEntry[] | null;
+  // True when the walk hit the server's row limit and stopped early.
+  truncated?: boolean;
   read_meta?: ReadMeta;
 }
 
