@@ -630,8 +630,60 @@ def test_assignment_that_exists_unlisted_is_kept(tmp_path: Path) -> None:
     assert second["assignments"] == first["assignments"]
 
 
+def _with_admin_condition(state: dict[str, Any], condition: str | None) -> dict[str, Any]:
+    for assignment in state["assignments"]:
+        if assignment["role"] == _RBAC_ADMIN:
+            assignment["condition"] = condition
+    return state
+
+
+def test_unlisted_assignment_with_a_stale_condition_is_replaced(tmp_path: Path) -> None:
+    """G8c: an assignment found only through the create's collision still has
+    its condition checked, and a stale one is replaced with the current one."""
+    state = _with_admin_condition(_granted(tmp_path), "stale")
+    state["assignment_misses"] = 3 * _lookup_attempts()
+
+    result, calls, after = _run(tmp_path, state)
+
+    assert result.returncode == 0, result.stderr
+    assert len([c for c in calls if c[1:3] == ["assignment", "delete"]]) == 1
+    (admin,) = [a for a in after["assignments"] if a["role"] == _RBAC_ADMIN]
+    assert admin["condition"] == _expected_condition()
+
+
+def test_failed_condition_replacement_names_the_step(tmp_path: Path) -> None:
+    """G8d: when the listing still misses after a collision, the delete finds
+    nothing and the re-create collides again; the run stops and says so rather
+    than exiting without a reason."""
+    attempts = _lookup_attempts()
+    state = _with_admin_condition(_granted(tmp_path), "stale")
+    # Three id lookups and the re-read after the collision all exhaust, and
+    # the delete's own listing misses.
+    state["assignment_misses"] = 4 * attempts + 1
+
+    result, _, after = _run(tmp_path, state)
+
+    assert result.returncode != 0
+    assert f"assignment of {_RBAC_ADMIN} at {_RG} still exists after deleting it" in result.stderr
+    (admin,) = [a for a in after["assignments"] if a["role"] == _RBAC_ADMIN]
+    assert admin["condition"] == "stale"
+
+
+def test_unconditioned_admin_grant_is_replaced_without_waiting(tmp_path: Path) -> None:
+    """G8e: an existing RBAC administrator grant with no condition lists as a
+    row, so it is replaced at once instead of being retried as missing."""
+    state = _with_admin_condition(_granted(tmp_path), None)
+
+    result, calls, after = _run(tmp_path, state)
+
+    assert result.returncode == 0, result.stderr
+    assert not [c for c in calls if c[0] == "sleep"]
+    (admin,) = [a for a in after["assignments"] if a["role"] == _RBAC_ADMIN]
+    assert admin["condition"] == _expected_condition()
+
+
 def test_remove_legacy_rereads_an_incomplete_listing(tmp_path: Path) -> None:
-    """G8c: a listing that is missing part of the narrowed set is read again
+    """G8f: a listing that is missing part of the narrowed set is read again
     before the run refuses, so an incomplete answer does not stop retirement."""
     state = _granted(tmp_path)
     state["assignment_misses"] = 1
@@ -643,7 +695,7 @@ def test_remove_legacy_rereads_an_incomplete_listing(tmp_path: Path) -> None:
 
 
 def test_show_rereads_an_incomplete_listing(tmp_path: Path) -> None:
-    """G8d: --show reads the listing again while it is missing part of the
+    """G8g: --show reads the listing again while it is missing part of the
     narrowed set, so an incomplete answer cannot hide a grant outside it."""
     state = _granted(tmp_path)
     state["assignments"] = [

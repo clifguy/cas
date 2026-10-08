@@ -30,8 +30,12 @@
 #                    for removal at its own scope. Run it only after a deploy has
 #                    succeeded on the narrowed set.
 #   --show           print the identity's assignments and federated credentials,
-#                    and fail while any assignment outside the narrowed set remains,
-#                    including one inherited from above the subscription.
+#                    and fail on any listed assignment outside the narrowed set,
+#                    including one inherited from above the subscription. The
+#                    listing is eventually consistent: it is read again while
+#                    part of the narrowed set is missing, but one that omits only
+#                    an assignment outside the set cannot be told from a clean
+#                    one, so a pass is evidence rather than proof.
 #
 # Every mode refuses while the application carries a federated credential that
 # is not a plain GitHub environment subject from the GitHub issuer: the
@@ -243,10 +247,12 @@ ensure_custom_role() {
   printf '%s\n' "$id"
 }
 
-# Lists the identity's assignment of role $1 at scope $2 with the query $3.
-assignment_query() {
+# The identity's assignment of role $1 at scope $2 as id|condition, or nothing.
+# The id makes the answer non-empty whenever the assignment is listed, so an
+# unconditioned assignment is not mistaken for a missing one.
+assignment_row() {
   retry_listing az role assignment list --assignee "$APP_ID" --scope "$2" --role "$1" \
-    --query "$3" -o tsv
+    --query "[0].join('|', [id, condition || ''])" -o tsv
 }
 
 # Assigns role $1 at scope $2, conditioned by $3 when it is set. Returns 2 when
@@ -268,9 +274,9 @@ create_assignment() {
 }
 
 ensure_assignment() {
-  local role="$1" scope="$2" condition="${3:-}" id current status=0
-  id="$(assignment_query "$role" "$scope" "[0].id")" || return 1
-  if [ -z "$id" ]; then
+  local role="$1" scope="$2" condition="${3:-}" row status=0
+  row="$(assignment_row "$role" "$scope")" || return 1
+  if [ -z "$row" ]; then
     create_assignment "$role" "$scope" "$condition" || status=$?
     case "$status" in
       0)
@@ -278,17 +284,28 @@ ensure_assignment() {
         return 0
         ;;
       # The assignment exists but had not yet been listed; its condition is
-      # checked below like any other existing assignment's.
+      # read again and checked below like any other existing assignment's.
       2) echo "assignment of $role at $scope already exists though it was not listed" >&2 ;;
       *) return 1 ;;
     esac
+    [ -n "$condition" ] || return 0
+    row="$(assignment_row "$role" "$scope")" || return 1
   fi
   [ -n "$condition" ] || return 0
-  current="$(assignment_query "$role" "$scope" "[0].condition")" || return 1
-  [ "$current" != "$condition" ] || return 0
+  [ "${row#*|}" != "$condition" ] || return 0
   # A condition cannot be edited in place by the CLI; replace the assignment.
   az role assignment delete --assignee "$APP_ID" --role "$role" --scope "$scope" || return 1
-  create_assignment "$role" "$scope" "$condition" || return 1
+  status=0
+  create_assignment "$role" "$scope" "$condition" || status=$?
+  case "$status" in
+    0) ;;
+    2)
+      echo "ERROR: the assignment of $role at $scope still exists after deleting it to" \
+        "replace its condition; re-run once the role-assignment listing has caught up" >&2
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
   echo "granted: $role at $scope"
 }
 
