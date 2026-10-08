@@ -1,19 +1,25 @@
 """A stateful stand-in for the Azure CLI's Entra surface, run as ``az``.
 
-The Entra bootstrap tests put this on ``PATH`` ahead of the real CLI. Each call
+The bootstrap tests put this on ``PATH`` ahead of the real CLI. Each call
 appends its argument vector to ``$AZURE_CALLS`` and answers from, or writes to,
 the JSON directory model in ``$AZURE_STATE``: applications, service principals,
-groups and app-role assignments. Lookups behave the way the real CLI does where
-the bootstrap depends on it -- ``--display-name`` matches by prefix, an OData
-``eq`` filter matches exactly, creating an object that already exists fails, and
-a duplicate app-role assignment is refused -- so a script that leans on a
-lenient double cannot pass here.
+groups, app-role assignments, managed identities and SharePoint sites (with
+their document libraries, per-site permissions and uploaded files). Lookups
+behave the way the real CLI does where the bootstrap depends on it --
+``--display-name`` matches by prefix, an OData ``eq`` filter matches exactly,
+creating an object that already exists fails, a duplicate app-role assignment
+is refused, and a site is addressed by its exact server-relative path -- so a
+script that leans on a lenient double cannot pass here.
 
 It is written to disk and executed once per stubbed call, so it imports only the
 standard library: the test writes it behind an interpreter line that disables
 site-packages. ``--query`` supports the JMESPath subset the bootstrap uses: an
-optional field path, one ``[]``, ``[N]`` or ``[?k=='v' && ...]`` selector, an
-optional projected field, and an optional ``| [N]``.
+optional field path, one ``[]``, ``[N]`` or ``[?cond && ...]`` selector, an
+optional projected field, and an optional ``| [N]``. A condition is
+``k=='v'`` or ``contains(path, 'v')``, where ``path`` may flatten lists with
+``[]`` (``grantedToIdentitiesV2[].application.id``) and may default a null
+with ``|| `[]` ``; a null subject without that default fails the call, as the
+real CLI's JMESPath does.
 """
 
 import base64
@@ -30,13 +36,12 @@ from typing import Any
 AZURE_CLI_APP_ID = "-".join(("04b07795", "8ddb", "461a", "bbee", "02f9e1bf7b46"))
 DEFAULT_ACCESS_ROLE_ID = "-".join("0" * n for n in (8, 4, 4, 4, 12))
 
-_QUERY_RE = re.compile(
-    r"^(?P<path>[A-Za-z0-9_.]*)"
-    r"(?P<sel>\[(?:\d+|\?[^\]]*)?\])?"
-    r"(?:\.(?P<field>[A-Za-z0-9_]+))?"
-    r"(?:\s*\|\s*\[(?P<pipe>\d+)\])?$"
-)
+_QUERY_HEAD_RE = re.compile(r"^(?P<path>[A-Za-z0-9_.]*)")
+_QUERY_TAIL_RE = re.compile(r"^(?:\.(?P<field>[A-Za-z0-9_]+))?(?:\s*\|\s*\[(?P<pipe>\d+)\])?$")
 _COND_RE = re.compile(r"^\s*([A-Za-z0-9_]+)\s*==\s*'([^']*)'\s*$")
+_CONTAINS_RE = re.compile(
+    r"^\s*contains\(\s*([A-Za-z0-9_.\[\]]+)(\s*\|\|\s*`\[\]`)?\s*,\s*'([^']*)'\s*\)\s*$"
+)
 _EQ_FILTER_RE = re.compile(r"^\s*(displayName|appId)\s+eq\s+'([^']*)'\s*$", re.IGNORECASE)
 
 
@@ -46,10 +51,65 @@ class AzError(Exception):
         self.code = code
 
 
+def _path(value: Any, path: str) -> Any:
+    """Evaluate a dotted JMESPath field path; a ``name[]`` segment flattens a list."""
+    projected = False
+    for part in path.split("."):
+        flatten = part.endswith("[]")
+        name = part[:-2] if flatten else part
+        if projected:
+            nxt = []
+            for item in value:
+                got = item.get(name) if isinstance(item, dict) else None
+                if flatten and isinstance(got, list):
+                    nxt.extend(got)
+                elif got is not None:
+                    nxt.append(got)
+            value = nxt
+        else:
+            value = value.get(name) if isinstance(value, dict) else None
+            if flatten:
+                # A projection over a missing field is null, as in JMESPath.
+                if not isinstance(value, list):
+                    return None
+                projected = True
+    return value
+
+
+def _matches(item: Any, clause: str) -> bool:
+    cond = _COND_RE.match(clause)
+    if cond is not None:
+        return isinstance(item, dict) and str(item.get(cond[1])) == cond[2]
+    contains = _CONTAINS_RE.match(clause)
+    if contains is not None:
+        haystack = _path(item, contains[1])
+        if haystack is None and contains[2]:
+            haystack = []
+        if not isinstance(haystack, (list, str)):
+            # JMESPath refuses contains() on anything but an array or a string,
+            # so the CLI fails the whole call rather than skipping the item.
+            raise AzError(f"In function contains(), invalid type for value: {haystack!r}", 1)
+        return contains[3] in haystack
+    raise AssertionError(f"fake az: unsupported filter {clause!r}")
+
+
 def _query(value: Any, query: str) -> Any:
-    match = _QUERY_RE.match(query.strip())
-    if match is None:
+    query = query.strip()
+    head = _QUERY_HEAD_RE.match(query)
+    path, rest, sel = head["path"], query[head.end() :], None
+    if rest.startswith("["):
+        # The selector runs to its matching bracket: a filter may itself contain
+        # brackets, as ``contains(a[].b, 'v')`` does.
+        depth = 0
+        for end, char in enumerate(rest):
+            depth += {"[": 1, "]": -1}.get(char, 0)
+            if depth == 0:
+                break
+        sel, rest = rest[: end + 1], rest[end + 1 :]
+    tail = _QUERY_TAIL_RE.match(rest)
+    if tail is None or (sel is not None and not re.match(r"^\[(?:\d+|\?.*)?\]$", sel)):
         raise AssertionError(f"fake az: unsupported --query {query!r}")
+    match = {"path": path, "sel": sel, "field": tail["field"], "pipe": tail["pipe"]}
     for part in filter(None, match["path"].split(".")):
         value = value.get(part) if isinstance(value, dict) else None
     sel = match["sel"]
@@ -62,13 +122,8 @@ def _query(value: Any, query: str) -> Any:
         elif inner.isdigit():
             value = items[int(inner)] if int(inner) < len(items) else None
         else:
-            conds = []
-            for clause in inner[1:].split("&&"):
-                cond = _COND_RE.match(clause)
-                if cond is None:
-                    raise AssertionError(f"fake az: unsupported filter {clause!r}")
-                conds.append((cond[1], cond[2]))
-            value = [i for i in items if all(str(i.get(k)) == v for k, v in conds)]
+            clauses = inner[1:].split("&&")
+            value = [i for i in items if all(_matches(i, c) for c in clauses)]
             projected_list = True
     if match["field"]:
         if projected_list:
@@ -241,6 +296,62 @@ _REST_RE = re.compile(
     r"^https://graph\.microsoft\.com/v1\.0/(applications|servicePrincipals|groups)/([^/]+)"
     r"(?:/(appRoleAssignedTo|appRoleAssignments))?$"
 )
+_SITE_BY_PATH_RE = re.compile(r"^https://graph\.microsoft\.com/v1\.0/sites/([^/:]+):(/.*)$")
+_SITE_SUB_RE = re.compile(
+    r"^https://graph\.microsoft\.com/v1\.0/sites/([^/:]+)/(drives|permissions)$"
+)
+_DRIVE_UPLOAD_RE = re.compile(
+    r"^https://graph\.microsoft\.com/v1\.0/drives/([^/]+)/root:/(.+):/content$"
+)
+
+
+def _principal_exists(state: dict, object_id: str) -> bool:
+    return any(o["id"] == object_id for o in state["groups"] + state["sps"])
+
+
+def _site_rest(state: dict, method: str, url: str, args: list[str]) -> Any:
+    """Answer the SharePoint calls: a site by path, its drives, its permissions, uploads."""
+    sites = state.get("sites", [])
+    if (match := _SITE_BY_PATH_RE.match(url)) is not None:
+        host, path = match.groups()
+        for site in sites:
+            if method == "GET" and site["hostname"] == host and site["path"] == path:
+                return {"id": site["id"], "webUrl": f"https://{host}{path}"}
+        raise AzError("Not Found: itemNotFound. Requested site could not be found.", 3)
+    if (match := _SITE_SUB_RE.match(url)) is not None:
+        site_id, sub = match.groups()
+        site = next((s for s in sites if s["id"] == site_id), None)
+        if site is None:
+            raise AzError("Not Found: itemNotFound. Requested site could not be found.", 3)
+        if method == "GET":
+            return {"value": site[sub]}
+        if sub == "permissions" and method == "POST":
+            body = json.loads(_arg(args, "--body"))
+            identities = body.get("grantedToIdentities") or []
+            if not body.get("roles") or not identities:
+                raise AzError("Bad Request: roles and grantedToIdentities are required.", 1)
+            if not identities[0].get("application", {}).get("id"):
+                raise AzError("Bad Request: the granted application has no id.", 1)
+            permission = {
+                "id": _new_id(),
+                "roles": body["roles"],
+                "grantedToIdentities": identities,
+                "grantedToIdentitiesV2": identities,
+            }
+            site["permissions"].append(permission)
+            return permission
+        raise AssertionError(f"fake az: unsupported {method} on site {sub}")
+    if (match := _DRIVE_UPLOAD_RE.match(url)) is not None and method == "PUT":
+        drive_id, item_path = match.groups()
+        if not any(d["id"] == drive_id for s in sites for d in s["drives"]):
+            raise AzError("Not Found: itemNotFound. The drive could not be found.", 3)
+        body = _arg(args, "--body")
+        content = Path(body[1:]).read_text() if body.startswith("@") else body
+        state.setdefault("uploads", []).append(
+            {"drive": drive_id, "path": item_path, "content": content}
+        )
+        return {"name": item_path.rsplit("/", 1)[-1]}
+    raise AssertionError(f"fake az: unsupported rest url {url!r}")
 
 
 def _rest(state: dict, args: list[str]) -> Any:
@@ -248,7 +359,7 @@ def _rest(state: dict, args: list[str]) -> Any:
     url = _arg(args, "--url") if "--url" in args else _arg(args, "--uri")
     match = _REST_RE.match(url)
     if match is None:
-        raise AssertionError(f"fake az: unsupported rest url {url!r}")
+        return _site_rest(state, method, url, args)
     collection, object_id, sub = match.groups()
     try:
         body = json.loads(_arg(args, "--body")) if "--body" in args else None
@@ -278,26 +389,45 @@ def _rest(state: dict, args: list[str]) -> Any:
             raise AssertionError(f"fake az: unsupported {method} on a service principal")
         sp.update(body)
         return None
+    # ``appRoleAssignedTo`` is the resource side of an assignment (who holds this
+    # principal's roles); ``appRoleAssignments`` is the principal side (whose
+    # roles this principal holds). Graph accepts the same body on either.
+    resource_side = sub == "appRoleAssignedTo"
     if method == "GET":
-        if sub != "appRoleAssignedTo":
-            raise AssertionError("fake az: GET is modeled on appRoleAssignedTo only")
-        return {"value": [a for a in state["assignments"] if a["resourceId"] == sp["id"]]}
+        key = "resourceId" if resource_side else "principalId"
+        return {"value": [a for a in state["assignments"] if a[key] == sp["id"]]}
     if method != "POST":
         raise AssertionError(f"fake az: unsupported {method} on {sub}")
-    if body["resourceId"] != sp["id"]:
+    if resource_side and body["resourceId"] != sp["id"]:
         raise AzError("resourceId does not match the addressed service principal.", 1)
-    if not any(g["id"] == body["principalId"] for g in state["groups"]):
+    if not resource_side and body["principalId"] != sp["id"]:
+        raise AzError("principalId does not match the addressed service principal.", 1)
+    if not _principal_exists(state, body["principalId"]):
         raise AzError(f"Resource '{body['principalId']}' does not exist.", 3)
-    role_ids = {r["id"] for r in _sp_view(state, sp).get("appRoles", [])}
+    resource = _sp_lookup(state, body["resourceId"]) if not resource_side else sp
+    role_ids = {r["id"] for r in _sp_view(state, resource).get("appRoles", [])}
     if body["appRoleId"] not in role_ids | {DEFAULT_ACCESS_ROLE_ID}:
         raise AzError("Permission being assigned was not found on application.", 1)
     key = (body["principalId"], body["resourceId"], body["appRoleId"])
     existing = {(a["principalId"], a["resourceId"], a["appRoleId"]) for a in state["assignments"]}
     if key in existing:
         raise AzError("Permission being assigned already exists on the object.", 1)
-    assignment = {"id": _new_id(), "principalType": "Group", **body}
+    is_group = any(g["id"] == body["principalId"] for g in state["groups"])
+    principal_type = "Group" if is_group else "ServicePrincipal"
+    assignment = {"id": _new_id(), "principalType": principal_type, **body}
     state["assignments"].append(assignment)
     return assignment
+
+
+def _identity(state: dict, args: list[str]) -> Any:
+    """Answer ``identity show`` for a user-assigned managed identity."""
+    if args[1] != "show":
+        raise AssertionError(f"fake az: unsupported identity call {args!r}")
+    group, name = _arg(args, "-g"), _arg(args, "-n")
+    for identity in state.get("identities", []):
+        if identity["resourceGroup"] == group and identity["name"] == name:
+            return identity
+    raise AzError(f"The Resource '{name}' under resource group '{group}' was not found.", 3)
 
 
 def _cli_client_assertion() -> str:
@@ -340,6 +470,8 @@ def fake_azure() -> None:
             result = _ad(state, args)
         elif args[0] == "rest":
             result = _rest(state, args)
+        elif args[0] == "identity":
+            result = _identity(state, args)
         elif args[:2] == ["account", "get-access-token"]:
             _cli_reply(args)
             return
