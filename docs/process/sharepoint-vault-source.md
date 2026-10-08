@@ -70,16 +70,23 @@ the managed identity and needs no standing elevation afterward.
   tree. Record the site hostname, the server-relative site path, and the library
   display name as shell variables.
 
+Each lookup below must return exactly one value. Stop if one returns nothing
+or several -- and stop on any failed command -- rather than carrying an empty or
+ambiguous id into a grant. [`deploy/bootstrap/seed-vault-source.sh`](../../deploy/bootstrap/seed-vault-source.sh)
+is the executable form of this runbook and enforces exactly that.
+
 ```bash
 # Resolve identity coordinates at run time (no GUID is baked into this runbook).
 SAGE_MI_CLIENT_ID="$(az identity show -g "$RG" -n "$SAGE_IDENTITY_NAME" --query clientId -o tsv)"
-SAGE_MI_SP_ID="$(az ad sp list --filter "appId eq '$SAGE_MI_CLIENT_ID'" --query '[0].id' -o tsv)"
+SAGE_MI_SP_ID="$(az ad sp list --filter "appId eq '$SAGE_MI_CLIENT_ID'" --query '[].id' -o tsv)"
 
-# The Microsoft Graph service principal, resolved by display name rather than by
-# its well-known app id, so no identifier literal lives in this file.
-GRAPH_SP_ID="$(az ad sp list --display-name 'Microsoft Graph' --query '[0].id' -o tsv)"
+# The Microsoft Graph service principal, selected by its exact display name
+# rather than by its well-known app id, so no identifier literal lives in this
+# file. An exact `eq` filter, not `--display-name`: that flag matches by prefix,
+# so any principal whose name starts with "Microsoft Graph" would also match.
+GRAPH_SP_ID="$(az ad sp list --filter "displayName eq 'Microsoft Graph'" --query '[].id' -o tsv)"
 SITES_SELECTED_ROLE_ID="$(az ad sp show --id "$GRAPH_SP_ID" \
-  --query "appRoles[?value=='Sites.Selected'].id | [0]" -o tsv)"
+  --query "appRoles[?value=='Sites.Selected'].id" -o tsv)"
 ```
 
 ## Steps
@@ -105,13 +112,16 @@ step 4 — SAGE is the sole writer of the tree thereafter (CAS-ADR-043).
 
 ### 1. Resolve the SharePoint site and library coordinates
 
+`SITE_PATH` is the server-relative path including its `/sites/` prefix, so it
+follows the hostname's colon directly.
+
 ```bash
 SITE_ID="$(az rest --method GET \
-  --uri "https://graph.microsoft.com/v1.0/sites/${SITE_HOSTNAME}:/sites/${SITE_PATH}" \
+  --uri "https://graph.microsoft.com/v1.0/sites/${SITE_HOSTNAME}:${SITE_PATH}" \
   --query id -o tsv)"
 DRIVE_ID="$(az rest --method GET \
   --uri "https://graph.microsoft.com/v1.0/sites/${SITE_ID}/drives" \
-  --query "value[?name=='${LIBRARY_NAME}'].id | [0]" -o tsv)"
+  --query "value[?name=='${LIBRARY_NAME}'].id" -o tsv)"
 ```
 
 These are the values the deployment needs: set `sharepointSiteId = ${SITE_ID}`
@@ -120,18 +130,36 @@ deploy time). `vaultSourceRootPath` defaults to `vaults`.
 
 ### 2. Grant the `Sites.Selected` application role to the SAGE identity
 
+Look the assignment up first and post it only when absent, so a re-run never
+posts it twice:
+
 ```bash
-az rest --method POST \
+existing_role="$(az rest --method GET \
   --uri "https://graph.microsoft.com/v1.0/servicePrincipals/${SAGE_MI_SP_ID}/appRoleAssignments" \
-  --body "{\"principalId\":\"${SAGE_MI_SP_ID}\",\"resourceId\":\"${GRAPH_SP_ID}\",\"appRoleId\":\"${SITES_SELECTED_ROLE_ID}\"}"
+  --query "value[?resourceId=='${GRAPH_SP_ID}' && appRoleId=='${SITES_SELECTED_ROLE_ID}'].id" \
+  -o tsv)"
+if [ -z "${existing_role}" ]; then
+  az rest --method POST \
+    --uri "https://graph.microsoft.com/v1.0/servicePrincipals/${SAGE_MI_SP_ID}/appRoleAssignments" \
+    --body "{\"principalId\":\"${SAGE_MI_SP_ID}\",\"resourceId\":\"${GRAPH_SP_ID}\",\"appRoleId\":\"${SITES_SELECTED_ROLE_ID}\"}"
+fi
 ```
 
 ### 3. Grant the per-site write permission, scoped to the single site
 
+Check the site's existing permissions for a write grant to the SAGE identity
+first, and post only when there is none:
+
 ```bash
-az rest --method POST \
+existing_grant="$(az rest --method GET \
   --uri "https://graph.microsoft.com/v1.0/sites/${SITE_ID}/permissions" \
-  --body "{\"roles\":[\"write\"],\"grantedToIdentities\":[{\"application\":{\"id\":\"${SAGE_MI_CLIENT_ID}\"}}]}"
+  --query "value[?contains(grantedToIdentitiesV2[].application.id, '${SAGE_MI_CLIENT_ID}') && contains(roles, 'write')].id" \
+  -o tsv)"
+if [ -z "${existing_grant}" ]; then
+  az rest --method POST \
+    --uri "https://graph.microsoft.com/v1.0/sites/${SITE_ID}/permissions" \
+    --body "{\"roles\":[\"write\"],\"grantedToIdentities\":[{\"application\":{\"id\":\"${SAGE_MI_CLIENT_ID}\"}}]}"
+fi
 ```
 
 This is the step that actually confers access, and it confers it to exactly one

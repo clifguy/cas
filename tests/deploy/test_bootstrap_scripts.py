@@ -1210,15 +1210,37 @@ def test_vault_seed_script_grants_and_seeds() -> None:
 
 
 def test_vault_seed_script_is_idempotent() -> None:
-    """The seed upload is create-or-replace and the script tolerates a
-    pre-existing grant, so a re-run converges.
+    """The seed upload is create-or-replace and each grant is looked up before it
+    is posted, so a re-run converges without swallowing a failed call.
+
+    A ``|| true`` guard would make a refused grant indistinguishable from one
+    already in place; the executed tests below hold the behaviour, this one
+    holds the shape: every POST is preceded by a GET of the collection it writes.
     """
     text = _text(VAULT_SEED)
     uri_lines = [line for line in text.splitlines() if "--uri" in line]
     assert any(":/content" in line for line in uri_lines), (
         "seed upload must be the create-or-replace :/content PUT"
     )
-    assert "|| true" in text, "seed script must tolerate an already-present grant on re-run"
+    assert "|| true" not in text, "seed script must not tolerate a failed call with `|| true`"
+    lines = text.splitlines()
+    for i, line in enumerate(lines):
+        if "--method POST" not in line:
+            continue
+        target = next(
+            (
+                found
+                for j in range(i, min(i + 3, len(lines)))
+                if (found := re.search(r"/v1\.0/(\S+?)\"", lines[j])) is not None
+            ),
+            None,
+        )
+        assert target is not None, f"POST at line {i + 1} has no --uri"
+        collection = target.group(1)
+        assert any(
+            "--method GET" in lines[k] and collection in "\n".join(lines[k : k + 3])
+            for k in range(i)
+        ), f"POST to {collection} must be preceded by a GET of the same collection"
 
 
 def test_dns_script_emits_all_three_records() -> None:
@@ -1284,3 +1306,304 @@ def test_runbooks_point_to_their_scripts() -> None:
         assert f"deploy/bootstrap/{script}" in text, (
             f"{runbook} must point to its codified script deploy/bootstrap/{script}"
         )
+
+
+# --- Executed vault-source seed -----------------------------------------------
+#
+# The seed script runs, under every available bash, against the same stateful
+# stand-in for the Azure CLI, here modelling the SAGE managed identity, Microsoft
+# Graph's service principal and one SharePoint site with its document library.
+# Assertions read the final tenant state and the recorded calls.
+
+_SEED_RG: Final[str] = "rg-seed-test"
+_SEED_IDENTITY: Final[str] = "id-sage-seed-test"
+_SEED_HOST: Final[str] = "contoso.sharepoint.com"
+_SEED_SITE_PATH: Final[str] = "/sites/cas-vaults"
+_SEED_LIBRARY: Final[str] = "Documents"
+
+
+def _bash_interpreters() -> list[str]:
+    found = [shutil.which("bash")]
+    if Path("/bin/bash").exists():
+        found.append("/bin/bash")
+    return sorted({b for b in found if b})
+
+
+SEED_BASHES = pytest.mark.parametrize("bash", _bash_interpreters())
+
+
+def _graph_sp(name: str = "Microsoft Graph") -> dict:
+    return {
+        "id": str(uuid.uuid4()),
+        "appId": str(uuid.uuid4()),
+        "displayName": name,
+        "appRoleAssignmentRequired": False,
+        "appRoles": [
+            {"id": str(uuid.uuid4()), "value": "Sites.Read.All"},
+            {"id": str(uuid.uuid4()), "value": "Sites.Selected"},
+        ],
+    }
+
+
+def _seed_tenant() -> dict:
+    """A tenant holding the SAGE identity, Microsoft Graph and one SharePoint site."""
+    client_id = str(uuid.uuid4())
+    sage_sp = {
+        "id": str(uuid.uuid4()),
+        "appId": client_id,
+        "displayName": _SEED_IDENTITY,
+        "appRoleAssignmentRequired": False,
+    }
+    return {
+        "apps": [],
+        "sps": [sage_sp, _graph_sp()],
+        "groups": [],
+        "assignments": [],
+        "identities": [
+            {
+                "name": _SEED_IDENTITY,
+                "resourceGroup": _SEED_RG,
+                "clientId": client_id,
+                "principalId": sage_sp["id"],
+            }
+        ],
+        "sites": [
+            {
+                "id": f"{_SEED_HOST},{uuid.uuid4()},{uuid.uuid4()}",
+                "hostname": _SEED_HOST,
+                "path": _SEED_SITE_PATH,
+                "drives": [
+                    {"id": f"b!{uuid.uuid4().hex}", "name": "Site Assets"},
+                    {"id": f"b!{uuid.uuid4().hex}", "name": _SEED_LIBRARY},
+                ],
+                "permissions": [],
+            }
+        ],
+        "uploads": [],
+        "faults": [],
+    }
+
+
+def _run_seed(tmp_path: Path, state: dict, bash: str = "bash") -> tuple:
+    """Run the seed script against ``state``; return (result, calls, final state).
+
+    ``state`` persists in ``tmp_path`` between runs, so a second call re-runs the
+    script against the tenant the first left behind.
+    """
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    az = bin_dir / "az"
+    az.write_text(f"#!{sys.executable} -IS\n" + FAKE_ENTRA_AZ.read_text())
+    az.chmod(0o755)
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps(state))
+    calls_path = tmp_path / "calls.jsonl"
+    calls_path.write_text("")
+    result = subprocess.run(
+        [bash, str(VAULT_SEED)],
+        cwd=REPO_ROOT,
+        env={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "HOME": str(tmp_path),
+            "AZURE_STATE": str(state_path),
+            "AZURE_CALLS": str(calls_path),
+            "RG": _SEED_RG,
+            "SAGE_IDENTITY_NAME": _SEED_IDENTITY,
+            "SITE_HOSTNAME": _SEED_HOST,
+            "SITE_PATH": _SEED_SITE_PATH,
+            "LIBRARY_NAME": _SEED_LIBRARY,
+        },
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
+    return result, calls, json.loads(state_path.read_text())
+
+
+def _sage_identity(state: dict) -> dict:
+    return state["identities"][0]
+
+
+def _real_graph(state: dict) -> dict:
+    matches = [s for s in state["sps"] if s["displayName"] == "Microsoft Graph"]
+    assert len(matches) == 1
+    return matches[0]
+
+
+def _sites_selected(sp: dict) -> str:
+    return next(r["id"] for r in sp["appRoles"] if r["value"] == "Sites.Selected")
+
+
+def _grant_posts(calls: list[list[str]]) -> list[int]:
+    return [i for i, c in enumerate(calls) if c[:1] == ["rest"] and "POST" in c]
+
+
+def _write_grants(state: dict) -> list[dict]:
+    client_id = _sage_identity(state)["clientId"]
+    return [
+        p
+        for p in state["sites"][0]["permissions"]
+        if "write" in p["roles"]
+        and any(g["application"]["id"] == client_id for g in p["grantedToIdentitiesV2"])
+    ]
+
+
+@SEED_BASHES
+def test_vault_seed_converges_on_a_fresh_tenant(tmp_path: Path, bash: str) -> None:
+    """A first run grants Sites.Selected on Graph, grants write on the one site,
+    seeds the committed config, and emits the site and drive coordinates.
+    """
+    state = _seed_tenant()
+    result, _, final = _run_seed(tmp_path, state, bash)
+    assert result.returncode == 0, result.stderr
+    graph = _real_graph(final)
+    identity = _sage_identity(final)
+    assert [(a["principalId"], a["resourceId"], a["appRoleId"]) for a in final["assignments"]] == [
+        (identity["principalId"], graph["id"], _sites_selected(graph))
+    ]
+    assert len(_write_grants(final)) == 1
+    site = final["sites"][0]
+    library = next(d for d in site["drives"] if d["name"] == _SEED_LIBRARY)
+    seed = (REPO_ROOT / "deploy" / "test-vault" / "vault_config.yaml").read_text()
+    assert final["uploads"] == [
+        {
+            "drive": library["id"],
+            "path": "vaults/cloud_validation/vault_config.yaml",
+            "content": seed,
+        }
+    ]
+    assert f"param sharepointSiteId = '{site['id']}'" in result.stdout
+    assert f"param sharepointDriveId = '{library['id']}'" in result.stdout
+
+
+@SEED_BASHES
+def test_vault_seed_grants_write_despite_other_site_grants(tmp_path: Path, bash: str) -> None:
+    """Only a write grant to the SAGE identity counts as already in place.
+
+    The site already grants write to another application and read to the SAGE
+    identity; neither satisfies the check, so the write grant is still posted.
+    """
+    state = _seed_tenant()
+    client_id = _sage_identity(state)["clientId"]
+
+    def grant(app_id: str, role: str) -> dict:
+        who = [{"application": {"id": app_id, "displayName": "app"}}]
+        return {
+            "id": str(uuid.uuid4()),
+            "roles": [role],
+            "grantedToIdentities": who,
+            "grantedToIdentitiesV2": who,
+        }
+
+    state["sites"][0]["permissions"] = [grant(str(uuid.uuid4()), "write"), grant(client_id, "read")]
+    result, _, final = _run_seed(tmp_path, state, bash)
+    assert result.returncode == 0, result.stderr
+    assert len(_write_grants(final)) == 1
+
+
+@SEED_BASHES
+def test_vault_seed_ignores_a_look_alike_graph_principal(tmp_path: Path, bash: str) -> None:
+    """A principal whose name merely starts with "Microsoft Graph" is never
+    selected. It is listed first, so a prefix match taking the first hit would
+    grant its role instead of Graph's.
+    """
+    state = _seed_tenant()
+    state["sps"].insert(0, _graph_sp("Microsoft Graph Connector Agent"))
+    result, _, final = _run_seed(tmp_path, state, bash)
+    assert result.returncode == 0, result.stderr
+    graph = _real_graph(final)
+    assert [(a["resourceId"], a["appRoleId"]) for a in final["assignments"]] == [
+        (graph["id"], _sites_selected(graph))
+    ]
+
+
+@SEED_BASHES
+def test_vault_seed_stops_on_duplicate_graph_principals(tmp_path: Path, bash: str) -> None:
+    """Two principals named exactly "Microsoft Graph" stop the run before any
+    grant: the script cannot tell which one to grant against.
+    """
+    state = _seed_tenant()
+    state["sps"].append(_graph_sp())
+    result, calls, final = _run_seed(tmp_path, state, bash)
+    assert result.returncode != 0, "duplicate Graph principals must stop the run"
+    assert "exactly one" in result.stderr, result.stderr
+    assert _grant_posts(calls) == []
+    assert final["uploads"] == []
+
+
+@pytest.mark.parametrize(
+    ("label", "mutate"),
+    [
+        ("no identity principal", lambda s: s["sps"].pop(0)),
+        ("no Sites.Selected role", lambda s: s["sps"][1]["appRoles"].pop()),
+        ("no document library", lambda s: s["sites"][0]["drives"].pop()),
+    ],
+)
+@SEED_BASHES
+def test_vault_seed_stops_when_a_lookup_resolves_empty(
+    tmp_path: Path, bash: str, label: str, mutate: object
+) -> None:
+    """A lookup that finds nothing stops the run instead of posting an empty id."""
+    state = _seed_tenant()
+    mutate(state)  # type: ignore[operator]
+    result, calls, final = _run_seed(tmp_path, state, bash)
+    assert result.returncode != 0, f"{label} must stop the run"
+    assert "ERROR" in result.stderr, result.stderr
+    assert _grant_posts(calls) == []
+    assert final["uploads"] == []
+
+
+@pytest.mark.parametrize(
+    "contains",
+    [
+        ["ad", "sp", "list", "appId eq"],
+        ["ad", "sp", "list", "displayName eq 'Microsoft Graph'"],
+        ["rest", "GET", "/appRoleAssignments"],
+        ["rest", "GET", "/permissions"],
+    ],
+)
+@SEED_BASHES
+def test_vault_seed_stops_when_a_lookup_fails(
+    tmp_path: Path, bash: str, contains: list[str]
+) -> None:
+    """A failed lookup inside a command substitution stops the run; it never
+    reads as "absent" and goes on to post a grant or seed the vault.
+    """
+    state = _seed_tenant()
+    state["faults"] = [{"contains": contains, "message": "Service unavailable.", "code": 1}]
+    result, calls, final = _run_seed(tmp_path, state, bash)
+    assert result.returncode != 0, f"a failed {contains} lookup must stop the run"
+    failed = next(i for i, c in enumerate(calls) if all(t in " ".join(c) for t in contains))
+    assert failed == len(calls) - 1, "nothing may run after the failed lookup"
+    assert final["uploads"] == []
+
+
+@pytest.mark.parametrize("grant", ["/appRoleAssignments", "/permissions"])
+@SEED_BASHES
+def test_vault_seed_stops_when_a_grant_is_refused(tmp_path: Path, bash: str, grant: str) -> None:
+    """A refused grant fails the run before the vault is seeded."""
+    state = _seed_tenant()
+    state["faults"] = [
+        {
+            "contains": ["rest", "POST", grant],
+            "message": "Authorization_RequestDenied: Insufficient privileges.",
+            "code": 1,
+        }
+    ]
+    result, _, final = _run_seed(tmp_path, state, bash)
+    assert result.returncode != 0, f"a refused {grant} grant must fail the run"
+    assert final["uploads"] == []
+
+
+@SEED_BASHES
+def test_vault_seed_rerun_is_idempotent(tmp_path: Path, bash: str) -> None:
+    """A re-run against a converged tenant succeeds without posting either grant."""
+    first, _, built = _run_seed(tmp_path, _seed_tenant(), bash)
+    assert first.returncode == 0, first.stderr
+    result, calls, final = _run_seed(tmp_path, built, bash)
+    assert result.returncode == 0, result.stderr
+    assert _grant_posts(calls) == [], "a converged tenant must not be granted again"
+    assert final["assignments"] == built["assignments"]
+    assert final["sites"][0]["permissions"] == built["sites"][0]["permissions"]
+    assert len(final["uploads"]) == 2, "the config upload is create-or-replace on every run"
