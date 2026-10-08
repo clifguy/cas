@@ -629,24 +629,24 @@ def test_apim_custom_domain_references_keyvault_cert() -> None:
 
 def test_apim_assigns_user_assigned_identity() -> None:
     """The service carries a user-assigned managed identity (so it can read the
-    certificate from Key Vault), keyed by the ``sageIdentityId`` parameter, and
+    certificate from Key Vault), keyed by the ``apimIdentityId`` parameter, and
     the hostname binding names that identity's client id for the Key Vault GET.
     """
     text = _strip_line_comments(APIM.read_text(encoding="utf-8"))
-    assert re.search(r"param\s+sageIdentityId\s+string", text), (
-        "apim.bicep must take a `sageIdentityId` string parameter"
+    assert re.search(r"param\s+apimIdentityId\s+string", text), (
+        "apim.bicep must take a `apimIdentityId` string parameter"
     )
-    assert re.search(r"param\s+sageIdentityClientId\s+string", text), (
-        "apim.bicep must take a `sageIdentityClientId` string parameter"
+    assert re.search(r"param\s+apimIdentityClientId\s+string", text), (
+        "apim.bicep must take a `apimIdentityClientId` string parameter"
     )
     assert re.search(r"type:\s*'UserAssigned'", text), (
         "the service must declare a UserAssigned managed identity"
     )
-    assert "userAssignedIdentities" in text and "sageIdentityId" in text, (
-        "the userAssignedIdentities map must reference the sageIdentityId parameter"
+    assert "userAssignedIdentities" in text and "apimIdentityId" in text, (
+        "the userAssignedIdentities map must reference the apimIdentityId parameter"
     )
-    assert re.search(r"identityClientId:\s*sageIdentityClientId", text), (
-        "the hostname binding must name the sageIdentityClientId for the Key Vault GET"
+    assert re.search(r"identityClientId:\s*apimIdentityClientId", text), (
+        "the hostname binding must name the apimIdentityClientId for the Key Vault GET"
     )
 
 
@@ -2049,8 +2049,8 @@ def test_apim_declares_app_insights_logger() -> None:
         "credentials.connectionString must be a symbolic reference to the Application "
         "Insights resource's ConnectionString property, never a literal"
     )
-    assert "identityClientId: sageIdentityClientId" in block, (
-        "credentials.identityClientId must bind the sageIdentityClientId param so "
+    assert "identityClientId: apimIdentityClientId" in block, (
+        "credentials.identityClientId must bind the apimIdentityClientId param so "
         "ingestion authenticates via the user-assigned managed identity"
     )
     assert "instrumentationKey" not in block, (
@@ -2111,8 +2111,8 @@ def test_apim_grants_metrics_publisher_to_identity() -> None:
         "the role assignment must be scoped to the Application Insights resource "
         "(scope: appInsights)"
     )
-    assert "principalId: sageIdentityPrincipalId" in block, (
-        "the role assignment must bind principalId to the sageIdentityPrincipalId "
+    assert "principalId: apimIdentityPrincipalId" in block, (
+        "the role assignment must bind principalId to the apimIdentityPrincipalId "
         "param (the principal id, not the client id)"
     )
     assert "principalType: 'ServicePrincipal'" in block, (
@@ -2135,8 +2135,8 @@ def test_apim_declares_identity_principal_param() -> None:
     error-level ``no-unused-params`` lint rule forces it to be consumed.
     """
     text = APIM.read_text(encoding="utf-8")
-    assert _declares_param(text, "sageIdentityPrincipalId"), (
-        "apim.bicep must declare a required 'param sageIdentityPrincipalId string' (no default)"
+    assert _declares_param(text, "apimIdentityPrincipalId"), (
+        "apim.bicep must declare a required 'param apimIdentityPrincipalId string' (no default)"
     )
 
 
@@ -2162,17 +2162,17 @@ def test_main_bicep_wires_identity_principal_into_apim() -> None:
     """The orchestrator passes the identity's principal id into the APIM module.
 
     Scoped to the ``apim`` module call and pinned to the identity module's
-    ``sageIdentityPrincipalId`` output — the principal id, not the client id,
+    ``apimIdentityPrincipalId`` output — the principal id, not the client id,
     which a bare substring check would accept and which produces a role
     assignment that matches no principal.
     """
     block = _module_block(MAIN_BICEP.read_text(encoding="utf-8"), "modules/apim.bicep")
     assert block, "main.bicep declares no apim module call"
     assert re.search(
-        r"sageIdentityPrincipalId:\s*identity\.outputs\.sageIdentityPrincipalId", block
+        r"apimIdentityPrincipalId:\s*identity\.outputs\.apimIdentityPrincipalId", block
     ), (
-        "the apim module must receive sageIdentityPrincipalId from "
-        "identity.outputs.sageIdentityPrincipalId"
+        "the apim module must receive apimIdentityPrincipalId from "
+        "identity.outputs.apimIdentityPrincipalId"
     )
 
 
@@ -2286,7 +2286,7 @@ def test_apim_app_insights_detectors_control() -> None:
         "  scope: ai\n"
         "  name: guid(ai.id)\n"
         "  properties: {\n"
-        "    principalId: sageIdentityPrincipalId\n"
+        "    principalId: apimIdentityPrincipalId\n"
         "  }\n"
         "}\n"
         "resource lg 'Microsoft.ApiManagement/service/loggers@2022-08-01' = {\n"
@@ -2296,7 +2296,7 @@ def test_apim_app_insights_detectors_control() -> None:
         "    loggerType: 'applicationInsights'\n"
         "    credentials: {\n"
         "      connectionString: ai.properties.ConnectionString\n"
-        "      identityClientId: sageIdentityClientId\n"
+        "      identityClientId: apimIdentityClientId\n"
         "    }\n"
         "  }\n"
         "}\n"
@@ -2326,7 +2326,7 @@ def test_apim_app_insights_detectors_control() -> None:
     assert re.search(r"loggerId:\s*\w+\.id", diag_block)
     assert "credentials" not in diag_block
     ra_block = _resource_block(present, _ROLE_ASSIGNMENT_TYPE)
-    assert "principalId: sageIdentityPrincipalId" in ra_block
+    assert "principalId: apimIdentityPrincipalId" in ra_block
     assert "connectionString" not in ra_block
     ai_block = _resource_block(present, _APP_INSIGHTS_TYPE)
     assert "DisableLocalAuth: true" in ai_block
@@ -2346,7 +2346,7 @@ def test_apim_app_insights_detectors_control() -> None:
     assert f"loggerType: '{_APP_INSIGHTS_LOGGER_TYPE}'" not in _resource_block(
         wrong_type, _APIM_LOGGER_TYPE
     )
-    no_identity = present.replace("      identityClientId: sageIdentityClientId\n", "")
+    no_identity = present.replace("      identityClientId: apimIdentityClientId\n", "")
     assert "identityClientId" not in _resource_block(no_identity, _APIM_LOGGER_TYPE)
 
     # Absent: no telemetry-plane type resolves to a block when only the service

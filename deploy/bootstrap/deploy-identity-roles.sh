@@ -100,7 +100,6 @@ ASSIGNABLE_ROLES=(
   "Monitoring Metrics Publisher"
   "AcrPull"
   "Key Vault Secrets User"
-  "Key Vault Certificate User"
 )
 
 # The resource-provider namespaces the templates deploy. Registering one needs

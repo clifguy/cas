@@ -67,12 +67,19 @@ declares it as an idempotent Container Apps job and CI **starts that job and wai
 for it** as part of this stage. The deployment is idempotent; re-running
 reconciles.
 
+Key Vault access is granted per secret, and a grant scoped to a secret needs that
+secret to exist. On a **new tenant**, run this stage the first time with
+`keyVaultSecretsLoaded=false`: the grants and the gateway ingress key are held
+back, and SAGE receives no key and so checks none. Load the secrets (Stage 2),
+then run this stage again with the default `true`.
+
 ### Stage 2 — Post-deploy seed (secrets and vault source)
 
 After the vault and the SAGE identity exist:
 
 - `deploy/bootstrap/load-key-vault-secrets.sh` — loads the abstraction-provider
-  key, the BFF client secret, and the wildcard TLS certificate into Key Vault.
+  key, the BFF client secret, and the wildcard TLS certificate into Key Vault,
+  and generates the gateway ingress key when the vault holds none.
 - `deploy/bootstrap/seed-vault-source.sh` — grants the SAGE identity the
   site-scoped Microsoft Graph permission and seeds the validation vault's
   configuration into the document library (CAS-ADR-043); **emits
@@ -109,6 +116,40 @@ store — and reports all failures at once, each paired with an anti-coincidenta
 control; a non-zero exit fails the deploy. Serial discovery of one broken layer
 per redeploy is the failure mode the staged ordering and the preflight exist to
 kill.
+
+## Moving an existing tenant to per-secret grants
+
+A tenant deployed before Key Vault access was granted per secret holds vault-wide
+**Key Vault Secrets User** and **Key Vault Certificate User** grants for the SAGE
+and BFF identities, and its gateway runs as the SAGE identity. Moving it is a
+one-time sequence:
+
+1. **Before deploying,** run `deploy/bootstrap/load-key-vault-secrets.sh`. It
+   generates `sage-ingress-key`, which the deployment's grants, the gateway's
+   named value and SAGE's secret reference all name.
+2. **Deploy** (Stage 1). The gateway moves to its own identity, every identity
+   gains its per-secret grants, and SAGE starts requiring the ingress key that
+   the gateway now injects.
+3. **Remove the old vault-wide grants.** An Azure deployment adds and updates
+   but never deletes, so the vault-scope assignments a template no longer
+   declares stay in force until removed. Delete those held by the SAGE and BFF
+   identities — and only those: the vault may hold other workloads' grants:
+
+   ```bash
+   KV_ID="$(az keyvault show -n "$KV" --query id -o tsv)"
+   for identity in "id-sage-$ENV" "id-cas-bff-$ENV"; do
+     principal="$(az identity show -g "$RG" -n "$identity" --query principalId -o tsv)"
+     az role assignment delete --assignee "$principal" --scope "$KV_ID" \
+       --role "Key Vault Secrets User"
+     az role assignment delete --assignee "$principal" --scope "$KV_ID" \
+       --role "Key Vault Certificate User"
+   done
+   ```
+
+4. **Verify:** `az role assignment list --scope "$KV_ID" --assignee <principal>`
+   returns nothing for either identity, the apps and both custom domains still
+   serve, and a request to SAGE's container hostname without the ingress key
+   is refused with 403.
 
 ## Re-running
 

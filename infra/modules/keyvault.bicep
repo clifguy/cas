@@ -2,10 +2,11 @@
 //
 // Provisions the secrets vault for the cloud deployment profile (CAS-ADR-042).
 // The vault holds the hosted abstraction provider's API key and the owned
-// wildcard TLS certificate; the database connection authenticates by managed
-// identity, so no database password is stored. The access model is Azure RBAC:
-// the SAGE and CAS BFF managed identities are granted data-plane read of the
-// secrets and certificates they consume. Secret values are loaded out of band
+// wildcard TLS certificate, the BFF client secret and the gateway's ingress
+// key; the database connection authenticates by managed identity, so no
+// database password is stored. The access model is Azure RBAC, granted per
+// secret: each identity reads exactly the secrets it consumes and nothing else
+// in the vault, which may hold other workloads' secrets. Secret values are loaded out of band
 // by a documented operator step (see docs/process/key-vault-secrets.md), so no
 // secret material is committed to the repository.
 //
@@ -27,6 +28,12 @@ param sagePrincipalId string
 @description('Principal id of the CAS BFF managed identity granted secret/certificate read.')
 param bffPrincipalId string
 
+@description('Principal id of the API Management gateway managed identity granted certificate and ingress-key read.')
+param apimPrincipalId string
+
+@description('Whether the secrets are loaded. A grant scoped to one secret needs that secret to exist, and secrets are loaded after the first deployment of a new tenant; deploy that first time with false, load the secrets, then deploy again with true.')
+param keyVaultSecretsLoaded bool = true
+
 @description('Enable purge protection. Off by default: the setting is irreversible — Azure refuses false once it has been applied — and vault-wide, so it binds every workload whose secrets share the vault rather than only this one. On, it hardens against secret loss but blocks deletion for the full soft-delete window. While it is off, soft delete is the recovery path.')
 param enablePurgeProtection bool = false
 
@@ -35,11 +42,19 @@ param enablePurgeProtection bool = false
 // naming in the foundation module).
 var kvName = 'kv${uniqueString(resourceGroup().id)}'
 
-// Built-in Azure roles (public, fixed constants — not identity coordinates).
-// Key Vault Secrets User: read secret values. Key Vault Certificate User: read
-// certificates and their backing secret.
+// Built-in Azure role (a public, fixed constant — not an identity coordinate).
+// Key Vault Secrets User reads a secret's value; a certificate's private key is
+// read through its backing secret, of the same name. Certificate User is not
+// used: it carries secrets/getSecret, so even a narrow scope grants more than
+// the read this vault's consumers need.
 var keyVaultSecretsUserRoleId = '4633458b-17de-408a-b874-0445c86b69e6' // gitleaks:allow public role id
-var keyVaultCertificateUserRoleId = 'db79e9a7-68ee-4b58-9aeb-b90e7c24fcba'
+
+// Canonical names of the secrets the deployment consumes. Downstream modules
+// build Key Vault references from the outputs below; use them verbatim.
+var anthropicSecretName = 'anthropic-api-key'
+var bffClientSecretName = 'bff-client-secret'
+var tlsCertificateName = 'wildcard-tls'
+var ingressKeySecretName = 'sage-ingress-key'
 
 resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   name: kvName
@@ -64,11 +79,33 @@ resource keyVault 'Microsoft.KeyVault/vaults@2023-07-01' = {
   }
 }
 
-// Data-plane grants. Each managed identity reads the secrets and certificates it
-// consumes; nothing is granted write access to secret material from here.
-resource sageSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: keyVault
-  name: guid(keyVault.id, sagePrincipalId, keyVaultSecretsUserRoleId)
+// The secrets the grants are scoped to. Loaded out of band, never created here.
+resource anthropicSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = {
+  parent: keyVault
+  name: anthropicSecretName
+}
+
+resource bffClientSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = {
+  parent: keyVault
+  name: bffClientSecretName
+}
+
+resource tlsCertificateSecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = {
+  parent: keyVault
+  name: tlsCertificateName
+}
+
+resource ingressKeySecret 'Microsoft.KeyVault/vaults/secrets@2023-07-01' existing = {
+  parent: keyVault
+  name: ingressKeySecretName
+}
+
+// Data-plane grants, one per identity and secret. Nothing is granted at vault
+// scope, and nothing is granted write access to secret material from here.
+// SAGE: the hosted abstraction key, and the ingress key it checks requests for.
+resource sageAnthropicRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (keyVaultSecretsLoaded) {
+  scope: anthropicSecret
+  name: guid(anthropicSecret.id, sagePrincipalId, keyVaultSecretsUserRoleId)
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
     principalId: sagePrincipalId
@@ -76,19 +113,21 @@ resource sageSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
   }
 }
 
-resource sageCertificateUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: keyVault
-  name: guid(keyVault.id, sagePrincipalId, keyVaultCertificateUserRoleId)
+resource sageIngressKeyRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (keyVaultSecretsLoaded) {
+  scope: ingressKeySecret
+  name: guid(ingressKeySecret.id, sagePrincipalId, keyVaultSecretsUserRoleId)
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultCertificateUserRoleId)
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
     principalId: sagePrincipalId
     principalType: 'ServicePrincipal'
   }
 }
 
-resource bffSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: keyVault
-  name: guid(keyVault.id, bffPrincipalId, keyVaultSecretsUserRoleId)
+// BFF: its client secret, and the certificate the container-apps environment
+// binds to the cas custom domain (read as the BFF identity).
+resource bffClientSecretRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (keyVaultSecretsLoaded) {
+  scope: bffClientSecret
+  name: guid(bffClientSecret.id, bffPrincipalId, keyVaultSecretsUserRoleId)
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
     principalId: bffPrincipalId
@@ -96,12 +135,34 @@ resource bffSecretsUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
-resource bffCertificateUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  scope: keyVault
-  name: guid(keyVault.id, bffPrincipalId, keyVaultCertificateUserRoleId)
+resource bffCertificateRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (keyVaultSecretsLoaded) {
+  scope: tlsCertificateSecret
+  name: guid(tlsCertificateSecret.id, bffPrincipalId, keyVaultSecretsUserRoleId)
   properties: {
-    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultCertificateUserRoleId)
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
     principalId: bffPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// Gateway: the certificate for the sage custom domain, and the ingress key it
+// injects on every request it forwards.
+resource apimCertificateRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (keyVaultSecretsLoaded) {
+  scope: tlsCertificateSecret
+  name: guid(tlsCertificateSecret.id, apimPrincipalId, keyVaultSecretsUserRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
+    principalId: apimPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+resource apimIngressKeyRead 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (keyVaultSecretsLoaded) {
+  scope: ingressKeySecret
+  name: guid(ingressKeySecret.id, apimPrincipalId, keyVaultSecretsUserRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', keyVaultSecretsUserRoleId)
+    principalId: apimPrincipalId
     principalType: 'ServicePrincipal'
   }
 }
@@ -116,10 +177,13 @@ output keyVaultUri string = keyVault.properties.vaultUri
 output keyVaultResourceId string = keyVault.id
 
 @description('Canonical secret name the hosted abstraction provider key is loaded under.')
-output anthropicSecretName string = 'anthropic-api-key'
+output anthropicSecretName string = anthropicSecretName
 
 @description('Canonical certificate name the owned wildcard TLS certificate is loaded under.')
-output tlsCertificateName string = 'wildcard-tls'
+output tlsCertificateName string = tlsCertificateName
 
 @description('Canonical secret name the BFF confidential-client secret is loaded under.')
-output bffClientSecretName string = 'bff-client-secret'
+output bffClientSecretName string = bffClientSecretName
+
+@description('Canonical secret name the gateway ingress key is loaded under.')
+output ingressKeySecretName string = ingressKeySecretName

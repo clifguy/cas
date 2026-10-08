@@ -116,12 +116,13 @@ def test_identity_module_exists() -> None:
 
 
 def test_identity_declares_application_and_bootstrap_identities() -> None:
-    """Three user-assigned identities are declared — the two application identities
-    (SAGE, CAS BFF) and the dedicated Postgres bootstrap identity. The application
-    identities back the running apps; the bootstrap identity is the one the
-    relational-store module sets as the server's Entra administrator and the
-    in-VNet bootstrap job runs as. None may be silently dropped; downstream modules
-    grant and attach each.
+    """Four user-assigned identities are declared — the two application identities
+    (SAGE, CAS BFF), the API Management gateway's identity, and the dedicated
+    Postgres bootstrap identity. The application identities back the running
+    apps; the gateway's identity reads only the TLS certificate and the ingress
+    key; the bootstrap identity is the one the relational-store module sets as
+    the server's Entra administrator and the in-VNet bootstrap job runs as. None
+    may be silently dropped; downstream modules grant and attach each.
 
     Each name is asserted inside its own resource body. The three declarations are
     otherwise identical, so a whole-module containment check would stay green with
@@ -130,13 +131,14 @@ def test_identity_declares_application_and_bootstrap_identities() -> None:
     """
     text = IDENTITY.read_text(encoding="utf-8")
     count = _count_resource_type(text, _UAMI_TYPE)
-    assert count == 3, (
-        f"identity.bicep must declare exactly three {_UAMI_TYPE} resources "
-        f"(SAGE, CAS BFF, Postgres bootstrap); found {count}"
+    assert count == 4, (
+        f"identity.bicep must declare exactly four {_UAMI_TYPE} resources "
+        f"(SAGE, CAS BFF, API Management, Postgres bootstrap); found {count}"
     )
     for symbol, name in (
         ("sageIdentity", "'id-sage-${environmentName}'"),
         ("bffIdentity", "'id-cas-bff-${environmentName}'"),
+        ("apimIdentity", "'id-apim-${environmentName}'"),
         ("bootstrapIdentity", "'id-pg-bootstrap-${environmentName}'"),
     ):
         block = _resource_block(text, symbol)

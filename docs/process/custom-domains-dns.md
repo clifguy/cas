@@ -41,9 +41,10 @@ and rotation flows to both bindings without a redeploy.
   outputs; `<BASE_DOMAIN>` is the `baseDomain` deployment parameter.
 - The `wildcard-tls` certificate is loaded in Key Vault
   ([`key-vault-secrets.md`](key-vault-secrets.md)). The managed identities that
-  read it (SAGE for APIM, the CAS BFF for the ACA environment certificate) hold
-  **Key Vault Certificate User** — granted by the Key Vault module — so the
-  bindings can read the certificate.
+  read it (the API Management gateway's own identity, and the CAS BFF for the
+  ACA environment certificate) hold **Key Vault Secrets User** on the
+  certificate's backing secret alone — granted by the Key Vault module — so the
+  bindings can read the certificate and nothing else in the vault.
 - You hold write access to the `<BASE_DOMAIN>` hosted zone in AWS Route 53.
 - `az login` to the subscription that owns the resource group, for resolving the
   Azure FQDNs and the domain-ownership token below.

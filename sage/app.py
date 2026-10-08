@@ -42,7 +42,7 @@ from sage.api.routers import (
     utilities,
     vaults,
 )
-from sage.auth import AuthMiddleware, LoopbackOriginGuard
+from sage.auth import AuthMiddleware, IngressKeyGuard, LoopbackOriginGuard, ingress_key_from_env
 from sage.build_info import API_VERSION, BUILD_IDENTITY, RELEASE_VERSION
 from sage.capabilities import ocr_capability
 from sage.config import SageCoreConfig, StackAuthConfig, VaultConfig
@@ -949,5 +949,13 @@ def create_app(
         exempt_prefixes=frozenset({"/download/"}),
         client_names=stack_cfg.auth.client_names if stack_cfg.auth is not None else None,
     )
+
+    # CAS-ADR-042: where the environment supplies an ingress key, the gateway
+    # in front of the deployment is the only way in. Registered after the
+    # authentication middleware, so it runs first: a request that did not come
+    # through the gateway is refused before any token is examined.
+    ingress_key = ingress_key_from_env()
+    if ingress_key is not None:
+        app.add_middleware(IngressKeyGuard, key=ingress_key)
 
     return app

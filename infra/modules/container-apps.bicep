@@ -67,6 +67,12 @@ param keyVaultUri string
 @description('Canonical Key Vault secret name the BFF confidential-client secret is loaded under (single-sourced by the keyvault module).')
 param bffClientSecretName string
 
+@description('Canonical Key Vault secret name the gateway ingress key is loaded under (single-sourced by the keyvault module).')
+param ingressKeySecretName string
+
+@description('Whether the Key Vault secrets are loaded. Until they are, SAGE receives no ingress key and so requires none.')
+param keyVaultSecretsLoaded bool = true
+
 @description('Fully qualified domain name of the managed Postgres server.')
 param postgresServerFqdn string
 
@@ -127,6 +133,11 @@ var bffDbUser = last(split(bffIdentityId, '/'))
 // secret value is loaded out of band by the documented operator step; the BFF
 // reads it at runtime via its managed identity, so no secret is carried here.
 var bffClientSecretUri = '${keyVaultUri}secrets/${bffClientSecretName}'
+
+// Versionless Key Vault secret URL of the ingress key the gateway injects. SAGE
+// reads it as its own identity and refuses any request that does not carry it,
+// so its external ingress admits only traffic the gateway forwarded.
+var sageIngressKeySecretUri = '${keyVaultUri}secrets/${ingressKeySecretName}'
 
 // The mounted cloud config (CAS-ADR-042). Assembled from the hosting modules'
 // outputs as YAML and projected into each app as a file the runtime loads
@@ -241,7 +252,8 @@ resource bffAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 }
 
 // SAGE — external container ingress on its service port; the APIM facade routes
-// to the FQDN this app exposes. Runs as the SAGE identity; reads its config from
+// to the FQDN this app exposes, and SAGE admits only requests carrying the
+// ingress key the facade injects. Runs as the SAGE identity; reads its config from
 // the mounted YAML and its secrets from Key Vault via that identity.
 resource sageApp 'Microsoft.App/containerApps@2024-03-01' = {
   name: 'ca-sage-${environmentName}'
@@ -268,12 +280,21 @@ resource sageApp 'Microsoft.App/containerApps@2024-03-01' = {
           identity: sageIdentityId
         }
       ]
-      secrets: [
-        {
-          name: 'sage-cloud-config'
-          value: sageConfigYaml
-        }
-      ]
+      secrets: concat(
+        [
+          {
+            name: 'sage-cloud-config'
+            value: sageConfigYaml
+          }
+        ],
+        keyVaultSecretsLoaded ? [
+          {
+            name: 'sage-ingress-key'
+            keyVaultUrl: sageIngressKeySecretUri
+            identity: sageIdentityId
+          }
+        ] : []
+      )
     }
     template: {
       containers: [
@@ -292,20 +313,28 @@ resource sageApp 'Microsoft.App/containerApps@2024-03-01' = {
             cpu: json('2.0')
             memory: '4Gi'
           }
-          env: [
-            {
-              name: 'SAGE_CONFIG_PATH'
-              value: '${sageConfigMountPath}/${configFileName}'
-            }
-            {
-              name: 'SAGE_KEY_VAULT_URI'
-              value: keyVaultUri
-            }
-            {
-              name: 'AZURE_CLIENT_ID'
-              value: sageIdentityClientId
-            }
-          ]
+          env: concat(
+            [
+              {
+                name: 'SAGE_CONFIG_PATH'
+                value: '${sageConfigMountPath}/${configFileName}'
+              }
+              {
+                name: 'SAGE_KEY_VAULT_URI'
+                value: keyVaultUri
+              }
+              {
+                name: 'AZURE_CLIENT_ID'
+                value: sageIdentityClientId
+              }
+            ],
+            keyVaultSecretsLoaded ? [
+              {
+                name: 'SAGE_INGRESS_KEY'
+                secretRef: 'sage-ingress-key'
+              }
+            ] : []
+          )
           volumeMounts: [
             {
               volumeName: 'config'

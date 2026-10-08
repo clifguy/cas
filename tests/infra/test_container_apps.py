@@ -314,17 +314,24 @@ def test_acrpull_role_assignments_present() -> None:
 
 def test_sage_ingress_is_external_on_8000() -> None:
     """SAGE takes external container ingress on its service port 8000 (the APIM
-    facade routes to its resulting FQDN).
+    facade routes to its resulting FQDN), locked to the facade by the ingress
+    key it injects.
 
-    ``external`` is asserted on every app, as the message says: read once over a
-    module declaring two, the check is satisfied by whichever app still has it, so
-    either could fall to internal ingress with every gate green. SAGE's port is
-    read from SAGE's own block rather than anywhere in the module.
+    The Consumption gateway has no virtual network, so SAGE's ingress stays
+    external; what restricts it to the gateway is the key SAGE requires, which
+    it receives as an environment variable. ``external`` is asserted on every
+    app, as the message says: read once over a module declaring two, the check
+    is satisfied by whichever app still has it, so either could fall to internal
+    ingress with every gate green. SAGE's port and key are read from SAGE's own
+    block rather than anywhere in the module.
     """
     text = _strip_line_comments(CONTAINER_APPS.read_text(encoding="utf-8"))
     assert re.search(r"targetPort:\s*8000", _sage_app_block(text)), (
         "SAGE ingress must target port 8000"
     )
+    assert re.search(
+        r"name:\s*'SAGE_INGRESS_KEY'\s*secretRef:\s*'sage-ingress-key'", _sage_app_block(text)
+    ), "SAGE's external ingress must be locked by the gateway's ingress key"
     apps = _resource_blocks(text, _CONTAINER_APP_TYPE)
     assert len(apps) >= 2, f"expected >=2 container apps (SAGE + BFF); found {len(apps)}"
     internal = [i for i, app in enumerate(apps) if not re.search(r"external:\s*true", app)]
@@ -599,11 +606,15 @@ def test_injected_env_names_subset_of_runtime_contract() -> None:
     #   SAGE_KEY_VAULT_URI -> sage/secrets/key_vault.py
     #   AZURE_CLIENT_ID    -> DefaultAzureCredential (azure-identity)
     #   SAGE_VAULT_ROOT    -> sage vault discovery root
+    #   SAGE_INGRESS_KEY   -> sage/auth.py (INGRESS_KEY_ENV_VAR), read by name
+    from sage.auth import INGRESS_KEY_ENV_VAR
+
     sage_runtime_env = {
         "SAGE_CONFIG_PATH",
         "SAGE_KEY_VAULT_URI",
         "AZURE_CLIENT_ID",
         "SAGE_VAULT_ROOT",
+        INGRESS_KEY_ENV_VAR,
     }
     bff_runtime_env = {
         _TENANT_ENV,

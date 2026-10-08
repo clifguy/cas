@@ -1,10 +1,11 @@
 // CAS cloud deployment — application managed identities module.
 //
-// Provisions the two user-assigned managed identities the cloud deployment
-// profile (CAS-ADR-042) consumes: one for SAGE, one for the CAS BFF. They are
-// created once here and shared — the Key Vault module grants them data-plane
-// read, the relational-store module grants the SAGE identity a database role,
-// and the container apps attach them at deploy time. Each identity's resource
+// Provisions the user-assigned managed identities the cloud deployment profile
+// (CAS-ADR-042) consumes: one for SAGE, one for the CAS BFF, one for the API
+// Management gateway, and the relational store's bootstrap identity. They are
+// created once here and shared — the Key Vault module grants each the secrets
+// it reads, the relational-store module grants the SAGE identity a database
+// role, and the container apps and gateway attach them at deploy time. Each identity's resource
 // id, principal id, and client id are exposed as outputs so every downstream
 // module composes against a stable principal rather than minting its own.
 //
@@ -31,6 +32,16 @@ resource sageIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-
 // User-assigned identity the CAS BFF container app runs as.
 resource bffIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
   name: 'id-cas-bff-${environmentName}'
+  location: location
+  tags: tags
+}
+
+// User-assigned identity the API Management gateway runs as. It reads only the
+// TLS certificate and the ingress key it injects, and publishes telemetry. A
+// separate identity, so that SAGE -- which parses untrusted documents -- holds
+// neither the certificate's private key nor the gateway's credentials.
+resource apimIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: 'id-apim-${environmentName}'
   location: location
   tags: tags
 }
@@ -63,6 +74,15 @@ output bffIdentityPrincipalId string = bffIdentity.properties.principalId
 
 @description('Client id of the CAS BFF managed identity (runtime token acquisition).')
 output bffIdentityClientId string = bffIdentity.properties.clientId
+
+@description('Resource id of the API Management gateway managed identity (the gateway attaches this).')
+output apimIdentityId string = apimIdentity.id
+
+@description('Principal id of the API Management gateway managed identity (granted role assignments).')
+output apimIdentityPrincipalId string = apimIdentity.properties.principalId
+
+@description('Client id of the API Management gateway managed identity (Key Vault and telemetry token acquisition).')
+output apimIdentityClientId string = apimIdentity.properties.clientId
 
 @description('Resource id of the Postgres bootstrap managed identity (the bootstrap job attaches this).')
 output bootstrapIdentityId string = bootstrapIdentity.id

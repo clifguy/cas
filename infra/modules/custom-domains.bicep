@@ -32,7 +32,7 @@ param tlsCertSecretUri string
 @description('Canonical name the certificate is created under in the environment (the Key Vault certificate name).')
 param tlsCertificateName string
 
-@description('Resource id of the managed identity that reads the certificate from Key Vault (holds Key Vault Certificate User on the vault).')
+@description('Resource id of the managed identity that reads the certificate from Key Vault (granted Key Vault Secrets User on the certificate\'s backing secret alone).')
 param bffIdentityId string
 
 // The environment foundation created. Referenced as existing so this module
