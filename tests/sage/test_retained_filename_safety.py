@@ -117,19 +117,24 @@ def test_disposition_keeps_an_ordinary_name():
 @pytest.mark.parametrize("module", ["sage.api.routers.documents", "sage.api.routers.transfer"])
 def test_every_content_route_builds_its_disposition_through_the_helper(module):
     """TEST-SAGE-BH-180: no content route assembles a disposition header by
-    hand; each calls the shared helper that strips control characters.
+    hand; each builds its delivery headers through the shared helper, which
+    takes its disposition from the one that strips control characters.
     """
     import importlib
 
+    import sage.api._disposition as helpers
+
+    def calls(source: str, name: str) -> list[ast.Call]:
+        return [
+            n
+            for n in ast.walk(ast.parse(source))
+            if isinstance(n, ast.Call) and getattr(n.func, "id", None) == name
+        ]
+
     source = inspect.getsource(importlib.import_module(module))
-    tree = ast.parse(source)
-    calls = [
-        n
-        for n in ast.walk(tree)
-        if isinstance(n, ast.Call) and getattr(n.func, "id", None) == "attachment_disposition"
-    ]
-    assert calls
+    assert calls(source, "delivery_headers")
     assert "attachment; filename=" not in source
+    assert calls(inspect.getsource(helpers.delivery_headers), "attachment_disposition")
 
 
 def test_download_recipe_names_the_restricted_form():

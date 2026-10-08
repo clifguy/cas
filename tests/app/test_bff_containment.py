@@ -319,6 +319,8 @@ _ALLOWED_RESPONSE = {
     "cache-control": "no-store",
     "www-authenticate": 'Bearer realm="sage"',
     "allow": "GET",
+    "content-security-policy": "sandbox",
+    "x-content-type-options": "nosniff",
 }
 _DENIED_RESPONSE = {
     "set-cookie": "upstream=1; Path=/",

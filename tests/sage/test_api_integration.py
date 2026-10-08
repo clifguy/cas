@@ -1114,6 +1114,26 @@ async def test_get_content_200_streams_with_headers(client):
     assert resp2.headers["content-disposition"] == 'attachment; filename="sample.md"'
 
 
+async def test_get_content_forbids_sniffing_and_sandboxes_the_bytes(client):
+    """TEST-SAGE-BH-194: the raw content route tells the browser not to sniff
+    the media type and to treat the bytes as a sandboxed document, alongside
+    the derived type and attachment disposition.
+    """
+    resp1 = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": "test/sample.md", "source_type": "markdown"},
+    )
+    doc_id = resp1.json()["document"]["id"]
+
+    resp2 = await client.get(f"/sage_vaults/test_vault/documents/{doc_id}/content")
+    assert resp2.status_code == 200
+    assert resp2.content == b"# Sample Document\n\nSample content."
+    assert resp2.headers["x-content-type-options"] == "nosniff"
+    assert resp2.headers["content-security-policy"] == "sandbox"
+    assert resp2.headers["content-disposition"] == 'attachment; filename="sample.md"'
+    assert resp2.headers["content-length"] == str(len(resp2.content))
+
+
 async def test_get_content_404_unknown_id(client):
     """An unknown document id resolves to the structured 404 before any stream
     opens (the error is a JSON envelope, not a truncated byte stream)."""

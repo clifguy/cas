@@ -366,6 +366,45 @@ async def test_download_round_trip_projection(app, client, tmp_path):
     assert "sha256:" + hashlib.sha256(resp.content).hexdigest() == recipe["content_hash"]
 
 
+async def test_download_forbids_sniffing_and_sandboxes_the_bytes(app, client, tmp_path):
+    """TEST-SAGE-BH-195: a redeemed source download and a redeemed projection
+    download each tell the browser not to sniff the media type and to treat the
+    bytes as a sandboxed document."""
+    ingested = await _ingest_locally(tmp_path, "dl_headers.md", "# H\n\nHeader body.")
+    services = app.state.vault_registry[_VAULT_ID]
+    await await_pipeline_idle(
+        services.graph_store, ingested["id"], service=services.ingestion_service
+    )
+
+    with _profile("cloud"):
+        recipes = [
+            _parse(
+                await get_document(_VAULT_ID, ingested["id"], write_to_path=str(tmp_path / "s.md"))
+            ),
+            _parse(
+                await read_projection(
+                    _VAULT_ID, ingested["id"], write_to_path=str(tmp_path / "p.md")
+                )
+            ),
+        ]
+        responses = []
+        for recipe in recipes:
+            assert recipe.get("status") == "download_required", recipe
+            responses.append(
+                await client.get(
+                    f"/download/{recipe['transfer_id']}",
+                    headers={"X-Download-Token": recipe["token"]},
+                )
+            )
+
+    for recipe, resp in zip(recipes, responses, strict=True):
+        assert resp.status_code == 200, resp.text
+        assert "sha256:" + hashlib.sha256(resp.content).hexdigest() == recipe["content_hash"]
+        assert resp.headers["x-content-type-options"] == "nosniff"
+        assert resp.headers["content-security-policy"] == "sandbox"
+        assert resp.headers["content-disposition"].startswith("attachment; filename=")
+
+
 async def test_transfer_not_bounded_by_inline_ceiling(client, tmp_path, monkeypatch):
     """With the inline-content ceiling pinned far below the payload size, the
     transfer channel still round-trips the bytes -- neither leg is bounded by

@@ -49,9 +49,19 @@ _FORWARDED_REQUEST_HEADERS = frozenset({"accept", "accept-language", "content-ty
 # Response headers relayed back; every other header is dropped. httpx has
 # already decoded the body, so the upstream content-encoding, length and
 # transfer-encoding no longer describe the bytes being returned, and upstream
-# cookies or server identity have no meaning on this origin.
+# cookies or server identity have no meaning on this origin. SAGE's own
+# content-security policy and no-sniff directive travel with raw document bytes
+# and are stricter than this origin's page policy, so they are kept.
 _RELAYED_RESPONSE_HEADERS = frozenset(
-    {"content-type", "content-disposition", "cache-control", "www-authenticate", "allow"}
+    {
+        "content-type",
+        "content-disposition",
+        "cache-control",
+        "www-authenticate",
+        "allow",
+        "content-security-policy",
+        "x-content-type-options",
+    }
 )
 
 _COLLECTION_PREFIX = "/sage_vaults/"
