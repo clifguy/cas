@@ -12,6 +12,15 @@ the test can still recompute them.
 rendered the way the real CLI renders it with ``-o tsv``; an unrecognised query
 fails the call rather than being answered loosely.
 
+The real custom-role and role-assignment listings are eventually consistent: a
+role or an assignment that exists can list as absent for a while.
+``lookup_misses`` in the state makes that many custom-role listings answer empty
+whatever they ask, ``shape_misses`` does the same for the role-shape listing
+only, and ``assignment_misses`` for role-assignment listings; each miss is
+counted down and saved; a delete by role and scope consumes a miss too, since
+the CLI lists before it deletes. Creating an assignment that already exists fails with
+``RoleAssignmentExists``, as Resource Manager refuses it.
+
 It imports only the standard library: the test runs it behind an interpreter
 line that disables site-packages.
 """
@@ -28,6 +37,7 @@ NAMESPACE = uuid.UUID(int=0)
 _CREDENTIAL_ROWS = (
     "[].join('|', [subject || '', issuer || '', claimsMatchingExpression.value || ''])"
 )
+_ASSIGNMENT_ROW = "[0].join('|', [id, condition || ''])"
 _ASSIGNMENT_ROWS = "[].join('|', [id, roleDefinitionName || '', scope, condition || ''])"
 _ROLE_SHAPE = (
     "[0].join('|', [to_string(length(permissions)), "
@@ -108,6 +118,15 @@ def main(argv: list[str]) -> int:
                 for d in state["custom_roles"]
                 if d["roleName"] == name and visible_from in d["assignableScopes"]
             ]
+            for counter, applies in (
+                ("lookup_misses", True),
+                ("shape_misses", query == _ROLE_SHAPE),
+            ):
+                if applies and state.get(counter, 0) > 0:
+                    state[counter] -= 1
+                    save()
+                    hits = []
+                    break
             if query == "[0].name":
                 _lines([hits[0]["name"]] if hits else [])
             elif query == _ROLE_SHAPE:
@@ -179,9 +198,12 @@ def main(argv: list[str]) -> int:
             and in_reach(a["scope"])
             and (role is None or _role_matches(a, role))
         ]
-        if query in ("[0].id", "[0].condition"):
-            value = hits[0][query.split(".", 1)[1]] if hits else None
-            _lines([value] if value is not None else [])
+        if state.get("assignment_misses", 0) > 0:
+            state["assignment_misses"] -= 1
+            save()
+            hits = []
+        if query == _ASSIGNMENT_ROW:
+            _lines([hits[0]["id"] + "|" + (hits[0].get("condition") or "")] if hits else [])
         elif query == _ASSIGNMENT_ROWS:
             _lines(
                 ["|".join([a["id"], a["role"], a["scope"], a.get("condition") or ""]) for a in hits]
@@ -192,6 +214,16 @@ def main(argv: list[str]) -> int:
 
     if group == "role assignment create":
         role = _opt(argv, "--role") or ""
+        if any(
+            a["assignee"] == _opt(argv, "--assignee")
+            and a["scope"] == _opt(argv, "--scope")
+            and _role_matches(a, role)
+            for a in state["assignments"]
+        ):
+            print(
+                "ERROR: (RoleAssignmentExists) The role assignment already exists.", file=sys.stderr
+            )
+            return 1
         state["assignments"].append(
             {
                 "id": str(uuid.uuid4()),
@@ -210,6 +242,10 @@ def main(argv: list[str]) -> int:
         ids = _opt(argv, "--ids")
         if ids:
             state["assignments"] = [a for a in state["assignments"] if a["id"] != ids]
+        elif state.get("assignment_misses", 0) > 0:
+            # The CLI resolves --assignee/--role/--scope by listing first, so
+            # a missed listing deletes nothing.
+            state["assignment_misses"] -= 1
         else:
             assignee = _opt(argv, "--assignee")
             scope = _opt(argv, "--scope")

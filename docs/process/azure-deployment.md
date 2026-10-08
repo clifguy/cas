@@ -203,8 +203,11 @@ assignment the identity holds in the subscription. An assignment inherited from 
 management group above it is reported and fails the run instead, since it has to
 be removed at its own scope. Record the result with `--show`,
 which lists the identity's federated credentials and assignments and exits
-non-zero while any assignment outside the narrowed set remains, inherited ones
-included. Every read names the subscription, so it does not matter which
+non-zero on any listed assignment outside the narrowed set, inherited ones
+included. Azure's role-assignment listing is eventually consistent, so the script
+reads it again while part of the narrowed set is missing; a listing that omits
+only an assignment outside the set cannot be detected, so if a pass follows a
+change made moments earlier, run `--show` again a minute later. Every read names the subscription, so it does not matter which
 subscription your CLI session currently points at.
 
 Azure may store a condition in a normalized form. If it does, three things

@@ -30,8 +30,12 @@
 #                    for removal at its own scope. Run it only after a deploy has
 #                    succeeded on the narrowed set.
 #   --show           print the identity's assignments and federated credentials,
-#                    and fail while any assignment outside the narrowed set remains,
-#                    including one inherited from above the subscription.
+#                    and fail on any listed assignment outside the narrowed set,
+#                    including one inherited from above the subscription. The
+#                    listing is eventually consistent: it is read again while
+#                    part of the narrowed set is missing, but one that omits only
+#                    an assignment outside the set cannot be told from a clean
+#                    one, so a pass is evidence rather than proof.
 #
 # Every mode refuses while the application carries a federated credential that
 # is not a plain GitHub environment subject from the GitHub issuer: the
@@ -159,9 +163,37 @@ builtin_role_id() {
   printf '%s\n' "$id"
 }
 
+# The role-definition and role-assignment listings are eventually consistent:
+# a custom role or an assignment that exists can list as absent for a while,
+# even after it has been seen. A lookup that comes back empty is retried,
+# waiting between attempts, before what it looks for is taken as absent.
+ROLE_LOOKUP_ATTEMPTS=5
+ROLE_LOOKUP_DELAY=3
+
+# Runs the listing command "$@", retrying an empty answer; prints nothing when
+# every attempt is empty.
+retry_listing() {
+  local out attempt=1
+  while :; do
+    out="$("$@")" || return 1
+    if [ -n "$out" ]; then
+      printf '%s\n' "$out"
+      return 0
+    fi
+    [ "$attempt" -lt "$ROLE_LOOKUP_ATTEMPTS" ] || return 0
+    attempt=$((attempt + 1))
+    sleep "$ROLE_LOOKUP_DELAY"
+  done
+}
+
+# Lists the custom role named $1 with the query $2.
+custom_role_query() {
+  retry_listing az role definition list --custom-role-only true --name "$1" --scope "$SUB_SCOPE" \
+    --query "$2" -o tsv
+}
+
 custom_role_id() {
-  az role definition list --custom-role-only true --name "$1" --scope "$SUB_SCOPE" \
-    --query "[0].name" -o tsv
+  custom_role_query "$1" "[0].name"
 }
 
 ROLE_SHAPE_QUERY="[0].join('|', [to_string(length(permissions)), \
@@ -175,15 +207,27 @@ joined() {
 }
 
 ensure_custom_role() {
-  local name="$1" description="$2" id shape expected json
+  local name="$1" description="$2" id shape expected json err
   shift 2
-  id="$(custom_role_id "$name")"
+  id="$(custom_role_id "$name")" || return 1
   if [ -z "$id" ]; then
     json="$(printf '"%s",' "$@")"
-    az role definition create --role-definition "$(printf \
+    if ! err="$(az role definition create --role-definition "$(printf \
       '{"Name": "%s", "Description": "%s", "Actions": [%s], "NotActions": [], "AssignableScopes": ["%s"]}' \
-      "$name" "$description" "${json%,}" "$SUB_SCOPE")" >/dev/null || return 1
-    id="$(custom_role_id "$name")"
+      "$name" "$description" "${json%,}" "$SUB_SCOPE")" 2>&1 >/dev/null)"; then
+      # A name collision means the role exists but had not yet been listed; it
+      # is resolved and verified below like any other existing role.
+      case "$err" in
+        *RoleDefinitionWithSameNameExists*)
+          echo "role '$name' already exists though it was not listed; resolving it" >&2
+          ;;
+        *)
+          printf '%s\n' "$err" >&2
+          return 1
+          ;;
+      esac
+    fi
+    id="$(custom_role_id "$name")" || return 1
     if [ -z "$id" ]; then
       echo "ERROR: role '$name' was not found after creation; re-run once it has propagated" >&2
       return 1
@@ -193,8 +237,7 @@ ensure_custom_role() {
   # otherwise survive every re-run. The whole grant is compared -- the number of
   # permission blocks, the actions, any not-actions, any data actions and the
   # assignable scopes -- since widening can come through any of them.
-  shape="$(az role definition list --custom-role-only true --name "$name" --scope "$SUB_SCOPE" \
-    --query "$ROLE_SHAPE_QUERY" -o tsv)"
+  shape="$(custom_role_query "$name" "$ROLE_SHAPE_QUERY")" || return 1
   expected="1|$(joined "$@")||||$SUB_SCOPE"
   if [ "$shape" != "$expected" ]; then
     echo "ERROR: role '$name' is [$shape], expected [$expected]" \
@@ -204,29 +247,65 @@ ensure_custom_role() {
   printf '%s\n' "$id"
 }
 
-assignment_id() {
-  az role assignment list --assignee "$APP_ID" --scope "$2" --role "$1" --query "[0].id" -o tsv
+# The identity's assignment of role $1 at scope $2 as id|condition, or nothing.
+# The id makes the answer non-empty whenever the assignment is listed, so an
+# unconditioned assignment is not mistaken for a missing one.
+assignment_row() {
+  retry_listing az role assignment list --assignee "$APP_ID" --scope "$2" --role "$1" \
+    --query "[0].join('|', [id, condition || ''])" -o tsv
 }
 
-assignment_condition_of() {
-  az role assignment list --assignee "$APP_ID" --scope "$2" --role "$1" \
-    --query "[0].condition" -o tsv
+# Assigns role $1 at scope $2, conditioned by $3 when it is set. Returns 2 when
+# the assignment already exists, 1 on any other failure.
+create_assignment() {
+  local err
+  if [ -n "$3" ]; then
+    err="$(az role assignment create --assignee "$APP_ID" --role "$1" --scope "$2" \
+      --condition "$3" --condition-version "2.0" 2>&1 >/dev/null)" && return 0
+  else
+    err="$(az role assignment create --assignee "$APP_ID" --role "$1" --scope "$2" \
+      2>&1 >/dev/null)" && return 0
+  fi
+  case "$err" in
+    *RoleAssignmentExists*) return 2 ;;
+  esac
+  printf '%s\n' "$err" >&2
+  return 1
 }
 
 ensure_assignment() {
-  local role="$1" scope="$2" condition="${3:-}"
-  if [ -n "$(assignment_id "$role" "$scope")" ]; then
+  local role="$1" scope="$2" condition="${3:-}" row status=0
+  row="$(assignment_row "$role" "$scope")" || return 1
+  if [ -z "$row" ]; then
+    create_assignment "$role" "$scope" "$condition" || status=$?
+    case "$status" in
+      0)
+        echo "granted: $role at $scope"
+        return 0
+        ;;
+      # The assignment exists but had not yet been listed; its condition is
+      # read again and checked below like any other existing assignment's.
+      2) echo "assignment of $role at $scope already exists though it was not listed" >&2 ;;
+      *) return 1 ;;
+    esac
     [ -n "$condition" ] || return 0
-    [ "$(assignment_condition_of "$role" "$scope")" != "$condition" ] || return 0
-    # A condition cannot be edited in place by the CLI; replace the assignment.
-    az role assignment delete --assignee "$APP_ID" --role "$role" --scope "$scope"
+    row="$(assignment_row "$role" "$scope")" || return 1
   fi
-  if [ -n "$condition" ]; then
-    az role assignment create --assignee "$APP_ID" --role "$role" --scope "$scope" \
-      --condition "$condition" --condition-version "2.0" >/dev/null
-  else
-    az role assignment create --assignee "$APP_ID" --role "$role" --scope "$scope" >/dev/null
-  fi
+  [ -n "$condition" ] || return 0
+  [ "${row#*|}" != "$condition" ] || return 0
+  # A condition cannot be edited in place by the CLI; replace the assignment.
+  az role assignment delete --assignee "$APP_ID" --role "$role" --scope "$scope" || return 1
+  status=0
+  create_assignment "$role" "$scope" "$condition" || status=$?
+  case "$status" in
+    0) ;;
+    2)
+      echo "ERROR: the assignment of $role at $scope still exists after deleting it to" \
+        "replace its condition; re-run once the role-assignment listing has caught up" >&2
+      return 1
+      ;;
+    *) return 1 ;;
+  esac
   echo "granted: $role at $scope"
 }
 
@@ -267,6 +346,13 @@ in_subscription() {
   esac
 }
 
+NARROWED_SET=(
+  "$ORCHESTRATOR_ROLE|$SUB_SCOPE"
+  "Contributor|$RG_SCOPE"
+  "$RBAC_ADMIN_ROLE|$RG_SCOPE"
+  "$LOCK_ROLE|$RG_SCOPE"
+)
+
 # Whether one assignment row is part of the narrowed set.
 is_narrowed() {
   local role="$1" scope="$2" condition="$3"
@@ -277,13 +363,49 @@ is_narrowed() {
   esac
 }
 
+# Prints the first role|scope of the narrowed set that the assignment rows in $1
+# do not hold, or nothing when they hold all of it.
+first_missing_narrowed() {
+  local wanted found id role scope condition
+  for wanted in "${NARROWED_SET[@]}"; do
+    found=0
+    while IFS='|' read -r id role scope condition; do
+      if [ "$role|$scope" = "$wanted" ] && is_narrowed "$role" "$scope" "$condition"; then
+        found=1
+      fi
+    done <<EOF
+$1
+EOF
+    if [ "$found" -ne 1 ]; then
+      printf '%s\n' "$wanted"
+      return 0
+    fi
+  done
+}
+
+# The identity's assignment rows, deduplicated. A listing missing part of the
+# narrowed set is read again, since it may be incomplete rather than accurate;
+# the last read is returned either way.
+assignment_rows() {
+  local rows attempt=1
+  while :; do
+    rows="$(all_assignments)" || return 1
+    rows="$(printf '%s\n' "$rows" | sort -u)"
+    if [ -z "$(first_missing_narrowed "$rows")" ] || [ "$attempt" -ge "$ROLE_LOOKUP_ATTEMPTS" ]; then
+      printf '%s\n' "$rows"
+      return 0
+    fi
+    attempt=$((attempt + 1))
+    sleep "$ROLE_LOOKUP_DELAY"
+  done
+}
+
 check_credentials
 
 case "$MODE" in
   show)
     EXPECTED_CONDITION="$(assignment_condition)"
-    rows="$(all_assignments)"
-    rows="$(printf '%s\n' "$rows" | sort -u)"
+    rows="$(assignment_rows)"
     extra=0
     while IFS='|' read -r id role scope condition; do
       [ -n "$id" ] || continue
@@ -323,23 +445,12 @@ EOF
 
   remove-legacy)
     EXPECTED_CONDITION="$(assignment_condition)"
-    rows="$(all_assignments)"
-    rows="$(printf '%s\n' "$rows" | sort -u)"
-    for wanted in "$ORCHESTRATOR_ROLE|$SUB_SCOPE" "Contributor|$RG_SCOPE" \
-      "$RBAC_ADMIN_ROLE|$RG_SCOPE" "$LOCK_ROLE|$RG_SCOPE"; do
-      found=0
-      while IFS='|' read -r id role scope condition; do
-        if [ "$role|$scope" = "$wanted" ] && is_narrowed "$role" "$scope" "$condition"; then
-          found=1
-        fi
-      done <<EOF
-$rows
-EOF
-      if [ "$found" -ne 1 ]; then
-        echo "ERROR: the narrowed role set is not in place (missing: ${wanted%%|*} at ${wanted#*|}); run this script without flags first" >&2
-        exit 1
-      fi
-    done
+    rows="$(assignment_rows)"
+    missing="$(first_missing_narrowed "$rows")"
+    if [ -n "$missing" ]; then
+      echo "ERROR: the narrowed role set is not in place (missing: ${missing%%|*} at ${missing#*|}); run this script without flags first" >&2
+      exit 1
+    fi
     inherited=0
     while IFS='|' read -r id role scope condition; do
       [ -n "$id" ] || continue
