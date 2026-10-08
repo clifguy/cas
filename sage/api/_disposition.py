@@ -1,4 +1,4 @@
-"""The ``Content-Disposition`` header for a delivered source file."""
+"""The headers a delivered source or projection file is sent with."""
 
 import re
 from urllib.parse import quote
@@ -21,3 +21,19 @@ def attachment_disposition(filename: str) -> str:
             f"filename*=UTF-8''{quote(name)}"
         )
     return disposition
+
+
+def delivery_headers(filename: str, size: int) -> dict[str, str]:
+    """The headers a raw byte delivery is sent with, beside its media type.
+
+    The bytes are whatever a document's author put there, so a browser is told
+    to save them rather than render them, not to second-guess the declared
+    media type, and -- should it render them anyway -- to treat them as a
+    sandboxed document with no script, origin or navigation of its own.
+    """
+    return {
+        "Content-Disposition": attachment_disposition(filename),
+        "Content-Length": str(size),
+        "X-Content-Type-Options": "nosniff",
+        "Content-Security-Policy": "sandbox",
+    }

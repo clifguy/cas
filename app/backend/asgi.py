@@ -26,11 +26,17 @@ from fastapi import Depends, FastAPI
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.types import ASGIApp
 
 from app.backend.auth.dependencies import require_session
 from app.backend.auth.router import router as auth_router
 from app.backend.proxy import router as proxy_router
 from app.backend.router import router as app_backend_router
+from app.backend.security_headers import (
+    SecurityHeadersMiddleware,
+    csp_enforced_from_env,
+    security_headers,
+)
 from app.backend.transport import resolve_bff_transport
 from sage.api.errors import register_exception_handlers
 from sage.build_info import API_VERSION, RELEASE_VERSION
@@ -77,10 +83,26 @@ def _escapes_bundle(spa_path: str) -> bool:
     return "\x00" in spa_path or relative.is_absolute() or ".." in relative.parts
 
 
+class _BffApp(FastAPI):
+    """The backend application, with its security headers outermost.
+
+    Starlette places its server-error middleware outside every middleware
+    registered on the application, so a header added from inside that stack
+    would be missing from the response produced for an unhandled exception.
+    Wrapping the assembled stack puts the headers outside it.
+    """
+
+    security_headers: tuple[tuple[str, str], ...] = ()
+
+    def build_middleware_stack(self) -> ASGIApp:
+        return SecurityHeadersMiddleware(super().build_middleware_stack(), self.security_headers)
+
+
 def create_bff_app(
     *,
     spa_dir: Path | None = None,
     stack_config: SageCoreConfig | None = None,
+    csp_enforce: bool | None = None,
 ) -> FastAPI:
     """Build the standalone backend-for-frontend ASGI app.
 
@@ -91,6 +113,9 @@ def create_bff_app(
         stack_config: Stack configuration override. Defaults to the
             process configuration; tests pass a ``cloud``-profile config to
             exercise the hosted transport.
+        csp_enforce: Send the page content-security policy as an enforcing
+            policy rather than report-only. Defaults to the
+            ``CAS_BFF_CSP_ENFORCE`` environment variable.
     """
     from sage.mcp_init import load_stack_config_or_default
 
@@ -116,7 +141,7 @@ def create_bff_app(
         # directly; a no-op on the local profile.
         await _teardown_bff_auth(app)
 
-    app = FastAPI(
+    app = _BffApp(
         title="CAS Application Backend",
         version=API_VERSION,
         description="CAS backend-for-frontend: SPA serving and SAGE access.",
@@ -128,6 +153,13 @@ def create_bff_app(
         openapi_url=None,
         docs_url=None,
         redoc_url=None,
+    )
+
+    # Transport security is asserted only where the profile serves HTTPS; the
+    # local profile is reached over plain HTTP.
+    app.security_headers = security_headers(
+        enforce_csp=csp_enforced_from_env() if csp_enforce is None else csp_enforce,
+        transport_security=stack_cfg.profile == "cloud",
     )
 
     register_exception_handlers(app)

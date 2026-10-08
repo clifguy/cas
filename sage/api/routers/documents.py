@@ -11,7 +11,7 @@ mutually-exclusive content-delivery modes:
 from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 
-from sage.api._disposition import attachment_disposition
+from sage.api._disposition import delivery_headers
 from sage.api.dependencies import (
     get_documents_service,
     get_ingestion_service,
@@ -297,17 +297,14 @@ async def get_document_content(
     source's presence and size are resolved before the stream opens, so those
     failures arrive as structured JSON envelopes; a vault-source store refusal
     raised once the bytes are already flowing ends the body short of the
-    promised Content-Length instead.
+    promised Content-Length instead. The bytes are delivered as an attachment
+    that a browser may neither sniff nor render as a page of this origin.
     """
     delivery = await service.get_document_content(document_id)
-    disposition = attachment_disposition(delivery.filename)
     return StreamingResponse(
         delivery.chunks,
         media_type=delivery.media_type,
-        headers={
-            "Content-Disposition": disposition,
-            "Content-Length": str(delivery.size),
-        },
+        headers=delivery_headers(delivery.filename, delivery.size),
     )
 
 

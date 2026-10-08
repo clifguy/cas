@@ -4000,13 +4000,13 @@ would pass whatever the default was.
 
 **Expected:** `attachment; filename="sample.md"`.
 
-### TEST-SAGE-BH-180: Every content route builds its disposition through the helper
+### TEST-SAGE-BH-180: Every content route builds its delivery headers through the helper
 
 **Artifact:** `documents and transfer routers`
 **Category:** delivery headers
-**Precondition:** Each router module's source.
+**Precondition:** Each router module's source, and the helper's.
 
-**Expected:** Calls `attachment_disposition`; no hand-built header.
+**Expected:** Each router calls `delivery_headers`, which calls `attachment_disposition`; no router hand-builds a disposition.
 
 ### TEST-SAGE-BH-181: A download recipe names the restricted form
 
@@ -4118,3 +4118,18 @@ would pass whatever the default was.
 
 **Expected:** The first is retained under the restricted name; the second under the restricted stem with a disambiguating suffix, with no unsafe character.
 
+### TEST-SAGE-BH-194: The raw content route forbids sniffing and sandboxes the bytes
+
+**Artifact:** `GET /sage_vaults/{vault_id}/documents/{document_id}/content`
+**Category:** delivery headers
+**Precondition:** An ingested Markdown source.
+
+**Expected:** `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`, alongside the existing derived `Content-Type`, `attachment` disposition and length. Control: the bytes still round-trip exactly.
+
+### TEST-SAGE-BH-195: The transfer download route forbids sniffing and sandboxes the bytes
+
+**Artifact:** `GET /download/{transfer_id}`
+**Category:** delivery headers
+**Precondition:** A source download recipe and a projection download recipe, each redeemed.
+
+**Expected:** Both responses carry `X-Content-Type-Options: nosniff` and `Content-Security-Policy: sandbox`, alongside the `attachment` disposition. Control: the bytes still equal the recipe's promise.

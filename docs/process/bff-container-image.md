@@ -91,6 +91,7 @@ missing file fails loud at startup rather than silently falling back to defaults
 | `CAS_BFF_SAGE_BASE_URL` | SAGE origin the BFF reaches server-side | unset |
 | `CAS_BFF_AUTHORITY_HOST` | Entra authority host | `https://login.microsoftonline.com` |
 | `CAS_BFF_POST_LOGIN_REDIRECT` | Path the SPA lands on after sign-in | `/` |
+| `CAS_BFF_CSP_ENFORCE` | Send the page content-security policy as enforcing (`1`/`true`) rather than report-only | unset (report-only) |
 
 Interactive auth, the on-behalf-of exchange, and the externalized session store
 activate only when the four required `CAS_BFF_*` coordinates are all present;
