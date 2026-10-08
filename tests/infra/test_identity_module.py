@@ -1,9 +1,10 @@
 """Structural gate for the user-assigned managed-identity module.
 
 Locks the shape of ``infra/modules/identity.bicep`` — the module that
-provisions the two user-assigned managed identities (one for SAGE, one for the
-CAS BFF) the cloud deployment profile (CAS-ADR-042) consumes. Those identities
-are created once and shared: the Key Vault module grants them data-plane read,
+provisions the user-assigned managed identities (SAGE, the CAS BFF, the API
+Management gateway and the relational store's bootstrap identity) the cloud
+deployment profile (CAS-ADR-042) consumes. Those identities are created once
+and shared: the Key Vault module grants each the secrets it reads,
 the relational-store module grants the SAGE identity a database role, and the
 container apps attach them at deploy time. Keeping both identities present and
 their ids exposed as outputs is what lets every downstream module compose
@@ -312,7 +313,7 @@ def test_module_block_detector_controls() -> None:
 def test_resource_block_detector_controls() -> None:
     """``_resource_block`` returns only the named resource's own body.
 
-    This is what makes the per-identity gates load-bearing: the three identities
+    This is what makes the per-identity gates load-bearing: the four identities
     are declared identically, so a property found anywhere in the module says
     nothing about which of them carries it.
 

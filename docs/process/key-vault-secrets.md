@@ -125,9 +125,24 @@ fi
 ```
 
 **Rotating it** is a planned step, because the gateway and SAGE read it
-independently. Set a new version as above, have API Management refresh the
-`sage-ingress-key` named value, and restart the SAGE revision. Until both hold
-the new value, SAGE refuses the gateway's requests.
+independently, and the loader keeps an existing key by design. Set a new
+version directly, then have API Management refresh its named value and restart
+the SAGE revision; until both hold the new value, SAGE refuses the gateway's
+requests:
+
+```bash
+ingress_key="$(openssl rand -hex 32)"
+printf '%s' "$ingress_key" >"$scratch/ingress"
+unset ingress_key
+az keyvault secret set --vault-name "$KV" --name sage-ingress-key \
+  --file "$scratch/ingress" --encoding utf-8 --output none
+APIM="$(az apim list -g "$RG" --query '[0].name' -o tsv)"
+az rest --method POST --url "https://management.azure.com$(az apim show -g "$RG" -n "$APIM" \
+  --query id -o tsv)/namedValues/sage-ingress-key/refreshSecret?api-version=2022-08-01"
+az containerapp revision restart -g "$RG" -n "ca-sage-$ENV" \
+  --revision "$(az containerapp show -g "$RG" -n "ca-sage-$ENV" \
+    --query properties.latestRevisionName -o tsv)"
+```
 
 ## Import the wildcard TLS certificate
 

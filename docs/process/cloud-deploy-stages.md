@@ -68,10 +68,12 @@ for it** as part of this stage. The deployment is idempotent; re-running
 reconciles.
 
 Key Vault access is granted per secret, and a grant scoped to a secret needs that
-secret to exist. On a **new tenant**, run this stage the first time with
-`keyVaultSecretsLoaded=false`: the grants and the gateway ingress key are held
-back, and SAGE receives no key and so checks none. Load the secrets (Stage 2),
-then run this stage again with the default `true`.
+secret to exist. On a **new tenant**, the first run of this stage is an operator
+run, because the CI deploy always uses the default: run the same
+`az deployment sub create` command the workflow runs, with
+`keyVaultSecretsLoaded=false` added to its parameters. The grants and the
+gateway ingress key are held back, and SAGE receives no key and so checks none.
+Load the secrets (Stage 2), then deploy through CI as usual.
 
 ### Stage 2 — Post-deploy seed (secrets and vault source)
 
@@ -130,10 +132,12 @@ one-time sequence:
 2. **Deploy** (Stage 1). The gateway moves to its own identity, every identity
    gains its per-secret grants, and SAGE starts requiring the ingress key that
    the gateway now injects.
-3. **Remove the old vault-wide grants.** An Azure deployment adds and updates
-   but never deletes, so the vault-scope assignments a template no longer
-   declares stay in force until removed. Delete those held by the SAGE and BFF
-   identities — and only those: the vault may hold other workloads' grants:
+3. **Remove the grants the template no longer declares.** An Azure deployment
+   adds and updates but never deletes, so they stay in force until removed: the
+   SAGE and BFF identities' vault-scope Key Vault grants, and the SAGE
+   identity's Monitoring Metrics Publisher grant on the gateway's Application
+   Insights resource, which the gateway's own identity now holds. Delete only
+   those: the vault may hold other workloads' grants:
 
    ```bash
    KV_ID="$(az keyvault show -n "$KV" --query id -o tsv)"
@@ -144,10 +148,16 @@ one-time sequence:
      az role assignment delete --assignee "$principal" --scope "$KV_ID" \
        --role "Key Vault Certificate User"
    done
+   sage_principal="$(az identity show -g "$RG" -n "id-sage-$ENV" --query principalId -o tsv)"
+   az role assignment delete --assignee "$sage_principal" \
+     --scope "$(az resource show -g "$RG" -n "appi-$ENV" \
+       --resource-type Microsoft.Insights/components --query id -o tsv)" \
+     --role "Monitoring Metrics Publisher"
    ```
 
 4. **Verify:** `az role assignment list --scope "$KV_ID" --assignee <principal>`
-   returns nothing for either identity, the apps and both custom domains still
+   returns nothing for either identity, the SAGE identity holds nothing on
+   `appi-$ENV`, the apps and both custom domains still
    serve, and a request to SAGE's container hostname without the ingress key
    is refused with 403.
 

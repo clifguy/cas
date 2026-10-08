@@ -55,17 +55,19 @@ template state rather than an out-of-band action, and a group rebuilt from a
 clean checkout comes up protected. The lock blocks only the delete verb, leaving
 ARM updates and the in-VNet bootstrap job — and so a re-deploy — unaffected.
 
-The identity module (`identity.bicep`) provisions the two user-assigned managed
-identities the container apps run as (SAGE and the CAS BFF) and exposes, for
-each, its resource id, principal id, and client id. The Key Vault module grants
-those principals data-plane read; the relational-store module grants the SAGE
+The identity module (`identity.bicep`) provisions the user-assigned managed
+identities the deployment runs as — SAGE, the CAS BFF, the API Management
+gateway, and the relational store's bootstrap identity — and exposes, for each,
+its resource id, principal id, and client id. The Key Vault module grants the
+first three read of the individual secrets each consumes; the relational-store module grants the SAGE
 principal a database role; the container apps attach the identities by resource
 id at deploy time.
 
 The Key Vault module (`keyvault.bicep`) provisions the secrets vault under Azure
-RBAC, granting the SAGE and CAS BFF identities read of the secrets and
-certificates they consume, and exposes `keyVaultUri`, `keyVaultName`, and the
-canonical `anthropicSecretName` / `tlsCertificateName` / `bffClientSecretName`.
+RBAC, granting the SAGE, CAS BFF and gateway identities Key Vault Secrets User
+on exactly the secrets each consumes and nothing at vault scope, and exposes
+`keyVaultUri`, `keyVaultName`, and the canonical `anthropicSecretName` /
+`tlsCertificateName` / `bffClientSecretName` / `ingressKeySecretName`.
 Secret values and the wildcard TLS certificate are loaded out of band per
 [`../../docs/process/key-vault-secrets.md`](../../docs/process/key-vault-secrets.md);
 no secret material is committed. Soft delete is on unconditionally; purge
