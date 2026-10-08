@@ -17,7 +17,9 @@ site-packages. ``--query`` supports the JMESPath subset the bootstrap uses: an
 optional field path, one ``[]``, ``[N]`` or ``[?cond && ...]`` selector, an
 optional projected field, and an optional ``| [N]``. A condition is
 ``k=='v'`` or ``contains(path, 'v')``, where ``path`` may flatten lists with
-``[]`` (``grantedToIdentitiesV2[].application.id``).
+``[]`` (``grantedToIdentitiesV2[].application.id``) and may default a null
+with ``|| `[]` ``; a null subject without that default fails the call, as the
+real CLI's JMESPath does.
 """
 
 import base64
@@ -37,7 +39,9 @@ DEFAULT_ACCESS_ROLE_ID = "-".join("0" * n for n in (8, 4, 4, 4, 12))
 _QUERY_HEAD_RE = re.compile(r"^(?P<path>[A-Za-z0-9_.]*)")
 _QUERY_TAIL_RE = re.compile(r"^(?:\.(?P<field>[A-Za-z0-9_]+))?(?:\s*\|\s*\[(?P<pipe>\d+)\])?$")
 _COND_RE = re.compile(r"^\s*([A-Za-z0-9_]+)\s*==\s*'([^']*)'\s*$")
-_CONTAINS_RE = re.compile(r"^\s*contains\(\s*([A-Za-z0-9_.\[\]]+)\s*,\s*'([^']*)'\s*\)\s*$")
+_CONTAINS_RE = re.compile(
+    r"^\s*contains\(\s*([A-Za-z0-9_.\[\]]+)(\s*\|\|\s*`\[\]`)?\s*,\s*'([^']*)'\s*\)\s*$"
+)
 _EQ_FILTER_RE = re.compile(r"^\s*(displayName|appId)\s+eq\s+'([^']*)'\s*$", re.IGNORECASE)
 
 
@@ -65,7 +69,10 @@ def _path(value: Any, path: str) -> Any:
         else:
             value = value.get(name) if isinstance(value, dict) else None
             if flatten:
-                value, projected = (value if isinstance(value, list) else []), True
+                # A projection over a missing field is null, as in JMESPath.
+                if not isinstance(value, list):
+                    return None
+                projected = True
     return value
 
 
@@ -76,9 +83,13 @@ def _matches(item: Any, clause: str) -> bool:
     contains = _CONTAINS_RE.match(clause)
     if contains is not None:
         haystack = _path(item, contains[1])
-        if isinstance(haystack, (list, str)):
-            return contains[2] in haystack
-        return False
+        if haystack is None and contains[2]:
+            haystack = []
+        if not isinstance(haystack, (list, str)):
+            # JMESPath refuses contains() on anything but an array or a string,
+            # so the CLI fails the whole call rather than skipping the item.
+            raise AzError(f"In function contains(), invalid type for value: {haystack!r}", 1)
+        return contains[3] in haystack
     raise AssertionError(f"fake az: unsupported filter {clause!r}")
 
 

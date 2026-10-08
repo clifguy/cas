@@ -77,15 +77,15 @@ is the executable form of this runbook and enforces exactly that.
 
 ```bash
 # Resolve identity coordinates at run time (no GUID is baked into this runbook).
-SAGE_MI_CLIENT_ID="$(az identity show -g "$RG" -n "$SAGE_IDENTITY_NAME" --query clientId -o tsv)"
-SAGE_MI_SP_ID="$(az ad sp list --filter "appId eq '$SAGE_MI_CLIENT_ID'" --query '[].id' -o tsv)"
+SAGE_MI_CLIENT_ID="$(az identity show -g "${RG}" -n "${SAGE_IDENTITY_NAME}" --query clientId -o tsv)"
+SAGE_MI_SP_ID="$(az ad sp list --filter "appId eq '${SAGE_MI_CLIENT_ID}'" --query '[].id' -o tsv)"
 
 # The Microsoft Graph service principal, selected by its exact display name
 # rather than by its well-known app id, so no identifier literal lives in this
 # file. An exact `eq` filter, not `--display-name`: that flag matches by prefix,
 # so any principal whose name starts with "Microsoft Graph" would also match.
 GRAPH_SP_ID="$(az ad sp list --filter "displayName eq 'Microsoft Graph'" --query '[].id' -o tsv)"
-SITES_SELECTED_ROLE_ID="$(az ad sp show --id "$GRAPH_SP_ID" \
+SITES_SELECTED_ROLE_ID="$(az ad sp show --id "${GRAPH_SP_ID}" \
   --query "appRoles[?value=='Sites.Selected'].id" -o tsv)"
 ```
 
@@ -153,7 +153,7 @@ first, and post only when there is none:
 ```bash
 existing_grant="$(az rest --method GET \
   --uri "https://graph.microsoft.com/v1.0/sites/${SITE_ID}/permissions" \
-  --query "value[?contains(grantedToIdentitiesV2[].application.id, '${SAGE_MI_CLIENT_ID}') && contains(roles, 'write')].id" \
+  --query "value[?contains(grantedToIdentitiesV2[].application.id || \`[]\`, '${SAGE_MI_CLIENT_ID}') && contains(roles || \`[]\`, 'write')].id" \
   -o tsv)"
 if [ -z "${existing_grant}" ]; then
   az rest --method POST \

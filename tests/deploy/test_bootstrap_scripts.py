@@ -1444,8 +1444,11 @@ def _write_grants(state: dict) -> list[dict]:
     return [
         p
         for p in state["sites"][0]["permissions"]
-        if "write" in p["roles"]
-        and any(g["application"]["id"] == client_id for g in p["grantedToIdentitiesV2"])
+        if "write" in p.get("roles", [])
+        and any(
+            g.get("application", {}).get("id") == client_id
+            for g in p.get("grantedToIdentitiesV2", [])
+        )
     ]
 
 
@@ -1483,6 +1486,8 @@ def test_vault_seed_grants_write_despite_other_site_grants(tmp_path: Path, bash:
 
     The site already grants write to another application and read to the SAGE
     identity; neither satisfies the check, so the write grant is still posted.
+    It also holds a grant carrying neither an identity list nor roles, which
+    the check must step over rather than fail on.
     """
     state = _seed_tenant()
     client_id = _sage_identity(state)["clientId"]
@@ -1496,7 +1501,11 @@ def test_vault_seed_grants_write_despite_other_site_grants(tmp_path: Path, bash:
             "grantedToIdentitiesV2": who,
         }
 
-    state["sites"][0]["permissions"] = [grant(str(uuid.uuid4()), "write"), grant(client_id, "read")]
+    state["sites"][0]["permissions"] = [
+        grant(str(uuid.uuid4()), "write"),
+        grant(client_id, "read"),
+        {"id": str(uuid.uuid4())},
+    ]
     result, _, final = _run_seed(tmp_path, state, bash)
     assert result.returncode == 0, result.stderr
     assert len(_write_grants(final)) == 1

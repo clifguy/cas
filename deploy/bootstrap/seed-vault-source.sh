@@ -87,7 +87,7 @@ fi
 # site already grants the identity write.
 existing_grant="$(az rest --method GET \
   --uri "https://graph.microsoft.com/v1.0/sites/${SITE_ID}/permissions" \
-  --query "value[?contains(grantedToIdentitiesV2[].application.id, '${SAGE_MI_CLIENT_ID}') && contains(roles, 'write')].id" \
+  --query "value[?contains(grantedToIdentitiesV2[].application.id || \`[]\`, '${SAGE_MI_CLIENT_ID}') && contains(roles || \`[]\`, 'write')].id" \
   -o tsv)"
 if [ -z "${existing_grant}" ]; then
   az rest --method POST \

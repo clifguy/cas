@@ -197,39 +197,63 @@ def test_operator_command_blocks_declare_the_rewrite_expectation() -> None:
 
 SEED_SCRIPT: Final[Path] = REPO_ROOT / "deploy" / "bootstrap" / "seed-vault-source.sh"
 _ASSIGNMENT_RE: Final[re.Pattern[str]] = re.compile(r'^(\w+)="\$\(', re.MULTILINE)
-_QUERY_ARG_RE: Final[re.Pattern[str]] = re.compile(r"--query (\"[^\"]*\"|'[^']*'|[^\s)\"]+)")
+_POST_RE: Final[re.Pattern[str]] = re.compile(r"az rest --method POST\b")
+# An option the commands are compared on, with its value: a double-quoted
+# string (escaped quotes included), a single-quoted string, or a bare word.
+_OPTION_RE: Final[re.Pattern[str]] = re.compile(
+    r"--(uri|filter|query|body) (\"(?:[^\"\\]|\\.)*\"|'[^']*'|[^\s)\"]+)"
+)
 
 
-def _lookups(text: str) -> dict[str, str]:
-    """Map each shell variable assigned from a command substitution to its ``--query``.
+def _options(text: str, start: int, end: int) -> dict[str, str]:
+    return {m.group(1): m.group(2) for m in _OPTION_RE.finditer(text, start, end)}
 
-    Keyed by the variable, so a query is compared with the one the other file
-    uses for the same value -- containment anywhere in the file would let one
-    lookup's query satisfy another's.
+
+def _lookups(text: str) -> dict[str, dict[str, str]]:
+    """Map each variable assigned from a command substitution to its command's options.
+
+    Keyed by the variable, so a value is compared with the one the other file
+    uses for the same lookup -- containment anywhere in the file would let one
+    command's value satisfy another's.
     """
-    starts = [m for m in _ASSIGNMENT_RE.finditer(text)]
+    starts = list(_ASSIGNMENT_RE.finditer(text))
     out = {}
     for n, match in enumerate(starts):
         end = starts[n + 1].start() if n + 1 < len(starts) else len(text)
-        query = _QUERY_ARG_RE.search(text, match.end(), end)
-        if query is not None:
-            out[match.group(1)] = query.group(1)
+        end = min(end, text.find(')"', match.end()) + 2 or end)
+        options = _options(text, match.end(), end)
+        if options:
+            out[match.group(1)] = options
+    return out
+
+
+def _posts(text: str) -> list[dict[str, str]]:
+    """The ``--uri`` and ``--body`` of each POST, in order."""
+    out = []
+    for match in _POST_RE.finditer(text):
+        end = text.find("\n\n", match.end())
+        out.append(_options(text, match.end(), end if end != -1 else len(text)))
     return out
 
 
 def test_runbook_lookups_mirror_the_seed_script() -> None:
     """The runbook shows the commands the seed script runs.
 
-    Each value the script resolves through a ``--query`` lookup is resolved in
-    the runbook, into the same variable, with the same query, so the exact-match
-    selection and the lookup-before-grant checks cannot drift apart between the
-    two. The prefix-matching ``--display-name`` lookup and a ``|| true`` that
-    would hide a refused grant appear in neither.
+    Each value the script resolves through a command substitution is resolved
+    in the runbook, into the same variable, by a command with the same URI,
+    filter and query; and each grant is posted to the same URI with the same
+    body. So the exact-match selection, the lookup-before-grant checks and the
+    grants themselves cannot drift apart between the two. The prefix-matching
+    ``--display-name`` lookup and a ``|| true`` that would hide a refused grant
+    appear in neither.
     """
     script, runbook = SEED_SCRIPT.read_text(), _runbook_text()
     expected = _lookups(script)
-    assert {"GRAPH_SP_ID", "existing_role", "existing_grant"} <= expected.keys(), expected
+    assert {"GRAPH_SP_ID", "SITE_ID", "existing_role", "existing_grant"} <= expected.keys()
     assert _lookups(runbook) == expected
+    script_posts = _posts(script)
+    assert len(script_posts) == 2 and all({"uri", "body"} <= p.keys() for p in script_posts)
+    assert _posts(runbook) == script_posts
     for text, name in ((script, "script"), (runbook, "runbook")):
         # Anchored on the flag taking a value: both files name it in prose to
         # say why it is not used.
