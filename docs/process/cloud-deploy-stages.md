@@ -165,7 +165,7 @@ one-time sequence:
    SAGE identity. A logger credential holds the client id directly or as a
    `{{named value}}` reference, so references are resolved before comparing.
    The identity's key is taken from the gateway's identity list exactly as
-   Azure returns it:
+   Azure returns it. The block needs `jq` as well as the Azure CLI:
 
    ```bash
    APIM="$(az apim list -g "$RG" --query '[0].name' -o tsv)"
@@ -200,28 +200,35 @@ one-time sequence:
    if [ -n "$blocked" ]; then
      echo "Not detaching: $blocked" >&2
    else
-     sage_key="$(az apim show -g "$RG" -n "$APIM" -o json \
-       | jq -r --arg n "/id-sage-$ENV" \
-         '.identity.userAssignedIdentities | keys[] | select(endswith($n))')"
-     if [ -n "$sage_key" ]; then
+     sage_key=""
+     ids="$(az apim show -g "$RG" -n "$APIM" \
+       --query identity.userAssignedIdentities -o json)" \
+       && sage_key="$(printf '%s' "$ids" | jq -r --arg n "/id-sage-$ENV" \
+         '(. // {}) | keys[] | select(endswith($n))')" \
+       || blocked="identity read failed"
+     if [ -n "$blocked" ]; then
+       echo "Not detaching: $blocked" >&2
+     elif [ -z "$sage_key" ]; then
+       echo "id-sage-$ENV is not attached to the gateway"
+     elif [ "$(printf '%s\n' "$sage_key" | wc -l)" -ne 1 ]; then
+       echo "Not detaching: more than one attached identity ends in /id-sage-$ENV" >&2
+     else
        az rest --method patch --url "$APIM_ID?api-version=2022-08-01" \
          --body "$(jq -n --arg k "$sage_key" \
            '{identity: {type: "UserAssigned", userAssignedIdentities: {($k): null}}}')" \
          --query "identity.userAssignedIdentities" -o json
-     else
-       echo "id-sage-$ENV is not attached to the gateway"
      fi
    fi
    ```
 
-   The response lists only `id-apim-$ENV`.
+   When it detaches, the response lists only `id-apim-$ENV`.
 
 4. **Verify:** `az role assignment list --scope "$KV_ID" --assignee <principal>`
    returns nothing for either identity, the SAGE identity holds nothing on
-   `appi-$ENV`, the gateway carries only `id-apim-$ENV`, the apps and both
-   custom domains still
-   serve, and a request to SAGE's container hostname without the ingress key
-   is refused with 403.
+   `appi-$ENV`, the gateway carries only `id-apim-$ENV`
+   (`az apim show -g "$RG" -n "$APIM" --query identity.userAssignedIdentities`),
+   the apps and both custom domains still serve, and a request to SAGE's
+   container hostname without the ingress key is refused with 403.
 
 ## Re-running
 
