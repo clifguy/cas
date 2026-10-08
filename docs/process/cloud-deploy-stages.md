@@ -155,9 +155,71 @@ one-time sequence:
      --role "Monitoring Metrics Publisher"
    ```
 
+   The gateway's identities need the same attention. API Management keeps a
+   user-assigned identity the template no longer lists, so after the deployment
+   the SAGE identity is still attached beside the gateway's own, and the gateway
+   can still act as SAGE. Detach it once none of the places the deployment
+   configures with an identity names it: the custom-domain certificate, the Key
+   Vault-backed named values and the logger credential. The block below reads
+   all three and detaches only when every read succeeded and none names the
+   SAGE identity. A logger credential holds the client id directly or as a
+   `{{named value}}` reference, so references are resolved before comparing.
+   The identity's key is taken from the gateway's identity list exactly as
+   Azure returns it:
+
+   ```bash
+   APIM="$(az apim list -g "$RG" --query '[0].name' -o tsv)"
+   APIM_ID="$(az apim show -g "$RG" -n "$APIM" --query id -o tsv)"
+   SAGE_CLIENT_ID="$(az identity show -g "$RG" -n "id-sage-$ENV" --query clientId -o tsv)"
+   blocked=""
+   [ -n "$APIM_ID" ] && [ -n "$SAGE_CLIENT_ID" ] || blocked="$blocked gateway or identity lookup failed;"
+   hosts="$(az apim show -g "$RG" -n "$APIM" \
+     --query "hostnameConfigurations[?identityClientId=='$SAGE_CLIENT_ID'].hostName" -o tsv)" \
+     || blocked="$blocked hostname read failed;"
+   values="$(az apim nv list -g "$RG" --service-name "$APIM" \
+     --query "[?keyVault.identityClientId=='$SAGE_CLIENT_ID'].name" -o tsv)" \
+     || blocked="$blocked named-value read failed;"
+   loggers="$(az rest --method get --url "$APIM_ID/loggers?api-version=2022-08-01" \
+     --query "value[].properties.credentials.identityClientId" -o tsv)" \
+     || blocked="$blocked logger read failed;"
+   logger_ids="$(printf '%s\n' "$loggers" | while read -r ref; do
+     case "$ref" in
+       ("{{"*"}}")
+         ref="${ref#"{{"}"
+         v="$(az apim nv show-secret -g "$RG" --service-name "$APIM" \
+           --named-value-id "${ref%"}}"}" --query value -o tsv)" && [ -n "$v" ] \
+           && printf '%s\n' "$v" || echo "unresolved" ;;
+       (*) printf '%s\n' "$ref" ;;
+     esac
+   done)"
+   printf '%s\n' "$logger_ids" | grep -qx unresolved \
+     && blocked="$blocked logger credential unresolved;"
+   [ -n "$SAGE_CLIENT_ID" ] && printf '%s\n' "$logger_ids" | grep -qxF "$SAGE_CLIENT_ID" \
+     && blocked="$blocked a logger uses id-sage-$ENV;"
+   [ -z "$hosts$values" ] || blocked="$blocked still in use: $hosts $values;"
+   if [ -n "$blocked" ]; then
+     echo "Not detaching: $blocked" >&2
+   else
+     sage_key="$(az apim show -g "$RG" -n "$APIM" -o json \
+       | jq -r --arg n "/id-sage-$ENV" \
+         '.identity.userAssignedIdentities | keys[] | select(endswith($n))')"
+     if [ -n "$sage_key" ]; then
+       az rest --method patch --url "$APIM_ID?api-version=2022-08-01" \
+         --body "$(jq -n --arg k "$sage_key" \
+           '{identity: {type: "UserAssigned", userAssignedIdentities: {($k): null}}}')" \
+         --query "identity.userAssignedIdentities" -o json
+     else
+       echo "id-sage-$ENV is not attached to the gateway"
+     fi
+   fi
+   ```
+
+   The response lists only `id-apim-$ENV`.
+
 4. **Verify:** `az role assignment list --scope "$KV_ID" --assignee <principal>`
    returns nothing for either identity, the SAGE identity holds nothing on
-   `appi-$ENV`, the apps and both custom domains still
+   `appi-$ENV`, the gateway carries only `id-apim-$ENV`, the apps and both
+   custom domains still
    serve, and a request to SAGE's container hostname without the ingress key
    is refused with 403.
 
