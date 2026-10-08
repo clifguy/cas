@@ -156,6 +156,11 @@ def _run(
     az = bin_dir / "az"
     az.write_text(f"#!{sys.executable} -IS\n" + FAKE_AZ.read_text(encoding="utf-8"))
     az.chmod(0o755)
+    # The script waits between custom-role lookups; this records each wait as a
+    # call instead of sleeping through it.
+    sleep = bin_dir / "sleep"
+    sleep.write_text('#!/bin/sh\nprintf \'["sleep", "%s"]\\n\' "$1" >> "$AZURE_CALLS"\n')
+    sleep.chmod(0o755)
     state_path = tmp_path / "state.json"
     state_path.write_text(json.dumps(state))
     calls_path = tmp_path / "calls.jsonl"
@@ -179,6 +184,35 @@ def _run(
     )
     calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
     return result, calls, json.loads(state_path.read_text())
+
+
+def _lookup_attempts() -> int:
+    """How many times the script lists a custom role before taking it as absent."""
+    match = re.search(r"^ROLE_LOOKUP_ATTEMPTS=(\d+)$", SCRIPT.read_text(), re.MULTILINE)
+    assert match, "ROLE_LOOKUP_ATTEMPTS not found in the script"
+    return int(match.group(1))
+
+
+def _role_id_lookups(calls: list[list[str]], role: str) -> list[int]:
+    """Positions of the custom-role id lookups for ``role`` in the call log."""
+    return [
+        i
+        for i, c in enumerate(calls)
+        if c[:3] == ["role", "definition", "list"]
+        and "--custom-role-only" in c
+        and c[c.index("--name") + 1] == role
+        and c[c.index("--query") + 1] == "[0].name"
+    ]
+
+
+def _role_creates(calls: list[list[str]], role: str) -> list[int]:
+    """Positions of the create calls for custom role ``role`` in the call log."""
+    return [
+        i
+        for i, c in enumerate(calls)
+        if c[:3] == ["role", "definition", "create"]
+        and json.loads(c[c.index("--role-definition") + 1])["Name"] == role
+    ]
 
 
 def _held(state: dict[str, Any]) -> set[tuple[str, str]]:
@@ -476,6 +510,151 @@ def test_apply_stops_on_a_failed_call(tmp_path: Path) -> None:
 
     assert result.returncode != 0
     assert (_LOCK, _RG) not in _held(after)
+
+
+def test_rerun_survives_a_missed_role_lookup(tmp_path: Path) -> None:
+    """G7: the role-definition listing is eventually consistent, so a role that
+    exists can list as absent for a while. A re-run that meets such a miss
+    retries the lookup instead of trying to create the role again."""
+    first = _granted(tmp_path)
+    first["lookup_misses"] = 2
+
+    result, calls, second = _run(tmp_path, first)
+
+    assert result.returncode == 0, result.stderr
+    assert not [c for c in calls if c[:3] == ["role", "definition", "create"]]
+    assert second["custom_roles"] == first["custom_roles"]
+    assert _held(second) >= _NARROWED
+
+
+def test_rerun_survives_a_missed_shape_lookup(tmp_path: Path) -> None:
+    """G7b: the verification read of an existing role retries a miss too, rather
+    than refusing the role as reshaped."""
+    first = _granted(tmp_path)
+    first["shape_misses"] = 2
+
+    result, calls, second = _run(tmp_path, first)
+
+    assert result.returncode == 0, result.stderr
+    assert not [c for c in calls if c[:3] == ["role", "definition", "create"]]
+    assert _held(second) >= _NARROWED
+
+
+def test_create_hitting_an_existing_name_re_resolves(tmp_path: Path) -> None:
+    """G7c: when every lookup misses and the create then reports that the name
+    is taken, the role exists after all; the run resolves it and carries on
+    without a second definition."""
+    state = _granted(tmp_path)
+    state["assignments"] = [a for a in state["assignments"] if a["role"] != _ORCHESTRATOR]
+    state["lookup_misses"] = _lookup_attempts()
+
+    result, calls, after = _run(tmp_path, state)
+
+    assert result.returncode == 0, result.stderr
+    assert len(_role_creates(calls, _ORCHESTRATOR)) == 1
+    assert after["custom_roles"] == state["custom_roles"]
+    assert _held(after) >= _NARROWED
+
+
+def test_absent_role_is_created_after_bounded_lookups(tmp_path: Path) -> None:
+    """G7d: a role that genuinely does not exist is still created, once, after
+    a bounded number of lookups and a wait between each."""
+    result, calls, state = _run(tmp_path, _legacy_state())
+
+    assert result.returncode == 0, result.stderr
+    attempts = _lookup_attempts()
+    for role in (_ORCHESTRATOR, _LOCK):
+        (create,) = _role_creates(calls, role)
+        before = [i for i in _role_id_lookups(calls, role) if i < create]
+        assert len(before) == attempts
+        waits = [c for c in calls[before[0] : create] if c[0] == "sleep"]
+        assert len(waits) == attempts - 1
+    assert sorted(d["roleName"] for d in state["custom_roles"]) == sorted([_LOCK, _ORCHESTRATOR])
+
+
+def test_created_role_that_lists_late_is_resolved(tmp_path: Path) -> None:
+    """G7e: a role the run has just created can also be slow to list; the
+    lookup after creation retries rather than reporting it missing."""
+    state = _legacy_state()
+    state["lookup_misses"] = _lookup_attempts() + 2
+
+    result, calls, after = _run(tmp_path, state)
+
+    assert result.returncode == 0, result.stderr
+    assert len(_role_creates(calls, _ORCHESTRATOR)) == 1
+    assert _held(after) >= _NARROWED
+
+
+def test_role_create_failure_other_than_duplicate_stops(tmp_path: Path) -> None:
+    """G7f: only a name collision is taken as proof that the role exists; any
+    other create failure stops the run before anything is assigned."""
+    state = _legacy_state()
+    state["fail_on"] = "definition create"
+
+    result, _, after = _run(tmp_path, state)
+
+    assert result.returncode != 0
+    assert after["custom_roles"] == []
+    assert not _held(after) & _NARROWED
+
+
+def test_rerun_survives_a_missed_assignment_lookup(tmp_path: Path) -> None:
+    """G8: the role-assignment listing is eventually consistent too. A re-run
+    that meets a miss retries the lookup instead of assigning again, which
+    Resource Manager would refuse."""
+    first = _granted(tmp_path)
+    first["assignment_misses"] = 2
+
+    result, calls, second = _run(tmp_path, first)
+
+    assert result.returncode == 0, result.stderr
+    assert not [c for c in calls if c[1:3] == ["assignment", "create"]]
+    assert second["assignments"] == first["assignments"]
+
+
+def test_assignment_that_exists_unlisted_is_kept(tmp_path: Path) -> None:
+    """G8b: when every lookup misses and the create then reports that the
+    assignment exists, the run carries on without replacing it -- including
+    the conditioned grant, whose condition is then read and found current."""
+    first = _granted(tmp_path)
+    # Enough misses to exhaust the lookups for the first three assignments.
+    first["assignment_misses"] = 3 * _lookup_attempts()
+
+    result, calls, second = _run(tmp_path, first)
+
+    assert result.returncode == 0, result.stderr
+    creates = [c for c in calls if c[1:3] == ["assignment", "create"]]
+    assert len(creates) == 3
+    assert any("--condition" in c for c in creates)
+    assert not [c for c in calls if c[1:3] == ["assignment", "delete"]]
+    assert second["assignments"] == first["assignments"]
+
+
+def test_remove_legacy_rereads_an_incomplete_listing(tmp_path: Path) -> None:
+    """G8c: a listing that is missing part of the narrowed set is read again
+    before the run refuses, so an incomplete answer does not stop retirement."""
+    state = _granted(tmp_path)
+    state["assignment_misses"] = 1
+
+    result, _, after = _run(tmp_path, state, "--remove-legacy")
+
+    assert result.returncode == 0, result.stderr
+    assert _held(after) == _NARROWED
+
+
+def test_show_rereads_an_incomplete_listing(tmp_path: Path) -> None:
+    """G8d: --show reads the listing again while it is missing part of the
+    narrowed set, so an incomplete answer cannot hide a grant outside it."""
+    state = _granted(tmp_path)
+    state["assignments"] = [
+        a for a in state["assignments"] if (a["role"], a["scope"]) in _NARROWED
+    ] + [_assignment("Owner", _RG)]
+    state["assignment_misses"] = 1
+
+    result, _, _ = _run(tmp_path, state, "--show")
+
+    assert result.returncode != 0
+    assert f"OUTSIDE THE NARROWED SET: Owner at {_RG}" in result.stderr
 
 
 # ---------------------------------------------------------------------------

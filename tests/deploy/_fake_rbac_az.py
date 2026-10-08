@@ -12,6 +12,14 @@ the test can still recompute them.
 rendered the way the real CLI renders it with ``-o tsv``; an unrecognised query
 fails the call rather than being answered loosely.
 
+The real custom-role and role-assignment listings are eventually consistent: a
+role or an assignment that exists can list as absent for a while.
+``lookup_misses`` in the state makes that many custom-role listings answer empty
+whatever they ask, ``shape_misses`` does the same for the role-shape listing
+only, and ``assignment_misses`` for role-assignment listings; each miss is
+counted down and saved. Creating an assignment that already exists fails with
+``RoleAssignmentExists``, as Resource Manager refuses it.
+
 It imports only the standard library: the test runs it behind an interpreter
 line that disables site-packages.
 """
@@ -108,6 +116,15 @@ def main(argv: list[str]) -> int:
                 for d in state["custom_roles"]
                 if d["roleName"] == name and visible_from in d["assignableScopes"]
             ]
+            for counter, applies in (
+                ("lookup_misses", True),
+                ("shape_misses", query == _ROLE_SHAPE),
+            ):
+                if applies and state.get(counter, 0) > 0:
+                    state[counter] -= 1
+                    save()
+                    hits = []
+                    break
             if query == "[0].name":
                 _lines([hits[0]["name"]] if hits else [])
             elif query == _ROLE_SHAPE:
@@ -179,6 +196,10 @@ def main(argv: list[str]) -> int:
             and in_reach(a["scope"])
             and (role is None or _role_matches(a, role))
         ]
+        if state.get("assignment_misses", 0) > 0:
+            state["assignment_misses"] -= 1
+            save()
+            hits = []
         if query in ("[0].id", "[0].condition"):
             value = hits[0][query.split(".", 1)[1]] if hits else None
             _lines([value] if value is not None else [])
@@ -192,6 +213,16 @@ def main(argv: list[str]) -> int:
 
     if group == "role assignment create":
         role = _opt(argv, "--role") or ""
+        if any(
+            a["assignee"] == _opt(argv, "--assignee")
+            and a["scope"] == _opt(argv, "--scope")
+            and _role_matches(a, role)
+            for a in state["assignments"]
+        ):
+            print(
+                "ERROR: (RoleAssignmentExists) The role assignment already exists.", file=sys.stderr
+            )
+            return 1
         state["assignments"].append(
             {
                 "id": str(uuid.uuid4()),
