@@ -14,6 +14,14 @@
             passthrough — no CORS block because the caller is a shell, not a
             browser.
         -->
+        <!--
+            The ingress key: SAGE refuses any request without it, so only
+            requests that pass through this gateway reach the backend.
+            Overrides any value a caller sent.
+        -->
+        <set-header name="X-SAGE-Ingress-Key" exists-action="override">
+            <value>{{sage-ingress-key}}</value>
+        </set-header>
         <set-backend-service backend-id="sage-backend" />
     </inbound>
     <backend>

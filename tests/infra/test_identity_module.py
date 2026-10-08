@@ -1,9 +1,10 @@
 """Structural gate for the user-assigned managed-identity module.
 
 Locks the shape of ``infra/modules/identity.bicep`` — the module that
-provisions the two user-assigned managed identities (one for SAGE, one for the
-CAS BFF) the cloud deployment profile (CAS-ADR-042) consumes. Those identities
-are created once and shared: the Key Vault module grants them data-plane read,
+provisions the user-assigned managed identities (SAGE, the CAS BFF, the API
+Management gateway and the relational store's bootstrap identity) the cloud
+deployment profile (CAS-ADR-042) consumes. Those identities are created once
+and shared: the Key Vault module grants each the secrets it reads,
 the relational-store module grants the SAGE identity a database role, and the
 container apps attach them at deploy time. Keeping both identities present and
 their ids exposed as outputs is what lets every downstream module compose
@@ -116,12 +117,13 @@ def test_identity_module_exists() -> None:
 
 
 def test_identity_declares_application_and_bootstrap_identities() -> None:
-    """Three user-assigned identities are declared — the two application identities
-    (SAGE, CAS BFF) and the dedicated Postgres bootstrap identity. The application
-    identities back the running apps; the bootstrap identity is the one the
-    relational-store module sets as the server's Entra administrator and the
-    in-VNet bootstrap job runs as. None may be silently dropped; downstream modules
-    grant and attach each.
+    """Four user-assigned identities are declared — the two application identities
+    (SAGE, CAS BFF), the API Management gateway's identity, and the dedicated
+    Postgres bootstrap identity. The application identities back the running
+    apps; the gateway's identity reads only the TLS certificate and the ingress
+    key; the bootstrap identity is the one the relational-store module sets as
+    the server's Entra administrator and the in-VNet bootstrap job runs as. None
+    may be silently dropped; downstream modules grant and attach each.
 
     Each name is asserted inside its own resource body. The three declarations are
     otherwise identical, so a whole-module containment check would stay green with
@@ -130,13 +132,14 @@ def test_identity_declares_application_and_bootstrap_identities() -> None:
     """
     text = IDENTITY.read_text(encoding="utf-8")
     count = _count_resource_type(text, _UAMI_TYPE)
-    assert count == 3, (
-        f"identity.bicep must declare exactly three {_UAMI_TYPE} resources "
-        f"(SAGE, CAS BFF, Postgres bootstrap); found {count}"
+    assert count == 4, (
+        f"identity.bicep must declare exactly four {_UAMI_TYPE} resources "
+        f"(SAGE, CAS BFF, API Management, Postgres bootstrap); found {count}"
     )
     for symbol, name in (
         ("sageIdentity", "'id-sage-${environmentName}'"),
         ("bffIdentity", "'id-cas-bff-${environmentName}'"),
+        ("apimIdentity", "'id-apim-${environmentName}'"),
         ("bootstrapIdentity", "'id-pg-bootstrap-${environmentName}'"),
     ):
         block = _resource_block(text, symbol)
@@ -310,7 +313,7 @@ def test_module_block_detector_controls() -> None:
 def test_resource_block_detector_controls() -> None:
     """``_resource_block`` returns only the named resource's own body.
 
-    This is what makes the per-identity gates load-bearing: the three identities
+    This is what makes the per-identity gates load-bearing: the four identities
     are declared identically, so a property found anywhere in the module says
     nothing about which of them carries it.
 

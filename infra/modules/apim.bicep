@@ -59,14 +59,20 @@ param apimSku string = 'Consumption'
 @description('Custom domain hostname bound to the gateway (e.g. sage.<base-domain>), served with the owned wildcard certificate.')
 param sageCustomDomain string
 
-@description('Resource id of the user-assigned managed identity APIM uses to read the custom-domain certificate from Key Vault.')
-param sageIdentityId string
+@description('Resource id of the gateway\'s own user-assigned managed identity, which reads the custom-domain certificate and the ingress key from Key Vault.')
+param apimIdentityId string
 
-@description('Client id of that managed identity — the Key Vault GET principal for the custom-domain certificate, and the token principal for Application Insights telemetry ingestion.')
-param sageIdentityClientId string
+@description('Client id of that managed identity — the Key Vault GET principal for the custom-domain certificate and the ingress key, and the token principal for Application Insights telemetry ingestion.')
+param apimIdentityClientId string
 
 @description('Principal (object) id of that managed identity — granted the telemetry-ingestion role on the Application Insights resource.')
-param sageIdentityPrincipalId string
+param apimIdentityPrincipalId string
+
+@description('Versionless Key Vault secret URL of the ingress key the gateway injects on every request it forwards to SAGE.')
+param sageIngressKeySecretUri string
+
+@description('Whether the Key Vault secrets are loaded. Until they are, the ingress-key named value holds a placeholder, which SAGE -- holding no key yet -- does not check.')
+param keyVaultSecretsLoaded bool = true
 
 @description('Versionless Key Vault secret URL of the wildcard certificate. Versionless so the binding follows certificate rotation.')
 param tlsCertSecretUri string
@@ -92,14 +98,15 @@ resource apimService 'Microsoft.ApiManagement/service@2022-08-01' = {
     name: apimSku
     capacity: apimCapacity
   }
-  // The user-assigned identity APIM authenticates to Key Vault with to read the
-  // custom-domain certificate. It reuses the SAGE identity (already granted Key
-  // Vault Certificate User on the vault); the vault has no firewall, so the
+  // The gateway's own user-assigned identity, which reads the custom-domain
+  // certificate and the ingress key from Key Vault (granted on those two secrets
+  // alone) and publishes telemetry. Never the SAGE identity: SAGE parses
+  // untrusted documents and must hold neither. The vault has no firewall, so the
   // user-assigned path is supported on the Consumption SKU.
   identity: {
     type: 'UserAssigned'
     userAssignedIdentities: {
-      '${sageIdentityId}': {}
+      '${apimIdentityId}': {}
     }
   }
   properties: {
@@ -116,7 +123,7 @@ resource apimService 'Microsoft.ApiManagement/service@2022-08-01' = {
         hostName: sageCustomDomain
         certificateSource: 'KeyVault'
         keyVaultId: tlsCertSecretUri
-        identityClientId: sageIdentityClientId
+        identityClientId: apimIdentityClientId
         defaultSslBinding: true
       }
     ]
@@ -173,10 +180,10 @@ var monitoringMetricsPublisherRoleId = '3913510d-42f4-4e42-8a64-420c390055eb'
 // above: without this grant, nothing can be ingested at all.
 resource appInsightsMetricsPublisher 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: appInsights
-  name: guid(appInsights.id, sageIdentityPrincipalId, monitoringMetricsPublisherRoleId)
+  name: guid(appInsights.id, apimIdentityPrincipalId, monitoringMetricsPublisherRoleId)
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', monitoringMetricsPublisherRoleId)
-    principalId: sageIdentityPrincipalId
+    principalId: apimIdentityPrincipalId
     principalType: 'ServicePrincipal'
   }
 }
@@ -192,7 +199,7 @@ resource apimAppInsightsLogger 'Microsoft.ApiManagement/service/loggers@2022-08-
     loggerType: 'applicationInsights'
     credentials: {
       connectionString: appInsights.properties.ConnectionString
-      identityClientId: sageIdentityClientId
+      identityClientId: apimIdentityClientId
     }
   }
 }
@@ -299,6 +306,26 @@ resource casAppUrlNamedValue 'Microsoft.ApiManagement/service/namedValues@2022-0
     displayName: 'cas-app-url'
     value: casAppUrl
     secret: false
+  }
+}
+
+// The ingress key the gateway injects on every request it forwards to SAGE,
+// which refuses any request without it -- so SAGE's container ingress, public
+// because the Consumption tier has no virtual network, cannot be used to bypass
+// the gateway's checks and telemetry. Read from Key Vault as the gateway's
+// identity once the secrets are loaded. Until then a placeholder stands in:
+// SAGE receives no key either, so it checks nothing.
+resource sageIngressKeyNamedValue 'Microsoft.ApiManagement/service/namedValues@2022-08-01' = {
+  parent: apimService
+  name: 'sage-ingress-key'
+  properties: {
+    displayName: 'sage-ingress-key'
+    secret: true
+    keyVault: keyVaultSecretsLoaded ? {
+      secretIdentifier: sageIngressKeySecretUri
+      identityClientId: apimIdentityClientId
+    } : null
+    value: keyVaultSecretsLoaded ? null : 'not-yet-loaded'
   }
 }
 
@@ -554,6 +581,7 @@ resource sageHealthOperationPolicy 'Microsoft.ApiManagement/service/apis/operati
   }
   dependsOn: [
     sageBackend
+    sageIngressKeyNamedValue
   ]
 }
 
@@ -566,6 +594,7 @@ resource sageOpenApiOperationPolicy 'Microsoft.ApiManagement/service/apis/operat
   }
   dependsOn: [
     sageBackend
+    sageIngressKeyNamedValue
   ]
 }
 
@@ -578,6 +607,7 @@ resource sageUploadOperationPolicy 'Microsoft.ApiManagement/service/apis/operati
   }
   dependsOn: [
     sageBackend
+    sageIngressKeyNamedValue
   ]
 }
 
@@ -590,6 +620,7 @@ resource sageDownloadOperationPolicy 'Microsoft.ApiManagement/service/apis/opera
   }
   dependsOn: [
     sageBackend
+    sageIngressKeyNamedValue
   ]
 }
 
@@ -623,6 +654,7 @@ resource sageApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2022-08-01
   }
   dependsOn: [
     sageBackend
+    sageIngressKeyNamedValue
   ]
 }
 

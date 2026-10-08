@@ -50,7 +50,6 @@ _TEMPLATE_ROLES: Final[dict[str, str]] = {
     "3913510d-42f4-4e42-8a64-420c390055eb": "Monitoring Metrics Publisher",
     "7f951dda-4ed3-4680-a7ca-43fe172d538d": "AcrPull",
     "4633458b-17de-408a-b874-0445c86b69e6": "Key Vault Secrets User",
-    "db79e9a7-68ee-4b58-9aeb-b90e7c24fcba": "Key Vault Certificate User",
 }
 
 _BUILTINS: Final[list[str]] = [

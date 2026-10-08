@@ -1132,33 +1132,36 @@ def test_entra_bootstrap_refuses_an_unreadable_redirect_platform(
 
 
 def test_kv_secrets_script_reads_secrets_from_env_not_args() -> None:
-    """Every secret and certificate password the Key Vault loader passes is an
-    environment-variable expansion, never a literal, and the variables are
-    ``unset`` after use.
+    """Secret material comes from the environment, is ``unset`` after use, and
+    reaches the CLI through a file, never as a command-line argument: no secret
+    is passed with ``--value``, and the bundle password only as ``@<file>``.
+    The executed tests below observe the argument vectors themselves.
     """
     text = _text(KEY_VAULT)
-    expansions = list(re.finditer(r"--(?:value|password)\s+(\S+)", text))
-    assert expansions, "load script must pass secret material via --value/--password"
-    for match in expansions:
-        token = match.group(1)
-        assert token.startswith('"$') or token.startswith("$"), (
-            f"secret material must be an env-var expansion, not a literal: {token!r}"
-        )
+    assert not re.search(r"--value\b", text), "secrets must not be passed with --value"
+    passwords = re.findall(r"--password\s+(\S+)", text)
+    assert passwords, "the certificate import must take its password"
+    for token in passwords:
+        assert token.startswith('"@'), f"the bundle password must be passed as @<file>: {token!r}"
+    assert not re.search(r"-passin\s+\"?pass:", text), (
+        "OpenSSL must not read the password from argv"
+    )
     # Anchor on the unset statements, not the prose that describes them.
     unset_stmts = [line for line in text.splitlines() if line.lstrip().startswith("unset ")]
     assert unset_stmts, "secret env vars must be unset after use"
 
 
 def test_kv_secrets_script_loads_the_three_artifacts() -> None:
-    """The loader sets the two secrets and imports the wildcard certificate,
-    under the fixed names the Key Vault module's outputs pin.
+    """The loader sets the secrets, generates the ingress key, and imports the
+    wildcard certificate, under the fixed names the Key Vault module's outputs
+    pin.
     """
     text = _text(KEY_VAULT)
-    assert "anthropic-api-key" in text, "loader must set anthropic-api-key"
-    assert "bff-client-secret" in text, "loader must set bff-client-secret"
+    for name in ("anthropic-api-key", "bff-client-secret", "sage-ingress-key"):
+        assert re.search(rf"^\s*set_secret {name} ", text, re.MULTILINE), f"loader must set {name}"
     assert "wildcard-tls" in text, "loader must import the wildcard-tls certificate"
     assert "keyvault certificate import" in text, "loader must use certificate import"
-    assert text.count("keyvault secret set") >= 2, "loader must set both secrets"
+    assert "keyvault secret set" in text, "the secrets must be set through the CLI"
 
 
 def test_kv_secrets_script_rejects_leaf_only_pfx() -> None:
@@ -1616,3 +1619,157 @@ def test_vault_seed_rerun_is_idempotent(tmp_path: Path, bash: str) -> None:
     assert final["assignments"] == built["assignments"]
     assert final["sites"][0]["permissions"] == built["sites"][0]["permissions"]
     assert len(final["uploads"]) == 2, "the config upload is create-or-replace on every run"
+
+
+# --- Executed Key Vault secret load -------------------------------------------
+#
+# The loader runs, under every available bash, against stand-ins for ``az`` and
+# ``openssl`` that record each call's argument vector. Secret values must reach
+# the CLI through files, never on a command line, where any local process can
+# read them.
+
+
+_FAKE_KV_TOOLS: Final[str] = r"""
+import json, os, sys
+from pathlib import Path
+
+state_path = Path(os.environ["KV_STATE"])
+state = json.loads(state_path.read_text())
+tool = Path(sys.argv[0]).name
+args = sys.argv[1:]
+with open(os.environ["KV_CALLS"], "a") as stream:
+    stream.write(json.dumps([tool, *args]) + "\n")
+joined = " ".join([tool, *args])
+for fault in state.get("faults", []):
+    if all(token in joined for token in fault):
+        sys.exit("ERROR: injected failure")
+
+def arg(flag):
+    return args[args.index(flag) + 1]
+
+if tool == "openssl":
+    if args[:2] == ["rand", "-hex"]:
+        print("ab" * int(args[2]))
+    elif args[0] == "pkcs12":
+        source = arg("-passin")
+        assert source.startswith("file:"), source
+        if Path(source[5:]).read_text() != state["pfx_password"]:
+            sys.exit("Mac verify error: invalid password?")
+        print("-----BEGIN CERTIFICATE-----\nleaf\n-----END CERTIFICATE-----")
+        print("-----BEGIN CERTIFICATE-----\nintermediate\n-----END CERTIFICATE-----")
+    else:
+        sys.exit(f"fake openssl: unsupported {args}")
+elif args[:3] == ["keyvault", "secret", "set"]:
+    assert "--value" not in args, "a secret value was passed on the command line"
+    assert arg("--encoding") == "utf-8"
+    state["secrets"][arg("--name")] = Path(arg("--file")).read_text()
+elif args[:3] == ["keyvault", "secret", "list"]:
+    assert arg("--query") == "[?name=='sage-ingress-key'].id"
+    if "sage-ingress-key" in state["secrets"]:
+        print("https://kv.example/secrets/sage-ingress-key")
+elif args[:3] == ["keyvault", "certificate", "import"]:
+    password = arg("--password")
+    assert password.startswith("@"), "the bundle password was passed on the command line"
+    if Path(password[1:]).read_text() != state["pfx_password"]:
+        sys.exit("ERROR: the bundle password is wrong")
+    state["certificates"][arg("--name")] = arg("--file")
+else:
+    sys.exit(f"fake az: unsupported {args}")
+state_path.write_text(json.dumps(state))
+"""
+
+_KV_INPUTS: Final[dict[str, str]] = {
+    "ANTHROPIC_API_KEY": "sk-anthropic-sentinel-0001",  # gitleaks:allow test sentinel
+    "BFF_CLIENT_SECRET": "bff-secret-sentinel-0002",  # gitleaks:allow test sentinel
+    "WILDCARD_TLS_PFX_PASSWORD": "pfx-password-sentinel-0003",  # gitleaks:allow test sentinel
+}
+
+
+def _run_kv_load(tmp_path: Path, state: dict, bash: str = "bash") -> tuple:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    for tool in ("az", "openssl"):
+        path = bin_dir / tool
+        path.write_text(f"#!{sys.executable} -IS\n" + _FAKE_KV_TOOLS)
+        path.chmod(0o755)
+    state_path = tmp_path / "kv-state.json"
+    state_path.write_text(json.dumps(state))
+    calls_path = tmp_path / "kv-calls.jsonl"
+    calls_path.write_text("")
+    scratch = tmp_path / "tmp"
+    scratch.mkdir(exist_ok=True)
+    pfx = tmp_path / "wildcard.pfx"
+    pfx.write_bytes(b"pfx-bytes")
+    result = subprocess.run(
+        [bash, str(KEY_VAULT)],
+        cwd=REPO_ROOT,
+        env={
+            "PATH": f"{bin_dir}:{os.environ['PATH']}",
+            "HOME": str(tmp_path),
+            "TMPDIR": str(scratch),
+            "KV_STATE": str(state_path),
+            "KV_CALLS": str(calls_path),
+            "KEY_VAULT_NAME": "kv-test",
+            "WILDCARD_TLS_PFX_PATH": str(pfx),
+            **_KV_INPUTS,
+        },
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
+    calls = [json.loads(line) for line in calls_path.read_text().splitlines()]
+    return result, calls, json.loads(state_path.read_text()), scratch
+
+
+def _kv_state(**extra: object) -> dict:
+    return {
+        "secrets": {},
+        "certificates": {},
+        "pfx_password": _KV_INPUTS["WILDCARD_TLS_PFX_PASSWORD"],
+        "faults": [],
+        **extra,
+    }
+
+
+@SEED_BASHES
+def test_key_vault_load_keeps_secrets_off_the_command_line(tmp_path: Path, bash: str) -> None:
+    """Every secret and the bundle password reach the CLI through files; no
+    value appears in any recorded argument vector, and the vault holds exactly
+    the supplied values. The scratch files are removed when the run ends.
+    """
+    result, calls, final, scratch = _run_kv_load(tmp_path, _kv_state(), bash)
+    assert result.returncode == 0, result.stderr
+    argv = "\n".join(" ".join(call) for call in calls)
+    for name, value in _KV_INPUTS.items():
+        assert value not in argv, f"{name} appeared on a command line"
+    assert final["secrets"]["anthropic-api-key"] == _KV_INPUTS["ANTHROPIC_API_KEY"]
+    assert final["secrets"]["bff-client-secret"] == _KV_INPUTS["BFF_CLIENT_SECRET"]
+    assert "wildcard-tls" in final["certificates"]
+    generated = final["secrets"]["sage-ingress-key"]
+    assert re.fullmatch(r"[0-9a-f]{64}", generated), generated
+    assert generated not in argv, "the generated ingress key appeared on a command line"
+    assert list(scratch.iterdir()) == [], "scratch files outlived the run"
+
+
+@SEED_BASHES
+def test_key_vault_load_keeps_an_existing_ingress_key(tmp_path: Path, bash: str) -> None:
+    """A re-run leaves the ingress key in place, so the gateway and SAGE keep
+    agreeing on it; rotating it is a deliberate step, not a side effect.
+    """
+    state = _kv_state(secrets={"sage-ingress-key": "existing"})
+    result, calls, final, _ = _run_kv_load(tmp_path, state, bash)
+    assert result.returncode == 0, result.stderr
+    assert final["secrets"]["sage-ingress-key"] == "existing"
+    assert not [c for c in calls if "sage-ingress-key" in c and "set" in c]
+
+
+@SEED_BASHES
+def test_key_vault_load_stops_when_the_ingress_key_lookup_fails(tmp_path: Path, bash: str) -> None:
+    """A failed lookup stops the run; it never reads as "absent" and replaces
+    a key the gateway and SAGE already share.
+    """
+    state = _kv_state(secrets={"sage-ingress-key": "existing"}, faults=[["secret", "list"]])
+    result, _, final, scratch = _run_kv_load(tmp_path, state, bash)
+    assert result.returncode != 0, "a failed lookup must stop the run"
+    assert final["secrets"]["sage-ingress-key"] == "existing"
+    assert list(scratch.iterdir()) == [], "scratch files outlived the failed run"

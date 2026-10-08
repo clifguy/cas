@@ -66,6 +66,13 @@ param deployClientId = 'REPLACE-WITH-DEPLOY-CLIENT-ID'
 // recovery path. Deletion protection for the durable store is not a parameter:
 // the relational-store module declares a CanNotDelete lock unconditionally.
 
+// keyVaultSecretsLoaded defaults to true. Key Vault access is granted per
+// secret, and a grant scoped to a secret needs that secret to exist. On a new
+// tenant, deploy first with false, load the secrets
+// (deploy/bootstrap/load-key-vault-secrets.sh), then deploy again with true.
+// Until the second deployment SAGE receives no ingress key and checks none.
+// param keyVaultSecretsLoaded = true
+
 // --- Custom domains --------------------------------------------------
 // baseDomain is the owned zone the cas/sage hostnames derive from; the
 // wildcard certificate *.<baseDomain> (loaded as wildcard-tls) covers both.

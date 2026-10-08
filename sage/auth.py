@@ -16,8 +16,10 @@ network access.
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
+import os
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
@@ -515,6 +517,77 @@ class LoopbackOriginGuard:
             return
         body = json.dumps(
             {"code": "http_error", "message": _REFUSAL_MESSAGE, "detail": None}
+        ).encode("utf-8")
+        headers = [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode("latin-1")),
+        ]
+        await send({"type": "http.response.start", "status": 403, "headers": headers})
+        await send({"type": "http.response.body", "body": body})
+
+
+#: Header the gateway in front of a deployment injects on every request it
+#: forwards, carrying the ingress key (CAS-ADR-042).
+INGRESS_KEY_HEADER = "X-SAGE-Ingress-Key"
+
+#: Environment variable that supplies the ingress key. Unset or empty, no key
+#: is required.
+INGRESS_KEY_ENV_VAR = "SAGE_INGRESS_KEY"
+
+_INGRESS_REFUSAL_MESSAGE = "This server accepts requests only through its gateway."
+
+
+def ingress_key_from_env(environ: Mapping[str, str] | None = None) -> str | None:
+    """The configured ingress key, or ``None`` when none is set."""
+    value = (os.environ if environ is None else environ).get(INGRESS_KEY_ENV_VAR, "")
+    return value or None
+
+
+class IngressKeyGuard:
+    """Admit only requests that carry the gateway's ingress key.
+
+    A deployment whose container ingress is reachable from the internet fronts
+    it with a gateway that validates callers and records traffic. This pure-ASGI
+    middleware makes that gateway the only way in: every request must present
+    the ingress key in :data:`INGRESS_KEY_HEADER`, which only the gateway knows
+    and injects. A request without it, or with a different value, is refused
+    with 403 in the application's ``http_error`` envelope before anything else
+    runs -- authentication included, and the routes that need no bearer token as
+    well. The liveness probe stays open so the platform can poll it directly.
+
+    The key is compared in constant time and never echoed.
+    """
+
+    exempt_paths: frozenset[str] = frozenset({"/health"})
+
+    def __init__(self, app: ASGIApp, *, key: str) -> None:
+        self.app = app
+        self._key = key.encode("utf-8")
+
+    def _admitted(self, scope: Scope) -> bool:
+        presented = _header(scope, INGRESS_KEY_HEADER.lower().encode("latin-1"))
+        if presented is None:
+            return False
+        return hmac.compare_digest(presented.encode("latin-1"), self._key)
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if (
+            scope["type"] not in ("http", "websocket")
+            or scope.get("path", "") in self.exempt_paths
+            or self._admitted(scope)
+        ):
+            await self.app(scope, receive, send)
+            return
+        logger.warning(
+            "Refused %s %s: no valid ingress key",
+            scope.get("method", "WEBSOCKET"),
+            scope.get("path", ""),
+        )
+        if scope["type"] == "websocket":
+            await send({"type": "websocket.close", "code": 1008})
+            return
+        body = json.dumps(
+            {"code": "http_error", "message": _INGRESS_REFUSAL_MESSAGE, "detail": None}
         ).encode("utf-8")
         headers = [
             (b"content-type", b"application/json"),

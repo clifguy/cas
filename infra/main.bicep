@@ -52,6 +52,9 @@ param abstractionModel string = 'claude-haiku-4-5'
 @description('Enable Key Vault purge protection. Off by default; the setting is irreversible once applied and vault-wide, so enable it per tenant only where every workload sharing the vault can accept a deletion block for the full soft-delete window.')
 param enableKeyVaultPurgeProtection bool = false
 
+@description('Whether the Key Vault secrets are loaded. Grants scoped to individual secrets need those secrets to exist, so the first deployment of a new tenant runs with false, the secrets are loaded, and the deployment runs again with true.')
+param keyVaultSecretsLoaded bool = true
+
 @description('Owned base domain the custom hostnames derive from (e.g. example.com). The wildcard certificate *.<base-domain> covers both the cas and sage hostnames.')
 param baseDomain string
 
@@ -131,10 +134,12 @@ module apim 'modules/apim.bicep' = {
     publisherEmail: publisherEmail
     apimSku: apimSku
     sageCustomDomain: sageHostname
-    sageIdentityId: identity.outputs.sageIdentityId
-    sageIdentityClientId: identity.outputs.sageIdentityClientId
-    sageIdentityPrincipalId: identity.outputs.sageIdentityPrincipalId
+    apimIdentityId: identity.outputs.apimIdentityId
+    apimIdentityClientId: identity.outputs.apimIdentityClientId
+    apimIdentityPrincipalId: identity.outputs.apimIdentityPrincipalId
     tlsCertSecretUri: tlsCertSecretUri
+    sageIngressKeySecretUri: '${keyvault.outputs.keyVaultUri}secrets/${keyvault.outputs.ingressKeySecretName}'
+    keyVaultSecretsLoaded: keyVaultSecretsLoaded
     logAnalyticsWorkspaceId: foundation.outputs.logAnalyticsWorkspaceId
   }
 }
@@ -193,6 +198,8 @@ module keyvault 'modules/keyvault.bicep' = {
     tags: tags
     sagePrincipalId: identity.outputs.sageIdentityPrincipalId
     bffPrincipalId: identity.outputs.bffIdentityPrincipalId
+    apimPrincipalId: identity.outputs.apimIdentityPrincipalId
+    keyVaultSecretsLoaded: keyVaultSecretsLoaded
     enablePurgeProtection: enableKeyVaultPurgeProtection
   }
 }
@@ -240,6 +247,8 @@ module containerApps 'modules/container-apps.bicep' = {
     bffIdentityPrincipalId: identity.outputs.bffIdentityPrincipalId
     keyVaultUri: keyvault.outputs.keyVaultUri
     bffClientSecretName: keyvault.outputs.bffClientSecretName
+    ingressKeySecretName: keyvault.outputs.ingressKeySecretName
+    keyVaultSecretsLoaded: keyVaultSecretsLoaded
     postgresServerFqdn: postgres.outputs.postgresServerFqdn
     postgresDatabaseName: postgres.outputs.postgresDatabaseName
     sageAudience: sageAudience

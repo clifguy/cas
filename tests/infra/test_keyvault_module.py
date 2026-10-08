@@ -202,7 +202,7 @@ def test_keyvault_grants_secrets_user_to_both_identities() -> None:
         f"keyvault.bicep must declare the Key Vault Secrets User role id {_KV_SECRETS_USER_ROLE}"
     )
     granting = [b for b in blocks if re.search(rf"roleDefinitionId:.*\b{role_var.group(1)}\b", b)]
-    for principal in ("sagePrincipalId", "bffPrincipalId"):
+    for principal in ("sagePrincipalId", "bffPrincipalId", "apimPrincipalId"):
         assert any(re.search(rf"principalId:\s*{principal}\b", b) for b in granting), (
             f"a Key Vault Secrets User assignment must grant {principal}"
         )
@@ -231,15 +231,22 @@ def test_keyvault_principal_ids_are_parameters() -> None:
 
 
 def test_keyvault_stores_no_committed_secret() -> None:
-    """No secret material is committed: the module declares no vault ``secrets``
+    """No secret material is committed: the module creates no vault ``secrets``
     child resource (each would require an inline value) and takes no ``@secure()``
     parameter. Secret values are loaded out of band by the documented operator step.
+
+    A secret referenced with ``existing`` creates nothing: it names a loaded
+    secret so a role assignment can be scoped to it. Every secret declaration
+    must be one of those.
     """
     text = KEYVAULT.read_text(encoding="utf-8")
-    secret_children = _count_resource_type(text, _KV_SECRET_CHILD_TYPE)
-    assert secret_children == 0, (
-        f"keyvault.bicep must not declare a {_KV_SECRET_CHILD_TYPE} resource "
-        f"(secrets are loaded out of band); found {secret_children}"
+    declared = re.findall(
+        rf"resource\s+\w+\s+'{re.escape(_KV_SECRET_CHILD_TYPE)}@[^']+'\s*(existing)?\s*=", text
+    )
+    created = [d for d in declared if d != "existing"]
+    assert not created, (
+        f"keyvault.bicep must not create a {_KV_SECRET_CHILD_TYPE} resource "
+        f"(secrets are loaded out of band); found {len(created)}"
     )
     assert "@secure()" not in text, (
         "keyvault.bicep must take no @secure() parameter; secret values load out of band"
@@ -272,6 +279,11 @@ def test_keyvault_outputs_bff_client_secret_name() -> None:
     matches = [(n, rhs) for n, rhs in outputs if "bff" in n.lower() and "secret" in n.lower()]
     assert matches, f"missing the BFF client-secret-name output; have {[n for n, _ in outputs]}"
     _name, rhs = matches[0]
+    # The output may name the module's own var, which holds the literal.
+    var = re.search(
+        rf"var\s+{re.escape(rhs)}\s*=\s*('[^']*')", KEYVAULT.read_text(encoding="utf-8")
+    )
+    rhs = var.group(1) if var else rhs
     assert rhs == "'bff-client-secret'", (
         f"the BFF client-secret-name output must be the canonical 'bff-client-secret'; got {rhs}"
     )

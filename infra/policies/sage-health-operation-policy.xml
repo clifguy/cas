@@ -12,6 +12,14 @@
             canned return-response, so the post-deploy 'liveness' preflight proves
             the SAGE process is up — not merely that APIM is up.
         -->
+        <!--
+            The ingress key: SAGE refuses any request without it, so only
+            requests that pass through this gateway reach the backend.
+            Overrides any value a caller sent.
+        -->
+        <set-header name="X-SAGE-Ingress-Key" exists-action="override">
+            <value>{{sage-ingress-key}}</value>
+        </set-header>
         <set-backend-service backend-id="sage-backend" />
     </inbound>
     <backend>
