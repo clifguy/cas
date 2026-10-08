@@ -8,9 +8,10 @@ SAGE rather than the file system.
 
 - Vault id: `cas`
 - Storage root on disk: `~/sage_vaults/cas/sources`
-- MCP access: configured in `~/.claude/settings.json`. Use the `search`,
-  `get_document`, `read_section`, and `traverse` tools against
-  `vault_id: "cas"`.
+- MCP access: the `sage` server, registered for this repository in the
+  untracked `.claude/settings.local.json` (see the root `README.md` for the
+  entry). Use the `search`, `get_document`, `read_section`, and `traverse`
+  tools against `vault_id: "cas"`.
 
 ## What was in this directory
 

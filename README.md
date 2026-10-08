@@ -41,7 +41,7 @@ The SAGE MCP surface is served over the MCP Streamable HTTP transport by the `py
 
 The maintenance surface is `sage_maint` at `/mcp_maint`. The SAGE Admin transition has ended: `/mcp_admin` and `admin_*` tool aliases are no longer served. Update clients to `/mcp_maint` and the canonical bare tool names (for example `get_vault_config`). The retained `maint_*` tool aliases still dispatch to their bare counterparts on whichever surface registers them; these aliases cannot help catalog-validating clients, whose configurations must use the advertised names. The six maintenance REST operations now use `/sage_vaults/{vault_id}/maintenance/*`; the former `/admin/*` paths are not served.
 
-Configure the mounts in your MCP client (e.g. Claude Code `settings.json`). The default case needs only `sage`; add `sage_maint` when you need maintenance tools:
+Configure the mounts in your MCP client. For Claude Code working in this repository, that is the project's untracked `.claude/settings.local.json`, which the tracked `.gitignore` keeps out of commits. The default case needs only `sage`; add `sage_maint` when you need maintenance tools:
 
 ```json
 {
