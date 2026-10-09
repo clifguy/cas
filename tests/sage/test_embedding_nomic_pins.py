@@ -120,8 +120,10 @@ def test_pooling_matches_the_pinned_snapshot(provider):
 # ── Refusals ────────────────────────────────────────────────────────
 
 
-def test_wrong_code_revision_refuses_the_load(monkeypatch, resolution_spy):
-    """A code revision that does not hold the pinned code refuses before import."""
+def test_unavailable_code_revision_refuses_the_load(monkeypatch, resolution_spy):
+    """A code revision that cannot be fetched refuses before the modeling file is
+    resolved for import. The digest comparison itself is held by the tampered-
+    digest and tampered-copy tests below."""
     _pin_with(monkeypatch, code_revision="0" * 40)
     with pytest.raises(RuntimeError, match=NOMIC_MODEL_NAME):
         NomicEmbeddingProvider()
@@ -199,6 +201,19 @@ def test_post_load_check_refuses_genuine_code_imported_under_another_commit(monk
     )
     monkeypatch.setitem(sys.modules, module_name, genuine)
     with pytest.raises(RuntimeError, match="is not from"):
+        embedding_nomic._verify_loaded_code(_pipeline_with_classes_from(module_name), PIN)
+
+
+def test_post_load_check_refuses_a_pinned_file_name_with_other_bytes(monkeypatch, tmp_path):
+    """A class imported from a file carrying a pinned name and the pinned commit
+    in its module path, but other bytes, is refused after load."""
+    module_name = f"transformers_modules.org.repo.{PIN.code_revision}.modeling_hf_nomic_bert"
+    impostor = tmp_path / MODELING_FILE
+    impostor.write_text("# not the pinned code\n")
+    module = types.ModuleType(module_name)
+    module.__file__ = str(impostor)
+    monkeypatch.setitem(sys.modules, module_name, module)
+    with pytest.raises(RuntimeError, match="SHA-256"):
         embedding_nomic._verify_loaded_code(_pipeline_with_classes_from(module_name), PIN)
 
 

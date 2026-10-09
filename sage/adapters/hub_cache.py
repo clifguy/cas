@@ -6,7 +6,7 @@ fetch. The launcher uses this to run the Hub client offline, closing the
 network path entirely on an established installation, while a first run,
 with a snapshot missing, stays online to fetch it.
 
-Standard library only: the Hub client reads its offline setting when it is
+Imports no Hub client: the Hub client reads its offline setting when it is
 imported, so this has to decide before anything imports it.
 """
 
@@ -92,6 +92,7 @@ def prefer_offline_when_pinned_models_cached(stack_config: SageCoreConfig) -> bo
             "Pinned models are cached, but the Hugging Face Hub client is already "
             "imported, so offline mode cannot take effect in this process"
         )
+        return False
     os.environ[OFFLINE_ENV] = "1"
     logger.info("Pinned models cached; Hugging Face Hub access runs offline")
     return True

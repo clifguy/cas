@@ -54,10 +54,16 @@ def _mlx_stack(**overrides) -> SageCoreConfig:
 
 def _clear(monkeypatch, *names: str) -> None:
     """Unset *names*, registering each for restoration even if it was unset,
-    since the helper under test writes ``HF_HUB_OFFLINE`` directly."""
+    since the helper under test writes ``HF_HUB_OFFLINE`` directly.
+
+    Also hides an already imported Hub client for the test's duration: an
+    earlier test in the same worker may have imported it, and the decision
+    rightly reports online once it is.
+    """
     for name in names:
         monkeypatch.setenv(name, "")
         monkeypatch.delenv(name)
+    monkeypatch.delitem(sys.modules, "huggingface_hub", raising=False)
 
 
 @pytest.fixture
@@ -146,6 +152,15 @@ def test_cache_location_expands_environment_references(monkeypatch, tmp_path):
     monkeypatch.setenv("HF_HUB_CACHE", "$CACHE_PARENT/hub")
     _populate(tmp_path / "hub")
     assert hub_cache.prefer_offline_when_pinned_models_cached(_mlx_stack()) is True
+
+
+def test_an_already_imported_hub_client_is_reported_online(monkeypatch, cache):
+    """Once the Hub client is imported the setting can no longer take effect, so
+    the decision reports online and leaves the environment unchanged."""
+    _populate(cache)
+    monkeypatch.setitem(sys.modules, "huggingface_hub", object())
+    assert hub_cache.prefer_offline_when_pinned_models_cached(_mlx_stack()) is False
+    assert "HF_HUB_OFFLINE" not in hub_cache.os.environ
 
 
 def test_launcher_decides_before_building_the_app(monkeypatch, cache):

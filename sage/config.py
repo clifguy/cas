@@ -21,6 +21,7 @@ from pydantic import (
     BaseModel,
     Field,
     PrivateAttr,
+    StringConstraints,
     ValidationInfo,
     model_validator,
 )
@@ -31,6 +32,13 @@ from sage.models.schemas import VaultIdStr
 from sage.source_adapters.base import AdapterConfigError, SourceAdapter
 
 logger = logging.getLogger(__name__)
+
+#: A full repository commit: 40 lowercase hexadecimal characters. A branch,
+#: tag or abbreviated hash names a reference that can move or be ambiguous; a
+#: full commit cannot.
+CommitHashStr = Annotated[
+    str, StringConstraints(pattern=r"^[0-9a-f]{40}$", min_length=40, max_length=40)
+]
 
 #: The validation context a stored configuration loads under. A stored
 #: configuration is a fact, not a request: a problem the write paths refuse is
@@ -1221,11 +1229,8 @@ class StackAbstractionConfig(BaseModel):
             "'anthropic'. Ignored when provider is 'stub'."
         ),
     )
-    revision: str | None = Field(
+    revision: CommitHashStr | None = Field(
         default=None,
-        pattern=r"^[0-9a-f]{40}$",
-        min_length=40,
-        max_length=40,
         description=(
             "Full 40-character commit hash of the model repository the local "
             "MLX provider fetches its weights at. Required when provider is "
