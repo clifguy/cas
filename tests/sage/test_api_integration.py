@@ -959,6 +959,72 @@ async def test_open_document_404_unknown_id(client):
     assert resp.json()["code"] == "document_not_found"
 
 
+def _recording_popen(monkeypatch) -> list:
+    calls = []
+
+    def fake_popen(args, *a, **kw):
+        calls.append(args)
+        return object()
+
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+    monkeypatch.setattr("sys.platform", "darwin")
+    return calls
+
+
+async def _ingest_markdown_named(client, tmp_vault_dir, name: str) -> str:
+    """Ingest a Markdown body stored under *name*, whatever its extension.
+
+    An explicit ``source_type`` outranks the file extension at ingest, so a
+    stored source can carry an extension no adapter claims.
+    """
+    (tmp_vault_dir / "sources" / "test" / name).write_text("# Title\n\nBody text.\n")
+    resp = await client.post(
+        "/sage_vaults/test_vault/documents",
+        json={"source": f"test/{name}", "source_type": "markdown"},
+    )
+    assert resp.status_code in (200, 201), resp.text
+    return resp.json()["document"]["id"]
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        pytest.param("run.command", id="shell-command"),
+        pytest.param("tool.sh", id="shell-script"),
+        pytest.param("Launcher.app", id="app-bundle"),
+        pytest.param("README", id="no-extension"),
+    ],
+)
+async def test_open_document_refuses_extension_outside_adapter_allowlist(
+    client, monkeypatch, tmp_vault_dir, name
+):
+    """A stored source whose extension no source adapter reads is refused with
+    400 `open_extension_not_allowed`, and the host opener is never invoked.
+
+    The host opener runs whatever the OS associates with the file, so only the
+    document formats SAGE itself ingests may be handed to it.
+    """
+    calls = _recording_popen(monkeypatch)
+    doc_id = await _ingest_markdown_named(client, tmp_vault_dir, name)
+
+    resp = await client.post(f"/sage_vaults/test_vault/documents/{doc_id}/open")
+
+    assert resp.status_code == 400
+    assert resp.json()["code"] == "open_extension_not_allowed"
+    assert calls == []
+
+
+async def test_open_document_extension_match_ignores_case(client, monkeypatch, tmp_vault_dir):
+    """An allowlisted extension in another case opens. Control for the refusal."""
+    calls = _recording_popen(monkeypatch)
+    doc_id = await _ingest_markdown_named(client, tmp_vault_dir, "NOTES.MD")
+
+    resp = await client.post(f"/sage_vaults/test_vault/documents/{doc_id}/open")
+
+    assert resp.status_code == 200
+    assert len(calls) == 1 and calls[0][1].endswith("NOTES.MD")
+
+
 async def test_open_document_missing_file_404(client, tmp_vault_dir):
     """If the source file is missing on disk, return content_file_missing (404)."""
     resp1 = await client.post(

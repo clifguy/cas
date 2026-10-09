@@ -3305,6 +3305,29 @@ components:
           $ref: '#/components/schemas/NoProjectionErrorDetail'
       additionalProperties: false
       description: The refusal envelope for this error code.
+    OpenExtensionNotAllowedError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: open_extension_not_allowed
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
     OutputPathInvalidErrorDetail:
       type: object
       additionalProperties: false
@@ -5489,6 +5512,7 @@ components:
             - missing_successor_id
             - mode_parameter_mismatch
             - no_projection
+            - open_extension_not_allowed
             - output_path_invalid
             - patch_empty
             - path_traversal_denied
@@ -6212,6 +6236,7 @@ components:
       - $ref: '#/components/schemas/MissingSuccessorIdError'
       - $ref: '#/components/schemas/ModeParameterMismatchError'
       - $ref: '#/components/schemas/NoProjectionError'
+      - $ref: '#/components/schemas/OpenExtensionNotAllowedError'
       - $ref: '#/components/schemas/OutputPathInvalidError'
       - $ref: '#/components/schemas/PatchEmptyError'
       - $ref: '#/components/schemas/PathTraversalDeniedError'
@@ -6342,6 +6367,7 @@ components:
           missing_successor_id: '#/components/schemas/MissingSuccessorIdError'
           mode_parameter_mismatch: '#/components/schemas/ModeParameterMismatchError'
           no_projection: '#/components/schemas/NoProjectionError'
+          open_extension_not_allowed: '#/components/schemas/OpenExtensionNotAllowedError'
           output_path_invalid: '#/components/schemas/OutputPathInvalidError'
           patch_empty: '#/components/schemas/PatchEmptyError'
           path_traversal_denied: '#/components/schemas/PathTraversalDeniedError'

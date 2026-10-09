@@ -59,6 +59,17 @@ class _FakeResponse:
         self.generation_tps = 50.0
 
 
+def _bypass_snapshot_resolution(monkeypatch):
+    """Hand the fake loader the model id unchanged, without a Hub fetch.
+
+    Snapshot fetching and inspection have their own tests; these tests
+    exercise only what is read from the loaded model.
+    """
+    monkeypatch.setattr(
+        abstraction_qwen3, "_resolve_inspected_snapshot", lambda model_id, revision: model_id
+    )
+
+
 def _install_fake_mlx(monkeypatch, native_window: int | None):
     """Inject a fake ``mlx_lm`` whose loaded model advertises *native_window*.
 
@@ -88,6 +99,7 @@ def _install_fake_mlx(monkeypatch, native_window: int | None):
 
     monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
     monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", sample_utils)
+    _bypass_snapshot_resolution(monkeypatch)
     return model
 
 
@@ -255,6 +267,7 @@ def _install_fake_wrapper_mlx(monkeypatch, wrapper_window: int | None, flat_wind
 
     monkeypatch.setitem(sys.modules, "mlx_lm", mlx_lm)
     monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", sample_utils)
+    _bypass_snapshot_resolution(monkeypatch)
     return model
 
 

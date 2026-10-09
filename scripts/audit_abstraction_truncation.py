@@ -198,8 +198,12 @@ def render_manifest(
     return "\n".join(lines) + "\n"
 
 
-def _load_tokenizer(model_id: str):
-    """Load the tokenizer for a model without its weights.
+def _load_tokenizer(model_id: str, revision: str | None):
+    """Load the tokenizer for a model without its weights, at *revision*.
+
+    *revision* is the commit the stack pins the model to, so the audit counts
+    with the tokenizer production loads rather than whatever the repository's
+    default branch holds now.
 
     The audit needs to count tokens exactly as the provider would, but has
     no use for the model itself. Loading the tokenizer alone keeps the
@@ -210,7 +214,7 @@ def _load_tokenizer(model_id: str):
         from transformers import AutoTokenizer
     except ImportError as exc:  # pragma: no cover - environment-dependent
         raise RuntimeError("transformers is required to count tokens for the audit") from exc
-    return AutoTokenizer.from_pretrained(model_id)
+    return AutoTokenizer.from_pretrained(model_id, revision=revision)
 
 
 def _overhead_lookup(tokenizer) -> Callable[[str | None], int]:
@@ -316,7 +320,7 @@ async def run(
         effective_window = stack.abstraction.context_window or DEFAULT_CONTEXT_WINDOW
 
     try:
-        tokenizer = _load_tokenizer(model_id)
+        tokenizer = _load_tokenizer(model_id, stack.abstraction.revision)
     except Exception as exc:
         print(f"cannot load tokenizer for {model_id!r}: {exc}", file=sys.stderr)
         return 2

@@ -272,3 +272,44 @@ def test_an_empty_ids_file_is_an_error(tmp_path, capsys):
 
     with pytest.raises(SystemExit):
         _parse_args(["cas", "--model", "stub", "--ids-file", str(manifest)])
+
+
+_CONFIGURED_REVISION = "8b2b98c00a6b4d291155e4890773ca8f769aee53"
+_CANDIDATE_REVISION = "0123456789abcdef0123456789abcdef01234567"
+
+
+def _configured_stack(stack_config) -> None:
+    stack_config(
+        {
+            "abstraction": {
+                "provider": "local-mlx",
+                "model": "mlx-community/Configured-4bit",
+                "revision": _CONFIGURED_REVISION,
+            }
+        }
+    )
+
+
+def test_configured_model_is_benchmarked_at_the_configured_revision(stack_config, recorded_factory):
+    """An unqualified run loads the configured model at the commit the stack pins."""
+    _configured_stack(stack_config)
+    args = _parse_args(["cas"])
+    _build_provider(args.model, args.context_window, revision=args.revision)
+
+    assert [(c["model_id"], c["revision"]) for c in recorded_factory] == [
+        ("mlx-community/Configured-4bit", _CONFIGURED_REVISION)
+    ]
+
+
+def test_a_candidate_model_does_not_inherit_the_configured_revision(stack_config):
+    """The configured commit belongs to the configured repository only."""
+    _configured_stack(stack_config)
+    assert _parse_args(["cas", "--model", "candidate"]).revision is None
+
+
+def test_revision_flag_reaches_the_provider(stack_config, recorded_factory):
+    _configured_stack(stack_config)
+    args = _parse_args(["cas", "--model", "candidate", "--revision", _CANDIDATE_REVISION])
+    _build_provider(args.model, args.context_window, revision=args.revision)
+
+    assert [c["revision"] for c in recorded_factory] == [_CANDIDATE_REVISION]

@@ -2960,7 +2960,9 @@ paths:
         share a machine, so it is gated to the local profile: under the
         cloud profile SAGE runs headless and the endpoint returns 501
         `local_open_only`. Deliver the document to a browser via
-        `GET /documents/{document_id}/download-url` instead.
+        `GET /documents/{document_id}/download-url` instead. Only a source
+        file whose extension a source adapter reads is handed to the opener;
+        any other returns 400 `open_extension_not_allowed`.
       tags: [Document Metadata]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -2974,6 +2976,10 @@ paths:
                 $ref: "#/components/schemas/OpenDocumentResponse"
         "400":
           description: >-
+            `open_extension_not_allowed`: the source file's extension is not
+            one a source adapter reads, so the file is not handed to the host
+            OS opener.
+
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
 
             `invalid_document_id`: `document_id` is not a well-formed
@@ -12874,6 +12880,29 @@ components:
           type: string
           description: Reason.
       description: Additional context for this refusal.
+    OpenExtensionNotAllowedError:
+      type: object
+      required:
+      - code
+      - message
+      properties:
+        code:
+          type: string
+          const: open_extension_not_allowed
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          type:
+          - object
+          - 'null'
+          maxProperties: 0
+          description: No additional context is emitted for this error.
+      additionalProperties: false
+      description: The refusal envelope for this error code.
     OutputPathInvalidError:
       type: object
       required:
@@ -15044,6 +15073,7 @@ components:
             - missing_successor_id
             - mode_parameter_mismatch
             - no_projection
+            - open_extension_not_allowed
             - output_path_invalid
             - patch_empty
             - path_traversal_denied
@@ -15767,6 +15797,7 @@ components:
       - $ref: '#/components/schemas/MissingSuccessorIdError'
       - $ref: '#/components/schemas/ModeParameterMismatchError'
       - $ref: '#/components/schemas/NoProjectionError'
+      - $ref: '#/components/schemas/OpenExtensionNotAllowedError'
       - $ref: '#/components/schemas/OutputPathInvalidError'
       - $ref: '#/components/schemas/PatchEmptyError'
       - $ref: '#/components/schemas/PathTraversalDeniedError'
@@ -15897,6 +15928,7 @@ components:
           missing_successor_id: '#/components/schemas/MissingSuccessorIdError'
           mode_parameter_mismatch: '#/components/schemas/ModeParameterMismatchError'
           no_projection: '#/components/schemas/NoProjectionError'
+          open_extension_not_allowed: '#/components/schemas/OpenExtensionNotAllowedError'
           output_path_invalid: '#/components/schemas/OutputPathInvalidError'
           patch_empty: '#/components/schemas/PatchEmptyError'
           path_traversal_denied: '#/components/schemas/PathTraversalDeniedError'

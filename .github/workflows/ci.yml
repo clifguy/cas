@@ -167,20 +167,30 @@ jobs:
           prune-cache: true
           python-version: ${{ needs.versions.outputs.python }}
 
-      - name: Cache HuggingFace models
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
-        with:
-          path: ~/.cache/huggingface
-          key: hf-${{ runner.os }}-nomic-embed-text-v1.5-rev1
-          restore-keys: |
-            hf-${{ runner.os }}-nomic-embed-text-v1.5-
-
       - name: Install dependencies (from lockfile)
         # --locked verifies uv.lock is current with pyproject.toml (a stale or
         # drifted lock fails the build) and installs exactly the resolved set
         # into .venv. torch resolves to the CPU build via the pytorch-cpu index
         # pinned in pyproject; mlx-lm is excluded (Apple-Silicon-only).
         run: uv sync --locked --extra test
+
+      - name: Resolve the pinned model revisions
+        # The embedding model and its remote code are pinned to commits in the
+        # embedding adapter. The model cache is keyed on those pins, so a cache
+        # is reused only while they are unchanged and a new pin fetches its own
+        # commit. Runs after the install because it reads the pins from source.
+        id: model-pins
+        run: >-
+          .venv/bin/python -c "from sage.adapters.hub_cache import pinned_cache_key;
+          print(f'key={pinned_cache_key()}')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache HuggingFace models
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/huggingface
+          key: hf-${{ runner.os }}-${{ steps.model-pins.outputs.key }}
+          restore-keys: |
+            hf-${{ runner.os }}-
 
       - name: Resolve the change's base revision
         id: substrate-base

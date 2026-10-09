@@ -22,10 +22,10 @@
 # commit having built from the same bases and the same locked dependency sets.
 #
 # Note what this does and does not buy. It does not make the build byte-identical
-# -- the runtime stage's apt layer resolves from moving indexes, and the embedder
-# weights are fetched from a floating ref -- so those layers are identical across
-# two builds only while the layer cache serves them, and rebuilt when it does
-# not. A moving tag would break even the weaker guarantee, and break it silently.
+# -- the runtime stage's apt layer resolves from moving indexes -- so that layer
+# is identical across two builds only while the layer cache serves it, and
+# rebuilt when it does not. The embedder layer is fetched at pinned commits, its
+# remote code checked against pinned digests before it is imported. A moving tag would break even the weaker guarantee, and break it silently.
 # Keep the readable tag ahead of the digest when bumping.
 #
 # Every pin below sits on a FROM line, and has to stay on one. Dependabot's
@@ -71,8 +71,9 @@ COPY sage/ ./sage/
 COPY app/backend/ ./app/backend/
 RUN uv sync --locked --no-dev --extra ocr
 
-# Pre-bake the Nomic embedder weights so the runtime loads them with no
-# HuggingFace egress at first vault init.
+# Pre-bake the Nomic embedder weights and remote code, at their pinned
+# commits, so the runtime loads them with no HuggingFace egress at first vault
+# init.
 RUN .venv/bin/python -c "from sage.adapters.embedding_nomic import NomicEmbeddingProvider; NomicEmbeddingProvider()"
 
 # --------------------------------------------------------------------------

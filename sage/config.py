@@ -21,6 +21,7 @@ from pydantic import (
     BaseModel,
     Field,
     PrivateAttr,
+    StringConstraints,
     ValidationInfo,
     model_validator,
 )
@@ -31,6 +32,13 @@ from sage.models.schemas import VaultIdStr
 from sage.source_adapters.base import AdapterConfigError, SourceAdapter
 
 logger = logging.getLogger(__name__)
+
+#: A full repository commit: 40 lowercase hexadecimal characters. A branch,
+#: tag or abbreviated hash names a reference that can move or be ambiguous; a
+#: full commit cannot.
+CommitHashStr = Annotated[
+    str, StringConstraints(pattern=r"^[0-9a-f]{40}$", min_length=40, max_length=40)
+]
 
 #: The validation context a stored configuration loads under. A stored
 #: configuration is a fact, not a request: a problem the write paths refuse is
@@ -1219,6 +1227,19 @@ class StackAbstractionConfig(BaseModel):
             "'anthropic' (startup fails loudly if null): a local model "
             "identifier for 'local-mlx', a Claude model identifier for "
             "'anthropic'. Ignored when provider is 'stub'."
+        ),
+    )
+    revision: CommitHashStr | None = Field(
+        default=None,
+        description=(
+            "Full 40-character commit hash of the model repository the local "
+            "MLX provider fetches its weights at. Required when provider is "
+            "'local-mlx' and 'model' names a Hugging Face repository (startup "
+            "fails loudly if null); a branch, tag or abbreviated hash is "
+            "refused because it can move. Not consulted when 'model' names a "
+            "local directory, which is loaded in place. In either case a model "
+            "carrying Python files, or a config naming a model_file, is refused "
+            "at load. Ignored by the other providers."
         ),
     )
     opener_constraint: bool = Field(

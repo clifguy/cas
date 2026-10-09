@@ -120,7 +120,11 @@ def test_prf_004_resolve_stack_abstraction_provider_routes_through_factory(monke
     )
 
     cfg = SageCoreConfig(
-        abstraction=StackAbstractionConfig(provider="local-mlx", model="mlx-community/test")
+        abstraction=StackAbstractionConfig(
+            provider="local-mlx",
+            model="mlx-community/test",
+            revision="0123456789abcdef0123456789abcdef01234567",
+        )
     )
     via_resolver = resolve_stack_abstraction_provider(cfg)
     via_factory = build_stack_abstraction_provider(cfg)

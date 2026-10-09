@@ -26,6 +26,7 @@ from sage.api.errors import (
     DocumentNotFoundError,
     DownloadUrlNotAvailableError,
     LocalOpenNotAvailableError,
+    OpenExtensionNotAllowedError,
     WritePathExistsError,
     WritePathInvalidError,
 )
@@ -44,6 +45,7 @@ from sage.services.caller_paths import (
     validate_write_to_path,
 )
 from sage.services.read_diagnostics import build_not_found_detail
+from sage.source_adapters.registry import registered_source_extensions
 from sage.vault_source_binding import SupportsSourceDownloadUrl, VaultSourceStore
 
 DEFAULT_MAX_INLINE_CONTENT_BYTES = 100 * 1024 * 1024
@@ -191,6 +193,10 @@ class DocumentsService:
         file_path = storage_root / doc.source_path
         if not file_path.exists():
             raise ContentFileMissingError(doc.id, doc.source_path)
+        # The opener runs whatever the OS associates with the file; only the
+        # formats a source adapter reads are handed to it.
+        if file_path.suffix.lower() not in registered_source_extensions():
+            raise OpenExtensionNotAllowedError(file_path.suffix)
 
         platform = sys.platform
         if platform == "darwin":

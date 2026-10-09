@@ -26,6 +26,7 @@ for _hf_logger in ("httpx", "sentence_transformers"):
 # ruff: noqa: E402 -- imports below follow the deliberate pre-import side effects above
 import uvicorn
 
+from sage.adapters.hub_cache import prefer_offline_when_pinned_models_cached
 from sage.app import MCP_HTTP_MOUNTS, admission_guarded, create_app
 from sage.config import SageCoreConfig
 from sage.mcp_init import load_stack_config_or_default
@@ -333,6 +334,8 @@ def main() -> None:
     _check_startup_posture(
         stack_config, args.host, allow_unauthenticated_network=args.allow_unauthenticated_network
     )
+    # Before the app is built, which is what first imports the Hub client.
+    prefer_offline_when_pinned_models_cached(stack_config)
 
     app = create_app(vault_root=vault_root, stack_config=stack_config)
     access_filter = _DropMcpAccessLogs(auth_enabled=app.state.auth_enabled)

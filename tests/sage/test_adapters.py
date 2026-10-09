@@ -206,8 +206,16 @@ class TestNomicEmbeddingProvider:
         for text in samples:
             assert embedding_provider.count_tokens(text) <= len(text.encode("utf-8")) + 2
 
-    def test_ad_008_init_fails_on_bad_model(self):
-        """AD-008: Provider init fails fast if model unavailable."""
+    def test_ad_008_init_fails_on_bad_model(self, monkeypatch):
+        """AD-008: Provider init fails fast if model unavailable.
+
+        The unavailable model is given a pin, so the refusal comes from the
+        model lookup itself rather than from the missing pin, which
+        test_embedding_nomic_pins covers separately.
+        """
+        from sage.adapters.embedding_nomic import MODEL_PINS, NOMIC_MODEL_NAME
+
+        monkeypatch.setitem(MODEL_PINS, "nonexistent-model-xyz", MODEL_PINS[NOMIC_MODEL_NAME])
         with pytest.raises(RuntimeError, match="nonexistent-model-xyz"):
             NomicEmbeddingProvider(model_name="nonexistent-model-xyz")
 
@@ -300,6 +308,11 @@ def committed_qwen3_model_id() -> str:
     return config.abstraction.model
 
 
+def committed_qwen3_revision() -> str | None:
+    """The repository commit the stack config pins its abstraction model to."""
+    return load_sage_core_config(_PROJECT_ROOT / "sage" / "config.yaml").abstraction.revision
+
+
 def _assert_released(provider: Qwen3AbstractionProvider) -> None:
     """Fail the class at teardown if its provider still holds model state."""
     assert provider._model is None, "provider still holds a model after release"
@@ -328,7 +341,9 @@ def qwen3_provider() -> Iterator[Qwen3AbstractionProvider]:
     if not _HAS_QWEN3:
         pytest.skip("mlx-lm or Qwen3 model not available")
     with loaded_provider(
-        lambda: Qwen3AbstractionProvider(model_id=committed_qwen3_model_id())
+        lambda: Qwen3AbstractionProvider(
+            model_id=committed_qwen3_model_id(), revision=committed_qwen3_revision()
+        )
     ) as provider:
         yield provider
     _assert_released(provider)
@@ -348,7 +363,8 @@ def qwen3_provider_factory() -> Iterator[Callable[..., Awaitable[Qwen3Abstractio
         for earlier in created:
             await earlier.unload()
         provider = Qwen3AbstractionProvider(
-            model_id=committed_qwen3_model_id() if model_id is None else model_id
+            model_id=committed_qwen3_model_id() if model_id is None else model_id,
+            revision=committed_qwen3_revision() if model_id is None else None,
         )
         created.append(provider)
         return provider
@@ -380,8 +396,13 @@ class TestQwen3AbstractionProvider:
         assert provider._model is None
 
     async def test_ad_026_bad_model_fails_on_first_call(self):
-        """AD-026: Bad model ID raises RuntimeError on first generate_abstract()."""
-        provider = Qwen3AbstractionProvider(model_id="nonexistent-model-xyz")
+        """AD-026: Bad model ID raises RuntimeError on first generate_abstract().
+
+        A revision is supplied so the failure is the model lookup itself, not
+        the missing-revision refusal that test_abstraction_qwen3_revision_pin
+        covers.
+        """
+        provider = Qwen3AbstractionProvider(model_id="nonexistent-model-xyz", revision="0" * 40)
         with pytest.raises(RuntimeError, match="nonexistent-model-xyz"):
             await provider.generate_abstract("Test text.", 200, None)
 
