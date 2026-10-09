@@ -11,7 +11,8 @@
 # run, and so does any failed call -- a refused grant is never mistaken for one
 # already in place.
 # Run by an operator holding a directory role that can consent application
-# permissions plus write access to the target site.
+# permissions (step 2) and the SharePoint Administrator role or higher (steps 3
+# and 4, which need a delegated Graph token carrying Sites.FullControl.All).
 set -euo pipefail
 
 : "${RG:?set RG to the resource group holding the SAGE identity}"
@@ -83,15 +84,34 @@ if [ -z "${existing_role}" ]; then
     >/dev/null
 fi
 
+# Step 3 addresses the site's permissions, which Microsoft Graph admits only for
+# a delegated token carrying Sites.FullControl.All; step 4's drive upload runs on
+# the same token, which covers it. The
+# Azure CLI's own client can never be issued that scope (AADSTS65002), so the
+# token comes from graph_sites_token.py unless the operator supplies one; either
+# way it is checked before use. It reaches az through a private file the CLI
+# expands (Authorization=@file), never as an argument other processes can read.
+TENANT_ID="$(lookup_one "signed-in tenant" az account show --query tenantId)"
+if [ -z "${GRAPH_SITES_TOKEN:-}" ]; then
+  GRAPH_SITES_TOKEN="$("${repo_root}/.venv/bin/python" "${repo_root}/deploy/bootstrap/graph_sites_token.py" mint --tenant "${TENANT_ID}")"
+fi
+printf '%s' "${GRAPH_SITES_TOKEN}" |
+  "${repo_root}/.venv/bin/python" "${repo_root}/deploy/bootstrap/graph_sites_token.py" check
+graph_auth="$(mktemp)"
+trap 'rm -f "${graph_auth}"' EXIT
+printf 'Bearer %s' "${GRAPH_SITES_TOKEN}" >"${graph_auth}"
+
 # 3. Grant the per-site write permission, scoped to the single site, unless the
 # site already grants the identity write.
 existing_grant="$(az rest --method GET \
   --uri "https://graph.microsoft.com/v1.0/sites/${SITE_ID}/permissions" \
+  --headers "Authorization=@${graph_auth}" \
   --query "value[?contains(grantedToIdentitiesV2[].application.id || \`[]\`, '${SAGE_MI_CLIENT_ID}') && contains(roles || \`[]\`, 'write')].id" \
   -o tsv)"
 if [ -z "${existing_grant}" ]; then
   az rest --method POST \
     --uri "https://graph.microsoft.com/v1.0/sites/${SITE_ID}/permissions" \
+    --headers "Authorization=@${graph_auth}" \
     --body "{\"roles\":[\"write\"],\"grantedToIdentities\":[{\"application\":{\"id\":\"${SAGE_MI_CLIENT_ID}\"}}]}" \
     >/dev/null
 fi
@@ -105,7 +125,7 @@ fi
 # together.
 az rest --method PUT \
   --uri "https://graph.microsoft.com/v1.0/drives/${DRIVE_ID}/root:/${VAULT_SOURCE_ROOT_PATH}/cloud_validation/vault_config.yaml:/content" \
-  --headers "Content-Type=text/yaml" \
+  --headers "Authorization=@${graph_auth}" "Content-Type=text/yaml" \
   --body "@${repo_root}/deploy/test-vault/vault_config.yaml"
 
 # Emit the coordinates for the deployment parameter set (main.bicepparam).

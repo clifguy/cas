@@ -259,3 +259,64 @@ def test_runbook_lookups_mirror_the_seed_script() -> None:
         # say why it is not used.
         assert not re.search(r"--display-name\s+['\"]", text), f"{name} selects by prefix"
         assert "|| true" not in text, f"{name} swallows a failed call"
+
+
+_SITES_AUTH: Final[str] = '--headers "Authorization=@${graph_auth}"'
+_AZ_REST_RE: Final[re.Pattern[str]] = re.compile(r"\baz rest\b")
+
+
+def _rest_commands(text: str) -> list[str]:
+    """Each ``az rest`` command, up to the next command or blank line."""
+    starts = [m.start() for m in _AZ_REST_RE.finditer(text)]
+    out = []
+    for n, start in enumerate(starts):
+        end = starts[n + 1] if n + 1 < len(starts) else len(text)
+        blank = text.find("\n\n", start)
+        out.append(text[start : min(end, blank) if blank != -1 else end])
+    return out
+
+
+def _is_site_step(command: str) -> bool:
+    return "/permissions" in command or ":/content" in command
+
+
+def test_site_steps_carry_the_full_control_token_in_both_files() -> None:
+    """Steps 3 and 4 run on the Sites.FullControl.All token, in the script and
+    in the runbook alike, and no other call does.
+
+    Graph admits the site-permission calls only for a delegated token carrying
+    that scope, which the Azure CLI's own client can never obtain; the token
+    reaches ``az`` through a private file rather than the command line. Both
+    files mint it with the same helper against the same signed-in tenant.
+    """
+    script, runbook = SEED_SCRIPT.read_text(), _runbook_text()
+    for text, name in ((script, "script"), (runbook, "runbook")):
+        commands = _rest_commands(text)
+        site = [c for c in commands if _is_site_step(c)]
+        assert len(site) >= 3, f"{name}: expected the permission GET/POST and the upload"
+        for command in site:
+            assert _SITES_AUTH in command, f"{name}: a site step lacks the token: {command!r}"
+        for command in commands:
+            if not _is_site_step(command) and "/drives/" not in command:
+                assert "Authorization" not in command, f"{name}: {command!r}"
+        assert "az account show --query tenantId" in text, name
+        assert re.search(r'graph_sites_token\.py"? mint --tenant "\$\{TENANT_ID\}"', text), name
+        assert "Authorization=Bearer" not in text, f"{name} puts the token on a command line"
+
+
+def test_runbook_states_the_privilege_the_site_steps_need() -> None:
+    """The privilege section names what Graph actually requires for steps 3 and
+    4 -- the delegated Sites.FullControl.All scope held by a SharePoint
+    Administrator or higher, through a client that can carry it -- and no
+    longer claims a site owner or member suffices.
+    """
+    text = _runbook_text()
+    for needed in ("Sites.FullControl.All", "SharePoint Administrator", "graph_sites_token.py"):
+        assert needed in text, f"runbook must name {needed}"
+    assert "AADSTS65002" in text, "runbook must say why the Azure CLI client cannot be used"
+    flat = " ".join(text.split())
+    assert "admin consent" in flat and "Cloud Application Administrator" in flat, (
+        "runbook must say the scope needs admin consent and which roles can grant it"
+    )
+    for stale in ("site owner", "owner / member"):
+        assert stale not in text, f"runbook still claims {stale!r} suffices"
