@@ -642,9 +642,9 @@ def test_unlisted_assignment_with_a_stale_condition_is_replaced(tmp_path: Path) 
     with the current one. The delete names the returned id, so it does not
     depend on a listing that is still missing the assignment."""
     state = _with_admin_condition(_granted(tmp_path), "stale")
-    # The three id lookups and the re-read after the create all exhaust, and
-    # one miss more would leave a delete that lists first with nothing to do.
-    state["assignment_misses"] = 4 * _lookup_attempts() + 1
+    # The three id lookups exhaust, and misses remain after them, so a delete
+    # that listed first would find nothing to delete.
+    state["assignment_misses"] = 4 * _lookup_attempts()
 
     result, calls, after = _run(tmp_path, state)
 
@@ -657,14 +657,13 @@ def test_unlisted_assignment_with_a_stale_condition_is_replaced(tmp_path: Path) 
 
 
 def test_unlisted_stale_condition_never_survives_a_successful_run(tmp_path: Path) -> None:
-    """G8g: every lookup misses an existing RBAC administrator assignment whose
-    condition is stale, including the re-read after the create. The create
-    exits 0 and returns that assignment unchanged; the run must still end with
-    the current condition or stop with a named error -- never exit 0 with the
-    stale condition in place."""
+    """G8h: every lookup misses an existing RBAC administrator assignment whose
+    condition is stale. The create exits 0 and returns that assignment
+    unchanged; the run must still end with the current condition or stop with a
+    named error -- never exit 0 with the stale condition in place."""
     state = _with_admin_condition(_granted(tmp_path), "stale")
-    # The three id lookups and the re-read after the create all exhaust.
-    state["assignment_misses"] = 4 * _lookup_attempts()
+    # The three id lookups all exhaust.
+    state["assignment_misses"] = 3 * _lookup_attempts()
 
     result, calls, after = _run(tmp_path, state)
 
@@ -677,7 +676,32 @@ def test_unlisted_stale_condition_never_survives_a_successful_run(tmp_path: Path
     if result.returncode == 0:
         assert admin["condition"] == _expected_condition()
     else:
-        assert f"assignment of {_RBAC_ADMIN} at {_RG}" in result.stderr
+        assert "ERROR:" in result.stderr
+        assert f"assignment of {_RBAC_ADMIN} at {_RG} still carries a stale condition" in (
+            result.stderr
+        )
+
+
+def test_create_whose_own_listing_misses_stops_without_granting(tmp_path: Path) -> None:
+    """G8i: the CLI answers a duplicate create by listing the assignment, and
+    that listing can miss too, failing the create. The run stops there, leaving
+    the stale condition untouched and reporting no grant."""
+    state = _with_admin_condition(_granted(tmp_path), "stale")
+    # The two grants assigned before it are absent, so their creates are new
+    # and only the administrator's create meets the duplicate path.
+    state["assignments"] = [a for a in state["assignments"] if a["role"] in (_RBAC_ADMIN, _LOCK)]
+    state["assignment_misses"] = 3 * _lookup_attempts()
+    state["assignment_create_misses"] = 1
+
+    result, calls, after = _run(tmp_path, state)
+
+    assert result.returncode != 0
+    admin_creates = [c for c in calls if c[1:3] == ["assignment", "create"] and "--condition" in c]
+    assert len(admin_creates) == 1
+    assert not [c for c in calls if c[1:3] == ["assignment", "delete"]]
+    assert f"granted: {_RBAC_ADMIN}" not in result.stdout
+    (admin,) = [a for a in after["assignments"] if a["role"] == _RBAC_ADMIN]
+    assert admin["condition"] == "stale"
 
 
 def test_failed_condition_replacement_names_the_step(tmp_path: Path) -> None:

@@ -270,7 +270,7 @@ create_assignment() {
 }
 
 ensure_assignment() {
-  local role="$1" scope="$2" condition="${3:-}" row listed
+  local role="$1" scope="$2" condition="${3:-}" row
   row="$(assignment_row "$role" "$scope")" || return 1
   if [ -z "$row" ]; then
     row="$(create_assignment "$role" "$scope" "$condition")" || return 1
@@ -279,11 +279,9 @@ ensure_assignment() {
       return 0
     fi
     # The create returned an assignment that exists but had not yet been
-    # listed, carrying another condition. It is read again, falling back to
-    # what the create returned, and replaced below.
+    # listed, carrying another condition. The CLI read that assignment back
+    # from the listing to return it, so it is current; it is replaced below.
     echo "assignment of $role at $scope already exists though it was not listed" >&2
-    listed="$(assignment_row "$role" "$scope")" || return 1
-    [ -z "$listed" ] || row="$listed"
   fi
   [ -n "$condition" ] || return 0
   [ "${row#*|}" != "$condition" ] || return 0

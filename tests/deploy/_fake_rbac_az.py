@@ -24,8 +24,12 @@ Creating a custom role whose name exists fails with
 ``RoleDefinitionWithSameNameExists``. Creating an assignment that already exists
 does not fail: the CLI exits 0 and returns the existing assignment unchanged,
 whatever ``--condition`` the create carried, so its condition is the existing
-one's. ``assignment_delete_ignored`` in the state makes a delete by id succeed
-without removing the assignment, so the next create still finds it.
+one's. The CLI obtains that return by listing the assignment after Resource
+Manager refuses the duplicate, so the listing can miss there too: then the
+create fails. ``assignment_create_misses`` makes that many duplicate creates
+fail that way; ``assignment_misses`` does not reach the create.
+``assignment_delete_ignored`` makes a delete by id succeed without removing the
+assignment, so the next create still finds it.
 
 It imports only the standard library: the test runs it behind an interpreter
 line that disables site-packages.
@@ -231,6 +235,11 @@ def main(argv: list[str]) -> int:
             and _role_matches(a, role)
         ]
         if existing:
+            if state.get("assignment_create_misses", 0) > 0:
+                state["assignment_create_misses"] -= 1
+                save()
+                print("ERROR: list index out of range", file=sys.stderr)
+                return 1
             created = existing[0]
         else:
             created = {
