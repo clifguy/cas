@@ -576,8 +576,11 @@ Insights logger's identity client id inline therefore gained one such value per
 deployment.
 
 The template now supplies that client id through the fixed-name named value
-`appinsights-logger-identity-client-id`, and the logger references it. A
-reference is stored as given, so later deployments add none. Values minted
+`appinsights-logger-identity-client-id`, and the logger references it. The
+gateway already stores the credential as such a `{{name}}` reference, so a
+supplied reference is expected to be kept as given and later deployments to add
+none. Confirm it after a deployment by checking that the number of
+`Logger-Credentials--*` values did not grow. Values minted
 before that change remain until removed. Remove them with the targeted utility.
 It deletes only logger-credential values that are auto-generated, secret, not
 Key Vault-backed, and referenced by no logger (by name or display name). It
@@ -586,7 +589,9 @@ logger references a named value it cannot find.
 
 Run it between deployments, never while one is in flight. Resolve the resource
 group and APIM service from the intended tenant's current deployment. Preview
-first and check that the logger's own reference is not listed:
+first. The preview lists the logger-credential values it keeps (the ones a
+logger references) separately from those it would delete; check that the
+logger's current reference is among the kept ones:
 
 ```bash
 python3 deploy/apim_logger_credentials_cleanup.py --resource-group "$RESOURCE_GROUP_NAME" --service-name "$APIM_SERVICE_NAME"

@@ -192,7 +192,9 @@ resource appInsightsMetricsPublisher 'Microsoft.Authorization/roleAssignments@20
 // a fixed-name named value the logger references. API Management stores a
 // logger credential given as a plain value in a new auto-generated secret named
 // value (Logger-Credentials--<hex>) on every write, and never removes the one
-// it replaced. A {{reference}} is stored as given, so redeploys reuse this one.
+// it replaced. It already stores the credential as a {{name}} reference, so a
+// reference supplied here should be kept as given and redeploys reuse this one;
+// only a live redeploy confirms that.
 resource apimLoggerIdentityClientIdNamedValue 'Microsoft.ApiManagement/service/namedValues@2022-08-01' = {
   parent: apimService
   name: 'appinsights-logger-identity-client-id'

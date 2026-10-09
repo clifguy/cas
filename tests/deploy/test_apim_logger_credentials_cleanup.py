@@ -47,11 +47,12 @@ class FakeAzure:
         self.pages = pages
         self.calls: list[tuple[str, ...]] = []
         self.ignore_deletes = False
+        self.service_id: Any = SERVICE_ID
 
     def __call__(self, *args: str) -> Any:
         self.calls.append(args)
         if args[:2] == ("apim", "show"):
-            return SERVICE_ID
+            return self.service_id
         if args[:3] == ("apim", "nv", "list"):
             return [dict(v) for v in self.values]
         if args[:3] == ("apim", "nv", "delete"):
@@ -221,3 +222,59 @@ def test_does_not_swallow_azure_failures() -> None:
     module.az = az
     with pytest.raises(subprocess.CalledProcessError):
         module.cleanup("rg", "apim", True)
+
+
+@pytest.mark.parametrize(
+    ("label", "mutate", "match"),
+    [
+        (
+            "credentials not an object",
+            lambda f: f.loggers.append({"name": "x", "properties": {"credentials": "{{a1}}"}}),
+            "credentials of an invalid shape",
+        ),
+        ("service id malformed", lambda f: setattr(f, "service_id", None), "service id"),
+    ],
+)
+def test_malformed_reads_delete_nothing(label: str, mutate: Any, match: str) -> None:
+    """A logger whose credentials are not an object, or a service id of the wrong
+    shape, stops the run before any delete.
+    """
+    module = _module()
+    fake = _gateway()
+    mutate(fake)
+    module.az = fake
+    with pytest.raises(RuntimeError, match=match):
+        module.cleanup("rg", "apim", True)
+    assert fake.deletes() == [], label
+
+
+def test_preview_lists_the_kept_reference(capsys: pytest.CaptureFixture[str]) -> None:
+    """The preview names the referenced logger credential it keeps, apart from
+    the ones it would delete, so the operator can check the logger's reference.
+    """
+    module = _module()
+    module.az = _gateway()
+    module.cleanup("rg", "apim", False)
+    out = capsys.readouterr().out
+    kept, _, deleted = out.partition("Would delete")
+    assert "  live\n" in kept and "  live\n" not in deleted
+    assert "  a1\n" in deleted and "  a1\n" not in kept
+
+
+def test_real_cli_failure_raises_and_shows_the_cli_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Through the real wrapper, a failing ``az`` raises -- it never reads as an
+    empty result -- and its own error text reaches the operator.
+    """
+    fake = tmp_path / "az"
+    fake.write_text(
+        "#!/bin/sh\necho \"ERROR: (ResourceGroupNotFound) Resource group 'rg' could not be "
+        'found." >&2\nexit 3\n'
+    )
+    fake.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
+    module = _module()
+    with pytest.raises(subprocess.CalledProcessError):
+        module.cleanup("rg", "apim", True)
+    assert "ResourceGroupNotFound" in capsys.readouterr().err

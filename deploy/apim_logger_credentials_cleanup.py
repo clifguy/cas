@@ -20,6 +20,7 @@ import json
 import re
 import shutil
 import subprocess
+import sys
 from typing import Any
 
 LOGGER_CREDENTIAL_PREFIX = "Logger-Credentials--"
@@ -28,7 +29,10 @@ _REFERENCE_RE = re.compile(r"\{\{([^{}]+)\}\}")
 
 
 def az(*args: str) -> Any:
-    """Run Azure CLI without a shell; failed reads never mean absence."""
+    """Run Azure CLI without a shell; failed reads never mean absence.
+
+    A failure raises after echoing the CLI's own error, so the operator sees why.
+    """
     executable = shutil.which("az")
     if executable is None:
         raise RuntimeError("Azure CLI is required")
@@ -37,8 +41,13 @@ def az(*args: str) -> Any:
         [executable, *args, "--only-show-errors", "--output", "json"],
         capture_output=True,
         text=True,
-        check=True,
+        check=False,
     )
+    if result.returncode != 0:
+        sys.stderr.write(result.stderr)
+        raise subprocess.CalledProcessError(
+            result.returncode, result.args, result.stdout, result.stderr
+        )
     return json.loads(result.stdout) if result.stdout.strip() else None
 
 
@@ -85,6 +94,10 @@ def _references(loggers: list[dict[str, Any]]) -> set[str]:
     return found
 
 
+def _logger_credentials(values: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [v for v in values if v["displayName"].startswith(LOGGER_CREDENTIAL_PREFIX)]
+
+
 def _unreferenced(values: list[dict[str, Any]], references: set[str]) -> list[str]:
     known = {v["name"] for v in values} | {v["displayName"] for v in values}
     unresolved = sorted(references - known)
@@ -92,9 +105,8 @@ def _unreferenced(values: list[dict[str, Any]], references: set[str]) -> list[st
         raise RuntimeError(f"logger references unresolved named values: {', '.join(unresolved)}")
     return sorted(
         v["name"]
-        for v in values
-        if v["displayName"].startswith(LOGGER_CREDENTIAL_PREFIX)
-        and v.get("secret") is True
+        for v in _logger_credentials(values)
+        if v.get("secret") is True
         and not v.get("keyVault")
         and v["name"] not in references
         and v["displayName"] not in references
@@ -109,7 +121,13 @@ def cleanup(resource_group: str, service: str, apply: bool) -> list[str]:
     if not isinstance(service_id, str) or not service_id.startswith("/subscriptions/"):
         raise RuntimeError("APIM service id returned an invalid shape")
     values = _named_values(resource_group, service)
-    candidates = _unreferenced(values, _references(_loggers(service_id)))
+    references = _references(_loggers(service_id))
+    candidates = _unreferenced(values, references)
+    kept = sorted(v["name"] for v in _logger_credentials(values) if v["name"] not in candidates)
+    print(f"Keeping {len(kept)} logger-credential named value(s) a logger references or that")
+    print("are not auto-generated secrets:")
+    for name in kept:
+        print(f"  {name}")
     verb = "Deleting" if apply else "Would delete"
     print(f"{verb} {len(candidates)} unreferenced logger-credential named value(s)")
     for name in candidates:
