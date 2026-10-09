@@ -21,10 +21,12 @@ optional projected field, and an optional ``| [N]``. A condition is
 with ``|| `[]` ``; a null subject without that default fails the call, as the
 real CLI's JMESPath does.
 
-A site's permissions and its drive uploads answer only a delegated token
-carrying ``Sites.FullControl.All``, passed as an ``Authorization`` header;
-without one they refuse with ``accessDenied``, as Microsoft Graph does for the
-CLI's own token, which can never carry that scope. A header value of the form
+A site's permissions answer only a delegated token carrying
+``Sites.FullControl.All``, passed as an ``Authorization`` header; without one
+they refuse with ``accessDenied``, as Microsoft Graph does for the CLI's own
+token, which can never carry that scope. Drive uploads are held to the same
+token here, because the seed sends it for both; Graph itself would also accept
+narrower file scopes for an upload. A header value of the form
 ``KEY=@path`` or ``@path`` is read from the file, as the real CLI expands it
 before parsing, so the token itself need not appear in the argument vector.
 """

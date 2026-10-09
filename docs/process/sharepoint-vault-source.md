@@ -56,10 +56,10 @@ Azure RBAC the deploy identity holds (`azure-deployment.md`):
 - **The per-site permission (step 3) and the seed upload (step 4)** call the
   site's permissions and its drive through Microsoft Graph. Listing or creating a
   site's application permissions requires a delegated token carrying
-  **`Sites.FullControl.All`**, held by a user with the **SharePoint
-  Administrator** role or higher (Global Administrator also qualifies).
-  Ordinary write access to the site is not enough, however the site's own
-  membership is set up.
+  **`Sites.FullControl.All`**. Microsoft documents the delegated call as also
+  requiring the signed-in user to hold an administrator role: **SharePoint
+  Administrator** or higher (Global Administrator also qualifies). Site
+  ownership or membership alone does not meet that requirement.
 - **That token cannot come from the Azure CLI's client.** `az rest` signs Graph
   calls with the CLI's own first-party client, which Microsoft preauthorizes for
   a fixed set of Graph scopes that does not include `Sites.FullControl.All`. A
@@ -67,11 +67,14 @@ Azure RBAC the deploy identity holds (`azure-deployment.md`):
   cannot produce one. Steps 3 and 4 therefore use a token minted by
   [`deploy/bootstrap/graph_sites_token.py`](../../deploy/bootstrap/graph_sites_token.py)
   through Microsoft Graph PowerShell's public client, which accepts the scope
-  on request. The first sign-in asks the administrator to consent to it. That
-  consent persists as a delegated permission grant to *Microsoft Graph Command
-  Line Tools* in Entra ID (for the administrator alone, or for the whole
-  organization if the consent box is ticked). Prefer the per-user consent. To
-  revoke it afterwards, remove the grant from that enterprise application. The
+  on request. Microsoft marks `Sites.FullControl.All` as requiring admin
+  consent, so the first sign-in must be approved by a role that can grant it:
+  **Global Administrator**, **Privileged Role Administrator**, **Cloud
+  Application Administrator** or **Application Administrator**. That role
+  either signs in itself or grants the consent beforehand. The consent persists
+  as a delegated permission grant to *Microsoft Graph Command Line Tools* in
+  Entra ID; to revoke it afterwards, remove the grant from that enterprise
+  application. The
   helper refuses a token that lacks the scope, and the commands read it from a
   private file, so it never appears on a command line.
 
@@ -108,7 +111,8 @@ SITES_SELECTED_ROLE_ID="$(az ad sp show --id "${GRAPH_SP_ID}" \
 ```
 
 Mint the `Sites.FullControl.All` token for steps 3 and 4, signed in as a
-SharePoint Administrator (or higher), and keep it in a private file for `az` to
+SharePoint Administrator (or higher) once the scope has been consented (see
+"Privilege required"), and keep it in a private file for `az` to
 read. Run from the repository root with its environment installed (`uv sync`).
 Add `--device-code` to sign in on another device when this machine has no
 browser:

@@ -1657,6 +1657,63 @@ def _auth_header(call: list[str]) -> str | None:
     return None
 
 
+@pytest.mark.parametrize(
+    "token",
+    [None, "Sites.ReadWrite.All Files.ReadWrite.All", "Sites.FullControl.All"],
+)
+@pytest.mark.parametrize("call", ["permissions", "upload"])
+def test_fake_graph_refuses_site_calls_without_full_control(
+    tmp_path: Path, token: str | None, call: str
+) -> None:
+    """The stand-in ``az`` refuses a site-permission or upload call unless its
+    ``Authorization`` header, read from a file as the real CLI expands it,
+    carries Sites.FullControl.All; the seed's token tests lean on that refusal.
+    """
+    state = _seed_tenant()
+    site = state["sites"][0]
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    az = bin_dir / "az"
+    az.write_text(f"#!{sys.executable} -IS\n" + FAKE_ENTRA_AZ.read_text())
+    az.chmod(0o755)
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps(state))
+    seed = tmp_path / "seed.yaml"
+    seed.write_text("vault: {}\n")
+    if call == "permissions":
+        args = [
+            "--method",
+            "GET",
+            "--uri",
+            f"https://graph.microsoft.com/v1.0/sites/{site['id']}/permissions",
+        ]
+    else:
+        drive = site["drives"][0]["id"]
+        args = [
+            "--method",
+            "PUT",
+            "--uri",
+            f"https://graph.microsoft.com/v1.0/drives/{drive}/root:/x/vault_config.yaml:/content",
+            "--body",
+            f"@{seed}",
+        ]
+    if token is not None:
+        auth = tmp_path / "auth"
+        auth.write_text(f"Bearer {_sites_token(token)}")
+        args += ["--headers", f"Authorization=@{auth}"]
+    result = subprocess.run(
+        [str(az), "rest", *args],
+        env={"AZURE_STATE": str(state_path), "AZURE_CALLS": str(tmp_path / "calls.jsonl")},
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    if token == "Sites.FullControl.All":
+        assert result.returncode == 0, result.stderr
+    else:
+        assert result.returncode != 0 and "accessDenied" in result.stderr, result
+
+
 @SEED_BASHES
 def test_vault_seed_site_steps_use_the_sites_token_off_the_command_line(
     tmp_path: Path, bash: str

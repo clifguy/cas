@@ -314,5 +314,9 @@ def test_runbook_states_the_privilege_the_site_steps_need() -> None:
     for needed in ("Sites.FullControl.All", "SharePoint Administrator", "graph_sites_token.py"):
         assert needed in text, f"runbook must name {needed}"
     assert "AADSTS65002" in text, "runbook must say why the Azure CLI client cannot be used"
+    flat = " ".join(text.split())
+    assert "admin consent" in flat and "Cloud Application Administrator" in flat, (
+        "runbook must say the scope needs admin consent and which roles can grant it"
+    )
     for stale in ("site owner", "owner / member"):
         assert stale not in text, f"runbook still claims {stale!r} suffices"

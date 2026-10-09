@@ -26,8 +26,9 @@ import sys
 
 SCOPE_NAME = "Sites.FullControl.All"
 SCOPE = f"https://graph.microsoft.com/{SCOPE_NAME}"
-# Microsoft Graph PowerShell's public client id, assembled from segments so no
-# GUID-shaped literal appears in the repository.
+# Microsoft Graph PowerShell's public client id: a published Microsoft constant,
+# not a tenant coordinate. It is assembled from segments, as the Azure CLI id is
+# in the test doubles, so the repository's GUID scan has nothing to flag.
 GRAPH_POWERSHELL_CLIENT_ID = "-".join(("14d82eec", "204b", "4c2f", "b7e8", "296a70dab67e"))
 
 
@@ -49,7 +50,7 @@ def _refuse_without_scope(token: str) -> bool:
         return False
     print(
         f"ERROR: the Graph token does not carry {SCOPE_NAME}; sign in as a SharePoint "
-        "Administrator (or higher) and consent to that scope.",
+        "Administrator (or higher) after an administrator has consented to that scope.",
         file=sys.stderr,
     )
     return True

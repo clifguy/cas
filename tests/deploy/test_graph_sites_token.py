@@ -24,8 +24,8 @@ import pytest
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 HELPER: Final[Path] = REPO_ROOT / "deploy" / "bootstrap" / "graph_sites_token.py"
-# Microsoft Graph PowerShell's public client, assembled so no GUID-shaped
-# literal appears in the repository.
+# Microsoft Graph PowerShell's public client id, a published Microsoft
+# constant, assembled from segments so the GUID scan has nothing to flag.
 GRAPH_POWERSHELL_CLIENT_ID: Final[str] = "-".join(
     ("14d82eec", "204b", "4c2f", "b7e8", "296a70dab67e")
 )

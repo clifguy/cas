@@ -84,8 +84,9 @@ if [ -z "${existing_role}" ]; then
     >/dev/null
 fi
 
-# Steps 3 and 4 address the site's permissions and its drive, which Microsoft
-# Graph admits only for a delegated token carrying Sites.FullControl.All. The
+# Step 3 addresses the site's permissions, which Microsoft Graph admits only for
+# a delegated token carrying Sites.FullControl.All; step 4's drive upload runs on
+# the same token, which covers it. The
 # Azure CLI's own client can never be issued that scope (AADSTS65002), so the
 # token comes from graph_sites_token.py unless the operator supplies one; either
 # way it is checked before use. It reaches az through a private file the CLI
