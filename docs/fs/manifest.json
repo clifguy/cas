@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Inventory and version tracking for the CAS Formal Substrate (CAS-ADR-008). Each artifact's version is the release MAJOR.MINOR in which it last changed, or null until a release first publishes it; no counter is assigned when a change is authored. revision_history is assembled per release: a change adds a numberless change record under changes/unreleased/, and the release step folds every unreleased record into one entry for the new release, newest first. Entries written before this scheme, which carry a substrate counter in their version field, follow the release entries and are kept verbatim.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-09-27",
+  "manifest_date": "2026-10-08",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -18,7 +18,7 @@
       "path": "sage/vault_config.schema.json",
       "title": "SAGE Vault Configuration",
       "status": "draft",
-      "version": "3.0",
+      "version": "3.2",
       "role": "Root schema for SAGE vault configuration. A domain instantiation produces a single YAML file that validates against this schema.",
       "instantiation_checklist_items": [
         1
@@ -28,7 +28,7 @@
       "path": "sage/sage_core_config.schema.json",
       "title": "SAGE Core API Configuration",
       "status": "draft",
-      "version": "3.0",
+      "version": "3.2",
       "role": "Stack-wide configuration for the SAGE Core API process (CAS-ADR-030, CAS-ADR-042, CAS-ADR-043). Loaded once at process startup before any vault is registered; carries resources whose enforcement spans the whole SAGE process (the abstraction provider, its model, and the local provider's optional context-window override and clause (f) opener constraint), the deployment-profile marker that co-binds the adapter-port implementations for one deployment target, the durable-storage binding selector (postgres, the storage port's sole binding), the vault-source-store binding selector (filesystem default, tenant document-store alternative), the Postgres storage-engine connection parameters (non-secret; password from the environment), the optional OAuth resource-server auth binding (absent by default; non-secret issuer/audience coordinates when a deployment authenticates its callers), and the caller-local transfer channel block (the public endpoint base minted recipes embed, the one-time token lifetime, and how many refused deliveries an upload token survives; omitted by deployments that never mint recipes). The on-disk file is sage/config.yaml at the repo root.",
       "instantiation_checklist_items": []
     },
@@ -84,7 +84,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "3.1",
+      "version": "3.2",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -92,7 +92,7 @@
       "path": "cas_app_api.openapi.yaml",
       "title": "CAS Application API",
       "status": "draft",
-      "version": "3.1",
+      "version": "3.2",
       "role": "OpenAPI 3.1.0 specification for the CAS Application backend HTTP surface (mounted at the /app prefix). Defines directory scan and batch-ingest endpoints used by the CAS Application UI. Architecturally distinct from the SAGE Core API; the two specs are validated together by tests/sage/test_openapi_conformance.py and must respect URL-prefix boundaries (sage_core_api owns /sage_vaults/*, cas_app_api owns /app/*).",
       "instantiation_checklist_items": []
     },
@@ -100,7 +100,7 @@
       "path": "sage/sage_mcp_tools.catalog.json",
       "title": "SAGE MCP Tool Catalog",
       "status": "draft",
-      "version": "3.1",
+      "version": "3.2",
       "role": "The tools the SAGE MCP surfaces publish through tools/list: name, input and output schemas, annotations, and description, for the ordinary surface (/mcp) and the maintenance surface (/mcp_maint). Generated from the servers by scripts/dump_mcp_catalog.py and held to them by a test gate; the contract comparison reads it as the MCP half of the published contract.",
       "instantiation_checklist_items": []
     },
@@ -189,6 +189,141 @@
   ],
   "deferred": [],
   "revision_history": [
+    {
+      "release": "3.2",
+      "date": "2026-10-08",
+      "changes": [
+        {
+          "classification": "minor",
+          "category": [
+            "caller-adaptation"
+          ],
+          "summary": "The hosted backend-for-frontend contains the paths and headers it handles. Its SPA catch-all serves only files that resolve inside the built bundle and answers an absolute path, a NUL, or a parent-directory segment with the route_not_found envelope (404). Its SAGE reverse proxy rebuilds each upstream path from the raw request target, refusing an empty, current- or parent-directory segment in any encoding as route_not_found (404) and keeping an encoded separator inside its segment, and it forwards and relays headers by allowlist rather than denylist. The proxy also relays the batch-upload ingest and deferred-reabstract event streams as SAGE emits them, where it previously delivered every event at once when the run ended, and forwards every value of a repeated query parameter, where it kept only the last; the transport port's stream call accepts a request body for this. It no longer serves the generated /openapi.json, /docs, /docs/oauth2-redirect or /redoc. The SPA's API helpers encode every identifier they place in a path. No published specification changes: the withdrawn routes and the narrowed proxy inputs were never part of cas_app_api.openapi.yaml. Ships without a deprecation under the security-exposure exemption.",
+          "for_callers": "The hosted application backend no longer serves /openapi.json, /docs or /redoc; the operations it hosts remain specified in the published CAS Application API specification. Its SAGE proxy refuses paths with empty or dot segments and forwards only the Accept, Accept-Language, Content-Type and User-Agent request headers. It now relays batch-upload and deferred-reabstract progress events as SAGE emits them rather than at the end of the run. Shipped without a deprecation (security exposure).",
+          "exemption": {
+            "kind": "security-exposure",
+            "reason": "Serving the old forms keeps reachable a disclosure of files outside the SPA bundle, proxied requests outside the SAGE vault API, and third-party documentation scripts loaded without integrity checks on the signed-in origin."
+          }
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "caller-adaptation"
+          ],
+          "summary": "The hosted backend-for-frontend hardens interactive sign-in and its sessions. Starting sign-in (begin_login) is rate-limited per client and answers a client over the limit with the new rate_limited error (429), whose detail carries retry_after_seconds and which also sets Retry-After; the family is added to both OpenAPI specifications' typed error envelope and to the packaged error contract, and SAGEError gains optional response headers to carry it. begin_login also sets a short-lived __Host-cas_login cookie holding a keyed digest of the flow's state, and the callback completes only when that cookie matches, so a sign-in finishes only in the browser that began it. The session cookie is renamed __Host-cas_session; sign-out also expires the old cas_session cookie. Sessions gain an idle timeout alongside the absolute lifetime (both eight hours by default), expired pre-login records and sessions are deleted as new ones are written, a refreshed token cache is written back to its session, and the durable store encrypts the token cache under a key derived from the client secret. Identity-provider discovery is fetched once per process and identity-provider calls run off the event loop.",
+          "for_callers": "Starting sign-in on a hosted CAS Application deployment can now be refused with rate_limited (429) when one client starts too many sign-ins in a short window; retry after detail.retry_after_seconds (also sent as Retry-After). The sign-in callback now completes only in the browser that started the sign-in. The session cookie is now named __Host-cas_session, so signed-in users sign in once more after this release. Shipped without a deprecation (security exposure).",
+          "exemption": {
+            "kind": "security-exposure",
+            "reason": "Keeping the old forms leaves sign-in open to unbounded unauthenticated load and to completion in a browser other than the one that began it."
+          }
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation"
+          ],
+          "summary": "Bounds the cost of a graph traversal. The traverse walk no longer continues through a document already on its path (the edge that reaches it is still reported), and a single call collects at most a fixed number of raw edge rows across all of its walks; TraverseResponse gains a truncated flag reporting a walk the limit cut short. The traverse depth ceiling drops from 1000 to 50 on REST and MCP (TraverseRequest.depth maximum; the MCP catalog note follows). The stack configuration's postgres block gains statement_timeout_seconds (default 60), applied as a session statement_timeout on the per-vault connection pools that request handling and background pipeline work share. Content-store optimize, the vault-migration table rewrites and the tier3 unique-index build lift it for their own statements. A statement the timeout cancels answers the new cross-cutting error code statement_timeout (503) on REST, MCP and the CAS Application API mirror, declared beside internal_error. Document updates now refuse a key that is not a documents column.",
+          "for_callers": "traverse accepts depth up to 50 (was 1000) and returns truncated: true when the walk hit the server's row limit, in which case narrow it by edge_type, direction or depth. Operators may set postgres.statement_timeout_seconds (default 60) to bound any one SQL statement a request issues; a statement that runs longer fails its request with statement_timeout (503), which a caller may retry or answer by narrowing the request. The depth limit ships without a deprecation period because the old ceiling was a security exposure.",
+          "exemption": {
+            "kind": "security-exposure",
+            "reason": "Serving the old depth ceiling keeps a request able to drive an unbounded amount of database and server work, so it cannot be served alongside the new limit."
+          }
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "The structured_data source type now claims .csv and .tsv. Delimited text is read with the delimiter its extension names (comma or tab, never sniffed) and projected in full with no headings, a blank line between rows placed at the parser's row starts so a quoted field spanning lines stays whole. The source_type descriptions on the ingest tools, the batch-upload model and the Core API specification, and the regenerated MCP tool catalog, name the two extensions; the refusal detail's registered_extensions follows the registry.",
+          "for_callers": "CSV and TSV files ingest directly as structured_data, inferred from the .csv or .tsv extension. A passage after the first holds row values without the header row's column names."
+        },
+        {
+          "classification": "patch",
+          "summary": "SAGE's raw document content route and transfer download route add X-Content-Type-Options: nosniff and Content-Security-Policy: sandbox to the attachment disposition they already sent; the Core API specification's descriptions of both routes say so. The hosted backend-for-frontend sends a page content-security policy (report-only unless enabled), nosniff, a no-referrer policy and frame protection on every response, and Strict-Transport-Security under the cloud profile; it relays SAGE's two delivery headers on proxied document bytes. The local development server refuses framing. No request, response body, status or error code changes, and no caller has to adapt: the bytes were already delivered as an attachment.",
+          "for_callers": ""
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "caller-adaptation"
+          ],
+          "summary": "Source parsing is bounded in memory and time and runs off the event loop. docx, pptx and xlsx packages are checked against fixed decompression limits (total uncompressed size, member count, and the compression ratio of large members) before any parser opens them, and a package over a limit is refused as source_unreadable. A workbook sheet is read lazily within a fixed column ceiling and row-scan ceiling, so its declared dimension no longer sizes the read; the reported row and column counts run to the last row and column holding a value, and a sheet past the row ceiling reports its count as a lower bound. The structured-data separation pass spends a fixed parse budget and falls back to the unseparated source text when it is exhausted. The filename parser strips trailing duplication noise in linear time and returns a stem past a fixed length as its own title, unparsed. Adapter projection runs on a single worker thread rather than the event loop, so a slow source no longer delays the server's other requests. Ships without a deprecation under the security-exposure exemption.",
+          "for_callers": "An Office package whose contents would decompress past fixed size or ratio limits is refused with source_unreadable. Workbook row and column counts in projections now run to the last cell holding a value rather than the sheet's declared extent. Shipped without a deprecation (security exposure).",
+          "exemption": {
+            "kind": "security-exposure",
+            "reason": "Serving the old forms lets a small upload exhaust the server's memory or stall every request it is serving."
+          }
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "caller-adaptation"
+          ],
+          "summary": "Ingest contains relative sources and vault provisioning contains its roots and schema names. A relative ingest source, on the real ingest and on a dry run, is resolved through links and refused with vault_source_path_refused unless it lies strictly under the vault's storage root, whether or not anything exists at the named path; under a vault-source binding with no local tree the local disk is no longer consulted for a relative source, which the store answers alone. create_vault and update_vault_config refuse, with vault_config_validation_error, a storage_root, brain_root or timing log_path they are asked to set outside the server's vault root; an unchanged value on an existing vault is still accepted. create_vault refuses a vault id that cannot name a Postgres schema (a hyphen or a leading digit) or that names a reserved one (public, information_schema, any pg_ name, or a schema another component owns) before creating anything, and removes the root directories it created when initialization fails; every schema provision and drop path refuses a reserved name too, and the identifier guards interpolated into SQL match whole strings. The storage_root, brain_root and timing log_path descriptions in the vault configuration schema state the rule. Ships without a deprecation under the security-exposure exemption.",
+          "for_callers": "A relative ingest source must lie inside the vault's storage root; one that resolves outside it is refused with vault_source_path_refused, on dry runs too. create_vault and update_vault_config refuse a storage_root, brain_root or timing log_path outside the server's vault root, and create_vault refuses a vault id that names a reserved database schema or cannot name one at all. Shipped without a deprecation (security exposure).",
+          "exemption": {
+            "kind": "security-exposure",
+            "reason": "Serving the old forms keeps reachable reads of server files outside a vault's source tree and directory creation and schema operations outside the vaults the server owns."
+          }
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "caller-adaptation",
+            "operator-adaptation"
+          ],
+          "summary": "A server running without authentication now admits only loopback-addressed, same-site requests: every surface, REST and each MCP mount alike, refuses a request whose Host is not 127.0.0.1, localhost or [::1], or that carries a non-loopback Origin or Sec-Fetch-Site cross-site, with 403 and the http_error envelope. The guard is absent when authentication is enabled. python -m sage refuses a non-loopback --host while authentication is disabled unless --allow-unauthenticated-network is passed, and the cloud profile refuses to start without an enabled auth block. An unexpected exception in an MCP tool call now returns internal_error with a reference instead of the exception's text, and a rejected bearer token's challenge carries a fixed description.",
+          "for_callers": "Without authentication, SAGE answers only requests addressed to a loopback host (127.0.0.1, localhost or [::1]); a request by another host name, or from a web page on another site, is refused with 403 http_error. The three loopback names are distinct sites to a browser, so a page must call the server by the name it was served from. The check reads request headers and does not authenticate the network peer. Operators who bind a non-loopback interface without authentication must pass --allow-unauthenticated-network, and a cloud-profile configuration must enable authentication to start. MCP internal errors no longer carry exception text; the message names a reference to look up in the server log."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "operator-adaptation"
+          ],
+          "summary": "Key Vault access is granted per secret rather than vault-wide: the SAGE, BFF and API Management identities each hold Key Vault Secrets User on exactly the secrets they read, and Certificate User is no longer assigned. API Management runs as an identity of its own instead of the SAGE identity. SAGE refuses any request that does not carry the ingress key the gateway injects (403, http_error), except the liveness probe, so its public container ingress admits only the gateway; the key is generated by the secret loader, read by the gateway through a Key Vault named value and by SAGE through a Key Vault secret reference. A keyVaultSecretsLoaded parameter lets a new tenant's first deployment run before its secrets are loaded. The secret loader passes every value through a file rather than the command line.",
+          "for_callers": "Operators must run the Key Vault secret loader, which now generates the gateway ingress key, before deploying this release, and afterwards remove the SAGE and BFF identities' old vault-wide Key Vault grants, which a deployment does not delete (see the cloud deployment stages runbook). Requests made directly to SAGE's container hostname, bypassing the gateway, are refused."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "caller-adaptation",
+            "operator-adaptation"
+          ],
+          "summary": "Pins the models SAGE loads and narrows the local document opener. The stack configuration's abstraction block gains revision, a full 40-character commit hash of the model repository the local MLX provider fetches its weights at (sage_core_config.schema.json and StackAbstractionConfig, pattern-bound to a full lowercase hash). Startup refuses provider local-mlx with a Hugging Face model and no revision; a model naming a local directory needs none. At load, the local MLX provider fetches that commit and refuses a snapshot carrying Python files or a config naming a model_file. The embedding model and its remote code are pinned to commits in the embedding adapter, the remote-code files are checked against pinned digests before import, and the committed sage/config.yaml carries the abstraction revision. open_document (POST /sage_vaults/{vault_id}/documents/{document_id}/open) refuses a stored source whose extension no source adapter reads with the new error code open_extension_not_allowed (400), declared in both OpenAPI specifications with its envelope schema. Ships without a deprecation under the security-exposure exemption.",
+          "for_callers": "open_document now refuses a source file whose extension is not one SAGE ingests with open_extension_not_allowed (400) instead of handing it to the host opener. Operators running the local MLX abstraction provider against a Hugging Face model must set abstraction.revision to the full commit hash of that model's repository; startup refuses the configuration without it. Shipped without a deprecation (security exposure).",
+          "exemption": {
+            "kind": "security-exposure",
+            "reason": "Serving the old forms keeps code from unpinned upstream repositories loadable into the server process and keeps arbitrary stored files reachable by the host opener."
+          }
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "caller-adaptation",
+            "operator-adaptation"
+          ],
+          "summary": "The Entra bootstrap enforces the access-group gate at the SAGE resource itself: the SAGE service principal requires app-role assignment and the access group is assigned to its Sage.Reader role, so a token for the SAGE audience is issued only to an assigned principal, whichever client requests it. The Sage.Access scope becomes admin-consent-only. The bootstrap now selects directory objects by exact display name and stops when a name matches more than one object, checks for an existing app-role assignment before creating one, stops on any failed call instead of continuing, and reuses the registration's live scope and role ids on a re-run. The runbook and the REST and Claude Code guides describe the gate as implemented.",
+          "for_callers": "Operators re-run the Entra bootstrap on each existing tenant to apply the resource gate and admin-only consent; confirm first that the CI deploy identity holds its Sage.Reader assignment. After that, only members of the deployment's access group obtain a token for SAGE, through the web client, the MCP connector, Azure CLI or any other client; a non-member is refused at token issuance (AADSTS50105) rather than receiving 403, and an application needs the Sage.Reader role before its client-credentials request succeeds. Users can no longer consent other applications to Sage.Access themselves. Shipped without a deprecation (security exposure).",
+          "exemption": {
+            "kind": "security-exposure",
+            "reason": "Keeping the old registration lets principals outside the access group obtain tokens SAGE accepts, contrary to the access model it documents."
+          }
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "caller-adaptation"
+          ],
+          "summary": "Document content is labelled untrusted and can no longer act on the abstraction call or on other callers' downloads. The server instructions and the descriptions of the content-returning tools and their REST operations state that document-derived fields are untrusted data, never instructions. Before a document is framed for abstract generation, every literal that could end or reopen its delimited frame -- the frame markers in any case or spacing, chat control sequences, and the reasoning, tool and speech tags a chat vocabulary maps to single tokens -- has its opening bracket replaced by the fullwidth form, so the text reads the same and cannot act on the call; a doc_type that is not a plain lowercase identifier is left out of the system prompt. An external source is retained under a restricted basename: control characters and shell-active characters become underscores, leading dashes, dots and spaces are removed, and a stem left with no letter or digit becomes \"source\". Source download recipes name the restricted form, and every Content-Disposition header drops control characters. Ships without a deprecation under the security-exposure exemption.",
+          "for_callers": "Treat titles, headings, abstracts, filenames and passages returned by SAGE as untrusted data. An external file whose name holds control or shell-active characters, or starts with a dash or dot, is now retained under a restricted form of that name, and download recipes name that form. Shipped without a deprecation (security exposure).",
+          "exemption": {
+            "kind": "security-exposure",
+            "reason": "Serving the old forms lets a document's text act on the abstraction call and lets a caller-chosen filename reach other callers' commands and break their downloads."
+          }
+        }
+      ]
+    },
     {
       "release": "3.1",
       "date": "2026-09-27",
