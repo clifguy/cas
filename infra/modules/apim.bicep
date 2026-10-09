@@ -188,10 +188,25 @@ resource appInsightsMetricsPublisher 'Microsoft.Authorization/roleAssignments@20
   }
 }
 
+// The managed identity's client id for the Application Insights logger, held in
+// a fixed-name named value the logger references. API Management stores a
+// logger credential given as a plain value in a new auto-generated secret named
+// value (Logger-Credentials--<hex>) on every write, and never removes the one
+// it replaced. A {{reference}} is stored as given, so redeploys reuse this one.
+resource apimLoggerIdentityClientIdNamedValue 'Microsoft.ApiManagement/service/namedValues@2022-08-01' = {
+  parent: apimService
+  name: 'appinsights-logger-identity-client-id'
+  properties: {
+    displayName: 'appinsights-logger-identity-client-id'
+    value: apimIdentityClientId
+    secret: false
+  }
+}
+
 // The Application Insights logger. Credentials carry the sink's connection
 // string by symbolic reference (no literal, no instrumentation key) plus the
-// managed identity's client id — the gateway acquires its ingestion token via
-// Entra rather than presenting a key.
+// managed identity's client id, through the named value above — the gateway
+// acquires its ingestion token via Entra rather than presenting a key.
 resource apimAppInsightsLogger 'Microsoft.ApiManagement/service/loggers@2022-08-01' = {
   parent: apimService
   name: 'appinsights'
@@ -199,9 +214,12 @@ resource apimAppInsightsLogger 'Microsoft.ApiManagement/service/loggers@2022-08-
     loggerType: 'applicationInsights'
     credentials: {
       connectionString: appInsights.properties.ConnectionString
-      identityClientId: apimIdentityClientId
+      identityClientId: '{{appinsights-logger-identity-client-id}}'
     }
   }
+  dependsOn: [
+    apimLoggerIdentityClientIdNamedValue
+  ]
 }
 
 // The service-level diagnostic that binds that logger. Its instance name must be
