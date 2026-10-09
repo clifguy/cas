@@ -564,3 +564,42 @@ retirement check. Supported mount discovery, JWT enforcement, and resource-token
 checks must also pass. Directory absence is proved by cleanup readback, not by
 these HTTP checks. Local tests validate fixtures, policy shape and Bicep compilation;
 retain live results before marking any deployed tenant remediated.
+
+## Removing orphaned logger-credential named values
+
+API Management stores a logger credential supplied as a plain value in an
+auto-generated secret named value, with display name
+`Logger-Credentials--<hex>`, and keeps a `{{name}}` reference to it in the
+logger. Every write of that credential mints a new value. The one it replaced is
+never removed. A gateway deployed from a template that passed the Application
+Insights logger's identity client id inline therefore gained one such value per
+deployment.
+
+The template now supplies that client id through the fixed-name named value
+`appinsights-logger-identity-client-id`, and the logger references it. The
+gateway already stores the credential as such a `{{name}}` reference, so a
+supplied reference is expected to be kept as given and later deployments to add
+none. Confirm it after a deployment by checking that the number of
+`Logger-Credentials--*` values did not grow. Values minted
+before that change remain until removed. Remove them with the targeted utility.
+It deletes only logger-credential values that are auto-generated, secret, not
+Key Vault-backed, and referenced by no logger (by name or display name). It
+deletes nothing if a read fails, if the logger list comes back empty, or if a
+logger references a named value it cannot find.
+
+Run it between deployments, never while one is in flight. Resolve the resource
+group and APIM service from the intended tenant's current deployment. Preview
+first. The preview lists the logger-credential values it keeps (the ones a
+logger references) separately from those it would delete; check that the
+logger's current reference is among the kept ones:
+
+```bash
+python3 deploy/apim_logger_credentials_cleanup.py --resource-group "$RESOURCE_GROUP_NAME" --service-name "$APIM_SERVICE_NAME"
+python3 deploy/apim_logger_credentials_cleanup.py --resource-group "$RESOURCE_GROUP_NAME" --service-name "$APIM_SERVICE_NAME" --apply
+```
+
+The apply run re-reads the named values and fails if any deleted value is still
+present. Repeated runs are safe. Afterwards, send an authenticated request
+through the gateway and confirm both that it succeeds and that it appears in the
+gateway's Application Insights resource (its `requests` table) a few minutes
+later. The logger still authenticates through its referenced value.

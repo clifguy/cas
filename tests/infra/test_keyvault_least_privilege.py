@@ -136,10 +136,20 @@ def test_apim_runs_as_its_own_identity() -> None:
     apim = _strip_comments(APIM.read_text(encoding="utf-8"))
     assert "sageIdentity" not in apim, "APIM must not run as, or grant, the SAGE identity"
     assert re.search(r"'\$\{apimIdentityId\}':\s*\{\}", apim)
-    assert len(re.findall(r"identityClientId:\s*apimIdentityClientId", apim)) == 3, (
-        "the certificate binding, the telemetry logger and the ingress-key named value "
-        "must each authenticate as the APIM identity"
+    assert len(re.findall(r"identityClientId:\s*apimIdentityClientId", apim)) == 2, (
+        "the certificate binding and the ingress-key named value must each "
+        "authenticate as the APIM identity"
     )
+    # The telemetry logger names the APIM identity through a fixed-name named
+    # value rather than inline, so a redeploy does not mint a new one.
+    assert re.search(
+        r"identityClientId:\s*'\{\{appinsights-logger-identity-client-id\}\}'", apim
+    ), "the telemetry logger must authenticate as the APIM identity"
+    assert re.search(
+        r"name:\s*'appinsights-logger-identity-client-id'[^}]*?value:\s*apimIdentityClientId\b",
+        apim,
+        re.DOTALL,
+    ), "the logger's named value must carry the APIM identity's client id"
     assert re.search(r"principalId:\s*apimIdentityPrincipalId", apim), (
         "the telemetry-publisher grant must name the APIM identity"
     )

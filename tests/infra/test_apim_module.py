@@ -209,6 +209,29 @@ def _output_lines(text: str) -> list[tuple[str, str]]:
     return [(m.group(1), m.group(2)) for m in pattern.finditer(_strip_line_comments(text))]
 
 
+_LOGGER_IDENTITY_NAMED_VALUE: Final[str] = "appinsights-logger-identity-client-id"
+_LOGGER_IDENTITY_SYMBOL: Final[str] = "apimLoggerIdentityClientIdNamedValue"
+
+
+def _named_value_block(text: str, name: str) -> str:
+    """Return the body of the ``namedValues`` resource declaring ``name: '<name>'``."""
+    stripped = _strip_line_comments(text)
+    starts = list(
+        re.finditer(
+            r"^resource\s+\w+\s+'Microsoft\.ApiManagement/service/namedValues@[0-9A-Za-z-]+'",
+            stripped,
+            re.MULTILINE,
+        )
+    )
+    for start in starts:
+        rest = stripped[start.end() :]
+        nxt = re.search(r"^(?:resource|module|output)\b", rest, re.MULTILINE)
+        block = rest if nxt is None else rest[: nxt.start()]
+        if re.search(rf"^\s*name:\s*'{re.escape(name)}'", block, re.MULTILINE):
+            return block
+    return ""
+
+
 def _resource_block(text: str, resource_type: str) -> str:
     """Return the body of the ``resource <symbol> '<resource_type>@...' = {`` block.
 
@@ -2029,10 +2052,14 @@ def test_apim_declares_app_insights_logger() -> None:
     the managed identity — no instrumentation key, no connection-string literal.
 
     ``connectionString`` must be a symbolic reference to the Application Insights
-    resource's own property (never a literal), and ``identityClientId`` must bind
-    the identity param so the gateway acquires its ingestion token via the
-    user-assigned managed identity. An ``instrumentationKey`` credential anywhere
-    in the block signals key-based auth — a secret in source — and fails the gate.
+    resource's own property (never a literal). ``identityClientId`` must reach the
+    identity param through the fixed-name named value
+    ``appinsights-logger-identity-client-id``, so the gateway acquires its
+    ingestion token via the user-assigned managed identity. It is referenced
+    rather than given inline because API Management turns an inline credential
+    into a fresh auto-generated named value on every deployment. An
+    ``instrumentationKey`` credential anywhere in the block signals key-based
+    auth — a secret in source — and fails the gate.
     """
     text = APIM.read_text(encoding="utf-8")
     assert _declares_resource_type(text, _APIM_LOGGER_TYPE), (
@@ -2049,10 +2076,24 @@ def test_apim_declares_app_insights_logger() -> None:
         "credentials.connectionString must be a symbolic reference to the Application "
         "Insights resource's ConnectionString property, never a literal"
     )
-    assert "identityClientId: apimIdentityClientId" in block, (
-        "credentials.identityClientId must bind the apimIdentityClientId param so "
+    assert f"identityClientId: '{{{{{_LOGGER_IDENTITY_NAMED_VALUE}}}}}'" in block, (
+        "credentials.identityClientId must reference the fixed-name named value, so "
+        "a redeploy reuses it instead of minting a new auto-generated one"
+    )
+    assert "apimIdentityClientId" not in block, (
+        "the logger must not carry the client id inline; API Management would store "
+        "it as a new auto-generated named value on every deployment"
+    )
+    assert re.search(r"dependsOn:\s*\[[^\]]*\b" + _LOGGER_IDENTITY_SYMBOL + r"\b", block), (
+        "the logger must depend on the named value it references by name"
+    )
+    named = _named_value_block(text, _LOGGER_IDENTITY_NAMED_VALUE)
+    assert re.search(r"^\s*value:\s*apimIdentityClientId\s*$", named, re.MULTILINE), (
+        "the logger's named value must carry the apimIdentityClientId param so "
         "ingestion authenticates via the user-assigned managed identity"
     )
+    assert f"displayName: '{_LOGGER_IDENTITY_NAMED_VALUE}'" in named
+    assert "secret: false" in named and "keyVault" not in named
     assert "instrumentationKey" not in block, (
         "the logger must not carry an instrumentationKey — key-based auth puts a "
         "secret in source; ingestion authenticates via the managed identity"
