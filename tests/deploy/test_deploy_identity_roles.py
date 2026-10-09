@@ -612,9 +612,9 @@ def test_rerun_survives_a_missed_assignment_lookup(tmp_path: Path) -> None:
 
 
 def test_assignment_that_exists_unlisted_is_kept(tmp_path: Path) -> None:
-    """G8b: when every lookup misses and the create then reports that the
-    assignment exists, the run carries on without replacing it -- including
-    the conditioned grant, whose condition is then read and found current."""
+    """G8b: when every lookup misses, the create returns the existing assignment
+    rather than failing, and the run carries on without replacing it --
+    including the conditioned grant, whose returned condition is current."""
     first = _granted(tmp_path)
     # Enough misses to exhaust the lookups for the first three assignments.
     first["assignment_misses"] = 3 * _lookup_attempts()
@@ -637,33 +637,88 @@ def _with_admin_condition(state: dict[str, Any], condition: str | None) -> dict[
 
 
 def test_unlisted_assignment_with_a_stale_condition_is_replaced(tmp_path: Path) -> None:
-    """G8c: an assignment found only through the create's collision still has
-    its condition checked, and a stale one is replaced with the current one."""
+    """G8c: an assignment found only through the create, which returns it
+    unchanged, still has its condition checked, and a stale one is replaced
+    with the current one. The delete names the returned id, so it does not
+    depend on a listing that is still missing the assignment."""
     state = _with_admin_condition(_granted(tmp_path), "stale")
-    state["assignment_misses"] = 3 * _lookup_attempts()
+    # The three id lookups exhaust, and misses remain after them, so a delete
+    # that listed first would find nothing to delete.
+    state["assignment_misses"] = 4 * _lookup_attempts()
 
     result, calls, after = _run(tmp_path, state)
 
     assert result.returncode == 0, result.stderr
-    assert len([c for c in calls if c[1:3] == ["assignment", "delete"]]) == 1
+    deletes = [c for c in calls if c[1:3] == ["assignment", "delete"]]
+    assert len(deletes) == 1
+    assert "--ids" in deletes[0]
     (admin,) = [a for a in after["assignments"] if a["role"] == _RBAC_ADMIN]
     assert admin["condition"] == _expected_condition()
 
 
-def test_failed_condition_replacement_names_the_step(tmp_path: Path) -> None:
-    """G8d: when the listing still misses after a collision, the delete finds
-    nothing and the re-create collides again; the run stops and says so rather
-    than exiting without a reason."""
-    attempts = _lookup_attempts()
+def test_unlisted_stale_condition_never_survives_a_successful_run(tmp_path: Path) -> None:
+    """G8h: every lookup misses an existing RBAC administrator assignment whose
+    condition is stale. The create exits 0 and returns that assignment
+    unchanged; the run must still end with the current condition or stop with a
+    named error -- never exit 0 with the stale condition in place."""
     state = _with_admin_condition(_granted(tmp_path), "stale")
-    # Three id lookups and the re-read after the collision all exhaust, and
-    # the delete's own listing misses.
-    state["assignment_misses"] = 4 * attempts + 1
+    # The three id lookups all exhaust.
+    state["assignment_misses"] = 3 * _lookup_attempts()
+
+    result, calls, after = _run(tmp_path, state)
+
+    (admin,) = [a for a in after["assignments"] if a["role"] == _RBAC_ADMIN]
+    # The conditioned grant was reached through the create, not through a
+    # listed row: its first create precedes any delete.
+    writes = [c for c in calls if c[1:3] in (["assignment", "create"], ["assignment", "delete"])]
+    first_create = next(i for i, c in enumerate(writes) if "--condition" in c)
+    assert all(c[2] == "create" for c in writes[:first_create])
+    if result.returncode == 0:
+        assert admin["condition"] == _expected_condition()
+    else:
+        assert "ERROR:" in result.stderr
+        assert f"assignment of {_RBAC_ADMIN} at {_RG} still carries a stale condition" in (
+            result.stderr
+        )
+
+
+def test_create_whose_own_listing_misses_stops_without_granting(tmp_path: Path) -> None:
+    """G8i: the CLI answers a duplicate create by listing the assignment, and
+    that listing can miss too, failing the create. The run stops there, leaving
+    the stale condition untouched and reporting no grant."""
+    state = _with_admin_condition(_granted(tmp_path), "stale")
+    # The two grants assigned before it are absent, so their creates are new
+    # and only the administrator's create meets the duplicate path.
+    state["assignments"] = [a for a in state["assignments"] if a["role"] in (_RBAC_ADMIN, _LOCK)]
+    state["assignment_misses"] = 3 * _lookup_attempts()
+    state["assignment_create_misses"] = 1
+
+    result, calls, after = _run(tmp_path, state)
+
+    assert result.returncode != 0
+    admin_creates = [c for c in calls if c[1:3] == ["assignment", "create"] and "--condition" in c]
+    assert len(admin_creates) == 1
+    assert not [c for c in calls if c[1:3] == ["assignment", "delete"]]
+    assert f"granted: {_RBAC_ADMIN}" not in result.stdout
+    (admin,) = [a for a in after["assignments"] if a["role"] == _RBAC_ADMIN]
+    assert admin["condition"] == "stale"
+
+
+def test_failed_condition_replacement_names_the_step(tmp_path: Path) -> None:
+    """G8d: when the assignment is still there after the delete meant to
+    replace its stale condition, the re-create returns it unchanged; the run
+    stops and names the step rather than exiting 0 or without a reason."""
+    state = _with_admin_condition(_granted(tmp_path), "stale")
+    state["assignment_misses"] = 3 * _lookup_attempts()
+    state["assignment_delete_ignored"] = True
 
     result, _, after = _run(tmp_path, state)
 
     assert result.returncode != 0
-    assert f"assignment of {_RBAC_ADMIN} at {_RG} still exists after deleting it" in result.stderr
+    assert (
+        f"assignment of {_RBAC_ADMIN} at {_RG} still carries a stale condition"
+        " after it was deleted and re-created" in result.stderr
+    )
     (admin,) = [a for a in after["assignments"] if a["role"] == _RBAC_ADMIN]
     assert admin["condition"] == "stale"
 

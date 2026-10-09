@@ -254,57 +254,46 @@ assignment_row() {
     --query "[0].join('|', [id, condition || ''])" -o tsv
 }
 
-# Assigns role $1 at scope $2, conditioned by $3 when it is set. Returns 2 when
-# the assignment already exists, 1 on any other failure.
+# Assigns role $1 at scope $2, conditioned by $3 when it is set, and prints the
+# assignment the create returns as id|condition. A create for an assignment that
+# already exists succeeds and returns the existing assignment unchanged, so the
+# printed condition is the one in force, not necessarily the one requested.
 create_assignment() {
-  local err
+  local query="join('|', [id, condition || ''])"
   if [ -n "$3" ]; then
-    err="$(az role assignment create --assignee "$APP_ID" --role "$1" --scope "$2" \
-      --condition "$3" --condition-version "2.0" 2>&1 >/dev/null)" && return 0
+    az role assignment create --assignee "$APP_ID" --role "$1" --scope "$2" \
+      --condition "$3" --condition-version "2.0" --query "$query" -o tsv
   else
-    err="$(az role assignment create --assignee "$APP_ID" --role "$1" --scope "$2" \
-      2>&1 >/dev/null)" && return 0
+    az role assignment create --assignee "$APP_ID" --role "$1" --scope "$2" \
+      --query "$query" -o tsv
   fi
-  case "$err" in
-    *RoleAssignmentExists*) return 2 ;;
-  esac
-  printf '%s\n' "$err" >&2
-  return 1
 }
 
 ensure_assignment() {
-  local role="$1" scope="$2" condition="${3:-}" row status=0
+  local role="$1" scope="$2" condition="${3:-}" row
   row="$(assignment_row "$role" "$scope")" || return 1
   if [ -z "$row" ]; then
-    create_assignment "$role" "$scope" "$condition" || status=$?
-    case "$status" in
-      0)
-        echo "granted: $role at $scope"
-        return 0
-        ;;
-      # The assignment exists but had not yet been listed; its condition is
-      # read again and checked below like any other existing assignment's.
-      2) echo "assignment of $role at $scope already exists though it was not listed" >&2 ;;
-      *) return 1 ;;
-    esac
-    [ -n "$condition" ] || return 0
-    row="$(assignment_row "$role" "$scope")" || return 1
+    row="$(create_assignment "$role" "$scope" "$condition")" || return 1
+    if [ -z "$condition" ] || [ "${row#*|}" = "$condition" ]; then
+      echo "granted: $role at $scope"
+      return 0
+    fi
+    # The create returned an assignment that exists but had not yet been
+    # listed, carrying another condition. The CLI read that assignment back
+    # from the listing to return it, so it is current; it is replaced below.
+    echo "assignment of $role at $scope already exists though it was not listed" >&2
   fi
   [ -n "$condition" ] || return 0
   [ "${row#*|}" != "$condition" ] || return 0
   # A condition cannot be edited in place by the CLI; replace the assignment.
-  az role assignment delete --assignee "$APP_ID" --role "$role" --scope "$scope" || return 1
-  status=0
-  create_assignment "$role" "$scope" "$condition" || status=$?
-  case "$status" in
-    0) ;;
-    2)
-      echo "ERROR: the assignment of $role at $scope still exists after deleting it to" \
-        "replace its condition; re-run once the role-assignment listing has caught up" >&2
-      return 1
-      ;;
-    *) return 1 ;;
-  esac
+  # The delete names the assignment's id, so it does not depend on a listing.
+  az role assignment delete --ids "${row%%|*}" || return 1
+  row="$(create_assignment "$role" "$scope" "$condition")" || return 1
+  if [ "${row#*|}" != "$condition" ]; then
+    echo "ERROR: the assignment of $role at $scope still carries a stale condition after it" \
+      "was deleted and re-created to replace it; re-run once Azure has caught up" >&2
+    return 1
+  fi
   echo "granted: $role at $scope"
 }
 

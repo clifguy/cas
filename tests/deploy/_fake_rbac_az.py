@@ -18,8 +18,18 @@ role or an assignment that exists can list as absent for a while.
 whatever they ask, ``shape_misses`` does the same for the role-shape listing
 only, and ``assignment_misses`` for role-assignment listings; each miss is
 counted down and saved; a delete by role and scope consumes a miss too, since
-the CLI lists before it deletes. Creating an assignment that already exists fails with
-``RoleAssignmentExists``, as Resource Manager refuses it.
+the CLI lists before it deletes.
+
+Creating a custom role whose name exists fails with
+``RoleDefinitionWithSameNameExists``. Creating an assignment that already exists
+does not fail: the CLI exits 0 and returns the existing assignment unchanged,
+whatever ``--condition`` the create carried, so its condition is the existing
+one's. The CLI obtains that return by listing the assignment after Resource
+Manager refuses the duplicate, so the listing can miss there too: then the
+create fails. ``assignment_create_misses`` makes that many duplicate creates
+fail that way; ``assignment_misses`` does not reach the create.
+``assignment_delete_ignored`` makes a delete by id succeed without removing the
+assignment, so the next create still finds it.
 
 It imports only the standard library: the test runs it behind an interpreter
 line that disables site-packages.
@@ -38,6 +48,7 @@ _CREDENTIAL_ROWS = (
     "[].join('|', [subject || '', issuer || '', claimsMatchingExpression.value || ''])"
 )
 _ASSIGNMENT_ROW = "[0].join('|', [id, condition || ''])"
+_CREATED_ROW = "join('|', [id, condition || ''])"
 _ASSIGNMENT_ROWS = "[].join('|', [id, roleDefinitionName || '', scope, condition || ''])"
 _ROLE_SHAPE = (
     "[0].join('|', [to_string(length(permissions)), "
@@ -213,19 +224,25 @@ def main(argv: list[str]) -> int:
         return 0
 
     if group == "role assignment create":
+        if query not in (None, _CREATED_ROW):
+            return _unknown(argv)
         role = _opt(argv, "--role") or ""
-        if any(
-            a["assignee"] == _opt(argv, "--assignee")
+        existing = [
+            a
+            for a in state["assignments"]
+            if a["assignee"] == _opt(argv, "--assignee")
             and a["scope"] == _opt(argv, "--scope")
             and _role_matches(a, role)
-            for a in state["assignments"]
-        ):
-            print(
-                "ERROR: (RoleAssignmentExists) The role assignment already exists.", file=sys.stderr
-            )
-            return 1
-        state["assignments"].append(
-            {
+        ]
+        if existing:
+            if state.get("assignment_create_misses", 0) > 0:
+                state["assignment_create_misses"] -= 1
+                save()
+                print("ERROR: list index out of range", file=sys.stderr)
+                return 1
+            created = existing[0]
+        else:
+            created = {
                 "id": str(uuid.uuid4()),
                 "assignee": _opt(argv, "--assignee"),
                 "role": _role_name(role, state),
@@ -234,14 +251,19 @@ def main(argv: list[str]) -> int:
                 "condition": _opt(argv, "--condition"),
                 "conditionVersion": _opt(argv, "--condition-version"),
             }
-        )
-        save()
+            state["assignments"].append(created)
+            save()
+        if query is None:
+            print(json.dumps(created))
+        else:
+            print(created["id"] + "|" + (created.get("condition") or ""))
         return 0
 
     if group == "role assignment delete":
         ids = _opt(argv, "--ids")
         if ids:
-            state["assignments"] = [a for a in state["assignments"] if a["id"] != ids]
+            if not state.get("assignment_delete_ignored"):
+                state["assignments"] = [a for a in state["assignments"] if a["id"] != ids]
         elif state.get("assignment_misses", 0) > 0:
             # The CLI resolves --assignee/--role/--scope by listing first, so
             # a missed listing deletes nothing.
