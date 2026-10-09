@@ -20,6 +20,13 @@ optional projected field, and an optional ``| [N]``. A condition is
 ``[]`` (``grantedToIdentitiesV2[].application.id``) and may default a null
 with ``|| `[]` ``; a null subject without that default fails the call, as the
 real CLI's JMESPath does.
+
+A site's permissions and its drive uploads answer only a delegated token
+carrying ``Sites.FullControl.All``, passed as an ``Authorization`` header;
+without one they refuse with ``accessDenied``, as Microsoft Graph does for the
+CLI's own token, which can never carry that scope. A header value of the form
+``KEY=@path`` or ``@path`` is read from the file, as the real CLI expands it
+before parsing, so the token itself need not appear in the argument vector.
 """
 
 import base64
@@ -305,6 +312,42 @@ _DRIVE_UPLOAD_RE = re.compile(
 )
 
 
+SITES_SCOPE = "Sites.FullControl.All"
+
+
+def _headers(args: list[str]) -> dict[str, str]:
+    """The ``--headers`` values, with ``@file`` references expanded as the CLI does."""
+    if "--headers" not in args:
+        return {}
+    out: dict[str, str] = {}
+    for item in args[args.index("--headers") + 1 :]:
+        if item.startswith("--"):
+            break
+        if item.startswith("@"):
+            out.update(json.loads(Path(item[1:]).read_text()))
+            continue
+        key, value = item.split("=", 1)
+        if value.startswith("@"):
+            value = Path(value[1:]).read_text().rstrip("\n")
+        out[key] = value
+    return out
+
+
+def _require_sites_token(args: list[str]) -> None:
+    """Refuse a site-permission or upload call lacking a ``Sites.FullControl.All`` token."""
+    bearer = _headers(args).get("Authorization", "")
+    scopes: list[str] = []
+    if bearer.startswith("Bearer "):
+        try:
+            payload = bearer.split(" ", 1)[1].split(".")[1]
+            claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
+            scopes = str(claims.get("scp", "")).split()
+        except ValueError, IndexError:
+            scopes = []
+    if SITES_SCOPE not in scopes:
+        raise AzError("Forbidden: accessDenied. Access denied.", 1)
+
+
 def _principal_exists(state: dict, object_id: str) -> bool:
     return any(o["id"] == object_id for o in state["groups"] + state["sps"])
 
@@ -323,6 +366,8 @@ def _site_rest(state: dict, method: str, url: str, args: list[str]) -> Any:
         site = next((s for s in sites if s["id"] == site_id), None)
         if site is None:
             raise AzError("Not Found: itemNotFound. Requested site could not be found.", 3)
+        if sub == "permissions":
+            _require_sites_token(args)
         if method == "GET":
             return {"value": site[sub]}
         if sub == "permissions" and method == "POST":
@@ -343,6 +388,7 @@ def _site_rest(state: dict, method: str, url: str, args: list[str]) -> Any:
         raise AssertionError(f"fake az: unsupported {method} on site {sub}")
     if (match := _DRIVE_UPLOAD_RE.match(url)) is not None and method == "PUT":
         drive_id, item_path = match.groups()
+        _require_sites_token(args)
         if not any(d["id"] == drive_id for s in sites for d in s["drives"]):
             raise AzError("Not Found: itemNotFound. The drive could not be found.", 3)
         body = _arg(args, "--body")
@@ -472,6 +518,8 @@ def fake_azure() -> None:
             result = _rest(state, args)
         elif args[0] == "identity":
             result = _identity(state, args)
+        elif args[:2] == ["account", "show"]:
+            result = {"tenantId": state.get("tenantId", str(uuid.uuid4()))}
         elif args[:2] == ["account", "get-access-token"]:
             _cli_reply(args)
             return

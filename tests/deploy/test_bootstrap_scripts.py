@@ -17,6 +17,7 @@ against a tenant is out of scope for CI, exactly as the runbook gate
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -1387,12 +1388,30 @@ def _seed_tenant() -> dict:
     }
 
 
-def _run_seed(tmp_path: Path, state: dict, bash: str = "bash") -> tuple:
+def _sites_token(scopes: str = "Sites.FullControl.All") -> str:
+    """An unsigned stand-in for a delegated Graph token carrying ``scopes``.
+
+    It verifies nothing; the seed and the fake ``az`` read only its ``scp`` claim.
+    """
+
+    def segment(obj: dict) -> str:
+        return base64.urlsafe_b64encode(json.dumps(obj).encode()).decode().rstrip("=")
+
+    return f"{segment({'alg': 'none'})}.{segment({'scp': scopes})}.unsigned"
+
+
+def _run_seed(
+    tmp_path: Path, state: dict, bash: str = "bash", sites_token: str | None = None
+) -> tuple:
     """Run the seed script against ``state``; return (result, calls, final state).
 
     ``state`` persists in ``tmp_path`` between runs, so a second call re-runs the
-    script against the tenant the first left behind.
+    script against the tenant the first left behind. The operator-supplied
+    ``GRAPH_SITES_TOKEN`` defaults to one carrying ``Sites.FullControl.All``,
+    so no run signs in.
     """
+    if sites_token is None:
+        sites_token = _sites_token()
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     az = bin_dir / "az"
@@ -1415,6 +1434,7 @@ def _run_seed(tmp_path: Path, state: dict, bash: str = "bash") -> tuple:
             "SITE_HOSTNAME": _SEED_HOST,
             "SITE_PATH": _SEED_SITE_PATH,
             "LIBRARY_NAME": _SEED_LIBRARY,
+            "GRAPH_SITES_TOKEN": sites_token,
         },
         capture_output=True,
         text=True,
@@ -1619,6 +1639,78 @@ def test_vault_seed_rerun_is_idempotent(tmp_path: Path, bash: str) -> None:
     assert final["assignments"] == built["assignments"]
     assert final["sites"][0]["permissions"] == built["sites"][0]["permissions"]
     assert len(final["uploads"]) == 2, "the config upload is create-or-replace on every run"
+
+
+def _site_calls(calls: list[list[str]]) -> list[list[str]]:
+    """The calls on a site's permissions or a drive upload -- steps 3 and 4."""
+    return [c for c in calls if any("/permissions" in a or ":/content" in a for a in c)]
+
+
+def _auth_header(call: list[str]) -> str | None:
+    if "--headers" not in call:
+        return None
+    for item in call[call.index("--headers") + 1 :]:
+        if item.startswith("--"):
+            break
+        if item.startswith("Authorization="):
+            return item
+    return None
+
+
+@SEED_BASHES
+def test_vault_seed_site_steps_use_the_sites_token_off_the_command_line(
+    tmp_path: Path, bash: str
+) -> None:
+    """Steps 3 and 4 carry the Sites.FullControl.All token; nothing else does.
+
+    The token reaches ``az`` through a private file the CLI expands
+    (``Authorization=@path``), never as an argument any local process can read,
+    and the file is gone once the run ends. The directory and site-lookup calls
+    keep the CLI's own token.
+    """
+    token = _sites_token()
+    result, calls, _ = _run_seed(tmp_path, _seed_tenant(), bash, token)
+    assert result.returncode == 0, result.stderr
+    site_calls = _site_calls(calls)
+    assert {c[c.index("--method") + 1] for c in site_calls} == {"GET", "POST", "PUT"}
+    headers = {_auth_header(c) for c in site_calls}
+    assert len(headers) == 1 and next(iter(headers), "").startswith("Authorization=@"), headers
+    token_file = Path(next(iter(headers)).split("@", 1)[1])
+    assert not token_file.exists(), "the token file outlives the run"
+    assert all(_auth_header(c) is None for c in calls if c not in site_calls)
+    assert all(token not in " ".join(c) for c in calls), "the token reached a command line"
+
+
+@SEED_BASHES
+def test_vault_seed_stops_without_the_full_control_scope(tmp_path: Path, bash: str) -> None:
+    """A token lacking Sites.FullControl.All stops the run before step 3.
+
+    The site write scope is not enough: Graph refuses the site-permission calls
+    without full control, so the run names the missing scope instead of failing
+    on a 403 halfway through.
+    """
+    token = _sites_token("Sites.ReadWrite.All Files.ReadWrite.All")
+    result, calls, final = _run_seed(tmp_path, _seed_tenant(), bash, token)
+    assert result.returncode != 0, "a token without full control must stop the run"
+    assert "Sites.FullControl.All" in result.stderr, result.stderr
+    assert _site_calls(calls) == []
+    assert final["sites"][0]["permissions"] == [] and final["uploads"] == []
+
+
+@SEED_BASHES
+def test_vault_seed_stops_when_the_tenant_lookup_fails(tmp_path: Path, bash: str) -> None:
+    """The run resolves the signed-in tenant, which a minted token is bound to;
+    a failed lookup stops it before any site call.
+    """
+    state = _seed_tenant()
+    state["faults"] = [
+        {"contains": ["account", "show"], "message": "Please run 'az login'.", "code": 1}
+    ]
+    result, calls, final = _run_seed(tmp_path, state, bash)
+    assert result.returncode != 0, "a failed tenant lookup must stop the run"
+    assert calls[-1][:2] == ["account", "show"], "nothing may run after the failed lookup"
+    assert _site_calls(calls) == []
+    assert final["uploads"] == []
 
 
 # --- Executed Key Vault secret load -------------------------------------------

@@ -53,9 +53,27 @@ Azure RBAC the deploy identity holds (`azure-deployment.md`):
   `servicePrincipals/.../appRoleAssignments` therefore requires a directory role
   that can consent to application permissions: **Privileged Role
   Administrator**, **Application Administrator**, or **Global Administrator**.
-- **The per-site permission (step 3) and the seed upload (step 4)** require write
-  access to the target site — a **site owner / member** or a SharePoint
-  administrator role that confers it.
+- **The per-site permission (step 3) and the seed upload (step 4)** call the
+  site's permissions and its drive through Microsoft Graph. Listing or creating a
+  site's application permissions requires a delegated token carrying
+  **`Sites.FullControl.All`**, held by a user with the **SharePoint
+  Administrator** role or higher (Global Administrator also qualifies).
+  Ordinary write access to the site is not enough, however the site's own
+  membership is set up.
+- **That token cannot come from the Azure CLI's client.** `az rest` signs Graph
+  calls with the CLI's own first-party client, which Microsoft preauthorizes for
+  a fixed set of Graph scopes that does not include `Sites.FullControl.All`. A
+  request for that scope on it fails with `AADSTS65002`, so `az login --scope`
+  cannot produce one. Steps 3 and 4 therefore use a token minted by
+  [`deploy/bootstrap/graph_sites_token.py`](../../deploy/bootstrap/graph_sites_token.py)
+  through Microsoft Graph PowerShell's public client, which accepts the scope
+  on request. The first sign-in asks the administrator to consent to it. That
+  consent persists as a delegated permission grant to *Microsoft Graph Command
+  Line Tools* in Entra ID (for the administrator alone, or for the whole
+  organization if the consent box is ticked). Prefer the per-user consent. To
+  revoke it afterwards, remove the grant from that enterprise application. The
+  helper refuses a token that lacks the scope, and the commands read it from a
+  private file, so it never appears on a command line.
 
 Run these while that elevated access is in hand; the grant then persists with
 the managed identity and needs no standing elevation afterward.
@@ -88,6 +106,23 @@ GRAPH_SP_ID="$(az ad sp list --filter "displayName eq 'Microsoft Graph'" --query
 SITES_SELECTED_ROLE_ID="$(az ad sp show --id "${GRAPH_SP_ID}" \
   --query "appRoles[?value=='Sites.Selected'].id" -o tsv)"
 ```
+
+Mint the `Sites.FullControl.All` token for steps 3 and 4, signed in as a
+SharePoint Administrator (or higher), and keep it in a private file for `az` to
+read. Run from the repository root with its environment installed (`uv sync`).
+Add `--device-code` to sign in on another device when this machine has no
+browser:
+
+```bash
+TENANT_ID="$(az account show --query tenantId -o tsv)"
+GRAPH_SITES_TOKEN="$(.venv/bin/python deploy/bootstrap/graph_sites_token.py mint --tenant "${TENANT_ID}")"
+graph_auth="$(mktemp)"
+printf 'Bearer %s' "${GRAPH_SITES_TOKEN}" >"${graph_auth}"
+```
+
+`mktemp` creates the file readable only by you. Delete it when you finish
+(`rm -f "${graph_auth}"`). The token expires within about an hour; mint a new
+one if steps 3 and 4 run later than that.
 
 ## Steps
 
@@ -148,16 +183,19 @@ fi
 ### 3. Grant the per-site write permission, scoped to the single site
 
 Check the site's existing permissions for a write grant to the SAGE identity
-first, and post only when there is none:
+first, and post only when there is none. Both calls use the
+`Sites.FullControl.All` token from the prerequisites:
 
 ```bash
 existing_grant="$(az rest --method GET \
   --uri "https://graph.microsoft.com/v1.0/sites/${SITE_ID}/permissions" \
+  --headers "Authorization=@${graph_auth}" \
   --query "value[?contains(grantedToIdentitiesV2[].application.id || \`[]\`, '${SAGE_MI_CLIENT_ID}') && contains(roles || \`[]\`, 'write')].id" \
   -o tsv)"
 if [ -z "${existing_grant}" ]; then
   az rest --method POST \
     --uri "https://graph.microsoft.com/v1.0/sites/${SITE_ID}/permissions" \
+    --headers "Authorization=@${graph_auth}" \
     --body "{\"roles\":[\"write\"],\"grantedToIdentities\":[{\"application\":{\"id\":\"${SAGE_MI_CLIENT_ID}\"}}]}"
 fi
 ```
@@ -179,13 +217,15 @@ its schema validity is gated by `tests/sage/test_cloud_test_vault_seed_config.py
 ```bash
 az rest --method PUT \
   --uri "https://graph.microsoft.com/v1.0/drives/${DRIVE_ID}/root:/vaults/cloud_validation/vault_config.yaml:/content" \
-  --headers "Content-Type=text/yaml" \
+  --headers "Authorization=@${graph_auth}" "Content-Type=text/yaml" \
   --body "@deploy/test-vault/vault_config.yaml"
 
 # Confirm it landed:
 az rest --method GET \
   --uri "https://graph.microsoft.com/v1.0/drives/${DRIVE_ID}/root:/vaults/cloud_validation/vault_config.yaml" \
+  --headers "Authorization=@${graph_auth}" \
   --query name -o tsv
+rm -f "${graph_auth}"
 ```
 
 The `:/path:/content` upload creates the intermediate `vaults/cloud_validation/` folders
@@ -440,4 +480,6 @@ read modes (`get_document(include_content=true)`, `read_projection` inline,
 The grant follows the managed identity: deleting the SAGE identity removes the
 service principal and with it the app-role assignment. To revoke access to a site
 without deleting the identity, remove the per-site permission (the inverse of
-step 3) — the `Sites.Selected` role alone then grants nothing.
+step 3) — the `Sites.Selected` role alone then grants nothing. Deleting a site
+permission needs the same `Sites.FullControl.All` token as step 3; pass it the
+same way (`--headers "Authorization=@${graph_auth}"`).
