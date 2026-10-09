@@ -93,6 +93,11 @@ def _configured_model() -> str | None:
     return load_stack_config_or_default().abstraction.model
 
 
+def _configured_revision() -> str | None:
+    """The repository commit this stack pins its abstraction model to."""
+    return load_stack_config_or_default().abstraction.revision
+
+
 def _positive_int(raw: str) -> int:
     """argparse type for a token count that must be at least one."""
     value = int(raw)
@@ -166,8 +171,12 @@ def _build_provider(
     context_window: int | None = None,
     prompt_construction: str = DEFAULT_CONSTRUCTION,
     opener_constraint: bool = False,
+    revision: str | None = None,
 ):
     """Instantiate the candidate provider. ``stub`` swaps in the stub.
+
+    ``revision`` is the repository commit a Hub model is loaded at; the
+    provider refuses a Hub model without one.
 
     ``context_window`` is forwarded verbatim, None included: None is the
     provider's unconfigured sentinel, so omitting the flag reproduces the
@@ -201,6 +210,7 @@ def _build_provider(
         model_id=model,
         context_window=context_window,
         opener_constraint=opener_constraint,
+        revision=revision,
     )
     if prompt_construction != DEFAULT_CONSTRUCTION:
         bind_construction(provider, PROMPT_CONSTRUCTIONS[prompt_construction])
@@ -357,6 +367,7 @@ async def run(args: argparse.Namespace) -> int:
             args.context_window,
             args.prompt_construction,
             opener_constraint=args.opener_constraint,
+            revision=args.revision,
         )
         if args.prompt_construction != DEFAULT_CONSTRUCTION:
             print(f"  prompt construction: {args.prompt_construction}", flush=True)
@@ -460,6 +471,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             f"({configured_model or 'unset -- --model is then required'}), so "
             "an unqualified run measures what this stack actually abstracts "
             "with."
+        ),
+    )
+    parser.add_argument(
+        "--revision",
+        default=None,
+        help=(
+            "Full commit hash of the model repository to load. Defaults to the "
+            "stack config's abstraction revision when --model is the configured "
+            "model, and to none otherwise; a Hugging Face model with no revision "
+            "is refused at load."
         ),
     )
     parser.add_argument(
@@ -591,6 +612,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         parser.error(
             "--model is required: the stack config names no abstraction model to fall back on."
         )
+    # The configured commit belongs to the configured repository only.
+    if args.revision is None and args.model == configured_model:
+        args.revision = _configured_revision()
     if args.ids_file is not None:
         if args.document_id:
             parser.error("--ids-file and --document-id name the corpus two ways; pass one.")

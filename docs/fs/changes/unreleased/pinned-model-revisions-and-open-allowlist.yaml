@@ -1,0 +1,32 @@
+classification: minor
+category: [caller-adaptation, operator-adaptation]
+summary: >-
+  Pins the models SAGE loads and narrows the local document opener. The stack
+  configuration's abstraction block gains revision, a full 40-character commit
+  hash of the model repository the local MLX provider fetches its weights at
+  (sage_core_config.schema.json and StackAbstractionConfig, pattern-bound to
+  a full lowercase hash). Startup refuses provider local-mlx with a Hugging
+  Face model and no revision; a model naming a local directory needs none.
+  At load, the local MLX provider fetches that commit and refuses a snapshot
+  carrying Python files or a config naming a model_file. The embedding model
+  and its remote code are pinned to commits in the embedding adapter, the
+  remote-code files are checked against pinned digests before import, and the
+  committed sage/config.yaml carries the abstraction revision. open_document
+  (POST /sage_vaults/{vault_id}/documents/{document_id}/open) refuses a stored
+  source whose extension no source adapter reads with the new error code
+  open_extension_not_allowed (400), declared in both OpenAPI specifications
+  with its envelope schema. Ships without a deprecation under the
+  security-exposure exemption.
+for_callers: >-
+  open_document now refuses a source file whose extension is not one SAGE
+  ingests with open_extension_not_allowed (400) instead of handing it to the
+  host opener. Operators running the local MLX abstraction provider against a
+  Hugging Face model must set abstraction.revision to the full commit hash of
+  that model's repository; startup refuses the configuration without it.
+  Shipped without a deprecation (security exposure).
+exemption:
+  kind: security-exposure
+  reason: >-
+    Serving the old forms keeps code from unpinned upstream repositories
+    loadable into the server process and keeps arbitrary stored files
+    reachable by the host opener.

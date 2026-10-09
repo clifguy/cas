@@ -2,11 +2,22 @@
 
 Uses sentence-transformers to load nomic-ai/nomic-embed-text-v1.5.
 Produces 768-dimensional L2-normalized embeddings.
+
+The model runs remote code that lives in a second repository, named in the
+model's ``auto_map``. Both the weights and that code are pinned to commits,
+and the code files are checked against pinned SHA-256 digests before they
+are imported; a mismatch refuses the load.
 """
 
 import asyncio
+import hashlib
 import logging
+import os
+from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 from sage.adapters.interfaces import EmbeddingProvider
 
@@ -18,6 +29,157 @@ EXPECTED_DIMENSIONS = 768
 # is truncated. nomic's primary training context; the model's default of 8192
 # produces attention matrices 16x larger.
 MAX_INPUT_TOKENS = 2048
+
+
+@dataclass(frozen=True)
+class ModelPin:
+    """Immutable identity of a remote-code embedding model.
+
+    ``revision`` is the model repository commit. ``code_repo`` and
+    ``code_revision`` locate the remote code the model's ``auto_map`` names,
+    which a model revision alone does not pin when the code lives in another
+    repository. ``code_sha256`` maps each remote-code file to the digest it
+    must have before it may be imported.
+    """
+
+    revision: str
+    code_repo: str
+    code_revision: str
+    code_sha256: Mapping[str, str]
+
+
+MODEL_PINS: dict[str, ModelPin] = {
+    NOMIC_MODEL_NAME: ModelPin(
+        revision="e9b6763023c676ca8431644204f50c2b100d9aab",
+        code_repo="nomic-ai/nomic-bert-2048",
+        code_revision="7710840340a098cfb869c4f65e87cf2b1b70caca",
+        code_sha256={
+            "configuration_hf_nomic_bert.py": (
+                "f7871694b8de3d3df4ac6640313d5799ce323261a0fb90c5cc567ecc34a0039e"
+            ),
+            "modeling_hf_nomic_bert.py": (
+                "3b24a366c4cc31b869466ccfb7bbb8879e138c97f8de06c83d4fa1e31a21f149"
+            ),
+        },
+    ),
+}
+
+
+def _sha256(path: str | os.PathLike[str]) -> str:
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+def _imported_copy_path(pin: ModelPin, filename: str) -> Path:
+    """Where transformers keeps the copy of a remote-code file it imports.
+
+    For a Hub repository, transformers reuses an existing copy at the pinned
+    commit without comparing it to the downloaded snapshot, so that copy,
+    not the snapshot, is what executes.
+    """
+    from transformers.dynamic_module_utils import _sanitize_module_name
+    from transformers.utils import hub as transformers_hub
+
+    parts = [_sanitize_module_name(part) for part in pin.code_repo.split("/")]
+    return Path(
+        transformers_hub.HF_MODULES_CACHE,
+        transformers_hub.TRANSFORMERS_DYNAMIC_MODULE_NAME,
+        *parts,
+        pin.code_revision,
+        filename,
+    )
+
+
+def _verify_remote_code(pin: ModelPin) -> None:
+    """Refuse unless every remote-code file matches its pinned digest.
+
+    Runs before anything is imported. Checks the file as fetched at the
+    pinned code revision and, where one already exists, the copy the
+    loader would import in its place.
+    """
+    import huggingface_hub
+
+    for filename, expected in pin.code_sha256.items():
+        try:
+            fetched = huggingface_hub.hf_hub_download(
+                pin.code_repo, filename, revision=pin.code_revision
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Remote code {pin.code_repo}/{filename} at {pin.code_revision} "
+                f"is unavailable: {exc}"
+            ) from exc
+        candidates = [Path(fetched)]
+        imported_copy = _imported_copy_path(pin, filename)
+        if imported_copy.exists():
+            candidates.append(imported_copy)
+        for candidate in candidates:
+            actual = _sha256(candidate)
+            if actual != expected:
+                raise RuntimeError(
+                    f"Remote code {candidate} has SHA-256 {actual}; the pinned digest is {expected}"
+                )
+
+
+def _verify_loaded_code(model: Any, pin: ModelPin) -> None:
+    """Confirm the classes actually imported come from the pinned, verified code."""
+    import inspect
+
+    auto_model = model[0].auto_model
+    for cls in (type(auto_model), type(auto_model.config)):
+        not_pinned = RuntimeError(
+            f"Loaded class {cls.__module__}.{cls.__qualname__} is not from "
+            f"{pin.code_repo} at {pin.code_revision}"
+        )
+        if pin.code_revision not in cls.__module__.split("."):
+            raise not_pinned
+        try:
+            source = Path(inspect.getfile(cls))
+        except (TypeError, OSError) as exc:
+            raise not_pinned from exc
+        expected = pin.code_sha256.get(source.name)
+        if expected is None:
+            raise not_pinned
+        if _sha256(source) != expected:
+            raise RuntimeError(
+                f"Loaded class {cls.__qualname__} has a SHA-256 that differs from the pin"
+            )
+
+
+def _build_pinned_model(model_name: str, pin: ModelPin) -> Any:
+    """Assemble the sentence-transformers pipeline from its modules.
+
+    The plain ``SentenceTransformer(name, ...)`` constructor removes
+    ``code_revision`` from ``model_kwargs`` while resolving the module
+    classes, so the model load receives none and fetches the remote code
+    from its repository's default branch. Building the ``Transformer`` module
+    directly delivers the pinned code revision to both the configuration and
+    the model load.
+    """
+    import huggingface_hub
+    from sentence_transformers import SentenceTransformer
+    from sentence_transformers.sentence_transformer.modules import Pooling, Transformer
+
+    pinned = {
+        "revision": pin.revision,
+        "code_revision": pin.code_revision,
+        "trust_remote_code": True,
+    }
+    transformer = Transformer(
+        model_name,
+        max_seq_length=MAX_INPUT_TOKENS,
+        model_kwargs=dict(pinned),
+        config_kwargs=dict(pinned),
+        processor_kwargs={"revision": pin.revision},
+    )
+    pooling_config = huggingface_hub.hf_hub_download(
+        model_name, "1_Pooling/config.json", revision=pin.revision
+    )
+    pooling = Pooling.load(os.path.dirname(pooling_config))
+    # Force CPU to avoid MPS memory contention on Apple Silicon unified
+    # memory. MPS attention tensors scale quadratically with sequence length
+    # and can exhaust the shared memory pool.
+    return SentenceTransformer(modules=[transformer, pooling], device="cpu")
+
 
 # PyTorch's ``_IncompatibleKeys`` success repr, emitted as a cosmetic WARNING
 # by nomic's remote modeling code on a clean state-dict load.
@@ -73,7 +235,7 @@ class NomicEmbeddingProvider(EmbeddingProvider):
 
     def __init__(self, model_name: str = NOMIC_MODEL_NAME) -> None:
         try:
-            from sentence_transformers import SentenceTransformer
+            import sentence_transformers  # noqa: F401
         except ImportError as exc:
             raise ImportError(
                 "sentence-transformers is required for NomicEmbeddingProvider. "
@@ -81,19 +243,23 @@ class NomicEmbeddingProvider(EmbeddingProvider):
             ) from exc
 
         self._model_name = model_name
-        logger.info("Loading embedding model: %s (device=cpu)", model_name)
+        pin = MODEL_PINS.get(model_name)
+        if pin is None:
+            raise RuntimeError(
+                f"Failed to load embedding model '{model_name}': no pinned "
+                f"revision is declared for it"
+            )
+        logger.info("Loading embedding model: %s at %s (device=cpu)", model_name, pin.revision)
         # Quiet the cosmetic ``<All keys matched successfully>`` WARNING the
         # model load emits; install here, where the process's log handlers are
         # in place, immediately before the load.
         _install_nomic_keys_matched_filter()
         try:
-            # Force CPU to avoid MPS memory contention on Apple Silicon
-            # unified memory. MPS attention tensors scale quadratically
-            # with sequence length and can exhaust the shared memory pool.
-            self._model = SentenceTransformer(model_name, trust_remote_code=True, device="cpu")
+            _verify_remote_code(pin)
             # Texts beyond the cap are truncated. Chunking keeps each passage
             # within it, so truncation reaches only text not built by chunking.
-            self._model.max_seq_length = MAX_INPUT_TOKENS
+            self._model = _build_pinned_model(model_name, pin)
+            _verify_loaded_code(self._model, pin)
         except Exception as exc:
             raise RuntimeError(f"Failed to load embedding model '{model_name}': {exc}") from exc
 

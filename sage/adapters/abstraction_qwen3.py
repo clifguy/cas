@@ -11,6 +11,7 @@ import time
 import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any, NamedTuple
 
 from sage.adapters.abstraction_prompt import (
@@ -342,6 +343,72 @@ class _OpenerConstraint:
         return self._mask(logits, tuple(blocked))
 
 
+# The files mlx-lm fetches for a model. Python files are fetched too, so the
+# inspection below sees any the snapshot carries; fetching is not executing.
+_MLX_SNAPSHOT_PATTERNS = [
+    "*.json",
+    "model*.safetensors",
+    "*.py",
+    "tokenizer.model",
+    "*.tiktoken",
+    "tiktoken.model",
+    "*.txt",
+    "*.jsonl",
+    "*.jinja",
+]
+
+
+def _refuse_snapshot_code(model_id: str, snapshot: Path) -> None:
+    """Refuse a model snapshot that could make the loader execute its code.
+
+    mlx-lm imports the file a model's ``config.json`` names in
+    ``model_file`` as the model architecture, with no trust gate. A snapshot
+    carrying any Python file, or that key, is refused before loading.
+    """
+    python_files = sorted(str(p.relative_to(snapshot)) for p in snapshot.rglob("*.py"))
+    if python_files:
+        raise RuntimeError(
+            f"Abstraction model '{model_id}' carries Python files ({', '.join(python_files)}); "
+            f"refusing to load it"
+        )
+    config_path = snapshot / "config.json"
+    if config_path.is_file():
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        if isinstance(config, dict) and "model_file" in config:
+            raise RuntimeError(
+                f"Abstraction model '{model_id}' names a model_file in its config; "
+                f"refusing to load it"
+            )
+
+
+def _resolve_inspected_snapshot(model_id: str, revision: str | None) -> Path:
+    """Return the directory to load the model from, after refusing any code in it.
+
+    A model id naming a local directory is inspected in place. Any other id
+    is fetched from the Hub at the pinned ``revision`` (required), and the
+    fetched snapshot is the directory both inspected and loaded, so nothing
+    is fetched between the inspection and the load.
+    """
+    local = Path(model_id)
+    if local.is_dir():
+        snapshot = local
+    else:
+        if revision is None:
+            raise RuntimeError(
+                f"Abstraction model '{model_id}' has no pinned revision; set "
+                f"abstraction.revision to the repository commit to load"
+            )
+        import huggingface_hub
+
+        snapshot = Path(
+            huggingface_hub.snapshot_download(
+                model_id, revision=revision, allow_patterns=_MLX_SNAPSHOT_PATTERNS
+            )
+        )
+    _refuse_snapshot_code(model_id, snapshot)
+    return snapshot
+
+
 class Qwen3AbstractionProvider(AbstractionProvider):
     """Production abstraction provider using Qwen3 via MLX.
 
@@ -360,8 +427,13 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         model_id: str,
         context_window: int | None = None,
         opener_constraint: bool = False,
+        revision: str | None = None,
     ) -> None:
         self._model_id = model_id
+        # The repository commit the weights are fetched at. Required for a
+        # Hub model id; not consulted for a model id naming a local
+        # directory, which is loaded in place.
+        self._revision = revision
         # Whether generation is constrained against CAS-ADR-020 clause (f)
         # openers. A decoding-time property, so it is available only here:
         # a hosted provider exposes no sampling loop to constrain, and its
@@ -438,9 +510,10 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         self._generate_fn = stream_generate
         self._greedy_sampler = make_sampler(temp=0.0)
 
-        logger.info("Loading abstraction model: %s", self._model_id)
+        logger.info("Loading abstraction model: %s at %s", self._model_id, self._revision)
         try:
-            model, tokenizer = load(self._model_id)
+            snapshot = _resolve_inspected_snapshot(self._model_id, self._revision)
+            model, tokenizer = load(str(snapshot))
         except Exception as exc:
             # Reset deferred state so a retry can attempt loading again
             self._generate_fn = None
@@ -918,13 +991,14 @@ def get_qwen3_abstraction_provider(
     model_id: str,
     context_window: int | None = None,
     opener_constraint: bool = False,
+    revision: str | None = None,
 ) -> Qwen3AbstractionProvider:
     """Return the process-wide Qwen3AbstractionProvider, constructing on first call.
 
     Subsequent calls return the cached instance. Requesting a different
-    ``model_id`` than the cached instance raises ``RuntimeError`` rather
-    than silently loading a second MLX model — vaults are expected to
-    agree on the abstraction model per CAS design.
+    ``model_id`` or ``revision`` than the cached instance raises
+    ``RuntimeError`` rather than silently loading a second MLX model —
+    vaults are expected to agree on the abstraction model per CAS design.
     """
     global _singleton
     if _singleton is None:
@@ -932,13 +1006,15 @@ def get_qwen3_abstraction_provider(
             model_id=model_id,
             context_window=context_window,
             opener_constraint=opener_constraint,
+            revision=revision,
         )
-    elif _singleton._model_id != model_id:
+    elif _singleton._model_id != model_id or _singleton._revision != revision:
         raise RuntimeError(
             f"Qwen3AbstractionProvider singleton already initialized with "
-            f"model_id={_singleton._model_id!r}; cannot satisfy request "
-            f"for model_id={model_id!r}. Qwen3 is intended to be "
-            f"SAGE-stack-wide; reconcile vault configs or call "
+            f"model_id={_singleton._model_id!r} at revision "
+            f"{_singleton._revision!r}; cannot satisfy request for "
+            f"model_id={model_id!r} at revision {revision!r}. Qwen3 is "
+            f"intended to be SAGE-stack-wide; reconcile vault configs or call "
             f"_reset_qwen3_singleton() if intentional."
         )
     return _singleton

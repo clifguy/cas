@@ -41,7 +41,13 @@ router = APIRouter(route_class=WireRoute, tags=["Document Metadata"])
     response_model=OpenDocumentResponse,
     responses={
         400: boundary_400(
-            path=("invalid_document_id", "invalid_vault_id"), request=("unknown_parameter",)
+            path=("invalid_document_id", "invalid_vault_id"),
+            request=("unknown_parameter",),
+            extra=(
+                "`open_extension_not_allowed`: the source file's extension is not "
+                "one a source adapter reads, so the file is not handed to the host "
+                "OS opener."
+            ),
         ),
         404: {
             "model": ErrorResponse,

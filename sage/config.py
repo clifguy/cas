@@ -1221,6 +1221,22 @@ class StackAbstractionConfig(BaseModel):
             "'anthropic'. Ignored when provider is 'stub'."
         ),
     )
+    revision: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{40}$",
+        min_length=40,
+        max_length=40,
+        description=(
+            "Full 40-character commit hash of the model repository the local "
+            "MLX provider fetches its weights at. Required when provider is "
+            "'local-mlx' and 'model' names a Hugging Face repository (startup "
+            "fails loudly if null); a branch, tag or abbreviated hash is "
+            "refused because it can move. Not consulted when 'model' names a "
+            "local directory, which is loaded in place. In either case a model "
+            "carrying Python files, or a config naming a model_file, is refused "
+            "at load. Ignored by the other providers."
+        ),
+    )
     opener_constraint: bool = Field(
         default=False,
         description=(

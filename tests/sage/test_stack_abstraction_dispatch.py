@@ -27,8 +27,18 @@ from sage.adapters.stubs import StubAbstractionProvider
 from sage.config import SageCoreConfig, StackAbstractionConfig
 from sage.mcp_init import build_stack_abstraction_provider, resolve_stack_abstraction_provider
 
+_PINNED_REVISION = "0123456789abcdef0123456789abcdef01234567"
+
 
 def _stack_config(**abstraction_kwargs) -> SageCoreConfig:
+    """A stack config for these dispatch cases.
+
+    A local-mlx config naming a model is given a pinned revision unless the
+    case sets one, since startup refuses a Hub model without it; STK-022
+    builds its unpinned config directly.
+    """
+    if abstraction_kwargs.get("provider") == "local-mlx" and abstraction_kwargs.get("model"):
+        abstraction_kwargs.setdefault("revision", _PINNED_REVISION)
     return SageCoreConfig(abstraction=StackAbstractionConfig(**abstraction_kwargs))
 
 
@@ -568,3 +578,54 @@ def test_stk_020_committed_opener_constraint_reaches_the_local_factory(monkeypat
 
     assert len(calls) == 1
     assert calls[0]["opener_constraint"] == cfg.abstraction.opener_constraint
+
+
+def _recording_factory(monkeypatch) -> list[dict]:
+    monkeypatch.delenv("SAGE_TEST_STUB_PROVIDERS", raising=False)
+    calls: list[dict] = []
+
+    def fake_factory(*, model_id: str, **kwargs):
+        calls.append({"model_id": model_id, **kwargs})
+        return StubAbstractionProvider()
+
+    monkeypatch.setattr(
+        "sage.adapters.abstraction_qwen3.get_qwen3_abstraction_provider",
+        fake_factory,
+    )
+    return calls
+
+
+def test_stk_021_committed_revision_reaches_the_local_factory(monkeypatch):
+    """The committed config's pinned revision is what the local provider receives.
+
+    Equality against the loaded value: a dispatch that read the field and
+    dropped it would hand the provider None, which it refuses only at the
+    first load rather than at startup.
+    """
+    calls = _recording_factory(monkeypatch)
+    cfg = _committed_stack_config()
+    assert cfg.abstraction.revision is not None
+    build_stack_abstraction_provider(cfg)
+    assert [c["revision"] for c in calls] == [cfg.abstraction.revision]
+
+
+def test_stk_022_hub_model_without_revision_fails_at_startup(monkeypatch):
+    """A Hub model id with no pinned revision is refused at startup, before
+    any provider is constructed. STK-023 is the local-directory control."""
+    calls = _recording_factory(monkeypatch)
+    cfg = SageCoreConfig(
+        abstraction=StackAbstractionConfig(provider="local-mlx", model="mlx-community/test-qwen3")
+    )
+    with pytest.raises(ValueError, match="abstraction.revision"):
+        build_stack_abstraction_provider(cfg)
+    assert calls == []
+
+
+def test_stk_023_local_directory_model_needs_no_revision(monkeypatch, tmp_path):
+    """A model id naming a local directory is loaded in place; no revision applies."""
+    calls = _recording_factory(monkeypatch)
+    cfg = SageCoreConfig(
+        abstraction=StackAbstractionConfig(provider="local-mlx", model=str(tmp_path))
+    )
+    build_stack_abstraction_provider(cfg)
+    assert [(c["model_id"], c["revision"]) for c in calls] == [(str(tmp_path), None)]

@@ -55,9 +55,17 @@ abstraction:
   # it accepts; the larger window recovers them whole. Quality and speed are
   # comparable between the two; the capacity is the reason for the choice.
   # Reverting to the predecessor (mlx-community/Qwen3-8B-4bit,
-  # context_window 40960) is an edit to this block with no data migration
-  # (CAS-ADR-030); abstracts already generated remain unchanged either way.
+  # context_window 40960, and that repository's commit as the revision) is an
+  # edit to this block with no data migration (CAS-ADR-030); abstracts
+  # already generated remain unchanged either way.
   model: mlx-community/Qwen3.5-9B-4bit
+
+  # The model repository commit the weights are fetched at, as a full commit
+  # hash. A branch or tag can move under the same name; a commit cannot. The
+  # snapshot is refused at load if it carries Python files or names a
+  # model_file. Changing the model means changing this to a commit of the new
+  # repository.
+  revision: 8b2b98c00a6b4d291155e4890773ca8f769aee53
 
   # Maximum prompt length in tokens, consumed only by the local MLX provider:
   # it truncates a document that would overflow this window, preserving the

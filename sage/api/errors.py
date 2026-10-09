@@ -2172,6 +2172,28 @@ class LocalOpenNotAvailableError(SAGEError):
         )
 
 
+class OpenExtensionNotAllowedError(SAGEError):
+    """400: the stored source's extension is not one a source adapter reads.
+
+    ``POST /documents/{id}/open`` hands the file to the host OS opener, which
+    runs whatever the OS associates with it. An explicit ``source_type`` at
+    ingest outranks the file extension, so a stored source may carry any
+    extension; the opener is limited to the document formats SAGE itself
+    ingests.
+    """
+
+    def __init__(self, extension: str) -> None:
+        shown = extension or "(none)"
+        super().__init__(
+            "open_extension_not_allowed",
+            (
+                f"The source file's extension {shown} is not a document format SAGE "
+                "ingests, so it is not handed to the host OS opener."
+            ),
+            400,
+        )
+
+
 class DownloadUrlNotAvailableError(SAGEError):
     """501: the active vault-source binding cannot issue a source download URL.
 

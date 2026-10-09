@@ -699,3 +699,61 @@ def test_sch_s_028_stack_context_window_rejects_non_positive():
             jsonschema.validate(instance, schema)
         with pytest.raises(ValidationError):
             StackAbstractionConfig.model_validate(instance)
+
+
+def test_sch_s_029_stack_revision_round_trip():
+    """A full commit hash in `abstraction.revision` validates against the schema
+    and survives the Pydantic model unchanged; absent, the field is None.
+
+    Asserted against both sources independently, so a field added to only one
+    fails its own half.
+    """
+    schema = _abstraction_schema()
+    revision = "8b2b98c00a6b4d291155e4890773ca8f769aee53"
+    instance = {"provider": "local-mlx", "model": "mlx-community/test", "revision": revision}
+    jsonschema.validate(instance, schema)
+
+    from sage.config import StackAbstractionConfig
+
+    assert StackAbstractionConfig.model_validate(instance).revision == revision
+    del instance["revision"]
+    jsonschema.validate(instance, schema)
+    assert StackAbstractionConfig.model_validate(instance).revision is None
+
+
+@pytest.mark.parametrize(
+    "bad_value",
+    [
+        pytest.param("main", id="branch-name"),
+        pytest.param("8b2b98c", id="short-hash"),
+        pytest.param("8B2B98C00A6B4D291155E4890773CA8F769AEE53", id="uppercase"),
+        pytest.param("8b2b98c00a6b4d291155e4890773ca8f769aee53\n", id="trailing-newline"),
+    ],
+)
+def test_sch_s_030_stack_revision_rejects_anything_but_a_full_commit_hash(bad_value):
+    """A branch, tag or abbreviated hash is a moving or ambiguous reference
+    and fails both the JSON Schema and the Pydantic model.
+
+    SCH-S-029 is the positive control.
+    """
+    schema = _abstraction_schema()
+
+    from pydantic import ValidationError
+
+    from sage.config import StackAbstractionConfig
+
+    instance = {"provider": "local-mlx", "model": "mlx-community/test", "revision": bad_value}
+    with pytest.raises(jsonschema.ValidationError):
+        jsonschema.validate(instance, schema)
+    with pytest.raises(ValidationError):
+        StackAbstractionConfig.model_validate(instance)
+
+
+def test_sch_s_031_committed_stack_config_pins_the_abstraction_revision():
+    """The committed `sage/config.yaml` names a full commit for its local model."""
+    import yaml
+
+    committed = yaml.safe_load((_REPO_ROOT / "sage" / "config.yaml").read_text())
+    abstraction = committed["abstraction"]
+    assert abstraction["provider"] == "local-mlx"
+    assert abstraction["revision"] == "8b2b98c00a6b4d291155e4890773ca8f769aee53"

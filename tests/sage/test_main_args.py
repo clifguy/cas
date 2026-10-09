@@ -355,6 +355,9 @@ def test_sp_006_main_serves_the_guarded_app_with_the_loaded_config(monkeypatch):
 
     monkeypatch.setattr("sys.argv", ["sage", "--vault-root", "/tmp/x"])
     monkeypatch.setattr("sage.__main__.load_stack_config_or_default", lambda: cfg)
+    # The offline decision reads the real model cache and writes the process
+    # environment; it has its own tests.
+    monkeypatch.setattr("sage.__main__.prefer_offline_when_pinned_models_cached", lambda _c: False)
     monkeypatch.setattr("sage.__main__.create_app", _create_app)
     monkeypatch.setattr("sage.__main__.admission_guarded", _guard)
     monkeypatch.setattr("sage.__main__.uvicorn.run", _run)

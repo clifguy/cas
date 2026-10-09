@@ -1,5 +1,7 @@
 """The process-wide source-adapter registry."""
 
+from functools import cache
+
 from sage.models.enums import SourceType
 from sage.source_adapters.base import SourceAdapter
 from sage.source_adapters.docx_adapter import DocxAdapter
@@ -26,3 +28,19 @@ def build_source_adapter_registry() -> dict[SourceType, SourceAdapter]:
         SourceType.PPTX: PptxAdapter(),
         SourceType.STRUCTURED_DATA: StructuredDataAdapter(),
     }
+
+
+@cache
+def registered_source_extensions() -> frozenset[str]:
+    """Every file extension a registered source adapter reads, lowercased.
+
+    The union of the adapters' ``EXTENSIONS``. Ingest does not limit stored
+    sources to it, since an explicit ``source_type`` outranks the extension,
+    so a consumer that must stay within the formats SAGE reads checks a
+    stored path against this set itself.
+    """
+    return frozenset(
+        extension.lower()
+        for adapter in build_source_adapter_registry().values()
+        for extension in adapter.EXTENSIONS
+    )

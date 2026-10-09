@@ -36,6 +36,11 @@ dependencies = [
     # bound turns a future float across 5.12 into a reviewable lock-time conflict
     # instead of a startup AttributeError. Resolves to 5.11.0 today.
     "transformers>=5.9,<5.12",
+    # Imported directly to fetch pinned model and remote-code snapshots before
+    # they are loaded. Transitive via transformers; declared so the import is
+    # not an accident of another package's dependencies. Resolves to 1.17.0
+    # today (no version move).
+    "huggingface-hub>=1.0",
     # Direct so [tool.uv.sources] can route it through the CPU wheel index on
     # Linux (the default PyPI build there is CUDA). Resolved exactly by uv.lock.
     "torch>=2.11.0",

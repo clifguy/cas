@@ -506,7 +506,9 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
       3. stack.abstraction.provider == "local-mlx"
          and stack.abstraction.model is None       -> raise ValueError
       4. stack.abstraction.provider == "local-mlx"
-         and stack.abstraction.model is not None -> local MLX provider (factory)
+         and stack.abstraction.model is not None -> local MLX provider (factory),
+         unless the model names a Hub repository and
+         stack.abstraction.revision is None      -> raise ValueError
       5. stack.abstraction.provider == "anthropic"
          and stack.abstraction.model is None -> raise ValueError
       6. stack.abstraction.provider == "anthropic"
@@ -542,12 +544,20 @@ def build_stack_abstraction_provider(stack_config: SageCoreConfig) -> Abstractio
                 "abstraction.provider to 'stub' to opt the whole stack "
                 "out of semantic abstract generation."
             )
+        if abstraction.revision is None and not Path(abstraction.model).is_dir():
+            raise ValueError(
+                "sage_core_config.abstraction.revision is required when "
+                "abstraction.provider is 'local-mlx' and abstraction.model "
+                "names a Hugging Face repository. Set it to the full commit "
+                "hash of the repository to load in sage/config.yaml."
+            )
         from sage.adapters.abstraction_qwen3 import get_qwen3_abstraction_provider
 
         return get_qwen3_abstraction_provider(
             model_id=abstraction.model,
             context_window=abstraction.context_window,
             opener_constraint=abstraction.opener_constraint,
+            revision=abstraction.revision,
         )
     if abstraction.provider == "anthropic":
         if abstraction.model is None:

@@ -220,3 +220,25 @@ def test_manifest_round_trips_into_the_reabstract_loader(tmp_path):
     )
 
     assert _load_ids_file(path) == ["doc_b", "doc_a"]
+
+
+def test_tokenizer_is_loaded_at_the_pinned_revision(monkeypatch):
+    """The audit counts with the tokenizer of the commit the stack pins, not
+    whatever the repository's default branch holds now."""
+    import transformers
+
+    from scripts.audit_abstraction_truncation import _load_tokenizer
+
+    calls: list[tuple[tuple, dict]] = []
+
+    class _FakeAutoTokenizer:
+        @staticmethod
+        def from_pretrained(*args, **kwargs):
+            calls.append((args, kwargs))
+            return object()
+
+    monkeypatch.setattr(transformers, "AutoTokenizer", _FakeAutoTokenizer)
+    revision = "8b2b98c00a6b4d291155e4890773ca8f769aee53"
+    _load_tokenizer("mlx-community/Example-4bit", revision)
+
+    assert calls == [(("mlx-community/Example-4bit",), {"revision": revision})]

@@ -300,6 +300,11 @@ def committed_qwen3_model_id() -> str:
     return config.abstraction.model
 
 
+def committed_qwen3_revision() -> str | None:
+    """The repository commit the stack config pins its abstraction model to."""
+    return load_sage_core_config(_PROJECT_ROOT / "sage" / "config.yaml").abstraction.revision
+
+
 def _assert_released(provider: Qwen3AbstractionProvider) -> None:
     """Fail the class at teardown if its provider still holds model state."""
     assert provider._model is None, "provider still holds a model after release"
@@ -328,7 +333,9 @@ def qwen3_provider() -> Iterator[Qwen3AbstractionProvider]:
     if not _HAS_QWEN3:
         pytest.skip("mlx-lm or Qwen3 model not available")
     with loaded_provider(
-        lambda: Qwen3AbstractionProvider(model_id=committed_qwen3_model_id())
+        lambda: Qwen3AbstractionProvider(
+            model_id=committed_qwen3_model_id(), revision=committed_qwen3_revision()
+        )
     ) as provider:
         yield provider
     _assert_released(provider)
@@ -348,7 +355,8 @@ def qwen3_provider_factory() -> Iterator[Callable[..., Awaitable[Qwen3Abstractio
         for earlier in created:
             await earlier.unload()
         provider = Qwen3AbstractionProvider(
-            model_id=committed_qwen3_model_id() if model_id is None else model_id
+            model_id=committed_qwen3_model_id() if model_id is None else model_id,
+            revision=committed_qwen3_revision() if model_id is None else None,
         )
         created.append(provider)
         return provider
