@@ -560,8 +560,8 @@ would need a secret the PKCE flow does not use. The required set is each
 `<MCP_CLIENT_REDIRECT_URI>` entry plus the `http://localhost/callback` loopback a
 browser-context desktop client uses for its auth-code/PKCE callback. A new
 registration gets exactly that set. An existing one keeps every redirect URI it
-holds, such as the per-port `http://127.0.0.1:<port>/callback/<id>` loopbacks a
-desktop client registers, and gains any required URI it lacks (see
+holds, such as the `http://127.0.0.1:<callback_port>/callback/<id>` loopbacks a
+desktop client registers (one per callback path; see below), and gains any required URI it lacks (see
 [Redirect URIs on a re-run](#redirect-uris-on-a-re-run)).
 
 On a live tenant, the public-client redirect URIs hold the hosted client's
