@@ -91,22 +91,24 @@ source bytes, not a reconstructed search snippet, are the edit baseline.
 
 Use retained source bytes for substantive revisions and atomic predecessor-based
 ingest with optimistic concurrency. Explicitly supply metadata (it does not inherit).
-Wait for terminal pipeline status and restore the prior completed or dropped resting
-state through valid lifecycle transitions within the authorized revision scope.
-Read back metadata, lineage, pipeline and resting state. Do not manufacture a version
-chain with separate edge creation and archival writes.
+Restore the prior completed or dropped resting state right after the supersede,
+through valid lifecycle transitions within the authorized revision scope; it does not
+wait on the new head's pipeline. Read back metadata, lineage and resting state, and
+settle the new head's pipeline in the session's one bounded wait, recovering a failure
+by recomputing it. Do not manufacture a version chain with separate edge creation and
+archival writes.
 
 Capture the current head/version and use the served optimistic precondition with
 `predecessor_id`; on conflict reread and rebase the intended edit, never overwrite a
 concurrent revision. Preserve full metadata explicitly, including submitter where
 stored, original opening date, follow-up tags and closure provenance. The CAS live
-table permits completed predecessors to be superseded directly; after terminal
-pipeline success complete the new head. It does not permit archived predecessors:
-when that revision is authorized, reactivate the dropped head, supersede it, then
-archive the successful new head. Do not archive a completed predecessor merely to
+table permits completed predecessors to be superseded directly; complete the new
+head right after the supersede. It does not permit archived predecessors: when that
+revision is authorized, reactivate the dropped head, supersede it, then archive the
+new head. Do not archive a completed predecessor merely to
 reactivate it. If interrupted, reconcile the actual head before restoring state;
-report failed/nonterminal pipeline or unfinished restoration separately and do not
-declare the revision complete. These restoration actions preserve the prior decision
+report unfinished restoration, or a pipeline that fails afterwards, separately and do
+not declare the revision complete until both are settled. These restoration actions preserve the prior decision
 and do not authorize reopening work or making a new acceptance judgment.
 
 ## Dependencies and triage

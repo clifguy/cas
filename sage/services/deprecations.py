@@ -3,8 +3,8 @@
 CAS-ADR-008 clause 8 has every caller adaptation that withdraws or changes
 something callers use follow a deprecation. The published contract marks a
 deprecation for whoever reads the specification; this module reaches the caller
-who never does. A call that uses a deprecated operation, parameter, value or
-default gets a warning in its response naming the form, its replacement and the
+who never does. A call that uses a deprecated operation, parameter, value,
+value format or default gets a warning in its response naming the form, its replacement and the
 earliest date the adaptation may ship.
 
 The warning is decided here, beneath both request surfaces (CAS-ADR-052), from
@@ -22,14 +22,15 @@ operation that field, which is itself a published capability.
 from __future__ import annotations
 
 import datetime as dt
-from collections.abc import Iterable, Mapping
+import re
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
 from pydantic import BaseModel
 
-from sage.models.schemas import DiscoverRequest, IngestRequest
+from sage.models.schemas import BulkMetadataItem, DiscoverRequest, IngestRequest
 
 
 class DeprecatedForm(StrEnum):
@@ -38,7 +39,29 @@ class DeprecatedForm(StrEnum):
     OPERATION = "operation"
     PARAMETER = "parameter"
     VALUE = "value"
+    FORMAT = "format"
     DEFAULT = "default"
+
+
+_TIMESTAMP_PREFIX: Final[re.Pattern[str]] = re.compile(r"^\d{4}-\d{2}-\d{2}T")
+
+
+def is_timestamp(value: Any) -> bool:
+    """Whether ``value`` is an ISO 8601 timestamp string."""
+    if not isinstance(value, str) or not _TIMESTAMP_PREFIX.match(value):
+        return False
+    try:
+        dt.datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return True
+
+
+#: The value formats a ``FORMAT`` deprecation can name, each with the test that
+#: tells a value of that format from any other value of its parameter.
+VALUE_FORMATS: Final[Mapping[str, Callable[[Any], bool]]] = {
+    "timestamp": is_timestamp,
+}
 
 
 class DeprecationRegistryError(ValueError):
@@ -63,6 +86,8 @@ class Deprecation:
             return f"the {self.parameter} parameter"
         if self.form is DeprecatedForm.VALUE:
             return f"the value {self.value!r} of {self.parameter}"
+        if self.form is DeprecatedForm.FORMAT:
+            return f"a {self.value} value of {self.parameter}"
         return f"the default of {self.parameter}"
 
     def warning(self) -> str:
@@ -78,6 +103,8 @@ class Deprecation:
         value = getattr(request, self.parameter or "", None)
         if self.form is DeprecatedForm.VALUE:
             return value == self.value
+        if self.form is DeprecatedForm.FORMAT:
+            return value is not None and VALUE_FORMATS[self.value](value)
         field = type(request).model_fields.get(self.parameter or "")
         default = None if field is None else field.get_default(call_default_factory=True)
         at_default = value is None or value == default
@@ -86,16 +113,40 @@ class Deprecation:
 
 #: The operations whose response carries a caller-facing warnings list and whose
 #: service consults ``warnings_for``: ``search`` in its hints, ``ingest_document``
-#: in the ingest result's warnings. Each names the request model its service
-#: receives, which holds every parameter a deprecation of it can name.
+#: in the ingest result's warnings, ``update_metadata`` in each item result's
+#: warnings. Each names the request model its service judges, which holds every
+#: parameter a deprecation of it can name; ``update_metadata`` is judged item by
+#: item, so a warning lands on the item that used the deprecated form.
 WARNING_CARRIERS: Final[Mapping[str, type[BaseModel]]] = {
     "search": DiscoverRequest,
     "ingest_document": IngestRequest,
+    "update_metadata": BulkMetadataItem,
 }
+
+#: The date from which an ``updated_at`` concurrency token may stop being
+#: accepted (CAS-ADR-038, CAS-ADR-008 clause 8).
+TIMESTAMP_TOKEN_ADAPTATION: Final[dt.date] = dt.date(2026, 12, 1)
 
 #: Every deprecated form currently served. An entry names the operation id the
 #: REST operation and the MCP tool share, and stays until the adaptation ships.
-DEPRECATIONS: tuple[Deprecation, ...] = ()
+DEPRECATIONS: tuple[Deprecation, ...] = (
+    Deprecation(
+        operation="ingest_document",
+        form=DeprecatedForm.FORMAT,
+        parameter="expected_head_version",
+        value="timestamp",
+        replacement="the predecessor's version_token",
+        earliest_adaptation=TIMESTAMP_TOKEN_ADAPTATION,
+    ),
+    Deprecation(
+        operation="update_metadata",
+        form=DeprecatedForm.FORMAT,
+        parameter="expected_version",
+        value="timestamp",
+        replacement="the document's version_token",
+        earliest_adaptation=TIMESTAMP_TOKEN_ADAPTATION,
+    ),
+)
 
 
 def validate_registry(entries: Iterable[Deprecation]) -> None:
@@ -118,6 +169,11 @@ def validate_registry(entries: Iterable[Deprecation]) -> None:
         if entry.form is DeprecatedForm.VALUE and entry.value is None:
             raise DeprecationRegistryError(
                 f"a value deprecation of {entry.operation!r} names no value"
+            )
+        if entry.form is DeprecatedForm.FORMAT and entry.value not in VALUE_FORMATS:
+            raise DeprecationRegistryError(
+                f"a format deprecation of {entry.operation!r} names no known format: "
+                f"{entry.value!r}"
             )
 
 

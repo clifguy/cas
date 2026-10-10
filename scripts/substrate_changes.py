@@ -117,10 +117,12 @@ CATEGORY_ORDER: Final[tuple[str, ...]] = ("capability", "caller-adaptation", "op
 # baseline, so deprecation history is read only from releases after it.
 DEPRECATION_BASELINE: Final[str] = "3.0"
 DEPRECATION_WINDOW: Final[dt.timedelta] = dt.timedelta(days=30)
-# A deprecated value or default is stated in its parameter's description, which
-# the contract comparison does not read, so no mark is looked for. A value is
-# addressed as ``.../enum/<value>``, the pointer its removal is reported at.
-_VALUE_POINTER: Final[re.Pattern[str]] = re.compile(r"/default$|/enum/")
+# A deprecated value, value format or default is stated in its parameter's
+# description, which the contract comparison does not read, so no mark is looked
+# for. A value is addressed as ``.../enum/<value>``, the pointer its removal is
+# reported at; a format, a class of values such as timestamps, as
+# ``.../format/<name>``.
+_VALUE_POINTER: Final[re.Pattern[str]] = re.compile(r"/default$|/enum/|/format/[^/]+$")
 
 
 class ReleaseRefused(RuntimeError):

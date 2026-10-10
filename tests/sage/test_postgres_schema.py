@@ -545,6 +545,45 @@ async def test_bootstrap_adds_a_new_column_to_an_already_provisioned_schema(
             await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')  # noqa: S608
 
 
+async def test_a_document_written_before_the_version_token_existed_is_at_version_one(pg_dsn):
+    """An existing row reads the first version once the column lands.
+
+    Anti-coincidental-pass: the row is written while the column is absent, so
+    its value can only come from the additive statement's default; a column
+    added without one would leave the bootstrap failing on the NOT NULL.
+    """
+    import psycopg
+
+    from sage.storage.postgres import schema as pg
+    from sage.storage.postgres.schema import assert_disposable_target, bootstrap_schema
+
+    schema = assert_disposable_target("sage_test_vertok_" + os.urandom(3).hex())
+    legacy_documents = pg.DOCUMENTS_TABLE.replace(
+        ",\n    version_token bigint NOT NULL DEFAULT 1", ""
+    )
+    assert "version_token" not in legacy_documents
+
+    async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+        try:
+            await conn.execute(f'CREATE SCHEMA IF NOT EXISTS "{schema}"')  # noqa: S608
+            await conn.execute(f'SET search_path TO "{schema}", public')  # noqa: S608
+            await conn.execute(legacy_documents)
+            await conn.execute(
+                "INSERT INTO documents (id, title, source_type, source_path, "
+                "source_content_hash, adapter_version, created_by, created_at, "
+                "last_modified_by, updated_at) VALUES ('d1', 't', 'markdown', 'a.md', "
+                "'sha256:0', '1', 'owner', '2026-01-01T00:00:00+00:00', 'owner', "
+                "'2026-01-01T00:00:00+00:00')"
+            )
+
+            await bootstrap_schema(conn, schema=schema, extensions=["vector", "pgstattuple"])
+
+            cur = await conn.execute("SELECT version_token FROM documents WHERE id = 'd1'")
+            assert (await cur.fetchone())[0] == 1
+        finally:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')  # noqa: S608
+
+
 @pytest.mark.parametrize(
     "column,declaration",
     [

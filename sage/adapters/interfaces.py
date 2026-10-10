@@ -872,8 +872,18 @@ class GraphStore(ABC):
         """Return the document with this id, or None if absent."""
 
     @abstractmethod
-    async def update_document(self, doc_id: str, updates: dict) -> Document | None:
-        """Apply a partial update; return the updated document or None if absent."""
+    async def update_document(
+        self, doc_id: str, updates: dict, *, advance_version: bool = True
+    ) -> Document | None:
+        """Apply a partial update; return the updated document or None if absent.
+
+        ``advance_version`` adds one to the document's ``version_token``, the
+        optimistic-concurrency token of CAS-ADR-038. Every write a caller means
+        advances it; a write the pipeline makes on its own account (a status
+        stamp, an abstract, a re-projection) passes False, so a token a caller
+        read before that write stays valid. The supersede operations always
+        advance the predecessor's token.
+        """
 
     @abstractmethod
     async def list_all_documents(self) -> list[Document]:

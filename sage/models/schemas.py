@@ -638,6 +638,18 @@ class Document(BaseModel):
         ),
     )
     updated_at: datetime = Field(description="Last modification timestamp.")
+    version_token: str = Field(
+        default="1",
+        description=(
+            "The document's version, an opaque string. Pass it as "
+            "`expected_version` to a metadata patch or as "
+            "`expected_head_version` to a supersede. It advances on every "
+            "metadata patch, lifecycle transition, supersede and content "
+            "replacement, and not on pipeline work (status changes, indexing, "
+            "abstraction, re-projection), so a value read while the pipeline "
+            "runs stays valid."
+        ),
+    )
     projected_at: datetime | None = Field(
         default=None,
         description="Last time the source adapter ran against this source.",
@@ -1332,19 +1344,18 @@ class IngestRequest(BaseModel):
     expected_head_version: str | None = Field(
         default=None,
         description=(
-            "Optimistic-concurrency token on the chain head identified by "
-            "`predecessor_id`. When supplied, the "
-            "substrate verifies it against the predecessor's current "
-            "`updated_at` inside the per-predecessor lock at supersede time; "
-            "on mismatch the supersede is rejected with a structured "
-            "`stale_chain_head` 409 carrying the current head id and version "
-            "in detail. When omitted (the default), the supersede proceeds "
-            "without a version check (back-compat for callers that have not "
-            "adopted the contract). The version source is the predecessor's "
-            "`updated_at` value as observed on a prior `GET /documents/{id}` "
-            "read, in its canonical wire form (ISO 8601 with `Z` suffix). "
-            "Requires `predecessor_id`; supplying this token on a "
-            "fresh-chain ingest returns 400 "
+            "Optimistic-concurrency token on the chain head named by "
+            "`predecessor_id`: its `version_token` from a prior read, which "
+            "pipeline work does not advance. When supplied, it is verified "
+            "against the predecessor's current version inside the "
+            "per-predecessor lock at supersede time; a mismatch is refused with "
+            "a `stale_chain_head` 409 carrying the current head id and version. "
+            "When omitted, the supersede proceeds without a version check. A "
+            "timestamp (the predecessor's `updated_at`, the earlier token) is "
+            "deprecated: it is compared with `updated_at`, which pipeline work "
+            "advances, draws a warning, and may stop being accepted from "
+            "2026-12-01. Requires `predecessor_id`; supplied on a fresh-chain "
+            "ingest it returns 400 "
             "`expected_head_version_requires_predecessor`."
         ),
     )
@@ -2302,15 +2313,16 @@ class UpdateMetadataRequest(BaseModel):
     expected_version: str | None = Field(
         default=None,
         description=(
-            "Optimistic-concurrency token (CAS-ADR-038 Primitive B). When "
-            "supplied, the substrate verifies it against the document's "
-            "current version inside the per-document lock at write time; "
-            "on mismatch the write is rejected with a structured "
-            "`stale_read` 409 carrying the current version in detail. When "
-            "omitted (the default), behavior is last-writer-wins and "
-            "unchanged from the pre-Primitive-B contract. The version "
-            "source is the document's `updated_at` value as observed on "
-            "a prior read."
+            "Optimistic-concurrency token (CAS-ADR-038 Primitive B): the "
+            "document's `version_token` from a prior read, which pipeline work "
+            "does not advance. When supplied, it is verified against the "
+            "document's current version inside the per-document lock at write "
+            "time; a mismatch is refused with a `stale_read` 409 carrying the "
+            "current version. When omitted (the default), the write is "
+            "last-writer-wins. A timestamp (the document's `updated_at`, the "
+            "earlier token) is deprecated: it is compared with `updated_at`, "
+            "which pipeline work advances, draws a warning, and may stop being "
+            "accepted from 2026-12-01."
         ),
     )
     dry_run: bool = Field(
@@ -2438,12 +2450,15 @@ class BulkMetadataItem(BaseModel):
     expected_version: str | None = Field(
         default=None,
         description=(
-            "Optimistic-concurrency token (CAS-ADR-038 Primitive B), the document's "
-            "`updated_at` value as observed on a prior read. When supplied, verified "
-            "against the per-item document's current version inside its per-document "
-            "lock; mismatch surfaces a structured `stale_read` per-item error envelope"
-            " without aborting the batch (CAS-ADR-029 partial-success semantics). When"
-            " omitted, the per-item write is last-writer-wins."
+            "Optimistic-concurrency token (CAS-ADR-038 Primitive B): the "
+            "document's `version_token` from a prior read, which pipeline work "
+            "does not advance. Verified against the document's current version "
+            "inside its per-document lock; a mismatch surfaces a `stale_read` "
+            "per-item error without aborting the batch (CAS-ADR-029). When "
+            "omitted, the write is last-writer-wins. A timestamp (the "
+            "document's `updated_at`, the earlier token) is deprecated: it is "
+            "compared with `updated_at`, which pipeline work advances, draws a "
+            "warning, and may stop being accepted from 2026-12-01."
         ),
     )
 
@@ -2557,8 +2572,9 @@ class BulkMetadataItemResult(BaseModel):
     warnings: list[str] | None = Field(
         default=None,
         description=(
-            "Advisory messages; reserved for parity with `BulkLifecycleItemResult`. "
-            "Not currently emitted by `update_metadata`."
+            "Advisory messages, such as a deprecation warning when the item "
+            "used a deprecated form; reserved for parity with "
+            "`BulkLifecycleItemResult`."
         ),
     )
     error: dict | None = Field(

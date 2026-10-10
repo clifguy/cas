@@ -550,11 +550,7 @@ _INGEST_PREDECESSOR_ID = _ingest_param(
     ),
 )
 
-_INGEST_EXPECTED_HEAD_VERSION = _ingest_param(
-    str | None,
-    "expected_head_version",
-    mcp="Pass the ``updated_at`` observed on a prior ``get_document`` read.",
-)
+_INGEST_EXPECTED_HEAD_VERSION = _ingest_param(str | None, "expected_head_version")
 
 _INGEST_NEEDS_REVIEW = _ingest_param(
     bool,
@@ -848,16 +844,15 @@ def register_sage_tools(
         """Ingest a source file into SAGE, running the projection ->
         indexing -> abstraction pipeline.
 
-        Stages 2-3 (indexing, abstraction) run in the background, so the
-        call returns with ``pipeline_status`` typically non-terminal; a
+        Stages 2-3 (indexing, abstraction) run in the background; a
         requested supersede runs synchronously, so the version chain is
-        complete on return. To observe the outcome, wait for a terminal
-        ``pipeline_status`` on the document: ``abstraction_complete``,
-        ``abstraction_skipped``, or ``failed`` (which sets ``pipeline_error``).
-        A wait must also accept
-        ``abstraction_interrupted``: the work was stopped before it finished
-        and the next server start re-runs it. Run one bounded wait on the
-        caller's side, not a status request per unit of work.
+        complete on return. The document can at once be read, patched,
+        linked and superseded. Only passage search waits on indexing, and
+        the abstract on abstraction, so wait for a terminal
+        ``pipeline_status`` only when the next step needs one, else once per
+        batch, bounded: ``abstraction_complete``,
+        ``abstraction_skipped``, ``failed`` (sets ``pipeline_error``) or
+        ``abstraction_interrupted`` (re-run at the next server start).
 
         Metadata is caller-authoritative. ``dry_run=true`` previews the
         call and the doc_type's requirements, persisting nothing.
@@ -2531,8 +2526,9 @@ def register_sage_tools(
         The call flips ``pipeline_status=abstraction_in_progress`` and
         returns ``{"status": "reabstract_started", "document_id",
         "dispatched_at"}``. The task ends at ``abstraction_complete`` or
-        ``failed`` (with ``pipeline_error``). To observe the outcome, wait
-        for a terminal ``pipeline_status`` -- a single caller-side wait that
+        ``failed`` (with ``pipeline_error``). The document can be read and
+        patched throughout; only its abstract waits on the task. To observe
+        the outcome, wait for a terminal ``pipeline_status`` -- a single caller-side wait that
         returns once the status leaves ``abstraction_in_progress``, not one
         status request per unit of caller work. A wait must also accept
         ``abstraction_interrupted``, which means the queue draining the work
@@ -2578,7 +2574,9 @@ def register_sage_tools(
         failure is refused here. Indexing and abstraction then run as a
         background task, and the call returns without waiting for them.
 
-        To observe the outcome, wait for a terminal ``pipeline_status`` with
+        The document can be read and patched throughout; only passage search
+        and its abstract wait on the background task. To observe the outcome,
+        wait for a terminal ``pipeline_status`` with
         ``get_document``, as one bounded wait: ``abstraction_complete`` or
         ``abstraction_skipped`` on success, ``failed`` with ``pipeline_error``
         populated, or ``abstraction_interrupted``, which the next server start

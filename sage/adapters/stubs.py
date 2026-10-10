@@ -690,10 +690,16 @@ class StubGraphStore(GraphStore):
     async def get_document(self, doc_id: str) -> Document | None:
         return self._docs.get(doc_id)
 
-    async def update_document(self, doc_id: str, updates: dict) -> Document | None:
+    async def update_document(
+        self, doc_id: str, updates: dict, *, advance_version: bool = True
+    ) -> Document | None:
         doc = self._docs.get(doc_id)
         if doc is None:
             return None
+        if "version_token" in updates:
+            raise ValueError("version_token is advanced, never set")
+        if advance_version:
+            updates = {**updates, "version_token": str(int(doc.version_token) + 1)}
         updated = doc.model_copy(update=updates)
         self._docs[doc_id] = updated
         return updated

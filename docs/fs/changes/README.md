@@ -113,11 +113,12 @@ deprecates:
 
 The pointer is the one the contract comparison prints in its findings. The gate
 fails a change that marks a deprecation no record declares, and a record that
-declares one the contract does not mark. The exception is a deprecated value or
-default: its parameter's description states it, so no mark is looked for. A
-deprecated default's pointer ends in `/default`; a deprecated value's is
-`.../enum/<value>`, the pointer its removal is reported at, so the deprecation
-covers that value and no other. A `/` in the value is written `~1` and a `~`
+declares one the contract does not mark. The exception is a deprecated value,
+value format or default: its parameter's description states it, so no mark is
+looked for. A deprecated default's pointer ends in `/default`; a deprecated
+value's is `.../enum/<value>`, the pointer its removal is reported at, so the
+deprecation covers that value and no other. A deprecated value format, a class
+of values such as timestamps, ends in `.../format/<name>`. A `/` in the value is written `~1` and a `~`
 is written `~0`, as in a JSON Pointer. For an operation listed in
 `WARNING_CARRIERS` in `sage/services/deprecations.py`, declare the form there
 too, so a caller using it is warned in the response; another operation first

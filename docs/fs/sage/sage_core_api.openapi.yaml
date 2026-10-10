@@ -605,12 +605,13 @@ paths:
         The MCP `ingest_document` tool wraps this same service but dispatches
         Stages 2-3 as a background task and returns in seconds with
         `pipeline_status` at a non-terminal value (typically
-        `indexing_in_progress`). MCP callers wait for a terminal
-        `pipeline_status` on the document to observe the outcome, as a single
-        bounded wait rather than one status read per unit of caller work. A
-        wait must also accept `abstraction_interrupted`, which means the queue
-        draining the work was stopped before it finished and the next server
-        start re-runs it. This
+        `indexing_in_progress`). The document can at once be read, patched,
+        linked and superseded. Only passage search waits on indexing, and the
+        abstract on abstraction, so wait for a terminal `pipeline_status` only
+        when the next step needs one, else once per batch, bounded:
+        `abstraction_complete`, `abstraction_skipped`, `failed` (sets
+        `pipeline_error`) or `abstraction_interrupted` (re-run at the next
+        server start). This
         exists because the MCP client transport imposes a 60-second RPC timeout
         that abstraction on large documents can exceed (BH-130).
 
@@ -932,10 +933,11 @@ paths:
 
 
             `stale_chain_head`: `expected_head_version` was supplied
-            and did not match the predecessor's current `updated_at`
-            at supersede time. Detail carries the current head id and
-            version so the caller can pivot through the chain and
-            retry (CAS-ADR-038 Primitive C).
+            and did not match the predecessor's current version at
+            supersede time. Detail carries the current head id and
+            version, in the form the token was supplied in, so the
+            caller can pivot through the chain and retry (CAS-ADR-038
+            Primitive C).
 
             `tier3_unique_constraint_violation`: the resolved doc_type
             declares a tier3 field `unique`, and another document in the
@@ -3026,8 +3028,10 @@ paths:
         document, flips pipeline_status to abstraction_in_progress,
         dispatches the abstraction work as a background task, and returns
         immediately. The regenerated abstract is written by that task, not
-        by this call; wait on `GET /documents/{document_id}` for a terminal
-        pipeline_status to observe the outcome, as a single bounded wait
+        by this call. The document can be read and patched throughout; only
+        its abstract waits on the task. Wait on
+        `GET /documents/{document_id}` for a terminal pipeline_status to
+        observe the outcome, as a single bounded wait
         rather than one status read per unit of caller work. A wait must also
         accept `abstraction_interrupted`, which means the queue draining the
         work was stopped before it finished and the next server start re-runs
@@ -3096,7 +3100,9 @@ paths:
         background task, and the call returns without waiting for them.
 
 
-        To observe the outcome, wait for a terminal `pipeline_status` with
+        The document can be read and patched throughout; only passage search
+        and its abstract wait on the background task. To observe the outcome,
+        wait for a terminal `pipeline_status` with
         `get_document`, as one bounded wait: `abstraction_complete` or
         `abstraction_skipped` on success, `failed` with `pipeline_error`
         populated, or `abstraction_interrupted`, which the next server start
@@ -5131,6 +5137,16 @@ components:
           type: string
           format: date-time
           description: Last modification timestamp.
+        version_token:
+          type: string
+          description: >-
+            The document's version, an opaque string. Pass it as
+            `expected_version` to a metadata patch or as
+            `expected_head_version` to a supersede. It advances on every
+            metadata patch, lifecycle transition, supersede and content
+            replacement, and not on pipeline work (status changes,
+            indexing, abstraction, re-projection), so a value read while
+            the pipeline runs stays valid.
         projected_at:
           type: [string, "null"]
           format: date-time
@@ -5920,15 +5936,17 @@ components:
         expected_version:
           type: [string, "null"]
           description: >-
-            Optimistic-concurrency token (CAS-ADR-038 Primitive B). When
-            supplied, the substrate verifies it against the document's
-            current version inside the per-document lock at write time;
-            on mismatch the write is rejected with a structured
-            `stale_read` 409 carrying the current version in detail. When
-            omitted (the default), behavior is last-writer-wins and
-            unchanged from the pre-Primitive-B contract. The version
-            source is the document's `updated_at` value as observed on
-            a prior read.
+            Optimistic-concurrency token (CAS-ADR-038 Primitive B): the
+            document's `version_token` from a prior read, which pipeline
+            work does not advance. When supplied, it is verified against
+            the document's current version inside the per-document lock
+            at write time; a mismatch is refused with a `stale_read` 409
+            carrying the current version. When omitted (the default),
+            the write is last-writer-wins. A timestamp (the document's
+            `updated_at`, the earlier token) is deprecated: it is
+            compared with `updated_at`, which pipeline work advances,
+            draws a warning, and may stop being accepted from
+            2026-12-01.
         dry_run:
           type: boolean
           default: false
@@ -6157,20 +6175,19 @@ components:
         expected_head_version:
           type: [string, "null"]
           description: >-
-            Optimistic-concurrency token on the chain head identified
-            by `predecessor_id`. When
-            supplied, the substrate verifies it against the
-            predecessor's current `updated_at` inside the
-            per-predecessor lock at supersede time; on mismatch the
-            supersede is rejected with a structured `stale_chain_head`
-            409 carrying the current head id and version in detail.
-            When omitted (the default), the supersede proceeds without
-            a version check (back-compat for callers that have not
-            adopted the contract). The version source is the
-            predecessor's `updated_at` value as observed on a prior
-            `GET /documents/{id}` read, in its canonical wire form
-            (ISO 8601 with `Z` suffix). Requires `predecessor_id`;
-            supplying this token on a fresh-chain ingest returns 400
+            Optimistic-concurrency token on the chain head named by
+            `predecessor_id`: its `version_token` from a prior read,
+            which pipeline work does not advance. When supplied, it is
+            verified against the predecessor's current version inside
+            the per-predecessor lock at supersede time; a mismatch is
+            refused with a `stale_chain_head` 409 carrying the current
+            head id and version. When omitted, the supersede proceeds
+            without a version check. A timestamp (the predecessor's
+            `updated_at`, the earlier token) is deprecated: it is
+            compared with `updated_at`, which pipeline work advances,
+            draws a warning, and may stop being accepted from
+            2026-12-01. Requires `predecessor_id`; supplied on a
+            fresh-chain ingest it returns 400
             `expected_head_version_requires_predecessor`.
         tier3_metadata:
           type: [object, "null"]
@@ -7417,14 +7434,16 @@ components:
         expected_version:
           type: [string, "null"]
           description: >-
-            Optimistic-concurrency token (CAS-ADR-038 Primitive B), the
-            document's `updated_at` value as observed on a prior read.
-            When supplied, verified against the per-item document's
-            current version inside its per-document lock; mismatch
-            surfaces a structured `stale_read` per-item error envelope
-            without aborting the batch (CAS-ADR-029 partial-success
-            semantics). When omitted, the per-item write is
-            last-writer-wins.
+            Optimistic-concurrency token (CAS-ADR-038 Primitive B): the
+            document's `version_token` from a prior read, which pipeline
+            work does not advance. Verified against the document's
+            current version inside its per-document lock; a mismatch
+            surfaces a `stale_read` per-item error without aborting the
+            batch (CAS-ADR-029). When omitted, the write is
+            last-writer-wins. A timestamp (the document's `updated_at`,
+            the earlier token) is deprecated: it is compared with
+            `updated_at`, which pipeline work advances, draws a warning,
+            and may stop being accepted from 2026-12-01.
 
     BulkMetadataRequest:
       type: object
@@ -7514,9 +7533,9 @@ components:
           items:
             type: string
           description: >-
-            Advisory messages; reserved for parity with
-            `BulkLifecycleItemResult`. Not currently emitted by
-            `update_metadata`.
+            Advisory messages, such as a deprecation warning when the
+            item used a deprecated form; reserved for parity with
+            `BulkLifecycleItemResult`.
         error:
           type: [object, "null"]
           description: >-

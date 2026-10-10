@@ -40,8 +40,8 @@ from sage.models.schemas import (
 from sage.request_identity import asserted_agent, current_actor, modifier_fields
 from sage.services._bulk_envelope import resolve_item_document_id, sage_error_to_envelope
 from sage.services._dry_run import doc_type_requirements
-from sage.services.document_surface import compose_document_surface
-from sage.services.passage_structure import indexed_structure
+from sage.services.deprecations import is_timestamp, warnings_for
+from sage.services.document_surface import refresh_derived_retrieval_text
 from sage.storage.locks import DocumentLockManager
 
 
@@ -59,6 +59,20 @@ def _wire_version(ts: datetime) -> str:
     if ts.tzinfo is not None and ts.utcoffset() == timedelta(0):
         return iso.replace("+00:00", "Z")
     return iso
+
+
+def current_version(doc: Document, token: str) -> str:
+    """The document's current version, in the form of the token it is compared with.
+
+    The token is ``version_token``, which only a caller-meaningful write
+    advances (CAS-ADR-038). A timestamp is the deprecated earlier form: the
+    document's ``updated_at``, compared as it always was, pipeline writes
+    included. Answering in the caller's own form keeps a refusal's detail
+    usable for the caller's next attempt in either form.
+    """
+    if is_timestamp(token):
+        return _wire_version(doc.updated_at)
+    return doc.version_token
 
 
 def _compute_metadata_changes(pre_doc: Document, updates: dict) -> list[FieldChange]:
@@ -238,19 +252,14 @@ class MetadataService:
 
             # CAS-ADR-038 Primitive B compare-and-swap. The check runs
             # inside the per-document lock so a concurrent winner has
-            # already advanced updated_at before the loser observes it.
-            # `updated_at` is the per-document monotonic version source;
-            # equality is over the canonical wire string (Pydantic's
-            # JSON form for UTC datetimes uses a `Z` suffix), so the
-            # value matches what callers see across the MCP / HTTP
-            # transports on a prior read.
+            # already advanced the version before the loser observes it.
             if request.expected_version is not None:
-                current_version = _wire_version(doc.updated_at)
-                if current_version != request.expected_version:
+                current = current_version(doc, request.expected_version)
+                if current != request.expected_version:
                     raise StaleReadError(
                         document_id=document_id,
                         expected_version=request.expected_version,
-                        current_version=current_version,
+                        current_version=current,
                     )
 
             updates: dict = {}
@@ -388,37 +397,9 @@ class MetadataService:
                     await self._content.update_chunk_metadata(document_id, chunk_updates)
 
                 if "title" in updates or "tags" in updates:
-                    await self._refresh_derived_retrieval_text(document_id, doc)
+                    await refresh_derived_retrieval_text(self._content, document_id, doc)
 
             return UpdateMetadataResponse(document=doc, dry_run=False)
-
-    async def _refresh_derived_retrieval_text(self, document_id: str, doc: Document) -> None:
-        """Re-derive what the content store holds *about* a document.
-
-        A document's title and tags are authored text the retrieval binding
-        indexes in two derived places (CAS-ADR-049): the document surface's
-        matchable half, and -- because a passage's indexed structure is its
-        heading path relative to the document -- every passage of the document.
-        Both are computed from the record, so an edit to the record leaves both
-        describing a title nobody holds any more: the document goes on matching
-        its old title and not its new one.
-
-        The structure is re-derived through the same function ingest and the
-        migration use, so a document edited here and one re-ingested afterwards
-        agree. Only the keyword halves move; nothing is re-embedded, which is
-        the posture passages already have -- a metadata edit has never
-        recomputed a vector.
-        """
-        surface = compose_document_surface(document_id, doc)
-        await self._content.update_document_surface_text(
-            document_id, surface.matchable, surface.orienting
-        )
-
-        paths = await self._content.get_heading_paths(document_id)
-        if paths:
-            await self._content.update_indexed_structure(
-                document_id, [(path, indexed_structure(path, doc.title)) for path in paths]
-            )
 
     async def bulk_update_metadata(
         self,
@@ -519,6 +500,7 @@ class MetadataService:
                     BulkMetadataItemResult(
                         document_id=resolved_id,
                         status="success",
+                        warnings=warnings_for("update_metadata", item) or None,
                         # Light mode: drop the document body. The
                         # caller already knows the document_id (they
                         # passed it); the body's primary bloat field
@@ -540,6 +522,7 @@ class MetadataService:
                     BulkMetadataItemResult(
                         document_id=echo_id,
                         status="error",
+                        warnings=warnings_for("update_metadata", item) or None,
                         error=sage_error_to_envelope(exc),
                     )
                 )

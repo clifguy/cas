@@ -686,7 +686,9 @@ class MaintenanceService:
             # this is a respelling, not a modification -- so stamping
             # ``updated_at`` here would make every record in a legacy vault
             # look freshly changed to the drift and staleness comparisons.
-            await self._graph_store.update_document(doc_id, {"source_path": plain})
+            await self._graph_store.update_document(
+                doc_id, {"source_path": plain}, advance_version=False
+            )
             normalized.append(
                 SourcePathNormalization(
                     document_id=doc_id,
@@ -1164,7 +1166,9 @@ class MaintenanceService:
             # only through an unverifiable pin, which is why the report carries
             # ``provenance_verified`` rather than leaving the caller to assume a
             # check that did not happen.
-            await self._graph_store.update_document(doc.id, {"stored_content_hash": restored_hash})
+            await self._graph_store.update_document(
+                doc.id, {"stored_content_hash": restored_hash}, advance_version=False
+            )
 
         return SourceFileRestoreReport(
             vault_id=self._vault_id,

@@ -50,7 +50,7 @@
     "deprecates": {
       "type": "array",
       "minItems": 1,
-      "description": "What this change deprecates (CAS-ADR-008 clause 8). Each element is marked on the published contract in the same change -- deprecated: true in a specification, a description opening with Deprecated: in the MCP catalog -- except a deprecated value or default, which only its parameter's description can state. The release that publishes this record dates the deprecation.",
+      "description": "What this change deprecates (CAS-ADR-008 clause 8). Each element is marked on the published contract in the same change -- deprecated: true in a specification, a description opening with Deprecated: in the MCP catalog -- except a deprecated value, value format or default, which only its parameter's description can state. The release that publishes this record dates the deprecation.",
       "items": {
         "type": "object",
         "required": [
@@ -74,7 +74,7 @@
             "type": "string",
             "minLength": 1,
             "pattern": "\\S",
-            "description": "The element, in the contract comparison's pointer form: paths/{path}/{method}, then /parameters/{in}:{name}, or components/schemas/{name}/properties/{name} for a specification; {surface}/{tool}, then /inputSchema/properties/{name}, for the MCP catalog. A deprecated default appends /default to its parameter's schema pointer, and a deprecated value /enum/<value>."
+            "description": "The element, in the contract comparison's pointer form: paths/{path}/{method}, then /parameters/{in}:{name}, or components/schemas/{name}/properties/{name} for a specification; {surface}/{tool}, then /inputSchema/properties/{name}, for the MCP catalog. A deprecated default appends /default to its parameter's schema pointer, a deprecated value /enum/<value>, and a deprecated value format (a class of values, such as timestamps) /format/<name>."
           },
           "replacement": {
             "type": "string",
@@ -125,7 +125,7 @@
             "type": "string",
             "minLength": 1,
             "pattern": "\\S",
-            "description": "The element, in the contract comparison's pointer form: paths/{path}/{method}, then /parameters/{in}:{name}, or components/schemas/{name}/properties/{name} for a specification; {surface}/{tool}, then /inputSchema/properties/{name}, for the MCP catalog. A deprecated default appends /default to its parameter's schema pointer, and a deprecated value /enum/<value>."
+            "description": "The element, in the contract comparison's pointer form: paths/{path}/{method}, then /parameters/{in}:{name}, or components/schemas/{name}/properties/{name} for a specification; {surface}/{tool}, then /inputSchema/properties/{name}, for the MCP catalog. A deprecated default appends /default to its parameter's schema pointer, a deprecated value /enum/<value>, and a deprecated value format (a class of values, such as timestamps) /format/<name>."
           }
         }
       }
