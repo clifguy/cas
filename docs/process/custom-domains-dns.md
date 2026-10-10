@@ -197,7 +197,10 @@ it, and nothing belonging to the old domain is removed until clients have moved.
    custom domains and the `sage-resource-url` named value. It then converges the
    application tier.
 5. **Run the cloud preflight.** It runs as the deploy's post-deploy gate. When
-   you re-run it, set `BASE_DOMAIN` to `<NEW_DOMAIN>`. Three checks bear on the
+   you re-run it by hand, set `BASE_DOMAIN` to `<NEW_DOMAIN>`. Also set
+   `PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD=deploy/resource-token-probe.sh`, from an
+   authenticated `az` session, as the `infra` workflow does. Without it the
+   registration check skips instead of verifying. Three checks bear on the
    move:
    - `kv_wildcard_tls` checks that the certificate covers `*.<NEW_DOMAIN>`.
    - `bff_custom_domain_tls` checks the chain served on `cas.<NEW_DOMAIN>`.

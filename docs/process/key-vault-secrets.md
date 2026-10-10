@@ -206,9 +206,11 @@ No redeploy is needed. API Management and the Container Apps environment both
 reference the certificate's secret without a version, so each one fetches the
 current version on its own schedule:
 
-- **API Management** picks up a new version automatically, but Microsoft
-  documents this as taking up to one to two days. To apply it sooner, start a
-  certificate synchronization on the instance's **Custom domains** page.
+- **API Management** picks up a new version through its automated
+  synchronization job. Microsoft documents that job as taking "several hours or
+  longer", and quotes up to one to two days for an auto-renewed certificate. To
+  apply the new version at once, select **Sync certificates** on the instance's
+  **Custom domains** page.
   ([Configure a custom domain name](https://learn.microsoft.com/azure/api-management/configure-custom-domain).)
 - **Container Apps** applies a rotated Key Vault certificate within up to 12
   hours.
