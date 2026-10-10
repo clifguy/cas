@@ -82,39 +82,45 @@ def test_specialized_obligation_roster_covers_procedure_sections() -> None:
 
 
 def _markdown_headings(text: str) -> set[str]:
-    """ATX heading texts outside fenced code blocks."""
+    """ATX heading texts outside fenced code blocks, per CommonMark's indentation limits."""
     headings: set[str] = set()
     fence: str | None = None
     for line in text.splitlines():
-        stripped = line.lstrip()
-        marker = re.match(r"(`{3,}|~{3,})", stripped)
+        indent = len(line) - len(line.lstrip(" "))
+        stripped = line.lstrip(" ")
+        marker = re.match(r"(`{3,}|~{3,})", stripped) if indent <= 3 else None
         if marker:
             if fence is None:
                 fence = marker.group(1)[0] * len(marker.group(1))
             elif stripped.startswith(fence):
                 fence = None
             continue
-        if fence is None:
-            heading = re.match(r"#{1,6}\s+(.*?)\s*#*\s*$", stripped)
+        if fence is None and indent <= 3:
+            heading = re.match(r"#{1,6}(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$", stripped)
             if heading:
-                headings.add(heading.group(1))
+                headings.add(heading.group(1) or "")
     return headings
 
 
 def test_pinned_procedure_sections_exist_as_headings() -> None:
+    """Each section pinned against a live procedure file names a heading in that file."""
     roster = json.loads((PROPOSED / "required-obligations.json").read_text())
     obligations = json.loads((PROPOSED / "obligations.json").read_text())["obligations"]
     mapping = {row["id"]: row for row in obligations}
-    pinned = [
-        row for row in roster["required_obligations"] if row["source_id"].startswith("specialized-")
+    live = {row["id"]: row for row in roster["sources"] if row["revision"] == "working-tree"}
+    assert len(live) == 4, "every specialized procedure must be pinned against the working tree"
+    pins = [(source["path"], source["section"], source["id"]) for source in live.values()]
+    for row in roster["required_obligations"]:
+        if row["source_id"] in live:
+            path = live[row["source_id"]]["path"]
+            assert mapping[row["id"]]["proposed_authority"] == path, row["id"]
+            pins.append((path, row["source_section"], row["id"]))
+    assert {source_id for _, _, source_id in pins} >= set(live)
+    missing = [
+        f"{path}: {section!r} ({pin_id})"
+        for path, section, pin_id in pins
+        if section not in _markdown_headings((ROOT / path).read_text())
     ]
-    sources = {row["source_id"] for row in pinned}
-    assert len(sources) == 4, "every specialized procedure must be pinned"
-    missing = []
-    for row in pinned:
-        authority = mapping[row["id"]]["proposed_authority"]
-        if row["source_section"] not in _markdown_headings((ROOT / authority).read_text()):
-            missing.append(f"{authority}: {row['source_section']!r} ({row['id']})")
     assert not missing, "pinned sections with no matching heading:\n" + "\n".join(missing)
 
 
