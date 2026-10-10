@@ -389,9 +389,9 @@ class _CountingStubGraphStore(StubGraphStore):
         self.update_calls: list[tuple[str, dict]] = []
         self.holder_lookups: list[list[str]] = []
 
-    async def update_document(self, doc_id: str, updates: dict):
+    async def update_document(self, doc_id: str, updates: dict, **kwargs):
         self.update_calls.append((doc_id, dict(updates)))
-        return await super().update_document(doc_id, updates)
+        return await super().update_document(doc_id, updates, **kwargs)
 
     async def find_document_ids_by_source_paths(self, source_paths: list[str]):
         self.holder_lookups.append(list(source_paths))
@@ -401,7 +401,7 @@ class _CountingStubGraphStore(StubGraphStore):
 class _FailingUpdateStubGraphStore(StubGraphStore):
     """A stub whose document writes fail for a reason that is not a refusal."""
 
-    async def update_document(self, doc_id: str, updates: dict):
+    async def update_document(self, doc_id: str, updates: dict, **kwargs):
         raise RuntimeError("graph store unavailable")
 
 

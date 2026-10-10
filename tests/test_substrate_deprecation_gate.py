@@ -742,3 +742,47 @@ def test_a_deprecated_value_needs_no_contract_mark(tmp_path: Path) -> None:
     )
 
     assert _check(repo).errors == []
+
+
+def test_a_deprecated_value_format_needs_no_contract_mark(tmp_path: Path) -> None:
+    """A format is a class of values, stated only in its parameter's description."""
+    repo = make_substrate_repo(tmp_path / "repo")
+    repo.checkout("feature", create=True)
+    repo.edit_yaml(
+        CORE_SPEC,
+        lambda s: s["paths"]["/things"]["get"]["parameters"][0].__setitem__(
+            "description", "Page size. A timestamp value is deprecated."
+        ),
+    )
+    repo.add_record(
+        "deprecate-limit-timestamps",
+        **{
+            **DEPRECATION,
+            "deprecates": [
+                {**DEPRECATION["deprecates"][0], "pointer": f"{LIMIT}/schema/format/timestamp"}
+            ],
+        },
+    )
+
+    assert _check(repo).errors == []
+
+
+def test_a_format_less_deprecation_is_refused(tmp_path: Path) -> None:
+    """A bare ``.../format`` names no class of values, so it is held to a mark."""
+    repo = make_substrate_repo(tmp_path / "repo")
+    repo.checkout("feature", create=True)
+    repo.edit_yaml(
+        CORE_SPEC,
+        lambda s: s["paths"]["/things"]["get"]["parameters"][0].__setitem__(
+            "description", "Page size. Some values are deprecated."
+        ),
+    )
+    pointer = f"{LIMIT}/schema/format"
+    repo.add_record(
+        "deprecate-limit-format",
+        **{**DEPRECATION, "deprecates": [{**DEPRECATION["deprecates"][0], "pointer": pointer}]},
+    )
+
+    message = _errors(_check(repo))
+
+    assert f"deprecates names sage_core_api:{pointer}, but" in message

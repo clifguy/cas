@@ -154,7 +154,8 @@ CREATE TABLE IF NOT EXISTS documents (
     metadata_confirmed boolean NOT NULL DEFAULT false,
     is_chain_head boolean NOT NULL DEFAULT true,
     relocated_from jsonb,
-    relocated_to jsonb
+    relocated_to jsonb,
+    version_token bigint NOT NULL DEFAULT 1
 );
 """
 
@@ -454,6 +455,12 @@ ADDITIVE_COLUMNS: tuple[str, ...] = (
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS created_by_name text;",
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS last_modified_by_name text;",
     "ALTER TABLE edges ADD COLUMN IF NOT EXISTS created_by_name text;",
+    # The optimistic-concurrency token (CAS-ADR-038). Unlike the columns above
+    # it is never null: every document has a current version, so a document
+    # written before the column existed is at its first version, which the
+    # default records. A constant default is catalog-only, so this is safe on
+    # every vault open whatever the table's size.
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS version_token bigint NOT NULL DEFAULT 1;",
 )
 
 

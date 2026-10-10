@@ -386,10 +386,10 @@ class PostgresGraphStore(GraphStore):
                 semantic_abstract, pipeline_status, pipeline_error, tier3_metadata,
                 adapter_config, metadata_confirmed, relocated_from, relocated_to,
                 created_client, created_agent, last_modified_client, last_modified_agent,
-                created_by_name, last_modified_by_name
+                created_by_name, last_modified_by_name, version_token
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                       %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, %s, %s, %s)""",
+                      %s, %s, %s, %s, %s, %s, %s)""",
             (
                 doc.id,
                 doc.title,
@@ -426,6 +426,7 @@ class PostgresGraphStore(GraphStore):
                 _agent_to_jsonb(doc.last_modified_agent),
                 doc.created_by_name,
                 doc.last_modified_by_name,
+                int(doc.version_token),
             ),
         )
         await self._sync_document_tags(conn, doc.id, doc.tags)
@@ -497,27 +498,39 @@ class PostgresGraphStore(GraphStore):
             row = await self._fetch_one("SELECT * FROM documents WHERE id = %s", (doc_id,))
             return self._row_to_document(row) if row is not None else None
 
-    async def update_document(self, doc_id: str, updates: dict) -> Document | None:
+    async def update_document(
+        self, doc_id: str, updates: dict, *, advance_version: bool = True
+    ) -> Document | None:
         if not updates:
             return await self.get_document(doc_id)
         async with self._pool.connection() as conn:
             async with conn.transaction():
-                await self._exec_update_document(conn, doc_id, dict(updates))
+                await self._exec_update_document(
+                    conn, doc_id, dict(updates), advance_version=advance_version
+                )
         return await self.get_document(doc_id)
 
-    async def _exec_update_document(self, conn: Any, doc_id: str, updates: dict) -> None:
+    async def _exec_update_document(
+        self, conn: Any, doc_id: str, updates: dict, *, advance_version: bool = True
+    ) -> None:
         """Issue the UPDATE for a document on ``conn`` without committing.
 
         ``updates`` is a private copy the caller may mutate; collection and
         boolean fields are adapted in place to their Postgres wire forms.
         A key that is not a documents column is refused before any SQL runs,
         since the keys are interpolated into the SET clause.
+
+        ``advance_version`` adds one to ``version_token`` in the same statement,
+        so two writes that race past every lock both count. The token is only
+        ever advanced this way, never set, so it is refused as an update key.
         """
         if not updates:
             return
         unknown = sorted(set(updates) - DOCUMENT_COLUMNS)
         if unknown:
             raise ValueError(f"not a documents column: {', '.join(unknown)}")
+        if "version_token" in updates:
+            raise ValueError("version_token is advanced, never set")
         new_tags: list[str] | None = updates["tags"] if "tags" in updates else None
         if "tags" in updates:
             updates["tags"] = Jsonb(updates["tags"])
@@ -544,6 +557,8 @@ class PostgresGraphStore(GraphStore):
             updates["is_chain_head"] = bool(updates["is_chain_head"])
 
         set_clause = ", ".join(f"{k} = %s" for k in updates)
+        if advance_version:
+            set_clause += ", version_token = version_token + 1"
         values = list(updates.values())
         values.append(doc_id)
         await conn.execute(
@@ -2137,6 +2152,9 @@ class PostgresGraphStore(GraphStore):
             created_agent=_agent_from_stored(row.get("created_agent")),
             last_modified_client=row.get("last_modified_client"),
             last_modified_agent=_agent_from_stored(row.get("last_modified_agent")),
+            # ``.get`` for the same reason as ``stored_content_hash`` above; a
+            # row predating the column is at its first version.
+            version_token=str(row.get("version_token") or 1),
         )
 
     @staticmethod

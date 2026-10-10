@@ -30,7 +30,7 @@ from sage.mcp_server import (
 from sage.mcp_server import (
     update_metadata as _update_metadata_bulk,
 )
-from tests.helpers.pipeline_wait import await_tool_idle, drain_vaults
+from tests.helpers.pipeline_wait import drain_vaults
 from tests.sage.conftest import initialize_services_for_test
 
 
@@ -111,24 +111,14 @@ def _parse(result):
 
 
 async def _seed_doc(services, source_path: str = "test/sample.md") -> tuple[str, str]:
-    """Ingest a fresh document and return (document_id, current_updated_at).
+    """Ingest a fresh document and return (document_id, version_token).
 
-    Waits for the background pipeline to settle *and* release its claim before
-    reading `updated_at`. Without that gate the pipeline can advance
-    `updated_at` between the test's read and its compare-and-swap call,
-    producing a `stale_read` from the pipeline race rather than the assertion
-    under test.
+    The token is taken from the ingest response itself, with the background
+    pipeline still running: pipeline writes do not advance it, so the tests
+    below need not wait for the pipeline before their compare-and-swap.
     """
     ingest_result = _parse(await ingest_document("test_vault", source_path, "markdown"))
-    doc_id = ingest_result["id"]
-
-    async def fetch():
-        return _parse(await get_document("test_vault", doc_id))
-
-    doc = await await_tool_idle(
-        fetch, doc_id, service=services.ingestion_service, attempts=100, delay=0.02
-    )
-    return doc_id, doc["updated_at"]
+    return ingest_result["id"], ingest_result["version_token"]
 
 
 # ---------------------------------------------------------------------------
@@ -161,8 +151,8 @@ def test_t8_stale_read_error_envelope_shape():
 
 
 async def test_t1_matching_expected_version_succeeds(vault_services):
-    """Caller passes the current `updated_at`; write succeeds and
-    `updated_at` advances past the supplied version.
+    """Caller passes the current `version_token`; write succeeds and
+    the token advances past the supplied version.
     """
     doc_id, v0 = await _seed_doc(vault_services)
     result = _parse(
@@ -170,8 +160,8 @@ async def test_t1_matching_expected_version_succeeds(vault_services):
     )
     assert "error" not in result, f"unexpected error: {result!r}"
     assert result["document"]["title"] == "renamed"
-    v1 = result["document"]["updated_at"]
-    assert v1 != v0, "updated_at must advance past the supplied expected_version"
+    v1 = result["document"]["version_token"]
+    assert v1 != v0, "version_token must advance past the supplied expected_version"
 
 
 async def test_t3_omitted_expected_version_preserves_back_compat(vault_services):
@@ -183,7 +173,7 @@ async def test_t3_omitted_expected_version_preserves_back_compat(vault_services)
     # First write advances version without the caller observing it.
     intermediate = _parse(await update_metadata("test_vault", doc_id, title="first"))
     assert "error" not in intermediate
-    v_advanced = intermediate["document"]["updated_at"]
+    v_advanced = intermediate["document"]["version_token"]
     assert v_advanced != v0
 
     # Second write omits expected_version: must succeed even though we
@@ -207,7 +197,7 @@ async def test_t2_stale_expected_version_returns_structured_stale_read(vault_ser
 
     # Advance the document so v0 is now stale.
     first = _parse(await update_metadata("test_vault", doc_id, title="advance"))
-    v_current = first["document"]["updated_at"]
+    v_current = first["document"]["version_token"]
     assert v_current != v0
 
     result = _parse(
@@ -223,8 +213,8 @@ async def test_t2_stale_expected_version_returns_structured_stale_read(vault_ser
     assert after["title"] == "advance", (
         f"stale rejection must not mutate the document; got title={after['title']!r}"
     )
-    assert after["updated_at"] == v_current, (
-        f"stale rejection must not advance updated_at; got {after['updated_at']!r}"
+    assert after["version_token"] == v_current, (
+        f"stale rejection must not advance version_token; got {after['version_token']!r}"
     )
 
 
@@ -247,7 +237,7 @@ async def test_t4_parallel_same_version_one_wins_one_stale(vault_services):
 
     for i in range(25):
         before = _parse(await get_document("test_vault", doc_id))
-        v_baseline = before["updated_at"]
+        v_baseline = before["version_token"]
 
         a_title = f"a_{i}"
         b_title = f"b_{i}"
@@ -261,17 +251,17 @@ async def test_t4_parallel_same_version_one_wins_one_stale(vault_services):
         assert len(successes) == 1, f"iteration {i}: expected exactly one success; got {parsed!r}"
         assert len(stale) == 1, f"iteration {i}: expected exactly one stale_read; got {parsed!r}"
 
-        winner_version = successes[0]["document"]["updated_at"]
+        winner_version = successes[0]["document"]["version_token"]
         assert stale[0]["detail"]["expected_version"] == v_baseline
         assert stale[0]["detail"]["current_version"] == winner_version, (
             f"iteration {i}: stale envelope's current_version must point to "
-            f"the winner's resulting updated_at; got "
+            f"the winner's resulting version_token; got "
             f"{stale[0]['detail']['current_version']!r} vs winner "
             f"{winner_version!r}"
         )
 
         after = _parse(await get_document("test_vault", doc_id))
-        assert after["updated_at"] == winner_version
+        assert after["version_token"] == winner_version
         assert after["title"] in {a_title, b_title}
 
 
@@ -290,7 +280,7 @@ async def test_t5_retry_after_stale_succeeds_with_current_version(vault_services
 
     # A racer advances the document.
     racer = _parse(await update_metadata("test_vault", doc_id, title="racer", expected_version=v0))
-    v_after_racer = racer["document"]["updated_at"]
+    v_after_racer = racer["document"]["version_token"]
     assert v_after_racer != v0
 
     # The original caller holds v0; their write is now stale.
@@ -312,7 +302,7 @@ async def test_t5_retry_after_stale_succeeds_with_current_version(vault_services
     )
     assert "error" not in retry_result, f"retry must succeed: {retry_result!r}"
     assert retry_result["document"]["title"] == "caller_attempt"
-    assert retry_result["document"]["updated_at"] != retry_token
+    assert retry_result["document"]["version_token"] != retry_token
 
 
 # ---------------------------------------------------------------------------
@@ -329,7 +319,7 @@ async def test_t6_dry_run_with_stale_expected_version_rejects(vault_services):
     advanced = _parse(
         await update_metadata("test_vault", doc_id, title="advance", expected_version=v0)
     )
-    v_current = advanced["document"]["updated_at"]
+    v_current = advanced["document"]["version_token"]
 
     result = _parse(
         await update_metadata(
@@ -389,7 +379,7 @@ async def test_t7_bulk_one_stale_item_rejects_per_item_rest_succeed(vault_servic
     # State of doc2 is unchanged.
     doc2_after = _parse(await get_document("test_vault", doc2_id))
     assert doc2_after["title"] != "d2_new"
-    assert doc2_after["updated_at"] == v2
+    assert doc2_after["version_token"] == v2
 
 
 # ---------------------------------------------------------------------------
@@ -411,7 +401,7 @@ async def test_t9_fastmcp_wire_path_surfaces_stale_read_envelope(vault_services)
     advanced = _parse(
         await update_metadata("test_vault", doc_id, title="advance", expected_version=v0)
     )
-    v_current = advanced["document"]["updated_at"]
+    v_current = advanced["document"]["version_token"]
 
     # Post-CAS-ADR-029: update_metadata MCP tool takes items: list[dict].
     # The stale_read surfaces as a per-item error envelope inside results[].
@@ -450,7 +440,7 @@ async def test_t9_fastmcp_wire_path_surfaces_stale_read_envelope(vault_services)
 @pytest.fixture
 async def seeded_http_app(minimal_vault_config_dict, monkeypatch):
     """Boot the ASGI app and seed one document; expose (app, vault_id,
-    doc_id, initial_updated_at).
+    doc_id, initial_version_token).
     """
     monkeypatch.setenv("SAGE_TEST_STUB_PROVIDERS", "1")
     config = VaultConfig.model_validate(minimal_vault_config_dict)
@@ -469,9 +459,7 @@ async def seeded_http_app(minimal_vault_config_dict, monkeypatch):
     await graph_store.insert_document(_make_doc(doc_id))
     await graph_store.update_document(doc_id, {"doc_type": "note", "metadata_confirmed": True})
     seeded = await graph_store.get_document(doc_id)
-    # Mirror the canonical wire form (Pydantic emits UTC datetimes with
-    # a `Z` suffix in JSON) so the caller can round-trip the value.
-    wire_v0 = seeded.updated_at.isoformat().replace("+00:00", "Z")
+    wire_v0 = seeded.version_token
 
     yield app, vault_id, doc_id, wire_v0
 
@@ -510,7 +498,7 @@ async def test_t10_http_post_stale_expected_version_returns_per_item_stale_read(
         assert first.status_code == 200, first.text
         first_body = first.json()
         assert first_body["success_count"] == 1
-        v_current = first_body["results"][0]["document"]["updated_at"]
+        v_current = first_body["results"][0]["document"]["version_token"]
         assert v_current != v0
 
         response = await client.post(

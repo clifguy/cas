@@ -9,9 +9,9 @@ disagree about it.
 
 Anti-coincidental-pass discipline:
 
-* The registry ships empty, so every surface test installs its own declaration;
-  a surface that emitted nothing, or emitted for every call, fails the paired
-  control that omits the deprecated form.
+* Every surface test installs its own declaration in place of the shipped
+  registry; a surface that emitted nothing, or emitted for every call, fails
+  the paired control that omits the deprecated form.
 * Both surfaces' warnings are compared with each other and with a hand-written
   expected string, so the two agreeing on nothing, or on the same wrong text,
   fails.
@@ -30,7 +30,7 @@ import pytest
 
 from sage._tool_naming import SERVER_ASSIGNMENT
 from sage.config import VaultConfig
-from sage.models.schemas import DiscoverRequest, IngestRequest
+from sage.models.schemas import BulkMetadataItem, DiscoverRequest, IngestRequest
 from sage.services import deprecations
 from sage.services.deprecations import (
     WARNING_CARRIERS,
@@ -73,14 +73,46 @@ CREATED_BY_WARNING = (
 # ---------------------------------------------------------------------------
 
 
-def test_the_shipped_registry_is_valid_and_empty() -> None:
+def test_the_shipped_registry_is_valid_and_holds_the_timestamp_token_forms() -> None:
     validate_registry(deprecations.DEPRECATIONS)
-    assert deprecations.DEPRECATIONS == ()
+    assert {(d.operation, d.form, d.parameter, d.value) for d in deprecations.DEPRECATIONS} == {
+        ("ingest_document", DeprecatedForm.FORMAT, "expected_head_version", "timestamp"),
+        ("update_metadata", DeprecatedForm.FORMAT, "expected_version", "timestamp"),
+    }
 
 
 def test_every_warning_carrier_is_a_published_operation() -> None:
     assert set(WARNING_CARRIERS) <= set(SERVER_ASSIGNMENT)
-    assert {"search", "ingest_document"} <= set(WARNING_CARRIERS)
+    assert {"search", "ingest_document", "update_metadata"} <= set(WARNING_CARRIERS)
+
+
+TOKEN_FORMAT = Deprecation(
+    operation="update_metadata",
+    form=DeprecatedForm.FORMAT,
+    parameter="expected_version",
+    value="timestamp",
+    replacement="the document's version_token",
+    earliest_adaptation=EARLIEST,
+)
+
+
+def test_a_format_deprecation_warns_only_on_a_value_of_that_format(registry) -> None:
+    """A timestamp warns; a version token, a non-timestamp string and omission do not."""
+    registry(TOKEN_FORMAT)
+
+    assert warnings_for(
+        "update_metadata",
+        BulkMetadataItem(
+            document_id="0123abcd_doc", expected_version="2026-10-10T16:44:01.489319Z"
+        ),
+    ) == [
+        "Deprecated: a timestamp value of expected_version is deprecated; use the "
+        "document's version_token instead. The change may ship from 2027-01-15."
+    ]
+    for token in ("7", "2026-10-10", "STALE_VERSION", "2026-13-40T00:00:00Z"):
+        item = BulkMetadataItem(document_id="0123abcd_doc", expected_version=token)
+        assert warnings_for("update_metadata", item) == [], token
+    assert warnings_for("update_metadata", BulkMetadataItem(document_id="0123abcd_doc")) == []
 
 
 @pytest.mark.parametrize(
@@ -100,6 +132,28 @@ def test_every_warning_carrier_is_a_published_operation() -> None:
             Deprecation("search", DeprecatedForm.DEFAULT, "x", EARLIEST, parameter="mdoe"),
             "takes no parameter 'mdoe'",
         ),
+        (
+            Deprecation(
+                "update_metadata",
+                DeprecatedForm.FORMAT,
+                "x",
+                EARLIEST,
+                parameter="expected_version",
+                value="epoch",
+            ),
+            "names no known format",
+        ),
+        (
+            Deprecation(
+                "update_metadata",
+                DeprecatedForm.FORMAT,
+                "x",
+                EARLIEST,
+                parameter="expected_head_version",
+                value="timestamp",
+            ),
+            "takes no parameter 'expected_head_version'",
+        ),
     ],
     ids=[
         "carrier-less-operation",
@@ -107,6 +161,8 @@ def test_every_warning_carrier_is_a_published_operation() -> None:
         "parameter-unnamed",
         "value-unnamed",
         "parameter-misspelled",
+        "format-unknown",
+        "format-parameter-on-the-wrong-operation",
     ],
 )
 def test_the_registry_refuses_a_declaration_it_cannot_honour(

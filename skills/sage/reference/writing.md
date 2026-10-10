@@ -78,12 +78,17 @@ readback. See [diagnosis](diagnosis.md).
 
 ## After an ingest
 
-Ingestion continues in the background after the call returns. Wait once for a
-terminal state rather than checking after each unit of work, and bound the
-wait. The tool description names the terminal states and explains why the
-bound matters. Report success only after a declared successful terminal state and the
-required readback. Report failed terminal states, interruptions and unresolved
-waits separately; terminal alone does not mean successful.
+Ingestion continues in the background after the call returns, but the document
+is usable at once: it can be read, patched, linked and superseded. Only passage
+search waits on indexing, and the semantic abstract on abstraction. Report the
+ingest on the verified document record and its readback, not on the pipeline.
+
+Wait earlier only when the next step needs passage search or the abstract.
+Otherwise settle every document a batch or session ingested with one bounded
+wait at its end, rather than checking after each unit of work. The tool
+description names the terminal states and explains why the bound matters.
+Report failed terminal states, interruptions and unresolved waits separately;
+terminal alone does not mean successful.
 
 ## Revising a document
 

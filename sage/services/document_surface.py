@@ -7,8 +7,9 @@ Keeping the composition in one place is what stops a migrated vault and a
 freshly ingested one from carrying different text under the same contract.
 """
 
-from sage.adapters.interfaces import DocumentSurface
+from sage.adapters.interfaces import ContentStore, DocumentSurface
 from sage.models.schemas import Document
+from sage.services.passage_structure import indexed_structure
 from sage.utils.text_normalization import expand_for_index
 
 
@@ -74,3 +75,30 @@ def embedding_text(surface: DocumentSurface) -> str:
     orientation value the provenance rule preserves whole.
     """
     return f"{surface.matchable}\n\n{surface.orienting}"
+
+
+async def refresh_derived_retrieval_text(
+    content_store: ContentStore, document_id: str, doc: Document
+) -> None:
+    """Re-derive what the content store holds *about* a document from its record.
+
+    A document's title and tags are authored text the retrieval binding
+    indexes in two derived places (CAS-ADR-049): the document surface's
+    matchable half, and -- because a passage's indexed structure is its
+    heading path relative to the document -- every passage of the document.
+    Both are computed from the record, so a record that changed leaves both
+    describing a title nobody holds any more.
+
+    The structure is re-derived through the same function ingest and the
+    migration use, so every writer agrees. Only the keyword halves move;
+    nothing is re-embedded.
+    """
+    surface = compose_document_surface(document_id, doc)
+    await content_store.update_document_surface_text(
+        document_id, surface.matchable, surface.orienting
+    )
+    paths = await content_store.get_heading_paths(document_id)
+    if paths:
+        await content_store.update_indexed_structure(
+            document_id, [(path, indexed_structure(path, doc.title)) for path in paths]
+        )

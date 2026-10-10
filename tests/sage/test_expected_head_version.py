@@ -113,11 +113,9 @@ def _parse(result):
 async def _wait_terminal(services, doc_id: str) -> dict:
     """Wait until the document is settled and unclaimed, then return it.
 
-    Without this gate the background abstraction pipeline can advance
-    `updated_at` between a test's read and its compare-and-swap call,
-    producing a `stale_chain_head` from the pipeline race rather than the
-    assertion under test. Mirror of `_seed_doc` in the Primitive B test
-    surface.
+    The version token does not move with pipeline work, so this gate is
+    not what keeps a token valid; it keeps the background pipeline from
+    interleaving with the chain writes a test makes and inspects.
     """
 
     async def fetch():
@@ -132,7 +130,7 @@ async def _seed_chain_head(services, test_dir, name: str = "seed") -> dict:
     """Write a source file, ingest it, and return the terminal-state doc dict.
 
     Returns the parsed `get_document` payload, including a stable
-    `updated_at` whose wire form is the chain-head version token.
+    `version_token`, the chain-head version token.
     """
     src = test_dir / f"{name}.md"
     src.write_text(f"# {name}\n\nSeed content for {name}.")
@@ -184,13 +182,13 @@ def test_t8_stale_chain_head_error_envelope_shape():
 
 
 async def test_t1_matching_expected_head_version_succeeds(vault_services):
-    """Caller passes the current head's `updated_at`; supersede succeeds.
+    """Caller passes the current head's `version_token`; supersede succeeds.
 
     Linear chain: D1 → D2 (one supersedes edge inbound to D1, D1 archived).
     """
     services, test_dir = vault_services
     d1 = await _seed_chain_head(services, test_dir, "d1")
-    v0 = d1["updated_at"]
+    v0 = d1["version_token"]
 
     new_source = await _write_source(test_dir, "d2", "# D2\n\nRevision of d1.")
     result = _parse(
@@ -262,15 +260,15 @@ async def test_t2_stale_expected_head_version_returns_structured_409(vault_servi
     """
     services, test_dir = vault_services
     d1 = await _seed_chain_head(services, test_dir, "d1")
-    v0 = d1["updated_at"]
+    v0 = d1["version_token"]
 
     # Out-of-band advance: update_metadata bumps the predecessor's
-    # updated_at without superseding it. v0 is now stale.
+    # version_token without superseding it. v0 is now stale.
     bumped = _parse(
         await update_metadata("test_vault", d1["id"], title="renamed", expected_version=v0)
     )
     assert "error" not in bumped
-    v_current = bumped["document"]["updated_at"]
+    v_current = bumped["document"]["version_token"]
     assert v_current != v0
 
     new_source = await _write_source(test_dir, "d2", "# D2\n\nShould not land.")
@@ -330,7 +328,7 @@ async def _run_supersede_pair(
                         source,
                         "markdown",
                         predecessor_id=head["id"],
-                        expected_head_version=head["updated_at"],
+                        expected_head_version=head["version_token"],
                     )
                 )
                 contenders[task] = side
@@ -381,7 +379,7 @@ async def test_t4_parallel_same_version_one_wins_one_stale(
         task = asyncio.current_task()
         document = await original_read(doc_id)
         if doc_id == head["id"] and task in contenders and task not in initial_reads:
-            initial_reads[task] = (document.lifecycle_status, document.updated_at)
+            initial_reads[task] = (document.lifecycle_status, document.version_token)
             await both_read.wait()
             assert len(initial_reads) == 2, "initial read released before both contenders arrived"
         return document
@@ -410,12 +408,12 @@ async def test_t4_parallel_same_version_one_wins_one_stale(
     winner_id = successes[0]["id"]
     assert commits == [winner_id]
     head_post = await _assert_single_successor(services, head["id"], winner_id)
-    assert head_post["updated_at"] != head["updated_at"]
+    assert head_post["version_token"] != head["version_token"]
     assert stale[0]["detail"] == {
         "predecessor_id": head["id"],
-        "expected_head_version": head["updated_at"],
+        "expected_head_version": head["version_token"],
         "current_head_id": head["id"],
-        "current_head_version": head_post["updated_at"],
+        "current_head_version": head_post["version_token"],
     }
 
 
@@ -500,14 +498,14 @@ async def test_t5_retry_after_stale_succeeds_with_current_head(vault_services):
     """
     services, test_dir = vault_services
     d1 = await _seed_chain_head(services, test_dir, "d1")
-    v0 = d1["updated_at"]
+    v0 = d1["version_token"]
 
-    # A racer bumps d1's updated_at without superseding it.
+    # A racer bumps d1's version_token without superseding it.
     bumped = _parse(
         await update_metadata("test_vault", d1["id"], title="racer", expected_version=v0)
     )
     assert "error" not in bumped
-    v_after_racer = bumped["document"]["updated_at"]
+    v_after_racer = bumped["document"]["version_token"]
     assert v_after_racer != v0
 
     # The original caller holds v0; their supersede is now stale.
@@ -572,7 +570,7 @@ async def test_t6_archived_predecessor_surfaces_existing_supersede_target_not_ac
     """
     services, test_dir = vault_services
     d1 = await _seed_chain_head(services, test_dir, "d1")
-    v0 = d1["updated_at"]
+    v0 = d1["version_token"]
 
     # Out-of-band supersede: D1 → D2. D1 is now archived.
     advance_src = await _write_source(test_dir, "d2_advance", "# D2\n\nAdvance to archive d1.")
@@ -643,12 +641,12 @@ async def test_t9_fastmcp_wire_path_surfaces_stale_chain_head_envelope(vault_ser
 
     services, test_dir = vault_services
     d1 = await _seed_chain_head(services, test_dir, "d1")
-    v0 = d1["updated_at"]
+    v0 = d1["version_token"]
 
     bumped = _parse(
         await update_metadata("test_vault", d1["id"], title="advance", expected_version=v0)
     )
-    v_current = bumped["document"]["updated_at"]
+    v_current = bumped["document"]["version_token"]
 
     rpc_src = await _write_source(test_dir, "rpc", "# RPC\n\nMCP wire-path body.")
     response = await _mcp.mcp.call_tool(
@@ -735,7 +733,7 @@ async def test_t10_http_post_stale_expected_head_version_returns_409_envelope(ht
         seeded_doc = seeded.json()["document"]
         d1_id = seeded_doc["id"]
 
-        # Wait for the document to settle and release its claim, so updated_at
+        # Wait for the document to settle and release its claim, so the token
         # is stable and a later reabstract would not be rejected.
         async def _fetch_over_http():
             return (await client.get(f"/sage_vaults/{vault_id}/documents/{d1_id}")).json()
@@ -747,7 +745,7 @@ async def test_t10_http_post_stale_expected_head_version_returns_409_envelope(ht
             attempts=150,
             delay=0.02,
         )
-        v0 = current["updated_at"]
+        v0 = current["version_token"]
 
         # Out-of-band bump so v0 is stale. Post-CAS-ADR-029, the metadata
         # endpoint is POST /metadata with an items[] body.
@@ -758,7 +756,7 @@ async def test_t10_http_post_stale_expected_head_version_returns_409_envelope(ht
         assert bump.status_code == 200, bump.text
         bump_body = bump.json()
         assert bump_body["success_count"] == 1, bump_body
-        v_current = bump_body["results"][0]["document"]["updated_at"]
+        v_current = bump_body["results"][0]["document"]["version_token"]
         assert v_current != v0
 
         response = await client.post(

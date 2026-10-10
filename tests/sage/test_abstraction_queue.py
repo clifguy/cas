@@ -885,10 +885,10 @@ async def test_restamp_reads_and_writes_under_one_hold_of_the_document_lock(
             observed.append(("read", lock.locked()))
         return await original_read(document_id)
 
-    async def _probing_write(document_id, updates):
+    async def _probing_write(document_id, updates, **kwargs):
         if document_id == doc_id:
             observed.append(("write", lock.locked()))
-        return await original_write(document_id, updates)
+        return await original_write(document_id, updates, **kwargs)
 
     graph_store.get_document = _probing_read
     graph_store.update_document = _probing_write

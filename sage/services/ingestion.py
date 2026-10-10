@@ -116,11 +116,15 @@ from sage.request_identity import (
 from sage.services._dry_run import doc_type_requirements
 from sage.services.caller_paths import caller_basename
 from sage.services.deprecations import warnings_for
-from sage.services.document_surface import compose_document_surface, embedding_text
+from sage.services.document_surface import (
+    compose_document_surface,
+    embedding_text,
+    refresh_derived_retrieval_text,
+)
 from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.services.identifier_mention_inference import infer_identifier_mentions_for_document
 from sage.services.identity import generate_document_id
-from sage.services.metadata import _wire_version
+from sage.services.metadata import current_version
 from sage.services.passage_split import (
     embedding_input,
     group_sections,
@@ -758,7 +762,7 @@ class IngestionService:
         if status in SUCCESSFUL_TERMINAL_PIPELINE_STATUSES:
             updates["pipeline_error"] = None
         async with self._locks.lock(document_id):
-            await self._store.update_document(document_id, updates)
+            await self._store.update_document(document_id, updates, advance_version=False)
 
     async def _stamp_abstraction_failed(
         self, document_id: str, attempts: int, exc: Exception | None, *, retried: bool = True
@@ -809,7 +813,7 @@ class IngestionService:
             doc = await self._store.get_document(document_id)
             if doc is None or doc.pipeline_status in TERMINAL_PIPELINE_STATUS_VALUES:
                 return False
-            await self._store.update_document(document_id, updates)
+            await self._store.update_document(document_id, updates, advance_version=False)
         return True
 
     async def stop_worker(self, *, restamp: bool = True) -> None:
@@ -2040,11 +2044,10 @@ class IngestionService:
                     # fires when the caller opts in; omission preserves
                     # the pre-Primitive-C contract (with the side-benefit
                     # that the lock above still prevents silent forks).
-                    # Version source is the predecessor's updated_at in
-                    # canonical wire form, matching what callers see via
-                    # get_document.
                     if request.expected_head_version is not None:
-                        current_head_version = _wire_version(fresh_pred.updated_at)
+                        current_head_version = current_version(
+                            fresh_pred, request.expected_head_version
+                        )
                         if current_head_version != request.expected_head_version:
                             raise StaleChainHeadError(
                                 predecessor_id=fresh_pred.id,
@@ -2430,12 +2433,44 @@ class IngestionService:
         if doc is not None:
             await self._write_document_surface(document_id, doc)
 
+        # A caller may patch or supersede the document while this stage runs:
+        # its version token does not move with pipeline work (CAS-ADR-038), so
+        # nothing makes it wait. That write synced the content store before
+        # these passages existed, so they carry what was read above. Re-read
+        # the record and bring them up to date, under the document lock the
+        # caller writes take, so a write landing meanwhile cannot have its own
+        # sync overwritten by this one.
+        if doc is not None:
+            async with self._locks.lock(document_id):
+                current = await self._store.get_document(document_id)
+                if current is not None:
+                    await self._reconcile_indexed_copies(document_id, doc, current)
+
         # Mark indexing complete (BH-008)
         await self._stamp_pipeline_status(
             document_id,
             PipelineStatus.INDEXING_COMPLETE,
             {"indexed_at": datetime.now(timezone.utc).isoformat()},
         )
+
+    async def _reconcile_indexed_copies(
+        self, document_id: str, indexed: Document, current: Document
+    ) -> None:
+        """Bring the content store's copies of a record's fields up to ``current``.
+
+        ``indexed`` is the record the passages were stamped from. Only what
+        changed since is rewritten, through the same writes a metadata patch
+        or lifecycle transition makes.
+        """
+        scalars = {
+            field: getattr(current, field)
+            for field in ("doc_type", "project", "lifecycle_status")
+            if getattr(current, field) != getattr(indexed, field)
+        }
+        if scalars:
+            await self._content_store.update_chunk_metadata(document_id, scalars)
+        if current.title != indexed.title or current.tags != indexed.tags:
+            await refresh_derived_retrieval_text(self._content_store, document_id, current)
 
     async def _refresh_header_chunk(self, document_id: str) -> None:
         """Rewrite the document surface after metadata changes.
@@ -2781,6 +2816,7 @@ class IngestionService:
                     "semantic_abstract": abstract,
                     "updated_at": datetime.now(timezone.utc).isoformat(),
                 },
+                advance_version=False,
             )
         await self._refresh_header_chunk(document_id)
 
@@ -2892,6 +2928,7 @@ class IngestionService:
                     "projected_at": start_time.isoformat(),
                     "updated_at": start_time.isoformat(),
                 },
+                advance_version=False,
             )
         except Exception:
             self._release_claim(document_id)
@@ -2952,6 +2989,7 @@ class IngestionService:
                 "projected_at": now.isoformat(),
                 "updated_at": now.isoformat(),
             },
+            advance_version=False,
         )
         await self._content_store.remove_document(document_id)
         return projection
@@ -3981,7 +4019,9 @@ class IngestionService:
 
         The candidate filter reads this, so a document it records is not read again.
         """
-        await self._store.update_document(document_id, {"adapter_version": adapter_version})
+        await self._store.update_document(
+            document_id, {"adapter_version": adapter_version}, advance_version=False
+        )
 
     async def _preamble_skipped(
         self,

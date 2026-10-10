@@ -551,7 +551,7 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     ("sage_core", "get_vault_stats"): Pin(6, 1),
     # doc_only fell from 13 as the operation gained the source-type
     # precedence its tool docstring already stated.
-    ("sage_core", "ingest_document"): Pin(12, 3),
+    ("sage_core", "ingest_document"): Pin(12, 2),
     # doc_only fell from 3 as the paging paragraph landed on both sides.
     ("sage_core", "list_pending_metadata"): Pin(7, 2),
     ("sage_core", "list_vaults"): Pin(4, 5),

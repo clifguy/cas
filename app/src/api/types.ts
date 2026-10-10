@@ -135,6 +135,8 @@ export interface Document {
   last_modified_client?: string | null;
   last_modified_agent?: AssertedAgent | null;
   updated_at: string;
+  // The optimistic-concurrency token; pipeline work does not advance it.
+  version_token?: string;
   projected_at?: string | null;
   indexed_at?: string | null;
   source_modified_at?: string | null;
