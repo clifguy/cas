@@ -155,6 +155,109 @@ curl -sI "https://${CAS_HOST}/" | head -n 1
 A bound hostname serving the wildcard certificate over HTTPS is the success
 condition for each edge.
 
+## Changing the base domain
+
+Moving a deployment from `<OLD_DOMAIN>` to `<NEW_DOMAIN>` changes every
+hostname the edges serve and every identity derived from them. The
+infrastructure and the workflows derive all of it from `BASE_DOMAIN`, so the
+change in Azure is one configuration value. The order of the steps around that
+value is what matters: each one must be in place before the step that relies on
+it, and nothing belonging to the old domain is removed until clients have moved.
+
+1. **Load the new certificate.** Import the `*.<NEW_DOMAIN>` wildcard as a
+   full-chain PFX into `wildcard-tls`, under the same certificate name (see
+   [`key-vault-secrets.md`](key-vault-secrets.md#import-the-wildcard-tls-certificate)).
+   Both edges reference the certificate without a version, so each one moves to
+   the new certificate when it next fetches the current version. From then on,
+   the old hostnames no longer match the certificate they serve. Do this step
+   immediately before the deploy, not days ahead of it. If the new certificate
+   also covers `*.<OLD_DOMAIN>`, the old hostnames keep a matching certificate
+   in the meantime.
+2. **Add the new identities to Entra, additively.** On the SAGE resource-server
+   registration, add the three `https://sage.<NEW_DOMAIN>` identifier URIs (the
+   host and its `/mcp` and `/mcp_maint` forms) alongside the existing ones. On
+   the CAS BFF registration, add the `https://cas.<NEW_DOMAIN>` callback redirect
+   URI. Both collections are written by a full-set replace. Read the live set,
+   write back the union, and read it back. Never write a set that holds only the
+   new domain's entries, because that removes the old ones while clients still
+   use them. See [`entra-app-registrations.md`](entra-app-registrations.md#1-sage-resource-server-registration)
+   for the identifier URIs and
+   [Redirect URIs on a re-run](entra-app-registrations.md#redirect-uris-on-a-re-run)
+   for the redirect URI. The https identifier URIs need `<NEW_DOMAIN>` verified
+   in the tenant first.
+3. **Publish the new zone's records.** In the `<NEW_DOMAIN>` zone, publish the
+   `sage` and `cas` CNAMEs and the `asuid.cas` TXT described above. Do this
+   before the deploy that binds the `cas` custom domain, because Container Apps
+   checks the ownership token when it binds. The BFF container app's ingress
+   FQDN and verification token do not change with the domain, so they can be
+   read from the running app ahead of the deploy.
+4. **Set `BASE_DOMAIN` and deploy.** Set the `BASE_DOMAIN` variable on the
+   tenant's GitHub Environment to `<NEW_DOMAIN>`. Then run the deploy. The
+   `infra` workflow applies the infrastructure template, which rebinds both
+   custom domains and the `sage-resource-url` named value. It then converges the
+   application tier.
+5. **Run the cloud preflight.** It runs as the deploy's post-deploy gate. When
+   you re-run it by hand, set `BASE_DOMAIN` to `<NEW_DOMAIN>`. Also set
+   `PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD=deploy/resource-token-probe.sh`, from an
+   authenticated `az` session, as the `infra` workflow does. Without it the
+   registration check skips instead of verifying. Three checks bear on the
+   move:
+   - `kv_wildcard_tls` checks that the certificate covers `*.<NEW_DOMAIN>`.
+   - `bff_custom_domain_tls` checks the chain served on `cas.<NEW_DOMAIN>`.
+   - `edge_resource_identity` and `edge_advertised_resources_registered` check
+     that the edge advertises `https://sage.<NEW_DOMAIN>`, and that Entra holds
+     that resource.
+6. **Re-point MCP clients, per client type.** Move every client that names the
+   SAGE edge to `https://sage.<NEW_DOMAIN>/mcp` (and `/mcp_maint`) and sign in
+   again against the new resource. How depends on the client; see
+   [Re-pointing MCP clients](#re-pointing-mcp-clients) below.
+7. **Only then retire the old domain.** Remove the `https://sage.<OLD_DOMAIN>`
+   identifier URIs and the old BFF redirect URI the same way: read the set, drop
+   the entries, write back the remainder, and read it back. On the MCP client
+   app, also remove any loopback callback that no configured client uses any
+   more, such as the path a Codex server entry used before it was re-pointed.
+   Then delete the `<OLD_DOMAIN>` records from its zone.
+
+**Why the old hostname cannot stay as a serving alias for SAGE.** The SAGE edge
+advertises exactly one resource origin. API Management's discovery operations
+publish the `sage-resource-url` named value, which is `https://` plus the SAGE
+custom domain, as the `resource` and authorization server in the
+protected-resource metadata. An MCP client requires that advertised resource to
+match the origin it connected to (RFC 9728). A client still on
+`sage.<OLD_DOMAIN>` would therefore be handed `sage.<NEW_DOMAIN>` metadata and
+reject it, even if the old hostname were still bound. Moving the clients (step 6)
+is the only migration path. There is no window in which both names serve MCP.
+
+### Re-pointing MCP clients
+
+- **claude.ai custom connectors.** A connector's URL cannot be edited. Remove
+  the connector (Customize → Connectors, then the connector's **⋮** menu →
+  **Remove**). Add a new custom connector at `https://sage.<NEW_DOMAIN>/mcp`,
+  and another at `/mcp_maint` if it is used, then sign in. The edge supports
+  dynamic client registration, so no client ID is needed.
+- **Codex.** After a server's `url` changes, Codex's next sign-in uses a new
+  loopback callback path, `http://127.0.0.1:<callback_port>/callback/<id>`. The
+  port stays as configured, but a pinned `callback_url` path is not reused.
+  Entra rejects that sign-in with `AADSTS50011` until that exact URI is
+  registered on the MCP client app (`cas-mcp-client`) as a public-client
+  redirect URI. To register it:
+  1. Read the current `publicClient.redirectUris`.
+  2. Append the new URI.
+  3. Write back the merged list with
+     `az ad app update --public-client-redirect-uris <every URI in the merged list>`.
+  4. Read it back.
+
+  Never write a set without the existing entries: the flag replaces the whole
+  collection, and the hosted client's callback would be lost. Then set that
+  server's `callback_url` in the Codex configuration to the same URI. Entra
+  ignores the port of a loopback redirect URI but matches its path exactly, so
+  each Codex server entry needs its own registered path. Once registered, the
+  path is stable across sign-ins. See
+  [the MCP client registration](entra-app-registrations.md#4-public-mcp-client-registration-auth-code--pkce-no-secret)
+  for how these entries sit alongside the bootstrap's own.
+- **Other local registrations,** such as Claude Code's MCP entries: change the
+  configured URL and sign in again.
+
 ## What this procedure does NOT do
 
 - **Create the CAS BFF container app or its ingress custom-domain binding.** The

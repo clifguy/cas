@@ -37,7 +37,7 @@ deployment/vault pairs, except deleting the vault itself:
 | Deployment | Literal vault ID | Authorized smoke-test effects |
 |---|---|---|
 | Local SAGE | `test` | All necessary in-vault verification operations except vault deletion |
-| Hosted SAGE at `https://sage.cor.org` | `cloud_validation` | All necessary in-vault verification operations except vault deletion |
+| Hosted SAGE at `https://sage.resurrection.church` | `cloud_validation` | All necessary in-vault verification operations except vault deletion |
 
 This general grant is not an exhaustive operation allowlist. It includes document
 and lifecycle mutations, edge staging/confirmation/dismissal, production-edge
