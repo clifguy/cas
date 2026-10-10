@@ -564,6 +564,19 @@ holds, such as the per-port `http://127.0.0.1:<port>/callback/<id>` loopbacks a
 desktop client registers, and gains any required URI it lacks (see
 [Redirect URIs on a re-run](#redirect-uris-on-a-re-run)).
 
+On a live tenant, the public-client redirect URIs hold the hosted client's
+callback (for claude.ai, `https://claude.ai/api/mcp/auth_callback`). They also
+hold **one loopback callback per configured Codex server**, of the form
+`http://127.0.0.1:<callback_port>/callback/<id>`. Entra ignores the port of a
+loopback redirect URI but matches its path exactly, so each Codex server entry
+(`/mcp` and `/mcp_maint` count separately) needs its own registered path. That
+path is the `callback_url` pinned in the Codex configuration. These entries are
+added by hand, not by this bootstrap. A re-run keeps them, because it writes
+back the union of the live set and the required set. A full-set write of only
+the required URIs would drop them, and every Codex sign-in would then fail with
+`AADSTS50011`. Registering one is the additive procedure in
+[Changing the base domain](custom-domains-dns.md#changing-the-base-domain).
+
 Grant the same delegated `Sage.Access` scope the BFF holds, and additionally grant
 `offline_access` so Entra issues this public client a **refresh token**. Without
 `offline_access`, Entra's v2 endpoint mints an access token only; once it expires

@@ -207,14 +207,16 @@ it, and nothing belonging to the old domain is removed until clients have moved.
    - `edge_resource_identity` and `edge_advertised_resources_registered` check
      that the edge advertises `https://sage.<NEW_DOMAIN>`, and that Entra holds
      that resource.
-6. **Re-point MCP clients.** Update every client that names the SAGE edge to
-   `https://sage.<NEW_DOMAIN>`: hosted connectors and local registrations,
-   such as Claude Code's MCP entries. Each client then signs in again against
-   the new resource.
+6. **Re-point MCP clients, per client type.** Move every client that names the
+   SAGE edge to `https://sage.<NEW_DOMAIN>/mcp` (and `/mcp_maint`) and sign in
+   again against the new resource. How depends on the client; see
+   [Re-pointing MCP clients](#re-pointing-mcp-clients) below.
 7. **Only then retire the old domain.** Remove the `https://sage.<OLD_DOMAIN>`
    identifier URIs and the old BFF redirect URI the same way: read the set, drop
-   the entries, write back the remainder, and read it back. Then delete the
-   `<OLD_DOMAIN>` records from its zone.
+   the entries, write back the remainder, and read it back. On the MCP client
+   app, also remove any loopback callback that no configured client uses any
+   more, such as the path a Codex server entry used before it was re-pointed.
+   Then delete the `<OLD_DOMAIN>` records from its zone.
 
 **Why the old hostname cannot stay as a serving alias for SAGE.** The SAGE edge
 advertises exactly one resource origin. API Management's discovery operations
@@ -225,6 +227,36 @@ match the origin it connected to (RFC 9728). A client still on
 `sage.<OLD_DOMAIN>` would therefore be handed `sage.<NEW_DOMAIN>` metadata and
 reject it, even if the old hostname were still bound. Moving the clients (step 6)
 is the only migration path. There is no window in which both names serve MCP.
+
+### Re-pointing MCP clients
+
+- **claude.ai custom connectors.** A connector's URL cannot be edited. Remove
+  the connector (Customize → Connectors, then the connector's **⋮** menu →
+  **Remove**). Add a new custom connector at `https://sage.<NEW_DOMAIN>/mcp`,
+  and another at `/mcp_maint` if it is used, then sign in. The edge supports
+  dynamic client registration, so no client ID is needed.
+- **Codex.** After a server's `url` changes, Codex's next sign-in uses a new
+  loopback callback path, `http://127.0.0.1:<callback_port>/callback/<id>`. The
+  port stays as configured, but a pinned `callback_url` path is not reused.
+  Entra rejects that sign-in with `AADSTS50011` until that exact URI is
+  registered on the MCP client app (`cas-mcp-client`) as a public-client
+  redirect URI. To register it:
+  1. Read the current `publicClient.redirectUris`.
+  2. Append the new URI.
+  3. Write back the merged list with
+     `az ad app update --public-client-redirect-uris <every URI in the merged list>`.
+  4. Read it back.
+
+  Never write a set without the existing entries: the flag replaces the whole
+  collection, and the hosted client's callback would be lost. Then set that
+  server's `callback_url` in the Codex configuration to the same URI. Entra
+  ignores the port of a loopback redirect URI but matches its path exactly, so
+  each Codex server entry needs its own registered path. Once registered, the
+  path is stable across sign-ins. See
+  [the MCP client registration](entra-app-registrations.md#4-public-mcp-client-registration-auth-code--pkce-no-secret)
+  for how these entries sit alongside the bootstrap's own.
+- **Other local registrations,** such as Claude Code's MCP entries: change the
+  configured URL and sign in again.
 
 ## What this procedure does NOT do
 
