@@ -248,7 +248,10 @@ az keyvault certificate show --vault-name "$KV" --name wildcard-tls \
 
 Setting contacts and certificate policy needs **Key Vault Certificates
 Officer**, which only the operator holds. The CI deploy identity cannot do it,
-so this stays an operator step.
+so this stays an operator step. The role grants certificate and contact
+writes. Adding a contact also reads the existing list, so if that read is
+refused the script stops before it changes the policy. On a deployment's first
+run, keep the two readbacks above as the record that the notice is in place.
 
 ## Renewing the wildcard certificate
 
@@ -268,7 +271,7 @@ which does not name this deployment:
   fails every deploy's post-deploy gate, and the steps after that gate do not
   run. To deploy while a renewal is pending, lower
   `PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS` on the tenant's GitHub Environment; `0`
-  fails only a certificate that has already expired.
+  fails only a certificate that has expired or expires within the day.
 
 Import the renewed certificate as a full-chain PFX under the **same name**,
 `wildcard-tls`, using the import command above. That command, and the loader

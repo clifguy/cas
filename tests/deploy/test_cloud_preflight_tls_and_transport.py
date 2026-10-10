@@ -19,7 +19,7 @@ from typing import Final
 import pytest
 
 from tests.deploy._preflight_harness import (
-    _BASH_BINS,
+    _BASH_BIN_PARAMS,
     _HTTP_CHECKS,
     _NEEDS_BASH,
     _NEEDS_RUNTIME,
@@ -952,14 +952,6 @@ def test_cname_equal_to_the_suffix_itself_is_credited(tmp_path: Path) -> None:
 # The check reads the expiry each custom hostname actually serves and fails when
 # either falls inside the window. It is the deploy-time backstop to the Key Vault
 # expiry notice: a certificate allowed to lapse takes both hostnames down at once.
-
-_BASH_BIN_PARAMS: Final[list[pytest.param]] = [
-    pytest.param(
-        path,
-        id=f"bash{label}" if [lb for lb, _ in _BASH_BINS].count(label) == 1 else f"bash{label}#{i}",
-    )
-    for i, (label, path) in enumerate(_BASH_BINS)
-]
 
 _MONTHS: Final[tuple[str, ...]] = (
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",

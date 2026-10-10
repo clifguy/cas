@@ -2063,12 +2063,24 @@ def test_expiry_notice_rerun_adds_nothing(tmp_path: Path, bash: str) -> None:
 
 
 @SEED_BASHES
-def test_expiry_notice_matches_existing_contacts_ignoring_case(tmp_path: Path, bash: str) -> None:
-    state = _kv_state(contacts=["Cert-Owner@Example.org", "OPS@example.org"])
-    result, calls, final, _ = _run_notice(tmp_path, state, bash)
+@pytest.mark.parametrize(
+    ("listed", "given"),
+    [
+        (["Cert-Owner@Example.org", "OPS@example.org"], _KV_CONTACTS),
+        (["cert-owner@example.org", "ops@example.org"], "Cert-Owner@Example.org,OPS@example.org"),
+    ],
+    ids=["mixed-case-listing", "mixed-case-input"],
+)
+def test_expiry_notice_matches_existing_contacts_ignoring_case(
+    tmp_path: Path, bash: str, listed: list[str], given: str
+) -> None:
+    """Case is ignored on both sides: the service's own duplicate check is
+    exact, so a missed match would add a second, differently-cased contact."""
+    state = _kv_state(contacts=list(listed))
+    result, calls, final, _ = _run_notice(tmp_path, state, bash, CERT_EXPIRY_CONTACTS=given)
     assert result.returncode == 0, result.stderr
     assert not _call_index(calls, "keyvault", "certificate", "contact", "add"), calls
-    assert final["contacts"] == ["Cert-Owner@Example.org", "OPS@example.org"]
+    assert final["contacts"] == listed
 
 
 @SEED_BASHES
