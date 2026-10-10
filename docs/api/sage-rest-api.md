@@ -20,7 +20,7 @@ scheme the deployment accepts. Point a code generator at it. Nothing in this
 file repeats it, and nothing here is needed in order to read it.
 
 - **Base URL:** `https://sage.<base-domain>` — supplied by the deployment's
-  operator. The first deployment is `https://sage.cor.org`, used as the worked
+  operator. The first deployment is `https://sage.resurrection.church`, used as the worked
   example throughout.
 - The rendered explorers (`/docs`, `/redoc`) do require a token. The schema
   document itself does not.
@@ -31,7 +31,7 @@ The schema document tells you to resolve the tenant, endpoints, and scope
 string from the deployment's own discovery documents at runtime. The reason it
 matters is not in there: SAGE is deployed more than once, each deployment owns
 its own domain, Entra tenant, and audience, and the scope string is derived
-from the domain — `https://sage.cor.org/Sage.Access` on the first one,
+from the domain — `https://sage.resurrection.church/Sage.Access` on the first one,
 something else on the next.
 
 So a client that hardcodes the scope, tenant id, or token endpoint does not
@@ -97,7 +97,7 @@ get wrong anyway:
 
 - **Use the advertised scope string verbatim.** The resource advertises
   `scopes_supported` in the resource-qualified form — on the first deployment,
-  `["https://sage.cor.org/Sage.Access", "offline_access"]`. That form is
+  `["https://sage.resurrection.church/Sage.Access", "offline_access"]`. That form is
   required; a bare `Sage.Access` leaves Entra unable to bind the scope.
 - **Dynamic client registration is open at `POST /register`**, so a public
   client can self-register rather than waiting on the operator. Authorization

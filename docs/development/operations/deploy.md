@@ -29,7 +29,11 @@ scope (see *Out of scope*); the skill halts if the tenant's Environment does not
 
 | Domain | Environment |
 |---|---|
+| `resurrection.church` | `cor-prod` |
 | `cor.org` | `cor-prod` |
+
+`cor.org` is an accepted alias for the same Environment: the deployment's base domain moved to
+`resurrection.church`, and the Environment name was kept. Both resolve to `cor-prod`.
 
 This table is the extension point: adding a tenant is adding a row here (and authoring its GitHub
 Environment + parameter set, which is out of scope for this skill). A domain not in the table is a
@@ -56,9 +60,9 @@ Step 1. Every `gh` command below is `gh -R "$repo" …`.
 ### Step 0 — Resolve the tenant Environment
 
 Parse `<domain>` from the arguments and look it up in the map. On a miss, halt:
-`Unknown tenant domain '<domain>'. Known: cor.org.` Detect the `--dry-run` flag.
+`Unknown tenant domain '<domain>'. Known: resurrection.church, cor.org.` Detect the `--dry-run` flag.
 
-Resolve `env` (e.g., `cor.org` → `cor-prod`). Detect the `--allow-red-main` flag alongside
+Resolve `env` (e.g., `resurrection.church` → `cor-prod`). Detect the `--allow-red-main` flag alongside
 `--dry-run`.
 
 ### Step 1 — Preconditions
@@ -158,7 +162,7 @@ does not cancel the remote deployment.
 ### Step 5 — Report
 
 - **`DONE success`** — report: ✅ deploy succeeded, the run URL, and that the preflight gate passed
-  (cite the observed preflight step result and its per-layer report). For `cor.org`, note the live-proof signal the
+  (cite the observed preflight step result and its per-layer report). For `cor-prod`, note the live-proof signal the
   preflight asserts: SAGE loads its seeded vault with no `OperationalError`.
 - **`DONE failure`** — identify the failing job and step from
   `gh -R "$repo" run view "$RUN_ID" --json jobs` (find the job/step whose `conclusion == "failure"`),
@@ -204,7 +208,7 @@ RUN: <run url>
 - **Always deploys `origin/main`.** The dispatch targets `--ref main`; the local working tree is
   irrelevant to what ships (Principle 1). Report the SHA so the operator sees the artifact.
 - **Per-tenant serialization.** `infra.yml`'s `concurrency` group is keyed on the Environment with
-  `cancel-in-progress: false`, so two `/deploy cor.org` invocations queue rather than race or cancel.
+  `cancel-in-progress: false`, so two `/deploy resurrection.church` invocations queue rather than race or cancel.
 - **Dispatch correlation.** Follow Step 3; timestamps discover candidates but never establish identity by themselves.
 - **Adding a tenant.** Add a row to the domain→Environment map. The Environment itself, its
   federated deploy identity, and its parameter set are provisioned out of band (the manual floor).

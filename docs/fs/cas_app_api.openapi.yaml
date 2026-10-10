@@ -58,7 +58,7 @@ servers:
       Entra tenant, so `baseDomain` selects the target deployment.
     variables:
       baseDomain:
-        default: cor.org
+        default: resurrection.church
         description: Owned base domain of the target deployment.
   - url: http://localhost:8000
     description: Local profile (FastAPI).

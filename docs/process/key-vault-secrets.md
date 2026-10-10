@@ -178,8 +178,8 @@ az keyvault certificate import --vault-name "$KV" --name wildcard-tls \
 
 `deploy/bootstrap/load-key-vault-secrets.sh` runs this import and **refuses a
 leaf-only bundle** (the same `>= 2 certificates` guard) so the gap cannot reach
-Key Vault unnoticed. Certificate renewal is the same command with a new
-full-chain bundle; the custom-domain bindings pick up the current version.
+Key Vault unnoticed. Renewal reuses this import; see
+[Renewing the wildcard certificate](#renewing-the-wildcard-certificate).
 
 After a deploy, confirm the served chain is complete and trusted:
 
@@ -193,6 +193,42 @@ echo | openssl s_client -connect cas.<base-domain>:443 \
 ```
 
 The post-deploy preflight's `bff_custom_domain_tls` check asserts exactly this.
+
+## Renewing the wildcard certificate
+
+Import the renewed certificate as a full-chain PFX under the **same name**,
+`wildcard-tls`, using the import command above. That command, and the loader
+script with its `>= 2 certificates` guard, add a new version of the existing
+certificate. Do not create a certificate under a new name, because downstream
+configuration builds its references from that name.
+
+No redeploy is needed. API Management and the Container Apps environment both
+reference the certificate's secret without a version, so each one fetches the
+current version on its own schedule:
+
+- **API Management** picks up a new version automatically, but Microsoft
+  documents this as taking up to one to two days. To apply it sooner, start a
+  certificate synchronization on the instance's **Custom domains** page.
+  ([Configure a custom domain name](https://learn.microsoft.com/azure/api-management/configure-custom-domain).)
+- **Container Apps** applies a rotated Key Vault certificate within up to 12
+  hours.
+  ([Import certificates from Azure Key Vault](https://learn.microsoft.com/azure/container-apps/key-vault-certificates-manage).)
+
+Both services keep serving their cached certificate until they fetch the new
+version. Renew well ahead of expiry, by more than the longer of the two windows.
+
+Once both windows have passed, or after a manual sync, verify with the cloud
+preflight. `kv_wildcard_tls` checks that the current version still covers
+`*.<base-domain>`. `bff_custom_domain_tls` checks that `cas.<base-domain>`
+serves a complete, trusted chain. To confirm the served certificate is the
+renewed one, compare the expiry each edge serves with the new certificate's:
+
+```bash
+echo | openssl s_client -connect sage.<base-domain>:443 \
+  -servername sage.<base-domain> 2>/dev/null | openssl x509 -noout -enddate
+echo | openssl s_client -connect cas.<base-domain>:443 \
+  -servername cas.<base-domain> 2>/dev/null | openssl x509 -noout -enddate
+```
 
 ## Verify
 

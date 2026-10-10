@@ -162,7 +162,7 @@ servers:
       and audience, so `baseDomain` selects the target deployment.
     variables:
       baseDomain:
-        default: cor.org
+        default: resurrection.church
         description: Owned base domain of the target deployment.
   - url: http://localhost:8000
     description: Local profile. Authentication is disabled by default.
@@ -4523,7 +4523,7 @@ components:
         Deployment-portable clients must not hardcode the scope, tenant, or
         token endpoint: all three vary by deployment, and the scope string is
         derived from the deployment's own domain (for example
-        `https://sage.cor.org/Sage.Access`). Resolve them at runtime from the
+        `https://sage.resurrection.church/Sage.Access`). Resolve them at runtime from the
         unauthenticated discovery documents published by the target edge:
 
 

@@ -5,7 +5,7 @@ complete, authored description of itself — every operation, request and respon
 schema, error code, and the auth scheme — at one **unauthenticated** URL:
 
 ```
-https://sage.cor.org/openapi.json
+https://sage.resurrection.church/openapi.json
 ```
 
 Point Claude Code at that document and let it read the contract. This page is
@@ -31,7 +31,7 @@ durable, set-and-forget path for a months-long project.
 One-time setup:
 
 1. Ask Clif to provision a **service principal** for your app and **grant it the
-   `Sage.Reader` app role** on the cor.org deployment. The role assignment is a
+   `Sage.Reader` app role** on the resurrection.church deployment. The role assignment is a
    per-principal grant — without it Entra refuses the token request itself, and
    it is not something you can self-serve.
 2. Store the principal's `client_id` and secret as environment variables (never
@@ -43,7 +43,7 @@ deployment itself, so read them from its metadata rather than copying them
 from anywhere:
 
 ```bash
-SAGE=https://sage.cor.org
+SAGE=https://sage.resurrection.church
 TOKEN_URL="$(curl -s "$SAGE/.well-known/oauth-authorization-server" | jq -r .token_endpoint)"
 SCOPE="$(curl -s "$SAGE/.well-known/oauth-protected-resource" | jq -r .resource)/.default"
 
@@ -68,24 +68,24 @@ again — no re-login. Mint on demand instead of pasting a static value:
 
 ```bash
 sage-token() { az account get-access-token \
-  --scope "https://sage.cor.org/.default" \
+  --scope "https://sage.resurrection.church/.default" \
   --query accessToken -o tsv; }
-# curl -H "Authorization: Bearer $(sage-token)" https://sage.cor.org/...
+# curl -H "Authorization: Bearer $(sage-token)" https://sage.resurrection.church/...
 ```
 
 > The scope is the deployment's advertised resource with `/.default`
 > appended. The resource is listed at
-> `https://sage.cor.org/.well-known/oauth-protected-resource`, and the token
+> `https://sage.resurrection.church/.well-known/oauth-protected-resource`, and the token
 > endpoint, which names the tenant, at
-> `https://sage.cor.org/.well-known/oauth-authorization-server`. Read both
+> `https://sage.resurrection.church/.well-known/oauth-authorization-server`. Read both
 > there if you ever target a different deployment.
 
 ## 2. Hand Claude Code this prompt
 
 ```
-The SAGE API is fully described at https://sage.cor.org/openapi.json — fetch it
+The SAGE API is fully described at https://sage.resurrection.church/openapi.json — fetch it
 and treat it as the authoritative contract: operations, request/response
-schemas, error codes, and the auth scheme. Base URL is https://sage.cor.org.
+schemas, error codes, and the auth scheme. Base URL is https://sage.resurrection.church.
 Authenticate every request as `Authorization: Bearer <token>`, minting the token
 fresh (don't cache a stale one) — for interactive work run `sage-token`; in
 application code use the client-credentials call. Before you call an operation,
@@ -118,7 +118,7 @@ knowing up front:
 - **The document is the source of truth, not this page.** It is generated from
   the routes the deployment actually runs, so it is always accurate for that
   deployment. Read it fresh; don't hardcode the operation list.
-- **It's per-deployment.** `sage.cor.org` is the current deployment. Against a
+- **It's per-deployment.** `sage.resurrection.church` is the current deployment. Against a
   different one, swap the base domain — the scope, audience, and tenant are all
   derived from it and advertised at that deployment's `openapi.json` and
   `/.well-known/` discovery documents.
