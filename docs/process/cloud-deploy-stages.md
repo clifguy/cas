@@ -81,7 +81,9 @@ After the vault and the SAGE identity exist:
 
 - `deploy/bootstrap/load-key-vault-secrets.sh` — loads the abstraction-provider
   key, the BFF client secret, and the wildcard TLS certificate into Key Vault,
-  and generates the gateway ingress key when the vault holds none.
+  and generates the gateway ingress key when the vault holds none. It also sets
+  the certificate's expiry notice to `CERT_EXPIRY_CONTACTS`, the certificate
+  owner's addresses, which it requires.
 - `deploy/bootstrap/seed-vault-source.sh` — grants the SAGE identity the
   site-scoped Microsoft Graph permission and seeds the validation vault's
   configuration into the document library (CAS-ADR-043); **emits

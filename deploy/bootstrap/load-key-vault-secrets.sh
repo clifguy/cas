@@ -11,7 +11,14 @@
 # removed when the script exits. Re-running sets a new secret version (the
 # rotation path) for every secret but the ingress key, which is generated once
 # and kept, so the gateway and SAGE keep agreeing on it.
+#
+# After each certificate import the expiry notice is set again
+# (set-certificate-expiry-notice.sh, from CERT_EXPIRY_CONTACTS and the optional
+# CERT_EXPIRY_NOTICE_DAYS), so a renewal re-asserts it.
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+NOTICE="${SCRIPT_DIR}/set-certificate-expiry-notice.sh"
 
 # The vault name is the keyVaultName deployment output. Supply it directly via
 # KEY_VAULT_NAME, or set DEPLOYMENT_NAME to resolve it from the deployment.
@@ -26,6 +33,9 @@ fi
 : "${BFF_CLIENT_SECRET:?set BFF_CLIENT_SECRET to the BFF confidential-client secret}"
 : "${WILDCARD_TLS_PFX_PATH:?set WILDCARD_TLS_PFX_PATH to the wildcard certificate bundle}"
 : "${WILDCARD_TLS_PFX_PASSWORD:?set WILDCARD_TLS_PFX_PASSWORD to the bundle password}"
+: "${CERT_EXPIRY_CONTACTS:?set CERT_EXPIRY_CONTACTS to the email addresses of the certificate owner, comma-separated}"
+# Refuse malformed notice input now, before anything is written.
+"${BASH:-bash}" "${NOTICE}" --validate-only
 
 umask 077
 # An explicit template: without one, macOS mktemp ignores TMPDIR.
@@ -92,3 +102,8 @@ fi
 
 az keyvault certificate import --vault-name "${KV}" --name wildcard-tls \
   --file "$WILDCARD_TLS_PFX_PATH" --password "@${scratch}/pfx-password" --output none
+
+# Have the vault email the certificate's owner before expiry, naming this
+# deployment as a holder. Set after every import, whether or not a new version
+# keeps the previous policy.
+KEY_VAULT_NAME="${KV}" "${BASH:-bash}" "${NOTICE}"

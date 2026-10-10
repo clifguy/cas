@@ -37,7 +37,15 @@ KEY_VAULT: Final[Path] = BOOTSTRAP_DIR / "load-key-vault-secrets.sh"
 VAULT_SEED: Final[Path] = BOOTSTRAP_DIR / "seed-vault-source.sh"
 DNS: Final[Path] = BOOTSTRAP_DIR / "emit-dns-records.sh"
 DEPLOY_IDENTITY: Final[Path] = BOOTSTRAP_DIR / "deploy-identity-roles.sh"
-SCRIPTS: Final[tuple[Path, ...]] = (ENTRA, KEY_VAULT, VAULT_SEED, DNS, DEPLOY_IDENTITY)
+EXPIRY_NOTICE: Final[Path] = BOOTSTRAP_DIR / "set-certificate-expiry-notice.sh"
+SCRIPTS: Final[tuple[Path, ...]] = (
+    ENTRA,
+    KEY_VAULT,
+    VAULT_SEED,
+    DNS,
+    DEPLOY_IDENTITY,
+    EXPIRY_NOTICE,
+)
 
 PROCESS_DIR: Final[Path] = REPO_ROOT / "docs" / "process"
 STAGES_DOC: Final[Path] = PROCESS_DIR / "cloud-deploy-stages.md"
@@ -1312,6 +1320,13 @@ def test_runbooks_point_to_their_scripts() -> None:
         )
 
 
+def test_key_vault_runbook_points_to_the_expiry_notice_script() -> None:
+    """The certificate runbook also documents the expiry notice, whose
+    executable substance is its own script, runnable without a re-import."""
+    text = (PROCESS_DIR / "key-vault-secrets.md").read_text(encoding="utf-8")
+    assert f"deploy/bootstrap/{EXPIRY_NOTICE.name}" in text
+
+
 # --- Executed vault-source seed -----------------------------------------------
 #
 # The seed script runs, under every available bash, against the same stateful
@@ -1822,6 +1837,47 @@ elif args[:3] == ["keyvault", "certificate", "import"]:
     if Path(password[1:]).read_text() != state["pfx_password"]:
         sys.exit("ERROR: the bundle password is wrong")
     state["certificates"][arg("--name")] = arg("--file")
+elif args[:4] == ["keyvault", "certificate", "contact", "list"]:
+    # The service answers a vault that has never held a contact with an error,
+    # not an empty list.
+    assert arg("--query") == "[].email" and arg("-o") == "tsv", args
+    if not state["contacts"]:
+        sys.exit("ERROR: (ContactsNotFound) Contacts not found")
+    print("\n".join(state["contacts"]))
+elif args[:4] == ["keyvault", "certificate", "contact", "add"]:
+    # The CLI reads the vault's contacts, refuses an exact duplicate and writes
+    # the list back; it handles a vault with none itself.
+    email = arg("--email")
+    if email in state["contacts"]:
+        sys.exit(f"ERROR: contact '{email}' already exists")
+    state["contacts"].append(email)
+elif args[:3] == ["keyvault", "certificate", "set-attributes"]:
+    # The CLI converts the policy's keys to snake case and keeps only the
+    # fields it knows; an unknown spelling is dropped, and the update is then a
+    # silent no-op.
+    import re
+    def snake(item):
+        if isinstance(item, dict):
+            return {re.sub(r"(?<!^)(?=[A-Z])", "_", k).lower(): snake(v) for k, v in item.items()}
+        if isinstance(item, list):
+            return [snake(x) for x in item]
+        return item
+    source = arg("--policy")
+    assert source.startswith("@"), source
+    policy = snake(json.loads(Path(source[1:]).read_text()))
+    actions = policy.get("lifetime_actions")
+    if actions and not state.get("policy_noop"):
+        state["policies"][arg("--name")] = [
+            {"action": a["action"]["action_type"], "days": a["trigger"].get("days_before_expiry")}
+            for a in actions
+        ]
+elif args[:3] == ["keyvault", "certificate", "show"]:
+    assert arg("--query") == (
+        "policy.lifetimeActions[?action.actionType=='EmailContacts'].trigger.daysBeforeExpiry"
+    ), args
+    for action in state["policies"].get(arg("--name"), []):
+        if action["action"] == "EmailContacts":
+            print(action["days"])
 else:
     sys.exit(f"fake az: unsupported {args}")
 state_path.write_text(json.dumps(state))
@@ -1834,7 +1890,20 @@ _KV_INPUTS: Final[dict[str, str]] = {
 }
 
 
-def _run_kv_load(tmp_path: Path, state: dict, bash: str = "bash") -> tuple:
+#: The certificate's expiry contacts, as the loader and the notice script take them.
+_KV_CONTACTS: Final[str] = "cert-owner@example.org,ops@example.org"
+
+
+def _run_kv_load(
+    tmp_path: Path,
+    state: dict,
+    bash: str = "bash",
+    script: Path = KEY_VAULT,
+    args: tuple[str, ...] = (),
+    **env: str | None,
+) -> tuple:
+    """Run ``script`` with ``args`` against the stand-ins. ``env`` overrides
+    the defaults; a value of ``None`` removes that variable."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
     for tool in ("az", "openssl"):
@@ -1849,19 +1918,26 @@ def _run_kv_load(tmp_path: Path, state: dict, bash: str = "bash") -> tuple:
     scratch.mkdir(exist_ok=True)
     pfx = tmp_path / "wildcard.pfx"
     pfx.write_bytes(b"pfx-bytes")
+    run_env: dict[str, str] = {
+        "PATH": f"{bin_dir}:{os.environ['PATH']}",
+        "HOME": str(tmp_path),
+        "TMPDIR": str(scratch),
+        "KV_STATE": str(state_path),
+        "KV_CALLS": str(calls_path),
+        "KEY_VAULT_NAME": "kv-test",
+        "WILDCARD_TLS_PFX_PATH": str(pfx),
+        "CERT_EXPIRY_CONTACTS": _KV_CONTACTS,
+        **_KV_INPUTS,
+    }
+    for name, value in env.items():
+        if value is None:
+            run_env.pop(name, None)
+        else:
+            run_env[name] = value
     result = subprocess.run(
-        [bash, str(KEY_VAULT)],
+        [bash, str(script), *args],
         cwd=REPO_ROOT,
-        env={
-            "PATH": f"{bin_dir}:{os.environ['PATH']}",
-            "HOME": str(tmp_path),
-            "TMPDIR": str(scratch),
-            "KV_STATE": str(state_path),
-            "KV_CALLS": str(calls_path),
-            "KEY_VAULT_NAME": "kv-test",
-            "WILDCARD_TLS_PFX_PATH": str(pfx),
-            **_KV_INPUTS,
-        },
+        env=run_env,
         capture_output=True,
         text=True,
         timeout=120,
@@ -1874,6 +1950,8 @@ def _kv_state(**extra: object) -> dict:
     return {
         "secrets": {},
         "certificates": {},
+        "contacts": [],
+        "policies": {},
         "pfx_password": _KV_INPUTS["WILDCARD_TLS_PFX_PASSWORD"],
         "faults": [],
         **extra,
@@ -1922,3 +2000,201 @@ def test_key_vault_load_stops_when_the_ingress_key_lookup_fails(tmp_path: Path, 
     assert result.returncode != 0, "a failed lookup must stop the run"
     assert final["secrets"]["sage-ingress-key"] == "existing"
     assert list(scratch.iterdir()) == [], "scratch files outlived the failed run"
+
+
+# --- Executed certificate expiry notice ---------------------------------------
+#
+# The notice script makes the deployment's own Key Vault email the certificate's
+# owner before expiry, so the notice names a holder the owner may not know of.
+# Contacts are vault-wide: the script adds, and never removes, so another
+# workload's contacts survive it.
+
+_WRITES: Final[tuple[tuple[str, ...], ...]] = (
+    ("keyvault", "secret", "set"),
+    ("keyvault", "certificate", "import"),
+    ("keyvault", "certificate", "contact", "add"),
+    ("keyvault", "certificate", "contact", "delete"),
+    ("keyvault", "certificate", "set-attributes"),
+)
+
+
+def _writes(calls: list[list[str]]) -> list[list[str]]:
+    return [
+        c for c in calls if c[0] == "az" and any(tuple(c[1 : 1 + len(w)]) == w for w in _WRITES)
+    ]
+
+
+def _call_index(calls: list[list[str]], *prefix: str) -> list[int]:
+    return [i for i, c in enumerate(calls) if tuple(c[1 : 1 + len(prefix)]) == prefix]
+
+
+def _run_notice(tmp_path: Path, state: dict, bash: str, **env: str | None) -> tuple:
+    return _run_kv_load(tmp_path, state, bash, script=EXPIRY_NOTICE, **env)
+
+
+@SEED_BASHES
+def test_expiry_notice_adds_contacts_and_sets_the_lifetime_action(
+    tmp_path: Path, bash: str
+) -> None:
+    """The listed contacts join the vault's, which keep any it already had, and
+    the certificate emails them 30 days before expiry by default."""
+    state = _kv_state(contacts=["other-workload@example.net"])
+    result, calls, final, scratch = _run_notice(tmp_path, state, bash)
+    assert result.returncode == 0, result.stderr
+    assert final["contacts"] == [
+        "other-workload@example.net",
+        "cert-owner@example.org",
+        "ops@example.org",
+    ]
+    assert final["policies"]["wildcard-tls"] == [{"action": "EmailContacts", "days": 30}]
+    assert not _call_index(calls, "keyvault", "certificate", "contact", "delete")
+    assert list(scratch.iterdir()) == [], "scratch files outlived the run"
+
+
+@SEED_BASHES
+def test_expiry_notice_rerun_adds_nothing(tmp_path: Path, bash: str) -> None:
+    first, _, state, _ = _run_notice(tmp_path / "first", _kv_state(), bash)
+    assert first.returncode == 0, first.stderr
+    again, calls, final, _ = _run_notice(tmp_path / "again", state, bash)
+    assert again.returncode == 0, again.stderr
+    assert not _call_index(calls, "keyvault", "certificate", "contact", "add"), calls
+    assert final["contacts"] == state["contacts"]
+    assert final["policies"] == state["policies"]
+
+
+@SEED_BASHES
+@pytest.mark.parametrize(
+    ("listed", "given"),
+    [
+        (["Cert-Owner@Example.org", "OPS@example.org"], _KV_CONTACTS),
+        (["cert-owner@example.org", "ops@example.org"], "Cert-Owner@Example.org,OPS@example.org"),
+    ],
+    ids=["mixed-case-listing", "mixed-case-input"],
+)
+def test_expiry_notice_matches_existing_contacts_ignoring_case(
+    tmp_path: Path, bash: str, listed: list[str], given: str
+) -> None:
+    """Case is ignored on both sides: the service's own duplicate check is
+    exact, so a missed match would add a second, differently-cased contact."""
+    state = _kv_state(contacts=list(listed))
+    result, calls, final, _ = _run_notice(tmp_path, state, bash, CERT_EXPIRY_CONTACTS=given)
+    assert result.returncode == 0, result.stderr
+    assert not _call_index(calls, "keyvault", "certificate", "contact", "add"), calls
+    assert final["contacts"] == listed
+
+
+@SEED_BASHES
+def test_expiry_notice_takes_a_contactless_vault(tmp_path: Path, bash: str) -> None:
+    """A vault that has never held a contact answers the listing with an error;
+    that is an empty list, not a failure."""
+    result, _, final, _ = _run_notice(tmp_path, _kv_state(), bash)
+    assert result.returncode == 0, result.stderr
+    assert final["contacts"] == ["cert-owner@example.org", "ops@example.org"]
+
+
+@SEED_BASHES
+def test_expiry_notice_counts_an_already_present_contact_as_added(
+    tmp_path: Path, bash: str
+) -> None:
+    """When the listing is unavailable, adding a contact the vault already
+    holds is refused as a duplicate, which is the state the run wants."""
+    state = _kv_state(contacts=["cert-owner@example.org"], faults=[["contact", "list"]])
+    result, _, final, _ = _run_notice(tmp_path, state, bash)
+    assert result.returncode == 0, result.stderr
+    assert final["contacts"] == ["cert-owner@example.org", "ops@example.org"]
+
+
+@SEED_BASHES
+def test_expiry_notice_stops_when_a_contact_cannot_be_added(tmp_path: Path, bash: str) -> None:
+    state = _kv_state(faults=[["contact", "add"]])
+    result, calls, final, _ = _run_notice(tmp_path, state, bash)
+    assert result.returncode != 0
+    assert final["policies"] == {}
+    assert not _call_index(calls, "keyvault", "certificate", "set-attributes")
+
+
+@SEED_BASHES
+def test_expiry_notice_window_is_configurable(tmp_path: Path, bash: str) -> None:
+    result, _, final, _ = _run_notice(tmp_path, _kv_state(), bash, CERT_EXPIRY_NOTICE_DAYS="45")
+    assert result.returncode == 0, result.stderr
+    assert final["policies"]["wildcard-tls"] == [{"action": "EmailContacts", "days": 45}]
+
+
+@SEED_BASHES
+def test_expiry_notice_fails_when_the_policy_does_not_read_back(tmp_path: Path, bash: str) -> None:
+    """An update the service accepted but did not apply reads back without the
+    action, and the run must say so rather than report success."""
+    result, _, _, _ = _run_notice(tmp_path, _kv_state(policy_noop=True), bash)
+    assert result.returncode != 0
+    assert "EmailContacts" in result.stderr, result.stderr
+
+
+@SEED_BASHES
+@pytest.mark.parametrize(
+    "env",
+    [
+        {"CERT_EXPIRY_CONTACTS": None},
+        {"CERT_EXPIRY_CONTACTS": ""},
+        {"CERT_EXPIRY_CONTACTS": " , "},
+        {"CERT_EXPIRY_CONTACTS": "not-an-address"},
+        {"CERT_EXPIRY_CONTACTS": "owner@example.org,-x@example.org"},
+        {"CERT_EXPIRY_CONTACTS": "owner@example.org\nops@example.org"},
+        {"CERT_EXPIRY_CONTACTS": "owner@@example.org"},
+        {"CERT_EXPIRY_NOTICE_DAYS": "0"},
+        {"CERT_EXPIRY_NOTICE_DAYS": "thirty"},
+        {"CERT_EXPIRY_NOTICE_DAYS": "-3"},
+    ],
+    ids=[
+        "contacts-unset",
+        "contacts-empty",
+        "contacts-blank",
+        "no-at-sign",
+        "option-shaped",
+        "control-character",
+        "two-at-signs",
+        "days-zero",
+        "days-word",
+        "days-negative",
+    ],
+)
+def test_expiry_notice_refuses_malformed_input_before_any_call(
+    tmp_path: Path, bash: str, env: dict[str, str | None]
+) -> None:
+    result, calls, _, _ = _run_notice(tmp_path, _kv_state(), bash, **env)
+    assert result.returncode != 0
+    assert not [c for c in calls if c[0] == "az"], calls
+
+
+@SEED_BASHES
+def test_expiry_notice_validate_only_makes_no_call(tmp_path: Path, bash: str) -> None:
+    """Valid input passes the check without reaching Azure, so a caller can
+    validate before writing anything of its own."""
+    result, calls, final, _ = _run_kv_load(
+        tmp_path, _kv_state(), bash, script=EXPIRY_NOTICE, args=("--validate-only",)
+    )
+    assert result.returncode == 0, result.stderr
+    assert calls == [], calls
+    assert final["contacts"] == [] and final["policies"] == {}
+
+
+@SEED_BASHES
+def test_key_vault_load_sets_the_expiry_notice_after_the_import(tmp_path: Path, bash: str) -> None:
+    """Every import, the first and each renewal, re-asserts the notice, so it
+    holds whether or not a new version keeps the previous policy."""
+    result, calls, final, _ = _run_kv_load(tmp_path, _kv_state(), bash)
+    assert result.returncode == 0, result.stderr
+    (imported,) = _call_index(calls, "keyvault", "certificate", "import")
+    policy = _call_index(calls, "keyvault", "certificate", "set-attributes")
+    assert policy and min(policy) > imported, calls
+    assert final["contacts"] == ["cert-owner@example.org", "ops@example.org"]
+    assert final["policies"]["wildcard-tls"] == [{"action": "EmailContacts", "days": 30}]
+
+
+@SEED_BASHES
+@pytest.mark.parametrize("contacts", [None, "not-an-address"], ids=["unset", "malformed"])
+def test_key_vault_load_refuses_bad_contacts_before_any_write(
+    tmp_path: Path, bash: str, contacts: str | None
+) -> None:
+    result, calls, _, _ = _run_kv_load(tmp_path, _kv_state(), bash, CERT_EXPIRY_CONTACTS=contacts)
+    assert result.returncode != 0
+    assert not _writes(calls), calls

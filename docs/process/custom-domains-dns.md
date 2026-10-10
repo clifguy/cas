@@ -172,7 +172,10 @@ it, and nothing belonging to the old domain is removed until clients have moved.
    the old hostnames no longer match the certificate they serve. Do this step
    immediately before the deploy, not days ahead of it. If the new certificate
    also covers `*.<OLD_DOMAIN>`, the old hostnames keep a matching certificate
-   in the meantime.
+   in the meantime. The loader sets the expiry notice again after the import;
+   if the new certificate has a different owner, give their addresses in
+   `CERT_EXPIRY_CONTACTS` (see
+   [`key-vault-secrets.md`](key-vault-secrets.md#email-the-certificates-owner-before-expiry)).
 2. **Add the new identities to Entra, additively.** On the SAGE resource-server
    registration, add the three `https://sage.<NEW_DOMAIN>` identifier URIs (the
    host and its `/mcp` and `/mcp_maint` forms) alongside the existing ones. On
@@ -200,10 +203,12 @@ it, and nothing belonging to the old domain is removed until clients have moved.
    you re-run it by hand, set `BASE_DOMAIN` to `<NEW_DOMAIN>`. Also set
    `PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD=deploy/resource-token-probe.sh`, from an
    authenticated `az` session, as the `infra` workflow does. Without it the
-   registration check skips instead of verifying. Three checks bear on the
+   registration check skips instead of verifying. These checks bear on the
    move:
    - `kv_wildcard_tls` checks that the certificate covers `*.<NEW_DOMAIN>`.
    - `bff_custom_domain_tls` checks the chain served on `cas.<NEW_DOMAIN>`.
+   - `wildcard_tls_expiry` reports the expiry each new hostname serves, and
+     fails if either is within the window.
    - `edge_resource_identity` and `edge_advertised_resources_registered` check
      that the edge advertises `https://sage.<NEW_DOMAIN>`, and that Entra holds
      that resource.

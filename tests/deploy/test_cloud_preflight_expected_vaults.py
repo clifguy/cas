@@ -15,6 +15,7 @@ import pytest
 
 from tests.deploy._preflight_harness import (
     _BASH,
+    _BASH_BIN_PARAMS,
     _BASH_BINS,
     _NEEDS_BASH,
     _NEEDS_RUNTIME,
@@ -50,19 +51,6 @@ from tests.deploy._preflight_harness import (
 # The stub advertises two vaults (``_VAULTS_BODY``), so a multi-id expectation is
 # satisfiable without a bespoke responder.
 # --------------------------------------------------------------------------- #
-#: One case per inventoried interpreter, named by the version it proves rather
-#: than by a filesystem path that says nothing about the floor. A label can repeat
-#: -- two installs may report the same major.minor -- so when it does, *every*
-#: case sharing it takes a positional suffix (``bash5.2#0``, ``bash5.2#1``), which
-#: keeps the ids distinct and keeps the pair visibly a pair. A lone label is left
-#: bare, so the ordinary single-interpreter host reads as ``bash3.2``.
-_BASH_BIN_PARAMS: Final[list[pytest.param]] = [
-    pytest.param(
-        path,
-        id=f"bash{label}" if [lb for lb, _ in _BASH_BINS].count(label) == 1 else f"bash{label}#{i}",
-    )
-    for i, (label, path) in enumerate(_BASH_BINS)
-]
 
 #: The detail line a satisfied vault_load emits against ``_VAULTS_BODY``.
 _VAULT_LOAD_CLEAN_DETAIL: Final[str] = "2 vault(s) loaded; expected id(s) present"
@@ -548,6 +536,7 @@ def _refusal_message(variable: str, bash_bin: str, **overrides: str) -> str:
         ("CAS_BASE_URL", "https://cas.test.invalid\r", "$'https://cas.test.invalid\\r'"),
         ("PREFLIGHT_RESOURCE_GROUP", "rg-cas\n", "$'rg-cas\\n'"),
         ("PREFLIGHT_EXPECTED_PG_MAJOR", "16\n", "$'16\\n'"),
+        ("PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS", "30\n", "$'30\\n'"),
         ("EXPECTED_SAGE_CNAME_SUFFIX", "azure-api.net\n", "$'azure-api.net\\n'"),
         ("EXPECTED_CAS_CNAME_SUFFIX", "azurecontainerapps.io\r", "$'azurecontainerapps.io\\r'"),
     ],
@@ -564,6 +553,7 @@ def _refusal_message(variable: str, bash_bin: str, **overrides: str) -> str:
         "cas-base-url",
         "resource-group",
         "pg-major",
+        "tls-expiry-window",
         "sage-cname-suffix",
         "cas-cname-suffix",
     ],

@@ -116,6 +116,20 @@ def _bash_inventory(candidates: Iterable[str | None] | None = None) -> tuple[tup
 #: proves rather than by a filesystem path that says nothing about the floor.
 _BASH_BINS: Final[tuple[tuple[str, str], ...]] = _bash_inventory()
 
+#: One case per inventoried interpreter, named by the version it proves rather
+#: than by a filesystem path that says nothing about the floor. A label can repeat
+#: -- two installs may report the same major.minor -- so when it does, *every*
+#: case sharing it takes a positional suffix (``bash5.2#0``, ``bash5.2#1``), which
+#: keeps the ids distinct and keeps the pair visibly a pair. A lone label is left
+#: bare, so the ordinary single-interpreter host reads as ``bash3.2``.
+_BASH_BIN_PARAMS: Final[list[pytest.param]] = [
+    pytest.param(
+        path,
+        id=f"bash{label}" if [lb for lb, _ in _BASH_BINS].count(label) == 1 else f"bash{label}#{i}",
+    )
+    for i, (label, path) in enumerate(_BASH_BINS)
+]
+
 
 # --------------------------------------------------------------------------- #
 # Helpers                                                                      #

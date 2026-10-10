@@ -287,6 +287,9 @@ gh variable set SHAREPOINT_DRIVE_ID   --env "$ENVIRONMENT" --body "<drive-id>"
 # steps earlier, at §1.
 gh variable set PREFLIGHT_EXPECTED_VAULTS --env "$ENVIRONMENT" --body "cloud_validation"
 gh variable set PREFLIGHT_VAULT_SOURCE    --env "$ENVIRONMENT" --body "document_store"
+# Optional. Days before the wildcard certificate's expiry at which the
+# preflight's wildcard_tls_expiry check fails the deploy; unset means 30.
+# gh variable set PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS --env "$ENVIRONMENT" --body "30"
 ```
 
 Once the deploy identity variables are in place the `build` and `deploy` jobs
@@ -425,8 +428,10 @@ the live tenant and checks **every layer independently** — edge routing
 authenticated request reaching the backend), SAGE liveness and vault-load count,
 Postgres-backed retrieval, a read-only sweep across the Core API router groups
 (vault-scoped reads, document reads, and the pure-computation filename parser),
-Key Vault secret resolution, provider-agnostic DNS resolution, and SharePoint
-vault-source reachability — emitting a single pass/fail matrix that names every
+Key Vault secret resolution, the wildcard certificate's served expiry on both
+custom hostnames (failing within `PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS`, default 30),
+provider-agnostic DNS resolution, and SharePoint vault-source reachability —
+emitting a single pass/fail matrix that names every
 failing layer. It also verifies that every OAuth resource identity the edge
 advertises is registered in the directory, by minting a token scoped to each
 advertised resource (CI arms this via `PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD`; a
