@@ -2164,7 +2164,7 @@
     {
       "id": "cas-batch-obligation-55",
       "source_id": "specialized-batch",
-      "source_section": "Codex dispatch and recovery constraints",
+      "source_section": "Host dispatch and recovery constraints",
       "operations": [
         "batch"
       ],

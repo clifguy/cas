@@ -81,6 +81,43 @@ def test_specialized_obligation_roster_covers_procedure_sections() -> None:
             assert migrated["proposed_authority"] == f"docs/development/operations/{operation}.md"
 
 
+def _markdown_headings(text: str) -> set[str]:
+    """ATX heading texts outside fenced code blocks."""
+    headings: set[str] = set()
+    fence: str | None = None
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        marker = re.match(r"(`{3,}|~{3,})", stripped)
+        if marker:
+            if fence is None:
+                fence = marker.group(1)[0] * len(marker.group(1))
+            elif stripped.startswith(fence):
+                fence = None
+            continue
+        if fence is None:
+            heading = re.match(r"#{1,6}\s+(.*?)\s*#*\s*$", stripped)
+            if heading:
+                headings.add(heading.group(1))
+    return headings
+
+
+def test_pinned_procedure_sections_exist_as_headings() -> None:
+    roster = json.loads((PROPOSED / "required-obligations.json").read_text())
+    obligations = json.loads((PROPOSED / "obligations.json").read_text())["obligations"]
+    mapping = {row["id"]: row for row in obligations}
+    pinned = [
+        row for row in roster["required_obligations"] if row["source_id"].startswith("specialized-")
+    ]
+    sources = {row["source_id"] for row in pinned}
+    assert len(sources) == 4, "every specialized procedure must be pinned"
+    missing = []
+    for row in pinned:
+        authority = mapping[row["id"]]["proposed_authority"]
+        if row["source_section"] not in _markdown_headings((ROOT / authority).read_text()):
+            missing.append(f"{authority}: {row['source_section']!r} ({row['id']})")
+    assert not missing, "pinned sections with no matching heading:\n" + "\n".join(missing)
+
+
 def test_installable_composition_uses_one_shared_smoke_and_unversioned_batch() -> None:
     declaration = json.loads((ROOT / "docs/development/distribution/composition.json").read_text())
     components = {row["name"]: row for row in declaration["components"]}
