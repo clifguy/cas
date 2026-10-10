@@ -102,6 +102,35 @@ def _markdown_headings(text: str) -> set[str]:
     return headings
 
 
+def test_markdown_headings_follows_commonmark_limits() -> None:
+    text = "\n".join(
+        [
+            "# Top",
+            "   ### Three-space indent",
+            "    ## Indented code",
+            "## Closed ##",
+            "## Notes#",
+            "```text",
+            "## Inside backticks",
+            "~~~",
+            "## Still inside",
+            "```",
+            "~~~~",
+            "## Inside tildes",
+            "~~~~",
+            "    ```",
+            "## After indented backticks",
+        ]
+    )
+    assert _markdown_headings(text) == {
+        "Top",
+        "Three-space indent",
+        "Closed",
+        "Notes#",
+        "After indented backticks",
+    }
+
+
 def test_pinned_procedure_sections_exist_as_headings() -> None:
     """Each section pinned against a live procedure file names a heading in that file."""
     roster = json.loads((PROPOSED / "required-obligations.json").read_text())
