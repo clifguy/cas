@@ -57,6 +57,9 @@ value.
   Secrets User** grants the module makes, per secret, to the SAGE, CAS BFF and
   gateway managed identities — the workloads read; only an operator writes.
 - `az login` to the subscription that owns the resource group.
+- The email addresses of whoever owns the wildcard certificate, for
+  `CERT_EXPIRY_CONTACTS`. See
+  [Email the certificate's owner before expiry](#email-the-certificates-owner-before-expiry).
 
 Resolve the vault name from the deployment outputs:
 
@@ -194,7 +197,78 @@ echo | openssl s_client -connect cas.<base-domain>:443 \
 
 The post-deploy preflight's `bff_custom_domain_tls` check asserts exactly this.
 
+## Email the certificate's owner before expiry
+
+The wildcard certificate is administered outside this deployment. Its issuer
+warns the owner before it expires, but that warning does not say this
+deployment still serves the certificate on both custom hostnames. An owner who
+believes the certificate is retired can let it lapse, and both hostnames go
+down together.
+
+The vault closes that gap by emailing the owner itself. The certificate's
+lifetime action emails the vault's certificate contacts a set number of days
+before expiry, and the notice names the vault, so it identifies this deployment
+as a holder of the certificate.
+
+**Codified as [`deploy/bootstrap/set-certificate-expiry-notice.sh`](../../deploy/bootstrap/set-certificate-expiry-notice.sh).**
+The loader runs it after every import, so the first load and each renewal set
+it. Run it on its own to set or change the notice on an existing deployment
+without re-importing:
+
+```bash
+KEY_VAULT_NAME="$KV" \
+CERT_EXPIRY_CONTACTS="cert-owner@example.org,ops@example.org" \
+  deploy/bootstrap/set-certificate-expiry-notice.sh
+```
+
+- **`CERT_EXPIRY_CONTACTS`** (required): the owner's addresses, comma-separated.
+  The loader requires it too, and refuses a malformed entry before writing
+  anything.
+- **`CERT_EXPIRY_NOTICE_DAYS`** (optional, default 30): days before expiry to
+  send the notice. Keep it above the renewal lead time described in
+  [Renewing the wildcard certificate](#renewing-the-wildcard-certificate).
+
+Certificate contacts belong to the vault, not to one certificate, and the vault
+may hold other workloads' certificates. The script therefore only adds
+contacts. It never removes one, and an address the vault already lists
+(compared without regard to case) is left as it is. To drop a contact, use
+`az keyvault certificate contact delete --vault-name "$KV" --email <address>`.
+The lifetime action replaces the certificate's previous one. Re-running the
+script changes nothing further.
+
+The script reads the action back and fails if the vault does not report it.
+To check it by hand:
+
+```bash
+az keyvault certificate contact list --vault-name "$KV" -o table
+az keyvault certificate show --vault-name "$KV" --name wildcard-tls \
+  --query 'policy.lifetimeActions' -o json
+  # -> an EmailContacts action with trigger.daysBeforeExpiry set
+```
+
+Setting contacts and certificate policy needs **Key Vault Certificates
+Officer**, which only the operator holds. The CI deploy identity cannot do it,
+so this stays an operator step.
+
 ## Renewing the wildcard certificate
+
+Two signals say renewal is due. Neither depends on the issuer's own reminder,
+which does not name this deployment:
+
+- **The vault's expiry notice.** The vault emails `CERT_EXPIRY_CONTACTS`
+  `CERT_EXPIRY_NOTICE_DAYS` days before expiry (default 30), naming the vault
+  that holds the certificate. This is the primary signal, because it fires
+  whether or not anyone deploys. See
+  [Email the certificate's owner before expiry](#email-the-certificates-owner-before-expiry).
+- **The preflight's `wildcard_tls_expiry` check.** On every deploy, the cloud
+  preflight reads the expiry that `sage.<base-domain>` and `cas.<base-domain>`
+  each serve. It reports both dates, and fails when either falls within
+  `PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS` (default 30) or has passed. It is a
+  backstop: it runs only when something is deployed. Inside the window it
+  fails every deploy's post-deploy gate, and the steps after that gate do not
+  run. To deploy while a renewal is pending, lower
+  `PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS` on the tenant's GitHub Environment; `0`
+  fails only a certificate that has already expired.
 
 Import the renewed certificate as a full-chain PFX under the **same name**,
 `wildcard-tls`, using the import command above. That command, and the loader
@@ -218,12 +292,14 @@ current version on its own schedule:
 
 Both services keep serving their cached certificate until they fetch the new
 version. Renew well ahead of expiry, by more than the longer of the two windows.
+Acting on the 30-day notice leaves ample margin.
 
 Once both windows have passed, or after a manual sync, verify with the cloud
 preflight. `kv_wildcard_tls` checks that the current version still covers
 `*.<base-domain>`. `bff_custom_domain_tls` checks that `cas.<base-domain>`
-serves a complete, trusted chain. To confirm the served certificate is the
-renewed one, compare the expiry each edge serves with the new certificate's:
+serves a complete, trusted chain. `wildcard_tls_expiry` reports the expiry each
+edge serves: both should show the renewed certificate's date. To read the dates
+by hand:
 
 ```bash
 echo | openssl s_client -connect sage.<base-domain>:443 \

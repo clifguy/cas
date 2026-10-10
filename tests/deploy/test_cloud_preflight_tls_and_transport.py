@@ -1,21 +1,25 @@
 """The preflight's DNS, TLS and transport checks.
 
-Covers DNS targets, certificate subjects and the BFF custom domain's served
-chain, the warm-up retry budget for a connection-level ``000``, the bearer-token
-claims diagnostic, the decode of a ``000`` into its cause, and the MCP-surface
-checks.
+Covers DNS targets, certificate subjects, the BFF custom domain's served chain
+and the served certificate's expiry, the warm-up retry budget for a
+connection-level ``000``, the bearer-token claims diagnostic, the decode of a
+``000`` into its cause, and the MCP-surface checks.
 """
 
 from __future__ import annotations
 
 import base64
+import datetime
 import json
 import re
+import subprocess
 from pathlib import Path
+from typing import Final
 
 import pytest
 
 from tests.deploy._preflight_harness import (
+    _BASH_BINS,
     _HTTP_CHECKS,
     _NEEDS_BASH,
     _NEEDS_RUNTIME,
@@ -940,3 +944,167 @@ def test_cname_equal_to_the_suffix_itself_is_credited(tmp_path: Path) -> None:
     )
     proc = _run(env)
     assert _verdicts(proc.stdout).get("dns_sage_cname") == "PASS", proc.stdout
+
+
+# --------------------------------------------------------------------------- #
+# Wildcard certificate expiry (both custom hostnames serve the one certificate) #
+# --------------------------------------------------------------------------- #
+# The check reads the expiry each custom hostname actually serves and fails when
+# either falls inside the window. It is the deploy-time backstop to the Key Vault
+# expiry notice: a certificate allowed to lapse takes both hostnames down at once.
+
+_BASH_BIN_PARAMS: Final[list[pytest.param]] = [
+    pytest.param(
+        path,
+        id=f"bash{label}" if [lb for lb, _ in _BASH_BINS].count(label) == 1 else f"bash{label}#{i}",
+    )
+    for i, (label, path) in enumerate(_BASH_BINS)
+]
+
+_MONTHS: Final[tuple[str, ...]] = (
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+)  # fmt: skip
+
+#: Offset added to every whole-day expiry so the floor of the remaining days is
+#: exactly the requested count however long the test takes to run.
+_SLACK: Final[datetime.timedelta] = datetime.timedelta(hours=6)
+
+
+def _not_after(days: int) -> tuple[str, str]:
+    """An openssl ``notAfter=`` line ``days`` whole days from now, and the
+    expiry's calendar date as the check reports it."""
+    when = datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=days) + _SLACK
+    # openssl pads a single-digit day with a space, not a zero.
+    line = f"notAfter={_MONTHS[when.month - 1]} {when.day:>2} {when:%H:%M:%S} {when.year} GMT"
+    return line, f"{when:%Y-%m-%d}"
+
+
+def _expiry_probe(tmp_path: Path, sage: str, cas: str) -> str:
+    """A probe stub printing ``sage`` for the SAGE host and ``cas`` for the BFF
+    host. An empty string makes that host's probe fail with no output."""
+
+    def arm(text: str) -> str:
+        return f"printf '%s\\n' '{text}'" if text else "exit 1"
+
+    return _write_stub_cmd(
+        tmp_path,
+        "expiryprobe",
+        f'case "$1" in\n  sage.*) {arm(sage)} ;;\n  cas.*) {arm(cas)} ;;\n  *) exit 1 ;;\nesac\n',
+    )
+
+
+def _run_expiry(
+    tmp_path: Path, sage: str, cas: str, bash_bin: str, **overrides: str
+) -> subprocess.CompletedProcess[str]:
+    env = _base_env(
+        "http://127.0.0.1:1",
+        PREFLIGHT_CHECKS="wildcard_tls_expiry",
+        PREFLIGHT_TLS_EXPIRY_PROBE_CMD=_expiry_probe(tmp_path, sage, cas),
+        **overrides,
+    )
+    return _run(env, bash_bin=bash_bin)
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
+def test_expiry_outside_window_passes_and_reports_both_hosts(tmp_path: Path, bash_bin: str) -> None:
+    (sage_line, sage_date), (cas_line, cas_date) = _not_after(90), _not_after(120)
+    proc = _run_expiry(tmp_path, sage_line, cas_line, bash_bin)
+    assert _verdicts(proc.stdout).get("wildcard_tls_expiry") == "PASS", proc.stdout + proc.stderr
+    detail = _detail(proc.stdout, "wildcard_tls_expiry")
+    assert f"sage.test.invalid expires {sage_date} (90 days)" in detail, detail
+    assert f"cas.test.invalid expires {cas_date} (120 days)" in detail, detail
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
+@pytest.mark.parametrize("near", ["sage", "cas"])
+def test_expiry_inside_window_on_either_host_fails_naming_it(
+    tmp_path: Path, bash_bin: str, near: str
+) -> None:
+    """Each host is probed in its own right: a certificate near expiry on the
+    BFF host fails even when the SAGE host's is far from it, and vice versa."""
+    (soon, soon_date), (later, later_date) = _not_after(10), _not_after(90)
+    sage, cas = (soon, later) if near == "sage" else (later, soon)
+    proc = _run_expiry(tmp_path, sage, cas, bash_bin)
+    assert proc.returncode != 0
+    assert _verdicts(proc.stdout).get("wildcard_tls_expiry") == "FAIL", proc.stdout
+    detail = _detail(proc.stdout, "wildcard_tls_expiry")
+    assert f"{near}.test.invalid expires {soon_date} (10 days)" in detail, detail
+    other = "cas" if near == "sage" else "sage"
+    assert f"{other}.test.invalid expires {later_date} (90 days)" in detail, detail
+    assert "within the 30-day window" in detail, detail
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
+@pytest.mark.parametrize(
+    ("days", "window", "expected"),
+    [
+        (31, None, "PASS"),
+        (30, None, "FAIL"),
+        (29, None, "FAIL"),
+        (60, "90", "FAIL"),
+        (60, "45", "PASS"),
+    ],
+    ids=["default-outside", "default-edge", "default-inside", "wide-window", "narrow-window"],
+)
+def test_expiry_window_is_configurable_with_a_30_day_default(
+    tmp_path: Path, bash_bin: str, days: int, window: str | None, expected: str
+) -> None:
+    line, _ = _not_after(days)
+    overrides = {} if window is None else {"PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS": window}
+    proc = _run_expiry(tmp_path, line, line, bash_bin, **overrides)
+    assert _verdicts(proc.stdout).get("wildcard_tls_expiry") == expected, proc.stdout
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
+def test_expired_certificate_fails_as_expired(tmp_path: Path, bash_bin: str) -> None:
+    (expired, expired_date), (later, _) = _not_after(-5), _not_after(90)
+    proc = _run_expiry(tmp_path, later, expired, bash_bin)
+    assert _verdicts(proc.stdout).get("wildcard_tls_expiry") == "FAIL", proc.stdout
+    detail = _detail(proc.stdout, "wildcard_tls_expiry")
+    assert f"cas.test.invalid expired {expired_date}" in detail, detail
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
+@pytest.mark.parametrize(
+    "cas_output",
+    ["", "notAfter=garbage", "notAfter=Foo  1 00:00:00 2027 GMT"],
+    ids=["no-output", "unparseable", "unknown-month"],
+)
+def test_unreadable_expiry_fails_naming_the_host(
+    tmp_path: Path, bash_bin: str, cas_output: str
+) -> None:
+    """A failed handshake or an unparseable date is not a pass: the expiry is
+    unknown, and the host it is unknown for is named."""
+    later, _ = _not_after(90)
+    proc = _run_expiry(tmp_path, later, cas_output, bash_bin)
+    assert _verdicts(proc.stdout).get("wildcard_tls_expiry") == "FAIL", proc.stdout
+    assert "cas.test.invalid" in _detail(proc.stdout, "wildcard_tls_expiry"), proc.stdout
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
+@pytest.mark.parametrize("window", ["thirty", "-1", "3 0"])
+def test_malformed_expiry_window_is_refused_before_any_check(
+    tmp_path: Path, bash_bin: str, window: str
+) -> None:
+    line, _ = _not_after(90)
+    proc = _run_expiry(tmp_path, line, line, bash_bin, PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS=window)
+    assert proc.returncode == 2, proc.stdout + proc.stderr
+    assert not _verdicts(proc.stdout), proc.stdout
+    assert "PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS" in proc.stderr, proc.stderr
+
+
+@_NEEDS_RUNTIME
+@pytest.mark.parametrize("bash_bin", _BASH_BIN_PARAMS)
+def test_empty_expiry_window_takes_the_default(tmp_path: Path, bash_bin: str) -> None:
+    """The workflow passes an unset Environment variable through as an empty
+    string, which must mean the default rather than a refusal."""
+    inside, _ = _not_after(20)
+    proc = _run_expiry(tmp_path, inside, inside, bash_bin, PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS="")
+    assert _verdicts(proc.stdout).get("wildcard_tls_expiry") == "FAIL", proc.stdout
+    assert "within the 30-day window" in _detail(proc.stdout, "wildcard_tls_expiry")

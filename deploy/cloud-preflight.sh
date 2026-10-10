@@ -46,8 +46,9 @@
 #   PREFLIGHT_SKIP             comma-list denylist of check ids to skip
 #                              (a control character in any of these, in the
 #                              hosts and URLs, the CNAME suffixes,
-#                              PREFLIGHT_RESOURCE_GROUP or
-#                              PREFLIGHT_EXPECTED_PG_MAJOR is refused before any
+#                              PREFLIGHT_RESOURCE_GROUP,
+#                              PREFLIGHT_EXPECTED_PG_MAJOR or
+#                              PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS is refused before any
 #                              check runs, as is a PREFLIGHT_CHECKS or
 #                              PREFLIGHT_SKIP entry naming no registered check,
 #                              and a selection that leaves no check to run)
@@ -58,6 +59,14 @@
 #   PREFLIGHT_TLS_CHAIN_PROBE_CMD  TLS-chain probe invoked as `<cmd> <host>`,
 #                              prints "<cert_count> <verify_code>" for the served
 #                              chain (default: openssl s_client -showcerts)
+#   PREFLIGHT_TLS_EXPIRY_PROBE_CMD  TLS expiry probe invoked as `<cmd> <host>`,
+#                              prints the served leaf certificate's openssl
+#                              "notAfter=..." line (default: openssl s_client)
+#   PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS  days before expiry at which the served
+#                              wildcard certificate fails the preflight
+#                              (default: 30; empty means the default; anything
+#                              but a non-negative integer is refused before any
+#                              check runs)
 #   PREFLIGHT_CURL_CMD         HTTP client (default: curl); seamed by the gate to
 #                              drive probes offline
 #   PREFLIGHT_MCP_PROBE_CMD    MCP round-trip probe invoked as
@@ -310,6 +319,63 @@ default_tls_chain_probe() { # host
   verify="$(printf '%s' "$out" | sed -n 's/.*Verify return code: \([0-9][0-9]*\).*/\1/p' | head -1)"
   [ -z "$verify" ] && verify=99
   printf '%s %s' "$count" "$verify"
+}
+
+# Default TLS-expiry probe: print the served leaf certificate's "notAfter=..."
+# line, in openssl's fixed "Mon DD HH:MM:SS YYYY GMT" form. Overridable via
+# PREFLIGHT_TLS_EXPIRY_PROBE_CMD (the gate stubs it offline).
+default_tls_expiry_probe() { # host
+  local host="$1"
+  echo | openssl s_client -connect "${host}:443" -servername "$host" 2>/dev/null \
+    | openssl x509 -noout -enddate 2>/dev/null
+}
+
+# Parse an openssl "notAfter=Mon DD HH:MM:SS YYYY GMT" line into two globals:
+# NOT_AFTER_EPOCH (seconds since the epoch, UTC) and NOT_AFTER_DATE
+# (YYYY-MM-DD). Pure shell arithmetic, so GNU and BSD date never disagree about
+# the parse. Returns 1, leaving both empty, on anything else.
+parse_not_after() { # line
+  local rest mon day hms year zone month h m s y era yoe doy doe days
+  NOT_AFTER_EPOCH=""
+  NOT_AFTER_DATE=""
+  rest="${1#notAfter=}"
+  # Only the fields below may reach the unquoted split, never a glob pattern.
+  case "$rest" in *[!A-Za-z0-9:\ ]*) return 1 ;; esac
+  # shellcheck disable=SC2086 # word splitting absorbs openssl's padded day
+  set -- $rest
+  [ "$#" -eq 5 ] || return 1
+  mon="$1" day="$2" hms="$3" year="$4" zone="$5"
+  [ "$zone" = GMT ] || return 1
+  case "$mon" in
+    Jan) month=1 ;; Feb) month=2 ;; Mar) month=3 ;; Apr) month=4 ;;
+    May) month=5 ;; Jun) month=6 ;; Jul) month=7 ;; Aug) month=8 ;;
+    Sep) month=9 ;; Oct) month=10 ;; Nov) month=11 ;; Dec) month=12 ;;
+    *) return 1 ;;
+  esac
+  case "$day" in '' | *[!0-9]*) return 1 ;; esac
+  case "$year" in [0-9][0-9][0-9][0-9]) : ;; *) return 1 ;; esac
+  case "$hms" in [0-9][0-9]:[0-9][0-9]:[0-9][0-9]) : ;; *) return 1 ;; esac
+  day=$((10#$day))
+  [ "$day" -ge 1 ] && [ "$day" -le 31 ] || return 1
+  h=$((10#${hms%%:*}))
+  m=${hms#*:}
+  m=$((10#${m%%:*}))
+  s=$((10#${hms##*:}))
+  y=$((10#$year))
+  # Days from 1970-01-01 to the civil date (proleptic Gregorian).
+  [ "$month" -le 2 ] && y=$((y - 1))
+  era=$((y / 400))
+  yoe=$((y - era * 400))
+  if [ "$month" -gt 2 ]; then
+    doy=$(((153 * (month - 3) + 2) / 5 + day - 1))
+  else
+    doy=$(((153 * (month + 9) + 2) / 5 + day - 1))
+  fi
+  doe=$((yoe * 365 + yoe / 4 - yoe / 100 + doy))
+  days=$((era * 146097 + doe - 719468))
+  NOT_AFTER_EPOCH=$((days * 86400 + h * 3600 + m * 60 + s))
+  NOT_AFTER_DATE="$(printf '%04d-%02d-%02d' "$((10#$year))" "$month" "$day")"
+  return 0
 }
 
 # Run the MCP round-trip probe against a mount and capture its outcome into
@@ -1312,6 +1378,48 @@ check_kv_wildcard_tls() {
   return 1
 }
 
+check_wildcard_tls_expiry() {
+  # Both custom hostnames serve the one wildcard certificate, administered
+  # outside this deployment, so letting it lapse takes both down together. The
+  # Key Vault expiry notice is the signal between deploys; this is the backstop
+  # at deploy time. Each host is read in its own right: the gateway and the
+  # container-apps environment fetch a renewed version on separate schedules,
+  # so one can still serve the old certificate after the other has moved on.
+  local now host out rc days read_note report="" near="" status=0
+  now="$(date -u +%s)"
+  for host in "$SAGE_FQDN" "$CAS_FQDN"; do
+    out="$($PREFLIGHT_TLS_EXPIRY_PROBE_CMD "$host" 2>/dev/null)" && rc=0 || rc=$?
+    if [ "$rc" != 0 ] || ! parse_not_after "$out"; then
+      read_note=""
+      [ -n "$out" ] && read_note=", read \"$out\""
+      report="$report${report:+; }$host expiry unreadable (probe exit $rc$read_note)"
+      status=1
+      continue
+    fi
+    # Floor division; bash rounds toward zero, so step down for a past date.
+    days=$(((NOT_AFTER_EPOCH - now) / 86400))
+    [ "$NOT_AFTER_EPOCH" -lt "$now" ] && [ $(((NOT_AFTER_EPOCH - now) % 86400)) -ne 0 ] \
+      && days=$((days - 1))
+    if [ "$NOT_AFTER_EPOCH" -le "$now" ]; then
+      report="$report${report:+; }$host expired $NOT_AFTER_DATE ($((-days)) days ago)"
+      near="$near${near:+, }$host"
+    else
+      report="$report${report:+; }$host expires $NOT_AFTER_DATE ($days days)"
+      [ "$days" -le "$PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS" ] && near="$near${near:+, }$host"
+    fi
+  done
+  if [ "$status" != 0 ]; then
+    DETAIL_MSG="$report -- an unreadable expiry is unknown, not current"
+    return 1
+  fi
+  if [ -n "$near" ]; then
+    DETAIL_MSG="$report -- $near within the ${PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS}-day window; renew the wildcard certificate (docs/process/key-vault-secrets.md)"
+    return 1
+  fi
+  DETAIL_MSG="$report (outside the ${PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS}-day window)"
+  return 0
+}
+
 check_kv_anthropic() {
   # The key is fetched eagerly at startup, and only for the hosted provider, so
   # registered vaults say something about it only when that provider is the one
@@ -1590,6 +1698,9 @@ register postgres_major check_postgres_major \
 register kv_wildcard_tls check_kv_wildcard_tls \
   "leaf cert SAN covers the wildcard base domain" \
   "a wrong/parked cert subject fails even though the handshake succeeds"
+register wildcard_tls_expiry check_wildcard_tls_expiry \
+  "the certificate each custom hostname serves expires outside PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS (default 30), with both expiries reported" \
+  "each host is read separately, so one host inside the window fails though the other is far from it; an unreadable or unparseable expiry fails rather than passing as unknown"
 register kv_anthropic check_kv_anthropic \
   "anthropic-api-key resolved (inferred from vault registration under the served anthropic provider)" \
   "rides vault_load not /health; SKIP if vault_load did not pass or the served provider is stub (no fetch); FAIL if the provider cannot be read or is one a cloud tenant cannot load"
@@ -1636,13 +1747,16 @@ Required environment:
 
 Optional: CAS_FQDN, SAGE_BASE_URL, CAS_BASE_URL, PREFLIGHT_EXPECTED_VAULTS,
 PREFLIGHT_EXPECTED_ASUID, PREFLIGHT_VAULT_SOURCE, PREFLIGHT_CHECKS,
-PREFLIGHT_SKIP, PREFLIGHT_RESOLVE_CMD, PREFLIGHT_TLS_PROBE_CMD. See the header
-of this script for the full reference.
+PREFLIGHT_SKIP, PREFLIGHT_RESOLVE_CMD, PREFLIGHT_TLS_PROBE_CMD,
+PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS (default 30). See the header of this script for
+the full reference.
 
 A control character in PREFLIGHT_EXPECTED_VAULTS, the check lists,
 PREFLIGHT_VAULT_SOURCE, PREFLIGHT_EXPECTED_ASUID, the hosts and URLs, the CNAME
-suffixes, PREFLIGHT_RESOURCE_GROUP or PREFLIGHT_EXPECTED_PG_MAJOR is refused
-before any check runs, as is a PREFLIGHT_CHECKS or PREFLIGHT_SKIP entry that
+suffixes, PREFLIGHT_RESOURCE_GROUP, PREFLIGHT_EXPECTED_PG_MAJOR or
+PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS is refused before any check runs, as is an
+expiry window that is not a whole number of days, a PREFLIGHT_CHECKS or
+PREFLIGHT_SKIP entry that
 names no registered check (--dry-run lists them) and a selection that leaves no
 check to run.
 EOF
@@ -1839,7 +1953,7 @@ fi
 refuse_control_characters_in_lists PREFLIGHT_EXPECTED_VAULTS PREFLIGHT_CHECKS PREFLIGHT_SKIP
 refuse_control_characters_in_values PREFLIGHT_VAULT_SOURCE PREFLIGHT_EXPECTED_ASUID \
   BASE_DOMAIN SAGE_FQDN CAS_FQDN SAGE_BASE_URL CAS_BASE_URL \
-  PREFLIGHT_RESOURCE_GROUP PREFLIGHT_EXPECTED_PG_MAJOR \
+  PREFLIGHT_RESOURCE_GROUP PREFLIGHT_EXPECTED_PG_MAJOR PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS \
   EXPECTED_SAGE_CNAME_SUFFIX EXPECTED_CAS_CNAME_SUFFIX
 refuse_unknown_check_ids PREFLIGHT_CHECKS PREFLIGHT_SKIP
 
@@ -1861,6 +1975,14 @@ PREFLIGHT_SKIP="${PREFLIGHT_SKIP:-}"
 PREFLIGHT_RESOLVE_CMD="${PREFLIGHT_RESOLVE_CMD:-dig +short}"
 PREFLIGHT_TLS_PROBE_CMD="${PREFLIGHT_TLS_PROBE_CMD:-default_tls_probe}"
 PREFLIGHT_TLS_CHAIN_PROBE_CMD="${PREFLIGHT_TLS_CHAIN_PROBE_CMD:-default_tls_chain_probe}"
+PREFLIGHT_TLS_EXPIRY_PROBE_CMD="${PREFLIGHT_TLS_EXPIRY_PROBE_CMD:-default_tls_expiry_probe}"
+PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS="${PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS:-30}"
+case "$PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS" in
+  *[!0-9]*)
+    usage_and_exit 2 "PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS must be a non-negative whole number of days, not '$PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS'"
+    ;;
+esac
+PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS=$((10#$PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS))
 PREFLIGHT_CURL_CMD="${PREFLIGHT_CURL_CMD:-curl}"
 PREFLIGHT_MCP_PROBE_CMD="${PREFLIGHT_MCP_PROBE_CMD:-python3 $SCRIPT_DIR/mcp_preflight_probe.py}"
 PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD="${PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD:-}"

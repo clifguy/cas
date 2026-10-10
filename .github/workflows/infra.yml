@@ -116,6 +116,8 @@ jobs:
       SHAREPOINT_DRIVE_ID: ${{ vars.SHAREPOINT_DRIVE_ID }}
       PREFLIGHT_EXPECTED_VAULTS: ${{ vars.PREFLIGHT_EXPECTED_VAULTS }}
       PREFLIGHT_VAULT_SOURCE: ${{ vars.PREFLIGHT_VAULT_SOURCE }}
+      # Optional: unset reaches the preflight empty, which means its default.
+      PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS: ${{ vars.PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS }}
       IMAGE_TAG: ${{ needs.build.outputs.image_tag }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -280,6 +282,7 @@ jobs:
             BASE_DOMAIN="$BASE_DOMAIN" \
             PREFLIGHT_EXPECTED_VAULTS="$PREFLIGHT_EXPECTED_VAULTS" \
             PREFLIGHT_VAULT_SOURCE="$PREFLIGHT_VAULT_SOURCE" \
+            PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS="$PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS" \
             PREFLIGHT_RESOURCE_TOKEN_PROBE_CMD="deploy/resource-token-probe.sh" \
             PREFLIGHT_POSTGRES_VERSION_PROBE_CMD="deploy/postgres-version-probe.sh" \
             PREFLIGHT_EXPECTED_PG_MAJOR="$EXPECTED_PG_MAJOR" \

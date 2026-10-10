@@ -65,6 +65,7 @@ _EXPECTED_CHECKS: Final[frozenset[str]] = frozenset(
         "core_api_document_reads",
         "core_api_parse_filename",
         "kv_wildcard_tls",
+        "wildcard_tls_expiry",
         "kv_anthropic",
         "bff_liveness",
         "bff_auth_configured",
