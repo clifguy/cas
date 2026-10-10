@@ -64,6 +64,7 @@
       "path": "docs/development/operations/smoke-test.md",
       "revision": "working-tree",
       "sha256": "ef1fc1590afddfe039adf90c0b35919a7e6b9fc6b173c9fd2ff3e86522050fe3",
+      "sha256_tracking": "untracked: adoption-time snapshot of a live procedure; not refreshed when the procedure is edited",
       "section": "CAS smoke-test procedure"
     },
     {
@@ -72,6 +73,7 @@
       "path": "docs/development/operations/deploy.md",
       "revision": "working-tree",
       "sha256": "878073837c95f04fba9ac06b0e77a15ebb5e17b6f83219ab180e134c18950bda",
+      "sha256_tracking": "untracked: adoption-time snapshot of a live procedure; not refreshed when the procedure is edited",
       "section": "Deploy"
     },
     {
@@ -80,6 +82,7 @@
       "path": "docs/development/operations/batch.md",
       "revision": "working-tree",
       "sha256": "4a210f287f4c9ea389756fa89d403618aa0a33c51af5741c18d1b2a8321f07be",
+      "sha256_tracking": "untracked: adoption-time snapshot of a live procedure; not refreshed when the procedure is edited",
       "section": "/batch"
     },
     {
@@ -88,6 +91,7 @@
       "path": "docs/development/operations/azure-review.md",
       "revision": "working-tree",
       "sha256": "19ce6f6d5b7ceab1f105ff4f2f08d894239b81d6f013fc2852d98914cba2c9c6",
+      "sha256_tracking": "untracked: adoption-time snapshot of a live procedure; not refreshed when the procedure is edited",
       "section": "azure-deploy-review"
     }
   ],

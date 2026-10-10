@@ -124,6 +124,19 @@ def test_pinned_procedure_sections_exist_as_headings() -> None:
     assert not missing, "pinned sections with no matching heading:\n" + "\n".join(missing)
 
 
+def test_live_procedure_hashes_are_declared_untracked() -> None:
+    """A working-tree source's sha256 is a snapshot nobody refreshes; it must say so."""
+    for name in ("required-obligations.json", "obligations.json"):
+        sources = json.loads((PROPOSED / name).read_text())["sources"]
+        live = [row for row in sources if row["revision"] == "working-tree"]
+        assert len(live) == 4, name
+        for row in live:
+            assert row.get("sha256_tracking", "").startswith("untracked:"), (name, row["id"])
+        for row in sources:
+            if row["revision"] != "working-tree":
+                assert "sha256_tracking" not in row, (name, row["id"])
+
+
 def test_installable_composition_uses_one_shared_smoke_and_unversioned_batch() -> None:
     declaration = json.loads((ROOT / "docs/development/distribution/composition.json").read_text())
     components = {row["name"]: row for row in declaration["components"]}
