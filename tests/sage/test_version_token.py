@@ -477,3 +477,49 @@ async def test_the_store_refuses_to_set_the_token(vault_services):
     with pytest.raises(ValueError, match="version_token is advanced, never set"):
         await store.update_document(doc["id"], {"version_token": "9"})
     assert (await _read(doc["id"]))["version_token"] == doc["version_token"]
+
+
+async def test_the_indexing_reconcile_writes_under_the_document_lock(
+    vault_services, held_indexing, monkeypatch
+):
+    """Every content-store sync for the document runs under the lock caller writes take.
+
+    The reconcile reads the record and writes what changed; a caller write
+    landing between that read and those writes would have its own sync
+    overwritten unless both hold the same lock. The probe records the lock
+    state at each sync, so an unlocked reconcile shows as a False entry.
+    """
+    services, test_dir = vault_services
+    entered, release = held_indexing
+    content = services.ingestion_service._content_store
+    original = content.update_chunk_metadata
+    observed: list[bool] = []
+    doc_id_box: list[str] = []
+
+    async def probing(document_id, metadata):
+        if doc_id_box and document_id == doc_id_box[0]:
+            observed.append(services.ingestion_service._locks.lock(document_id).locked())
+        return await original(document_id, metadata)
+
+    monkeypatch.setattr(content, "update_chunk_metadata", probing)
+
+    (test_dir / "locked.md").write_text("# locked\n\nBody.")
+    ingested = _parse(await ingest_document(VAULT, "test/locked.md", "markdown"))
+    doc_id_box.append(ingested["id"])
+    await asyncio.wait_for(entered.wait(), timeout=5)
+    patched = await _patch(ingested["id"], doc_type="memo")
+    assert patched["status"] == "success", patched
+    release.set()
+    await _settled(services, ingested["id"])
+
+    assert len(observed) >= 2, "both the patch's sync and the reconcile must have run"
+    assert all(observed), observed
+
+
+async def test_recording_the_examining_adapter_leaves_the_token_unchanged(vault_services):
+    services, test_dir = vault_services
+    before = await _seed(services, test_dir, "examined")
+    await services.ingestion_service._stamp_examined(before["id"], "9.9.9")
+    after = await _read(before["id"])
+    assert after["adapter_version"] == "9.9.9", "the stamp must have landed"
+    assert after["version_token"] == before["version_token"]

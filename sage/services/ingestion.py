@@ -2437,11 +2437,14 @@ class IngestionService:
         # its version token does not move with pipeline work (CAS-ADR-038), so
         # nothing makes it wait. That write synced the content store before
         # these passages existed, so they carry what was read above. Re-read
-        # the record and bring them up to date.
+        # the record and bring them up to date, under the document lock the
+        # caller writes take, so a write landing meanwhile cannot have its own
+        # sync overwritten by this one.
         if doc is not None:
-            current = await self._store.get_document(document_id)
-            if current is not None:
-                await self._reconcile_indexed_copies(document_id, doc, current)
+            async with self._locks.lock(document_id):
+                current = await self._store.get_document(document_id)
+                if current is not None:
+                    await self._reconcile_indexed_copies(document_id, doc, current)
 
         # Mark indexing complete (BH-008)
         await self._stamp_pipeline_status(
