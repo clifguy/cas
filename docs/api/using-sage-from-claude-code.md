@@ -10,8 +10,8 @@ https://sage.resurrection.church/openapi.json
 
 Point Claude Code at that document and let it read the contract. This page is
 the prompt that does it, plus the one thing the document cannot hand you:
-credentials. (You — Joel, Jared — already have the access grant, so a token you
-mint will authorize.)
+credentials. Once the deployment's operator has granted you access, a token you
+mint will authorize.
 
 ---
 
@@ -30,7 +30,7 @@ durable, set-and-forget path for a months-long project.
 
 One-time setup:
 
-1. Ask Clif to provision a **service principal** for your app and **grant it the
+1. Ask the deployment's operator to provision a **service principal** for your app and **grant it the
    `Sage.Reader` app role** on the resurrection.church deployment. The role assignment is a
    per-principal grant — without it Entra refuses the token request itself, and
    it is not something you can self-serve.
@@ -107,7 +107,7 @@ knowing up front:
 - **A refused token request** (`AADSTS50105` for a person, a refusal of the
   client-credentials request for an app) — the principal has no access to this
   deployment: a person is not in its access group, or your app's service
-  principal lacks the `Sage.Reader` role (step 1 above). Ping Clif. It is never a
+  principal lacks the `Sage.Reader` role (step 1 above). Ask the deployment's operator. It is never a
   code fix.
 - **`403`** — a token for the SAGE audience that carries neither the
   `Sage.Access` scope nor the `Sage.Reader` role. The supported paths above never

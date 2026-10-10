@@ -81,6 +81,91 @@ def test_specialized_obligation_roster_covers_procedure_sections() -> None:
             assert migrated["proposed_authority"] == f"docs/development/operations/{operation}.md"
 
 
+def _markdown_headings(text: str) -> set[str]:
+    """ATX heading texts outside fenced code blocks, per CommonMark's indentation limits."""
+    headings: set[str] = set()
+    fence: str | None = None
+    for line in text.splitlines():
+        indent = len(line) - len(line.lstrip(" "))
+        stripped = line.lstrip(" ")
+        marker = re.match(r"(`{3,}|~{3,})", stripped) if indent <= 3 else None
+        if marker:
+            if fence is None:
+                fence = marker.group(1)[0] * len(marker.group(1))
+            elif stripped.startswith(fence):
+                fence = None
+            continue
+        if fence is None and indent <= 3:
+            heading = re.match(r"#{1,6}(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$", stripped)
+            if heading:
+                headings.add(heading.group(1) or "")
+    return headings
+
+
+def test_markdown_headings_follows_commonmark_limits() -> None:
+    text = "\n".join(
+        [
+            "# Top",
+            "   ### Three-space indent",
+            "    ## Indented code",
+            "## Closed ##",
+            "## Notes#",
+            "```text",
+            "## Inside backticks",
+            "~~~",
+            "## Still inside",
+            "```",
+            "~~~~",
+            "## Inside tildes",
+            "~~~~",
+            "    ```",
+            "## After indented backticks",
+        ]
+    )
+    assert _markdown_headings(text) == {
+        "Top",
+        "Three-space indent",
+        "Closed",
+        "Notes#",
+        "After indented backticks",
+    }
+
+
+def test_pinned_procedure_sections_exist_as_headings() -> None:
+    """Each section pinned against a live procedure file names a heading in that file."""
+    roster = json.loads((PROPOSED / "required-obligations.json").read_text())
+    obligations = json.loads((PROPOSED / "obligations.json").read_text())["obligations"]
+    mapping = {row["id"]: row for row in obligations}
+    live = {row["id"]: row for row in roster["sources"] if row["revision"] == "working-tree"}
+    assert len(live) == 4, "every specialized procedure must be pinned against the working tree"
+    pins = [(source["path"], source["section"], source["id"]) for source in live.values()]
+    for row in roster["required_obligations"]:
+        if row["source_id"] in live:
+            path = live[row["source_id"]]["path"]
+            assert mapping[row["id"]]["proposed_authority"] == path, row["id"]
+            pins.append((path, row["source_section"], row["id"]))
+    assert {source_id for _, _, source_id in pins} >= set(live)
+    missing = [
+        f"{path}: {section!r} ({pin_id})"
+        for path, section, pin_id in pins
+        if section not in _markdown_headings((ROOT / path).read_text())
+    ]
+    assert not missing, "pinned sections with no matching heading:\n" + "\n".join(missing)
+
+
+def test_live_procedure_hashes_are_declared_untracked() -> None:
+    """A working-tree source's sha256 is a snapshot nobody refreshes; it must say so."""
+    for name in ("required-obligations.json", "obligations.json"):
+        sources = json.loads((PROPOSED / name).read_text())["sources"]
+        live = [row for row in sources if row["revision"] == "working-tree"]
+        assert len(live) == 4, name
+        for row in live:
+            assert row.get("sha256_tracking", "").startswith("untracked:"), (name, row["id"])
+        for row in sources:
+            if row["revision"] != "working-tree":
+                assert "sha256_tracking" not in row, (name, row["id"])
+
+
 def test_installable_composition_uses_one_shared_smoke_and_unversioned_batch() -> None:
     declaration = json.loads((ROOT / "docs/development/distribution/composition.json").read_text())
     components = {row["name"]: row for row in declaration["components"]}
