@@ -105,6 +105,27 @@ def test_installs_ocr_binaries_in_runtime_stage() -> None:
         )
 
 
+def test_runtime_apt_layer_consumes_a_refresh_key() -> None:
+    # The apt layer resolves from moving Debian indexes, but its build-cache key
+    # is only the base digest and the RUN text, so a warm layer cache would serve
+    # the same packages indefinitely and hold back published security fixes.
+    # A refresh build arg consumed by that RUN bounds how stale it can get. The
+    # ARG must sit in the runtime stage ahead of the RUN: declared anywhere else,
+    # the value never reaches the layer and the cache key never moves.
+    runtime = _runtime_stage_text()
+    arg = runtime.find("ARG APT_REFRESH")
+    assert arg != -1, "the runtime stage declares no APT_REFRESH build arg"
+    install = runtime.find("apt-get install")
+    assert install != -1, "no apt package install layer in the runtime stage"
+    run = runtime.rfind("\nRUN ", 0, install)
+    assert run != -1, "the apt install is not inside a RUN instruction"
+    assert arg < run, "APT_REFRESH is declared after the apt RUN, so it cannot key it"
+    end = runtime.find("\n\n", install)
+    assert "${APT_REFRESH" in runtime[run : end if end != -1 else None], (
+        "the apt RUN does not reference APT_REFRESH"
+    )
+
+
 def test_runtime_nonroot_user() -> None:
     text = _dockerfile_text()
     assert "useradd" in text, "no non-root user is created"

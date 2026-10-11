@@ -232,9 +232,16 @@ jobs:
             || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
         run: |
           set -euo pipefail
+          # APT_REFRESH re-resolves the image's apt layer once per UTC day.
+          # Without it the layer cache serves that layer's first resolution
+          # until the base digest moves, holding back published Debian
+          # security fixes -- on every arm, including the deploy arm, which
+          # runs no vulnerability scan. Daily bounds the lag behind a published
+          # fix to a day; a same-day CI run and deploy can still share the layer.
           args=(--platform linux/amd64
                 --build-arg "SAGE_BUILD_VERSION=${SAGE_BUILD_VERSION}"
                 --build-arg "SAGE_BUILD_IDENTITY=${SAGE_BUILD_IDENTITY}"
+                --build-arg "APT_REFRESH=$(date -u +%F)"
                 --cache-from "type=gha,scope=sage-image")
           if [ "${WRITE_CACHE}" = "true" ]; then
             args+=(--cache-to "type=gha,mode=max,scope=sage-image")
