@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Inventory and version tracking for the CAS Formal Substrate (CAS-ADR-008). Each artifact's version is the release MAJOR.MINOR in which it last changed, or null until a release first publishes it; no counter is assigned when a change is authored. revision_history is assembled per release: a change adds a numberless change record under changes/unreleased/, and the release step folds every unreleased record into one entry for the new release, newest first. Entries written before this scheme, which carry a substrate counter in their version field, follow the release entries and are kept verbatim.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-10-08",
+  "manifest_date": "2026-10-10",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -84,7 +84,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "3.2",
+      "version": "3.3",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -92,7 +92,7 @@
       "path": "cas_app_api.openapi.yaml",
       "title": "CAS Application API",
       "status": "draft",
-      "version": "3.2",
+      "version": "3.3",
       "role": "OpenAPI 3.1.0 specification for the CAS Application backend HTTP surface (mounted at the /app prefix). Defines directory scan and batch-ingest endpoints used by the CAS Application UI. Architecturally distinct from the SAGE Core API; the two specs are validated together by tests/sage/test_openapi_conformance.py and must respect URL-prefix boundaries (sage_core_api owns /sage_vaults/*, cas_app_api owns /app/*).",
       "instantiation_checklist_items": []
     },
@@ -100,7 +100,7 @@
       "path": "sage/sage_mcp_tools.catalog.json",
       "title": "SAGE MCP Tool Catalog",
       "status": "draft",
-      "version": "3.2",
+      "version": "3.3",
       "role": "The tools the SAGE MCP surfaces publish through tools/list: name, input and output schemas, annotations, and description, for the ordinary surface (/mcp) and the maintenance surface (/mcp_maint). Generated from the servers by scripts/dump_mcp_catalog.py and held to them by a test gate; the contract comparison reads it as the MCP half of the published contract.",
       "instantiation_checklist_items": []
     },
@@ -182,13 +182,72 @@
       "path": "changes/change_record.schema.json",
       "title": "Formal Substrate Change Record",
       "status": "draft",
-      "version": "3.1",
+      "version": "3.3",
       "role": "The per-change release classification record (patch or minor, with category and release-note text) that every change to the published contract adds under changes/unreleased/, and that the release step folds into revision_history.",
       "instantiation_checklist_items": []
     }
   ],
   "deferred": [],
   "revision_history": [
+    {
+      "release": "3.3",
+      "date": "2026-10-10",
+      "changes": [
+        {
+          "classification": "patch",
+          "summary": "Retarget the hosted deployment's example base domain from cor.org to resurrection.church: the `servers` baseDomain default in the SAGE Core API and CAS Application specifications, and the scope-string example in the Core API's bearer-scheme description. Descriptive only; the served schema document derives neither field from these files, and no operation, schema or security requirement changes."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation"
+          ],
+          "summary": "Documents carry a version_token, returned on every read, that a metadata patch, a lifecycle transition, a supersede or a content replacement advances and pipeline work does not. update_metadata's expected_version and ingest_document's expected_head_version compare against it, so a token read while a document is still being indexed or abstracted stays valid. The earlier token, a timestamp compared with updated_at, is still accepted with its earlier comparison and is deprecated: a call using it is warned in ingest_document's warnings or in the update_metadata item's warnings. The ingest and recompute descriptions now say what is usable as soon as the call returns. The change-record gate accepts a deprecated value format, addressed as .../format/<name>.",
+          "for_callers": "Read version_token from get_document and pass it as expected_version or expected_head_version; pipeline work no longer invalidates it. An updated_at timestamp is still accepted as before but is deprecated, draws a warning, and may stop being accepted from 2026-12-01. A document can be read, patched, linked and superseded as soon as ingest_document returns; only passage search and the semantic abstract wait on the background stages.",
+          "deprecates": [
+            {
+              "surface": "sage_core_api",
+              "pointer": "components/schemas/IngestRequest/properties/expected_head_version/format/timestamp",
+              "replacement": "the predecessor's version_token",
+              "earliest_adaptation": "2026-12-01"
+            },
+            {
+              "surface": "sage_core_api",
+              "pointer": "components/schemas/UpdateMetadataRequest/properties/expected_version/format/timestamp",
+              "replacement": "the document's version_token",
+              "earliest_adaptation": "2026-12-01"
+            },
+            {
+              "surface": "sage_core_api",
+              "pointer": "components/schemas/BulkMetadataItem/properties/expected_version/format/timestamp",
+              "replacement": "the document's version_token",
+              "earliest_adaptation": "2026-12-01"
+            },
+            {
+              "surface": "mcp",
+              "pointer": "sage/ingest_document/inputSchema/properties/expected_head_version/format/timestamp",
+              "replacement": "the predecessor's version_token",
+              "earliest_adaptation": "2026-12-01"
+            },
+            {
+              "surface": "mcp",
+              "pointer": "sage/update_metadata/inputSchema/properties/items/items/properties/expected_version/format/timestamp",
+              "replacement": "the document's version_token",
+              "earliest_adaptation": "2026-12-01"
+            }
+          ]
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "operator-adaptation"
+          ],
+          "summary": "The cloud deployment now tells the wildcard certificate's owner that it depends on the certificate. A new operator script, deploy/bootstrap/set-certificate-expiry-notice.sh, adds the given addresses to the Key Vault's certificate contacts. It also sets the wildcard-tls lifetime action to email them a configurable number of days before expiry (default 30). The Key Vault loader requires the contact list and runs the script after every certificate import. The cloud preflight gains a wildcard_tls_expiry check. It reports the expiry served on both custom hostnames, and fails when either is within PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS (default 30). No API, schema or tool contract changes.",
+          "for_callers": "Operators: deploy/bootstrap/load-key-vault-secrets.sh now requires CERT_EXPIRY_CONTACTS, the certificate owner's email addresses. On an existing deployment, run deploy/bootstrap/set-certificate-expiry-notice.sh once, so the vault emails the owner before the wildcard certificate expires. The post-deploy preflight now fails a deploy when the served certificate is within 30 days of expiry; to change that window, set PREFLIGHT_TLS_EXPIRY_WINDOW_DAYS."
+        }
+      ]
+    },
     {
       "release": "3.2",
       "date": "2026-10-08",

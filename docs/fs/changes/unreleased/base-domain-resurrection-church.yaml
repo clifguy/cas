@@ -1,8 +1,0 @@
-classification: patch
-summary: >-
-  Retarget the hosted deployment's example base domain from cor.org to
-  resurrection.church: the `servers` baseDomain default in the SAGE Core API and
-  CAS Application specifications, and the scope-string example in the Core API's
-  bearer-scheme description. Descriptive only; the served schema document
-  derives neither field from these files, and no operation, schema or security
-  requirement changes.
