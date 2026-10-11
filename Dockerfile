@@ -24,8 +24,12 @@
 # Note what this does and does not buy. It does not make the build byte-identical
 # -- the runtime stage's apt layer resolves from moving indexes -- so that layer
 # is identical across two builds only while the layer cache serves it, and
-# rebuilt when it does not. The embedder layer is fetched at pinned commits, its
-# remote code checked against pinned digests before it is imported. A moving tag would break even the weaker guarantee, and break it silently.
+# rebuilt when it does not. The image workflow passes the date as the
+# APT_REFRESH build arg, so its same-day builds can share that layer and none
+# serves it more than a day stale.
+# The embedder layer is fetched at pinned commits, its remote code checked
+# against pinned digests before it is imported. A moving tag would break even
+# the weaker guarantee, and break it silently.
 # Keep the readable tag ahead of the digest when bumping.
 #
 # Every pin below sits on a FROM line, and has to stay on one. Dependabot's
@@ -99,7 +103,15 @@ RUN groupadd --system sage \
 # The distro codename is read from /etc/os-release so this survives a base-image
 # Debian bump. Build-time egress only (like the uv install); apt lists are
 # dropped so the runtime layer stays minimized.
+#
+# The layer cache keys this RUN on the base digest and its own text, neither of
+# which moves when Debian publishes a security fix, so a warm cache would keep
+# serving the packages it first resolved. APT_REFRESH is the moving input: the
+# build passes the current UTC date, and a new value re-resolves this layer
+# (and rebuilds the layers after it) while the builder stage stays cached.
+ARG APT_REFRESH
 RUN set -eux; \
+    : "apt refresh key: ${APT_REFRESH:-unset}"; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates curl gnupg; \
     install -d /usr/share/postgresql-common/pgdg; \

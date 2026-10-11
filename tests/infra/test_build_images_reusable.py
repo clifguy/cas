@@ -14,9 +14,9 @@ The deploy arm does not re-run the smoke tests. It is reached only for a commit
 whose own CI run concluded green, and that run built from the same
 digest-pinned bases and the same locked dependency sets, then smoked the result
 — so a third execution would re-prove a settled fact against the clock. The
-pins do not make the two builds byte-identical (the apt and model-weight layers
-float, and are equal only while the layer cache serves them); they make the
-recipe equal, which is what the skip rests on.
+pins do not make the two builds byte-identical (the apt layer floats, and is
+equal only while the layer cache serves it, which is at most the same UTC
+day); they make the recipe equal, which is what the skip rests on.
 
 These checks read the tracked workflow YAML only — no Actions runner or Azure
 tooling — so they run in the ordinary Python test job. The deployment-profile
@@ -393,4 +393,31 @@ def test_the_layer_cache_is_read_everywhere_and_written_only_where_it_is_read() 
     )
     assert "pull_request" not in condition, (
         f"the write gate admits pull-request refs, whose cache nothing reads: {condition!r}"
+    )
+
+
+def test_the_sage_build_refreshes_its_apt_layer_daily_on_every_arm() -> None:
+    """The SAGE build feeds the current UTC date to the image's apt refresh key.
+
+    The layer cache keys the runtime apt layer on the base digest and the RUN
+    text alone, so without a moving input it serves the packages it first
+    resolved until the base digest changes -- holding back Debian security
+    fixes that are already published. A daily key bounds that staleness to a
+    day while two same-day builds of one commit still share the layer.
+
+    The argument has to be unconditional: placed inside the push or cache-write
+    branch, one arm would keep reusing the stale layer, and the deploy arm runs
+    no vulnerability scan to notice.
+    """
+    sage_steps = [
+        step for step in _steps() if _is_buildx_step(step) and "Dockerfile.bff" not in _run_of(step)
+    ]
+    assert len(sage_steps) == 1, "expected exactly one SAGE image build step"
+    run = _run_of(sage_steps[0])
+
+    refresh = run.find('--build-arg "APT_REFRESH=$(date -u +%F)"')
+    assert refresh != -1, "the SAGE build passes no daily APT_REFRESH build arg"
+    first_branch = run.find("\nif ")
+    assert first_branch == -1 or refresh < first_branch, (
+        "APT_REFRESH is passed inside a conditional branch, so some arm builds without it"
     )
