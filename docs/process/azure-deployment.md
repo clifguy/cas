@@ -368,18 +368,23 @@ the same recipe.
 
 Be precise about how far that second fact reaches, because it is easy to
 overstate. It is not byte-equality: the SAGE runtime stage installs its apt
-packages from moving indexes, and the embedder weights are fetched from a
-floating model ref, so those two layers are identical across the CI build and
-the deploy build only while the layer cache still serves them — and are rebuilt,
-possibly differently, once it does not. What the pins guarantee is the stronger
-half of the recipe; the cache supplies the rest, for as long as it survives.
+packages from moving indexes, so that layer is identical across the CI build and
+the deploy build only while the layer cache still serves it — and is rebuilt,
+possibly differently, once it does not. The build also keys that layer to the
+UTC date (the `APT_REFRESH` build arg), so the cache serves it only to builds on
+the same day: a deploy on a later day than its commit's `main` run re-resolves
+it even when every cache entry survives, picking up whatever Debian security
+fixes have been published since. The embedder weights and remote code are
+fetched at pinned commits and checked against pinned digests, so they do not
+float. What the pins guarantee is the stronger half of the recipe; the cache
+supplies the rest, for as long as it survives and the day has not turned.
 
 Which makes it worth knowing who fills that cache. It is written from two places
 only — the push-to-`main` CI run of a commit, and the deploy dispatch itself —
 because those are the refs another run can read. Pull-request runs read that
 scope and never write to it, so a branch cannot warm the cache a deploy will
 use, and a deploy of a commit whose `main` run has since been evicted rebuilds
-the floating layers rather than reusing them. The repository's Actions cache is
+the apt layer rather than reusing it. The repository's Actions cache is
 capped at 10 GB and evicts least-recently-used entries without reporting it.
 
 Break either fact — force a deploy past its precheck, or let a base image float

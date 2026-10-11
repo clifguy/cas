@@ -190,10 +190,10 @@ def test_base_images_are_digest_pinned() -> None:
     dependency sets.
 
     The pins do not deliver byte-equality and this gate does not claim it -- the
-    apt layer and the embedder weights float, and are shared between the two
-    builds only while the layer cache serves them. What a moving base would
-    break is the weaker guarantee the skip actually rests on, and it would break
-    it silently.
+    apt layer floats, and is shared between the two builds only while the
+    layer cache serves it, which is at most the same UTC day. What a moving
+    base would break is the weaker guarantee the skip actually rests on, and it
+    would break it silently.
     """
     refs = external_image_refs(_dockerfile_text())
 
