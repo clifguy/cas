@@ -21,6 +21,7 @@ an unreleased checkout behavior is deployed.
 | 11 source_types | Source filename parser applies source_types constraints; explicit doc_type resolves separately. | configuration | Explicit supported format/type needs no unsolicited config edit. |
 | 12 bulk enumeration | Served search defines paged catalog/light response; API exposes same operation. | retrieval | Enumerate pages once; union separate tag queries for OR; fetch detail for omitted tags. |
 | 13 scoped verification | Concurrent writes invalidate vault totals as no-drift control. | retrieval | Reread touched IDs and lineage while unrelated writer changes facets; do not assert vault immutability. |
+| 14 concurrent supersession | The served ingest makes `expected_head_version` optional and checks nothing without it. `version_token` is not advanced by pipeline work, and the `updated_at` form is deprecated. Callers told only to name the predecessor retried a `stale_chain_head` with the reported version. | writing / Guard every supersession | The caller reads immediately before and passes `version_token`, never `updated_at`. A `stale_chain_head` (which always names the predecessor) or an archived-predecessor refusal: no retry; resolve with `chain` to separate a changed predecessor from a landed supersession; stop and report the heads; no re-pointed `predecessor_id`. |
 
 Reference names above are under `skills/sage/reference/`. Tests execute actual
 package and installer code. Prose acceptance must inspect observed agent decisions;
