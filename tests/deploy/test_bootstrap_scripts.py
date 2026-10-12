@@ -2278,11 +2278,14 @@ def test_key_vault_load_refuses_bad_contacts_before_any_write(
 
 
 @pytest.mark.parametrize("suffix", ["", "staging", "A-2"])
-@pytest.mark.parametrize("group_name", [_GROUP, "separate-access"])
+@pytest.mark.parametrize("group_override", [None, "", _GROUP, "separate-access"])
 def test_entra_environment_names_and_independent_group(
-    tmp_path: Path, suffix: str, group_name: str
+    tmp_path: Path, suffix: str, group_override: str | None
 ) -> None:
-    env = {"ENTRA_APP_SUFFIX": suffix, "PROVISIONING_GROUP_NAME": group_name}
+    group_name = group_override or _GROUP
+    env = {"ENTRA_APP_SUFFIX": suffix}
+    if group_override is not None:
+        env["PROVISIONING_GROUP_NAME"] = group_override
     result, calls, state = _run_entra(tmp_path, _seed_directory(), env, bare_ids=True)
     assert result.returncode == 0, result.stderr
     names = [f"{base}-{suffix}" if suffix else base for base in (_SAGE_APP, _BFF_APP, _MCP_APP)]
@@ -2335,6 +2338,15 @@ def test_entra_environment_isolation_and_rerun(tmp_path: Path) -> None:
     second, calls, combined = _run_entra(tmp_path, original, env, bare_ids=True)
     assert second.returncode == 0, second.stderr
     assert len(combined["apps"]) == 6
+    assert combined["groups"] == snapshot["groups"]
+    shared_group = _group(combined)
+    for base in (_SAGE_APP, _BFF_APP, _MCP_APP):
+        for name in (base, f"{base}-stage"):
+            sp = _sp_of(combined, name)
+            assert any(
+                a["principalId"] == shared_group["id"] and a["resourceId"] == sp["id"]
+                for a in combined["assignments"]
+            )
     for key in ("apps", "sps", "groups", "assignments"):
         for old in snapshot[key]:
             assert next(item for item in combined[key] if item["id"] == old["id"]) == old
