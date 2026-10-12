@@ -28,7 +28,7 @@ live deployment/cohort/service acceptance. Packaging alone proves none of those.
 ## Personal SAGE dependency
 
 New CAS consumer packages select the shared personal dependency contract. Use the
-reviewed shared source at `ae5af582bfaf09cbb82526ea37d26908acd2e660` and the
+reviewed shared source at `e7d8091b72edbd3b0a898ab5cd101a93b85a87d0` and the
 CAS package from `b91b1c43da378b9cfcc52b6ab6c5297df03bd8fc`, whose manifest
 SHA-256 is `c6e0f19041527e4b86bb4d8c7288981d912c50e651cf125cbf1d2c1f6b609b75`.
 Rebuild it from a clone that carries the release tags: the manifest records
