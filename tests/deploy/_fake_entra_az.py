@@ -36,6 +36,7 @@ import json
 import os
 import re
 import sys
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -624,8 +625,21 @@ def fake_azure() -> None:
     except AzError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         sys.exit(exc.code)
+    delay_exit = args[0] == "rest" and state.get("delay_rest_exit", 0) > 0
+    if delay_exit:
+        state["delay_rest_exit"] -= 1
+        state["delayed_rest_exits"] = state.get("delayed_rest_exits", 0) + 1
     path.write_text(json.dumps(state))
     _emit(result, args)
+    if delay_exit:
+        # Exercise the parent's timed process-reaping loop after pipe EOF.
+        # Its real scheduling must not consume the helper's virtual backoff.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.close(1)
+        os.close(2)
+        time.sleep(0.2)
+        os._exit(0)
 
 
 if __name__ == "__main__":

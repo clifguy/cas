@@ -573,14 +573,18 @@ def _run_entra(
     python.write_text(
         f"#!{sys.executable} -IS\n"
         + """
-import os, runpy, sys, time
+import importlib.util, os, sys, time, types
 if len(sys.argv) > 1 and sys.argv[1].endswith('/entra-reconcile.py'):
+    spec = importlib.util.spec_from_file_location('entra_reconcile', sys.argv[1])
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
     offset = [0.0]
-    original = time.monotonic
-    time.monotonic = lambda: original() + offset[0]
-    time.sleep = lambda seconds: offset.__setitem__(0, offset[0] + seconds)
+    helper.time = types.SimpleNamespace(
+        monotonic=lambda: time.monotonic() + offset[0],
+        sleep=lambda seconds: offset.__setitem__(0, offset[0] + seconds),
+    )
     sys.argv = sys.argv[1:]
-    runpy.run_path(sys.argv[0], run_name='__main__')
+    sys.exit(helper.main())
 else:
     os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
 """
@@ -2505,6 +2509,15 @@ def test_entra_exact_consent_and_third_run_stability(tmp_path: Path) -> None:
             assert state[key] == baseline[key]
         assert not any(c[:4] == ["ad", "app", "permission", "admin-consent"] for c in calls)
         assert not _rest_calls(calls, "POST", "/oauth2PermissionGrants")
+
+
+def test_entra_backoff_clock_does_not_accelerate_process_wait(tmp_path: Path) -> None:
+    state = _seed_directory()
+    state["delay_rest_exit"] = 5
+    result, _, state = _run_entra(tmp_path, state)
+    assert result.returncode == 0, result.stderr
+    assert state["delayed_rest_exits"] == 5
+    assert len(state["grants"]) == 3
 
 
 def test_entra_delayed_resource_and_uncertain_grant(tmp_path: Path) -> None:
