@@ -244,8 +244,11 @@ is the only migration path. There is no window in which both names serve MCP.
   loopback callback path, `http://127.0.0.1:<callback_port>/callback/<id>`. The
   port stays as configured, but a pinned `callback_url` path is not reused.
   Entra rejects that sign-in with `AADSTS50011` until that exact URI is
-  registered on the MCP client app (`cas-mcp-client`) as a public-client
-  redirect URI. To register it:
+  registered as a public-client redirect URI on that environment's MCP client
+  app. Use the same `ENTRA_APP_SUFFIX` selected during
+  [Entra app registration](entra-app-registrations.md#environment-selection):
+  `cas-mcp-client` when unset or empty, or `cas-mcp-client-<suffix>` otherwise.
+  To register it:
   1. Read the current `publicClient.redirectUris`.
   2. Append the new URI.
   3. Write back the merged list with
