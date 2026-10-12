@@ -31,9 +31,10 @@ most common and least visible corruption in the whole system.
 
 1. Search the vault for an existing document on the same subject, with the
    same title, or carrying the same identifier.
-2. If one exists and this is a newer version of it, ingest with the
-   predecessor named. That archives the old one and links the two in a single
-   step.
+2. If one exists and this is a newer version of it, supersede it: ingest
+   with the predecessor named, guarded as described under
+   [Guard every supersession](#guard-every-supersession). That archives the
+   old one and links the two in a single step.
 3. If one exists and this is genuinely a different document, say so out loud
    and proceed without the link.
 4. If none exists, ingest normally.
@@ -119,6 +120,45 @@ Preserving an already authorized resting state does not authorize a new closure
 judgment or reopening. A failed or interrupted pipeline must be reported, not
 silently completed merely to reproduce the predecessor's label.
 
+### Guard every supersession
+
+The version check on a supersession is optional. Without it, a change made to
+the head between your read and your write goes unnoticed, and your version
+silently replaces work you never saw.
+
+Read the predecessor with `get_document` immediately before the call. Pass
+that read's `version_token` as `expected_head_version`, and carry forward the
+metadata that read shows. Never pass `updated_at`: the timestamp form is
+deprecated and may stop being accepted. Pipeline work does not advance the
+token, so the read need not wait for indexing or abstraction. If the record has
+no `version_token`, the deployment predates it. Stop and report that rather
+than passing a timestamp.
+
+A refused supersession is a finding, not a transient fault. Never retry it,
+not even with the current version the refusal reports.
+
+- `stale_chain_head`: the predecessor changed after your read, through a
+  patch, a lifecycle move or another supersession. Do not infer which from the
+  refusal's detail. Resolve the head with `chain`. If the head is still the
+  predecessor, another writer changed it: report its current version. If the
+  head has moved, another supersession landed: report both heads. Stop either
+  way.
+- `supersede_target_not_active` with the predecessor archived: another session
+  has most likely superseded it. Resolve the head with `chain`, then stop and
+  report both heads. If `chain` shows no successor, the predecessor was
+  archived in place, and the paragraphs above on states that do not permit
+  supersession govern.
+
+A forced re-ingest is for pipeline recovery. Do not combine it with a
+predecessor: the version check does not apply on that path.
+
+Never re-point `predecessor_id` at a new head without reading it. Your edit
+was made against the old head, and pointing it at the new one would overwrite
+the change you never saw. Rebasing means reading the new head, reapplying the
+intended change to it, and superseding with that read's token. It is a new
+write, made only when the caller or the governing project procedure authorizes
+it.
+
 ## Editing a document that is already in the vault
 
 Spill the **source** bytes to a file, edit that file, and ingest it as a
@@ -159,6 +199,8 @@ before using it, and prefer single ingests when there are only a few files.
 
 - Never write without established authorization for the exact target and action.
 - Never create a second active copy of a document the vault already holds.
+- Never supersede without the head's current version token, and never retry
+  a refused supersession.
 - Never edit files inside the vault tree directly, by any means. Everything
   goes through the tools. Direct changes break provenance and desync the
   stores, and nothing surfaces the damage until much later.

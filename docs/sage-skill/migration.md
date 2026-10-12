@@ -46,7 +46,7 @@ blocker, not a package pass.
 
 After separate smoke-test initiation names permitted vaults/actions, independently
 exercise the independently configured local and hosted smoke-test vaults: create a disposable source,
-read retained hash and metadata, supersede it, verify lineage and intended lifecycle;
+read retained hash, metadata and version token, supersede it with that token, verify lineage and intended lifecycle;
 upload/download a genuine binary fixture; verify no-overwrite and integrity;
 reconcile a simulated uncertain completion through supported identity reads.
 Schema/configuration mutations require their explicit grant. Do not use canonical
