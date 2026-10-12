@@ -48,8 +48,8 @@ Azure RBAC the deploy identity holds (`azure-deployment.md`):
 - **The `Sites.Selected` app-role assignment (step 2) is itself the admin
   consent** for that application permission — assigning the app role to the
   identity's service principal *is* granting it. There is no separate
-  `az ad app permission admin-consent` call (that command consents delegated
-  scopes, as in `entra-app-registrations.md`). The POST to
+  delegated-consent step; `entra-app-registrations.md` reconciles delegated
+  scopes separately through `oauth2PermissionGrants`. The POST to
   `servicePrincipals/.../appRoleAssignments` therefore requires a directory role
   that can consent to application permissions: **Privileged Role
   Administrator**, **Application Administrator**, or **Global Administrator**.

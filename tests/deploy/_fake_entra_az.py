@@ -39,6 +39,7 @@ import sys
 import uuid
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 # Azure CLI's first-party client id, assembled from segments so no GUID-shaped
 # literal appears in the repository.
@@ -247,6 +248,18 @@ def _ad(state: dict, args: list[str]) -> Any:
     kind, verb = args[1], args[2]
     if kind == "app" and verb == "permission":
         state.setdefault("permission_calls", []).append(args[3:])
+        app = _app_by_app_id(state, _arg(args, "--id"))
+        if args[3] == "add":
+            entry = {
+                "resourceAppId": _arg(args, "--api"),
+                "resourceAccess": [
+                    dict(zip(("id", "type"), value.split("=")))
+                    for value in _values(args, "--api-permissions")
+                ],
+            }
+            app.setdefault("requiredResourceAccess", []).append(entry)
+        # Broad consent is deliberately not proof of a grant: the live CLI
+        # returned success with no BFF grant. Targeted Graph writes are modeled below.
         return None
     if kind == "app":
         if verb == "list":
@@ -402,9 +415,69 @@ def _site_rest(state: dict, method: str, url: str, args: list[str]) -> Any:
     raise AssertionError(f"fake az: unsupported rest url {url!r}")
 
 
+def _grants(state: dict, method: str, url: str, args: list[str]) -> Any:
+    grants = state.setdefault("grants", [])
+    parsed = urlparse(url)
+    grant_id = parsed.path.removeprefix("/v1.0/oauth2PermissionGrants").strip("/")
+    if method == "GET":
+        if grant_id:
+            matches = [g for g in grants if g["id"] == grant_id]
+            if not matches:
+                raise AzError("Request_ResourceNotFound", 3)
+            return matches[0]
+        query = parse_qs(parsed.query)
+        clause = query.get("$filter", [""])[0]
+        match = re.fullmatch(r"clientId eq '([^']+)'", clause)
+        if not match:
+            raise AssertionError("grant reads must be client-filtered")
+        matches = [g for g in grants if g["clientId"] == match[1]]
+        if state.get("grant_visibility_delay", 0):
+            state["grant_visibility_delay"] -= 1
+            matches = []
+        offset = int(query.get("page", [0])[0])
+        size = state.get("grant_page_size", 100)
+        result = {"value": matches[offset : offset + size]}
+        if state.get("unsafe_grant_page"):
+            result["@odata.nextLink"] = "https://example.test/v1.0/oauth2PermissionGrants?next=1"
+            return result
+        if len(matches) > offset + size:
+            result["@odata.nextLink"] = url.split("&page=")[0] + f"&page={offset + size}"
+        return result
+    body = json.loads(_arg(args, "--body"))
+    if method == "PATCH":
+        grant = next(g for g in grants if g["id"] == grant_id)
+        grant.update(body)
+        return None
+    assert method == "POST" and not grant_id
+    assert body["consentType"] == "AllPrincipals" and body["principalId"] is None
+    client = next((s for s in state["sps"] if s["id"] == body["clientId"]), None)
+    resource = next((s for s in state["sps"] if s["id"] == body["resourceId"]), None)
+    if not client or not resource:
+        raise AzError("Request_ResourceNotFound: expected service-principal object IDs")
+    scopes = {s["value"] for s in _sp_view(state, resource).get("oauth2PermissionScopes", [])}
+    if not set(body["scope"].split()) <= scopes:
+        raise AzError("InvalidValue: unknown scope")
+    if any(
+        all(g[k] == body[k] for k in ("clientId", "resourceId", "consentType", "principalId"))
+        for g in grants
+    ):
+        raise AzError("Request_BadRequest: permission grant already exists")
+    grant = {"id": _new_id(), **body}
+    if not state.get("discard_grant_write"):
+        grants.append(grant)
+    if state.pop("uncertain_grant_write", False):
+        state["grant_visibility_delay"] = 1
+        # Save the committed write before losing its response.
+        Path(os.environ["AZURE_STATE"]).write_text(json.dumps(state))
+        raise AzError("ServiceUnavailable: response lost after commit")
+    return grant
+
+
 def _rest(state: dict, args: list[str]) -> Any:
     method = _arg(args, "--method").upper()
     url = _arg(args, "--url") if "--url" in args else _arg(args, "--uri")
+    if "/oauth2PermissionGrants" in url:
+        return _grants(state, method, url, args)
     match = _REST_RE.match(url)
     if match is None:
         return _site_rest(state, method, url, args)
@@ -415,8 +488,23 @@ def _rest(state: dict, args: list[str]) -> Any:
         raise AzError(f"Bad Request: the request body is not valid JSON ({exc}).", 1) from exc
     if collection == "applications":
         app = next((a for a in state["apps"] if a["id"] == object_id), None)
-        if app is None or method != "PATCH" or sub:
+        if app is None or sub:
             raise AzError(f"Resource '{object_id}' does not exist.", 3)
+        if method == "GET":
+            if state.get("malformed_application_read"):
+                return []
+            return app
+        if method != "PATCH":
+            raise AssertionError(method)
+        # Real Graph validates preauthorization against the previously persisted
+        # scope set, not the scope definitions in this same PATCH.
+        old_ids = {s["id"] for s in app.get("api", {}).get("oauth2PermissionScopes", [])}
+        for pre in body.get("api", {}).get("preAuthorizedApplications", []):
+            if not set(pre["delegatedPermissionIds"]) <= old_ids:
+                raise AzError(
+                    "InvalidValue: delegatedPermissionIds has a Permission Id "
+                    "that cannot be found in the AppPermissions sets."
+                )
         for key, value in body.items():
             if key == "api":
                 app.setdefault("api", {}).update(value)
@@ -433,6 +521,12 @@ def _rest(state: dict, args: list[str]) -> Any:
     if sp is None:
         raise AzError(f"Resource '{object_id}' does not exist.", 3)
     if sub is None:
+        if method == "GET":
+            view = _sp_view(state, sp)
+            if state.get("sp_visibility_delay", 0):
+                state["sp_visibility_delay"] -= 1
+                return {**view, "oauth2PermissionScopes": [], "appRoles": []}
+            return view
         if method != "PATCH":
             raise AssertionError(f"fake az: unsupported {method} on a service principal")
         sp.update(body)

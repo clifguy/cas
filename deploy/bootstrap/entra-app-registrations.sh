@@ -242,7 +242,7 @@ SAGE_SP_ID="$(ensure_sp "${SAGE_APP_ID}")"
 # -- the issuer APIM validate-jwt and the SAGE backend require. The scope and
 # role ids are generated once: a re-run reuses the ids the registration already
 # carries (or ACCESS_SCOPE_ID / SAGE_READER_ROLE_ID from the environment), since
-# the PATCH below replaces both collections and a fresh id would orphan every
+# replacing a stable id would orphan every
 # consent grant and role assignment made against the old one.
 #
 # Sage.Access is admin-consent-only ("type": "Admin"): every supported client is
@@ -251,15 +251,7 @@ SAGE_SP_ID="$(ensure_sp "${SAGE_APP_ID}")"
 # user-consentable scope would let any member grant an arbitrary app delegated
 # SAGE access.
 SAGE_OBJECT_ID="$(az ad app show --id "${SAGE_APP_ID}" --query id -o tsv)"
-ACCESS_SCOPE_ID="${ACCESS_SCOPE_ID:-$(az ad app show --id "${SAGE_APP_ID}" \
-  --query "api.oauth2PermissionScopes[?value=='Sage.Access'].id | [0]" -o tsv)}"
-ACCESS_SCOPE_ID="${ACCESS_SCOPE_ID:-$(uuidgen)}"
-SAGE_READER_ROLE_ID="${SAGE_READER_ROLE_ID:-$(az ad app show --id "${SAGE_APP_ID}" \
-  --query "appRoles[?value=='Sage.Reader'].id | [0]" -o tsv)}"
-SAGE_READER_ROLE_ID="${SAGE_READER_ROLE_ID:-$(uuidgen)}"
-
-# Pre-authorize Azure CLI on the SAGE resource server (folded into the api PATCH
-# below) so an operator can hand-mint the bearer deploy/cloud-preflight.sh needs
+# Pre-authorize Azure CLI on the SAGE resource server after persisting the scope so an operator can hand-mint the bearer deploy/cloud-preflight.sh needs
 # -- `az account get-access-token --scope api://<SAGE_APP_ID>/.default` -- without
 # a per-app consent screen. Verified live against cor.org (2026-07-04): without
 # this, that call fails AADSTS650057 (invalid_client) on a fresh SAGE
@@ -297,44 +289,12 @@ if [ "${AZURE_CLI_APP_ID}" != "${AZURE_CLI_KNOWN_APP_ID}" ]; then
   exit 1
 fi
 
-# One PATCH pins the whole SAGE registration: access-token v2 (so a /.default
-# token carries the v2.0 issuer APIM validate-jwt and the SAGE backend require),
-# the single Sage.Access delegated scope and Sage.Reader app role that authorize
-# the REST and MCP surfaces, and the preAuthorizedApplications entry for Azure
-# CLI. Folding the pre-authorization into this PATCH -- rather than a second
-# PATCH to the same `api` complex property -- keeps requestedAccessTokenVersion
-# and oauth2PermissionScopes off Graph's merge-vs-replace semantics for a
-# follow-up `api` write. preAuthorizedApplications is a declarative full-set
-# replace (like the identifier URIs above), so a future addition to this list
-# must include this Azure CLI entry or a re-run will drop it.
-az rest --method PATCH \
-  --url "https://graph.microsoft.com/v1.0/applications/${SAGE_OBJECT_ID}" \
-  --headers 'Content-Type=application/json' \
-  --body "{
-    \"api\": {
-      \"requestedAccessTokenVersion\": 2,
-      \"oauth2PermissionScopes\": [{
-        \"id\": \"${ACCESS_SCOPE_ID}\",
-        \"value\": \"Sage.Access\",
-        \"type\": \"Admin\",
-        \"adminConsentDisplayName\": \"Access SAGE\",
-        \"adminConsentDescription\": \"Access SAGE on behalf of the signed-in user.\",
-        \"isEnabled\": true
-      }],
-      \"preAuthorizedApplications\": [{
-        \"appId\": \"${AZURE_CLI_APP_ID}\",
-        \"delegatedPermissionIds\": [\"${ACCESS_SCOPE_ID}\"]
-      }]
-    },
-    \"appRoles\": [{
-      \"id\": \"${SAGE_READER_ROLE_ID}\",
-      \"allowedMemberTypes\": [\"User\", \"Application\"],
-      \"value\": \"Sage.Reader\",
-      \"displayName\": \"Sage.Reader\",
-      \"description\": \"Read across the SAGE REST and MCP surfaces.\",
-      \"isEnabled\": true
-    }]
-  }"
+# Persist the scope, role and v2 setting, verify them, then preauthorize Azure
+# CLI and wait for the resource service principal to expose both permissions.
+# The helper uses only Python's standard library and this same az login.
+RECONCILE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/entra-reconcile.py"
+RESOURCE_IDS="$(python3 "${RECONCILE}" resource "${SAGE_OBJECT_ID}" "${SAGE_SP_ID}" "${AZURE_CLI_APP_ID}")"
+read -r ACCESS_SCOPE_ID SAGE_READER_ROLE_ID <<<"${RESOURCE_IDS}"
 
 # 2. The single SAGE access-provisioning group (CAS-ADR-044): binary membership,
 # uniform across every interactive surface (browser and agent alike). Every
@@ -412,12 +372,10 @@ else
 fi
 BFF_SP_ID="$(ensure_sp "${BFF_APP_ID}")"
 
-# Grant the BFF the delegated API permission onto SAGE, then admin-consent it —
-# this is what makes the on-behalf-of exchange possible.
-az ad app permission add --id "${BFF_APP_ID}" \
-  --api "${SAGE_APP_ID}" \
-  --api-permissions "${ACCESS_SCOPE_ID}=Scope"
-az ad app permission admin-consent --id "${BFF_APP_ID}"
+# Reconcile only the required declaration and exact tenant-wide delegated grant.
+BFF_OBJECT_ID="$(az ad app show --id "${BFF_APP_ID}" --query id -o tsv)"
+python3 "${RECONCILE}" permission "${BFF_OBJECT_ID}" "${BFF_SP_ID}" \
+  "${SAGE_APP_ID}" "${SAGE_SP_ID}" "${ACCESS_SCOPE_ID}" Sage.Access
 
 # Gate the BFF's own sign-in on the single provisioning group (CAS-ADR-044),
 # through its default-access role.
@@ -451,44 +409,19 @@ else
 fi
 MCP_CLIENT_SP_ID="$(ensure_sp "${MCP_CLIENT_APP_ID}")"
 
-# Grant the same delegated SAGE.Access scope the BFF holds; the admin-consent
-# below records the tenant consent for this SAGE.Access grant. It does NOT
-# consent the offline_access grant that follows -- that needs its own explicit
-# grant (verified live: admin-consent returns 0 yet records no offline_access
-# consent), issued after the admin-consent step below.
-az ad app permission add --id "${MCP_CLIENT_APP_ID}" \
-  --api "${SAGE_APP_ID}" \
-  --api-permissions "${ACCESS_SCOPE_ID}=Scope"
-
-# Also grant offline_access so Entra issues a refresh token to this public client
-# -- without it a v2 access token (60-90 min lifetime) expires with no way to
-# renew the session but a fresh /authorize round trip (CAS-ADR-042).
-# offline_access is a Microsoft Graph delegated permission, not a scope on the
-# SAGE resource server, so it is granted against Graph's first-party service
-# principal; Graph's app id and the offline_access scope id are resolved from the
-# tenant at run time, never hardcoded, keeping this durable script free of
-# GUID-shaped literals.
-GRAPH_APP_ID="$(lookup_one "service principal named Microsoft Graph" \
-  az ad sp list --filter "displayName eq 'Microsoft Graph'" --query '[].appId')"
-OFFLINE_ACCESS_SCOPE_ID="$(az ad sp show --id "${GRAPH_APP_ID}" \
-  --query "oauth2PermissionScopes[?value=='offline_access'].id | [0]" -o tsv)"
-az ad app permission add --id "${MCP_CLIENT_APP_ID}" \
-  --api "${GRAPH_APP_ID}" \
-  --api-permissions "${OFFLINE_ACCESS_SCOPE_ID}=Scope"
-az ad app permission admin-consent --id "${MCP_CLIENT_APP_ID}"
-
-# admin-consent above records the tenant consent for the SAGE.Access delegated
-# scope but empirically does NOT create the delegated grant for the Graph
-# offline_access scope -- az returns 0 yet no oauth2PermissionGrant for
-# offline_access appears (verified live against the tenant). Without the grant
-# Entra issues no refresh token and the symptom the offline_access request was
-# meant to fix returns. An explicit grant is what actually consents it: it
-# records an AllPrincipals oauth2PermissionGrant for offline_access on the Graph
-# resource. Graph's app id is reused from the run-time resolution above, so this
-# durable script still carries no GUID-shaped literal (CAS-ADR-042).
-az ad app permission grant --id "${MCP_CLIENT_APP_ID}" \
-  --api "${GRAPH_APP_ID}" \
-  --scope offline_access
+# Declare and verify Sage.Access and Graph offline_access independently. Extra
+# declarations remain intact but are never automatically admin-consented.
+MCP_OBJECT_ID="$(az ad app show --id "${MCP_CLIENT_APP_ID}" --query id -o tsv)"
+python3 "${RECONCILE}" permission "${MCP_OBJECT_ID}" "${MCP_CLIENT_SP_ID}" \
+  "${SAGE_APP_ID}" "${SAGE_SP_ID}" "${ACCESS_SCOPE_ID}" Sage.Access
+GRAPH_SP_ID="$(lookup_one "service principal named Microsoft Graph" \
+  az ad sp list --filter "displayName eq 'Microsoft Graph'" --query '[].id')"
+GRAPH_APP_ID="$(az ad sp show --id "${GRAPH_SP_ID}" --query appId -o tsv)"
+OFFLINE_ACCESS_SCOPE_ID="$(lookup_one "Graph offline_access scope" \
+  az ad sp show --id "${GRAPH_SP_ID}" \
+  --query "oauth2PermissionScopes[?value=='offline_access'].id")"
+python3 "${RECONCILE}" permission "${MCP_OBJECT_ID}" "${MCP_CLIENT_SP_ID}" \
+  "${GRAPH_APP_ID}" "${GRAPH_SP_ID}" "${OFFLINE_ACCESS_SCOPE_ID}" offline_access
 
 # Gate the public client's own sign-in on the single provisioning group
 # (CAS-ADR-044), through its default-access role. The assignment goes to the

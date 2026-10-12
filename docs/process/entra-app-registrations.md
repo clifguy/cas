@@ -115,6 +115,31 @@ BFF_APP_NAME="cas-bff${ENTRA_APP_SUFFIX:+-${ENTRA_APP_SUFFIX}}"
 MCP_CLIENT_APP_NAME="cas-mcp-client${ENTRA_APP_SUFFIX:+-${ENTRA_APP_SUFFIX}}"
 ```
 
+### Reconciliation readiness and failures
+
+Run under the existing interactive Azure CLI directory-admin session, with Python
+3 available. The operator must be allowed to update these applications and
+service principals and manage tenant-wide delegated permission grants through
+Microsoft Graph (`DelegatedPermissionGrant.ReadWrite.All` or another supported
+permission). Authorization refusal stops the run; the bootstrap never expands
+its own privileges. See Microsoft's [create-grant API](https://learn.microsoft.com/en-us/graph/api/oauth2permissiongrant-post?view=graph-rest-1.0)
+for supported delegated permissions and administrator roles.
+
+Each reconciliation phase has a 120-second deadline, including CLI requests,
+with polling delays of 1, 2, 4, 8, then at most 10 seconds. Transient service,
+throttling and known propagation failures may be retried within that budget.
+Malformed reads, denied requests and ambiguous identities fail promptly. Grant
+reads follow all pages and accept continuation URLs only for the expected Graph
+collection. After a successful or uncertain grant POST, the helper waits for the
+exact relationship and never blindly repeats the POST. Missing readback fails
+nonzero; rerunning reconciles safely persisted partial work. No deployment
+coordinates are printed unless all required phases finish.
+
+Do not rerun against production to validate a code change. Use uniquely suffixed
+disposable apps and an explicitly named disposable provisioning group. An omitted
+suffix retains the documented unsuffixed behavior and is suitable for simulation
+compatibility checks, not live repair testing.
+
 ## 1. SAGE resource-server registration
 
 Create (or reuse) the application, give it **four** identifier URIs — the
@@ -226,47 +251,46 @@ it cannot prove an unadvertised identity is absent. Keep the cleanup readback as
 the evidence of directory retirement. Do not rerun the whole bootstrap to trim
 one identity.
 
-Expose the delegated scope and the app role, and pin the resource's access-token
-version to **v2**. `requestedAccessTokenVersion`, `oauth2PermissionScopes`, and
-`appRoles` are set in one Graph `PATCH`. That `PATCH` replaces both collections,
-so the ids are generated once and then reused. A fresh id on a re-run would
-orphan every consent grant and role assignment made against the old one, so the
-re-run reads the ids the registration already carries.
+Expose the delegated scope and app role and pin **v2** tokens before adding
+Azure CLI preauthorization. Use the same reconciliation helper as the bootstrap
+for these collection writes; hand-written full-set replacements can discard
+unrelated permissions. The helper persists `oauth2PermissionScopes`, `appRoles`
+and `"requestedAccessTokenVersion": 2`, verifies the readback, then writes the
+merged `preAuthorizedApplications` collection and verifies both stages again.
+Finally it waits for the resource service principal to expose the enabled scope
+and role. A fresh combined write can fail because Graph validates preauthorization
+against scopes persisted before the request.
+
+After resolving the resource application and service principal above, run the
+following from the repository root. `AZURE_CLI_APP_ID` must be the verified Azure
+CLI client ID described below; the full Bash bootstrap performs that check.
 
 ```bash
 SAGE_OBJECT_ID="$(az ad app show --id "$SAGE_APP_ID" --query id -o tsv)"
-ACCESS_SCOPE_ID="${ACCESS_SCOPE_ID:-$(az ad app show --id "$SAGE_APP_ID" \
-  --query "api.oauth2PermissionScopes[?value=='Sage.Access'].id | [0]" -o tsv)}"
-ACCESS_SCOPE_ID="${ACCESS_SCOPE_ID:-$(uuidgen)}"
-SAGE_READER_ROLE_ID="${SAGE_READER_ROLE_ID:-$(az ad app show --id "$SAGE_APP_ID" \
-  --query "appRoles[?value=='Sage.Reader'].id | [0]" -o tsv)}"
-SAGE_READER_ROLE_ID="${SAGE_READER_ROLE_ID:-$(uuidgen)}"
-
-az rest --method PATCH \
-  --url "https://graph.microsoft.com/v1.0/applications/${SAGE_OBJECT_ID}" \
-  --headers 'Content-Type=application/json' \
-  --body "{
-    \"api\": {
-      \"requestedAccessTokenVersion\": 2,
-      \"oauth2PermissionScopes\": [{
-        \"id\": \"${ACCESS_SCOPE_ID}\",
-        \"value\": \"Sage.Access\",
-        \"type\": \"Admin\",
-        \"adminConsentDisplayName\": \"Access SAGE\",
-        \"adminConsentDescription\": \"Access SAGE on behalf of the signed-in user.\",
-        \"isEnabled\": true
-      }]
-    },
-    \"appRoles\": [{
-      \"id\": \"${SAGE_READER_ROLE_ID}\",
-      \"allowedMemberTypes\": [\"User\", \"Application\"],
-      \"value\": \"Sage.Reader\",
-      \"displayName\": \"Sage.Reader\",
-      \"description\": \"Read across the SAGE REST and MCP surfaces.\",
-      \"isEnabled\": true
-    }]
-  }"
+RESOURCE_IDS="$(python3 deploy/bootstrap/entra-reconcile.py resource \
+  "$SAGE_OBJECT_ID" "$SAGE_SP_ID" "$AZURE_CLI_APP_ID")" || exit 1
+read -r ACCESS_SCOPE_ID SAGE_READER_ROLE_ID <<<"$RESOURCE_IDS"
 ```
+
+Existing Sage.Access/Sage.Reader IDs are retained. Optional `ACCESS_SCOPE_ID` and
+`SAGE_READER_ROLE_ID` environment overrides must agree with existing identities;
+multiple matching entries or conflicting overrides stop the run. Unrelated
+scopes, roles, API settings and preauthorized clients remain intact. Do not edit
+these collections concurrently with reconciliation.
+
+The owned permission definitions include these fields:
+
+```json
+{
+  "api": {
+    "requestedAccessTokenVersion": 2,
+    "oauth2PermissionScopes": [{"value": "Sage.Access", "type": "Admin"}]
+  },
+  "appRoles": [{"allowedMemberTypes": ["User", "Application"], "value": "Sage.Reader"}]
+}
+```
+
+This fragment describes the contract; it is not a standalone PATCH body.
 
 The single `Sage.Access` delegated scope (and the `Sage.Reader` app role) is the
 authorization unit for **both** the REST surface and the MCP surface — SAGE does
@@ -324,38 +348,16 @@ default-access app-role id, and checks that against the `appid` claim of a token
 reports the *running* principal's appid, which is Azure CLI's constant only under
 an interactive `az login`; under a service principal or managed identity it is
 that principal's id, so the script aborts rather than pre-authorize the wrong
-app. Run this step as an interactive directory admin. For the standalone `PATCH`
-below, set `AZURE_CLI_APP_ID` to that well-known `04b07795-...` id (the script
-resolves and verifies it for you).
+app. Run this step as an interactive directory admin. For the helper invocation
+above, set `AZURE_CLI_APP_ID` to that well-known `04b07795-...` ID after verifying
+the running token names that client. Prefer the full bootstrap, which resolves
+and checks it automatically.
 
-```bash
-az rest --method PATCH \
-  --url "https://graph.microsoft.com/v1.0/applications/${SAGE_OBJECT_ID}" \
-  --headers 'Content-Type=application/json' \
-  --body "{
-    \"api\": {
-      \"preAuthorizedApplications\": [{
-        \"appId\": \"${AZURE_CLI_APP_ID}\",
-        \"delegatedPermissionIds\": [\"${ACCESS_SCOPE_ID}\"]
-      }]
-    }
-  }"
-```
-
-`az ad app update --set api.preAuthorizedApplications=...` does not reach this
-nested `api` property reliably (`Couldn't find 'api' in ''`); the direct Graph
-`PATCH` above is what actually lands the change — verified live. The standalone
-`PATCH` shown is the targeted form for adding this pre-authorization to a tenant
-already provisioned by §1 (as `cor.org` was): it relies on the `api` write
-merging alongside the `oauth2PermissionScopes`/`requestedAccessTokenVersion`
-already set there rather than replacing the whole `api` object (verified live),
-and re-running it with the same body is idempotent. The bootstrap script instead
-folds `preAuthorizedApplications` into that same single `api` PATCH, so on a
-fresh bring-up `requestedAccessTokenVersion` and `oauth2PermissionScopes` never
-ride on that merge behavior at all. Either way `preAuthorizedApplications` is a
-**declarative full-set replace** (like `--identifier-uris` above) — a future
-addition to this list must include this Azure CLI entry or the write will drop
-it.
+The helper first reads back the scope's exact ID/value, enabled state, the role
+and token version. Only then does it PATCH `api.preAuthorizedApplications`,
+merging Azure CLI's required scope ID with its existing entries. The second
+readback confirms this write retained the first stage. Other preauthorized
+clients are preserved. A direct `az ad app update --set api...` is not used.
 
 This grants **delegated** (signed-in user) access only. A member of the
 provisioning group can mint a SAGE token through their own `az login` session
@@ -504,17 +506,25 @@ if [ -z "$BFF_SP_ID" ]; then
 fi
 ```
 
-Grant the BFF the delegated API permission onto the SAGE resource server, then
-admin-consent it. This `requiredResourceAccess` entry is what makes the
-on-behalf-of exchange possible: the BFF, holding the user's token plus this
-delegated grant, exchanges it for a SAGE-audienced token.
+Reconcile the BFF's `requiredResourceAccess` declaration and tenant-wide delegated
+consent. The helper deduplicates permission `(id, type)` tuples by resource app ID
+and preserves unrelated Scope/Role declarations. It then reads every page of
+client-filtered `oauth2PermissionGrants`, selecting the exact client **service
+principal object ID**, resource service principal object ID,
+`consentType=AllPrincipals` and null `principalId` relationship.
 
 ```bash
-az ad app permission add --id "$BFF_APP_ID" \
-  --api "$SAGE_APP_ID" \
-  --api-permissions "${ACCESS_SCOPE_ID}=Scope"
-az ad app permission admin-consent --id "$BFF_APP_ID"
+BFF_OBJECT_ID="$(az ad app show --id "$BFF_APP_ID" --query id -o tsv)"
+python3 deploy/bootstrap/entra-reconcile.py permission "$BFF_OBJECT_ID" "$BFF_SP_ID" \
+  "$SAGE_APP_ID" "$SAGE_SP_ID" "$ACCESS_SCOPE_ID" Sage.Access
 ```
+
+An existing grant keeps its ID and other scopes; duplicate scope words are
+removed. A missing grant is created once and verified by readback. Principal
+consent grants and unrelated client/resource grants are preserved. The helper
+does not broadly admin-consent extra declarations, create direct user app-role
+assignments, or remove existing assignments. Multiple matching AllPrincipals
+grants stop the run for operator diagnosis.
 
 On-behalf-of (OBO) requires the BFF to authenticate as a confidential client,
 which means a client secret or certificate. Custody of that credential (Key Vault
@@ -623,37 +633,28 @@ against Graph's first-party service principal. Resolve Graph's app id and the
 `offline_access` scope id at run time rather than pasting the well-known GUIDs, the
 same no-literal discipline used for the all-zero role sentinel below.
 
-Admin-consent records the tenant consent for the `Sage.Access` grant, but it does
-**not** create the delegated consent grant for the Graph `offline_access` scope:
-verified live against the tenant, `az ad app permission admin-consent` returns 0
-yet no `oauth2PermissionGrant` for `offline_access` appears, so the client is left
-without a refresh token on a fresh bring-up. Follow the admin-consent with an
-explicit `az ad app permission grant … --scope offline_access` — the form that
-actually consents it, recording an `AllPrincipals` `oauth2PermissionGrant` for
-`offline_access` on the Graph resource. Graph's app id is reused from the run-time
-resolution above, so no GUID literal is pasted.
+Consent must be verified independently for **both** Sage.Access and offline_access.
+The previous broad admin-consent command returned success without a required
+grant during smoke testing; exit status alone is not completion evidence.
+Use the same targeted reconciliation as the BFF:
 
 ```bash
-az ad app permission add --id "$MCP_CLIENT_APP_ID" \
-  --api "$SAGE_APP_ID" \
-  --api-permissions "${ACCESS_SCOPE_ID}=Scope"
+MCP_OBJECT_ID="$(az ad app show --id "$MCP_CLIENT_APP_ID" --query id -o tsv)"
+python3 deploy/bootstrap/entra-reconcile.py permission "$MCP_OBJECT_ID" "$MCP_CLIENT_SP_ID" \
+  "$SAGE_APP_ID" "$SAGE_SP_ID" "$ACCESS_SCOPE_ID" Sage.Access
 
-GRAPH_APP_ID="$(az ad sp list --filter "displayName eq 'Microsoft Graph'" \
-  --query '[].appId' -o tsv)"
-OFFLINE_ACCESS_SCOPE_ID="$(az ad sp show --id "$GRAPH_APP_ID" \
-  --query "oauth2PermissionScopes[?value=='offline_access'].id | [0]" -o tsv)"
-az ad app permission add --id "$MCP_CLIENT_APP_ID" \
-  --api "$GRAPH_APP_ID" \
-  --api-permissions "${OFFLINE_ACCESS_SCOPE_ID}=Scope"
-
-az ad app permission admin-consent --id "$MCP_CLIENT_APP_ID"
-
-# admin-consent does not consent offline_access (it returns 0 but records no
-# grant for it); an explicit grant is required to actually consent it.
-az ad app permission grant --id "$MCP_CLIENT_APP_ID" \
-  --api "$GRAPH_APP_ID" \
-  --scope offline_access
+GRAPH_SP_ID="$(az ad sp list --filter "displayName eq 'Microsoft Graph'" --query '[].id' -o tsv)"
+GRAPH_APP_ID="$(az ad sp show --id "$GRAPH_SP_ID" --query appId -o tsv)"
+OFFLINE_ACCESS_SCOPE_ID="$(az ad sp show --id "$GRAPH_SP_ID" \
+  --query "oauth2PermissionScopes[?value=='offline_access'].id" -o tsv)"
+python3 deploy/bootstrap/entra-reconcile.py permission "$MCP_OBJECT_ID" "$MCP_CLIENT_SP_ID" \
+  "$GRAPH_APP_ID" "$GRAPH_SP_ID" "$OFFLINE_ACCESS_SCOPE_ID" offline_access
 ```
+
+The Graph registration is read only. The grant belongs to the disposable or
+production client explicitly selected by the operator, with Graph as its resource.
+A grant readback establishes directory consent, not successful PKCE, refresh-token
+issuance, BFF sign-in or OBO. Verify those flows separately against a deployment.
 
 Finally, gate the client's own sign-in on the single provisioning group
 (CAS-ADR-044), using the same steps and the same `appRoleAssignedTo` collection
