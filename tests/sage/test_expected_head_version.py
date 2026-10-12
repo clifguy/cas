@@ -41,6 +41,7 @@ from sage.mcp_server import (
     update_metadata as _update_metadata_bulk,
 )
 from sage.models.schemas import Document, Edge
+from sage.services.deprecations import is_timestamp
 from tests.helpers.pipeline_wait import await_tool_idle, drain_vaults
 from tests.sage.conftest import initialize_services_for_test
 
@@ -313,6 +314,7 @@ async def _run_supersede_pair(
     sources: dict[str, str],
     contenders: dict[asyncio.Task, str],
     first_at_insert: asyncio.Event | None = None,
+    version_field: str = "version_token",
 ) -> list[dict]:
     """Run both tool calls with bounded, structured cancellation on failure."""
     async with asyncio.timeout(15):
@@ -328,7 +330,7 @@ async def _run_supersede_pair(
                         source,
                         "markdown",
                         predecessor_id=head["id"],
-                        expected_head_version=head["version_token"],
+                        expected_head_version=head[version_field],
                     )
                 )
                 contenders[task] = side
@@ -353,15 +355,21 @@ async def _assert_single_successor(services: SAGEServices, head_id: str, winner_
     return _parse(await get_document("test_vault", head_id))
 
 
-async def test_t4_parallel_same_version_one_wins_one_stale(
-    vault_services: tuple[SAGEServices, Path], monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Both initial reads see the active predecessor before either writer commits.
+async def _race_two_supersedes(
+    services: SAGEServices,
+    test_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    version_field: str = "version_token",
+) -> tuple[dict, str, dict]:
+    """Race two supersedes of one head, both holding the same token.
 
-    The loser reaches the locked version check and reports the predecessor's
-    id and archive-time version, not the winning successor's id or version.
+    Both initial reads see the active predecessor before either writer
+    commits, so the loser passes pre-validation and reaches the locked
+    version check after the winner has superseded the predecessor.
+    ``version_field`` names the head field the contenders send as
+    ``expected_head_version``. Returns the seeded head, the winner's id
+    and the loser's parsed refusal.
     """
-    services, test_dir = vault_services
     head = await _seed_chain_head(services, test_dir)
     sources = {
         "a": await _write_source(test_dir, "a", "# A\n\nFirst contender."),
@@ -396,7 +404,7 @@ async def test_t4_parallel_same_version_one_wins_one_stale(
     with monkeypatch.context() as patch:
         patch.setattr(store, "get_document", read)
         patch.setattr(store, "insert_with_supersede_atomic", insert)
-        parsed = await _run_supersede_pair(head, sources, contenders)
+        parsed = await _run_supersede_pair(head, sources, contenders, version_field=version_field)
 
     assert len(initial_reads) == 2
     assert all(state == "active" for state, _ in initial_reads.values())
@@ -409,12 +417,65 @@ async def test_t4_parallel_same_version_one_wins_one_stale(
     assert commits == [winner_id]
     head_post = await _assert_single_successor(services, head["id"], winner_id)
     assert head_post["version_token"] != head["version_token"]
-    assert stale[0]["detail"] == {
+    return head, winner_id, stale[0]
+
+
+async def test_t4_parallel_same_version_one_wins_one_stale(
+    vault_services: tuple[SAGEServices, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The loser of a supersede race is told the chain's actual head.
+
+    The predecessor it named has been superseded by the winner, so the
+    refusal reports the winning successor's id and version rather than
+    the archived predecessor's: the head a retry can supersede.
+    """
+    services, test_dir = vault_services
+    head, winner_id, stale = await _race_two_supersedes(services, test_dir, monkeypatch)
+    winner = _parse(await get_document("test_vault", winner_id))
+    assert stale["detail"] == {
         "predecessor_id": head["id"],
         "expected_head_version": head["version_token"],
-        "current_head_id": head["id"],
-        "current_head_version": head_post["version_token"],
+        "current_head_id": winner_id,
+        "current_head_version": winner["version_token"],
     }
+
+
+async def test_race_loser_reports_head_version_in_timestamp_form(
+    vault_services: tuple[SAGEServices, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deprecated timestamp token gets the successor's version as a timestamp."""
+    services, test_dir = vault_services
+    head, winner_id, stale = await _race_two_supersedes(
+        services, test_dir, monkeypatch, version_field="updated_at"
+    )
+    detail = stale["detail"]
+    assert detail["predecessor_id"] == head["id"]
+    assert detail["expected_head_version"] == head["updated_at"]
+    assert detail["current_head_id"] == winner_id
+    assert is_timestamp(detail["current_head_version"]), detail
+    assert detail["current_head_version"] != head["updated_at"]
+
+
+async def test_race_loser_retry_on_reported_head_succeeds(
+    vault_services: tuple[SAGEServices, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Rebasing onto the reported head and version lands the loser's revision."""
+    services, test_dir = vault_services
+    _head, winner_id, stale = await _race_two_supersedes(services, test_dir, monkeypatch)
+    retry_src = await _write_source(test_dir, "b_retry", "# B retry\n\nRebased contender.")
+    retry = _parse(
+        await ingest_document(
+            "test_vault",
+            retry_src,
+            "markdown",
+            predecessor_id=stale["detail"]["current_head_id"],
+            expected_head_version=stale["detail"]["current_head_version"],
+        )
+    )
+    assert "error" not in retry, f"retry on the reported head must succeed: {retry!r}"
+    await _wait_terminal(services, retry["id"])
+    edges = await services.graph_store.get_edges_by_target(winner_id, "supersedes")
+    assert [(e.source_id, e.target_id) for e in edges] == [(retry["id"], winner_id)]
 
 
 async def test_parallel_late_predecessor_read_rejects_not_active(
@@ -490,11 +551,10 @@ async def test_t5_retry_after_stale_succeeds_with_current_head(vault_services):
 
     Uses an out-of-band `update_metadata` bump for the version
     advance so the predecessor stays the chain head (still
-    `lifecycle_status=active`). The supersede-as-racer case is covered
-    by T6 — once a racer archives the predecessor, the existing
-    `supersede_target_not_active` guard fires before the version
-    check, and the caller's retry path is "pivot to the new head" not
-    "supply current_head_version".
+    `lifecycle_status=active`) and the refusal names it. A racer that
+    supersedes the predecessor instead is covered by the race tests
+    above, where the refusal names the successor; T6 covers a caller
+    whose first read already sees the archived predecessor.
     """
     services, test_dir = vault_services
     d1 = await _seed_chain_head(services, test_dir, "d1")

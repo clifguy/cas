@@ -122,6 +122,7 @@ from sage.services.document_surface import (
     refresh_derived_retrieval_text,
 )
 from sage.services.filename_parser import FilenameParser, ParsedMetadata
+from sage.services.graph_ops import supersedes_heads
 from sage.services.identifier_mention_inference import infer_identifier_mentions_for_document
 from sage.services.identity import generate_document_id
 from sage.services.metadata import current_version
@@ -2045,15 +2046,14 @@ class IngestionService:
                     # the pre-Primitive-C contract (with the side-benefit
                     # that the lock above still prevents silent forks).
                     if request.expected_head_version is not None:
-                        current_head_version = current_version(
-                            fresh_pred, request.expected_head_version
-                        )
-                        if current_head_version != request.expected_head_version:
+                        token = request.expected_head_version
+                        if current_version(fresh_pred, token) != token:
+                            head = await self._stale_chain_head(fresh_pred)
                             raise StaleChainHeadError(
                                 predecessor_id=fresh_pred.id,
-                                expected_head_version=request.expected_head_version,
-                                current_head_id=fresh_pred.id,
-                                current_head_version=current_head_version,
+                                expected_head_version=token,
+                                current_head_id=head.id,
+                                current_head_version=current_version(head, token),
                             )
                     transition = self._lifecycle_service.prepare_supersede(
                         fresh_pred, doc.id, modified_by=writer
@@ -2123,6 +2123,22 @@ class IngestionService:
             )
 
         return IngestResult(document=doc, is_new=is_new, warnings=attribution_warnings)
+
+    async def _stale_chain_head(self, predecessor: Document) -> Document:
+        """The chain head a stale supersede of ``predecessor`` should name.
+
+        A version mismatch has two causes: a write to the predecessor,
+        which leaves it the head, or a supersede that has archived it. The
+        head reachable forward is named either way, so the caller can
+        supersede it next. A walk that finds no single head (a fork or a
+        cycle, which the linear-chain invariant of CAS-ADR-023 excludes)
+        names the predecessor rather than choosing between branches.
+        """
+        heads = await supersedes_heads(self._store, predecessor.id)
+        if len(heads) != 1 or heads[0] == predecessor.id:
+            return predecessor
+        head = await self._store.get_document(heads[0])
+        return head if head is not None else predecessor
 
     async def _preview_ingest(
         self,

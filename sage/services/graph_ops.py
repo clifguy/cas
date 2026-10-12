@@ -152,6 +152,34 @@ def _chain_adjacency(
     return by_source, by_target
 
 
+async def supersedes_heads(store: GraphStore, doc_id: str) -> list[str]:
+    """Return the heads of ``doc_id``'s supersedes chain reachable forward.
+
+    Walks from ``doc_id`` toward newer versions only, so a branch that
+    forks from an older ancestor does not count as a head of this
+    document. A document never superseded is its own single head; when
+    every version reachable forward is itself superseded (the walk ends
+    only in a cycle) there is none, and the list is empty.
+    """
+    raw = await store.chain_walk(start_id=doc_id, edge_type=EdgeType.SUPERSEDES.value)
+    _, newer = _chain_adjacency(raw["edges"])
+
+    heads: list[str] = []
+    visited: set[str] = set()
+    frontier = [doc_id]
+    while frontier:
+        current = frontier.pop()
+        if current in visited:
+            continue
+        visited.add(current)
+        successors = newer.get(current)
+        if successors:
+            frontier.extend(sorted(successors))
+        else:
+            heads.append(current)
+    return sorted(heads)
+
+
 class GraphOpsService:
     def __init__(
         self,
@@ -1161,31 +1189,8 @@ class GraphOpsService:
         return filtered, truncated
 
     async def _supersedes_heads(self, doc_id: str) -> list[str]:
-        """Return the heads of ``doc_id``'s supersedes chain reachable forward.
-
-        Walks from ``doc_id`` toward newer versions only, so a branch that
-        forks from an older ancestor does not count as a head of this
-        document. A document never superseded is its own single head; when
-        every version reachable forward is itself superseded (the walk ends
-        only in a cycle) there is none, and the list is empty.
-        """
-        raw = await self._store.chain_walk(start_id=doc_id, edge_type=EdgeType.SUPERSEDES.value)
-        _, newer = _chain_adjacency(raw["edges"])
-
-        heads: list[str] = []
-        visited: set[str] = set()
-        frontier = [doc_id]
-        while frontier:
-            current = frontier.pop()
-            if current in visited:
-                continue
-            visited.add(current)
-            successors = newer.get(current)
-            if successors:
-                frontier.extend(sorted(successors))
-            else:
-                heads.append(current)
-        return sorted(heads)
+        """Return the heads of ``doc_id``'s supersedes chain reachable forward."""
+        return await supersedes_heads(self._store, doc_id)
 
     async def _apply_retracts(
         self,

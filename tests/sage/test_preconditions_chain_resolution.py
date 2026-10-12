@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 from sage.models.enums import EdgeType, PipelineStatus, ResolutionPolicy, SourceType
 from sage.models.schemas import Document, Edge, LinkRequest
+from sage.services.graph_ops import supersedes_heads
 
 
 def _id(name: str) -> str:
@@ -293,3 +294,19 @@ async def test_unsuperseded_target_is_its_own_head(graph_store, graph_ops_servic
     assert check.head_id == _id("dep")
     assert check.title == "Title dep"
     assert check.satisfied is True
+
+
+async def test_supersedes_heads_walks_forward_from_any_chain_member(graph_store):
+    """The shared helper names the forward head, or every head of a fork."""
+    for name in ("h0", "h1", "h2", "solo", "f0", "f1", "f2"):
+        await graph_store.insert_document(_make_doc(name))
+    await _supersede(graph_store, "h1", "h0", 1)
+    await _supersede(graph_store, "h2", "h1", 2)
+    await _supersede(graph_store, "f1", "f0", 3)
+    await _supersede(graph_store, "f2", "f0", 4)
+
+    assert await supersedes_heads(graph_store, _id("h0")) == [_id("h2")]
+    assert await supersedes_heads(graph_store, _id("h1")) == [_id("h2")]
+    assert await supersedes_heads(graph_store, _id("h2")) == [_id("h2")]
+    assert await supersedes_heads(graph_store, _id("solo")) == [_id("solo")]
+    assert await supersedes_heads(graph_store, _id("f0")) == sorted([_id("f1"), _id("f2")])
