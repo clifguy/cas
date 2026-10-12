@@ -306,8 +306,17 @@ def test_sage_reader_role_accepts_application_principals() -> None:
     tenant objects change, so a revert in either file alone would silently
     restore user-only membership while the edge kept advertising the grant.
     """
-    for path in (BOOTSTRAP, RUNBOOK):
-        member_types = _sage_reader_member_types(path.read_text(encoding="utf-8"))
+    # The runbook's literal contract and helper's executable role definition
+    # are checked separately; real bootstrap behavior is exercised in deploy tests.
+    for path in (BOOTSTRAP.with_name("entra-reconcile.py"), RUNBOOK):
+        text = path.read_text(encoding="utf-8")
+        if path.suffix == ".py":
+            definition = re.search(
+                r'"Sage.Reader",.*?"allowedMemberTypes": \[([^\]]*)\]', text, re.S
+            )
+            member_types = set(re.findall(r'"([A-Za-z]+)"', definition[1])) if definition else set()
+        else:
+            member_types = _sage_reader_member_types(text)
         assert member_types == {"User", "Application"}, (
             f"{path.name}: the Sage.Reader app role must declare allowedMemberTypes "
             '["User", "Application"] -- "Application" is what makes the role '

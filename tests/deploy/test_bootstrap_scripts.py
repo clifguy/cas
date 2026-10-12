@@ -183,7 +183,11 @@ def test_entra_script_is_idempotent_lookup_then_create() -> None:
     assert re.search(r"if\s+\[\s+-z\s+", text), (
         "entra script must guard the create with an emptiness test (lookup-then-create)"
     )
-    assert "az ad app permission admin-consent" in text, "entra script must grant admin consent"
+    assert any(
+        '"${RECONCILE}" permission "${BFF_OBJECT_ID}" "${BFF_SP_ID}" '
+        '"${SAGE_APP_ID}" "${SAGE_SP_ID}" "${ACCESS_SCOPE_ID}" Sage.Access' in call
+        for call in _uncommented_invocations(text, '"${RECONCILE}" permission')
+    )
 
 
 def test_entra_script_sets_v2_access_token_version() -> None:
@@ -196,7 +200,7 @@ def test_entra_script_sets_v2_access_token_version() -> None:
     APIM and the SAGE backend reject. Codifying the setting here keeps a
     fresh-tenant bring-up or a re-provision from regressing (CAS-ADR-042).
     """
-    text = _text(ENTRA)
+    text = _text(BOOTSTRAP_DIR / "entra-reconcile.py")
     # Anchor on the JSON ``key: 2`` form so a prose mention ("set it to 2") cannot
     # satisfy the gate; the optional backslash absorbs the script's escaped quote.
     assert re.search(r'requestedAccessTokenVersion\\?"\s*:\s*2', text), (
@@ -251,11 +255,10 @@ def test_entra_script_creates_public_client_registration() -> None:
     assert any(
         '"${MCP_CLIENT_APP_ID}"' in call for call in _uncommented_invocations(text, "ensure_sp")
     ), "entra script must ensure a service principal for the public MCP client too"
-    assert text.count("az ad app permission add") >= 2, (
-        "the public MCP client must be granted the delegated SAGE.Access scope"
-    )
-    assert text.count("az ad app permission admin-consent") >= 2, (
-        "the public MCP client's permission grant must be admin-consented"
+    assert any(
+        '"${RECONCILE}" permission "${MCP_OBJECT_ID}" "${MCP_CLIENT_SP_ID}" '
+        '"${SAGE_APP_ID}" "${SAGE_SP_ID}" "${ACCESS_SCOPE_ID}" Sage.Access' in call
+        for call in _uncommented_invocations(text, '"${RECONCILE}" permission')
     )
 
 
@@ -282,39 +285,18 @@ def test_entra_script_grants_offline_access_to_mcp_client() -> None:
     )
 
 
-def test_entra_script_explicitly_grants_offline_access_consent() -> None:
-    """Requesting ``offline_access`` is not enough — it must be consented. Granting
-    admin consent with ``az ad app permission admin-consent`` alone does NOT
-    record the delegated consent grant for the Graph ``offline_access`` scope
-    (verified live: the call returns 0 yet creates no ``oauth2PermissionGrant``
-    for it), leaving the public MCP client without a refresh token on a fresh
-    bring-up. The script must follow the ``offline_access`` ``permission add``
-    with an explicit ``az ad app permission grant ... --scope offline_access``,
-    the form that actually consents it as an ``AllPrincipals`` grant on Graph
-    (CAS-ADR-042).
-    """
-    text = _text(ENTRA)
-    # Anchor on a real command invocation, never a prose/comment mention: the
-    # pre-fix script mentioned "offline_access" and "grant" in comments but
-    # issued no `az ad app permission grant` at all, so a substring check would
-    # pass by accident. _uncommented_invocations skips `#` comments and joins the
-    # command across its backslash continuations (there is exactly one such grant).
-    grants = _uncommented_invocations(text, "az ad app permission grant")
-    assert grants, (
-        "entra script must issue `az ad app permission grant` for the MCP client — "
-        "admin-consent alone does not consent the Graph offline_access scope"
-    )
-    flat = grants[0]
-    assert "--scope offline_access" in flat, (
-        "the explicit grant must consent the offline_access scope (--scope offline_access)"
-    )
-    assert "GRAPH_APP_ID" in flat, (
-        "the grant must target Graph's runtime-resolved app id (${GRAPH_APP_ID}), "
-        "not a hardcoded GUID"
-    )
-    assert "MCP_CLIENT_APP_ID" in flat, (
-        "the explicit grant must be issued for the public MCP client (${MCP_CLIENT_APP_ID})"
-    )
+def test_entra_script_explicitly_grants_offline_access_consent(tmp_path: Path) -> None:
+    """The actual MCP grant must name Graph's SP object ID and offline_access."""
+    result, _, state = _run_entra(tmp_path, _seed_directory())
+    assert result.returncode == 0, result.stderr
+    graph = next(s for s in state["sps"] if s["displayName"] == "Microsoft Graph")
+    grants = [
+        g
+        for g in state["grants"]
+        if g["clientId"] == _sp_of(state, _MCP_APP)["id"] and g["resourceId"] == graph["id"]
+    ]
+    assert len(grants) == 1 and grants[0]["scope"] == "offline_access"
+    assert grants[0]["consentType"] == "AllPrincipals" and grants[0]["principalId"] is None
 
 
 def test_entra_script_registers_mcp_loopback_redirect() -> None:
@@ -592,6 +574,29 @@ def _run_entra(
     az = bin_dir / "az"
     az.write_text(f"#!{sys.executable} -IS\n" + FAKE_ENTRA_AZ.read_text())
     az.chmod(0o755)
+    # Advance only the helper's backoff clock; CLI subprocesses and the actual
+    # Bash entry point remain real. Never add test-only timing knobs to production.
+    python = bin_dir / "python3"
+    python.write_text(
+        f"#!{sys.executable} -IS\n"
+        + """
+import importlib.util, os, sys, time, types
+if len(sys.argv) > 1 and sys.argv[1].endswith('/entra-reconcile.py'):
+    spec = importlib.util.spec_from_file_location('entra_reconcile', sys.argv[1])
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    offset = [0.0]
+    helper.time = types.SimpleNamespace(
+        monotonic=lambda: time.monotonic() + offset[0],
+        sleep=lambda seconds: offset.__setitem__(0, offset[0] + seconds),
+    )
+    sys.argv = sys.argv[1:]
+    sys.exit(helper.main())
+else:
+    os.execv(sys.executable, [sys.executable, *sys.argv[1:]])
+"""
+    )
+    python.chmod(0o755)
     state_path = tmp_path / "state.json"
     state_path.write_text(json.dumps(state))
     calls_path = tmp_path / "calls.jsonl"
@@ -2350,19 +2355,19 @@ def test_entra_environment_isolation_and_rerun(tmp_path: Path) -> None:
     for key in ("apps", "sps", "groups", "assignments"):
         for old in snapshot[key]:
             assert next(item for item in combined[key] if item["id"] == old["id"]) == old
-    old_permissions = snapshot["permission_calls"]
-    assert combined["permission_calls"][: len(old_permissions)] == old_permissions
-    new_permissions = combined["permission_calls"][len(old_permissions) :]
-    old_ids = {a["appId"] for a in snapshot["apps"]}
-    assert all(not old_ids.intersection(call) for call in new_permissions)
+    for old in snapshot["grants"]:
+        assert old in combined["grants"]
     resource = _app(combined, f"{_SAGE_APP}-stage")
     for base in (_BFF_APP, _MCP_APP):
         client = _app(combined, f"{base}-stage")
         assert any(
-            c[:4] == ["ad", "app", "permission", "add"]
-            and c[c.index("--id") + 1] == client["appId"]
-            and c[c.index("--api") + 1] == resource["appId"]
-            for c in calls
+            p["resourceAppId"] == resource["appId"] for p in client["requiredResourceAccess"]
+        )
+        assert any(
+            g["clientId"] == _sp_of(combined, f"{base}-stage")["id"]
+            and g["resourceId"] == _sp_of(combined, f"{_SAGE_APP}-stage")["id"]
+            and g["scope"] == "Sage.Access"
+            for g in combined["grants"]
         )
     _app(combined, f"{_BFF_APP}-stage")["web"]["redirectUris"].append(
         "https://stage-extra.example.test/callback"
@@ -2466,3 +2471,230 @@ def test_entra_runbook_names_and_deploy_reader_grant(
         for a in final["assignments"]
     )
     assert _assignment_posts(calls, deploy_sp["id"])
+
+
+# These exercise the shipped entry point against persisted directory
+# state, including the fresh-scope validation that the old double omitted.
+def test_entra_fresh_scope_staged_before_preauthorization(tmp_path: Path) -> None:
+    result, calls, state = _run_entra(tmp_path, _seed_directory())
+    assert result.returncode == 0, result.stderr
+    app = _app(state, _SAGE_APP)
+    patches = _rest_calls(calls, "PATCH", f"/applications/{app['id']}")
+    bodies = [json.loads(calls[i][calls[i].index("--body") + 1]) for i in patches]
+    scope_write = next(
+        i for i, b in enumerate(bodies) if "oauth2PermissionScopes" in b.get("api", {})
+    )
+    pre_write = next(
+        i for i, b in enumerate(bodies) if "preAuthorizedApplications" in b.get("api", {})
+    )
+    assert scope_write < pre_write
+    assert app["api"]["requestedAccessTokenVersion"] == 2
+    assert app["api"]["preAuthorizedApplications"][0]["delegatedPermissionIds"] == [
+        app["api"]["oauth2PermissionScopes"][0]["id"]
+    ]
+
+
+def test_entra_exact_consent_and_third_run_stability(tmp_path: Path) -> None:
+    result, _, state = _run_entra(tmp_path, _seed_directory())
+    assert result.returncode == 0, result.stderr
+    sage = _sp_of(state, _SAGE_APP)
+    graph = next(s for s in state["sps"] if s["displayName"] == "Microsoft Graph")
+    expected = {
+        (_sp_of(state, _BFF_APP)["id"], sage["id"], "Sage.Access"),
+        (_sp_of(state, _MCP_APP)["id"], sage["id"], "Sage.Access"),
+        (_sp_of(state, _MCP_APP)["id"], graph["id"], "offline_access"),
+    }
+    assert {(g["clientId"], g["resourceId"], g["scope"]) for g in state["grants"]} == expected
+    assert all(
+        g["consentType"] == "AllPrincipals" and g["principalId"] is None for g in state["grants"]
+    )
+    baseline = json.loads(json.dumps(state))
+    for _ in range(2):
+        result, calls, state = _run_entra(tmp_path, state)
+        assert result.returncode == 0, result.stderr
+        for key in ("apps", "sps", "groups", "assignments", "grants"):
+            assert state[key] == baseline[key]
+        assert not any(c[:4] == ["ad", "app", "permission", "admin-consent"] for c in calls)
+        assert not _rest_calls(calls, "POST", "/oauth2PermissionGrants")
+
+
+def test_entra_backoff_clock_does_not_accelerate_process_wait(tmp_path: Path) -> None:
+    state = _seed_directory()
+    state["delay_rest_exit"] = 5
+    result, _, state = _run_entra(tmp_path, state)
+    assert result.returncode == 0, result.stderr
+    assert state["delayed_rest_exits"] == 5
+    assert len(state["grants"]) == 3
+
+
+def test_entra_delayed_resource_and_uncertain_grant(tmp_path: Path) -> None:
+    state = _seed_directory()
+    state["sp_visibility_delay"] = 2
+    state["uncertain_grant_write"] = True
+    result, calls, state = _run_entra(tmp_path, state)
+    assert result.returncode == 0, result.stderr
+    assert state["sp_visibility_delay"] == 0
+    sage_sp = _sp_of(state, _SAGE_APP)
+    assert len(_rest_calls(calls, "GET", f"/servicePrincipals/{sage_sp['id']}")) >= 3
+    grant_reads = [
+        c
+        for c in calls
+        if c[:1] == ["rest"] and "GET" in c and any("/oauth2PermissionGrants?" in arg for arg in c)
+    ]
+    assert len(grant_reads) >= 10, (
+        "uncertain committed write must survive a temporarily stale grant list"
+    )
+    assert len(state["grants"]) == 3
+    assert len(_rest_calls(calls, "POST", "/oauth2PermissionGrants")) == 3
+
+
+def test_entra_repairs_duplicates_preserving_unrelated_state(tmp_path: Path) -> None:
+    result, _, state = _run_entra(tmp_path, _seed_directory())
+    assert result.returncode == 0, result.stderr
+    sage, bff = _app(state, _SAGE_APP), _app(state, _BFF_APP)
+    extra_scope = {"id": str(uuid.uuid4()), "value": "Extra", "isEnabled": True, "type": "Admin"}
+    extra_role = {
+        "id": str(uuid.uuid4()),
+        "value": "Extra.Role",
+        "isEnabled": True,
+        "allowedMemberTypes": ["User"],
+    }
+    extra_pre = {"appId": str(uuid.uuid4()), "delegatedPermissionIds": [extra_scope["id"]]}
+    sage["api"]["oauth2PermissionScopes"].append(extra_scope)
+    sage["api"]["preAuthorizedApplications"].append(extra_pre)
+    sage["api"]["acceptMappedClaims"] = True
+    sage["appRoles"].append(extra_role)
+    # Force both replacement-write phases while retaining unrelated entries.
+    sage["api"]["requestedAccessTokenVersion"] = 1
+    cli_pre = sage["api"]["preAuthorizedApplications"][0]
+    cli_pre["delegatedPermissionIds"] = [extra_scope["id"]]
+    extra_permission = {
+        "resourceAppId": str(uuid.uuid4()),
+        "resourceAccess": [{"id": str(uuid.uuid4()), "type": "Role"}],
+    }
+    bff["requiredResourceAccess"] += [bff["requiredResourceAccess"][0], extra_permission]
+    grant = next(g for g in state["grants"] if g["clientId"] == _sp_of(state, _BFF_APP)["id"])
+    grant["scope"] = "Extra Sage.Access Sage.Access"
+    principal = {
+        **grant,
+        "id": str(uuid.uuid4()),
+        "consentType": "Principal",
+        "principalId": str(uuid.uuid4()),
+    }
+    wrong_resource = {**grant, "id": str(uuid.uuid4()), "resourceId": str(uuid.uuid4())}
+    state["grants"] = [principal, wrong_resource] + state["grants"]
+    state["grant_page_size"] = 1
+    existing_assignment = {
+        "id": str(uuid.uuid4()),
+        "principalId": str(uuid.uuid4()),
+        "principalType": "User",
+        "resourceId": _sp_of(state, _BFF_APP)["id"],
+        "appRoleId": str(uuid.uuid4()),
+    }
+    state["assignments"].append(existing_assignment)
+    result, calls, updated = _run_entra(tmp_path, state)
+    assert result.returncode == 0, result.stderr
+    fixed = _app(updated, _SAGE_APP)
+    assert extra_scope in fixed["api"]["oauth2PermissionScopes"]
+    assert (
+        extra_role in fixed["appRoles"] and extra_pre in fixed["api"]["preAuthorizedApplications"]
+    )
+    assert fixed["api"]["acceptMappedClaims"] is True
+    assert fixed["api"]["requestedAccessTokenVersion"] == 2
+    scope_id = next(
+        s["id"] for s in fixed["api"]["oauth2PermissionScopes"] if s["value"] == "Sage.Access"
+    )
+    fixed_cli = next(
+        p for p in fixed["api"]["preAuthorizedApplications"] if p["appId"] == cli_pre["appId"]
+    )
+    assert set(fixed_cli["delegatedPermissionIds"]) == {scope_id, extra_scope["id"]}
+    resource_patches = [
+        json.loads(calls[i][calls[i].index("--body") + 1])
+        for i in _rest_calls(calls, "PATCH", f"/applications/{sage['id']}")
+    ]
+    assert any(
+        "appRoles" in body and "oauth2PermissionScopes" in body.get("api", {})
+        for body in resource_patches
+    )
+    assert any("preAuthorizedApplications" in body.get("api", {}) for body in resource_patches)
+    declarations = _app(updated, _BFF_APP)["requiredResourceAccess"]
+    assert extra_permission in declarations and len(declarations) == 2
+    assert (
+        next(g for g in updated["grants"] if g["id"] == grant["id"])["scope"] == "Extra Sage.Access"
+    )
+    assert principal in updated["grants"] and wrong_resource in updated["grants"]
+    assert existing_assignment in updated["assignments"]
+    assert updated["assignments"] == state["assignments"]
+    assert any("&page=" in arg for c in calls for arg in c), "later-page grant must be read"
+    patches = _rest_calls(calls, "PATCH", f"/applications/{bff['id']}")
+    assert any(
+        "requiredResourceAccess" in calls[i][calls[i].index("--body") + 1] for i in patches
+    ), "duplicate declarations must trigger a deduplicating write"
+
+
+@pytest.mark.parametrize("fault", ["missing-grant", "never-visible", "denied", "malformed"])
+def test_entra_readiness_failure_omits_coordinates(tmp_path: Path, fault: str) -> None:
+    state = _seed_directory()
+    if fault == "missing-grant":
+        state["discard_grant_write"] = True
+    elif fault == "never-visible":
+        state["sp_visibility_delay"] = 1000
+    elif fault == "denied":
+        state["faults"] = [
+            {"contains": ["GET", "/applications/"], "message": "Authorization_RequestDenied"}
+        ]
+    else:
+        state["malformed_application_read"] = True
+    result, calls, final = _run_entra(tmp_path, state)
+    assert result.returncode != 0 and "param sageAudience" not in result.stdout
+    assert "ERROR:" in result.stderr
+    if fault in ("missing-grant", "never-visible"):
+        assert "deadline" in result.stderr and len(calls) < 100
+    else:
+        assert len(_rest_calls(calls, "GET", "")) == 1
+    if fault == "missing-grant":
+        assert len(_rest_calls(calls, "POST", "/oauth2PermissionGrants")) == 1
+    else:
+        assert not final.get("grants") and not final["assignments"]
+
+
+@pytest.mark.parametrize(
+    "problem", ["duplicate-scope", "override", "duplicate-grant", "unsafe-page"]
+)
+def test_entra_refuses_ambiguous_or_conflicting_state(tmp_path: Path, problem: str) -> None:
+    result, _, state = _run_entra(tmp_path, _seed_directory())
+    assert result.returncode == 0, result.stderr
+    env = {}
+    if problem == "duplicate-scope":
+        scopes = _app(state, _SAGE_APP)["api"]["oauth2PermissionScopes"]
+        scopes.append({**scopes[0], "id": str(uuid.uuid4())})
+    elif problem == "override":
+        env["ACCESS_SCOPE_ID"] = str(uuid.uuid4())
+    elif problem == "duplicate-grant":
+        state["grants"].append({**state["grants"][0], "id": str(uuid.uuid4())})
+    else:
+        state["unsafe_grant_page"] = True
+    before = json.loads(json.dumps(state))
+    result, _, final = _run_entra(tmp_path, state, env)
+    assert result.returncode != 0 and "param sageAudience" not in result.stdout
+    assert any(message in result.stderr for message in ("ambiguous", "conflicting", "continuation"))
+    assert final["grants"] == before["grants"]
+    assert _app(final, _SAGE_APP)["api"] == _app(before, _SAGE_APP)["api"]
+
+
+def test_entra_restart_after_partial_consent(tmp_path: Path) -> None:
+    state = _seed_directory()
+    state["faults"] = [
+        {
+            "contains": ["ad", "app", "list", "displayName eq 'cas-mcp-client'"],
+            "message": "Authorization_RequestDenied",
+        }
+    ]
+    failed, _, partial = _run_entra(tmp_path, state, bare_ids=True)
+    assert failed.returncode != 0 and len(partial["grants"]) == 1
+    assert "param sageAudience" not in failed.stdout
+    partial["faults"] = []
+    result, _, final = _run_entra(tmp_path, partial, bare_ids=True)
+    assert result.returncode == 0, result.stderr
+    assert partial["grants"][0] in final["grants"] and len(final["grants"]) == 3
+    assert _app(partial, _SAGE_APP) == _app(final, _SAGE_APP)
