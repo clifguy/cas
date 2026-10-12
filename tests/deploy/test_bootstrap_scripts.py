@@ -1840,10 +1840,33 @@ elif args[:3] == ["keyvault", "certificate", "import"]:
 elif args[:4] == ["keyvault", "certificate", "contact", "list"]:
     # The service answers a vault that has never held a contact with an error,
     # not an empty list.
-    assert arg("--query") == "[].email" and arg("-o") == "tsv", args
     if not state["contacts"]:
         sys.exit("ERROR: (ContactsNotFound) Contacts not found")
-    print("\n".join(state["contacts"]))
+    rendered = {
+        "contactList": [{"emailAddress": email} for email in state["contacts"]],
+        "id": "https://kv.example/certificates/contacts",
+    }
+    if "--query" not in args:
+        print(json.dumps(rendered))
+    else:
+        assert arg("-o") == "tsv", args
+        # Evaluate dotted fields and list projections against the rendered
+        # object. Missing fields and projections on non-lists yield no values.
+        def project(value, path):
+            if not path:
+                return [value] if value is not None else []
+            field, _, rest = path.partition(".")
+            flatten = field.endswith("[]")
+            key = field[:-2] if flatten else field
+            selected = value.get(key) if key and isinstance(value, dict) else (
+                value if not key else None
+            )
+            if flatten:
+                if not isinstance(selected, list):
+                    return []
+                return [item for entry in selected for item in project(entry, rest)]
+            return project(selected, rest)
+        print("\n".join(str(value) for value in project(rendered, arg("--query"))))
 elif args[:4] == ["keyvault", "certificate", "contact", "add"]:
     # The CLI reads the vault's contacts, refuses an exact duplicate and writes
     # the list back; it handles a vault with none itself.
@@ -2030,6 +2053,60 @@ def _call_index(calls: list[list[str]], *prefix: str) -> list[int]:
 
 def _run_notice(tmp_path: Path, state: dict, bash: str, **env: str | None) -> tuple:
     return _run_kv_load(tmp_path, state, bash, script=EXPIRY_NOTICE, **env)
+
+
+def _run_fake_contact_list(
+    tmp_path: Path, contacts: list[str], query: str | None
+) -> subprocess.CompletedProcess[str]:
+    az = tmp_path / "az"
+    az.write_text(f"#!{sys.executable} -IS\n" + _FAKE_KV_TOOLS)
+    az.chmod(0o755)
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps(_kv_state(contacts=contacts)))
+    args = [str(az), "keyvault", "certificate", "contact", "list", "--vault-name", "kv-test"]
+    if query is not None:
+        args += ["--query", query, "-o", "tsv"]
+    return subprocess.run(
+        args,
+        env={"KV_STATE": str(state_path), "KV_CALLS": str(tmp_path / "calls.jsonl")},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+
+
+@pytest.mark.parametrize(
+    ("query", "expected"),
+    [
+        ("contactList[].emailAddress", ["Cert-Owner@Example.org", "ops@example.org"]),
+        ("[].email", []),
+        ("contactList[].email", []),
+        ("contacts[].emailAddress", []),
+    ],
+    ids=["rendered-path", "wrong-root-shape", "missing-member", "missing-list"],
+)
+def test_certificate_contact_fake_applies_query_to_rendered_shape(
+    tmp_path: Path, query: str, expected: list[str]
+) -> None:
+    result = _run_fake_contact_list(tmp_path, ["Cert-Owner@Example.org", "ops@example.org"], query)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.split() == expected
+
+
+def test_certificate_contact_fake_renders_cli_object(tmp_path: Path) -> None:
+    result = _run_fake_contact_list(tmp_path, ["Cert-Owner@Example.org"], None)
+    assert result.returncode == 0, result.stderr
+    assert json.loads(result.stdout) == {
+        "contactList": [{"emailAddress": "Cert-Owner@Example.org"}],
+        "id": "https://kv.example/certificates/contacts",
+    }
+
+
+def test_certificate_contact_fake_refuses_contactless_vault(tmp_path: Path) -> None:
+    result = _run_fake_contact_list(tmp_path, [], "contactList[].emailAddress")
+    assert result.returncode != 0
+    assert "ContactsNotFound" in result.stderr
+    assert result.stdout == ""
 
 
 @SEED_BASHES
