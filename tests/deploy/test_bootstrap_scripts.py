@@ -183,7 +183,11 @@ def test_entra_script_is_idempotent_lookup_then_create() -> None:
     assert re.search(r"if\s+\[\s+-z\s+", text), (
         "entra script must guard the create with an emptiness test (lookup-then-create)"
     )
-    assert '"${RECONCILE}" permission "${BFF_OBJECT_ID}" "${BFF_SP_ID}"' in text
+    assert any(
+        '"${RECONCILE}" permission "${BFF_OBJECT_ID}" "${BFF_SP_ID}" '
+        '"${SAGE_APP_ID}" "${SAGE_SP_ID}" "${ACCESS_SCOPE_ID}" Sage.Access' in call
+        for call in _uncommented_invocations(text, '"${RECONCILE}" permission')
+    )
 
 
 def test_entra_script_sets_v2_access_token_version() -> None:
@@ -251,8 +255,11 @@ def test_entra_script_creates_public_client_registration() -> None:
     assert any(
         '"${MCP_CLIENT_APP_ID}"' in call for call in _uncommented_invocations(text, "ensure_sp")
     ), "entra script must ensure a service principal for the public MCP client too"
-    assert '"${RECONCILE}" permission "${MCP_OBJECT_ID}" "${MCP_CLIENT_SP_ID}"' in text
-    assert '"${SAGE_APP_ID}" "${SAGE_SP_ID}" "${ACCESS_SCOPE_ID}" Sage.Access' in text
+    assert any(
+        '"${RECONCILE}" permission "${MCP_OBJECT_ID}" "${MCP_CLIENT_SP_ID}" '
+        '"${SAGE_APP_ID}" "${SAGE_SP_ID}" "${ACCESS_SCOPE_ID}" Sage.Access' in call
+        for call in _uncommented_invocations(text, '"${RECONCILE}" permission')
+    )
 
 
 def test_entra_script_grants_offline_access_to_mcp_client() -> None:
@@ -2557,6 +2564,10 @@ def test_entra_repairs_duplicates_preserving_unrelated_state(tmp_path: Path) -> 
     sage["api"]["preAuthorizedApplications"].append(extra_pre)
     sage["api"]["acceptMappedClaims"] = True
     sage["appRoles"].append(extra_role)
+    # Force both replacement-write phases while retaining unrelated entries.
+    sage["api"]["requestedAccessTokenVersion"] = 1
+    cli_pre = sage["api"]["preAuthorizedApplications"][0]
+    cli_pre["delegatedPermissionIds"] = [extra_scope["id"]]
     extra_permission = {
         "resourceAppId": str(uuid.uuid4()),
         "resourceAccess": [{"id": str(uuid.uuid4()), "type": "Role"}],
@@ -2589,6 +2600,23 @@ def test_entra_repairs_duplicates_preserving_unrelated_state(tmp_path: Path) -> 
         extra_role in fixed["appRoles"] and extra_pre in fixed["api"]["preAuthorizedApplications"]
     )
     assert fixed["api"]["acceptMappedClaims"] is True
+    assert fixed["api"]["requestedAccessTokenVersion"] == 2
+    scope_id = next(
+        s["id"] for s in fixed["api"]["oauth2PermissionScopes"] if s["value"] == "Sage.Access"
+    )
+    fixed_cli = next(
+        p for p in fixed["api"]["preAuthorizedApplications"] if p["appId"] == cli_pre["appId"]
+    )
+    assert set(fixed_cli["delegatedPermissionIds"]) == {scope_id, extra_scope["id"]}
+    resource_patches = [
+        json.loads(calls[i][calls[i].index("--body") + 1])
+        for i in _rest_calls(calls, "PATCH", f"/applications/{sage['id']}")
+    ]
+    assert any(
+        "appRoles" in body and "oauth2PermissionScopes" in body.get("api", {})
+        for body in resource_patches
+    )
+    assert any("preAuthorizedApplications" in body.get("api", {}) for body in resource_patches)
     declarations = _app(updated, _BFF_APP)["requiredResourceAccess"]
     assert extra_permission in declarations and len(declarations) == 2
     assert (
