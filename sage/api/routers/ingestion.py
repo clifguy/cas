@@ -277,7 +277,7 @@ def _codes_and_tags_conflict(
                 "chain's current head, the version in the form the token was "
                 "supplied in: the predecessor itself when only it has "
                 "changed, its latest successor when it has been superseded. The "
-                "caller can supersede that head next without a further read "
+                "caller can retry against that head without a further read "
                 "(CAS-ADR-038 Primitive C).\n\n"
                 "`tier3_unique_constraint_violation`: the resolved doc_type "
                 "declares a tier3 field `unique`, and another document in the "

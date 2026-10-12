@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -443,17 +444,27 @@ async def test_t4_parallel_same_version_one_wins_one_stale(
 async def test_race_loser_reports_head_version_in_timestamp_form(
     vault_services: tuple[SAGEServices, Path], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A deprecated timestamp token gets the successor's version as a timestamp."""
+    """A deprecated timestamp token gets the successor's version as a timestamp.
+
+    The successor's ``updated_at`` can advance with pipeline work after the
+    refusal, so it is bounded rather than matched: no earlier than the
+    successor's creation, and not the archived predecessor's version.
+    """
     services, test_dir = vault_services
     head, winner_id, stale = await _race_two_supersedes(
         services, test_dir, monkeypatch, version_field="updated_at"
     )
+    head_post = _parse(await get_document("test_vault", head["id"]))
+    winner = _parse(await get_document("test_vault", winner_id))
     detail = stale["detail"]
     assert detail["predecessor_id"] == head["id"]
     assert detail["expected_head_version"] == head["updated_at"]
     assert detail["current_head_id"] == winner_id
-    assert is_timestamp(detail["current_head_version"]), detail
-    assert detail["current_head_version"] != head["updated_at"]
+    reported = detail["current_head_version"]
+    assert is_timestamp(reported), detail
+    assert reported not in (head["updated_at"], head_post["updated_at"])
+    instant = datetime.fromisoformat
+    assert instant(winner["created_at"]) <= instant(reported) <= instant(winner["updated_at"])
 
 
 async def test_race_loser_retry_on_reported_head_succeeds(
