@@ -104,7 +104,7 @@ trap 'rm -rf "${scratch}"' EXIT
 # add below, which handles that case itself and refuses an exact duplicate.
 existing=""
 if listed="$(az keyvault certificate contact list --vault-name "${KV}" \
-  --query '[].email' -o tsv 2>/dev/null)"; then
+  --query 'contactList[].emailAddress' -o tsv 2>/dev/null)"; then
   existing="$(lower "$listed")"
 fi
 
