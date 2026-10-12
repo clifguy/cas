@@ -635,13 +635,16 @@ class StaleChainHeadError(SAGEError):
 
     Raised when an ingest with `predecessor_id` supplies an
     `expected_head_version` that does not equal the predecessor's
-    current `updated_at` at the moment the supersede is about to run.
-    The detail envelope carries the current head id and version so the
-    caller can pivot through the chain (use `current_head_id` as the
-    next supersede's `predecessor_id`) and retry without an extra
-    round-trip. Preserves the linear-chain invariant in CAS-ADR-023 by
-    surfacing the conflict instead of letting two concurrent supersedes
-    each create their own version, forking the chain into a tree.
+    current version (its `version_token`, or `updated_at` for the
+    deprecated timestamp form) at the moment the supersede is about to
+    run. The detail envelope carries the id and version of the chain's
+    current head -- the predecessor when only it has changed, its latest
+    successor when it has been superseded -- so the caller can use
+    `current_head_id` as the next supersede's `predecessor_id` and retry
+    without an extra round-trip. Preserves the linear-chain invariant in
+    CAS-ADR-023 by surfacing the conflict instead of letting two
+    concurrent supersedes each create their own version, forking the
+    chain into a tree.
     """
 
     def __init__(

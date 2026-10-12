@@ -5473,11 +5473,11 @@ SCHEMAS = json.loads(
     "description": "Additional context for this refusal.",
     "properties": {
       "current_head_id": {
-        "description": "Current head id.",
+        "description": "Id of the chain's current head: the predecessor when only it has changed, its latest successor when it has been superseded.",
         "type": "string"
       },
       "current_head_version": {
-        "description": "Current head version.",
+        "description": "Version of the current head, in the form `expected_head_version` was supplied in.",
         "type": "string"
       },
       "expected_head_version": {

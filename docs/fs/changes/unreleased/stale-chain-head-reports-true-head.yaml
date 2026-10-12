@@ -1,0 +1,13 @@
+classification: patch
+summary: >-
+  A `stale_chain_head` refusal on a supersede now names the chain's actual
+  head. When the predecessor has been superseded since the caller read it,
+  `current_head_id` and `current_head_version` report its latest successor
+  rather than the archived predecessor; when only the predecessor changed they
+  still name it. The `expected_head_version` parameter, the ingest 409 response and
+  the `StaleChainHeadErrorDetail` field descriptions say so in both
+  specifications and the MCP catalog. A defect correction: the contract
+  already promised the current head, and a retry against the archived
+  predecessor the server used to name was always refused, so no caller could
+  rely on the old value.
+for_callers: ""

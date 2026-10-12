@@ -1631,11 +1631,11 @@
                 "description": "Additional context for this refusal.",
                 "properties": {
                   "current_head_id": {
-                    "description": "Current head id.",
+                    "description": "Id of the chain's current head: the predecessor when only it has changed, its latest successor when it has been superseded.",
                     "type": "string"
                   },
                   "current_head_version": {
-                    "description": "Current head version.",
+                    "description": "Version of the current head, in the form `expected_head_version` was supplied in.",
                     "type": "string"
                   },
                   "expected_head_version": {
@@ -8216,11 +8216,11 @@
                 "description": "Additional context for this refusal.",
                 "properties": {
                   "current_head_id": {
-                    "description": "Current head id.",
+                    "description": "Id of the chain's current head: the predecessor when only it has changed, its latest successor when it has been superseded.",
                     "type": "string"
                   },
                   "current_head_version": {
-                    "description": "Current head version.",
+                    "description": "Version of the current head, in the form `expected_head_version` was supplied in.",
                     "type": "string"
                   },
                   "expected_head_version": {
@@ -9412,7 +9412,7 @@
             },
             "expected_head_version": {
               "default": null,
-              "description": "Optimistic-concurrency token on the chain head named by `predecessor_id`: its `version_token` from a prior read, which pipeline work does not advance. When supplied, it is verified against the predecessor's current version inside the per-predecessor lock at supersede time; a mismatch is refused with a `stale_chain_head` 409 carrying the current head id and version. When omitted, the supersede proceeds without a version check. A timestamp (the predecessor's `updated_at`, the earlier token) is deprecated: it is compared with `updated_at`, which pipeline work advances, draws a warning, and may stop being accepted from 2026-12-01. Requires `predecessor_id`; supplied on a fresh-chain ingest it returns 400 `expected_head_version_requires_predecessor`.",
+              "description": "Optimistic-concurrency token on the chain head named by `predecessor_id`: its `version_token` from a prior read, which pipeline work does not advance. When supplied, it is verified against the predecessor's current version inside the per-predecessor lock at supersede time; a mismatch is refused with a `stale_chain_head` 409 carrying the id and version of the chain's current head: the predecessor itself when only it has changed, its latest successor when it has been superseded. When omitted, the supersede proceeds without a version check. A timestamp (the predecessor's `updated_at`, the earlier token) is deprecated: it is compared with `updated_at`, which pipeline work advances, draws a warning, and may stop being accepted from 2026-12-01. Requires `predecessor_id`; supplied on a fresh-chain ingest it returns 400 `expected_head_version_requires_predecessor`.",
               "type": "string"
             },
             "force": {

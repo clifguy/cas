@@ -934,10 +934,12 @@ paths:
 
             `stale_chain_head`: `expected_head_version` was supplied
             and did not match the predecessor's current version at
-            supersede time. Detail carries the current head id and
-            version, in the form the token was supplied in, so the
-            caller can pivot through the chain and retry (CAS-ADR-038
-            Primitive C).
+            supersede time. Detail carries the id and version of the
+            chain's current head, the version in the form the token was
+            supplied in: the predecessor itself when only it has
+            changed, its latest successor when it has been superseded. The
+            caller can retry against that head without a further read
+            (CAS-ADR-038 Primitive C).
 
             `tier3_unique_constraint_violation`: the resolved doc_type
             declares a tier3 field `unique`, and another document in the
@@ -6180,8 +6182,10 @@ components:
             which pipeline work does not advance. When supplied, it is
             verified against the predecessor's current version inside
             the per-predecessor lock at supersede time; a mismatch is
-            refused with a `stale_chain_head` 409 carrying the current
-            head id and version. When omitted, the supersede proceeds
+            refused with a `stale_chain_head` 409 carrying the id and
+            version of the chain's current head: the predecessor itself
+            when only it has changed, its latest successor when it has been
+            superseded. When omitted, the supersede proceeds
             without a version check. A timestamp (the predecessor's
             `updated_at`, the earlier token) is deprecated: it is
             compared with `updated_at`, which pipeline work advances,
@@ -13818,10 +13822,14 @@ components:
           description: Expected head version.
         current_head_id:
           type: string
-          description: Current head id.
+          description: >-
+            Id of the chain's current head: the predecessor when only it
+            has changed, its latest successor when it has been superseded.
         current_head_version:
           type: string
-          description: Current head version.
+          description: >-
+            Version of the current head, in the form
+            `expected_head_version` was supplied in.
       description: Additional context for this refusal.
     StaleChainHeadError:
       type: object

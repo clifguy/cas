@@ -4238,10 +4238,14 @@ components:
           description: Expected head version.
         current_head_id:
           type: string
-          description: Current head id.
+          description: >-
+            Id of the chain's current head: the predecessor when only it
+            has changed, its latest successor when it has been superseded.
         current_head_version:
           type: string
-          description: Current head version.
+          description: >-
+            Version of the current head, in the form
+            `expected_head_version` was supplied in.
       description: Additional context for this refusal.
     StaleChainHeadError:
       type: object
