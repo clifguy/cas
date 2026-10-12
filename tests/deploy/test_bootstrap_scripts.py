@@ -2275,3 +2275,182 @@ def test_key_vault_load_refuses_bad_contacts_before_any_write(
     result, calls, _, _ = _run_kv_load(tmp_path, _kv_state(), bash, CERT_EXPIRY_CONTACTS=contacts)
     assert result.returncode != 0
     assert not _writes(calls), calls
+
+
+@pytest.mark.parametrize("suffix", ["", "staging", "A-2"])
+@pytest.mark.parametrize("group_name", [_GROUP, "separate-access"])
+def test_entra_environment_names_and_independent_group(
+    tmp_path: Path, suffix: str, group_name: str
+) -> None:
+    env = {"ENTRA_APP_SUFFIX": suffix, "PROVISIONING_GROUP_NAME": group_name}
+    result, calls, state = _run_entra(tmp_path, _seed_directory(), env, bare_ids=True)
+    assert result.returncode == 0, result.stderr
+    names = [f"{base}-{suffix}" if suffix else base for base in (_SAGE_APP, _BFF_APP, _MCP_APP)]
+    assert {a["displayName"] for a in state["apps"]} == set(names)
+    assert {g["displayName"] for g in state["groups"]} == {group_name}
+    group = _group(state, group_name)
+    for name in names:
+        assert any(
+            c[:3] == ["ad", "app", "list"]
+            and c[c.index("--filter") + 1] == f"displayName eq '{name}'"
+            for c in calls
+        )
+        sp = _sp_of(state, name)
+        assert sp["appRoleAssignmentRequired"] is True
+        assert any(
+            a["principalId"] == group["id"] and a["resourceId"] == sp["id"]
+            for a in state["assignments"]
+        )
+    again, _, rerun = _run_entra(tmp_path, state, env, bare_ids=True)
+    assert again.returncode == 0, again.stderr
+    for key in ("apps", "sps", "groups", "assignments"):
+        assert rerun[key] == state[key]
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    ["bad name", "' or displayName eq 'other", "line\nbreak", "-stage", "a_b", "é", "a.b", "a\t"],
+)
+def test_entra_invalid_suffix_makes_no_directory_calls(tmp_path: Path, suffix: str) -> None:
+    before = _seed_directory()
+    result, calls, state = _run_entra(tmp_path, before, {"ENTRA_APP_SUFFIX": suffix})
+    assert result.returncode != 0
+    assert "ENTRA_APP_SUFFIX" in result.stderr
+    assert calls == []
+    assert state == before
+
+
+def test_entra_environment_isolation_and_rerun(tmp_path: Path) -> None:
+    first, _, original = _run_entra(tmp_path, _seed_directory(), bare_ids=True)
+    assert first.returncode == 0, first.stderr
+    _app(original, _BFF_APP)["web"]["redirectUris"].append("https://extra.example.test/callback")
+    _app(original, _MCP_APP)["publicClient"]["redirectUris"].append("http://localhost:9876/extra")
+    snapshot = json.loads(json.dumps(original))
+    env = {
+        "ENTRA_APP_SUFFIX": "stage",
+        "BFF_HOSTNAME": "stage-bff.example.test",
+        "SAGE_PUBLIC_HOSTNAME": "stage-sage.example.test",
+        "MCP_CLIENT_REDIRECT_URI": "http://127.0.0.1:9877/callback",
+    }
+    second, calls, combined = _run_entra(tmp_path, original, env, bare_ids=True)
+    assert second.returncode == 0, second.stderr
+    assert len(combined["apps"]) == 6
+    for key in ("apps", "sps", "groups", "assignments"):
+        for old in snapshot[key]:
+            assert next(item for item in combined[key] if item["id"] == old["id"]) == old
+    old_permissions = snapshot["permission_calls"]
+    assert combined["permission_calls"][: len(old_permissions)] == old_permissions
+    new_permissions = combined["permission_calls"][len(old_permissions) :]
+    old_ids = {a["appId"] for a in snapshot["apps"]}
+    assert all(not old_ids.intersection(call) for call in new_permissions)
+    resource = _app(combined, f"{_SAGE_APP}-stage")
+    for base in (_BFF_APP, _MCP_APP):
+        client = _app(combined, f"{base}-stage")
+        assert any(
+            c[:4] == ["ad", "app", "permission", "add"]
+            and c[c.index("--id") + 1] == client["appId"]
+            and c[c.index("--api") + 1] == resource["appId"]
+            for c in calls
+        )
+    _app(combined, f"{_BFF_APP}-stage")["web"]["redirectUris"].append(
+        "https://stage-extra.example.test/callback"
+    )
+    _app(combined, f"{_MCP_APP}-stage")["publicClient"]["redirectUris"].append(
+        "http://localhost:9878/extra"
+    )
+    for rerun_env in ({}, env):
+        result, _, rerun = _run_entra(tmp_path, combined, rerun_env, bare_ids=True)
+        assert result.returncode == 0, result.stderr
+        for key in ("apps", "sps", "groups", "assignments"):
+            assert rerun[key] == combined[key]
+        combined = rerun
+    for name, platform, extra in (
+        (_BFF_APP, "web", "https://extra.example.test/callback"),
+        (_MCP_APP, "publicClient", "http://localhost:9876/extra"),
+        (f"{_BFF_APP}-stage", "web", "https://stage-extra.example.test/callback"),
+        (f"{_MCP_APP}-stage", "publicClient", "http://localhost:9878/extra"),
+    ):
+        assert extra in _app(combined, name)[platform]["redirectUris"]
+
+
+@pytest.mark.parametrize("fault", ["duplicate", "lookup-failure", "lookalike"])
+def test_entra_suffixed_lookup_guards(tmp_path: Path, fault: str) -> None:
+    env = {"ENTRA_APP_SUFFIX": "stage"}
+    first, _, state = _run_entra(tmp_path, _seed_directory(), env, bare_ids=True)
+    assert first.returncode == 0, first.stderr
+    name = f"{_BFF_APP}-stage"
+    if fault in ("duplicate", "lookalike"):
+        extra = json.loads(json.dumps(_app(state, name)))
+        extra.update(id=str(uuid.uuid4()), appId=str(uuid.uuid4()))
+        if fault == "lookalike":
+            extra["displayName"] += "-old"
+        state["apps"].append(extra)
+    else:
+        state["faults"] = [
+            {
+                "contains": ["ad", "app", "list", f"displayName eq '{name}'"],
+                "message": "Service unavailable.",
+                "code": 1,
+            }
+        ]
+    result, calls, final = _run_entra(tmp_path, state, env, bare_ids=True)
+    assert (result.returncode == 0) == (fault == "lookalike"), result.stderr
+    assert final["apps"] == state["apps"]
+    assert not [c for c in calls if c[:3] == ["ad", "app", "create"]]
+    if fault == "duplicate":
+        assert name in result.stderr and "exactly one" in result.stderr
+    if fault == "lookalike":
+        assert len(final["apps"]) == 4
+        assert next(a for a in final["apps"] if a["id"] == extra["id"]) == extra
+
+
+@pytest.mark.parametrize("suffix", ["", "stage"])
+def test_entra_runbook_names_and_deploy_reader_grant(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, suffix: str
+) -> None:
+    runbook = _text(PROCESS_DIR / "entra-app-registrations.md")
+    blocks = re.findall(r"```bash\n(.*?)```", runbook, re.S)
+    naming = next(b for b in blocks if 'ENTRA_APP_SUFFIX="${ENTRA_APP_SUFFIX:-}"' in b)
+    creates = []
+    for variable in ("SAGE_APP_ID", "BFF_APP_ID", "MCP_CLIENT_APP_ID"):
+        block = next(b for b in blocks if f'{variable}="$(az ad app list' in b)
+        block = (
+            block.replace("<BFF_HOSTNAME>", "bff.example.test")
+            .replace("<AUTH_CALLBACK_PATH>", "app/auth/callback")
+            .replace("<MCP_CLIENT_REDIRECT_URI entry>", "http://127.0.0.1/callback")
+        )
+        creates.append(block.split("\nfi", 1)[0] + "\nfi\n")
+    manual = tmp_path / "manual.sh"
+    manual.write_text("set -euo pipefail\n" + naming + "\n".join(creates))
+    env = {"ENTRA_APP_SUFFIX": suffix}
+    with monkeypatch.context() as patch:
+        patch.setattr(sys.modules[__name__], "ENTRA", manual)
+        created, _, state = _run_entra(tmp_path, _seed_directory(), env, bare_ids=True)
+    assert created.returncode == 0, created.stderr
+    names = [f"{base}-{suffix}" if suffix else base for base in (_SAGE_APP, _BFF_APP, _MCP_APP)]
+    assert {a["displayName"] for a in state["apps"]} == set(names)
+    built, _, state = _run_entra(tmp_path, state, env, bare_ids=True)
+    assert built.returncode == 0, built.stderr
+    deploy_doc = _text(PROCESS_DIR / "azure-deployment.md")
+    grant = next(
+        b
+        for b in re.findall(r"```bash\n(.*?)```", deploy_doc, re.S)
+        if b.startswith('SAGE_APP_ID="$(az ad app list')
+    )
+    manual.write_text("set -euo pipefail\n" + naming + grant)
+    with monkeypatch.context() as patch:
+        patch.setattr(sys.modules[__name__], "ENTRA", manual)
+        granted, calls, final = _run_entra(
+            tmp_path, state, {**env, "APP_ID": _app(state, names[1])["appId"]}, bare_ids=True
+        )
+    assert granted.returncode == 0, granted.stderr
+    sage_sp = _sp_of(final, names[0])
+    deploy_sp = _sp_of(final, names[1])
+    role = _app(final, names[0])["appRoles"][0]["id"]
+    assert any(
+        a["principalId"] == deploy_sp["id"]
+        and a["resourceId"] == sage_sp["id"]
+        and a["appRoleId"] == role
+        for a in final["assignments"]
+    )
+    assert _assignment_posts(calls, deploy_sp["id"])

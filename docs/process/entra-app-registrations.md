@@ -81,6 +81,40 @@ You will also choose placeholders that downstream work fixes concretely:
   `sage.<base-domain>`), registered as an https identifier URI on the resource
   server. Its host must sit under a domain verified in the tenant.
 
+## Environment selection
+
+Set and retain `ENTRA_APP_SUFFIX` for each environment before running the
+bootstrap or the manual commands below. Leaving it unset or empty preserves
+`sage-resource-server`, `cas-bff` and `cas-mcp-client`. For example,
+`export ENTRA_APP_SUFFIX=staging` selects `sage-resource-server-staging`,
+`cas-bff-staging` and `cas-mcp-client-staging`. Use a unique, stable suffix for
+each additional environment in the tenant. Reusing or omitting a suffix selects
+existing registrations and can replace their SAGE identifier URIs; display names
+do not prove hostname ownership.
+
+The provisioning group is independent of this suffix: it defaults to
+`cas-sage-users`, shared by environments. Set `PROVISIONING_GROUP_NAME` explicitly
+if an environment needs a separate membership boundary. The app suffix never
+changes that group name.
+
+For the manual commands, initialize names with the same validation as the
+bootstrap, before any directory call:
+
+```bash
+# A suffix selects an independent set of applications in a shared tenant.
+ENTRA_APP_SUFFIX="${ENTRA_APP_SUFFIX:-}"
+if [ -n "${ENTRA_APP_SUFFIX}" ] && ! (
+  export LC_ALL=C
+  [[ "${ENTRA_APP_SUFFIX}" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]]
+); then
+  echo "ERROR: ENTRA_APP_SUFFIX must start with an ASCII alphanumeric and contain only ASCII alphanumerics or hyphens." >&2
+  exit 1
+fi
+SAGE_APP_NAME="sage-resource-server${ENTRA_APP_SUFFIX:+-${ENTRA_APP_SUFFIX}}"
+BFF_APP_NAME="cas-bff${ENTRA_APP_SUFFIX:+-${ENTRA_APP_SUFFIX}}"
+MCP_CLIENT_APP_NAME="cas-mcp-client${ENTRA_APP_SUFFIX:+-${ENTRA_APP_SUFFIX}}"
+```
+
 ## 1. SAGE resource-server registration
 
 Create (or reuse) the application, give it **four** identifier URIs — the
@@ -99,10 +133,10 @@ instead of continuing past it, so a failed lookup can never read as "absent"
 and create a duplicate.
 
 ```bash
-SAGE_APP_ID="$(az ad app list --filter "displayName eq 'sage-resource-server'" \
+SAGE_APP_ID="$(az ad app list --filter "displayName eq '${SAGE_APP_NAME}'" \
   --query '[].appId' -o tsv)"
 if [ -z "$SAGE_APP_ID" ]; then
-  SAGE_APP_ID="$(az ad app create --display-name sage-resource-server \
+  SAGE_APP_ID="$(az ad app create --display-name "${SAGE_APP_NAME}" \
     --sign-in-audience AzureADMyOrg --query appId -o tsv)"
 fi
 
@@ -416,7 +450,8 @@ it keep minting tokens.
 **Applying the gate to an existing tenant.** On a tenant provisioned before the
 resource gate existed, re-run the codified script as an interactive directory
 admin with the same `BFF_HOSTNAME`, `MCP_CLIENT_REDIRECT_URI` and
-`SAGE_PUBLIC_HOSTNAME` it was first run with. It reuses the live scope and role
+`SAGE_PUBLIC_HOSTNAME` and `ENTRA_APP_SUFFIX` it was first run with. Retain any
+explicit `PROVISIONING_GROUP_NAME` override as well. It reuses the live scope and role
 ids, finds the existing client assignments, adds the resource assignment,
 requires assignment on the resource, and switches `Sage.Access` to
 admin-consent-only. It keeps every redirect URI already registered on the two
@@ -434,8 +469,8 @@ edit is the whole of onboarding or offboarding — no code change, no
 redeployment:
 
 ```bash
-az ad group member add --group cas-sage-users --member-id <USER_OBJECT_ID>
-az ad group member remove --group cas-sage-users --member-id <USER_OBJECT_ID>
+az ad group member add --group "${PROVISIONING_GROUP_NAME:-cas-sage-users}" --member-id <USER_OBJECT_ID>
+az ad group member remove --group "${PROVISIONING_GROUP_NAME:-cas-sage-users}" --member-id <USER_OBJECT_ID>
 ```
 
 Resolve `<USER_OBJECT_ID>` at run time, for example
@@ -450,9 +485,9 @@ the callback if it lacks it (see [Redirect URIs on a re-run](#redirect-uris-on-a
 
 ```bash
 BFF_CALLBACK_URI="https://<BFF_HOSTNAME>/<AUTH_CALLBACK_PATH>"
-BFF_APP_ID="$(az ad app list --filter "displayName eq 'cas-bff'" --query '[].appId' -o tsv)"
+BFF_APP_ID="$(az ad app list --filter "displayName eq '${BFF_APP_NAME}'" --query '[].appId' -o tsv)"
 if [ -z "$BFF_APP_ID" ]; then
-  BFF_APP_ID="$(az ad app create --display-name cas-bff \
+  BFF_APP_ID="$(az ad app create --display-name "${BFF_APP_NAME}" \
     --sign-in-audience AzureADMyOrg \
     --web-redirect-uris "$BFF_CALLBACK_URI" \
     --query appId -o tsv)"
@@ -531,10 +566,10 @@ design notes for how the discovery-and-registration leg is intercepted while
 ```bash
 # One argument per <MCP_CLIENT_REDIRECT_URI> entry, then the desktop loopback.
 MCP_REQUIRED_REDIRECTS=("<MCP_CLIENT_REDIRECT_URI entry>" "http://localhost/callback")
-MCP_CLIENT_APP_ID="$(az ad app list --filter "displayName eq 'cas-mcp-client'" \
+MCP_CLIENT_APP_ID="$(az ad app list --filter "displayName eq '${MCP_CLIENT_APP_NAME}'" \
   --query '[].appId' -o tsv)"
 if [ -z "$MCP_CLIENT_APP_ID" ]; then
-  MCP_CLIENT_APP_ID="$(az ad app create --display-name cas-mcp-client \
+  MCP_CLIENT_APP_ID="$(az ad app create --display-name "${MCP_CLIENT_APP_NAME}" \
     --sign-in-audience AzureADMyOrg \
     --public-client-redirect-uris "${MCP_REQUIRED_REDIRECTS[@]}" \
     --query appId -o tsv)"
@@ -674,7 +709,7 @@ as the script does. Run them as a script, not pasted into an interactive shell.
 
 One consequence is that a superseded URI stays registered. After `BFF_HOSTNAME`
 moves from the default ingress FQDN to the custom domain, for example, the old
-callback stays on `cas-bff` until it is removed.
+callback stays on the selected BFF registration until it is removed.
 
 ### Removing a redirect URI deliberately
 

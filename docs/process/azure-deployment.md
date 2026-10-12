@@ -316,10 +316,14 @@ across the SAGE surfaces and nothing more; the deploy identity is **not** made a
 owner of the SAGE registration and is granted no write or admin role. Run this
 after the [Entra app-registrations bootstrap](entra-app-registrations.md)
 ([Stage 0](cloud-deploy-stages.md)) has created the SAGE resource server, whose
-service principal owns the role:
+service principal owns the role. In this shell, first initialize the application
+names using the [environment-selection block](entra-app-registrations.md#environment-selection)
+with the same `ENTRA_APP_SUFFIX` used for that environment’s bootstrap. The
+provisioning group remains independently selected; its membership does not grant
+the deploy identity this application role.
 
 ```bash
-SAGE_APP_ID="$(az ad app list --filter "displayName eq 'sage-resource-server'" \
+SAGE_APP_ID="$(az ad app list --filter "displayName eq '${SAGE_APP_NAME}'" \
   --query '[].appId' -o tsv)"
 SAGE_SP_ID="$(az ad sp list --filter "appId eq '${SAGE_APP_ID}'" --query '[0].id' -o tsv)"
 SAGE_READER_ROLE_ID="$(az ad sp show --id "${SAGE_SP_ID}" \

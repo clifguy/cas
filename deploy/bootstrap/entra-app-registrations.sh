@@ -18,6 +18,19 @@
 # bffOidcClientId, and mcpClientId coordinates for the deployment parameter set.
 set -euo pipefail
 
+# A suffix selects an independent set of applications in a shared tenant.
+ENTRA_APP_SUFFIX="${ENTRA_APP_SUFFIX:-}"
+if [ -n "${ENTRA_APP_SUFFIX}" ] && ! (
+  export LC_ALL=C
+  [[ "${ENTRA_APP_SUFFIX}" =~ ^[A-Za-z0-9][A-Za-z0-9-]*$ ]]
+); then
+  echo "ERROR: ENTRA_APP_SUFFIX must start with an ASCII alphanumeric and contain only ASCII alphanumerics or hyphens." >&2
+  exit 1
+fi
+SAGE_APP_NAME="sage-resource-server${ENTRA_APP_SUFFIX:+-${ENTRA_APP_SUFFIX}}"
+BFF_APP_NAME="cas-bff${ENTRA_APP_SUFFIX:+-${ENTRA_APP_SUFFIX}}"
+MCP_CLIENT_APP_NAME="cas-mcp-client${ENTRA_APP_SUFFIX:+-${ENTRA_APP_SUFFIX}}"
+
 # Print the single value an `az ... list` call returns, or nothing when it
 # returns none; stop the run when it returns more than one. Callers pass an
 # exact OData filter -- `--display-name` matches by prefix, so a look-alike such
@@ -192,10 +205,10 @@ done <<<"$(unique_lines "${MCP_REQUIRED_INPUT[@]}" "http://localhost/callback")"
 : "${SAGE_PUBLIC_HOSTNAME:?set SAGE_PUBLIC_HOSTNAME to the public SAGE hostname (e.g. sage.<base-domain>)}"
 
 # 1. SAGE resource-server registration (lookup-then-create keeps it idempotent).
-SAGE_APP_ID="$(lookup_one "application named sage-resource-server" \
-  az ad app list --filter "displayName eq 'sage-resource-server'" --query '[].appId')"
+SAGE_APP_ID="$(lookup_one "application named ${SAGE_APP_NAME}" \
+  az ad app list --filter "displayName eq '${SAGE_APP_NAME}'" --query '[].appId')"
 if [ -z "${SAGE_APP_ID}" ]; then
-  SAGE_APP_ID="$(az ad app create --display-name sage-resource-server \
+  SAGE_APP_ID="$(az ad app create --display-name "${SAGE_APP_NAME}" \
     --sign-in-audience AzureADMyOrg --query appId -o tsv)"
 fi
 # Four identifier URIs, declared together (the flag is a declarative full-set
@@ -328,6 +341,7 @@ az rest --method PATCH \
 # gating step below assigns this same group to its own service principal;
 # lookup-then-create so whichever step runs first on a fresh tenant creates it,
 # the rest reconcile.
+# The access group is shared across environments unless explicitly overridden.
 PROVISIONING_GROUP_NAME="${PROVISIONING_GROUP_NAME:-cas-sage-users}"
 # The name is matched inside a quoted OData literal; a quote in it would end the
 # literal early and let the filter select some other group.
@@ -380,10 +394,10 @@ DEFAULT_ACCESS_APP_ROLE_ID="$(printf '0%.0s' {1..8})-$(printf '0%.0s' {1..4})-$(
 # redirect URIs it holds and gains the callback if it lacks it, so a hostname
 # change leaves the old callback in place until an operator removes it.
 BFF_CALLBACK_URI="https://${BFF_HOSTNAME}/${AUTH_CALLBACK_PATH}"
-BFF_APP_ID="$(lookup_one "application named cas-bff" \
-  az ad app list --filter "displayName eq 'cas-bff'" --query '[].appId')"
+BFF_APP_ID="$(lookup_one "application named ${BFF_APP_NAME}" \
+  az ad app list --filter "displayName eq '${BFF_APP_NAME}'" --query '[].appId')"
 if [ -z "${BFF_APP_ID}" ]; then
-  BFF_APP_ID="$(az ad app create --display-name cas-bff \
+  BFF_APP_ID="$(az ad app create --display-name "${BFF_APP_NAME}" \
     --sign-in-audience AzureADMyOrg \
     --web-redirect-uris "${BFF_CALLBACK_URI}" \
     --query appId -o tsv)"
@@ -418,10 +432,10 @@ ensure_group_gate "${BFF_SP_ID}" "${DEFAULT_ACCESS_APP_ROLE_ID}"
 # exactly the required set (the MCP_CLIENT_REDIRECT_URI entries and the
 # http://localhost/callback loopback); an existing one keeps every redirect URI
 # it holds and gains any required one it lacks.
-MCP_CLIENT_APP_ID="$(lookup_one "application named cas-mcp-client" \
-  az ad app list --filter "displayName eq 'cas-mcp-client'" --query '[].appId')"
+MCP_CLIENT_APP_ID="$(lookup_one "application named ${MCP_CLIENT_APP_NAME}" \
+  az ad app list --filter "displayName eq '${MCP_CLIENT_APP_NAME}'" --query '[].appId')"
 if [ -z "${MCP_CLIENT_APP_ID}" ]; then
-  MCP_CLIENT_APP_ID="$(az ad app create --display-name cas-mcp-client \
+  MCP_CLIENT_APP_ID="$(az ad app create --display-name "${MCP_CLIENT_APP_NAME}" \
     --sign-in-audience AzureADMyOrg \
     --public-client-redirect-uris "${MCP_REQUIRED_REDIRECTS[@]}" \
     --query appId -o tsv)"
