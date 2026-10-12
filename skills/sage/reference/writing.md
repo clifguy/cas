@@ -105,6 +105,21 @@ Edges on a predecessor still resolve from its successor through the version
 chain, so the new version showing no edge rows of its own is correct. Do not
 re-create or re-anchor them; that duplicates what the chain already resolves.
 
+If the document rests in a state that does not permit supersession, inspect
+the live transition contract. Use a supported transition, supersession and
+resting-state restoration only when the existing authorization explicitly
+covers those lifecycle effects. Otherwise stop for the missing decision; a
+refusal does not authorize changing lifecycle merely to make the call pass.
+Track each completed step and reconcile interruptions before proceeding, so
+a temporary state is never silently reported as the intended resting state.
+
+A completed predecessor can produce an active successor. Read the vault's allowed
+transitions before revising it; after successful terminal processing restore the
+intended resting state with its supported completion action and read it back.
+Preserving an already authorized resting state does not authorize a new closure
+judgment or reopening. A failed or interrupted pipeline must be reported, not
+silently completed merely to reproduce the predecessor's label.
+
 ### Guard every supersession
 
 The version check on a supersession is optional. Without it, a change made to
@@ -122,15 +137,20 @@ than passing a timestamp.
 A refused supersession is a finding, not a transient fault. Never retry it,
 not even with the current version the refusal reports.
 
-- `stale_chain_head`: the predecessor changed after your read. The refusal
-  names the predecessor and its current version, whether the change was a
-  patch, a lifecycle move or another supersession, so resolve the head with
-  `chain`. If the head is still the predecessor, another writer changed it;
-  report the current version. If the head has moved, another supersession
-  landed; report both heads. Stop either way.
+- `stale_chain_head`: the predecessor changed after your read, through a
+  patch, a lifecycle move or another supersession. Do not infer which from the
+  refusal's detail. Resolve the head with `chain`. If the head is still the
+  predecessor, another writer changed it: report its current version. If the
+  head has moved, another supersession landed: report both heads. Stop either
+  way.
 - `supersede_target_not_active` with the predecessor archived: another session
-  has most likely superseded it. Resolve the new head with `chain`, then stop
-  and report both heads.
+  has most likely superseded it. Resolve the head with `chain`, then stop and
+  report both heads. If `chain` shows no successor, the predecessor was
+  archived in place, and the paragraphs above on states that do not permit
+  supersession govern.
+
+A forced re-ingest is for pipeline recovery. Do not combine it with a
+predecessor: the version check does not apply on that path.
 
 Never re-point `predecessor_id` at a new head without reading it. Your edit
 was made against the old head, and pointing it at the new one would overwrite
@@ -138,21 +158,6 @@ the change you never saw. Rebasing means reading the new head, reapplying the
 intended change to it, and superseding with that read's token. It is a new
 write, made only when the caller or the governing project procedure authorizes
 it.
-
-If the document rests in a state that does not permit supersession, inspect
-the live transition contract. Use a supported transition, supersession and
-resting-state restoration only when the existing authorization explicitly
-covers those lifecycle effects. Otherwise stop for the missing decision; a
-refusal does not authorize changing lifecycle merely to make the call pass.
-Track each completed step and reconcile interruptions before proceeding, so
-a temporary state is never silently reported as the intended resting state.
-
-A completed predecessor can produce an active successor. Read the vault's allowed
-transitions before revising it; after successful terminal processing restore the
-intended resting state with its supported completion action and read it back.
-Preserving an already authorized resting state does not authorize a new closure
-judgment or reopening. A failed or interrupted pipeline must be reported, not
-silently completed merely to reproduce the predecessor's label.
 
 ## Editing a document that is already in the vault
 

@@ -27,7 +27,8 @@ description can state.
    authorization for the same target and action; ask when it is missing or
    ambiguous. See `reference/writing.md`.
 3. **Look for a predecessor before every ingest.** Adding a revised document
-   without linking it forks the record, silently and permanently.
+   without linking it forks the record, silently and permanently. Guard the
+   supersession with the head's version token; see `reference/writing.md`.
 4. **Read a tool's description before supplying a parameter you have not
    used.** They are long because they are complete.
 5. **Read a document with the projection call.** Never reconstruct one by
