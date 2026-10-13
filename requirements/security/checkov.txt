@@ -525,9 +525,9 @@ charset-normalizer==3.5.2 \
     # via
     #   checkov
     #   requests
-checkov==3.3.22 \
-    --hash=sha256:53fa6ce894afcb17bfc448aad0f6100abb32a798fe17bdeed553b5ae6478daf0 \
-    --hash=sha256:f77b44e9264d53cbbf2976eddf6b2b17d05a912294ca40f2a7feef4b01d61a76
+checkov==3.3.26 \
+    --hash=sha256:3b4157e4a308ed72e86352b65331045d7b8172f7a4492741db85de6cf1a49b42 \
+    --hash=sha256:90df926e9acf102452ba28bebe910738d76d84b5ce5974475fadae4bc319ddcf
     # via -r requirements/security/checkov.in
 click==8.5.0 \
     --hash=sha256:255bc9599cf7748b4b1a446ccc735421bd08a2ae529a8b88597d3de5664ee360 \
