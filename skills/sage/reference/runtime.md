@@ -2,9 +2,12 @@
 
 This skill uses plain Markdown and relative references; it does not depend on
 a callable Skill tool, Claude-only shell APIs, assumed PlanMode transitions,
-or a fixed filesystem root. Load the complete selected folder, including
-writing and transfer references, and use the current host's available tools.
-Do not silently select an older same-named installation on another host.
+or a fixed filesystem root. Install the complete folder so every relative
+reference resolves; a partial installation is not a valid consumer. Read a
+reference only when [the entry point](../SKILL.md) routes the task to it: a
+read-only session that moves no bytes needs neither the writing nor the
+transfer reference. Use the current host's available tools. Do not silently
+select an older same-named installation on another host.
 
 Resolve the requested deployment using configured endpoints and live vault
 inventory. Connected local MCP tools do not imply hosted access. When a vault
