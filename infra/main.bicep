@@ -46,8 +46,8 @@ param mcpClientId string
 @description('Application (client) id of the deploy identity CI signs in as (supplied at deploy time). SAGE names it as the CI client in its client map; empty leaves it unnamed.')
 param deployClientId string = ''
 
-@description('Claude model identifier the hosted abstraction provider generates abstracts with.')
-param abstractionModel string = 'claude-haiku-4-5'
+@description('Claude model identifier the hosted abstraction provider generates abstracts with. The only declared default; a scheduled check fails when a newer Haiku exists or this one stops resolving.')
+param abstractionModel string = 'claude-haiku-5-5'
 
 @description('Enable Key Vault purge protection. Off by default; the setting is irreversible once applied and vault-wide, so enable it per tenant only where every workload sharing the vault can accept a deletion block for the full soft-delete window.')
 param enableKeyVaultPurgeProtection bool = false

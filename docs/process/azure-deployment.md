@@ -34,6 +34,28 @@ documents the full parameter surface; the deploy supplies each value from an
 environment-scoped variable. Adding a tenant is authoring an Environment and its
 variable set, not editing the stack.
 
+### Hosted abstraction model
+
+The cloud profile generates abstracts with the Claude model named by the
+`abstractionModel` default in [`infra/main.bicep`](../../infra/main.bicep). It
+is the only declared default: the container-apps module requires the value from
+its caller, and no tenant overrides it. Moving to another model is a one-line
+change there, and existing abstracts are not regenerated; each document picks up
+the new model the next time it is ingested or revised.
+
+Undated model ids follow updates only within their own generation, so the
+scheduled workflow
+[`abstraction-model-drift.yml`](../../.github/workflows/abstraction-model-drift.yml)
+runs `scripts.check_abstraction_model` daily. It fails when a Haiku newer than
+the pin exists, or when the pin no longer resolves (the Models API reports no
+retirement dates, so that is how a retired model shows). A failing run is the
+prompt to bump the pin.
+
+The check reads the Models API with a key held as the repository secret
+`ANTHROPIC_MODELS_API_KEY`, dedicated to this read and separate from the
+production abstraction key in Key Vault. Until that secret exists the run fails
+rather than skipping.
+
 ## Deployment entry point
 
 The authoritative deploy is **operator-triggered, per tenant, from committed

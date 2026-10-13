@@ -104,6 +104,15 @@ class _FakeTextBlock:
         self.text = text
 
 
+class _FakeThinkingBlock:
+    """A thinking block as current models return it by default: no text."""
+
+    def __init__(self) -> None:
+        self.type = "thinking"
+        self.thinking = ""
+        self.signature = "sig"
+
+
 class _FakeResponse:
     def __init__(self, blocks: list) -> None:
         self.content = blocks
@@ -159,6 +168,7 @@ def _install_fake_anthropic(
     retrieve_gate: asyncio.Event | None = None,
     create_error: Exception | None = None,
     token_counter=_even_counter,
+    leading_thinking: bool = False,
 ) -> _Recorder:
     """Patch ``anthropic.AsyncAnthropic`` with a recording fake.
 
@@ -178,6 +188,9 @@ def _install_fake_anthropic(
     what a condition that clears between calls looks like. ``retrieve_gate``
     holds each lookup inside the call until the test releases it, so two
     callers can be held in discovery at once.
+
+    ``leading_thinking`` puts an empty thinking block ahead of the text, the
+    shape a model that thinks by default returns.
     """
     recorder = _Recorder(response_text, token_counter)
 
@@ -186,7 +199,10 @@ def _install_fake_anthropic(
             recorder.create_calls.append(kwargs)
             if create_error is not None:
                 raise create_error
-            return _FakeResponse([_FakeTextBlock(recorder.response_text)])
+            blocks = [_FakeTextBlock(recorder.response_text)]
+            if leading_thinking:
+                blocks.insert(0, _FakeThinkingBlock())
+            return _FakeResponse(blocks)
 
         async def count_tokens(self, **kwargs):
             recorder.count_calls.append(kwargs)
@@ -816,3 +832,47 @@ async def test_anth_023_concurrent_first_abstracts_share_one_discovery(monkeypat
     assert results == ["abstract", "abstract"]
     assert len(recorder.retrieve_calls) == 1
     assert len(recorder.count_calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_anth_024_request_disables_thinking_and_sends_no_sampling_params(monkeypatch):
+    """The generation request turns thinking off and leaves sampling alone.
+
+    The abstract's ``max_tokens`` is a small, density-proportional budget.
+    Current Haiku models think by default, and thinking is charged against
+    that same budget, so a request that left thinking on could spend the
+    whole budget before any text and fail as empty output. Those models also
+    reject non-default sampling parameters outright.
+
+    Anti-coincidental-pass: the assertion is on the recorded request, so a
+    provider that dropped the ``thinking`` argument, or sent it in any other
+    shape, fails here; and the absence checks fail on any sampling parameter
+    added later.
+    """
+    recorder = _install_fake_anthropic(monkeypatch, response_text="card")
+    provider = AnthropicAbstractionProvider(model_id="claude-haiku-5-5")
+
+    await provider.generate_abstract("text", max_tokens=150, doc_type=None)
+
+    call = recorder.create_calls[0]
+    assert call["thinking"] == {"type": "disabled"}
+    for sampling in ("temperature", "top_p", "top_k"):
+        assert sampling not in call, f"{sampling} must not be sent"
+    assert call["messages"][-1]["role"] == "user", "no assistant prefill"
+
+
+@pytest.mark.asyncio
+async def test_anth_025_abstract_read_past_a_leading_thinking_block(monkeypatch):
+    """A response that opens with a thinking block still yields its text.
+
+    Regression pin, not a red test: the provider already selects content
+    blocks by type. It keeps that property from being lost to a positional
+    read, which would return the thinking block's empty text and fail the
+    abstract as empty output.
+    """
+    _install_fake_anthropic(monkeypatch, response_text="The abstract.", leading_thinking=True)
+    provider = AnthropicAbstractionProvider(model_id="claude-haiku-5-5")
+
+    result = await provider.generate_abstract("text", max_tokens=150, doc_type=None)
+
+    assert result == "The abstract."
