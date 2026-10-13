@@ -159,6 +159,16 @@ def test_assess_older_pin_names_both_ids() -> None:
     assert _NEW_HAIKU.id in findings[0]
 
 
+def test_assess_current_alias_pin_compares_on_resolved_id() -> None:
+    """D2b (control): an alias pin whose resolved, dated id is the newest
+    Haiku is current. The alias itself never appears in the listing, so a
+    comparison on the pin's spelling rather than its resolved id would report
+    a stale pin here."""
+    dated = ModelEntry("claude-haiku-6-0-20270101", datetime(2027, 1, 1, tzinfo=UTC))
+
+    assert assess("claude-haiku-6-0", dated, [dated, _NEW_HAIKU, _OLD_HAIKU]) == []
+
+
 def test_assess_orders_by_creation_date_not_list_position() -> None:
     """D3: the newest Haiku is chosen by ``created_at``; listing the older one
     first must not make it the newest."""
