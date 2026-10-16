@@ -1,0 +1,68 @@
+name: Abstraction model drift
+
+# Compares the cloud profile's hosted abstraction model, pinned once as the
+# `abstractionModel` default in infra/main.bicep, against the Anthropic Models
+# API, and fails when a newer Haiku exists or the pin no longer resolves. An
+# undated model id follows updates only within its own generation, so without
+# this read a newer generation would never be noticed; with it, each move is a
+# deliberate one-line change. Divergence surfaces as a failing run rather than
+# as an issue, as in ruleset-drift.yml.
+#
+# The read needs an Anthropic API key, held as the repository secret
+# ANTHROPIC_MODELS_API_KEY and bound only to the step that runs the check. It
+# is a key dedicated to this read, not the production abstraction key. A
+# missing secret fails the run rather than skipping it, so an unprovisioned
+# check cannot report green. See docs/process/azure-deployment.md.
+
+on:
+  schedule:
+    - cron: "0 8 * * *"  # daily 08:00 UTC; new models ship rarely, but a daily read keeps a retired pin from standing long
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  versions:
+    # Shared-component version manifest as job outputs, the same mechanism the
+    # other workflows use. See `docs/process/shared-version-parity.md`. The reads
+    # are assignments, so `set -e` fails this job on a manifest path that does
+    # not resolve.
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      python: ${{ steps.declared.outputs.python }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: versions.json
+          sparse-checkout-cone-mode: false
+      - id: declared
+        run: |
+          set -euo pipefail
+          python="$(jq -er .python.version versions.json)"
+          echo "python=$python" >> "$GITHUB_OUTPUT"
+
+  compare:
+    needs: versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # `prune-cache: true` is pinned for the cache-budget reason recorded in
+      # ruleset-drift.yml.
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: true
+          prune-cache: true
+          python-version: ${{ needs.versions.outputs.python }}
+      - run: uv sync --locked
+      - run: .venv/bin/python -m scripts.check_abstraction_model
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_MODELS_API_KEY }}

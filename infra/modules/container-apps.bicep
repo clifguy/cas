@@ -100,8 +100,8 @@ param casHostname string
 @description('Resource id of the environment wildcard certificate the BFF custom domain binds.')
 param casCertificateId string
 
-@description('Claude model identifier the hosted abstraction provider generates abstracts with.')
-param abstractionModel string = 'claude-haiku-4-5'
+@description('Claude model identifier the hosted abstraction provider generates abstracts with. Supplied by main.bicep, which declares the only default.')
+param abstractionModel string
 
 @description('Tenant id that issues the tokens the cloud profile validates.')
 param tenantId string = subscription().tenantId

@@ -40,7 +40,7 @@ vault_source_backend: filesystem
 abstraction:
   # Dispatch key. `local-mlx` loads the local MLX provider (Qwen3) with the
   # model identifier below. `anthropic` loads the hosted Claude provider
-  # (model below = a Claude model id, e.g. claude-haiku-4-5; the API key is
+  # (model below = a Claude model id, e.g. claude-haiku-5-5; the API key is
   # read from ANTHROPIC_API_KEY) -- the option that lets this stack run on a
   # non-Apple target. `stub` opts the whole stack out of semantic abstract
   # generation (test/dev only).

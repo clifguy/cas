@@ -336,9 +336,13 @@ class AnthropicAbstractionProvider(AbstractionProvider):
 
         client = self._ensure_client()
         try:
+            # Thinking is off: max_tokens is the abstract's own small budget,
+            # and models that think by default charge their thinking against
+            # it, which can exhaust it before any text is written.
             response = await client.messages.create(
                 model=self._model_id,
                 max_tokens=max_tokens,
+                thinking={"type": "disabled"},
                 system=system_prompt,
                 messages=[{"role": "user", "content": wrap_source_document(text)}],
             )
