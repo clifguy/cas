@@ -315,3 +315,57 @@ def test_allowlist_entry_validator_rejects_malformed(entry: Any, expect_valid: b
     assert bool(violations) is not expect_valid, (
         f"entry {entry!r}: expected valid={expect_valid}, got violations={violations}."
     )
+
+
+# --- scope premise of the asteval acceptance ---------------------------------
+
+# The accepted asteval advisories are justified by asteval reaching the repo
+# only through the hash-locked checkov install used by the CI IaC scan. The
+# allowlist suppresses by advisory id alone, whatever manifest an alert names,
+# so if asteval entered the runtime closure the same entries would silently
+# suppress an exposure their reasons do not cover.
+ASTEVAL_ADVISORIES: Final[frozenset[str]] = frozenset(
+    {"GHSA-89v8-rhwq-hf77", "GHSA-9w56-46f6-3qhx"}
+)
+CHECKOV_REQUIREMENTS: Final[Path] = REPO_ROOT / "requirements" / "security" / "checkov.txt"
+
+
+def _python_dependency_manifests() -> list[Path]:
+    """Every tracked Python dependency declaration: the project lock and
+    metadata, and each requirements input or compiled hashfile."""
+    manifests = [REPO_ROOT / "uv.lock", REPO_ROOT / "pyproject.toml"]
+    manifests += sorted((REPO_ROOT / "requirements").rglob("*.txt"))
+    manifests += sorted((REPO_ROOT / "requirements").rglob("*.in"))
+    return manifests
+
+
+def _names_asteval(path: Path) -> bool:
+    return re.search(r"\basteval\b", path.read_text(encoding="utf-8"), re.IGNORECASE) is not None
+
+
+def test_asteval_acceptance_premise_holds() -> None:
+    """W7: while the asteval advisories are accepted, asteval is declared by
+    the checkov hashfile and by no other Python dependency manifest.
+
+    Both halves matter. A runtime manifest naming asteval means the accepted
+    entries now hide an alert they were never justified for. The checkov
+    hashfile no longer naming it means the entries are stale and should be
+    removed rather than left to suppress a future, unrelated alert.
+    """
+    if not ASTEVAL_ADVISORIES & load_allowlist(ALLOWLIST):
+        pytest.skip("no asteval advisory is accepted")
+    manifests = _python_dependency_manifests()
+    assert REPO_ROOT / "uv.lock" in manifests and CHECKOV_REQUIREMENTS in manifests
+    assert _names_asteval(CHECKOV_REQUIREMENTS), (
+        f"{CHECKOV_REQUIREMENTS.relative_to(REPO_ROOT)} no longer declares asteval; "
+        "remove the accepted asteval entries from the triage allowlist."
+    )
+    elsewhere = [
+        str(path.relative_to(REPO_ROOT))
+        for path in manifests
+        if path != CHECKOV_REQUIREMENTS and _names_asteval(path)
+    ]
+    assert not elsewhere, (
+        f"asteval is declared outside the checkov install ({elsewhere}); the accepted "
+        "asteval advisories in the triage allowlist no longer cover that exposure."
+    )

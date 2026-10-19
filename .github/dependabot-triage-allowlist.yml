@@ -12,4 +12,16 @@
 # accepted:
 #   - ghsa_id: GHSA-xxxx-xxxx-xxxx
 #     reason: fixable but the bump is deferred pending an upstream regression fix
-accepted: []
+accepted:
+  - ghsa_id: GHSA-89v8-rhwq-hf77
+    reason: >-
+      asteval reaches the repo only through checkov's exact asteval==1.0.6 pin
+      (requirements/security/checkov.txt). Checkov uses asteval only for
+      Terraform variable rendering, and the CI scan runs --framework arm against
+      the repo's own compiled Bicep template, so the sandbox is never fed input.
+      Revisit when a checkov release accepts asteval>=1.0.9.
+  - ghsa_id: GHSA-9w56-46f6-3qhx
+    reason: >-
+      Same exposure as GHSA-89v8-rhwq-hf77: asteval arrives only through
+      checkov's exact pin, and the ARM-only CI scan never calls its
+      Interpreter. Revisit when a checkov release accepts asteval>=1.0.9.
