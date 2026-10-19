@@ -57,7 +57,7 @@ SECURITY_FLOORS: Final[dict[str, tuple[str, str]]] = {
     "aiohttp": ("3.14.3", "GHSA-cq5v-8q36-5273"),
     "anyio": ("4.14.2", "GHSA-82r6-8w77-94w6"),
     "cryptography": ("50.0.0", "GHSA-g6cj-pr64-35w5"),
-    "mcp": ("1.28.1", "GHSA-vj7q-gjh5-988w"),
+    "mcp": ("1.30.0", "GHSA-84m7-p3x7-pcfv"),
     "pyjwt": ("2.15.0", "GHSA-42vr-xj54-vc7v"),
     "pypdf": ("6.19.0", "GHSA-php9-fj8v-98fj"),
     "sentence-transformers": ("5.6.0", "GHSA-jhr6-gm9c-rqjv"),
