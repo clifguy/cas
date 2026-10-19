@@ -27,7 +27,7 @@ dependencies = [
     # unknown-kwarg rejection, CAS-ADR-037). Crossing it is a ModuleNotFoundError
     # at import, so the bound turns a future unscoped resolve across 2.0 into a
     # reviewable lock-time conflict instead of a broken build. Resolves to
-    # 1.28.1 today (no version move).
+    # 1.30.0 today.
     "mcp>=1.0,<2",
     "sentence-transformers>=5.5.1",
     # Transitive via sentence-transformers / mlx-lm, but pinned directly to hold a
