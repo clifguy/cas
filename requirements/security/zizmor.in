@@ -2,4 +2,4 @@
 # Regenerate zizmor.txt after changing this pin:
 #   uv pip compile requirements/security/zizmor.in --generate-hashes --universal \
 #     --python-version <versions.json python> -o requirements/security/zizmor.txt
-zizmor==1.30.1
+zizmor==1.31.1
