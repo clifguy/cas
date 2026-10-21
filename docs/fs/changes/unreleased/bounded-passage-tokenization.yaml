@@ -1,0 +1,20 @@
+classification: minor
+category: [caller-adaptation]
+summary: >-
+  Bounds passage-sizing and model-tokenizer inputs and moves passage construction
+  off the request loop. Oversized combined embedding inputs and semantic queries
+  now fail before tokenization. Security-exposure exemption: the previously
+  unbounded path can exhaust the shared process and repeatedly crash recovery.
+for_callers: >-
+  Ordinary large sources are divided without losing projected text. Each combined
+  heading-and-passage embedding input and each semantic query must fit the
+  32,768-character tokenizer work bound. Exceptionally large heading context or
+  document surfaces fail processing explicitly; shorten or divide that input
+  before retrying. This security-exposure fix applies immediately because serving
+  the unbounded path alongside it preserves a process-exhaustion weakness.
+exemption:
+  kind: security-exposure
+  reason: >-
+    The unbounded model-tokenizer path was reproduced as an OOM-killed process
+    inside a 4 GiB container. Retaining that path during a deprecation window
+    leaves shared-service denial of service and crash-loop recovery reachable.

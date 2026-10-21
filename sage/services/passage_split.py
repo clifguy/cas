@@ -14,9 +14,15 @@ concatenation. Sections are joined to one another as they always were.
 from __future__ import annotations
 
 import re
+from bisect import bisect_right
 from collections.abc import Callable, Iterable, Sequence
+from itertools import accumulate
 
 from sage.adapters.interfaces import Chunk
+from sage.adapters.tokenization import (
+    MAX_TOKENIZATION_CHARACTERS,
+    require_bounded_tokenizer_length,
+)
 
 # The separator between sections in reconstructed text. A section's own
 # passages are concatenated, because a division need not fall where this
@@ -41,13 +47,19 @@ def embedding_input(heading_path: str, content: str) -> str:
     its section's context even where the passage does not open with the heading
     line.
     """
+    require_bounded_tokenizer_length(
+        len(heading_path) + (len(SECTION_SEPARATOR) if heading_path else 0) + len(content)
+    )
     return f"{heading_path}{SECTION_SEPARATOR}{content}" if heading_path else content
 
 
 def split_passage(text: str, fits: Callable[[str], bool]) -> list[str]:
     """Divide ``text`` into consecutive pieces that each satisfy ``fits``.
 
-    Returns ``[text]`` when the whole fits. Otherwise the text is cut into
+    Returns ``[text]`` when the whole fits within the finite character work
+    bound. Larger text is divided even if a tokenizer could collapse it (for
+    example a long WordPiece word represented by one [UNK]). No text is lost.
+    Otherwise the text is cut into
     units -- paragraphs, then lines within a paragraph too long to fit, then
     code points within a line too long to fit -- and the units are packed
     greedily, each piece taking the longest run of units that fits. A unit is
@@ -68,9 +80,13 @@ def split_passage(text: str, fits: Callable[[str], bool]) -> list[str]:
     itself tested, so a predicate that is not strictly monotone can shorten
     pieces but never admit one that does not fit.
     """
-    if fits(text):
+
+    def bounded_fits(candidate: str) -> bool:
+        return len(candidate) <= MAX_TOKENIZATION_CHARACTERS and fits(candidate)
+
+    if bounded_fits(text):
         return [text]
-    return _pack(_units(text, fits, 0), fits)
+    return _pack(_units(text, bounded_fits, 0), bounded_fits)
 
 
 def _units(text: str, fits: Callable[[str], bool], level: int) -> list[str]:
@@ -95,7 +111,10 @@ def _code_point_units(text: str, fits: Callable[[str], bool]) -> list[str]:
     units: list[str] = []
     start = 0
     while start < len(text):
-        length = _longest_fitting(len(text) - start, lambda n, s=start: fits(text[s : s + n]))
+        length = _longest_fitting(
+            min(len(text) - start, MAX_TOKENIZATION_CHARACTERS),
+            lambda n, s=start: fits(text[s : s + n]),
+        )
         end = start + length
         if text[end - 1 : end + 1] == "\r\n":
             end += 1 if length == 1 else -1
@@ -107,11 +126,15 @@ def _code_point_units(text: str, fits: Callable[[str], bool]) -> list[str]:
 def _pack(units: Sequence[str], fits: Callable[[str], bool]) -> list[str]:
     """Join consecutive units into the longest fitting pieces."""
     pieces: list[str] = []
+    offsets = list(accumulate(map(len, units), initial=0))
     start = 0
     while start < len(units):
-        count = _longest_fitting(
-            len(units) - start, lambda n, s=start: fits("".join(units[s : s + n]))
-        )
+        # Do not build an enormous joined candidate just to reject it. Prefix
+        # lengths bound the join before allocation; one exceptional indivisible
+        # CR LF pair still makes progress under even the smallest budget.
+        stop = bisect_right(offsets, offsets[start] + MAX_TOKENIZATION_CHARACTERS) - 1
+        available = max(1, stop - start)
+        count = _longest_fitting(available, lambda n, s=start: fits("".join(units[s : s + n])))
         pieces.append("".join(units[start : start + count]))
         start += count
     return pieces
