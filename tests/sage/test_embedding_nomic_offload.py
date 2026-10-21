@@ -115,3 +115,74 @@ async def test_embed_empty_input_creates_no_thread(provider):
 
     assert await provider.embed([]) == []
     assert provider._executor is None
+
+
+@pytest.mark.parametrize("first", ["encode", "count"])
+async def test_sizing_and_inference_share_tokenizer_exclusion(provider, first):
+    """The fast tokenizer's mutable truncation state cannot be borrowed twice.
+
+    Hold either real provider operation inside the model/tokenizer boundary,
+    then launch the other on its production worker shape. The second must wait
+    without blocking the event loop; both operations must subsequently finish.
+    """
+    entered = threading.Event()
+    release = threading.Event()
+    second_started = threading.Event()
+    calls = []
+
+    class Model:
+        def use(self, operation):
+            calls.append(operation)
+            if operation == first:
+                entered.set()
+                release.wait(timeout=2.0)
+
+        def tokenizer(self, text):
+            self.use("count")
+            return {"input_ids": [1, 2, 3]}
+
+        def encode(self, texts, **kwargs):
+            self.use("encode")
+            return np.zeros((len(texts), EXPECTED_DIMENSIONS), dtype=np.float32)
+
+    provider._model = Model()
+
+    original_sync = provider._embed_sync
+
+    def observed_sync(texts):
+        if first == "count":
+            second_started.set()
+        return original_sync(texts)
+
+    provider._embed_sync = observed_sync
+
+    async def run(operation, *, second=False):
+        if operation == "encode":
+            return await provider.embed(["inference"])
+
+        def count():
+            if second:
+                second_started.set()
+            return provider.count_tokens("sizing")
+
+        return await asyncio.to_thread(count)
+
+    first_task = asyncio.create_task(run(first))
+    second_task = None
+    try:
+        await asyncio.wait_for(_wait_until(entered.is_set), timeout=1.0)
+        second_task = asyncio.create_task(
+            run("count" if first == "encode" else "encode", second=True)
+        )
+        await asyncio.wait_for(_wait_until(second_started.is_set), timeout=1.0)
+        await asyncio.sleep(0.05)
+        assert not second_task.done(), "sizing and inference borrowed the tokenizer concurrently"
+        assert calls == [first]
+        assert not first_task.done(), "the first operation must still be gated"
+    finally:
+        release.set()
+        outcomes = await asyncio.gather(
+            first_task, *([second_task] if second_task else []), return_exceptions=True
+        )
+    assert not any(isinstance(outcome, BaseException) for outcome in outcomes), outcomes
+    assert calls == [first, "count" if first == "encode" else "encode"]

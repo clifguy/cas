@@ -36,3 +36,11 @@ retain their own transport contracts.
 
 The catalog is regenerated with `python -m scripts.dump_mcp_catalog --write`.
 These schema declarations preserve existing payloads, statuses and read markers.
+
+Semantic embedding queries exceeding the tokenizer work limit return the typed
+`semantic_query_too_long` 400 refusal. Its numeric `max_characters` and
+`actual_characters` details count Unicode code points without echoing query
+content. The message explains how to shorten or split the query. The same
+refusal can arise from an assertion run by `verify_vault_retrieval`; correct
+that assertion's query in its configured file. Keyword queries do not invoke
+embedding and do not use this tokenizer limit.

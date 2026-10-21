@@ -40,11 +40,13 @@ from sage.adapters.interfaces import (
     SearchResult,
     StorageQueryError,
 )
+from sage.adapters.tokenization import TokenizerInputTooLargeError
 from sage.api.errors import (
     DocumentNotFoundError,
     HeadingNotFoundError,
     MissingFieldError,
     PipelineIncompleteError,
+    SemanticQueryTooLongError,
     StorageQueryFailedError,
     Tier3SchemaViolationError,
 )
@@ -1759,7 +1761,10 @@ class RetrievalService:
         fetch_limit = self._fetch_limit(request)
 
         with phases.phase("embed"):
-            embeddings = await self._embedding.embed([request.query])
+            try:
+                embeddings = await self._embedding.embed([request.query])
+            except TokenizerInputTooLargeError as exc:
+                raise SemanticQueryTooLongError(exc.max_characters, exc.actual_characters) from exc
             query_embedding = embeddings[0]
 
         with phases.phase("filter_resolution"):

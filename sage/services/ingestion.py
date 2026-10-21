@@ -127,6 +127,7 @@ from sage.services.identifier_mention_inference import infer_identifier_mentions
 from sage.services.identity import generate_document_id
 from sage.services.metadata import current_version
 from sage.services.passage_split import (
+    MAX_TOKENIZATION_CHARACTERS,
     embedding_input,
     group_sections,
     join_passages,
@@ -241,6 +242,22 @@ async def _run_projection(
 
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(_projection_executor(), context.run, project)
+
+
+# Passage sizing shares a process-wide single worker across vaults. Neither a
+# fresh ingest nor startup/migration work can run several tokenizers at once.
+# Keep this separate from projection and inference so each expensive stage has
+# its own bounded concurrency and cannot block lightweight requests.
+_PASSAGE_EXECUTOR: ThreadPoolExecutor | None = None
+
+
+async def _run_passage_work(work: Callable[[], list[Chunk]]) -> list[Chunk]:
+    """Run blocking passage construction off the request loop, one at a time."""
+    global _PASSAGE_EXECUTOR
+    if _PASSAGE_EXECUTOR is None:
+        _PASSAGE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-passage")
+    context = contextvars.copy_context()
+    return await asyncio.get_running_loop().run_in_executor(_PASSAGE_EXECUTOR, context.run, work)
 
 
 @dataclass
@@ -2396,7 +2413,9 @@ class IngestionService:
         # live on the document surface (CAS-ADR-049), not inlined into
         # chunk[0].
         doc = await self._store.get_document(document_id)
-        body_chunks = self._chunk_projection(document_id, projection)
+        body_chunks = await _run_passage_work(
+            lambda: self._chunk_projection(document_id, projection)
+        )
 
         # Stamp document-level scalars on body chunks for content-store
         # pre-filtering. doc_type, lifecycle_status, and project are
@@ -3726,8 +3745,11 @@ class IngestionService:
             # divides a section into slivers, each embedded as mostly the same
             # path, and past the bound into a passage per code point. The
             # section stays whole instead.
-            room = self._embedding.max_input_tokens - self._embedding.count_tokens(
-                embedding_input(heading_path, "")
+            room = (
+                self._embedding.max_input_tokens
+                - self._embedding.count_tokens(embedding_input(heading_path, ""))
+                if len(heading_path) + (2 if heading_path else 0) <= MAX_TOKENIZATION_CHARACTERS
+                else 0
             )
             crowded = room < self._embedding.max_input_tokens // 4
             pieces = [content] if crowded else split_passage(content, fits)
@@ -3754,6 +3776,14 @@ class IngestionService:
         bound = self._embedding.max_input_tokens
 
         def fits(piece: str) -> bool:
+            # Check character lengths before joining or encoding. UTF-8 is at
+            # most four bytes per code point, so every actual tokenizer input
+            # and its encoding allocations have a finite bound.
+            if (
+                len(heading_path) + (2 if heading_path else 0) + len(piece)
+                > MAX_TOKENIZATION_CHARACTERS
+            ):
+                return False
             text = embedding_input(heading_path, piece)
             if len(text.encode("utf-8")) + 2 <= bound:
                 return True
@@ -3806,9 +3836,11 @@ class IngestionService:
                 return False
             stored = await self._content_store.get_all_chunks(document_id)
             sections = group_sections(stored)
-            divided = self._passages_for_sections(
-                document_id,
-                [(section[0].heading_path, section_text(section)) for section in sections],
+            divided = await _run_passage_work(
+                lambda: self._passages_for_sections(
+                    document_id,
+                    [(section[0].heading_path, section_text(section)) for section in sections],
+                )
             )
             if [(c.heading_path, c.content) for c in divided] == [
                 (c.heading_path, c.content) for c in stored
@@ -4000,7 +4032,7 @@ class IngestionService:
             return await self._preamble_skipped(
                 document_id, adapter.VERSION, "source differs from the one its passages hold"
             )
-        fresh = self._chunk_projection(document_id, projection)
+        fresh = await _run_passage_work(lambda: self._chunk_projection(document_id, projection))
 
         async with self._locks.lock(document_id):
             # Re-read under the lock: a title edit that landed while the source

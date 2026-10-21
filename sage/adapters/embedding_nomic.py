@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import threading
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from sage.adapters.interfaces import EmbeddingProvider
+from sage.adapters.tokenization import require_bounded_tokenizer_input
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +31,10 @@ EXPECTED_DIMENSIONS = 768
 # is truncated. nomic's primary training context; the model's default of 8192
 # produces attention matrices 16x larger.
 MAX_INPUT_TOKENS = 2048
+
+# Construction is guarded too: __new__-based test providers and concurrent first
+# users must obtain the same provider-local lock without relying on the GIL.
+_TOKENIZER_LOCK_CREATION_LOCK = threading.Lock()
 
 
 @dataclass(frozen=True)
@@ -290,13 +296,25 @@ class NomicEmbeddingProvider(EmbeddingProvider):
     def max_input_tokens(self) -> int:
         return MAX_INPUT_TOKENS
 
+    def _tokenizer_work_lock(self) -> threading.Lock:
+        """Share mutable tokenizer state between sizing and inference workers."""
+        with _TOKENIZER_LOCK_CREATION_LOCK:
+            if not hasattr(self, "_tokenizer_lock"):
+                self._tokenizer_lock = threading.Lock()
+            return self._tokenizer_lock
+
     def count_tokens(self, text: str) -> int:
         """Count as ``encode`` does: WordPiece tokens plus the two special tokens.
 
         A WordPiece token never spans less than one character, so the count
         never exceeds the UTF-8 byte length plus two.
         """
-        return len(self._model.tokenizer(text)["input_ids"])
+        require_bounded_tokenizer_input(text)
+        # The fast tokenizer changes its truncation state for each call. The
+        # passage worker and inference worker must not borrow it concurrently.
+        # Production sizing calls run off-loop, so waiting does not stop requests.
+        with self._tokenizer_work_lock():
+            return len(self._model.tokenizer(text)["input_ids"])
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts. Returns L2-normalized vectors.
@@ -313,6 +331,12 @@ class NomicEmbeddingProvider(EmbeddingProvider):
         """
         if not texts:
             return []
+        # Model truncation caps inference, but its tokenizer still allocates
+        # against the original text. Crowded-heading exceptions and other
+        # callers must fail through the existing pipeline failure path rather
+        # than materializing unbounded tokenizer state or silently clipping.
+        for text in texts:
+            require_bounded_tokenizer_input(text)
 
         if self._executor is None:
             self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-embedding")
@@ -325,7 +349,8 @@ class NomicEmbeddingProvider(EmbeddingProvider):
         batch_size=8 bounds per-batch memory for long sequences (attention
         scales quadratically with sequence length).
         """
-        embeddings = self._model.encode(texts, normalize_embeddings=True, batch_size=8)
+        with self._tokenizer_work_lock():
+            embeddings = self._model.encode(texts, normalize_embeddings=True, batch_size=8)
         return [vec.tolist() for vec in embeddings]
 
 
@@ -334,8 +359,8 @@ class NomicEmbeddingProvider(EmbeddingProvider):
 # initialize_services() in sage/mcp_init.py used to construct a fresh
 # NomicEmbeddingProvider per vault; with N discovered vaults, the server
 # paid N model loads (~270 MB each) and emitted N huggingface INFO dumps
-# at startup. nomic-embed-text is stateless inference and shared safely
-# across vaults, so a single process-level instance suffices.
+# at startup. Inference is shared across vaults; the provider serializes access
+# to the tokenizer's mutable state, so a single process-level instance suffices.
 
 _singleton: NomicEmbeddingProvider | None = None
 

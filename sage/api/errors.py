@@ -1004,6 +1004,20 @@ class InvalidFilterValueError(SAGEError):
         )
 
 
+class SemanticQueryTooLongError(SAGEError):
+    """400: a semantic query exceeds the embedding tokenizer's finite work bound."""
+
+    def __init__(self, max_characters: int, actual_characters: int) -> None:
+        super().__init__(
+            "semantic_query_too_long",
+            f"Semantic query exceeds the {max_characters}-character embedding limit "
+            f"({actual_characters} received). Shorten the query or split it into "
+            "separate semantic searches. Keyword queries do not use this embedding limit.",
+            400,
+            {"max_characters": max_characters, "actual_characters": actual_characters},
+        )
+
+
 class StorageQueryFailedError(SAGEError):
     """500: the storage backend refused a filtered document query.
 
