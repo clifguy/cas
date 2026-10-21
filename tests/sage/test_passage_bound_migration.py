@@ -380,3 +380,31 @@ async def test_a_lifecycle_stamp_during_the_division_is_not_reverted(
 
     assert BACKFILL_PASSAGE_INPUT_BOUND in report.backfills_applied
     assert {c.lifecycle_status for c in await store.get_all_chunks(OVERSIZE)} == {"archived"}
+
+
+async def test_redivided_windows_preserve_each_stored_vector(
+    ingestion, store, embedder, legacy_vault
+):
+    from sage.adapters.stubs import SeededEmbeddingProvider
+    from sage.services.passage_split import embedding_input
+
+    calls = []
+
+    async def encode(texts):
+        calls.append(list(texts))
+        return await SeededEmbeddingProvider().embed(texts)
+
+    embedder.embed = encode
+    long_body = "\n\n".join(f"unique paragraph {i} " + "text " * 20 for i in range(48))
+    await store.index_chunks(OVERSIZE, _legacy_rows(ingestion, OVERSIZE, long_body))
+    assert await ingestion._divide_stored_passages(OVERSIZE)
+    chunks = await store.get_all_chunks(OVERSIZE)
+    assert len(chunks) > 8
+    assert max(map(len, calls)) <= 8
+    expected = await SeededEmbeddingProvider().embed(
+        [embedding_input(chunk.heading_path, chunk.content) for chunk in chunks]
+    )
+    assert len({tuple(vector) for vector in expected}) == len(chunks)
+    from scripts.embedding_contention_trial import read_stored_vectors
+
+    assert await read_stored_vectors(store, OVERSIZE) == expected

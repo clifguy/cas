@@ -186,3 +186,193 @@ async def test_sizing_and_inference_share_tokenizer_exclusion(provider, first):
         )
     assert not any(isinstance(outcome, BaseException) for outcome in outcomes), outcomes
     assert calls == [first, "count" if first == "encode" else "encode"]
+
+
+async def test_bulk_yields_to_interactive_and_preserves_content(provider):
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    class Model:
+        def encode(self, texts, **kwargs):
+            calls.append(list(texts))
+            if len(calls) == 1:
+                started.set()
+                release.wait(2)
+            return np.array([[float(text.split(":")[1])] for text in texts])
+
+    provider._model = Model()
+    bulk = asyncio.create_task(provider.embed([f"bulk:{i}" for i in range(12)]))
+    await asyncio.wait_for(_wait_until(started.is_set), 1)
+    query = asyncio.create_task(provider.embed(["query:99"]))
+    await asyncio.sleep(0)
+    release.set()
+    assert await asyncio.wait_for(query, 1) == [[99.0]]
+    assert await bulk == [[float(i)] for i in range(12)]
+    flattened = [text for batch in calls for text in batch]
+    assert flattened.index("query:99") < flattened.index("bulk:11")
+    assert all(len(batch) <= 1 for batch in calls)
+
+
+async def test_cancelled_bulk_drops_remaining_work_and_recovers(provider):
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    class Model:
+        def encode(self, texts, **kwargs):
+            calls.extend(texts)
+            if texts[0] == "bulk":
+                started.set()
+                release.wait(2)
+            if texts[0] == "fail":
+                raise ValueError("inference failed")
+            return np.zeros((len(texts), 1))
+
+    provider._model = Model()
+    bulk = asyncio.create_task(provider.embed(["bulk"] * 12))
+    await asyncio.wait_for(_wait_until(started.is_set), 1)
+    bulk.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await bulk
+    query = asyncio.create_task(provider.embed(["query"]))
+    release.set()
+    assert await asyncio.wait_for(query, 1) == [[0.0]]
+    assert calls.count("bulk") == 1
+    with pytest.raises(ValueError, match="inference failed"):
+        await provider.embed(["fail"])
+    assert await provider.embed(["recovered"]) == [[0.0]]
+
+
+async def test_continuing_callers_cannot_starve_bulk(provider):
+    calls = []
+
+    class Model:
+        def encode(self, texts, **kwargs):
+            calls.extend(texts)
+            return np.zeros((len(texts), 1))
+
+    provider._model = Model()
+
+    async def traffic():
+        for _ in range(20):
+            await provider.embed(["query"])
+
+    await asyncio.wait_for(
+        asyncio.gather(provider.embed(["bulk"] * 20), *(traffic() for _ in range(4))), 3
+    )
+    assert calls.count("bulk") == 20
+    assert calls.count("query") == 80
+    bulk_positions = [i for i, text in enumerate(calls) if text == "bulk"]
+    assert max(b - a for a, b in zip(bulk_positions, bulk_positions[1:])) <= 5
+    assert calls.index("query") < bulk_positions[-1]
+
+
+async def test_cancel_queued_and_waiting_work_releases_bounded_admission(provider):
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    class Model:
+        def encode(self, texts, **kwargs):
+            calls.extend(texts)
+            if texts == ["active"]:
+                started.set()
+                release.wait(2)
+            return np.zeros((len(texts), 1))
+
+    provider._model = Model()
+    active = asyncio.create_task(provider.embed(["active"]))
+    await asyncio.wait_for(_wait_until(started.is_set), 1)
+    queued = asyncio.create_task(provider.embed(["cancel-queued"]))
+    waiting = asyncio.create_task(provider.embed(["cancel-waiting"]))
+    await asyncio.sleep(0.02)
+    assert provider._executor._work_queue.qsize() == 1
+    assert not queued.done() and not waiting.done()
+    queued.cancel()
+    waiting.cancel()
+    await asyncio.gather(queued, waiting, return_exceptions=True)
+    release.set()
+    await asyncio.wait_for(active, 1)
+    assert await asyncio.wait_for(provider.embed(["recovered"]), 1) == [[0.0]]
+    assert calls == ["active", "recovered"]
+
+
+async def test_repeated_cancel_does_not_accumulate_executor_work(provider):
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    class Model:
+        def encode(self, texts, **kwargs):
+            calls.extend(texts)
+            if texts == ["active"]:
+                started.set()
+                release.wait(2)
+            return np.zeros((len(texts), 1))
+
+    provider._model = Model()
+    active = asyncio.create_task(provider.embed(["active"]))
+    await asyncio.wait_for(_wait_until(started.is_set), 1)
+    for _ in range(30):
+        task = asyncio.create_task(provider.embed(["abandoned"] * 100))
+        await asyncio.sleep(0)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        assert provider._executor._work_queue.qsize() <= 1
+    release.set()
+    await asyncio.wait_for(active, 1)
+    assert await asyncio.wait_for(provider.embed(["live"]), 1) == [[0.0]]
+    assert calls == ["active", "live"]
+
+
+def test_idle_provider_reused_after_event_loop_shutdown(provider):
+    class Model:
+        def encode(self, texts, **kwargs):
+            return np.zeros((len(texts), 1))
+
+    provider._model = Model()
+
+    async def contend():
+        return await asyncio.gather(*(provider.embed(["input"]) for _ in range(8)))
+
+    assert len(asyncio.run(contend())) == 8
+    assert len(asyncio.run(contend())) == 8
+
+
+def test_closed_loop_abandoned_inference_does_not_poison_or_overadmit(provider):
+    started = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    class Model:
+        def encode(self, texts, **kwargs):
+            calls.extend(texts)
+            if texts == ["old-failure"]:
+                started.set()
+                release.wait(2)
+                raise ValueError("old abandoned failure")
+            return np.zeros((len(texts), 1))
+
+    provider._model = Model()
+
+    async def abandon():
+        task = asyncio.create_task(provider.embed(["old-failure"]))
+        await asyncio.wait_for(_wait_until(started.is_set), 1)
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(abandon())
+
+    async def resume():
+        tasks = [asyncio.create_task(provider.embed(["new"])) for _ in range(8)]
+        await asyncio.sleep(0.02)
+        assert provider._executor._work_queue.qsize() <= 1
+        release.set()
+        return await asyncio.wait_for(asyncio.gather(*tasks), 1)
+
+    try:
+        assert len(asyncio.run(resume())) == 8
+    finally:
+        release.set()
+    assert calls == ["old-failure"] + ["new"] * 8

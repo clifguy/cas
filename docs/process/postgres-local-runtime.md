@@ -56,12 +56,13 @@ createdb sage
 ## 4. Enable extensions + create the schema
 
 The bootstrap is idempotent — it enables the extensions and creates every table
-and index, and is safe to re-run:
+and index, and is safe to re-run. Replace `myvault` with the configured vault id;
+`--schema` is required and `public` is refused:
 
 ```sh
 # Reads the postgres block from sage/config.yaml (socket, database `sage`),
 # enables `vector` + `pgstattuple`, and creates the graph + content schema:
-.venv/bin/python scripts/bootstrap_postgres.py
+.venv/bin/python scripts/bootstrap_postgres.py --schema myvault
 ```
 
 To also enable `pg_repack` (the online-repack capability a later content-store
@@ -69,14 +70,14 @@ adapter uses), pass the full extension list:
 
 ```sh
 .venv/bin/python scripts/bootstrap_postgres.py \
-    --extensions vector,pgstattuple,pg_repack
+    --schema myvault --extensions vector,pgstattuple,pg_repack
 ```
 
 Verify:
 
 ```sh
 psql sage -c '\dx'   # vector, pgstattuple (and pg_repack if enabled)
-psql sage -c '\dt'   # documents, edges, staging_edges, document_tags, chunks
+psql sage -c '\dt myvault.*'   # documents, edges, staging_edges, document_tags, chunks
 ```
 
 ## 5. A throwaway database for the test harness
@@ -92,7 +93,8 @@ the working `sage` database:
 
 ```sh
 createdb sage_test
-.venv/bin/python scripts/bootstrap_postgres.py --dsn "postgresql://localhost:5432/sage_test"
+.venv/bin/python scripts/bootstrap_postgres.py \
+    --dsn "postgresql://localhost:5432/sage_test" --schema test_bootstrap
 
 export SAGE_TEST_PG_DSN="postgresql://localhost:5432/sage_test"
 .venv/bin/pytest tests/                     # default tier: parallel, no model weights

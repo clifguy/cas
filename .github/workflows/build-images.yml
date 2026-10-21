@@ -340,3 +340,19 @@ jobs:
           SAGE_TEST_PG_DSN: "postgresql://postgres:postgres@localhost:5432/postgres"
         run: |
           .venv/bin/pytest -v --tb=short tests/deploy/
+
+      - name: Real embedding contention and interrupted recovery at production allocation
+        if: ${{ !inputs.push }}
+        env:
+          SAGE_TEST_PG_DSN: "postgresql://postgres:postgres@localhost:5432/postgres"
+        run: |
+          .venv/bin/python scripts/embedding_contention_trial.py \
+            --image cas-sage:ci --evidence "${RUNNER_TEMP}/embedding-trial"
+
+      - name: Retain embedding trial measurements
+        if: ${{ !inputs.push && always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: embedding-contention-trial
+          path: ${{ runner.temp }}/embedding-trial
+          if-no-files-found: error
