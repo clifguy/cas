@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Inventory and version tracking for the CAS Formal Substrate (CAS-ADR-008). Each artifact's version is the release MAJOR.MINOR in which it last changed, or null until a release first publishes it; no counter is assigned when a change is authored. revision_history is assembled per release: a change adds a numberless change record under changes/unreleased/, and the release step folds every unreleased record into one entry for the new release, newest first. Entries written before this scheme, which carry a substrate counter in their version field, follow the release entries and are kept verbatim.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-10-10",
+  "manifest_date": "2026-10-21",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -84,7 +84,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "3.3",
+      "version": "3.4",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -92,7 +92,7 @@
       "path": "cas_app_api.openapi.yaml",
       "title": "CAS Application API",
       "status": "draft",
-      "version": "3.3",
+      "version": "3.4",
       "role": "OpenAPI 3.1.0 specification for the CAS Application backend HTTP surface (mounted at the /app prefix). Defines directory scan and batch-ingest endpoints used by the CAS Application UI. Architecturally distinct from the SAGE Core API; the two specs are validated together by tests/sage/test_openapi_conformance.py and must respect URL-prefix boundaries (sage_core_api owns /sage_vaults/*, cas_app_api owns /app/*).",
       "instantiation_checklist_items": []
     },
@@ -100,7 +100,7 @@
       "path": "sage/sage_mcp_tools.catalog.json",
       "title": "SAGE MCP Tool Catalog",
       "status": "draft",
-      "version": "3.3",
+      "version": "3.4",
       "role": "The tools the SAGE MCP surfaces publish through tools/list: name, input and output schemas, annotations, and description, for the ordinary surface (/mcp) and the maintenance surface (/mcp_maint). Generated from the servers by scripts/dump_mcp_catalog.py and held to them by a test gate; the contract comparison reads it as the MCP half of the published contract.",
       "instantiation_checklist_items": []
     },
@@ -189,6 +189,29 @@
   ],
   "deferred": [],
   "revision_history": [
+    {
+      "release": "3.4",
+      "date": "2026-10-21",
+      "changes": [
+        {
+          "classification": "minor",
+          "category": [
+            "caller-adaptation"
+          ],
+          "summary": "Bounds passage-sizing and model-tokenizer inputs and moves passage construction off the request loop. Oversized combined embedding inputs and semantic queries now fail before tokenization. Security-exposure exemption: the previously unbounded path can exhaust the shared process and repeatedly crash recovery.",
+          "for_callers": "Ordinary large sources are divided without losing projected text. Each combined heading-and-passage embedding input and each semantic query must fit the 32,768-character tokenizer work bound. Exceptionally large heading context or document surfaces fail processing explicitly; shorten or divide that input before retrying. Oversized semantic queries return semantic_query_too_long (400) with max_characters and actual_characters; shorten or split the query. This security-exposure fix applies immediately because serving the unbounded path alongside it preserves a process-exhaustion weakness.",
+          "exemption": {
+            "kind": "security-exposure",
+            "reason": "The unbounded model-tokenizer path was reproduced as an OOM-killed process inside a 4 GiB container. Retaining that path during a deprecation window leaves shared-service denial of service and crash-loop recovery reachable."
+          }
+        },
+        {
+          "classification": "patch",
+          "summary": "A `stale_chain_head` refusal on a supersede now names the chain's actual head. When the predecessor has been superseded since the caller read it, `current_head_id` and `current_head_version` report its latest successor rather than the archived predecessor; when only the predecessor changed they still name it. The `expected_head_version` parameter, the ingest 409 response and the `StaleChainHeadErrorDetail` field descriptions say so in both specifications and the MCP catalog. A defect correction: the contract already promised the current head, and a retry against the archived predecessor the server used to name was always refused, so no caller could rely on the old value.",
+          "for_callers": ""
+        }
+      ]
+    },
     {
       "release": "3.3",
       "date": "2026-10-10",
