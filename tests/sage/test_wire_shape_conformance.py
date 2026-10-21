@@ -80,6 +80,7 @@ from __future__ import annotations
 import datetime as dt
 import enum
 import json
+import math
 import re
 import types
 import typing
@@ -1670,6 +1671,18 @@ def _error_schema_sentinel(schema: dict, definitions: dict) -> Any:
         if "patternProperties" in schema:
             value["sha256"] = None
         return value
-    return {"string": "sentinel", "integer": 0, "boolean": False, "array": [], "null": None}.get(
-        kind
-    )
+    if kind == "integer":
+        return math.ceil(schema.get("minimum", 0))
+    if kind == "number":
+        return float(schema.get("minimum", 0))
+    return {"string": "sentinel", "boolean": False, "array": [], "null": None}.get(kind)
+
+
+@pytest.mark.parametrize(
+    "kind,minimum,expected", [("integer", 2, 2), ("integer", 1.5, 2), ("number", 0.5, 0.5)]
+)
+def test_error_numeric_sentinel_satisfies_declared_minimum(kind, minimum, expected):
+    schema = {"type": kind, "minimum": minimum}
+    value = _error_schema_sentinel(schema, {})
+    assert value == expected
+    jsonschema.Draft202012Validator(schema).validate(value)

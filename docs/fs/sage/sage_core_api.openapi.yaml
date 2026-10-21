@@ -265,6 +265,11 @@ paths:
             whichever axis the constraint is on -- `allowed_modes` or
             `allowed_targets`, never both.
 
+            `semantic_query_too_long`: the semantic query exceeds the finite embedding
+            tokenizer work limit. `detail.max_characters` and `detail.actual_characters`
+            give the limit and received Unicode code points. Shorten or split the query;
+            keyword queries do not use this embedding limit.
+
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
 
             `invalid_document_id`: a document id in the request is not
@@ -1924,6 +1929,11 @@ paths:
 
             `assertions_not_configured`: the vault config has no
             `retrieval_health.assertions_file` entry.
+
+            `semantic_query_too_long`: an assertion's query exceeds the finite embedding
+            tokenizer work limit; `detail.max_characters` and `detail.actual_characters`
+            give the limit and received Unicode code points. Shorten or split that query
+            in the assertions file before retrying.
 
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
 
@@ -5552,11 +5562,9 @@ components:
         query:
           type: [string, "null"]
           description: >-
-            Search query text. Required for semantic and keyword modes, and
-            refused by the other two: catalog enumerates by filter and
-            deterministic extracts by heading path, so neither consumes it.
-            A catalog-only target refuses it too, on the target axis, naming
-            documents as the target that takes one.
+            Search text for semantic or keyword mode; catalog/deterministic refuse query.
+            Only documents target accepts it. Semantic input is capped at 32,768 Unicode
+            code points: shorten or split larger queries. Keyword input has no embedding cap.
         mode:
           $ref: "#/components/schemas/RetrievalMode"
           description: >-
@@ -13889,6 +13897,42 @@ components:
           $ref: '#/components/schemas/StaleReadErrorDetail'
       additionalProperties: false
       description: The refusal envelope for this error code.
+    SemanticQueryTooLongErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - max_characters
+      - actual_characters
+      properties:
+        max_characters:
+          type: integer
+          minimum: 1
+          description: Maximum Unicode code points accepted by the embedding tokenizer.
+        actual_characters:
+          type: integer
+          minimum: 0
+          description: Unicode code points in the refused semantic query.
+      description: Finite semantic embedding query limit and received size.
+    SemanticQueryTooLongError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: semantic_query_too_long
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable correction guidance.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/SemanticQueryTooLongErrorDetail'
+      additionalProperties: false
+      description: A semantic query exceeded the finite embedding tokenizer work limit.
     StorageQueryFailedErrorDetail:
       type: object
       additionalProperties: false
@@ -15131,6 +15175,7 @@ components:
             - stale_chain_head
             - stale_read
             - statement_timeout
+            - semantic_query_too_long
             - storage_query_failed
             - supersede_target_not_active
             - synced_from_inapplicable_edge_type
@@ -15625,6 +15670,7 @@ components:
         - mode_parameter_mismatch
         - pipeline_incomplete
         - statement_timeout
+        - semantic_query_too_long
         - storage_query_failed
         - tier3_schema_violation
         - unknown_filter_key
@@ -15742,6 +15788,7 @@ components:
         - internal_error
         - invalid_parameter
         - invalid_vault_id
+        - semantic_query_too_long
         - statement_timeout
         - unknown_parameter
         - vault_not_found
@@ -15854,6 +15901,7 @@ components:
       - $ref: '#/components/schemas/StagingEdgeNotFoundError'
       - $ref: '#/components/schemas/StaleChainHeadError'
       - $ref: '#/components/schemas/StaleReadError'
+      - $ref: '#/components/schemas/SemanticQueryTooLongError'
       - $ref: '#/components/schemas/StorageQueryFailedError'
       - $ref: '#/components/schemas/SupersedeTargetNotActiveError'
       - $ref: '#/components/schemas/SyncedFromInapplicableEdgeTypeError'
@@ -15985,6 +16033,7 @@ components:
           staging_edge_not_found: '#/components/schemas/StagingEdgeNotFoundError'
           stale_chain_head: '#/components/schemas/StaleChainHeadError'
           stale_read: '#/components/schemas/StaleReadError'
+          semantic_query_too_long: '#/components/schemas/SemanticQueryTooLongError'
           storage_query_failed: '#/components/schemas/StorageQueryFailedError'
           supersede_target_not_active: '#/components/schemas/SupersedeTargetNotActiveError'
           synced_from_inapplicable_edge_type: '#/components/schemas/SyncedFromInapplicableEdgeTypeError'

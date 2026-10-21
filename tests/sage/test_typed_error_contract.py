@@ -599,3 +599,41 @@ def test_unregistered_error_contract_cannot_silently_publish_common_families() -
 
     with pytest.raises(KeyError, match="undeclared_tool"):
         tool_error_schema("invalid_parameter", "undeclared_tool")
+
+
+@pytest.mark.parametrize(
+    "kind,minimum,accepted,rejected", [("integer", 2, 2, 1), ("number", 0.5, 0.5, 0.25)]
+)
+def test_error_model_derivation_preserves_numeric_minimum(
+    monkeypatch, kind, minimum, accepted, rejected
+):
+    from sage.models.error_contract import SCHEMAS, build_models
+    from sage.models.schemas import ReadMeta
+
+    schema = {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["value"],
+        "properties": {"value": {"type": kind, "minimum": minimum}},
+    }
+    monkeypatch.setitem(SCHEMAS, "NumericMinimumProbe", schema)
+    model = build_models(ReadMeta)["NumericMinimumProbe"]
+    assert model.model_validate({"value": accepted}).value == accepted
+    with pytest.raises(ValidationError):
+        model.model_validate({"value": rejected})
+    assert model.model_json_schema()["properties"]["value"]["minimum"] == minimum
+
+
+def test_semantic_limit_error_model_rejects_nonpositive_maximum():
+    with pytest.raises(ValidationError):
+        ErrorResponse(
+            code="semantic_query_too_long",
+            message="refused",
+            detail={"max_characters": 0, "actual_characters": 1},
+        )
+    admitted = ErrorResponse(
+        code="semantic_query_too_long",
+        message="refused",
+        detail={"max_characters": 1, "actual_characters": 2},
+    )
+    assert to_wire(admitted)["detail"] == {"max_characters": 1, "actual_characters": 2}

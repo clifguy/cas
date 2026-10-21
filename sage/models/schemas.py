@@ -3934,11 +3934,9 @@ class DiscoverRequest(BaseModel):
     query: str | None = Field(
         default=None,
         description=(
-            "Search query text. Required for semantic and keyword modes, "
-            "and refused by the other two: catalog enumerates by filter "
-            "and deterministic extracts by heading path, so neither "
-            "consumes it. A catalog-only target refuses it too, on the "
-            "target axis, naming documents as the target that takes one."
+            "Search text for semantic or keyword mode; catalog/deterministic refuse query. "
+            "Only documents target accepts it. Semantic input is capped at 32,768 Unicode "
+            "code points: shorten or split larger queries. Keyword input has no embedding cap."
         ),
     )
     scope: RetrievalScope = Field(

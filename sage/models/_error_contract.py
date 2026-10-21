@@ -1119,6 +1119,7 @@ SCHEMAS = json.loads(
         "sage_upstream_timeout": "#/components/schemas/SageUpstreamTimeoutError",
         "sage_upstream_unavailable": "#/components/schemas/SageUpstreamUnavailableError",
         "self_referential_edge": "#/components/schemas/SelfReferentialEdgeError",
+        "semantic_query_too_long": "#/components/schemas/SemanticQueryTooLongError",
         "source_digest_mismatch": "#/components/schemas/SourceDigestMismatchError",
         "source_file_not_found": "#/components/schemas/SourceFileNotFoundError",
         "source_type_unresolved": "#/components/schemas/SourceTypeUnresolvedError",
@@ -1445,6 +1446,9 @@ SCHEMAS = json.loads(
       },
       {
         "$ref": "#/components/schemas/StaleReadError"
+      },
+      {
+        "$ref": "#/components/schemas/SemanticQueryTooLongError"
       },
       {
         "$ref": "#/components/schemas/StorageQueryFailedError"
@@ -2049,6 +2053,7 @@ SCHEMAS = json.loads(
         "mode_parameter_mismatch",
         "pipeline_incomplete",
         "statement_timeout",
+        "semantic_query_too_long",
         "storage_query_failed",
         "tier3_schema_violation",
         "unknown_filter_key",
@@ -2175,6 +2180,7 @@ SCHEMAS = json.loads(
         "internal_error",
         "invalid_parameter",
         "invalid_vault_id",
+        "semantic_query_too_long",
         "statement_timeout",
         "unknown_parameter",
         "vault_not_found",
@@ -2328,6 +2334,7 @@ SCHEMAS = json.loads(
             "stale_chain_head",
             "stale_read",
             "statement_timeout",
+            "semantic_query_too_long",
             "storage_query_failed",
             "supersede_target_not_active",
             "synced_from_inapplicable_edge_type",
@@ -5158,6 +5165,54 @@ SCHEMAS = json.loads(
     },
     "required": [
       "document_id"
+    ],
+    "type": "object"
+  },
+  "SemanticQueryTooLongError": {
+    "additionalProperties": false,
+    "description": "A semantic query exceeded the finite embedding tokenizer work limit.",
+    "properties": {
+      "code": {
+        "const": "semantic_query_too_long",
+        "description": "Machine-readable error code selecting this envelope.",
+        "type": "string"
+      },
+      "detail": {
+        "$ref": "#/components/schemas/SemanticQueryTooLongErrorDetail"
+      },
+      "message": {
+        "description": "Human-readable correction guidance.",
+        "type": "string"
+      },
+      "read_meta": {
+        "$ref": "#/components/schemas/ReadMeta"
+      }
+    },
+    "required": [
+      "code",
+      "message",
+      "detail"
+    ],
+    "type": "object"
+  },
+  "SemanticQueryTooLongErrorDetail": {
+    "additionalProperties": false,
+    "description": "Finite semantic embedding query limit and received size.",
+    "properties": {
+      "actual_characters": {
+        "description": "Unicode code points in the refused semantic query.",
+        "minimum": 0,
+        "type": "integer"
+      },
+      "max_characters": {
+        "description": "Maximum Unicode code points accepted by the embedding tokenizer.",
+        "minimum": 1,
+        "type": "integer"
+      }
+    },
+    "required": [
+      "max_characters",
+      "actual_characters"
     ],
     "type": "object"
   },

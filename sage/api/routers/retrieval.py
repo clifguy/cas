@@ -23,7 +23,11 @@ router = APIRouter(route_class=WireRoute, tags=["Retrieval"])
             "mode or the chosen target forbids. Its detail carries `mode`, "
             "`target`, `forbidden_param`, and the allowed set for whichever "
             "axis the constraint is on -- `allowed_modes` or `allowed_targets`, "
-            "never both.",
+            "never both.\n\n"
+            "`semantic_query_too_long`: the semantic query exceeds the finite embedding "
+            "tokenizer work limit. `detail.max_characters` and `detail.actual_characters` "
+            "give the limit and received Unicode code points. Shorten or split the query; "
+            "keyword queries do not use this embedding limit.",
         ),
         404: {
             "model": ErrorResponse,

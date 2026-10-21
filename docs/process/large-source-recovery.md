@@ -8,7 +8,10 @@ Tokenization has a finite work bound of 32,768 Unicode characters per input,
 including a passage's heading and separator. Large ordinary sections are divided
 without discarding text. If an exceptionally large heading, combined crowded
 section, document surface, or semantic query cannot fit, processing fails before
-calling the tokenizer. Preserve the recorded error and source; shorten or divide
+calling the tokenizer. Semantic search returns the typed `semantic_query_too_long`
+400 refusal with `max_characters` and `actual_characters`; shorten the query or
+search in smaller parts. Ingestion records a failed pipeline with the retained
+source unchanged. Preserve the recorded error and source; shorten or divide
 the offending context before a supported retry. A model's later token truncation
 does not protect the allocation needed to tokenize its original input.
 

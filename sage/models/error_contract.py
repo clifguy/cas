@@ -39,6 +39,9 @@ def build_models(read_meta: type[BaseModel]) -> dict[str, type[BaseModel]]:
         kind = schema.get("type")
         if isinstance(kind, list):
             return Union[tuple(annotation({**schema, "type": k}, name) for k in kind)]
+        if kind in {"integer", "number"} and "minimum" in schema:
+            number_type = int if kind == "integer" else float
+            return Annotated[number_type, Field(ge=schema["minimum"])]
         if kind == "array":
             return list[annotation(schema.get("items", {}), name + "Item")]
         if kind == "object" and "maxProperties" in schema:

@@ -7,6 +7,19 @@
 MAX_TOKENIZATION_CHARACTERS = 32768
 
 
+class TokenizerInputTooLargeError(ValueError):
+    """A finite tokenizer work refusal, distinct from unrelated model failures."""
+
+    def __init__(self, actual_characters: int) -> None:
+        self.max_characters = MAX_TOKENIZATION_CHARACTERS
+        self.actual_characters = actual_characters
+        super().__init__(
+            f"Embedding input exceeds tokenizer work bound of "
+            f"{self.max_characters} characters ({actual_characters} received); "
+            "the retained source is unchanged; divide the exceptional input before retrying"
+        )
+
+
 def require_bounded_tokenizer_input(text: str) -> None:
     """Refuse unsafe model work before tokenization, without clipping any text."""
     require_bounded_tokenizer_length(len(text))
@@ -15,8 +28,4 @@ def require_bounded_tokenizer_input(text: str) -> None:
 def require_bounded_tokenizer_length(length: int) -> None:
     """Check combined input lengths before allocating their joined string."""
     if length > MAX_TOKENIZATION_CHARACTERS:
-        raise ValueError(
-            f"Embedding input exceeds tokenizer work bound of "
-            f"{MAX_TOKENIZATION_CHARACTERS} characters ({length} received); "
-            "the retained source is unchanged; divide the exceptional input before retrying"
-        )
+        raise TokenizerInputTooLargeError(length)

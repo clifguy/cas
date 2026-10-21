@@ -165,7 +165,11 @@ async def list_headings(
             extra="`assertions_file_invalid`: the referenced YAML is malformed "
             "or has the wrong structure, or its path leaves the vault's `storage_root`.\n\n"
             "`assertions_not_configured`: the vault config has no "
-            "`retrieval_health.assertions_file` entry.",
+            "`retrieval_health.assertions_file` entry.\n\n"
+            "`semantic_query_too_long`: an assertion's query exceeds the finite embedding "
+            "tokenizer work limit; `detail.max_characters` and `detail.actual_characters` "
+            "give the limit and received Unicode code points. Shorten or split that query "
+            "in the assertions file before retrying.",
         ),
         404: {
             "model": ErrorResponse,
