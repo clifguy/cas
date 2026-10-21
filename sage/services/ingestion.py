@@ -2455,10 +2455,7 @@ class IngestionService:
         # relative structure and leaves the vector arm alone, so no corpus needs
         # re-embedding to take that change.
         if chunks:
-            texts = [embedding_input(c.heading_path, c.content) for c in chunks]
-            embeddings = await self._embedding.embed(texts)
-            for chunk, embedding in zip(chunks, embeddings):
-                chunk.embedding = embedding
+            await self._embed_chunks(chunks)
 
         # Store in content store
         await self._content_store.index_chunks(document_id, chunks)
@@ -2487,6 +2484,19 @@ class IngestionService:
             PipelineStatus.INDEXING_COMPLETE,
             {"indexed_at": datetime.now(timezone.utc).isoformat()},
         )
+
+    async def _embed_chunks(self, chunks: list[Chunk]) -> None:
+        """Build only a bounded window of model inputs and transient vectors.
+
+        Initial indexing and maintenance rewrites share this boundary. Retained
+        chunks/projections stay exact; model dispatch applies fair backpressure.
+        """
+        for start in range(0, len(chunks), 8):
+            window = chunks[start : start + 8]
+            texts = [embedding_input(c.heading_path, c.content) for c in window]
+            embeddings = await self._embedding.embed(texts)
+            for chunk, embedding in zip(window, embeddings):
+                chunk.embedding = embedding
 
     async def _reconcile_indexed_copies(
         self, document_id: str, indexed: Document, current: Document
@@ -3852,11 +3862,7 @@ class IngestionService:
                 chunk.doc_type = origin.doc_type
                 chunk.lifecycle_status = origin.lifecycle_status
                 chunk.project = origin.project
-            embeddings = await self._embedding.embed(
-                [embedding_input(c.heading_path, c.content) for c in divided]
-            )
-            for chunk, embedding in zip(divided, embeddings):
-                chunk.embedding = embedding
+            await self._embed_chunks(divided)
             await self._content_store.index_chunks(document_id, divided)
             return True
 
@@ -4053,11 +4059,7 @@ class IngestionService:
                 chunk.doc_type = stored[0].doc_type
                 chunk.lifecycle_status = stored[0].lifecycle_status
                 chunk.project = stored[0].project
-            embeddings = await self._embedding.embed(
-                [embedding_input(c.heading_path, c.content) for c in fresh]
-            )
-            for chunk, embedding in zip(fresh, embeddings):
-                chunk.embedding = embedding
+            await self._embed_chunks(fresh)
             await self._content_store.index_chunks(document_id, fresh)
         await self._stamp_examined(document_id, adapter.VERSION)
         return True

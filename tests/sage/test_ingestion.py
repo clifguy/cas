@@ -3782,3 +3782,32 @@ async def test_the_reprojection_script_reprojects_with_the_stored_request_config
 
     assert adapter.configs == [_MERGED_DOCX_CONFIG]
     assert "SUBTITLED" in await stub_content_store.get_heading_paths(result.document.id)
+
+
+async def test_indexing_constructs_bounded_embedding_windows(ingestion_service, tmp_vault_dir):
+    """Multiple authored sections retain order/content across admitted windows."""
+    calls = []
+
+    class Recording(StubEmbeddingProvider):
+        async def embed(self, texts):
+            calls.append(list(texts))
+            return [[0.0] * 768 for _ in texts]
+
+    ingestion_service._embedding = Recording()
+    text = "".join(f"# Section {i}\n\nDistinct payload {i}.\n\n" for i in range(19))
+    _create_test_file(tmp_vault_dir, "bounded-windows.md", text)
+    result = await ingestion_service.ingest(
+        IngestRequest(source="bounded-windows.md", source_type=SourceType.MARKDOWN)
+    )
+    chunks = await ingestion_service._content_store.get_all_chunks(result.document.id)
+    assert len(chunks) == 19
+    assert [chunk.content for chunk in chunks] == [
+        f"# Section {i}\n\nDistinct payload {i}." for i in range(19)
+    ]
+    assert max(map(len, calls)) <= 8
+    flattened = [item for call in calls for item in call]
+    positions = [
+        next(i for i, item in enumerate(flattened) if f"Distinct payload {n}." in item)
+        for n in range(19)
+    ]
+    assert positions == sorted(positions)

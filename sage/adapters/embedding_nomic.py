@@ -17,6 +17,7 @@ import threading
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -322,8 +323,8 @@ class NomicEmbeddingProvider(EmbeddingProvider):
         Empty input returns empty output immediately (AD-006).
         Order is preserved (AD-002).
 
-        The synchronous ``encode`` runs on a dedicated single-thread
-        executor so it never freezes the event loop. Releasing the GIL
+        Inference is dispatched one bounded input at a time, fairly sharing
+        the dedicated single-thread executor without freezing the event loop. Releasing the GIL
         inside the C extension does not unblock the loop on its own: the
         loop runs on the calling thread, so a direct call would stall every
         concurrent request for the encode's full duration. The single
@@ -341,7 +342,70 @@ class NomicEmbeddingProvider(EmbeddingProvider):
         if self._executor is None:
             self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-embedding")
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(self._executor, self._embed_sync, texts)
+        # Admit only one quantum per caller, with at most two submitted jobs
+        # (one running, one queued). Semaphore waiters are FIFO: both bulk and
+        # interactive callers rejoin the tail after every input. The executor
+        # never retains the rest of a bulk list or its accumulated results.
+        if not hasattr(self, "_inference_slots"):
+            self._inference_slots = asyncio.Semaphore(2)
+            self._inference_loop = loop
+            self._inference_jobs = []
+        elif self._inference_loop.is_closed():
+            # Publish the new loop/capacity synchronously, before any caller
+            # awaits. Running jobs from the closed loop retain their slots;
+            # observe their actual completion on this loop without propagating
+            # an abandoned caller's error into a new request.
+            pending = [job for job in self._inference_jobs if not job.done()]
+            self._inference_slots = asyncio.Semaphore(2 - len(pending))
+            self._inference_loop = loop
+            self._inference_jobs = pending
+            for submitted in pending:
+                work = asyncio.wrap_future(submitted, loop=loop)
+                work.add_done_callback(partial(self._complete_inference, self._inference_slots))
+        result: list[list[float]] = []
+        for text in texts:
+            await self._inference_slots.acquire()
+            try:
+                abandoned = threading.Event()
+                submitted = self._executor.submit(self._embed_quantum_sync, [text], abandoned)
+                self._inference_jobs = [job for job in self._inference_jobs if not job.done()]
+                self._inference_jobs.append(submitted)
+                work = asyncio.wrap_future(submitted, loop=loop)
+            except BaseException:
+                self._inference_slots.release()
+                raise
+
+            # Shield the actual work from caller cancellation. Its slot belongs
+            # to the worker until encode completes, even if the waiter leaves.
+            # No subsequent quantum is submitted by a cancelled caller.
+            work.add_done_callback(partial(self._complete_inference, self._inference_slots))
+            try:
+                result.extend(await asyncio.shield(work))
+            except asyncio.CancelledError:
+                # Leave the executor future alive until its queue item has
+                # actually drained. Cancelling that future would release the
+                # slot while retaining its cancelled queue item, allowing an
+                # unbounded cancelled-work backlog behind a slow encode.
+                abandoned.set()
+                raise
+        return result
+
+    @staticmethod
+    def _complete_inference(
+        slots: asyncio.Semaphore, future: asyncio.Future[list[list[float]]]
+    ) -> None:
+        """Release admission only once the actual executor queue item drains."""
+        slots.release()
+        if not future.cancelled():
+            future.exception()  # consume failures after abandoned awaits
+
+    def _embed_quantum_sync(
+        self, texts: list[str], abandoned: threading.Event
+    ) -> list[list[float]]:
+        """Drain abandoned queue items without borrowing model/tokenizer state."""
+        if abandoned.is_set():
+            return []
+        return self._embed_sync(texts)
 
     def _embed_sync(self, texts: list[str]) -> list[list[float]]:
         """Blocking embedding inference. Runs on the dedicated executor.
