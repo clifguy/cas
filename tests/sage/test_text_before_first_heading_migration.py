@@ -1292,3 +1292,33 @@ async def test_a_read_fault_of_the_moment_is_not_recorded(vault, fault, recorded
     adapters = vault.ship_adapters()
     await vault.migrate()
     assert adapters[SourceType.MARKDOWN].projected == ([] if recorded else ["led.md"])
+
+
+async def test_reprojected_windows_preserve_each_stored_vector(vault):
+    from sage.adapters.stubs import SeededEmbeddingProvider
+    from sage.services.passage_split import embedding_input
+
+    body = "".join(f"# Heading {i}\n\nUnique paragraph {i}.\n\n" for i in range(19))
+    document_id = await vault.ingest(
+        "vector-windows.md", (LEAD + "\n\n" + body).encode(), SourceType.MARKDOWN
+    )
+    vault.ship_adapters()
+    calls = []
+
+    async def encode(texts):
+        calls.append(list(texts))
+        return await SeededEmbeddingProvider().embed(texts)
+
+    vault.embedder.embed = encode
+    await vault.migrate()
+    chunks = await vault.store.get_all_chunks(document_id)
+    assert len(chunks) == 20
+    assert chunks[0].content == LEAD
+    assert max(map(len, calls)) <= 8
+    expected = await SeededEmbeddingProvider().embed(
+        [embedding_input(chunk.heading_path, chunk.content) for chunk in chunks]
+    )
+    assert len({tuple(vector) for vector in expected}) == len(chunks)
+    from scripts.embedding_contention_trial import read_stored_vectors
+
+    assert await read_stored_vectors(vault.store, document_id) == expected

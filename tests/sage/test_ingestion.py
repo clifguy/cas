@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from sage.adapters.interfaces import Chunk, DocumentSurface
-from sage.adapters.stubs import StubEmbeddingProvider
+from sage.adapters.stubs import SeededEmbeddingProvider, StubEmbeddingProvider
 from sage.api.errors import (
     DuplicateContentError,
     ForceReingestPathMismatchError,
@@ -3788,10 +3788,10 @@ async def test_indexing_constructs_bounded_embedding_windows(ingestion_service, 
     """Multiple authored sections retain order/content across admitted windows."""
     calls = []
 
-    class Recording(StubEmbeddingProvider):
+    class Recording(SeededEmbeddingProvider):
         async def embed(self, texts):
             calls.append(list(texts))
-            return [[0.0] * 768 for _ in texts]
+            return await super().embed(texts)
 
     ingestion_service._embedding = Recording()
     text = "".join(f"# Section {i}\n\nDistinct payload {i}.\n\n" for i in range(19))
@@ -3811,3 +3811,11 @@ async def test_indexing_constructs_bounded_embedding_windows(ingestion_service, 
         for n in range(19)
     ]
     assert positions == sorted(positions)
+    from sage.services.passage_split import embedding_input
+
+    expected = await SeededEmbeddingProvider().embed(
+        [embedding_input(chunk.heading_path, chunk.content) for chunk in chunks]
+    )
+    assert len(expected) == 19
+    assert len({tuple(vector) for vector in expected}) == 19
+    assert [chunk.embedding for chunk in chunks] == expected
