@@ -4173,7 +4173,9 @@ async def _seed_uneven_tied_portfolio(graph_store) -> list[str]:
                 _id(f"uneven_heavy_{i:04d}"),
                 doc_type="ticket",
                 document_date="2026-05-01",
-                tags=[f"retrieval-conformance-dimension-{i:04d}-{n}" for n in range(6)],
+                tags=[
+                    f"retrieval-conformance-dimension-{i:04d}-{n}-" + "wide" * 30 for n in range(6)
+                ],
                 tier3_metadata={
                     "ticket_id": f"T-8{i:04d}",
                     "ticket_type": "feature",
@@ -4451,9 +4453,17 @@ async def test_budget_hint_accounts_for_tier3_metadata(
     monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", "4096")
 
     ids_yes = await _seed_portfolio(graph_store, 40, with_tier3=True, id_prefix="t0091_t3_yes")
+    # Separate integer recommendations at the same 4096-byte budget even as
+    # mandatory response metadata grows. Only Tier 3 content differs.
+    for document_id in ids_yes:
+        doc = await graph_store.get_document(document_id)
+        await graph_store.update_document(
+            document_id, {"tier3_metadata": {**doc.tier3_metadata, "description": "detail " * 80}}
+        )
     with_t3 = await retrieval_service.discover(
         DiscoverRequest(
             mode=RetrievalMode.CATALOG,
+            response_mode=ResponseMode.FULL,
             filters=RetrievalFilters(doc_type="ticket", document_ids=ids_yes),
             limit=100,
         )
@@ -4463,6 +4473,7 @@ async def test_budget_hint_accounts_for_tier3_metadata(
     without_t3 = await retrieval_service.discover(
         DiscoverRequest(
             mode=RetrievalMode.CATALOG,
+            response_mode=ResponseMode.FULL,
             filters=RetrievalFilters(doc_type="ticket", document_ids=ids_no),
             limit=100,
         )
@@ -5088,7 +5099,7 @@ async def test_bh_115_document_ids_filter_multiple_ids(
 async def test_semantic_empty_results_no_hints_when_no_raw_matches(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
-    """When content store returns zero raw results, hints is None."""
+    """An empty search carries the unestablished-scope advisory."""
     doc = _make_doc(_id("doc_empty_sem"))
     await graph_store.insert_document(doc)
     # No chunks indexed -- content store will return zero raw results.
@@ -5099,7 +5110,7 @@ async def test_semantic_empty_results_no_hints_when_no_raw_matches(
     )
     response = await retrieval_service.discover(request)
     assert response.results == []
-    assert response.hints is None
+    assert response.hints and "coverage_advisory" in response.hints
 
 
 async def test_semantic_empty_results_with_hints_when_filtered_out(
@@ -5169,7 +5180,7 @@ async def test_keyword_empty_results_with_hints_when_filtered_out(
 async def test_keyword_nonempty_results_no_hints(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service
 ):
-    """When results are returned, hints is None (not needed)."""
+    """Results with unknown coverage carry an explicit scope advisory."""
     doc = _make_doc(_id("doc_has_results"))
     await graph_store.insert_document(doc)
     await _index_doc_chunks(
@@ -5185,7 +5196,7 @@ async def test_keyword_nonempty_results_no_hints(
     )
     response = await retrieval_service.discover(request)
     assert len(response.results) > 0
-    assert response.hints is None
+    assert response.hints and "coverage_advisory" in response.hints
 
 
 # ---------------------------------------------------------------------------
@@ -9688,7 +9699,7 @@ async def test_scored_response_over_budget_is_excerpted(
     )
     baseline = await _scored_at_budget(retrieval_service, monkeypatch, mode, 10**9)
     full_size = _serialized_response_bytes(baseline)
-    assert baseline.hints is None
+    assert baseline.hints and "coverage_advisory" in baseline.hints
 
     response = await _scored_at_budget(retrieval_service, monkeypatch, mode, full_size - 1)
 
@@ -9807,7 +9818,7 @@ async def test_scored_excerpt_boundary_is_exact(
     full_size = _serialized_response_bytes(baseline)
 
     at_budget = await _scored_at_budget(retrieval_service, monkeypatch, mode, full_size)
-    assert at_budget.hints is None
+    assert at_budget.hints and "coverage_advisory" in at_budget.hints
     assert _LONG_PASSAGE in [hit.chunk_content for hit in at_budget.results]
 
     over = await _scored_at_budget(retrieval_service, monkeypatch, mode, full_size - 1)

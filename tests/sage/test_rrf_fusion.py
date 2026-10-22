@@ -13,6 +13,7 @@ from __future__ import annotations
 import pytest
 
 from sage.adapters.interfaces import SearchResult
+from sage.adapters.stubs import StubContentStore
 from sage.services.retrieval import RetrievalService
 from sage.utils.rrf import DEFAULT_RRF_K, rrf_fuse
 
@@ -103,12 +104,11 @@ def test_rrf_fuse_uses_rank_not_score() -> None:
     assert fused[0].score > fused[1].score
 
 
-class _FixedContentStore:
+class _FixedContentStore(StubContentStore):
     """Minimal content store returning fixed vector and BM25 lists.
 
-    Deliberately not a full ``ContentStore`` subclass: ``_hybrid_rrf`` touches
-    only ``search_semantic`` and ``search_bm25``, so a fake exposing just those
-    two keeps the delegation test focused.
+    Inherits the shared processing-snapshot protocol while fixing both ranked
+    arms, so the delegation test holds the service's actual port boundary.
     """
 
     def __init__(self, vector: list[SearchResult], bm25: list[SearchResult]) -> None:

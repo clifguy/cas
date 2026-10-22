@@ -270,6 +270,7 @@ class DocumentsService:
                     content_hash=store.hash_source(vault_id, storage_root, doc.source_path),
                     content_size=store.source_size(vault_id, storage_root, doc.source_path),
                     write_to_path=write_to_path,
+                    processing_coverage=doc.processing_coverage,
                 )
 
             validate_write_to_path(write_to_path)
@@ -397,4 +398,6 @@ class DocumentsService:
         if url is None:
             raise DownloadUrlNotAvailableError(document_id)
 
-        return DocumentDownloadUrlResponse(download_url=url)
+        return DocumentDownloadUrlResponse(
+            download_url=url, processing_coverage=doc.processing_coverage
+        )

@@ -23,6 +23,7 @@ from sage.adapters.interfaces import (
     KeywordQueryParse,
     SearchResult,
 )
+from sage.models.coverage import CoverageDimension, ProcessingCoverage
 from sage.models.enums import ResolutionPolicy
 from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
 from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge
@@ -53,6 +54,89 @@ class StubContentStore(ContentStore):
     def __init__(self) -> None:
         self._store: dict[str, list[Chunk]] = {}
         self._surfaces: dict[str, DocumentSurface] = {}
+
+    def bind_processing_store(self, graph_store: GraphStore) -> None:
+        self._processing_store = graph_store
+        self._processing_delegate = None
+        if hasattr(graph_store, "_pool"):
+            from sage.adapters.content_store_postgres import PostgresContentStore
+
+            self._processing_delegate = PostgresContentStore(graph_store._pool)
+
+    async def read_processing_snapshot(
+        self, document_id: str
+    ) -> tuple[ProcessingCoverage, list[Chunk]]:
+        doc = await self._processing_store.get_document(document_id)
+        return doc.processing_coverage, await self.get_all_chunks(document_id)
+
+    async def update_processing_status(self, document_id: str, attempt: int, updates: dict) -> bool:
+        if self._processing_delegate is not None:
+            return await self._processing_delegate.update_processing_status(
+                document_id, attempt, updates
+            )
+        doc = await self._processing_store.get_document(document_id)
+        if doc.processing_coverage.attempt != attempt:
+            return False
+        await self._processing_store.update_document(document_id, updates, advance_version=False)
+        return True
+
+    async def begin_processing_attempt(self, document_id: str) -> int:
+        if self._processing_delegate is not None:
+            return await self._processing_delegate.begin_processing_attempt(document_id)
+        doc = await self._processing_store.get_document(document_id)
+        attempt = doc.processing_coverage.attempt + 1
+        coverage = doc.processing_coverage.model_copy(update={"attempt": attempt})
+        await self._processing_store.update_document(
+            document_id, {"processing_coverage": coverage}, advance_version=False
+        )
+        return attempt
+
+    async def publish_processing(
+        self,
+        document_id: str,
+        attempt: int,
+        dimensions: dict[str, CoverageDimension],
+        *,
+        chunks: list[Chunk] | None = None,
+        surface: DocumentSurface | None = None,
+        semantic_abstract: str | None = None,
+    ) -> bool:
+        if self._processing_delegate is not None:
+            published = await self._processing_delegate.publish_processing(
+                document_id,
+                attempt,
+                dimensions,
+                chunks=chunks,
+                surface=surface,
+                semantic_abstract=semantic_abstract,
+            )
+            if published:
+                if chunks is not None:
+                    self._store[document_id] = chunks
+                if surface is not None:
+                    self._surfaces[document_id] = surface
+            return published
+        doc = await self._processing_store.get_document(document_id)
+        if doc.processing_coverage.attempt != attempt:
+            return False
+        coverage = ProcessingCoverage.model_validate(
+            {
+                **doc.processing_coverage.model_dump(),
+                **{
+                    name: {**value.model_dump(), "generation": attempt}
+                    for name, value in dimensions.items()
+                },
+            }
+        )
+        updates = {"processing_coverage": coverage}
+        if semantic_abstract is not None:
+            updates["semantic_abstract"] = semantic_abstract
+        await self._processing_store.update_document(document_id, updates, advance_version=False)
+        if chunks is not None:
+            self._store[document_id] = chunks
+        if surface is not None:
+            self._surfaces[document_id] = surface
+        return True
 
     async def index_chunks(self, document_id: str, chunks: list[Chunk]) -> None:
         self._store[document_id] = chunks

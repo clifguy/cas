@@ -114,6 +114,7 @@ def rrf_fuse(
                 matched_chunk_count=max(len(passages[doc_id]), carried_counts[doc_id]),
                 is_document_surface=all_surface[doc_id],
                 section_index=original.section_index,
+                processing_coverage=original.processing_coverage,
             )
         )
     return fused

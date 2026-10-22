@@ -10,11 +10,13 @@ port depends only on the models leaf, never on a concrete store module.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import NamedTuple, TypedDict
 
+from sage.models.coverage import CoverageDimension, ProcessingCoverage
 from sage.models.enums import ResolutionPolicy
 from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
 from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge
@@ -231,6 +233,7 @@ class SearchResult:
     matched_chunk_count: int = 1
     is_document_surface: bool = False
     section_index: int | None = None
+    processing_coverage: ProcessingCoverage | None = None
 
 
 @dataclass(frozen=True)
@@ -273,6 +276,41 @@ class ContentStoreOptimizeSnapshot(TypedDict):
 
 class ContentStore(ABC):
     """Interface for vector/full-text content store (Postgres in production)."""
+
+    @asynccontextmanager
+    async def processing_snapshot(self) -> AsyncIterator[None]:
+        """Keep retrieval arms on one serving snapshot where the binding supports it."""
+        yield
+
+    async def read_processing_snapshot(
+        self, document_id: str
+    ) -> tuple[ProcessingCoverage, list[Chunk]]:
+        """Read served passages and coverage from one publication snapshot."""
+        raise NotImplementedError
+
+    def bind_processing_store(self, graph_store: "GraphStore") -> None:
+        """Bind the document authority for test bindings sharing in-memory state."""
+
+    async def update_processing_status(self, document_id: str, attempt: int, updates: dict) -> bool:
+        """Write authoritative pipeline observations only while their attempt is current."""
+        raise NotImplementedError
+
+    async def begin_processing_attempt(self, document_id: str) -> int:
+        """Allocate a durable monotonically increasing publication fence."""
+        raise NotImplementedError
+
+    async def publish_processing(
+        self,
+        document_id: str,
+        attempt: int,
+        dimensions: dict[str, CoverageDimension],
+        *,
+        chunks: list[Chunk] | None = None,
+        surface: DocumentSurface | None = None,
+        semantic_abstract: str | None = None,
+    ) -> bool:
+        """Atomically publish evidence and affected artifacts, refusing stale attempts."""
+        raise NotImplementedError
 
     @abstractmethod
     async def index_chunks(self, document_id: str, chunks: list[Chunk]) -> None:

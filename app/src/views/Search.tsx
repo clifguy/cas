@@ -1,3 +1,4 @@
+import { ProcessingCoverage } from '../components/ProcessingCoverage';
 import { useState, useEffect } from 'react';
 import { Link, useOutletContext, useSearchParams } from 'react-router';
 import type { VaultContext } from '../App';
@@ -478,6 +479,7 @@ export default function Search() {
             <Link to={`/documents/${hit.document.id}`} style={{ fontSize: 15, fontWeight: 600, color: '#1565c0', textDecoration: 'none' }}>
               {sourceFilename(hit.document.source_path) ?? hit.document.title}
             </Link>
+            <ProcessingCoverage coverage={hit.document.processing_coverage} compact />
             {hit.document.doc_type && (
               <span style={badgeStyle}>{hit.document.doc_type.replace(/_/g, ' ')}</span>
             )}
@@ -633,7 +635,7 @@ function CatalogTable({
                 {sourceFilename(hit.document.source_path) ?? hit.document.title}
               </Link>
             </td>
-            <td style={tdStyle}>{hit.document.doc_type?.replace(/_/g, ' ') ?? '-'}</td>
+            <td style={tdStyle}>{hit.document.doc_type?.replace(/_/g, ' ') ?? '-'}<ProcessingCoverage coverage={hit.document.processing_coverage} compact /></td>
             <td style={tdStyle}>{formatDate(hit.document.document_date)}</td>
             <td style={tdStyle}>{hit.document.lifecycle_status}</td>
           </tr>

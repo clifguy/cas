@@ -25,9 +25,14 @@ plain Python lists.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
-from datetime import timedelta
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
+from datetime import datetime, timedelta, timezone
+from functools import wraps
 from typing import TYPE_CHECKING
+
+from psycopg.types.json import Jsonb
 
 from sage.adapters.interfaces import (
     HEADING_PATH_SEPARATOR,
@@ -41,6 +46,7 @@ from sage.adapters.interfaces import (
     SearchResult,
 )
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
+from sage.models.coverage import DIMENSIONS, CoverageDimension, ProcessingCoverage
 from sage.storage.postgres.schema import (
     CHUNKS_TSV_CURRENT_MARKERS,
     CHUNKS_TSV_GENERATION_EXPRESSION_PROBE,
@@ -417,6 +423,33 @@ def _split_negation(rendered: str) -> tuple[str, list[str]]:
     return "".join(kept), [lexeme.replace("''", "'") for lexeme in excluded]
 
 
+_PROCESSING_READ: ContextVar = ContextVar("processing_read", default=None)
+
+
+def _processing_read(method) -> object:
+    @wraps(method)
+    async def wrapped(self, *args, **kwargs) -> list[SearchResult]:
+        async with self.processing_snapshot():
+            conn = _PROCESSING_READ.get()[1]
+            results = await method(self, *args, **kwargs)
+            ids = list({r.document_id for r in results})
+            if ids:
+                cur = await conn.execute(
+                    "SELECT id, processing_coverage FROM documents WHERE id = ANY(%s)", (ids,)
+                )
+                coverage = {
+                    row[0]: ProcessingCoverage.model_validate(row[1] or {})
+                    for row in await cur.fetchall()
+                }
+                for result in results:
+                    result.processing_coverage = coverage.get(
+                        result.document_id, ProcessingCoverage()
+                    )
+            return results
+
+    return wrapped
+
+
 class PostgresContentStore(ContentStore):
     """ContentStore backed by Postgres (pgvector + native ts_rank)."""
 
@@ -478,10 +511,211 @@ class PostgresContentStore(ContentStore):
             chunk.section_index,
         )
 
+    @asynccontextmanager
+    async def processing_snapshot(self) -> AsyncIterator[None]:
+        active = _PROCESSING_READ.get()
+        if active is not None and active[0] is self:
+            yield
+            return
+        async with self._pool.connection() as conn, conn.transaction():
+            await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            token = _PROCESSING_READ.set((self, conn))
+            try:
+                yield
+            finally:
+                _PROCESSING_READ.reset(token)
+
+    @asynccontextmanager
+    async def _read_connection(self) -> AsyncIterator[AsyncConnection]:
+        active = _PROCESSING_READ.get()
+        if active is not None and active[0] is self:
+            yield active[1]
+        else:
+            async with self._pool.connection() as conn:
+                yield conn
+
+    @staticmethod
+    async def _invalidate_processing(
+        conn: AsyncConnection, document_id: str, dimensions: tuple[str, ...]
+    ) -> None:
+        present = await conn.execute("SELECT to_regclass('documents')")
+        if (await present.fetchone())[0] is None:
+            return
+        cur = await conn.execute(
+            "SELECT processing_coverage FROM documents WHERE id = %s FOR UPDATE", (document_id,)
+        )
+        row = await cur.fetchone()
+        if row is None or row[0] is None:
+            return
+        current = ProcessingCoverage.model_validate(row[0])
+        if not any(getattr(current, name).scope in ("limited", "complete") for name in dimensions):
+            return
+        attempt = current.attempt + 1
+        changes = {
+            name: CoverageDimension(
+                generation=attempt, limitations=["artifact_rewritten_without_coverage_evidence"]
+            ).model_dump(mode="json")
+            for name in dimensions
+        }
+        coverage = ProcessingCoverage.model_validate(
+            {**current.model_dump(), **changes, "attempt": attempt}
+        )
+        await conn.execute(
+            "UPDATE documents SET processing_coverage = %s WHERE id = %s",
+            (Jsonb(coverage.model_dump(mode="json")), document_id),
+        )
+
+    async def read_processing_snapshot(
+        self, document_id: str
+    ) -> tuple[ProcessingCoverage, list[Chunk]]:
+        async with self._pool.connection() as conn, conn.transaction():
+            await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
+            cur = await conn.execute(
+                "SELECT processing_coverage FROM documents WHERE id = %s", (document_id,)
+            )
+            row = await cur.fetchone()
+            coverage = (
+                ProcessingCoverage.model_validate(row[0] or {}) if row else ProcessingCoverage()
+            )
+            cur = await conn.execute(
+                f"SELECT {_SELECT_CHUNK_COLUMNS} FROM chunks "  # noqa: S608 -- fixed columns/predicate
+                f"WHERE document_id = %s AND {_passage_rows_only()} ORDER BY chunk_index",
+                (document_id,),
+            )
+            return coverage, [self._row_to_chunk(r) for r in await cur.fetchall()]
+
+    async def update_processing_status(self, document_id: str, attempt: int, updates: dict) -> bool:
+        allowed = {"pipeline_status", "pipeline_error", "updated_at", "indexed_at"}
+        if not updates or set(updates) - allowed:
+            raise ValueError("invalid processing observation fields")
+        async with self._pool.connection() as conn:
+            assignments = ", ".join(f"{key} = %s" for key in updates)
+            cur = await conn.execute(
+                f"UPDATE documents SET {assignments} WHERE id = %s "  # noqa: S608 -- fixed allowlist
+                "AND COALESCE((processing_coverage->>'attempt')::bigint, 0) = %s",
+                (*updates.values(), document_id, attempt),
+            )
+            return bool(cur.rowcount)
+
+    async def begin_processing_attempt(self, document_id: str) -> int:
+        """Allocate a monotonic fence without changing any served artifact evidence."""
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "UPDATE documents SET processing_coverage = "
+                "jsonb_set(COALESCE(processing_coverage, '{}'::jsonb), '{attempt}', "
+                "to_jsonb(COALESCE((processing_coverage->>'attempt')::bigint, 0) + 1)) "
+                "WHERE id = %s RETURNING (processing_coverage->>'attempt')::bigint",
+                (document_id,),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                raise ValueError("processing document does not exist")
+            return row[0]
+
+    async def publish_processing(
+        self,
+        document_id: str,
+        attempt: int,
+        dimensions: dict[str, CoverageDimension],
+        *,
+        chunks: list[Chunk] | None = None,
+        surface: DocumentSurface | None = None,
+        semantic_abstract: str | None = None,
+    ) -> bool:
+        """Commit artifact replacements and their evidence together under a database fence.
+
+        None leaves an artifact unchanged; an empty passage list publishes an empty
+        projection. Stale producers cannot change either artifacts or the summary.
+        Pipeline scheduling and outcome remain owned by pipeline_status.
+        """
+        if attempt < 1 or not dimensions or set(dimensions) - set(DIMENSIONS):
+            raise ValueError("invalid processing publication")
+        if (
+            chunks is None
+            and {"projection", "keyword_indexing", "passage_embeddings"} & dimensions.keys()
+        ):
+            raise ValueError("artifact coverage must be published with its passages")
+        if (
+            chunks is not None
+            and not {"projection", "keyword_indexing", "passage_embeddings"} <= dimensions.keys()
+        ):
+            raise ValueError("passage replacement requires evidence for every affected dimension")
+        if any(c.document_id != document_id for c in chunks or []) or (
+            surface is not None and surface.document_id != document_id
+        ):
+            raise ValueError("artifact document identity mismatch")
+        if chunks is not None:
+            for name in ("projection", "keyword_indexing", "passage_embeddings"):
+                evidence = dimensions[name]
+                bounds = {
+                    "characters": sum(len(c.content) for c in chunks),
+                    "passages": sum(c.embedding is not None for c in chunks)
+                    if name == "passage_embeddings"
+                    else len(chunks),
+                }
+                if any(
+                    c.unit in bounds and c.represented > bounds[c.unit] for c in evidence.counts
+                ):
+                    raise ValueError("coverage exceeds published artifacts")
+        async with self._pool.connection() as conn, conn.transaction():
+            cur = await conn.execute(
+                "SELECT processing_coverage, source_content_hash FROM documents "
+                "WHERE id = %s AND (processing_coverage->>'attempt')::bigint = %s FOR UPDATE",
+                (document_id, attempt),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return False
+            current = ProcessingCoverage.model_validate(row[0] or {})
+            changes = {}
+            for name, evidence in dimensions.items():
+                payload = evidence.model_dump()
+                payload["generation"] = attempt
+                value = CoverageDimension.model_validate(payload)
+                if value.identity is not None and value.identity.source_hash != row[1]:
+                    raise ValueError("coverage source identity mismatch")
+                changes[name] = value.model_dump(mode="json")
+            merged = ProcessingCoverage.model_validate({**current.model_dump(), **changes})
+            if chunks is not None:
+                await conn.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
+                if chunks:
+                    async with conn.cursor() as cur:
+                        await cur.executemany(_INSERT_SQL, [self._chunk_row(c) for c in chunks])
+            if surface is not None:
+                await conn.execute(
+                    "DELETE FROM document_surface WHERE document_id = %s", (document_id,)
+                )
+                await conn.execute(
+                    "INSERT INTO document_surface (document_id, matchable, orienting, embedding, "
+                    "doc_type, lifecycle_status, project) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                    (
+                        document_id,
+                        surface.matchable,
+                        surface.orienting,
+                        surface.embedding,
+                        surface.doc_type,
+                        surface.lifecycle_status,
+                        surface.project,
+                    ),
+                )
+            await conn.execute(
+                "UPDATE documents SET processing_coverage = %s WHERE id = %s",
+                (Jsonb(merged.model_dump(mode="json")), document_id),
+            )
+            if semantic_abstract is not None:
+                await conn.execute(
+                    "UPDATE documents SET semantic_abstract = %s, updated_at = %s WHERE id = %s",
+                    (semantic_abstract, datetime.now(timezone.utc).isoformat(), document_id),
+                )
+            return True
+
     async def index_chunks(self, document_id: str, chunks: list[Chunk]) -> None:
         """Replace all chunks for a document (delete-then-insert, atomic)."""
         with self._query_timer.measure("index_chunks", params={"chunks": len(chunks)}):
             async with self._pool.connection() as conn, conn.transaction():
+                await self._invalidate_processing(
+                    conn, document_id, ("projection", "keyword_indexing", "passage_embeddings")
+                )
                 await conn.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
                 if chunks:
                     async with conn.cursor() as cur:
@@ -491,6 +725,9 @@ class PostgresContentStore(ContentStore):
         """Write a document's document-level row; its passages are untouched."""
         with self._query_timer.measure("upsert_document_surface"):
             async with self._pool.connection() as conn, conn.transaction():
+                await self._invalidate_processing(
+                    conn, surface.document_id, ("keyword_indexing", "abstraction_evidence")
+                )
                 await conn.execute(
                     "DELETE FROM document_surface WHERE document_id = %s",
                     (surface.document_id,),
@@ -514,7 +751,10 @@ class PostgresContentStore(ContentStore):
     async def remove_document_surface(self, document_id: str) -> None:
         """Remove a document's document-level row (idempotent)."""
         with self._query_timer.measure("remove_document_surface"):
-            async with self._pool.connection() as conn:
+            async with self._pool.connection() as conn, conn.transaction():
+                await self._invalidate_processing(
+                    conn, document_id, ("keyword_indexing", "abstraction_evidence")
+                )
                 await conn.execute(
                     "DELETE FROM document_surface WHERE document_id = %s", (document_id,)
                 )
@@ -524,7 +764,10 @@ class PostgresContentStore(ContentStore):
     ) -> bool:
         """Rewrite a document-level row's text, leaving its vector in place."""
         with self._query_timer.measure("update_document_surface_text"):
-            async with self._pool.connection() as conn:
+            async with self._pool.connection() as conn, conn.transaction():
+                await self._invalidate_processing(
+                    conn, document_id, ("keyword_indexing", "abstraction_evidence")
+                )
                 cur = await conn.execute(
                     "UPDATE document_surface SET matchable = %s, orienting = %s"
                     " WHERE document_id = %s",
@@ -540,6 +783,7 @@ class PostgresContentStore(ContentStore):
             return 0
         with self._query_timer.measure("update_indexed_structure", params={"paths": len(derived)}):
             async with self._pool.connection() as conn, conn.transaction():
+                await self._invalidate_processing(conn, document_id, ("keyword_indexing",))
                 async with conn.cursor() as cur:
                     await cur.executemany(
                         "UPDATE chunks SET indexed_structure = %s"
@@ -552,6 +796,16 @@ class PostgresContentStore(ContentStore):
         """Remove a document's passages and document surface (idempotent)."""
         with self._query_timer.measure("remove_document"):
             async with self._pool.connection() as conn, conn.transaction():
+                await self._invalidate_processing(
+                    conn,
+                    document_id,
+                    (
+                        "projection",
+                        "keyword_indexing",
+                        "passage_embeddings",
+                        "abstraction_evidence",
+                    ),
+                )
                 await conn.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
                 await conn.execute(
                     "DELETE FROM document_surface WHERE document_id = %s", (document_id,)
@@ -724,6 +978,13 @@ class PostgresContentStore(ContentStore):
                     await conn.execute(drop)
 
                 if derived:
+                    pending = await conn.execute(
+                        "SELECT DISTINCT document_id FROM chunks WHERE indexed_structure IS NULL "
+                        "AND document_id = ANY(%s)",
+                        (list({doc for doc, _, _ in derived}),),
+                    )
+                    for (document_id,) in await pending.fetchall():
+                        await self._invalidate_processing(conn, document_id, ("keyword_indexing",))
                     async with conn.cursor() as cur:
                         for start in range(0, len(derived), _BACKFILL_BATCH_SIZE):
                             batch = derived[start : start + _BACKFILL_BATCH_SIZE]
@@ -779,6 +1040,7 @@ class PostgresContentStore(ContentStore):
 
     # -- read paths ---------------------------------------------------------
 
+    @_processing_read
     async def search_semantic(
         self,
         query_embedding: list[float],
@@ -911,12 +1173,13 @@ class PostgresContentStore(ContentStore):
                 limit,
                 limit,
             ]
-            async with self._pool.connection() as conn, conn.transaction():
+            async with self._read_connection() as conn, conn.transaction():
                 await conn.execute("SET LOCAL hnsw.iterative_scan = strict_order")
                 cur = await conn.execute(sql, params)
                 rows = await cur.fetchall()
             return [self._row_to_semantic_result(r) for r in rows]
 
+    @_processing_read
     async def search_bm25(
         self,
         query: str,
@@ -1571,6 +1834,10 @@ class PostgresContentStore(ContentStore):
         }
 
     async def _fetchall(self, sql: str, params: object = ()) -> list[tuple]:
+        active = _PROCESSING_READ.get()
+        if active is not None and active[0] is self:
+            cur = await active[1].execute(sql, params)
+            return await cur.fetchall()
         async with self._pool.connection() as conn, conn.cursor() as cur:
             await cur.execute(sql, params)
             return await cur.fetchall()

@@ -54,6 +54,7 @@ from sage.request_identity import (
     request_header_agent,
     request_principal,
 )
+from tests.helpers.pipeline_wait import drain_vaults
 from tests.helpers.write_attribution import (
     VAULT,
     StubValidator,
@@ -931,6 +932,8 @@ async def test_f1_provenance_filter_matches_exactly(auth_app, tmp_vault_dir, mod
         a1 = await _mcp_ingest(auth_app, "alice-mcp", _CLAUDE_UA, seed(tmp_vault_dir, "f1a.md"))
         a2 = await _rest_ingest(auth_app, "alice-bff", _BROWSER_UA, seed(tmp_vault_dir, "f1b.md"))
         a5 = await _mcp_ingest(auth_app, "alice-mcp", _CLAUDE_UA, seed(tmp_vault_dir, "f1c.md"))
+        # Attribution filtering concerns published documents, not queue latency.
+        await drain_vaults(auth_app.state.vault_registry, [VAULT])
         await mcp_call(
             auth_app,
             "bob-mcp",

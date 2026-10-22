@@ -25,6 +25,12 @@ from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import PydanticCustomError
 
 from sage.build_info import VERSION_WITH_BUILD
+from sage.models.coverage import CoverageCount as CoverageCount
+from sage.models.coverage import CoverageDimension as CoverageDimension
+from sage.models.coverage import CoverageManifest as CoverageManifest
+from sage.models.coverage import CoverageRange as CoverageRange
+from sage.models.coverage import ProcessingCoverage
+from sage.models.coverage import ProcessingIdentity as ProcessingIdentity
 from sage.models.enums import (
     CatalogSortBy,
     DryRunValidator,
@@ -496,6 +502,13 @@ class AssertedAgent(BaseModel):
 
 
 class Document(BaseModel):
+    processing_coverage: ProcessingCoverage = Field(
+        default_factory=ProcessingCoverage,
+        description=(
+            "System-owned achieved processing coverage; "
+            "unknown evidence does not imply completeness."
+        ),
+    )
     id: DocumentIdStr = Field(
         description="Immutable, assigned at creation (short hash + hint from title)."
     )
@@ -759,6 +772,13 @@ class Document(BaseModel):
 class DocumentSummary(BaseModel):
     """Compact document representation for list and search results."""
 
+    processing_coverage: ProcessingCoverage = Field(
+        default_factory=ProcessingCoverage,
+        description=(
+            "System-owned achieved processing coverage; "
+            "unknown evidence does not imply completeness."
+        ),
+    )
     id: DocumentIdStr = Field(description="Unique document identifier.")
     title: str = Field(description="Human-readable document title.")
     lifecycle_status: str = Field(
@@ -871,6 +891,7 @@ class DocumentSummary(BaseModel):
         document_date = parsed_dd.strftime("%Y-%m-%d") if parsed_dd else None
 
         return cls(
+            processing_coverage=doc.processing_coverage,
             id=doc.id,
             title=doc.title,
             lifecycle_status=doc.lifecycle_status,
@@ -927,6 +948,7 @@ class DocumentSummary(BaseModel):
         parsed_dd = parse_document_date(row.get("d_document_date"))
         document_date = parsed_dd.strftime("%Y-%m-%d") if parsed_dd else None
         return cls(
+            processing_coverage=row.get("d_processing_coverage") or ProcessingCoverage(),
             id=row["doc_id"],
             title=row["d_title"],
             lifecycle_status=row["d_lifecycle_status"],
@@ -969,6 +991,13 @@ class DocumentSummaryLight(BaseModel):
     back to ``get_document`` per id.
     """
 
+    processing_coverage: ProcessingCoverage = Field(
+        default_factory=ProcessingCoverage,
+        description=(
+            "System-owned achieved processing coverage; "
+            "unknown evidence does not imply completeness."
+        ),
+    )
     id: DocumentIdStr = Field(description="Unique document identifier.")
     title: str = Field(description="Human-readable document title.")
     lifecycle_status: str = Field(
@@ -992,6 +1021,7 @@ class DocumentSummaryLight(BaseModel):
     def from_document(cls, doc: "Document") -> "DocumentSummaryLight":
         """Build a DocumentSummaryLight from a Document."""
         return cls(
+            processing_coverage=doc.processing_coverage,
             id=doc.id,
             title=doc.title,
             lifecycle_status=doc.lifecycle_status,
@@ -1013,6 +1043,7 @@ class DocumentSummaryLight(BaseModel):
         when a field is added to this model and not wired through here.
         """
         return cls(
+            processing_coverage=summary.processing_coverage,
             id=summary.id,
             title=summary.title,
             lifecycle_status=summary.lifecycle_status,
@@ -2859,6 +2890,13 @@ class DocumentDownloadUrlResponse(BaseModel):
     URL; a binding that cannot refuses the request with a structured 501.
     """
 
+    processing_coverage: ProcessingCoverage = Field(
+        default_factory=ProcessingCoverage,
+        description=(
+            "System-owned achieved processing coverage; "
+            "unknown evidence does not imply completeness."
+        ),
+    )
     download_url: str = Field(
         description=(
             "Short-lived, pre-authenticated URL from which the document's source "
@@ -4787,11 +4825,25 @@ class ExportProjectionRequest(BaseModel):
 
 
 class ExportProjectionResponse(BaseModel):
+    processing_coverage: ProcessingCoverage = Field(
+        default_factory=ProcessingCoverage,
+        description=(
+            "System-owned achieved processing coverage; "
+            "unknown evidence does not imply completeness."
+        ),
+    )
     document_id: DocumentIdStr = Field(description="The document whose projection was exported.")
     output_path: str = Field(description="Absolute path where the projection file was written.")
 
 
 class ReadProjectionResponse(BaseModel):
+    processing_coverage: ProcessingCoverage = Field(
+        default_factory=ProcessingCoverage,
+        description=(
+            "System-owned achieved processing coverage; "
+            "unknown evidence does not imply completeness."
+        ),
+    )
     document_id: DocumentIdStr = Field(description="Id of the document whose projection was read.")
     title: str = Field(description="Human-readable title of the document.")
     version_label: str | None = Field(
@@ -4851,6 +4903,7 @@ class ReadProjectionResponse(BaseModel):
         """
         projection_status, projection_recovery = ReadMeta.projection_freshness(doc)
         return cls(
+            processing_coverage=doc.processing_coverage,
             document_id=doc.id,
             title=doc.title,
             version_label=doc.version_label,
@@ -4869,6 +4922,13 @@ class ReadProjectionResponse(BaseModel):
 
 
 class ReadSectionResponse(BaseModel):
+    processing_coverage: ProcessingCoverage = Field(
+        default_factory=ProcessingCoverage,
+        description=(
+            "System-owned achieved processing coverage; "
+            "unknown evidence does not imply completeness."
+        ),
+    )
     document_id: DocumentIdStr = Field(description="Id of the document whose section was read.")
     title: str = Field(description="Human-readable title of the document.")
     heading_path: str = Field(description="Heading-path prefix that scoped the section read.")
@@ -4903,6 +4963,7 @@ class ReadSectionResponse(BaseModel):
         """
         projection_status, projection_recovery = ReadMeta.projection_freshness(doc)
         return cls(
+            processing_coverage=doc.processing_coverage,
             document_id=doc.id,
             title=doc.title,
             heading_path=heading_path,
@@ -4919,6 +4980,13 @@ class ReadSectionResponse(BaseModel):
 
 
 class ListHeadingsResponse(BaseModel):
+    processing_coverage: ProcessingCoverage = Field(
+        default_factory=ProcessingCoverage,
+        description=(
+            "System-owned achieved processing coverage; "
+            "unknown evidence does not imply completeness."
+        ),
+    )
     document_id: DocumentIdStr = Field(description="Id of the document whose headings were listed.")
     title: str = Field(description="Human-readable title of the document.")
     headings: list[str] = Field(
@@ -4943,6 +5011,7 @@ class ListHeadingsResponse(BaseModel):
         ListHeadingsResponse but not wired through this factory.
         """
         return cls(
+            processing_coverage=doc.processing_coverage,
             document_id=doc.id,
             title=doc.title,
             headings=headings,
@@ -6944,6 +7013,13 @@ class DownloadRecipe(BaseModel):
     and verify them locally against the promised size and digest. Every URL
     and token is used verbatim; nothing is composed caller-side."""
 
+    processing_coverage: ProcessingCoverage = Field(
+        default_factory=ProcessingCoverage,
+        description=(
+            "System-owned achieved processing coverage; "
+            "unknown evidence does not imply completeness."
+        ),
+    )
     status: Literal["download_required"] = Field(
         default="download_required",
         description=(

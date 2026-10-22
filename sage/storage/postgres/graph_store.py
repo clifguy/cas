@@ -43,6 +43,7 @@ from sage.adapters.interfaces import (
     StorageQueryError,
 )
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
+from sage.models.coverage import ProcessingCoverage
 from sage.models.enums import (
     EdgeType,
     PipelineStatus,
@@ -529,6 +530,8 @@ class PostgresGraphStore(GraphStore):
         unknown = sorted(set(updates) - DOCUMENT_COLUMNS)
         if unknown:
             raise ValueError(f"not a documents column: {', '.join(unknown)}")
+        if "processing_coverage" in updates:
+            raise ValueError("coverage is written only through conditional publication")
         if "version_token" in updates:
             raise ValueError("version_token is advanced, never set")
         new_tags: list[str] | None = updates["tags"] if "tags" in updates else None
@@ -1925,6 +1928,7 @@ class PostgresGraphStore(GraphStore):
                 f"d.tags::text AS tags, "
                 f"d.document_date AS d_document_date, "
                 f"d.source_modified_at AS d_source_modified_at, "
+                f"d.processing_coverage AS d_processing_coverage, "
                 f"d.relocated_from AS d_relocated_from, "
                 f"d.relocated_to AS d_relocated_to "
                 f"FROM {walked} t "
@@ -1954,6 +1958,7 @@ class PostgresGraphStore(GraphStore):
                     "edge_created_agent": row["edge_created_agent"],
                     "edge_created_by_name": row["edge_created_by_name"],
                     "depth": row["depth"],
+                    "d_processing_coverage": row.get("d_processing_coverage"),
                     "d_title": row["title"],
                     "d_lifecycle_status": row["lifecycle_status"],
                     "d_source_type": row["source_type"],
@@ -2138,6 +2143,9 @@ class PostgresGraphStore(GraphStore):
             semantic_abstract=row["semantic_abstract"],
             pipeline_status=PipelineStatus(row["pipeline_status"]),
             pipeline_error=row["pipeline_error"],
+            processing_coverage=ProcessingCoverage.model_validate(
+                row.get("processing_coverage") or {}
+            ),
             tier3_metadata=row["tier3_metadata"],
             # ``.get`` for the same reason as ``stored_content_hash`` above.
             adapter_config=row.get("adapter_config"),

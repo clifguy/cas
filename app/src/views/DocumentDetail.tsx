@@ -1,3 +1,4 @@
+import { ProcessingCoverage } from '../components/ProcessingCoverage';
 import { useState, useEffect } from 'react';
 import { Link, useParams, useOutletContext, useNavigate } from 'react-router';
 import type { VaultContext } from '../App';
@@ -345,6 +346,7 @@ export default function DocumentDetail() {
             </span>
           )}
         </div>
+        <ProcessingCoverage coverage={doc.processing_coverage} />
         {doc.semantic_abstract ? (
           <div style={{ fontSize: 13, lineHeight: 1.6, color: '#444', fontStyle: 'italic' }}>
             {doc.semantic_abstract}
