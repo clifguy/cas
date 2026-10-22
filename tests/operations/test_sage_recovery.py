@@ -203,17 +203,71 @@ class CheckTests(unittest.TestCase):
             self.assertEqual(result["production_state"], "Not queried by this exporter")
 
     def test_export_truncated_is_not_verified(self):
+        ids = list(settings().six_ids)
         with tempfile.TemporaryDirectory() as temp:
             p = Path(temp) / "evidence.json"
+            for population in [
+                [],
+                ids[:1],
+                ids[:-1],
+                ids + [ids[0]],
+                ids[:-1] + [ids[0]],
+                ids[:-1] + ["foreign-document"],
+            ]:
+                with self.subTest(population=population):
+                    checks.atomic(
+                        p,
+                        {
+                            "complete": True,
+                            "configuration_sha256": settings().fingerprint,
+                            "manifest_sha256": settings().manifest_sha256,
+                            "records": [{"document_id": i} for i in population],
+                        },
+                    )
+                    self.assertEqual(save_evidence.evidence_status(p)["status"], "unverified")
+
+    def test_export_complete_population_is_recorded(self):
+        with tempfile.TemporaryDirectory() as temp:
+            p = Path(temp) / "evidence.json"
+            for population in [settings().six_ids, tuple(reversed(settings().six_ids))]:
+                with self.subTest(population=population):
+                    checks.atomic(
+                        p,
+                        {
+                            "complete": True,
+                            "configuration_sha256": settings().fingerprint,
+                            "manifest_sha256": settings().manifest_sha256,
+                            "records": [{"document_id": i} for i in population],
+                        },
+                    )
+                    self.assertEqual(
+                        save_evidence.evidence_status(p)["status"], "complete recorded evidence"
+                    )
+
+    def test_export_prerequisites_each_reject_complete_population(self):
+        with tempfile.TemporaryDirectory() as temp:
+            p = Path(temp) / "evidence.json"
+            valid = {
+                "complete": True,
+                "configuration_sha256": settings().fingerprint,
+                "manifest_sha256": settings().manifest_sha256,
+                "records": [{"document_id": i} for i in settings().six_ids],
+            }
             checks.atomic(
                 p,
-                {
-                    "complete": True,
-                    "manifest_sha256": settings().manifest_sha256,
-                    "records": [{"document_id": settings().six_ids[0]}],
-                },
+                valid,
             )
-            self.assertEqual(save_evidence.evidence_status(p)["status"], "unverified")
+            self.assertEqual(
+                save_evidence.evidence_status(p)["status"], "complete recorded evidence"
+            )
+            for key, value in [
+                ("complete", False),
+                ("configuration_sha256", "different"),
+                ("manifest_sha256", "different"),
+            ]:
+                with self.subTest(prerequisite=key):
+                    checks.atomic(p, {**valid, key: value})
+                    self.assertEqual(save_evidence.evidence_status(p)["status"], "unverified")
 
     def test_probe_latency_includes_auth_refresh(self):
         class Helper:
