@@ -27,6 +27,7 @@ if TYPE_CHECKING:
 
 from sage.adapters.abstraction_prompt import _format_system_prompt, wrap_source_document
 from sage.adapters.interfaces import AbstractionInputTooLargeError, AbstractionProvider
+from sage.instrumentation.performance import current_trace, span
 
 logger = logging.getLogger(__name__)
 
@@ -329,28 +330,44 @@ class AnthropicAbstractionProvider(AbstractionProvider):
 
         system_prompt = _format_system_prompt(doc_type)
 
-        limit = await self._resolve_input_limit()
-        if limit is not None:
-            budget = _input_budget_tokens(limit, max_tokens, system_prompt)
-            text = await self._fit_to_budget(text, budget, system_prompt)
+        with span("abstraction.prepare"):
+            limit = await self._resolve_input_limit()
+            if limit is not None:
+                budget = _input_budget_tokens(limit, max_tokens, system_prompt)
+                text = await self._fit_to_budget(text, budget, system_prompt)
+        trace = current_trace()
+        if trace is not None:
+            trace.count("abstraction.submitted_characters", len(text))
 
         client = self._ensure_client()
         try:
             # Thinking is off: max_tokens is the abstract's own small budget,
             # and models that think by default charge their thinking against
             # it, which can exhaust it before any text is written.
-            response = await client.messages.create(
-                model=self._model_id,
-                max_tokens=max_tokens,
-                thinking={"type": "disabled"},
-                system=system_prompt,
-                messages=[{"role": "user", "content": wrap_source_document(text)}],
-            )
+            with span("abstraction.provider_request"):
+                response = await client.messages.create(
+                    model=self._model_id,
+                    max_tokens=max_tokens,
+                    thinking={"type": "disabled"},
+                    system=system_prompt,
+                    messages=[{"role": "user", "content": wrap_source_document(text)}],
+                )
         except Exception as exc:
             if _reports_input_too_long(exc):
                 raise AbstractionInputTooLargeError(self._model_id, None, None) from exc
             raise
 
+        if trace is not None:
+            usage = getattr(response, "usage", None)
+            for field in (
+                "input_tokens",
+                "output_tokens",
+                "cache_creation_input_tokens",
+                "cache_read_input_tokens",
+            ):
+                value = getattr(usage, field, None)
+                if isinstance(value, int):
+                    trace.count("abstraction." + field, value)
         abstract = next(
             (block.text for block in response.content if block.type == "text"),
             "",

@@ -88,6 +88,13 @@ from sage.config import (
     build_transition_table,
     document_scope,
 )
+from sage.instrumentation.performance import (
+    clear_trace,
+    current_trace,
+    observe_operation,
+    offload,
+    span,
+)
 from sage.models.enums import (
     SUCCESSFUL_TERMINAL_PIPELINE_STATUSES,
     TERMINAL_PIPELINE_STATUS_VALUES,
@@ -235,13 +242,19 @@ async def _run_projection(
     the worker, under a copy of the caller's context, so request-scoped
     context variables read the same there. Its exceptions propagate unchanged.
     """
-    context = contextvars.copy_context()
 
     def project() -> "ProjectionResult":
         return asyncio.run(adapter.project(project_path, config))
 
-    loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(_projection_executor(), context.run, project)
+    result = await offload(_projection_executor(), "projection", project)
+    trace = current_trace()
+    if trace is not None:
+        trace.count("projection.characters", len(result.text))
+        try:
+            trace.count("source.bytes", project_path.stat().st_size)
+        except OSError:
+            trace.count("source.size_unavailable", 1)
+    return result
 
 
 # Passage sizing shares a process-wide single worker across vaults. Neither a
@@ -256,8 +269,11 @@ async def _run_passage_work(work: Callable[[], list[Chunk]]) -> list[Chunk]:
     global _PASSAGE_EXECUTOR
     if _PASSAGE_EXECUTOR is None:
         _PASSAGE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-passage")
-    context = contextvars.copy_context()
-    return await asyncio.get_running_loop().run_in_executor(_PASSAGE_EXECUTOR, context.run, work)
+    result = await offload(_PASSAGE_EXECUTOR, "passages", work)
+    trace = current_trace()
+    if trace is not None:
+        trace.count("passages", len(result))
+    return result
 
 
 @dataclass
@@ -427,6 +443,7 @@ class _AbstractionJob:
     projection: ProjectionResult | None
     doc_type: str | None
     attempts: int = 0
+    queued_ns: int = dataclasses.field(default_factory=time.perf_counter_ns)
 
 
 @dataclass
@@ -646,6 +663,7 @@ class IngestionService:
             # The worker is started from inside whichever request first enqueues
             # work and outlives it, so it runs without that request's identity.
             context = contextvars.copy_context()
+            context.run(clear_trace)
             for var in IDENTITY_VARS:
                 context.run(var.set, None)
             self._worker_task = asyncio.create_task(self._abstraction_worker(), context=context)
@@ -677,6 +695,7 @@ class IngestionService:
             finally:
                 queue.task_done()
 
+    @observe_operation("pipeline")
     async def _process_abstraction_job(self, job: _AbstractionJob) -> None:
         """Run one job with bounded retry.
 
@@ -691,7 +710,11 @@ class IngestionService:
         try:
             for attempt in range(1, max_attempts + 1):
                 try:
-                    await self._run_job_work(job)
+                    trace = current_trace()
+                    if trace is not None:
+                        trace.count("pipeline.attempts", 1)
+                    with span("pipeline.attempt"):
+                        await self._run_job_work(job)
                     return
                 except asyncio.CancelledError:
                     raise
@@ -747,7 +770,8 @@ class IngestionService:
 
     async def _sleep_for_backoff(self, seconds: float) -> None:
         """Indirection over asyncio.sleep so tests can observe or skip backoff."""
-        await asyncio.sleep(seconds)
+        with span("abstraction.retry_backoff"):
+            await asyncio.sleep(seconds)
 
     async def _stamp_pipeline_status(
         self,
@@ -771,6 +795,11 @@ class IngestionService:
         successful status. Failure transitions pass their message through
         ``extra`` and replace whatever was recorded before; nothing appends.
         """
+        trace = current_trace()
+        if trace is not None:
+            trace.count("status." + status.value, 1)
+            if status == PipelineStatus.FAILED:
+                trace.mark_failed()
         updates: dict = {
             "pipeline_status": status.value,
             "updated_at": datetime.now(timezone.utc).isoformat(),
@@ -1063,6 +1092,7 @@ class IngestionService:
             return dict(vault_config)
         return _deep_merge_dicts(vault_config, request_config)
 
+    @observe_operation("ingest")
     async def ingest(
         self,
         request: IngestRequest,
@@ -2330,6 +2360,7 @@ class IngestionService:
                 document_id, PipelineStatus.FAILED, {"pipeline_error": str(exc)}
             )
 
+    @observe_operation("pipeline.execute")
     async def _execute_pipeline_stages(
         self,
         document_id: str,
@@ -2485,6 +2516,7 @@ class IngestionService:
             {"indexed_at": datetime.now(timezone.utc).isoformat()},
         )
 
+    @observe_operation("embedding.chunks")
     async def _embed_chunks(self, chunks: list[Chunk]) -> None:
         """Build only a bounded window of model inputs and transient vectors.
 
@@ -2532,6 +2564,7 @@ class IngestionService:
             return
         await self._write_document_surface(document_id, doc)
 
+    @observe_operation("document_surface")
     async def _write_document_surface(self, document_id: str, doc: Document) -> None:
         """Compose, embed, and store a document's document-level row.
 
@@ -2542,6 +2575,7 @@ class IngestionService:
         [surface.embedding] = await self._embedding.embed([embedding_text(surface)])
         await self._content_store.upsert_document_surface(surface)
 
+    @observe_operation("abstraction")
     async def _generate_abstract_text(
         self, text: str, doc_type: str | None, document_id: str = ""
     ) -> str:
@@ -2994,6 +3028,7 @@ class IngestionService:
             "dispatched_at": start_time.isoformat(),
         }
 
+    @observe_operation("reproject")
     async def _reproject_from_source(self, document_id: str) -> ProjectionResult:
         """Stage 1 for the startup-recovery path: re-project a document from
         its source file and wipe stale chunks.
@@ -3825,6 +3860,7 @@ class IngestionService:
                 rewritten += 1
         return rewritten
 
+    @observe_operation("passages.rebuild")
     async def _divide_stored_passages(self, document_id: str) -> bool:
         """Re-divide one document's stored sections under the embedder's bound.
 
@@ -3969,6 +4005,7 @@ class IngestionService:
             for opening in section_openings.values()
         )
 
+    @observe_operation("projection.rebuild")
     async def _bring_passages_current(
         self, doc: Document, vault_source_store: "VaultSourceStore"
     ) -> bool | str:

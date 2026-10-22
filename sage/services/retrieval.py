@@ -51,6 +51,7 @@ from sage.api.errors import (
     Tier3SchemaViolationError,
 )
 from sage.config import VaultConfig
+from sage.instrumentation.performance import observe_operation
 from sage.instrumentation.timing import (
     NULL_QUERY_TIMER,
     NullQueryTimer,
@@ -1186,6 +1187,7 @@ class RetrievalService:
             hints["warnings"] = warnings
         return request, hints, names
 
+    @observe_operation("retrieval")
     async def discover(self, request: DiscoverRequest) -> DiscoverResponse:
         """Dispatch to the appropriate retrieval mode handler.
 
