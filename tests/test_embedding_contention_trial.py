@@ -422,3 +422,134 @@ async def test_absolute_watchdog_bounds_a_stalled_checkpoint():
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("have_snapshot", [False, True])
+@pytest.mark.parametrize("retry_behavior", ["stall", "raise"])
+async def test_worker_readiness_timeout_saves_without_retrying_diagnostics(
+    monkeypatch, tmp_path, have_snapshot, retry_behavior
+):
+    import argparse
+    import asyncio
+    import json
+    from contextlib import asynccontextmanager
+    from types import SimpleNamespace
+
+    import sage.app as app_module
+    from scripts import embedding_contention_trial as trial
+
+    manifest = [
+        {"id": "small", "pipeline_status": "abstraction_skipped"},
+        {"id": "large", "pipeline_status": "indexing_in_progress"},
+    ]
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    diagnostic_calls = []
+    original_timeouts = []
+    diagnostic_error = ValueError("a diagnostic retry must not replace the readiness timeout")
+    documents = [
+        SimpleNamespace(
+            id=entry["id"], pipeline_status=entry["pipeline_status"], pipeline_error=None
+        )
+        for entry in manifest
+    ]
+
+    async def list_documents():
+        diagnostic_calls.append(None)
+        if have_snapshot and len(diagnostic_calls) == 1:
+            return documents
+        if len(diagnostic_calls) > 1 and retry_behavior == "raise":
+            raise diagnostic_error
+        await asyncio.Future()
+
+    async def recover():
+        return 0
+
+    async def embed(chunks):
+        pass
+
+    provider = SimpleNamespace(count_tokens=len, _embed_sync=lambda texts: [[1.0]])
+    ingestion = SimpleNamespace(
+        _embedding=provider,
+        _chunk_projection=lambda *args: [],
+        _embed_chunks=embed,
+        recover_incomplete_documents=recover,
+        _inflight={"large"},
+        _abstraction_queue=None,
+    )
+    services = SimpleNamespace(
+        ingestion_service=ingestion,
+        graph_store=SimpleNamespace(list_all_documents=list_documents),
+    )
+
+    async def initialize(*args, **kwargs):
+        return services
+
+    @asynccontextmanager
+    async def lifespan(app):
+        await app_module.initialize_services()
+        yield
+
+    app = SimpleNamespace(
+        router=SimpleNamespace(lifespan_context=lifespan),
+        state=SimpleNamespace(vault_registry={"embedding_trial": services}),
+    )
+    original_wait = trial.BulkReadiness.wait
+
+    async def short_wait(self, checkpoint):
+        try:
+            await original_wait(self, checkpoint, absolute_timeout=0.03)
+        except TimeoutError as exc:
+            original_timeouts.append(exc)
+            raise
+
+    monkeypatch.setenv("TRIAL_PG_DATABASE", "unused")
+    monkeypatch.setenv("TRIAL_PG_USER", "unused")
+    monkeypatch.setattr(app_module, "create_app", lambda **kwargs: app)
+    monkeypatch.setattr(app_module, "initialize_services", initialize)
+    monkeypatch.setattr(trial.BulkReadiness, "wait", short_wait)
+    task = asyncio.create_task(
+        trial.worker(argparse.Namespace(evidence=str(tmp_path), phase="recover", samples=1))
+    )
+    try:
+        done, _ = await asyncio.wait({task}, timeout=0.3)
+        assert task in done, "worker retried diagnostics outside the readiness deadline"
+        with pytest.raises(TimeoutError) as raised:
+            await task
+        assert raised.value is original_timeouts[0]
+        assert len(diagnostic_calls) == 1
+        report = json.loads((tmp_path / "recover.json").read_text())
+        assert report["passed"] is False
+        assert report["files"] == manifest
+        assert len(report["failures"]) == 1
+        failure = report["failures"][0]
+        assert failure["kind"] == "large_bulk_readiness"
+        assert failure["readiness"]["target_id"] == "large"
+        assert failure["readiness"]["elapsed_seconds"] >= 0.03
+        assert report["large_bulk_readiness"]["target_id"] == "large"
+        if have_snapshot:
+            assert (
+                failure["documents"]
+                == report["live_jobs"]
+                == [
+                    {
+                        "id": "small",
+                        "status": "abstraction_skipped",
+                        "error": None,
+                        "claimed": False,
+                    },
+                    {
+                        "id": "large",
+                        "status": "indexing_in_progress",
+                        "error": None,
+                        "claimed": True,
+                    },
+                ]
+            )
+            assert failure["documents_source"] == "last_successful_checkpoint"
+        else:
+            assert failure["documents"] is None
+            assert failure["documents_source"] == "unavailable"
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)

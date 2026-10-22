@@ -524,10 +524,12 @@ async def worker(args: argparse.Namespace) -> int:
                 {
                     "kind": "large_bulk_readiness",
                     "readiness": readiness.snapshot(),
-                    "documents": [
-                        {"id": doc.id, "status": doc.pipeline_status, "error": doc.pipeline_error}
-                        for doc in await svc.graph_store.list_all_documents()
-                    ],
+                    # The timed-out checkpoint may itself be the graph read.
+                    # Persist available diagnostics without re-entering it.
+                    "documents": report.get("live_jobs"),
+                    "documents_source": "last_successful_checkpoint"
+                    if "live_jobs" in report
+                    else "unavailable",
                 }
             )
             report["passed"] = False
