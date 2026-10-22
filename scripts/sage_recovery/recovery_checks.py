@@ -6,7 +6,7 @@ import math
 import os
 from pathlib import Path
 
-from .config import settings
+from .config import require_binding, settings
 
 LABELS = {"health", "inventory", "document", "catalog", "keyword", "semantic"}
 LIGHT = {"health", "inventory", "document", "catalog"}
@@ -98,6 +98,7 @@ def probe_ok(label, response):
 
 
 def check_sample(row):
+    require_binding(row)
     require(row["ok"] is True, "probe failed: " + row["label"])
     seconds = row["seconds"]
     require(
@@ -113,19 +114,30 @@ def check_sample(row):
 
 def check_snapshot(snapshot, run_id, now=None):
     now = now or utc()
+    require_binding(snapshot)
     require(snapshot.get("run_id") == run_id, "observer run changed")
     age = (now - timestamp(snapshot["at"])).total_seconds()
     require(0 <= age <= 45, "observer missing or stale")
     rows = snapshot["requests"]
-    require(len(rows) == 6 and {x["label"] for x in rows} == LABELS, "incomplete probe cycle")
+    require(
+        len(rows) == 6 and {x["label"] for x in rows} == LABELS,
+        "incomplete probe cycle",
+    )
     for row in rows:
+        require_binding(row)
         require(row.get("run_id") == run_id, "probe belongs to another observer run")
-        require(0 <= (now - timestamp(row["started_at"])).total_seconds() <= 60, "stale probe")
+        require(
+            0 <= (now - timestamp(row["started_at"])).total_seconds() <= 60,
+            "stale probe",
+        )
     return rows
 
 
 def check_window(cycles, run_id, start, end):
     require((end - start).total_seconds() >= 1800, "window is shorter than thirty minutes")
+    for cycle in cycles:
+        if cycle.get("run_id") == run_id:
+            require_binding(cycle)
     for label in LABELS:
         rows = [
             r

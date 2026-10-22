@@ -18,7 +18,12 @@ a command, requesting help, or importing a module performs no service operations
 
 Keep configuration, tokens, source manifests, original reconciliation ledger, CSV
 content and runtime evidence outside all Git checkouts. Create owner-private work
-and export directories before use. Use the same work directory across controller
+and export directories before use. Keep those two directory trees disjoint. The
+operator configuration, token cache, manifest, ledger and original CSV paths must
+be outside both output trees. Configuration, token, manifest and ledger files
+must also have distinct paths. Input/output overlap
+is refused before dispatch. The vault configuration snapshot is named
+`vault-config.json`. Use the same work directory across controller
 starts so native-observation pacing, returned Azure backoff and restart intent
 survive. Do not remove or relocate guard markers to force a retry.
 
@@ -47,6 +52,10 @@ subscription or vault: verify the target and its served contract before running.
 The tool reads the existing token cache and uses the existing Azure sign-in to
 refresh it when necessary; it does not initiate interactive sign-in or new grants.
 Token refresh is coordinated across threads/processes and published atomically.
+The effective configuration has a stable fingerprint excluding transient execution
+consent. Controller child commands must match that pinned fingerprint before any
+external request. Observer runs, cycles, requests and verifier artifacts carry it;
+acceptance and progress/export consumers reject mismatched configuration evidence.
 Keep the cache owner-private; never put its contents into a PR or terminal report.
 
 The manifest is a six-element JSON array. Each entry has `filename`, `source`
@@ -116,7 +125,8 @@ must be at most 3 GiB, cgroup peak below 4 GiB, memory-limit failures zero and C
 quota two. Native evidence currently supports the cgroup-v1 paths used by the
 selected deployment; a different layout pauses observation rather than passing it.
 
-A diagnostic transport failure or repeated throttling pauses the local controller,
+A diagnostic transport failure, a non-successful backlog-status response, repeated
+throttling, or mismatched configuration evidence pauses the local controller,
 saves `verification-paused.json`, and does not deactivate production or declare
 success. A confirmed guarded safety failure uses the pinned revision's deactivation
 path and records whether deactivation was confirmed. Resource/replica/observer drift

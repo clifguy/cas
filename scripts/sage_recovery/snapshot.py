@@ -9,7 +9,7 @@ def main():
     cfg = settings()
     for name, path in [
         ("openapi", "/openapi.json"),
-        ("config", f"/sage_vaults/{cfg.vault_id}/config"),
+        ("vault-config", f"/sage_vaults/{cfg.vault_id}/config"),
         ("health", "/health"),
         ("inventory", "/sage_vaults"),
     ]:

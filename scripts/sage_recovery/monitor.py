@@ -6,7 +6,7 @@ import json
 import time
 import uuid
 
-from .config import settings
+from .config import bound, settings
 from .recovery_checks import atomic, check_scope, probe_ok, utc
 
 
@@ -19,7 +19,7 @@ def client():
 def probe(helper, run_id, label, path, method, body):
     started = utc().isoformat()
     began = time.monotonic()
-    row = {"kind": "request", "run_id": run_id, "label": label, "started_at": started}
+    row = bound({"kind": "request", "run_id": run_id, "label": label, "started_at": started})
     try:
         result = helper.request(path, method, body, timeout=12)
         row.update(
@@ -49,7 +49,13 @@ def main():
         run_id = str(uuid.uuid4())
         atomic(
             settings().root / "monitor-run.json",
-            {"run_id": run_id, "start_utc": utc().isoformat(), "ids": settings().expected_ids},
+            bound(
+                {
+                    "run_id": run_id,
+                    "start_utc": utc().isoformat(),
+                    "ids": settings().expected_ids,
+                }
+            ),
         )
         tests = [
             ("health", "/health", "GET", None),
@@ -100,12 +106,14 @@ def main():
             while not (settings().root / "stop").exists():
                 began = time.monotonic()
                 rows = list(pool.map(lambda test: probe(helper, run_id, *test), tests))
-                cycle = {
-                    "kind": "cycle",
-                    "run_id": run_id,
-                    "at": utc().isoformat(),
-                    "requests": rows,
-                }
+                cycle = bound(
+                    {
+                        "kind": "cycle",
+                        "run_id": run_id,
+                        "at": utc().isoformat(),
+                        "requests": rows,
+                    }
+                )
                 with (settings().root / "cycles.jsonl").open("a") as stream:
                     stream.write(json.dumps(cycle) + "\n")
                     stream.flush()

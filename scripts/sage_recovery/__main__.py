@@ -30,6 +30,9 @@ def main(argv=None):
         action="store_true",
         help="Enable the guarded control command; requires operator authorization",
     )
+    parser.add_argument(
+        "--expected-config-sha256", help="Controller-pinned effective configuration"
+    )
     parser.add_argument("--run-id", help="Current observer run for source/projection verification")
     parser.add_argument("--start-time", help="UTC timestamp for metrics queries")
     args = parser.parse_args(argv)
@@ -46,7 +49,10 @@ def main(argv=None):
         parser.error("source/projection verification requires --run-id")
     if args.command == "metrics" and not args.start_time:
         parser.error("metrics requires --start-time")
-    configure(load(args.config, control=args.command == "control" and args.execute))
+    loaded = load(args.config, control=args.command == "control" and args.execute)
+    if args.expected_config_sha256 and loaded.fingerprint != args.expected_config_sha256:
+        raise ValueError("Recovery configuration changed since controller startup")
+    configure(loaded)
     module_name = {
         "control": "advance",
         "export": "save_evidence",

@@ -9,7 +9,7 @@ from .recovery_checks import atomic, utc
 ALLOW = [
     "health.json",
     "inventory.json",
-    "config.json",
+    "vault-config.json",
     "initial-backlog.json",
     "backlog-ids.json",
     "backlog-latest.json",
@@ -69,11 +69,15 @@ def evidence_status(path):
         return {"status": "unverified", "reason": "missing artifact"}
     data = json.loads(path.read_text())
     if not isinstance(data, dict):
-        return {"status": "unverified", "reason": "legacy artifact requires reconciliation"}
+        return {
+            "status": "unverified",
+            "reason": "legacy artifact requires reconciliation",
+        }
     rows = data.get("records", [])
     ids = [row.get("document_id") for row in rows]
     valid = (
         data.get("complete") is True
+        and data.get("configuration_sha256") == settings().fingerprint
         and data.get("manifest_sha256") == settings().manifest_sha256
         and len(ids) == 6
         and set(ids) == set(settings().six_ids)

@@ -13,13 +13,15 @@ def main(run_id):
     for s in expected:
         i = next((x["document_id"] for x in ledger if x["filename"] == s["filename"]))
         r = h.request(
-            f"/sage_vaults/{settings().vault_id}/documents/" + i + "/projection", timeout=120
+            f"/sage_vaults/{settings().vault_id}/documents/" + i + "/projection",
+            timeout=120,
         )
         require(r["status"] == 200, (s["filename"], r["status"]))
         text = r["body"]["projection_text"]
         digest = hashlib.sha256(text.encode()).hexdigest()
         require(
-            digest == s["expected_projection_sha256"], (s["filename"], "projection digest differs")
+            digest == s["expected_projection_sha256"],
+            (s["filename"], "projection digest differs"),
         )
         checks = []
         for sample in s["samples"]:
@@ -69,7 +71,10 @@ def main(run_id):
             (s["filename"], "semantic retrieval failed"),
         )
         checks.append(
-            {"semantic_retrieval_found_correct_document": True, "search_seconds": r["seconds"]}
+            {
+                "semantic_retrieval_found_correct_document": True,
+                "search_seconds": r["seconds"],
+            }
         )
         d = h.request(f"/sage_vaults/{settings().vault_id}/documents/" + i, timeout=20)
         require(d["status"] == 200, "Source validation failed")
@@ -100,6 +105,7 @@ def main(run_id):
         {
             "at": utc().isoformat(),
             "manifest_sha256": settings().manifest_sha256,
+            "configuration_sha256": settings().fingerprint,
             "records": rows,
             "complete": True,
             "run_id": run_id,

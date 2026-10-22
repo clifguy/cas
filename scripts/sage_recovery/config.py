@@ -32,6 +32,14 @@ class Settings:
     control_enabled: bool = False
 
     @property
+    def fingerprint(self):
+        """Bind all effective target/source/path settings; execution consent is transient."""
+        values = dataclasses.asdict(self)
+        values.pop("control_enabled")
+        encoded = json.dumps(values, sort_keys=True, separators=(",", ":"), default=str).encode()
+        return hashlib.sha256(encoded).hexdigest()
+
+    @property
     def native_scope(self):
         return f"{self.subscription}/{self.resource_group}/{self.app}"
 
@@ -65,7 +73,10 @@ def load(path, *, control=False):
     """Validate all target and source pins before allowing any external operation."""
     path = private_path(path)
     raw = json.loads(path.read_text())
-    required = {f.name for f in dataclasses.fields(Settings)} - {"config_path", "control_enabled"}
+    required = {f.name for f in dataclasses.fields(Settings)} - {
+        "config_path",
+        "control_enabled",
+    }
     if set(raw) != required:
         raise ValueError("Recovery configuration has missing or unknown fields")
     origin = urlsplit(raw["base_url"])
@@ -109,12 +120,37 @@ def load(path, *, control=False):
         raise ValueError("The six source records must belong to the original backlog")
     for key in ["root", "evidence_out", "token_file", "manifest", "ledger"]:
         raw[key] = private_path(raw[key])
+    roots = [raw["root"], raw["evidence_out"]]
+    if roots[0].is_relative_to(roots[1]) or roots[1].is_relative_to(roots[0]):
+        raise ValueError("State and export directories must be disjoint")
+    inputs = [path, raw["token_file"], raw["manifest"], raw["ledger"]]
+    if len(set(inputs)) != len(inputs):
+        raise ValueError("Private input files must have distinct paths")
+    if any(item.is_relative_to(root) for item in inputs for root in roots):
+        raise ValueError("Private inputs must be outside state and export directories")
     for key in ["manifest", "ledger"]:
         digest = raw[key + "_sha256"]
         if not isinstance(digest, str) or not re.fullmatch(r"[a-f0-9]{64}", digest):
             raise ValueError("Invalid approved digest: " + key)
         if hashlib.sha256(raw[key].read_bytes()).hexdigest() != digest:
             raise ValueError("Original source pin mismatch: " + key)
+    for entry in json.loads(raw["manifest"].read_text()):
+        if isinstance(entry, dict) and entry.get("source"):
+            source = private_path(entry["source"])
+            if any(source.is_relative_to(root) for root in roots) or source in inputs:
+                raise ValueError(
+                    "Original CSV inputs must be outside state/export and other inputs"
+                )
     if not raw["root"].is_dir() or not raw["evidence_out"].is_dir():
         raise ValueError("Create private work and export directories explicitly before use")
     return Settings(config_path=path, control_enabled=control, **raw)
+
+
+def bound(value):
+    """Stamp an observation with its effective immutable configuration identity."""
+    return {**value, "configuration_sha256": settings().fingerprint}
+
+
+def require_binding(value):
+    if value.get("configuration_sha256") != settings().fingerprint:
+        raise ValueError("Observation belongs to another recovery configuration")

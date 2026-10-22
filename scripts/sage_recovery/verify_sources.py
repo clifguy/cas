@@ -37,7 +37,10 @@ def main(run_id):
             "Source validation failed",
         )
         c = h.request(
-            f"/sage_vaults/{settings().vault_id}/chain", "POST", {"document_id": i}, timeout=30
+            f"/sage_vaults/{settings().vault_id}/chain",
+            "POST",
+            {"document_id": i},
+            timeout=30,
         )
         require(c["status"] == 200, "Source validation failed")
         c = c["body"]
@@ -93,7 +96,10 @@ def main(run_id):
                 "limit": 100,
                 "offset": offset,
                 "response_mode": "full",
-                "filters": {"source_type": "structured_data", "exclude_terminal_lifecycle": False},
+                "filters": {
+                    "source_type": "structured_data",
+                    "exclude_terminal_lifecycle": False,
+                },
             },
             timeout=30,
         )
@@ -125,6 +131,7 @@ def main(run_id):
         {
             "at": utc().isoformat(),
             "manifest_sha256": settings().manifest_sha256,
+            "configuration_sha256": settings().fingerprint,
             "records": rows,
             "complete": True,
             "run_id": run_id,

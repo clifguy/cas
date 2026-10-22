@@ -20,11 +20,20 @@ def summarize(root=None, now=None):
             return None
 
     manifest = read("monitor-run.json") or {}
-    run_id = manifest.get("run_id")
+    run_id = (
+        manifest.get("run_id")
+        if manifest.get("configuration_sha256") == settings().fingerprint
+        else None
+    )
 
     def current(name, maximum_age=60):
         value = read(name)
-        if not run_id or not isinstance(value, dict) or value.get("run_id") != run_id:
+        if (
+            not run_id
+            or not isinstance(value, dict)
+            or value.get("run_id") != run_id
+            or value.get("configuration_sha256") != settings().fingerprint
+        ):
             return None
         try:
             age = (now - timestamp(value["at"])).total_seconds()

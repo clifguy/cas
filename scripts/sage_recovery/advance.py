@@ -12,7 +12,7 @@ import subprocess
 import sys
 import time
 
-from .config import settings
+from .config import bound, require_binding, settings
 from .recovery_checks import (
     Unsafe,
     atomic,
@@ -91,10 +91,15 @@ class Controller:
         self.started_at = self.clock()
 
     def save(self, name, value):
-        atomic(self.root / name, value)
+        atomic(self.root / name, bound(value) if isinstance(value, dict) else value)
 
     def event(self, phase, **fields):
-        value = {"at": self.clock().isoformat(), "phase": phase, "run_id": self.run_id, **fields}
+        value = {
+            "at": self.clock().isoformat(),
+            "phase": phase,
+            "run_id": self.run_id,
+            **fields,
+        }
         self.save("advance-state.json", value)
         print(json.dumps(value), flush=True)
 
@@ -104,7 +109,8 @@ class Controller:
     def allocation(self):
         app = self.azure(["show"])
         require(
-            app["properties"]["latestRevisionName"] == settings().revision, "latest revision drift"
+            app["properties"]["latestRevisionName"] == settings().revision,
+            "latest revision drift",
         )
         revision = self.azure(["revision", "show", "--revision", settings().revision])
         require(
@@ -112,7 +118,10 @@ class Controller:
             and revision["properties"].get("active") is True,
             "target revision inactive or changed",
         )
-        for template in [app["properties"]["template"], revision["properties"]["template"]]:
+        for template in [
+            app["properties"]["template"],
+            revision["properties"]["template"],
+        ]:
             containers = template["containers"]
             require(len(containers) == 1, "allocation container population changed")
             container = containers[0]
@@ -146,10 +155,15 @@ class Controller:
     def backlog(self):
         def get(document_id):
             result = self.helper.request(
-                f"/sage_vaults/{settings().vault_id}/documents/" + document_id, timeout=20
+                f"/sage_vaults/{settings().vault_id}/documents/" + document_id,
+                timeout=20,
             )
-            require(result["status"] == 200, "backlog read failed")
-            require(result["body"]["id"] == document_id, "backlog response identity mismatch")
+            if result["status"] != 200:
+                raise ObservationUnavailable("backlog observation unavailable")
+            require(
+                result["body"]["id"] == document_id,
+                "backlog response identity mismatch",
+            )
             return result["body"]
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
@@ -164,6 +178,7 @@ class Controller:
     def observer(self, strict=False, allow_failures=False):
         require(not (self.root / "stop").exists(), "stop marker is set")
         manifest = json.loads((self.root / "monitor-run.json").read_text())
+        require_binding(manifest)
         require(manifest["run_id"] == self.run_id, "observer changed")
         snapshot = json.loads((self.root / "monitor-latest.json").read_text())
         rows = check_snapshot(snapshot, self.run_id, self.clock())
@@ -401,7 +416,10 @@ class Controller:
             limit == 4 * 1024**3 and period > 0 and quota / period == 2,
             "actual resource limits changed",
         )
-        require(rss <= 3 * 1024**3 and peak < limit and failures == 0, "memory budget exceeded")
+        require(
+            rss <= 3 * 1024**3 and peak < limit and failures == 0,
+            "memory budget exceeded",
+        )
         return bytes(output), metrics
 
     def guard(self, expected, strict=False):
@@ -440,6 +458,8 @@ class Controller:
                     "scripts.sage_recovery",
                     "--config",
                     str(settings().config_path),
+                    "--expected-config-sha256",
+                    settings().fingerprint,
                     script.removesuffix(".py").replace("_", "-"),
                     "--run-id",
                     self.run_id,
@@ -457,7 +477,12 @@ class Controller:
                 data.get("manifest_sha256") == settings().manifest_sha256,
                 "six-source evidence baseline mismatch",
             )
-            require(began <= timestamp(data["at"]) <= self.clock(), "stale six-source evidence")
+            require(
+                began <= timestamp(data["at"]) <= self.clock(),
+                "stale six-source evidence",
+            )
+            if data.get("configuration_sha256") != settings().fingerprint:
+                raise ObservationUnavailable("verification evidence targets another configuration")
             ids = [row["document_id"] for row in data["records"]]
             require(
                 len(ids) == 6 and set(ids) == set(settings().six_ids),
@@ -473,7 +498,10 @@ class Controller:
             self.allocation()
             result = self.azure(["revision", "deactivate", "--revision", settings().revision])
             target = self.azure(["revision", "show", "--revision", settings().revision])
-            require(target["properties"].get("active") is False, "deactivation not confirmed")
+            require(
+                target["properties"].get("active") is False,
+                "deactivation not confirmed",
+            )
             self.save(
                 "stop-receipt.json",
                 {
@@ -504,7 +532,8 @@ class Controller:
             "restart marker exists; reconcile manually, never replay",
         )
         require(
-            not (self.root / "window.json").exists(), "window marker exists; reconcile manually"
+            not (self.root / "window.json").exists(),
+            "window marker exists; reconcile manually",
         )
         require(not (self.root / "stop").exists(), "stop marker exists; reconcile manually")
         self.run_id = json.loads((self.root / "monitor-run.json").read_text())["run_id"]
@@ -528,7 +557,9 @@ class Controller:
         terminal_at = self.clock()
         self.verify()
         self.capture(
-            "memory-before-controlled-restart.txt", self.original, minimum_time=terminal_at
+            "memory-before-controlled-restart.txt",
+            self.original,
+            minimum_time=terminal_at,
         )
         self.guard(self.original, strict=True)
         check_backlog(self.backlog(), complete=True)

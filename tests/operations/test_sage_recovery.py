@@ -23,6 +23,7 @@ NOW = dt.datetime(2026, 10, 21, 23, tzinfo=dt.timezone.utc)
 def request(label, at=NOW, **changes):
     row = {
         "run_id": "run",
+        "configuration_sha256": settings().fingerprint,
         "label": label,
         "at": at.isoformat(),
         "started_at": at.isoformat(),
@@ -38,13 +39,19 @@ def request(label, at=NOW, **changes):
 def cycle(at=NOW):
     return {
         "run_id": "run",
+        "configuration_sha256": settings().fingerprint,
         "at": at.isoformat(),
         "requests": [request(label, at) for label in sorted(checks.LABELS)],
     }
 
 
 def replica(name="old", **changes):
-    container = {"name": "sage", "ready": True, "runningState": "Running", "restartCount": 0}
+    container = {
+        "name": "sage",
+        "ready": True,
+        "runningState": "Running",
+        "restartCount": 0,
+    }
     container.update(changes)
     return [{"name": name, "properties": {"containers": [container]}}]
 
@@ -230,15 +237,28 @@ class CheckTests(unittest.TestCase):
     def test_progress_reads_new_schema_and_ignores_old_history(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            checks.atomic(root / "monitor-run.json", {"run_id": "run"})
+            checks.atomic(
+                root / "monitor-run.json",
+                {"run_id": "run", "configuration_sha256": settings().fingerprint},
+            )
             checks.atomic(root / "monitor-latest.json", cycle())
             checks.atomic(
                 root / "backlog-latest.json",
-                {"at": NOW.isoformat(), "run_id": "run", "documents": documents()},
+                {
+                    "at": NOW.isoformat(),
+                    "run_id": "run",
+                    "configuration_sha256": settings().fingerprint,
+                    "documents": documents(),
+                },
             )
             checks.atomic(
                 root / "replicas-latest.json",
-                {"at": NOW.isoformat(), "run_id": "run", "replicas": replica("current")},
+                {
+                    "at": NOW.isoformat(),
+                    "run_id": "run",
+                    "configuration_sha256": settings().fingerprint,
+                    "replicas": replica("current"),
+                },
             )
             (root / "samples.jsonl").write_text('{"kind":"replicas","replicas":["stale"]}\n')
             result = progress.summarize(root, NOW)
@@ -251,7 +271,10 @@ class CheckTests(unittest.TestCase):
     def test_progress_wrong_run_ignored(self):
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp)
-            checks.atomic(root / "monitor-run.json", {"run_id": "other"})
+            checks.atomic(
+                root / "monitor-run.json",
+                {"run_id": "other", "configuration_sha256": settings().fingerprint},
+            )
             checks.atomic(root / "monitor-latest.json", cycle())
             result = progress.summarize(root, NOW)
             self.assertEqual(result["observer"], "unverified or stale")
@@ -279,13 +302,19 @@ class ControllerTests(unittest.TestCase):
         self.pod = "old"
         self.calls = []
         self.source_checks = 0
-        checks.atomic(self.root / "monitor-run.json", {"run_id": "run"})
+        checks.atomic(
+            self.root / "monitor-run.json",
+            {"run_id": "run", "configuration_sha256": settings().fingerprint},
+        )
         self.publish()
 
         class Helper:
             def request(self, path, timeout=20):
                 i = path.rsplit("/", 1)[-1]
-                return {"status": 200, "body": next(d for d in documents() if d["id"] == i)}
+                return {
+                    "status": 200,
+                    "body": next(d for d in documents() if d["id"] == i),
+                }
 
         self.controller = advance.Controller(
             Helper(), self.root, self.azure, self.sleep, lambda: self.at
@@ -323,7 +352,12 @@ class ControllerTests(unittest.TestCase):
             ]
         }
         if args == ["show"]:
-            return {"properties": {"latestRevisionName": settings().revision, "template": template}}
+            return {
+                "properties": {
+                    "latestRevisionName": settings().revision,
+                    "template": template,
+                }
+            }
         if args[:2] == ["revision", "show"]:
             return {
                 "name": settings().revision,
@@ -394,9 +428,14 @@ class ControllerTests(unittest.TestCase):
             self.pod = "replacement"
 
         self.controller.verify = changed
+
+        def capture(name, pod, minimum_time=None):
+            self.controller.last_memory = self.at
+
+        self.controller.capture = capture
         with (
             contextlib.redirect_stdout(io.StringIO()),
-            self.assertRaises((checks.Unsafe, AssertionError)),
+            self.assertRaises(checks.Unsafe),
         ):
             self.controller.run()
         self.assertFalse(any(args[:2] == ["revision", "restart"] for args in self.calls))
@@ -412,7 +451,10 @@ class ControllerTests(unittest.TestCase):
                 checks.atomic(self.root / "monitor-latest.json", value)
 
         self.controller.sleep = failure
-        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(checks.Unsafe):
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaises(checks.Unsafe),
+        ):
             self.controller.run()
         self.assertFalse((self.root / "window-validation.json").exists())
 
@@ -458,7 +500,10 @@ class ControllerTests(unittest.TestCase):
 
         self.controller.sleep = sleep
         self.controller.verify = verify
-        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(checks.Unsafe):
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaises(checks.Unsafe),
+        ):
             self.controller.run()
         self.assertFalse((self.root / "window-validation.json").exists())
 
@@ -471,7 +516,10 @@ class ControllerTests(unittest.TestCase):
                 self.pod = "unexpected"
 
         self.controller.capture = changed
-        with contextlib.redirect_stdout(io.StringIO()), self.assertRaises(checks.Unsafe):
+        with (
+            contextlib.redirect_stdout(io.StringIO()),
+            self.assertRaises(checks.Unsafe),
+        ):
             self.controller.run()
         self.assertFalse((self.root / "window-validation.json").exists())
 
