@@ -135,8 +135,8 @@ class PipelineStatus(StrEnum):
     the LLM was unavailable (graceful degradation per CAS-ADR-011).
 
     `abstraction_interrupted` records abstraction work that was dropped
-    rather than attempted: the queue draining it was stopped before the
-    work ran or finished. It is terminal because nothing is left running
+    before publication: its queue was stopped or an artifact rewrite
+    superseded its attempt. It is terminal because nothing is left running
     to advance the document, and it is not a success -- `pipeline_error`
     carries the cause. Unlike the other non-success terminal status it
     says nothing about the document or the provider, so startup recovery
@@ -313,10 +313,10 @@ class ReabstractOutcome(StrEnum):
     `llm_failure`. A still-skipped document declined abstraction rather
     than attempting it; a timed-out one was abandoned by the waiter
     while the generation it was waiting on may still be running; an
-    interrupted one had its work dropped by a stopped queue and never
-    reached a provider at all. Folding any of them into `llm_failure`
-    would send an operator looking for a provider error that never
-    happened. A dispatch failure records the exception from the dispatch
+    interrupted one had its work stopped or superseded before publication.
+    Neither interruption cause establishes a provider failure. Folding any of
+    them into `llm_failure` would attribute a provider failure the status
+    does not establish. A dispatch failure records the exception from the dispatch
     call separately; it makes no claim about provider execution.
     """
 

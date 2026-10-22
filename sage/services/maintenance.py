@@ -136,16 +136,16 @@ def _reabstract_failure_report(status: str) -> _FailureReport:
     claims the provider raised, so each status that reaches a terminal
     state some other way is named before the fallthrough: a document that
     declined abstraction, one the waiter abandoned, one whose work was
-    dropped by a stopped queue, and one that no longer exists. Only a
+    stopped or superseded, and one that no longer exists. Only a
     stored ``failed`` should arrive at the last return.
     """
     if status == PipelineStatus.ABSTRACTION_INTERRUPTED.value:
         return _FailureReport(
             ReabstractOutcome.INTERRUPTED,
             "failed",
-            "abstraction work was dropped before it completed: the queue "
-            "draining it was stopped. No provider was reached; the next "
-            "server start re-runs it",
+            "abstraction work was stopped or superseded before publication. "
+            "No provider failure is inferred; inspect pipeline_error for the cause. "
+            "The next server start re-runs it",
         )
     if status == PipelineStatus.ABSTRACTION_SKIPPED.value:
         return _FailureReport(
@@ -1751,9 +1751,9 @@ class MaintenanceService:
                         # abstraction_skipped declined abstraction rather than
                         # failing at it; a timed-out one was abandoned by the
                         # waiter and may yet finish; an interrupted one had its
-                        # work dropped by a stopped queue. Reporting any of them
-                        # as an llm_failure sends an operator looking for a
-                        # provider error that was never raised.
+                        # work stopped or superseded. Reporting any of them
+                        # as an llm_failure attributes a provider failure the
+                        # status does not establish.
                         outcome, event_status, error_message = _reabstract_failure_report(status)
                         entries.append(
                             ReabstractReportEntry(

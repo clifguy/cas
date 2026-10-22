@@ -47,6 +47,7 @@ from sage.adapters.interfaces import (
 )
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
 from sage.models.coverage import DIMENSIONS, CoverageDimension, ProcessingCoverage
+from sage.models.enums import TERMINAL_PIPELINE_STATUSES, PipelineStatus
 from sage.storage.postgres.schema import (
     CHUNKS_TSV_CURRENT_MARKERS,
     CHUNKS_TSV_GENERATION_EXPRESSION_PROBE,
@@ -424,6 +425,9 @@ def _split_negation(rendered: str) -> tuple[str, list[str]]:
 
 
 _PROCESSING_READ: ContextVar = ContextVar("processing_read", default=None)
+_NON_TERMINAL_PROCESSING = [
+    status.value for status in PipelineStatus if status not in TERMINAL_PIPELINE_STATUSES
+]
 
 
 def _processing_read(method) -> object:
@@ -569,8 +573,22 @@ class PostgresContentStore(ContentStore):
             {**current.model_dump(), **changes, "attempt": attempt}
         )
         await conn.execute(
-            "UPDATE documents SET processing_coverage = %s WHERE id = %s",
-            (Jsonb(coverage.model_dump(mode="json")), document_id),
+            "UPDATE documents SET processing_coverage = %s, "
+            "pipeline_status = CASE WHEN pipeline_status = ANY(%s) "
+            "THEN 'abstraction_interrupted' ELSE pipeline_status END, "
+            "pipeline_error = CASE WHEN pipeline_status = ANY(%s) "
+            "THEN 'processing attempt was superseded by an artifact rewrite' "
+            "ELSE pipeline_error END, "
+            "updated_at = CASE WHEN pipeline_status = ANY(%s) THEN %s ELSE updated_at END "
+            "WHERE id = %s",
+            (
+                Jsonb(coverage.model_dump(mode="json")),
+                _NON_TERMINAL_PROCESSING,
+                _NON_TERMINAL_PROCESSING,
+                _NON_TERMINAL_PROCESSING,
+                datetime.now(timezone.utc).isoformat(),
+                document_id,
+            ),
         )
 
     async def read_processing_artifacts(

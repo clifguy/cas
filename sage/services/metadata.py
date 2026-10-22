@@ -352,7 +352,9 @@ class MetadataService:
             # computed `updates` dict already represents the would-be
             # post-patch state for every persisted field; applying it
             # to a shallow copy of the in-memory doc gives the preview
-            # with byte-identical semantics to the real-run output.
+            # with the same metadata patch semantics as the real run. Served
+            # evidence stays current: previews do not rewrite artifacts or
+            # allocate a future generation.
             #
             # Also compute the field-level deltas (`changes`)
             # the patch would persist. Dry-run only; real-run responses
@@ -399,6 +401,11 @@ class MetadataService:
                 if "title" in updates or "tags" in updates:
                     await refresh_derived_retrieval_text(self._content, document_id, doc)
 
+            # Capture the response after derived-text maintenance, while still
+            # holding the mutation lock: maintenance advances artifact evidence.
+            doc = await self._store.get_document(document_id)
+            if doc is None:
+                raise DocumentNotFoundError(document_id)
             return UpdateMetadataResponse(document=doc, dry_run=False)
 
     async def bulk_update_metadata(
