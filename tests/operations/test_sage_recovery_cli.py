@@ -135,11 +135,37 @@ def test_control_consent_is_explicit_and_not_persisted(tmp_path, recovery_settin
 
 
 def test_private_paths_refuse_git_and_symlinks(tmp_path):
-    (tmp_path / ".git").mkdir()
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / ".git").mkdir()
     with pytest.raises(ValueError, match="outside Git"):
-        config.private_path(str(tmp_path / "credentials.json"))
+        config.private_path(str(repository / "credentials.json"))
     with pytest.raises(ValueError, match="absolute"):
         config.private_path("relative.json")
+    ordinary = tmp_path / "ordinary.json"
+    ordinary.write_text("{}")
+    directory = tmp_path / "private-directory"
+    directory.mkdir()
+    for index, target in enumerate([ordinary, directory, tmp_path / "missing.json"]):
+        assert config.private_path(str(target)) == target.resolve()
+        link = tmp_path / f"link-{index}"
+        link.symlink_to(target)
+        with pytest.raises(ValueError, match="must not be symlinks"):
+            config.private_path(str(link))
+
+
+def test_symlink_configuration_refuses_before_dispatch(tmp_path, recovery_settings):
+    path, _ = configuration(tmp_path, recovery_settings)
+    assert config.load(path).config_path == path.resolve()
+    link = tmp_path / "linked-config.json"
+    link.symlink_to(path)
+    with (
+        patch.object(
+            cli.importlib, "import_module", side_effect=AssertionError("dispatch reached")
+        ),
+        pytest.raises(ValueError, match="must not be symlinks"),
+    ):
+        cli.main(["--config", str(link), "progress"])
 
 
 def test_no_config_is_no_implicit_target():
