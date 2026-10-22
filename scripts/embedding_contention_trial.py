@@ -20,7 +20,165 @@ import sys
 import threading
 import time
 import uuid
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from pathlib import Path
+from unittest.mock import patch
+
+
+class BulkReadiness:
+    """Observe target preparation without mistaking queued work for inference."""
+
+    def __init__(
+        self,
+        target_id: str | None = None,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        failures: list[dict] | None = None,
+    ) -> None:
+        self.failures = failures if failures is not None else []
+        self.target_id = target_id
+        self.clock = clock
+        self.started = threading.Event()
+        self._scope = threading.local()
+        self._lock = threading.Lock()
+        self._stage = "waiting"
+        self._sizing_completions = 0
+        self._prepared_chunks = 0
+        self._last_progress = clock()
+        self._wait_start = None
+
+    def _progress(self, stage: str) -> None:
+        self._stage = stage
+        self._last_progress = self.clock()
+
+    def instrument(self, ingestion: object, provider: object) -> None:
+        original_chunk = ingestion._chunk_projection
+        original_count = provider.count_tokens
+        original_embed = ingestion._embed_chunks
+
+        def chunk(document_id: str, projection: object) -> list:
+            # The recovery manifest supplies identity before startup; fresh
+            # ingestion binds it from the actual largest-source marker.
+            with self._lock:
+                target = document_id == self.target_id or (
+                    self.target_id is None and "LARGE_BULK_TRIAL" in projection.text
+                )
+                if target:
+                    self.target_id = document_id
+                    self._progress("preparing")
+            previous = getattr(self._scope, "target", False)
+            self._scope.target = target
+            try:
+                result = original_chunk(document_id, projection)
+                if target:
+                    with self._lock:
+                        self._prepared_chunks = len(result)
+                        self._progress("prepared")
+                return result
+            finally:
+                self._scope.target = previous
+
+        def count(text: str) -> int:
+            result = original_count(text)
+            if getattr(self._scope, "target", False):
+                with self._lock:
+                    self._sizing_completions += 1
+                    self._progress("preparing")
+            return result
+
+        async def embed(chunks: list) -> None:
+            with self._lock:
+                if self.target_id is not None and any(
+                    chunk.document_id == self.target_id for chunk in chunks
+                ):
+                    self._progress("submitted")
+            return await original_embed(chunks)
+
+        ingestion._chunk_projection = chunk
+        provider.count_tokens = count
+        ingestion._embed_chunks = embed
+
+    def run_inference(
+        self, texts: list[str], original: Callable[[list[str]], list[list[float]]]
+    ) -> list[list[float]]:
+        if any("LARGE_BULK_TRIAL" in text for text in texts):
+            with self._lock:
+                self._progress("inference")
+                self.started.set()
+        # Entry is evidence of contention, not acceptance of the result. The
+        # caller still records and propagates any actual inference exception.
+        try:
+            return original(texts)
+        except Exception as exc:
+            self.failures.append(
+                {
+                    "kind": "model_inference",
+                    "source_group": "largest"
+                    if any("LARGE_BULK_TRIAL" in text for text in texts)
+                    else "baseline_or_witness",
+                    "error": repr(exc),
+                }
+            )
+            raise
+
+    def snapshot(self) -> dict:
+        with self._lock:
+            now = self.clock()
+            return {
+                "target_id": self.target_id,
+                "stage": self._stage,
+                "sizing_completions": self._sizing_completions,
+                "prepared_chunks": self._prepared_chunks,
+                "elapsed_seconds": None if self._wait_start is None else now - self._wait_start,
+                "inactive_seconds": now - self._last_progress,
+            }
+
+    async def wait(
+        self,
+        checkpoint: Callable[[], Awaitable[None]],
+        *,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        absolute_timeout: float = 300,
+    ) -> None:
+        # Bound asynchronous diagnostics too; the clock-driven checks below
+        # enforce target inactivity and remain independently testable.
+        async with asyncio.timeout(absolute_timeout):
+            with self._lock:
+                self._wait_start = self.clock()
+                self._last_progress = max(self._last_progress, self._wait_start)
+            last_checkpoint = -float("inf")
+            while True:
+                state = self.snapshot()
+                if state["elapsed_seconds"] >= absolute_timeout or state["inactive_seconds"] >= 120:
+                    raise TimeoutError(f"largest inference readiness expired: {state}")
+                if self.started.is_set():
+                    return
+                if self.clock() - last_checkpoint >= 1:
+                    await checkpoint()
+                    last_checkpoint = self.clock()
+                await sleep(0.05)
+
+
+@asynccontextmanager
+async def observed_lifespan(
+    app: object,
+    initializer_owner: object,
+    readiness: BulkReadiness,
+    on_initialized: Callable[[object], None],
+) -> AsyncIterator[None]:
+    """Install trial instrumentation before automatic startup recovery."""
+    original = initializer_owner.initialize_services
+
+    async def initialize(*args: object, **kwargs: object) -> object:
+        services = await original(*args, **kwargs)
+        readiness.instrument(services.ingestion_service, services.ingestion_service._embedding)
+        on_initialized(services)
+        return services
+
+    with patch.object(initializer_owner, "initialize_services", initialize):
+        async with app.router.lifespan_context(app):
+            yield
 
 
 def require(condition: bool, message: object) -> None:
@@ -253,6 +411,7 @@ async def worker(args: argparse.Namespace) -> int:
     path = root / f"{args.phase}.json"
 
     def save() -> None:
+        report["large_bulk_readiness"] = readiness.snapshot()
         report["memory"] = memory()
         for kind in ("semantic", "lightweight"):
             values = sorted(report[f"{kind}_seconds"])
@@ -261,7 +420,47 @@ async def worker(args: argparse.Namespace) -> int:
                 report[f"{kind}_max"] = max(values)
         path.write_text(json.dumps(report, indent=2))
 
-    async with app.router.lifespan_context(app):
+    from sage import app as app_module
+
+    manifest_path = root / "manifest.json"
+    manifest = json.loads(manifest_path.read_text()) if args.phase == "recover" else []
+    readiness = BulkReadiness(
+        target_id=manifest[-1]["id"] if manifest else None, failures=report["failures"]
+    )
+    provider = None
+    original = None
+    completed = 0
+    bulk_completed = 0
+    witness_started = threading.Event()
+
+    def observed(texts: list[str]) -> list[list[float]]:
+        nonlocal completed, bulk_completed
+        is_bulk = any("LARGE_BULK_TRIAL" in text for text in texts)
+        if any("RECOVERY_WITNESS" in text for text in texts):
+            witness_started.set()
+        if is_bulk:
+            if len(report["bulk_input_shapes"]) < 16:
+                report["bulk_input_shapes"].extend(
+                    {
+                        "characters": len(text),
+                        "bytes": len(text.encode()),
+                        "tokens": provider.count_tokens(text),
+                    }
+                    for text in texts
+                )
+        result = readiness.run_inference(texts, original)
+        completed += len(texts)
+        if is_bulk:
+            bulk_completed += len(texts)
+        return result
+
+    def observe_provider(services: object) -> None:
+        nonlocal provider, original
+        provider = services.ingestion_service._embedding
+        original = provider._embed_sync
+        provider._embed_sync = observed
+
+    async with observed_lifespan(app, app_module, readiness, observe_provider):
         svc = app.state.vault_registry["embedding_trial"]
         provider = svc.ingestion_service._embedding
 
@@ -283,46 +482,6 @@ async def worker(args: argparse.Namespace) -> int:
             )
             save()
 
-        completed = 0
-        bulk_completed = 0
-        bulk_started = threading.Event()
-        witness_started = threading.Event()
-        original = provider._embed_sync
-
-        def observed(texts: list[str]) -> list[list[float]]:
-            nonlocal completed, bulk_completed
-            is_bulk = any("LARGE_BULK_TRIAL" in text for text in texts)
-            if any("RECOVERY_WITNESS" in text for text in texts):
-                witness_started.set()
-            if is_bulk:
-                bulk_started.set()
-                if len(report["bulk_input_shapes"]) < 16:
-                    report["bulk_input_shapes"].extend(
-                        {
-                            "characters": len(text),
-                            "bytes": len(text.encode()),
-                            "tokens": provider.count_tokens(text),
-                        }
-                        for text in texts
-                    )
-            try:
-                result = original(texts)
-            except Exception as exc:
-                report["failures"].append(
-                    {
-                        "kind": "model_inference",
-                        "source_group": "largest" if is_bulk else "baseline_or_witness",
-                        "error": repr(exc),
-                    }
-                )
-                raise
-            completed += len(texts)
-            if is_bulk:
-                bulk_completed += len(texts)
-            return result
-
-        provider._embed_sync = observed
-        manifest_path = root / "manifest.json"
         if args.phase == "fresh":
             manifest = []
             for index, size in enumerate((9216, 65536, 27262976)):
@@ -339,8 +498,6 @@ async def worker(args: argparse.Namespace) -> int:
                 entry["id"] = result.document.id
                 manifest.append(entry)
                 manifest_path.write_text(json.dumps(manifest, indent=2))
-        else:
-            manifest = json.loads(manifest_path.read_text())
         report["files"] = manifest
         if args.phase == "recover":
             report["recovered_ids"] = [
@@ -357,24 +514,22 @@ async def worker(args: argparse.Namespace) -> int:
             ] = await svc.ingestion_service.recover_incomplete_documents()
             require(report["duplicate_recovery_enqueues"] == 0, "duplicate recovery claim")
 
-        async def wait_for_bulk() -> None:
-            last = 0.0
-            while not bulk_started.is_set():
-                if time.monotonic() - last >= 1:
-                    await checkpoint("waiting for largest inference")
-                    last = time.monotonic()
-                await asyncio.sleep(0.05)
+        async def readiness_checkpoint() -> None:
+            await checkpoint("waiting for largest inference")
 
         try:
-            await asyncio.wait_for(wait_for_bulk(), 120)
+            await readiness.wait(readiness_checkpoint)
         except TimeoutError:
             report["failures"].append(
                 {
                     "kind": "large_bulk_readiness",
-                    "documents": [
-                        {"id": doc.id, "status": doc.pipeline_status, "error": doc.pipeline_error}
-                        for doc in await svc.graph_store.list_all_documents()
-                    ],
+                    "readiness": readiness.snapshot(),
+                    # The timed-out checkpoint may itself be the graph read.
+                    # Persist available diagnostics without re-entering it.
+                    "documents": report.get("live_jobs"),
+                    "documents_source": "last_successful_checkpoint"
+                    if "live_jobs" in report
+                    else "unavailable",
                 }
             )
             report["passed"] = False
