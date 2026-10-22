@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 from zipfile import ZipFile
 
 import pytest
@@ -57,7 +59,7 @@ def locked_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     _wheel(wheels, "platform_support", "1.0")
     for version in ("1.0", "2.0"):
         _wheel(wheels, "scanner", version, ("platform-support; sys_platform == 'win32'",))
-    monkeypatch.setenv("UV_NO_INDEX", "1")
+    monkeypatch.setenv("UV_OFFLINE", "1")
     monkeypatch.setenv("UV_FIND_LINKS", str(wheels))
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
     root = tmp_path / "repo"
@@ -162,6 +164,37 @@ def test_missing_uv_is_reported(locked_repo: Path, monkeypatch: pytest.MonkeyPat
     assert result.returncode == 1
     assert "uv" in result.stderr
     assert "Traceback" not in result.stderr
+
+
+def test_fixture_disables_index_requests(
+    locked_repo: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    requests: list[str] = []
+
+    class RecordingIndex(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            requests.append(self.path)
+            self.send_response(404)
+            self.end_headers()
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    with ThreadingHTTPServer(("127.0.0.1", 0), RecordingIndex) as server:
+        thread = Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        monkeypatch.setenv("UV_INDEX_URL", f"http://127.0.0.1:{server.server_port}/simple")
+        try:
+            offline = _check(locked_repo)
+            assert offline.returncode == 0, offline.stderr
+            assert requests == []
+            monkeypatch.delenv("UV_OFFLINE")
+            online = _check(locked_repo)
+            assert online.returncode == 0, online.stderr
+            assert "/simple/scanner/" in requests
+        finally:
+            server.shutdown()
+            thread.join()
 
 
 def test_required_ci_job_runs_the_verifier() -> None:
