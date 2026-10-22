@@ -63,11 +63,15 @@ class StubContentStore(ContentStore):
 
             self._processing_delegate = PostgresContentStore(graph_store._pool)
 
-    async def read_processing_snapshot(
+    async def read_processing_artifacts(
         self, document_id: str
-    ) -> tuple[ProcessingCoverage, list[Chunk]]:
+    ) -> tuple[ProcessingCoverage, list[Chunk], str | None]:
         doc = await self._processing_store.get_document(document_id)
-        return doc.processing_coverage, await self.get_all_chunks(document_id)
+        return (
+            doc.processing_coverage,
+            await self.get_all_chunks(document_id),
+            doc.semantic_abstract,
+        )
 
     async def update_processing_status(self, document_id: str, attempt: int, updates: dict) -> bool:
         if self._processing_delegate is not None:

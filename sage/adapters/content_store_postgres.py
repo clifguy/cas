@@ -435,15 +435,17 @@ def _processing_read(method) -> object:
             ids = list({r.document_id for r in results})
             if ids:
                 cur = await conn.execute(
-                    "SELECT id, processing_coverage FROM documents WHERE id = ANY(%s)", (ids,)
+                    "SELECT id, processing_coverage, semantic_abstract FROM documents "
+                    "WHERE id = ANY(%s)",
+                    (ids,),
                 )
                 coverage = {
-                    row[0]: ProcessingCoverage.model_validate(row[1] or {})
+                    row[0]: (ProcessingCoverage.model_validate(row[1] or {}), row[2])
                     for row in await cur.fetchall()
                 }
                 for result in results:
-                    result.processing_coverage = coverage.get(
-                        result.document_id, ProcessingCoverage()
+                    result.processing_coverage, result.semantic_abstract = coverage.get(
+                        result.document_id, (ProcessingCoverage(), None)
                     )
             return results
 
@@ -548,7 +550,13 @@ class PostgresContentStore(ContentStore):
         if row is None or row[0] is None:
             return
         current = ProcessingCoverage.model_validate(row[0])
-        if not any(getattr(current, name).scope in ("limited", "complete") for name in dimensions):
+        # Unknown scope can still describe a published artifact. Its generation
+        # and publication fence must move when maintenance replaces that artifact.
+        if not any(
+            getattr(current, name).generation is not None
+            or getattr(current, name).scope in ("limited", "complete")
+            for name in dimensions
+        ):
             return
         attempt = current.attempt + 1
         changes = {
@@ -565,13 +573,14 @@ class PostgresContentStore(ContentStore):
             (Jsonb(coverage.model_dump(mode="json")), document_id),
         )
 
-    async def read_processing_snapshot(
+    async def read_processing_artifacts(
         self, document_id: str
-    ) -> tuple[ProcessingCoverage, list[Chunk]]:
+    ) -> tuple[ProcessingCoverage, list[Chunk], str | None]:
         async with self._pool.connection() as conn, conn.transaction():
             await conn.execute("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ")
             cur = await conn.execute(
-                "SELECT processing_coverage FROM documents WHERE id = %s", (document_id,)
+                "SELECT processing_coverage, semantic_abstract FROM documents WHERE id = %s",
+                (document_id,),
             )
             row = await cur.fetchone()
             coverage = (
@@ -582,7 +591,11 @@ class PostgresContentStore(ContentStore):
                 f"WHERE document_id = %s AND {_passage_rows_only()} ORDER BY chunk_index",
                 (document_id,),
             )
-            return coverage, [self._row_to_chunk(r) for r in await cur.fetchall()]
+            return (
+                coverage,
+                [self._row_to_chunk(r) for r in await cur.fetchall()],
+                row[1] if row else None,
+            )
 
     async def update_processing_status(self, document_id: str, attempt: int, updates: dict) -> bool:
         allowed = {"pipeline_status", "pipeline_error", "updated_at", "indexed_at"}
@@ -975,6 +988,9 @@ class PostgresContentStore(ContentStore):
                 drop, add, index = CHUNKS_TSV_REBUILD
 
                 if rebuilding:
+                    affected = await conn.execute("SELECT DISTINCT document_id FROM chunks")
+                    for (document_id,) in await affected.fetchall():
+                        await self._invalidate_processing(conn, document_id, ("keyword_indexing",))
                     await conn.execute(drop)
 
                 if derived:
@@ -984,7 +1000,10 @@ class PostgresContentStore(ContentStore):
                         (list({doc for doc, _, _ in derived}),),
                     )
                     for (document_id,) in await pending.fetchall():
-                        await self._invalidate_processing(conn, document_id, ("keyword_indexing",))
+                        if not rebuilding:
+                            await self._invalidate_processing(
+                                conn, document_id, ("keyword_indexing",)
+                            )
                     async with conn.cursor() as cur:
                         for start in range(0, len(derived), _BACKFILL_BATCH_SIZE):
                             batch = derived[start : start + _BACKFILL_BATCH_SIZE]

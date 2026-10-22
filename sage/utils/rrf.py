@@ -115,6 +115,7 @@ def rrf_fuse(
                 is_document_surface=all_surface[doc_id],
                 section_index=original.section_index,
                 processing_coverage=original.processing_coverage,
+                semantic_abstract=original.semantic_abstract,
             )
         )
     return fused

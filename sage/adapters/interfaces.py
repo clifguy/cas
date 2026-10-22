@@ -234,6 +234,8 @@ class SearchResult:
     is_document_surface: bool = False
     section_index: int | None = None
     processing_coverage: ProcessingCoverage | None = None
+    # Present with processing_coverage, including a legitimate absent abstract.
+    semantic_abstract: str | None = None
 
 
 @dataclass(frozen=True)
@@ -286,6 +288,13 @@ class ContentStore(ABC):
         self, document_id: str
     ) -> tuple[ProcessingCoverage, list[Chunk]]:
         """Read served passages and coverage from one publication snapshot."""
+        coverage, chunks, _ = await self.read_processing_artifacts(document_id)
+        return coverage, chunks
+
+    async def read_processing_artifacts(
+        self, document_id: str
+    ) -> tuple[ProcessingCoverage, list[Chunk], str | None]:
+        """Read passages, coverage and the generated abstract from one snapshot."""
         raise NotImplementedError
 
     def bind_processing_store(self, graph_store: "GraphStore") -> None:

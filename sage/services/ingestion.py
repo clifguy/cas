@@ -22,6 +22,7 @@ import tempfile
 import time
 from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -120,7 +121,6 @@ from sage.services.deprecations import warnings_for
 from sage.services.document_surface import (
     compose_document_surface,
     embedding_text,
-    refresh_derived_retrieval_text,
 )
 from sage.services.filename_parser import FilenameParser, ParsedMetadata
 from sage.services.graph_ops import supersedes_heads
@@ -1769,7 +1769,7 @@ class IngestionService:
         # for adapter behavior across all ingests; the request override is
         # recorded on the document, so a later re-projection of this source
         # shapes its passages the way this call did.
-        merged_config = self._merge_adapter_config(request.source_type, request.config)
+        merged_config = deepcopy(self._merge_adapter_config(request.source_type, request.config))
         with self._project_source(vault_source_store, storage_root, vault_relative) as project_path:
             with (
                 _refuse_unreadable_source(request.source_type, reported_source),
@@ -2161,7 +2161,7 @@ class IngestionService:
 
         if retained or is_new:
             attempt = await self._content_store.begin_processing_attempt(doc.id)
-            identity = self._coverage_identity(doc)
+            identity = self._coverage_identity(doc, merged_config)
             await self._content_store.publish_processing(
                 doc.id,
                 attempt,
@@ -2484,12 +2484,14 @@ class IngestionService:
                 document_id,
             )
 
-    def _coverage_identity(self, doc: Document) -> ProcessingIdentity:
+    def _coverage_identity(
+        self, doc: Document, effective_config: dict | None
+    ) -> ProcessingIdentity:
         return ProcessingIdentity(
             source_hash=doc.source_content_hash,
             adapter=f"{doc.source_type.value}:{doc.adapter_version}",
             policy="coverage-v1",
-            configuration=doc.adapter_config or {},
+            configuration=effective_config or {},
             tokenization="unknown",
         )
 
@@ -2535,30 +2537,6 @@ class IngestionService:
             lambda: self._chunk_projection(document_id, projection)
         )
 
-        # Stamp document-level scalars on body chunks for content-store
-        # pre-filtering. doc_type, lifecycle_status, and project are
-        # all stable per-document fields whose values must
-        # ride along with each chunk row so the content store can
-        # pre-filter at top-K time without a graph-store round trip.
-        #
-        # The passage's structure relative to its document is derived here too,
-        # from the same record and by the same function the migration uses
-        # (CAS-ADR-049 Decision 3), so a re-ingested document and a migrated one
-        # carry identical structure for the same source. The stored heading path
-        # is untouched: it is the passage's address, and enumeration, section
-        # reads and any cached path resolve exactly as before.
-        #
-        # A document that vanished mid-pipeline leaves the field underived,
-        # which the binding reads as the pre-decision behaviour rather than as
-        # an empty structure.
-        if doc and body_chunks:
-            for chunk in body_chunks:
-                if doc.doc_type:
-                    chunk.doc_type = doc.doc_type
-                chunk.lifecycle_status = doc.lifecycle_status
-                chunk.project = doc.project
-                chunk.indexed_structure = indexed_structure(chunk.heading_path, doc.title)
-
         # The passage surface holds authored passages only (CAS-ADR-049);
         # document-level text goes to its own surface, written below.
         chunks: list[Chunk] = list(body_chunks)
@@ -2583,23 +2561,29 @@ class IngestionService:
             name: CoverageDimension(limitations=["producer_evidence_unavailable"])
             for name in ("projection", "keyword_indexing", "passage_embeddings")
         }
-        if not await self._content_store.publish_processing(
-            document_id, attempt, evidence, chunks=chunks, surface=surface
-        ):
-            raise RuntimeError("stale processing publication")
-
-        # A caller may patch or supersede the document while this stage runs:
-        # its version token does not move with pipeline work (CAS-ADR-038), so
-        # nothing makes it wait. That write synced the content store before
-        # these passages existed, so they carry what was read above. Re-read
-        # the record and bring them up to date, under the document lock the
-        # caller writes take, so a write landing meanwhile cannot have its own
-        # sync overwritten by this one.
-        if doc is not None:
-            async with self._locks.lock(document_id):
-                current = await self._store.get_document(document_id)
-                if current is not None:
-                    await self._reconcile_indexed_copies(document_id, doc, current)
+        # Reconcile the candidate before publishing under the same lock as
+        # metadata writers. Post-publication maintenance writes would invalidate
+        # this attempt's newly served evidence and fence its own completion.
+        async with self._locks.lock(document_id):
+            current = await self._store.get_document(document_id)
+            if current is not None:
+                for chunk in chunks:
+                    chunk.doc_type = current.doc_type
+                    chunk.lifecycle_status = current.lifecycle_status
+                    chunk.project = current.project
+                    chunk.indexed_structure = indexed_structure(chunk.heading_path, current.title)
+                fresh_surface = compose_document_surface(document_id, current)
+                if surface is None or embedding_text(fresh_surface) != embedding_text(surface):
+                    [fresh_surface.embedding] = await self._embedding.embed(
+                        [embedding_text(fresh_surface)]
+                    )
+                else:
+                    fresh_surface.embedding = surface.embedding
+                surface = fresh_surface
+            if not await self._content_store.publish_processing(
+                document_id, attempt, evidence, chunks=chunks, surface=surface
+            ):
+                raise RuntimeError("stale processing publication")
 
         # Mark indexing complete (BH-008)
         await self._stamp_pipeline_status(
@@ -2621,25 +2605,6 @@ class IngestionService:
             embeddings = await self._embedding.embed(texts)
             for chunk, embedding in zip(window, embeddings):
                 chunk.embedding = embedding
-
-    async def _reconcile_indexed_copies(
-        self, document_id: str, indexed: Document, current: Document
-    ) -> None:
-        """Bring the content store's copies of a record's fields up to ``current``.
-
-        ``indexed`` is the record the passages were stamped from. Only what
-        changed since is rewritten, through the same writes a metadata patch
-        or lifecycle transition makes.
-        """
-        scalars = {
-            field: getattr(current, field)
-            for field in ("doc_type", "project", "lifecycle_status")
-            if getattr(current, field) != getattr(indexed, field)
-        }
-        if scalars:
-            await self._content_store.update_chunk_metadata(document_id, scalars)
-        if current.title != indexed.title or current.tags != indexed.tags:
-            await refresh_derived_retrieval_text(self._content_store, document_id, current)
 
     async def _refresh_header_chunk(self, document_id: str) -> None:
         """Rewrite the document surface after metadata changes.

@@ -1948,7 +1948,12 @@ class RetrievalService:
             if doc is None:
                 continue
             if result.processing_coverage is not None:
-                doc = doc.model_copy(update={"processing_coverage": result.processing_coverage})
+                doc = doc.model_copy(
+                    update={
+                        "processing_coverage": result.processing_coverage,
+                        "semantic_abstract": result.semantic_abstract,
+                    }
+                )
 
             # BH-020: failed pipeline = excluded from all retrieval, EXCEPT when
             # the caller passes an explicit pipeline_status filter. The
@@ -2302,8 +2307,12 @@ class RetrievalService:
 
         # Prefix match on heading_path (BH-029)
         with phases.phase("get_chunks_by_heading_prefix"):
-            coverage, served = await self._content.read_processing_snapshot(request.document_id)
-            doc = doc.model_copy(update={"processing_coverage": coverage})
+            coverage, served, abstract = await self._content.read_processing_artifacts(
+                request.document_id
+            )
+            doc = doc.model_copy(
+                update={"processing_coverage": coverage, "semantic_abstract": abstract}
+            )
             chunks = [
                 c
                 for c in served
