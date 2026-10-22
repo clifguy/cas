@@ -83,6 +83,77 @@ def validate_target(plan: dict, live: dict) -> str:
     return origin.rstrip("/")
 
 
+def validate_serving_revision(plan: dict, live: dict, revisions: list[dict]) -> dict:
+    """Check the sole healthy serving revision, including its immutable template."""
+    import copy
+
+    validate_target(plan, live)
+    approved = plan["target"]["revision_name"]
+    props = live["properties"]
+    if (
+        props.get("provisioningState") != "Succeeded"
+        or props.get("latestRevisionName") != approved
+        or props.get("latestReadyRevisionName") != approved
+        or props["configuration"].get("activeRevisionsMode") != "Single"
+    ):
+        raise ValueError("approved revision is not the ready single serving revision")
+    active = [r for r in revisions if r["properties"].get("active") is True]
+    if len(active) != 1 or active[0]["name"] != approved:
+        raise ValueError("unexpected active revision ownership")
+    revision = active[0]
+    if revision["id"].casefold() != (live["id"] + "/revisions/" + approved).casefold():
+        raise ValueError("revision identity differs from approved app")
+    rp = revision["properties"]
+    if (
+        rp.get("healthState") != "Healthy"
+        or rp.get("provisioningState") != "Provisioned"
+        or rp.get("runningState") != "Running"
+        or rp.get("replicas") != 1
+        or rp.get("trafficWeight") != 100
+    ):
+        raise ValueError("approved revision is not healthy with sole traffic and replica")
+    traffic = props["configuration"]["ingress"].get("traffic", [])
+    positive = [t for t in traffic if t.get("weight", 0) > 0]
+    if len(positive) != 1 or positive[0]["weight"] != 100:
+        raise ValueError("split or missing ingress traffic")
+    route = positive[0]
+    if route.get("revisionName") != approved and not (
+        route.get("latestRevision") is True and not route.get("revisionName")
+    ):
+        raise ValueError("ingress traffic names another revision")
+    actual = copy.deepcopy(live)
+    actual["properties"]["template"] = rp["template"]
+    validate_target(plan, actual)
+    return revision
+
+
+def ready_replica(revision: dict, replicas: list[dict]) -> dict:
+    """Return a concrete ready process identity rather than desired replica count."""
+    if len(replicas) != 1:
+        raise ValueError("expected one actual trial replica")
+    replica = replicas[0]
+    if not replica["id"].casefold().startswith(revision["id"].casefold() + "/replicas/"):
+        raise ValueError("replica belongs to another revision")
+    props = replica["properties"]
+    containers = props["containers"]
+    if len(containers) != 1 or props.get("runningState") != "Running":
+        raise ValueError("trial replica is not running")
+    container = containers[0]
+    if (
+        container.get("name") != revision["properties"]["template"]["containers"][0]["name"]
+        or container.get("ready") is not True
+        or container.get("started") is not True
+        or container.get("runningState") != "Running"
+        or not container.get("containerId")
+    ):
+        raise ValueError("trial container is not ready")
+    return {
+        "replica": replica["name"],
+        "container_id": container["containerId"],
+        "restart_count": container["restartCount"],
+    }
+
+
 async def ingest_source(client: httpx.AsyncClient, origin: str, vault_id: str, path: Path) -> dict:
     """Deliver one digest-bound source and complete its synchronous REST ingest."""
     raw = path.read_bytes()
@@ -116,11 +187,15 @@ async def ingest_source(client: httpx.AsyncClient, origin: str, vault_id: str, p
         raise ValueError("untrusted upload origin")
     if item.get("sha256", "").removeprefix("sha256:") != digest or len(raw) > recipe["max_bytes"]:
         raise ValueError("upload digest binding or size mismatch")
-    # Byte legs use only the scoped transfer credential, never bearer auth.
+    # The validated same-origin byte leg also needs the app's ingress guard.
+    # Copy only that explicit header; bearer auth and other credentials stay out.
+    from sage.auth import INGRESS_KEY_HEADER
+
+    byte_headers = {recipe["token_header"]: item["token"]}
+    if INGRESS_KEY_HEADER in client.headers:
+        byte_headers[INGRESS_KEY_HEADER] = client.headers[INGRESS_KEY_HEADER]
     async with httpx.AsyncClient(follow_redirects=False, timeout=120) as bytes_client:
-        response = await bytes_client.put(
-            item["url"], content=raw, headers={recipe["token_header"]: item["token"]}
-        )
+        response = await bytes_client.put(item["url"], content=raw, headers=byte_headers)
         response.raise_for_status()
         receipt = response.json()
     if (

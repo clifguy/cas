@@ -1,7 +1,8 @@
 """Prepare an isolated Azure trial or execute an explicitly approved trial manifest.
 
-Preparation reads Azure metadata only. Execution writes synthetic sources only to
-an independently verified trial app/vault; it never provisions Azure resources.
+Preparation reads Azure metadata only. Execution restarts the approved isolated
+revision and writes synthetic sources to its verified trial vault; it never
+provisions Azure resources.
 """
 
 import argparse
@@ -20,7 +21,9 @@ from sage.utils.azure_ingest_trial import (
     emit_jsonl,
     ingest_source,
     latency_summary,
+    ready_replica,
     validate_backend,
+    validate_serving_revision,
     validate_target,
 )
 
@@ -77,6 +80,8 @@ def prepare(args):
             "config_secret_name": "sage-cloud-config",
             "vault_source_root": "performance/" + args.run_id,
             "origin": None,
+            "revision_name": None,
+            "restart_before_trial": False,
             "image_digest": None,
             "cpu": 2.0,
             "memory": "4Gi",
@@ -96,7 +101,7 @@ def prepare(args):
             "Validated fixed-memory two/four CPU control, separate from Consumption resource pairs",
             "Independent expiry/cleanup, exact deletion list and evidence export destination",
             "Cloud profile, hosted abstraction model and bounded provider usage verified",
-            "Operator approval of provisioning/deployment/trials and final manifest",
+            "Operator approval of provisioning/deployment/trials, isolated restart and manifest",
         ],
         "acceptance_pending": [
             "Azure stage/resource/throughput measurements",
@@ -108,26 +113,63 @@ def prepare(args):
         json.dump(plan, handle, indent=2)
 
 
-async def execute(args):
-    plan = json.loads(args.manifest.read_text())
-    live = azure("containerapp", "show", "--ids", plan["target"]["app_resource_id"])
-    origin = validate_target(plan, live)
+def runtime_snapshot(plan):
+    """Read and validate the serving configuration without exposing secret bytes."""
     target = plan["target"]
+    live = azure("containerapp", "show", "--ids", target["app_resource_id"])
+    common = ("-g", target["resource_group"], "-n", live["name"])
+    revisions = azure("containerapp", "revision", "list", "--all", *common)
+    revision = validate_serving_revision(plan, live, revisions)
     postgres = azure("resource", "show", "--ids", target["postgres_resource_id"])
-    # Read only the selected trial config value; never print or persist secret output.
     config = azure(
         "containerapp",
         "secret",
         "list",
-        "-g",
-        target["resource_group"],
-        "-n",
-        live["name"],
+        *common,
         "--show-values",
         "--query",
         "[?name=='" + target["config_secret_name"] + "'].value | [0]",
     )
     validate_backend(plan, postgres, config)
+    replicas = azure(
+        "containerapp", "replica", "list", *common, "--revision", target["revision_name"]
+    )
+    return live, ready_replica(revision, replicas)
+
+
+async def restart_trial(plan):
+    """Load the approved secret in a newly observed, ready isolated process."""
+    target = plan["target"]
+    if target.get("restart_before_trial") is not True:
+        raise ValueError("manifest must explicitly approve the isolated trial restart")
+    live, prior = await asyncio.to_thread(runtime_snapshot, plan)
+    # All ownership, backend and serving checks precede this sole control-plane write.
+    await asyncio.to_thread(
+        azure,
+        "containerapp",
+        "revision",
+        "restart",
+        "-g",
+        target["resource_group"],
+        "-n",
+        live["name"],
+        "--revision",
+        target["revision_name"],
+    )
+    async with asyncio.timeout(600):
+        while True:
+            try:
+                current, process = await asyncio.to_thread(runtime_snapshot, plan)
+                if process["container_id"] != prior["container_id"]:
+                    return current, process
+            except ValueError:
+                # Readiness may be transient during replacement; no data-plane write yet.
+                pass
+            await asyncio.sleep(5)
+
+
+async def execute(args):
+    plan = json.loads(args.manifest.read_text())
     vault = plan["target"]["vault_id"]
     limit = plan["proposed_limits"]["per_run_seconds"]
     if not isinstance(limit, int) or not 1 <= limit <= 900:
@@ -144,9 +186,21 @@ async def execute(args):
         emit_jsonl(
             output,
             {
+                "kind": "initialization",
+                "run_id": plan["run_id"],
+                "outcome": "restart_pending",
+                "target": plan["target"],
+            },
+        )
+        live, process = await restart_trial(plan)
+        origin = validate_target(plan, live)
+        emit_jsonl(
+            output,
+            {
                 "kind": "identity",
                 "run_id": plan["run_id"],
                 "target": plan["target"],
+                "serving_process": process,
                 "started_at_epoch": time.time(),
             },
         )
@@ -216,6 +270,9 @@ async def execute(args):
                             if not task.done():
                                 task.cancel()
                                 await asyncio.gather(task, return_exceptions=True)
+                    _, final_process = await asyncio.to_thread(runtime_snapshot, plan)
+                    if final_process != process:
+                        raise ValueError("trial process changed; measurements are invalid")
                     concurrent = samples[baseline_count:]
                     summary = latency_summary(concurrent)
                     if any(value["count"] < args.minimum_samples for value in summary.values()):

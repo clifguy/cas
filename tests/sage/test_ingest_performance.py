@@ -287,3 +287,59 @@ async def test_standalone_reembedding_establishes_document_scope(ingestion_servi
     assert row["document_id"] == "maintenance-document"
     assert row["operation"] == "embedding.chunks"
     assert len(chunk.embedding) > 0
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_cancelled_queued_work_does_not_execute_or_leak_trace(caplog, enabled):
+    import threading
+
+    caplog.set_level(logging.INFO, logger="sage.ingestion.performance")
+    entered = threading.Event()
+    release = threading.Event()
+    executed = threading.Event()
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        pool.submit(lambda: (entered.set(), release.wait(5)))
+        assert await asyncio.to_thread(entered.wait, 2)
+
+        async def caller():
+            with scope("vault", "doc", "ingest", enabled=enabled):
+                await offload(pool, "projection", executed.set)
+
+        task = asyncio.create_task(caller())
+        await asyncio.sleep(0)  # offload submits before its first suspension
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        release.set()
+        await asyncio.to_thread(pool.shutdown)
+        assert not executed.is_set()
+        rows = records(caplog)
+        if enabled:
+            [row] = rows
+            assert row["outcome"] == "cancelled"
+            assert row["stages"]["projection.queue"]["cancelled"] == 1
+            assert "projection.execute" not in row["stages"]
+        else:
+            assert not rows
+    finally:
+        release.set()
+        pool.shutdown()
+
+
+async def test_projection_rebuild_keeps_document_object_identity(
+    ingestion_service, caplog, tmp_path
+):
+    from sage.models.schemas import IngestRequest
+
+    source = tmp_path / "rebuild.md"
+    source.write_text("# Rebuild\nA retained source for maintenance correlation.")
+    result = await ingestion_service.ingest(IngestRequest(source=str(source)))
+    doc = result.document
+    caplog.clear()
+    caplog.set_level(logging.INFO, logger="sage.ingestion.performance")
+    # The real rebuild entrypoint can skip an unavailable source; it must still correlate.
+    await ingestion_service._bring_passages_current(doc, None)
+    [row] = records(caplog)
+    assert row["operation"] == "projection.rebuild"
+    assert row["document_id"] == doc.id

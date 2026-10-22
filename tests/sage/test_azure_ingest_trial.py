@@ -25,6 +25,8 @@ def target():
             "cpu": 2.0,
             "memory": "4Gi",
             "origin": "https://perf.example.com",
+            "revision_name": "perf--approved",
+            "restart_before_trial": True,
         },
     }
     live = {
@@ -33,7 +35,16 @@ def target():
         "tags": {"benchmarkRun": "run-one"},
         "properties": {
             "environmentId": plan["target"]["environment_resource_id"],
-            "configuration": {"ingress": {"fqdn": "perf.example.com"}},
+            "provisioningState": "Succeeded",
+            "latestRevisionName": "perf--approved",
+            "latestReadyRevisionName": "perf--approved",
+            "configuration": {
+                "activeRevisionsMode": "Single",
+                "ingress": {
+                    "fqdn": "perf.example.com",
+                    "traffic": [{"latestRevision": True, "weight": 100}],
+                },
+            },
             "template": {
                 "scale": {"minReplicas": 1, "maxReplicas": 1},
                 "volumes": [
@@ -45,6 +56,7 @@ def target():
                 ],
                 "containers": [
                     {
+                        "name": "sage",
                         "image": plan["target"]["image_digest"],
                         "resources": {"cpu": 2.0, "memory": "4Gi"},
                         "env": [{"name": "SAGE_CONFIG_PATH", "value": "/etc/sage/config.yaml"}],
@@ -146,25 +158,46 @@ async def test_digest_bound_upload_keeps_bearer_out_of_byte_leg(tmp_path, monkey
             },
         )
 
-    def upload(request):
+    from starlette.requests import Request
+    from starlette.responses import JSONResponse
+
+    from sage.auth import INGRESS_KEY_HEADER, IngressKeyGuard
+
+    uploaded = []
+
+    async def upload(scope, receive, send):
+        request = Request(scope, receive)
         assert "authorization" not in request.headers
+        assert "cookie" not in request.headers
         assert request.headers["x-upload-token"] == "scoped"
-        assert request.content == path.read_bytes()
-        return httpx.Response(
-            201, json={"transfer_id": "transfer", "size": len(request.content), "sha256": digest}
-        )
+        raw = await request.body()
+        assert raw == path.read_bytes()
+        uploaded.append(raw)
+        await JSONResponse(
+            {"transfer_id": "transfer", "size": len(raw), "sha256": digest}, status_code=201
+        )(scope, receive, send)
 
     original = httpx.AsyncClient
     async with original(
-        transport=httpx.MockTransport(service), headers={"Authorization": "Bearer private"}
+        transport=httpx.MockTransport(service),
+        headers={
+            "Authorization": "Bearer private",
+            INGRESS_KEY_HEADER: "trial-key",
+            "Cookie": "private-cookie",
+        },
     ) as client:
         monkeypatch.setattr(
-            httpx, "AsyncClient", lambda **kw: original(transport=httpx.MockTransport(upload), **kw)
+            httpx,
+            "AsyncClient",
+            lambda **kw: original(
+                transport=httpx.ASGITransport(app=IngressKeyGuard(upload, key="trial-key")), **kw
+            ),
         )
         result = await ingest_source(client, "https://perf.example.com", "perf-one", path)
     assert result["document_id"] == "document"
     assert result["source_sha256"] == digest
     assert len(observed) == 2
+    assert uploaded == [path.read_bytes()]
 
 
 def test_deployed_cloud_config_must_point_to_owned_database_and_source_root():
@@ -252,3 +285,209 @@ def test_runtime_benchmark_entrypoint_is_in_the_shipped_source_tree():
     assert run.returncode == 0
     assert "--batch-size" in run.stdout
     assert "--uninstrumented" in run.stdout
+
+
+def serving_target():
+    import copy
+
+    plan, live = target()
+    revision = {
+        "name": plan["target"]["revision_name"],
+        "id": live["id"] + "/revisions/" + plan["target"]["revision_name"],
+        "properties": {
+            "active": True,
+            "healthState": "Healthy",
+            "provisioningState": "Provisioned",
+            "runningState": "Running",
+            "replicas": 1,
+            "trafficWeight": 100,
+            "template": copy.deepcopy(live["properties"]["template"]),
+        },
+    }
+    return plan, live, revision
+
+
+def replica(revision, container_id):
+    return {
+        "name": "replica-" + container_id,
+        "id": revision["id"] + "/replicas/replica-" + container_id,
+        "properties": {
+            "runningState": "Running",
+            "containers": [
+                {
+                    "name": "sage",
+                    "containerId": container_id,
+                    "ready": True,
+                    "started": True,
+                    "runningState": "Running",
+                    "restartCount": 0,
+                }
+            ],
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "drift", ["failed-latest", "split-traffic", "old-template", "other-active"]
+)
+def test_serving_revision_guard_refuses_desired_versus_actual_drift(drift):
+    import copy
+
+    from sage.utils.azure_ingest_trial import validate_serving_revision
+
+    plan, live, revision = serving_target()
+    assert validate_serving_revision(plan, live, [revision]) == revision
+    revisions = [revision]
+    if drift == "failed-latest":
+        live["properties"]["latestReadyRevisionName"] = "perf--old"
+    elif drift == "split-traffic":
+        live["properties"]["configuration"]["ingress"]["traffic"] = [
+            {"revisionName": "perf--old", "weight": 50},
+            {"revisionName": revision["name"], "weight": 50},
+        ]
+    elif drift == "old-template":
+        revision["properties"]["template"]["containers"][0]["resources"]["cpu"] = 4
+    else:
+        revisions.append(copy.deepcopy(revision))
+        revisions[-1]["name"] = "perf--other"
+    with pytest.raises(ValueError):
+        validate_serving_revision(plan, live, revisions)
+
+
+@pytest.mark.parametrize("replace_process", [True, False])
+async def test_trial_restart_requires_new_ready_process_and_rechecks_config(
+    monkeypatch, replace_process
+):
+    import asyncio
+
+    import scripts.azure_ingest_trial as cli
+
+    plan, live, revision = serving_target()
+    live["name"] = "perf"
+    calls = []
+    checks = []
+    restarted = False
+
+    def azure(*args):
+        nonlocal restarted
+        calls.append(args)
+        if args[:3] == ("containerapp", "revision", "restart"):
+            restarted = True
+            return None
+        if args[:2] == ("containerapp", "show"):
+            return live
+        if args[:3] == ("containerapp", "revision", "list"):
+            return [revision]
+        if args[:3] == ("containerapp", "replica", "list"):
+            return [replica(revision, "new" if restarted and replace_process else "old")]
+        if args[:2] == ("resource", "show"):
+            return {"id": plan["target"]["postgres_resource_id"]}
+        if args[:3] == ("containerapp", "secret", "list"):
+            return "approved-secret"
+        raise AssertionError(args)
+
+    monkeypatch.setattr(cli, "azure", azure)
+    monkeypatch.setattr(cli, "validate_backend", lambda p, pg, text: checks.append(text))
+    original_sleep = asyncio.sleep
+    sleeps = 0
+
+    async def bounded_sleep(delay):
+        nonlocal sleeps
+        sleeps += 1
+        if not replace_process or sleeps > 2:
+            raise TimeoutError("unchanged process cannot prove the secret was loaded")
+        await original_sleep(0)
+
+    monkeypatch.setattr(cli.asyncio, "sleep", bounded_sleep)
+    if replace_process:
+        _, process = await cli.restart_trial(plan)
+        assert process["container_id"] == "new"
+    else:
+        with pytest.raises(TimeoutError):
+            await cli.restart_trial(plan)
+    assert restarted
+    assert checks == ["approved-secret", "approved-secret"]
+    assert len([c for c in calls if c[:3] == ("containerapp", "revision", "restart")]) == 1
+
+
+async def test_trial_restart_requires_explicit_approval_and_valid_target(monkeypatch):
+    import scripts.azure_ingest_trial as cli
+
+    plan, _, _ = serving_target()
+    plan["target"]["restart_before_trial"] = False
+    calls = []
+    monkeypatch.setattr(cli, "azure", lambda *args: calls.append(args))
+    with pytest.raises(ValueError, match="explicitly approve"):
+        await cli.restart_trial(plan)
+    assert calls == []
+
+
+@pytest.mark.parametrize("fault", ["not-ready", "other-revision", "two-replicas"])
+def test_ready_replica_refuses_missing_process_evidence(fault):
+    from sage.utils.azure_ingest_trial import ready_replica
+
+    _, _, revision = serving_target()
+    rows = [replica(revision, "one")]
+    assert ready_replica(revision, rows)["container_id"] == "one"
+    if fault == "not-ready":
+        rows[0]["properties"]["containers"][0]["ready"] = False
+    elif fault == "other-revision":
+        rows[0]["id"] = "other/revisions/old/replicas/one"
+    else:
+        rows.append(replica(revision, "two"))
+    with pytest.raises(ValueError):
+        ready_replica(revision, rows)
+
+
+async def test_execute_refuses_runtime_guard_before_any_http_write(tmp_path, monkeypatch):
+    import json
+    from argparse import Namespace
+
+    import scripts.azure_ingest_trial as cli
+
+    plan, _, _ = serving_target()
+    plan["proposed_limits"] = {"per_run_seconds": 60}
+    manifest = tmp_path / "plan.json"
+    manifest.write_text(json.dumps(plan))
+    sources = [tmp_path / "witness.md", tmp_path / "bulk.csv"]
+    for path in sources:
+        path.write_text("bounded source")
+    checked = []
+
+    async def refuse(plan):
+        checked.append(plan["run_id"])
+        raise ValueError("runtime guard refused")
+
+    def no_http(**kwargs):
+        raise AssertionError("HTTP must not begin before runtime guard")
+
+    monkeypatch.setattr(cli, "restart_trial", refuse)
+    monkeypatch.setattr(cli.httpx, "AsyncClient", no_http)
+    monkeypatch.setenv("SAGE_TRIAL_ACCESS_TOKEN", "test")
+    with pytest.raises(ValueError, match="runtime guard refused"):
+        await cli.execute(
+            Namespace(manifest=manifest, sources=sources, output=tmp_path / "out.jsonl")
+        )
+    assert checked == [plan["run_id"]]
+
+
+async def test_trial_restart_refuses_unsafe_target_before_control_write(monkeypatch):
+    import scripts.azure_ingest_trial as cli
+
+    plan, live, revision = serving_target()
+    live["name"] = "perf"
+    plan["target"]["resource_group"] = "rg-prod"
+    calls = []
+
+    def azure(*args):
+        calls.append(args)
+        if args[:2] == ("containerapp", "show"):
+            return live
+        if args[:3] == ("containerapp", "revision", "list"):
+            return [revision]
+        raise AssertionError("unsafe target reached a later operation")
+
+    monkeypatch.setattr(cli, "azure", azure)
+    with pytest.raises(ValueError, match="distinct resource group"):
+        await cli.restart_trial(plan)
+    assert len(calls) == 2

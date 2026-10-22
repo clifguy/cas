@@ -187,12 +187,8 @@ async def offload(executor: Executor, label: str, work: Callable[[], _T]) -> _T:
     def run() -> _T:
         if trace is not None:
             trace.observe(label + ".queue", queued, time.perf_counter_ns())
-        try:
-            with span(label + ".execute"):
-                return work()
-        finally:
-            if trace is not None:
-                trace.finish()
+        with span(label + ".execute"):
+            return work()
 
     try:
         submitted = executor.submit(context.run, run)
@@ -200,10 +196,18 @@ async def offload(executor: Executor, label: str, work: Callable[[], _T]) -> _T:
         if trace is not None:
             trace.finish()
         raise
-    # A cancelled await must not cancel a queued future and lose its retain.
+    # Completion releases retention for both cancelled queued and running work.
+    # A running callback cannot be stopped; keep its summary until actual exit.
+    if trace is not None:
+        submitted.add_done_callback(lambda done: trace.finish())
     future = asyncio.wrap_future(submitted)
     future.add_done_callback(lambda done: None if done.cancelled() else done.exception())
-    return await asyncio.shield(future)
+    try:
+        return await asyncio.shield(future)
+    except asyncio.CancelledError:
+        if submitted.cancel() and trace is not None:
+            trace.observe(label + ".queue", queued, time.perf_counter_ns(), "cancelled")
+        raise
 
 
 def observe_operation(operation: str) -> Callable:
@@ -217,6 +221,8 @@ def observe_operation(operation: str) -> Callable:
             bound = signature.bind(self, *args, **kwargs).arguments
             job = bound.get("job")
             document_id = bound.get("document_id", getattr(job, "document_id", ""))
+            if not document_id:
+                document_id = getattr(bound.get("doc"), "id", "")
             chunks = bound.get("chunks")
             if not document_id and chunks:
                 document_id = chunks[0].document_id

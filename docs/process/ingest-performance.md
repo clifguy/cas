@@ -114,7 +114,18 @@ abstraction settings and database topology; record all differences. The trial
 runner verifies the app identity/image/resources/entrypoint/config mount, reads the
 selected mounted config secret in memory, checks its approved SHA-256, and verifies
 that config points to the owned PostgreSQL endpoint/database and isolated source
-root. The secret contents are never written into evidence.
+root. The manifest must pin `revision_name` and explicitly approve
+`restart_before_trial: true`. The runner requires that revision to be the sole
+healthy active revision with all traffic and exactly one ready replica. It checks
+the actual revision template as well as the desired app template. After validating
+the secret/backend, it restarts only this isolated trial revision and waits up to
+ten minutes for a different ready container identity, then rechecks the secret and
+bindings. This loads the approved secret rather than trusting a control-plane
+update alone. The runner checks the process and bindings again after measurement;
+a restart or configuration drift invalidates the result. Freeze concurrent control
+changes during the trial. Secret contents never enter evidence. See Microsoft's
+[revision/secret guidance](https://learn.microsoft.com/en-us/azure/container-apps/revisions)
+and [replica state contract](https://learn.microsoft.com/en-us/rest/api/resource-manager/containerapps/container-apps-revision-replicas/list-replicas?view=rest-resource-manager-containerapps-2026-01-01).
 
 Consumption compares 2 CPU/4 GiB with 4 CPU/8 GiB, which is a **resource-size**
 comparison. It cannot isolate CPU allocation at fixed memory. Prepare a separately
@@ -139,9 +150,10 @@ python -m scripts.azure_ingest_trial execute --manifest approved-trial.json \
 
 Supply the bearer credential through `SAGE_TRIAL_ACCESS_TOKEN` and, when the direct
 app edge requires it, the trial-only ingress key through `SAGE_TRIAL_INGRESS_KEY`.
-Never put credentials in a manifest or command argument. Byte uploads carry only
-their one-time, digest-bound transfer credential, use the verified app origin and
-refuse redirects. The first source is a small positive keyword/semantic witness;
+Never put credentials in a manifest or command argument. Byte uploads carry
+their one-time, digest-bound transfer credential and the same-origin ingress key
+when required, exclude bearer authorization/cookies, and refuse redirects. The
+first source is a small positive keyword/semantic witness;
 subsequent sources create the measured request load. Use dense quoted JSON/multiline
 cells for the structured source. Retain exact source hashes and byte counts. The
 runner refuses an already-populated vault rather than replaying uncertain writes.
