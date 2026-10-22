@@ -22,10 +22,10 @@ updates:
     open-pull-requests-limit: 5
 
   # The security workflow's tools install from hash-locked requirements compiled
-  # from requirements/security/*.in. Version updates here are expected to
-  # regenerate the compiled file, hashes included; check that on the first such
-  # pull request. A bump that leaves a hash stale fails the --require-hashes
-  # install rather than running unverified code, so the failure is loud.
+  # from requirements/security/*.in. The required CI test job runs
+  # scripts.check_security_lockfiles to verify universal regeneration with the
+  # existing pins and hashes. Regenerate a failing update with the command it
+  # reports; a platform-specific lock can install on Linux while losing markers.
   - package-ecosystem: "pip"
     directory: "/requirements/security"
     schedule:
