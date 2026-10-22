@@ -17,6 +17,7 @@ are the fast local signal that the active environment matches the lock.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from importlib.metadata import version
 from pathlib import Path
@@ -54,18 +55,20 @@ LOCK_TRACKED = ("torch", "psycopg", "psycopg-pool", "pgvector")
 # forward, so conflating the two would make every future bump require a
 # ``uv sync`` before the suite could pass.
 SECURITY_FLOORS: Final[dict[str, tuple[str, str]]] = {
-    "aiohttp": ("3.14.3", "GHSA-cq5v-8q36-5273"),
+    "aiohttp": ("3.14.4", "GHSA-9xw5-w5jj-pvcg"),
     "anyio": ("4.14.2", "GHSA-82r6-8w77-94w6"),
+    "certifi": ("2026.10.19", "GHSA-6q48-6c7w-9gw2"),
     "cryptography": ("50.0.0", "GHSA-g6cj-pr64-35w5"),
     "mcp": ("1.30.0", "GHSA-84m7-p3x7-pcfv"),
+    "pillow": ("13.0.0", "GHSA-4rr5-89j8-mwwm"),
     "pyjwt": ("2.15.0", "GHSA-42vr-xj54-vc7v"),
-    "pypdf": ("6.19.0", "GHSA-php9-fj8v-98fj"),
+    "pypdf": ("6.21.1", "GHSA-5hx5-vpf9-5wcv"),
     "sentence-transformers": ("5.6.0", "GHSA-jhr6-gm9c-rqjv"),
     "setuptools": ("83.0.0", "GHSA-h35f-9h28-mq5c"),
     "torch": ("2.13.0", "GHSA-rrmf-rvhw-rf47"),
     "transformers": ("5.10.0", "GHSA-xrqw-3rrv-vx5w"),
     "urllib3": ("2.8.0", "GHSA-vxq7-64xx-v4gw"),
-    "virtualenv": ("21.7.13", "GHSA-p58f-9548-mpm2"),
+    "virtualenv": ("21.14.9", "GHSA-cw65-gx24-rc82"),
 }
 
 # The setuptools and torch floors above are one remediation, not two. torch 2.12.0 declares
@@ -226,6 +229,22 @@ def test_security_floor_holds(
         f"({advisory}). Raise it with `uv lock --upgrade-package {name}`; do not "
         "lower the floor."
     )
+
+
+@pytest.mark.parametrize("tool", ("pip-audit", "checkov"))
+def test_security_tool_certifi_floor(tool: str) -> None:
+    """The separately hash-locked scanners must not retain the revoked CA bundle.
+
+    These installs do not consume uv.lock. Require an exact certifi pin and
+    check every occurrence so a missing or duplicate vulnerable pin cannot
+    make the production-lock guard pass on behalf of the scanner environment.
+    """
+    text = (REPO_ROOT / "requirements" / "security" / f"{tool}.txt").read_text(encoding="utf-8")
+    versions = re.findall(r"^certifi==(\S+)", text, re.MULTILINE)
+    assert versions, f"{tool}.txt must pin certifi explicitly"
+    floor, advisory = SECURITY_FLOORS["certifi"]
+    below = [v for v in versions if Version(v) < Version(floor)]
+    assert not below, f"{tool}.txt resolves certifi {below}, below {floor} ({advisory})"
 
 
 def test_torch_is_direct_dependency() -> None:
