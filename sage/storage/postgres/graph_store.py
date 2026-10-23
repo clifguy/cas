@@ -42,6 +42,7 @@ from sage.adapters.interfaces import (
     NaturalKeyConflict,
     StorageQueryError,
 )
+from sage.instrumentation.performance import observed_context
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
 from sage.models.coverage import ProcessingCoverage
 from sage.models.enums import (
@@ -313,8 +314,12 @@ class PostgresGraphStore(GraphStore):
         """
         with self._query_timer.measure("initialize"):
             self._check_open()
-            async with self._pool.connection() as conn:
-                async with conn.transaction():
+            async with observed_context(
+                self._pool.connection(), "graph.pool", "graph.return", "graph.return_failed"
+            ) as conn:
+                async with observed_context(
+                    conn.transaction(), "graph.begin", "graph.commit", "graph.rollback"
+                ):
                     await conn.execute(_CHAIN_HEAD_FN_DDL)
                     await conn.execute(_CHAIN_HEAD_TRIGGER_DDL)
 
@@ -328,35 +333,47 @@ class PostgresGraphStore(GraphStore):
 
     async def _fetch_rows(self, sql: str, params: Any = ()) -> list[dict]:
         self._check_open()
-        async with self._pool.connection() as conn:
+        async with observed_context(
+            self._pool.connection(), "graph.pool", "graph.return", "graph.return_failed"
+        ) as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(sql, params)
                 return await cur.fetchall()
 
     async def _fetch_one(self, sql: str, params: Any = ()) -> dict | None:
         self._check_open()
-        async with self._pool.connection() as conn:
+        async with observed_context(
+            self._pool.connection(), "graph.pool", "graph.return", "graph.return_failed"
+        ) as conn:
             async with conn.cursor(row_factory=dict_row) as cur:
                 await cur.execute(sql, params)
                 return await cur.fetchone()
 
     async def _fetch_scalar(self, sql: str, params: Any = ()) -> Any:
         self._check_open()
-        async with self._pool.connection() as conn:
+        async with observed_context(
+            self._pool.connection(), "graph.pool", "graph.return", "graph.return_failed"
+        ) as conn:
             cur = await conn.execute(sql, params)
             row = await cur.fetchone()
             return row[0] if row is not None else None
 
     async def _fetch_tuples(self, sql: str, params: Any = ()) -> list[tuple]:
         self._check_open()
-        async with self._pool.connection() as conn:
+        async with observed_context(
+            self._pool.connection(), "graph.pool", "graph.return", "graph.return_failed"
+        ) as conn:
             cur = await conn.execute(sql, params)
             return await cur.fetchall()
 
     async def _execute(self, sql: str, params: Any = ()) -> int:
         self._check_open()
-        async with self._pool.connection() as conn:
-            async with conn.transaction():
+        async with observed_context(
+            self._pool.connection(), "graph.pool", "graph.return", "graph.return_failed"
+        ) as conn:
+            async with observed_context(
+                conn.transaction(), "graph.begin", "graph.commit", "graph.rollback"
+            ):
                 cur = await conn.execute(sql, params)
                 return cur.rowcount
 
@@ -367,8 +384,12 @@ class PostgresGraphStore(GraphStore):
     async def insert_document(self, doc: Document, *, processing_stage: str | None = None) -> None:
         with self._query_timer.measure("insert_document"):
             try:
-                async with self._pool.connection() as conn:
-                    async with conn.transaction():
+                async with observed_context(
+                    self._pool.connection(), "graph.pool", "graph.return", "graph.return_failed"
+                ) as conn:
+                    async with observed_context(
+                        conn.transaction(), "graph.begin", "graph.commit", "graph.rollback"
+                    ):
                         await self._exec_insert_document(
                             conn, doc, processing_stage=processing_stage
                         )
@@ -520,8 +541,12 @@ class PostgresGraphStore(GraphStore):
     ) -> Document | None:
         if not updates and processing_stage is None:
             return await self.get_document(doc_id)
-        async with self._pool.connection() as conn:
-            async with conn.transaction():
+        async with observed_context(
+            self._pool.connection(), "graph.pool", "graph.return", "graph.return_failed"
+        ) as conn:
+            async with observed_context(
+                conn.transaction(), "graph.begin", "graph.commit", "graph.rollback"
+            ):
                 changed = await self._exec_update_document(
                     conn,
                     doc_id,
@@ -999,8 +1024,12 @@ class PostgresGraphStore(GraphStore):
     async def insert_edge(self, edge: Edge, on_conflict: OnConflict = "raise") -> tuple[Edge, bool]:
         with self._query_timer.measure("insert_edge"):
             try:
-                async with self._pool.connection() as conn:
-                    async with conn.transaction():
+                async with observed_context(
+                    self._pool.connection(), "graph.pool", "graph.return", "graph.return_failed"
+                ) as conn:
+                    async with observed_context(
+                        conn.transaction(), "graph.begin", "graph.commit", "graph.rollback"
+                    ):
                         await self._exec_insert_edge(conn, edge)
             except pg_errors.UniqueViolation as exc:
                 if exc.diag.constraint_name == _EDGES_UNIQ_INDEX:
@@ -1076,8 +1105,12 @@ class PostgresGraphStore(GraphStore):
     ) -> Document | None:
         updates_with_chain_head = {**predecessor_updates, "is_chain_head": False}
         try:
-            async with self._pool.connection() as conn:
-                async with conn.transaction():
+            async with observed_context(
+                self._pool.connection(), "graph.pool", "graph.return", "graph.return_failed"
+            ) as conn:
+                async with observed_context(
+                    conn.transaction(), "graph.begin", "graph.commit", "graph.rollback"
+                ):
                     await self._exec_update_document(conn, predecessor_id, updates_with_chain_head)
                     await self._exec_insert_edge(conn, edge)
         except pg_errors.UniqueViolation as exc:
@@ -1099,8 +1132,12 @@ class PostgresGraphStore(GraphStore):
     ) -> tuple[Document, Document]:
         updates_with_chain_head = {**predecessor_updates, "is_chain_head": False}
         try:
-            async with self._pool.connection() as conn:
-                async with conn.transaction():
+            async with observed_context(
+                self._pool.connection(), "graph.pool", "graph.return", "graph.return_failed"
+            ) as conn:
+                async with observed_context(
+                    conn.transaction(), "graph.begin", "graph.commit", "graph.rollback"
+                ):
                     await self._exec_update_document(conn, predecessor_id, updates_with_chain_head)
                     await self._exec_insert_document(
                         conn, new_doc, processing_stage=processing_stage
@@ -1281,8 +1318,12 @@ class PostgresGraphStore(GraphStore):
     ) -> None:
         with self._query_timer.measure("merge_atomic"):
             try:
-                async with self._pool.connection() as conn:
-                    async with conn.transaction():
+                async with observed_context(
+                    self._pool.connection(), "graph.pool", "graph.return", "graph.return_failed"
+                ) as conn:
+                    async with observed_context(
+                        conn.transaction(), "graph.begin", "graph.commit", "graph.rollback"
+                    ):
                         await self._exec_insert_edge(conn, merged_from_edge)
                         if tombstone_edge_ids:
                             placeholders = ",".join("%s" for _ in tombstone_edge_ids)
@@ -1532,8 +1573,12 @@ class PostgresGraphStore(GraphStore):
 
     async def remove_document(self, document_id: str) -> None:
         with self._query_timer.measure("remove_document"):
-            async with self._pool.connection() as conn:
-                async with conn.transaction():
+            async with observed_context(
+                self._pool.connection(), "graph.pool", "graph.return", "graph.return_failed"
+            ) as conn:
+                async with observed_context(
+                    conn.transaction(), "graph.begin", "graph.commit", "graph.rollback"
+                ):
                     # Edges and staging edges reference documents with no ON
                     # DELETE CASCADE, so they must go before the documents row
                     # or the delete is FK-blocked. document_tags cascades, but
@@ -1596,8 +1641,12 @@ class PostgresGraphStore(GraphStore):
     ) -> tuple[StagingEdge, bool]:
         with self._query_timer.measure("insert_staging_edge"):
             try:
-                async with self._pool.connection() as conn:
-                    async with conn.transaction():
+                async with observed_context(
+                    self._pool.connection(), "graph.pool", "graph.return", "graph.return_failed"
+                ) as conn:
+                    async with observed_context(
+                        conn.transaction(), "graph.begin", "graph.commit", "graph.rollback"
+                    ):
                         await conn.execute(
                             """INSERT INTO staging_edges
                             (id, source_id, target_id, edge_type, inference_evidence,
@@ -1814,8 +1863,12 @@ class PostgresGraphStore(GraphStore):
         # ``public``, and a bare name would resolve a table this vault never owned.
         self._check_open()
         with self._query_timer.measure("drop_retired_users_table"):
-            async with self._pool.connection() as conn:
-                async with conn.transaction():
+            async with observed_context(
+                self._pool.connection(), "graph.pool", "graph.return", "graph.return_failed"
+            ) as conn:
+                async with observed_context(
+                    conn.transaction(), "graph.begin", "graph.commit", "graph.rollback"
+                ):
                     cur = await conn.execute(
                         "SELECT current_schema(), "
                         "to_regclass(format('%I.users', current_schema())) IS NOT NULL"

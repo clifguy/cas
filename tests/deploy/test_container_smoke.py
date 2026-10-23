@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import time
 import urllib.request
+import uuid
 from pathlib import Path
 
 import pytest
@@ -327,3 +328,42 @@ def test_smk_008_unauthenticated_image_refuses_default_network_bind(image: str) 
     )
     assert result.returncode != 0, result.stdout + result.stderr
     assert "--allow-unauthenticated-network" in result.stderr, result.stderr
+
+
+def test_embedding_benchmark_runs_with_offline_model_and_token_accounting(image: str) -> None:
+    probe = (
+        "import json,sys; from functools import partial; "
+        "import sage.utils.embedding_benchmark as bench; "
+        "bench.workload=partial(bench.workload,count=2); "
+        "sys.argv=['benchmark','--output','/tmp/embedding.jsonl','--shape','short',"
+        "'--batch-size','2','--threads','2','--warmups','0','--repeats','1']; "
+        "assert bench.main()==0; "
+        "rows=[json.loads(line) for line in open('/tmp/embedding.jsonl')]; "
+        "assert rows[-1]['outcome']=='completed'; "
+        "measured=[row for row in rows if 'counts' in row]; "
+        "assert len(measured)==1 and measured[0]['counts']['embedding.tokens']>0; "
+        "assert measured[0]['actual_batch_sizes']==[2]"
+    )
+    name = "sage-embedding-smoke-" + uuid.uuid4().hex[:12]
+    try:
+        run = subprocess.run(
+            [
+                "docker",
+                "run",
+                "--rm",
+                "--name",
+                name,
+                *_platform_args(),
+                "--entrypoint",
+                "python",
+                image,
+                "-c",
+                probe,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=600,
+        )
+        assert run.returncode == 0, run.stdout + run.stderr
+    finally:
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True, check=False)
