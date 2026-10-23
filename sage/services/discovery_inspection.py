@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from sage.adapters.interfaces import ContentStore
-from sage.models.coverage import CoverageDimension, ProcessingIdentity
+from sage.models.coverage import CoverageDimension, ProcessingIdentity, SelectionSummary
 
 if TYPE_CHECKING:
     from sage.services.discovery_selection import EvidencePackage, SelectionConfig
@@ -68,6 +68,26 @@ async def publish_inspection(
         raise ValueError("inspection requires a durable processing attempt")
     if package.interrupted and package.inspection_complete:
         raise ValueError("interrupted inspection cannot claim complete scope")
+    if package.interrupted and (package.selected or package.selected_tokens):
+        raise ValueError("interrupted inspection cannot retain selected evidence")
+    selection_summary = SelectionSummary(
+        outcome=(
+            "interrupted"
+            if package.interrupted
+            else "complete"
+            if package.inspection_complete
+            and not package.limitations
+            and package.associations_complete
+            else "limited"
+        ),
+        selected_inputs=len(package.selected),
+        selected_tokens=package.selected_tokens,
+        established_occurrences=sum(
+            run.count for excerpt in package.selected for run in excerpt.associations
+        ),
+        associations_complete=package.associations_complete,
+        boundary=package.boundary,
+    )
     limitations = list(dict.fromkeys(package.limitations))
     if package.interrupted and "inspection_interrupted" not in limitations:
         limitations.append("inspection_interrupted")
@@ -95,6 +115,7 @@ async def publish_inspection(
         counts=counts,
         limitations=limitations,
         unknown_remainder=not complete,
+        selection_summary=selection_summary,
     )
     return await store.publish_processing(
         attempt.document_id, attempt.generation, {"inspection": evidence}

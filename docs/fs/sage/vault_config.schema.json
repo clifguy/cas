@@ -220,60 +220,70 @@
       "additionalProperties": false,
       "properties": {
         "max_values": {
+          "description": "Inspected scalar facts: cells/native scalars or bounded narrative segments.",
           "type": "integer",
           "minimum": 1,
           "maximum": 400000,
           "default": 100000
         },
         "max_regions": {
+          "description": "Distinct source regions inspected.",
           "type": "integer",
           "minimum": 1,
           "maximum": 1024,
           "default": 256
         },
         "max_fields": {
+          "description": "Distinct region/field pairs inspected.",
           "type": "integer",
           "minimum": 1,
           "maximum": 4096,
           "default": 1024
         },
         "max_characters": {
+          "description": "Inspected rendered Unicode characters.",
           "type": "integer",
           "minimum": 1,
           "maximum": 67108864,
           "default": 16777216
         },
         "max_candidates": {
+          "description": "Retained distinct complete contextual discovery inputs.",
           "type": "integer",
           "minimum": 1,
           "maximum": 32768,
           "default": 8192
         },
         "max_tokens": {
+          "description": "Selected sizing tokens under the recorded tokenization identity, independently of model windows.",
           "type": "integer",
           "minimum": 1,
           "maximum": 32768,
           "default": 8192
         },
         "max_excerpts": {
+          "description": "Selected authored inputs.",
           "type": "integer",
           "minimum": 1,
           "maximum": 4096,
           "default": 1024
         },
         "max_candidate_characters": {
+          "description": "Unicode characters in one complete tokenizer input, authored context included.",
           "type": "integer",
           "minimum": 1,
           "maximum": 32768,
           "default": 32768
         },
         "max_retained_bytes": {
+          "description": "UTF-8 input bytes plus reserved association payload storage.",
           "type": "integer",
           "minimum": 1,
           "maximum": 67108864,
           "default": 16777216
         },
         "max_association_runs": {
+          "description": "Compressed source occurrence runs.",
           "type": "integer",
           "minimum": 1,
           "maximum": 65536,
@@ -286,30 +296,35 @@
       "additionalProperties": false,
       "properties": {
         "max_source_bytes": {
+          "description": "Source admission bytes before native materialization.",
           "type": "integer",
           "minimum": 1,
           "maximum": 268435456,
           "default": 67108864
         },
         "max_depth": {
+          "description": "Maximum native nesting depth.",
           "type": "integer",
           "minimum": 1,
           "maximum": 128,
           "default": 64
         },
         "max_parse_nodes": {
+          "description": "Bounded syntax/parser work units; format-specific accounting is documented by shared policy.",
           "type": "integer",
           "minimum": 1,
           "maximum": 1600000,
           "default": 400000
         },
         "max_rows": {
+          "description": "Native table/workbook source rows inspected or admitted.",
           "type": "integer",
           "minimum": 1,
           "maximum": 400000,
           "default": 100000
         },
         "max_columns": {
+          "description": "Inspected table/workbook columns; delimited parsing also enforces this bound.",
           "type": "integer",
           "minimum": 1,
           "maximum": 1024,

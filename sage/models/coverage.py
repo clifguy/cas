@@ -82,6 +82,59 @@ class CoverageManifest(CoverageModel):
         return self
 
 
+class SelectionSummary(CoverageModel):
+    outcome: Literal["complete", "limited", "interrupted"] = Field(
+        description=(
+            "Selection outcome independent of inspection scope; interrupted retains no "
+            "selected inputs, tokens or occurrences."
+        )
+    )
+    selected_inputs: int = Field(
+        strict=True, ge=0, le=4096, description="Exact number of selected distinct complete inputs."
+    )
+    selected_tokens: int = Field(
+        strict=True,
+        ge=0,
+        le=32768,
+        description=(
+            "Exact selected input token count under the parent processing identity "
+            "tokenization rule."
+        ),
+    )
+    established_occurrences: int = Field(
+        strict=True,
+        ge=0,
+        le=400000,
+        description=(
+            "Established occurrences associated with selected inputs; a lower bound when "
+            "associations_complete is false."
+        ),
+    )
+    associations_complete: bool = Field(
+        description=(
+            "Whether all established selected-input occurrence associations were retained; "
+            "complete outcome requires true."
+        )
+    )
+    boundary: BoundedText | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description="Last inspected source location, absent when no location was established.",
+    )
+
+    @model_validator(mode="after")
+    def consistent_selection(self) -> "SelectionSummary":
+        if (self.outcome == "interrupted" or self.selected_inputs == 0) and (
+            self.selected_inputs != 0
+            or self.selected_tokens != 0
+            or self.established_occurrences != 0
+        ):
+            raise ValueError("interrupted or empty selection cannot assert selected evidence")
+        if self.outcome == "complete" and not self.associations_complete:
+            raise ValueError("complete selection requires complete associations")
+        return self
+
+
 class CoverageDimension(CoverageModel):
     scope: Literal["unknown", "pending", "not_applicable", "limited", "complete"] = Field(
         default="unknown", description="Scope."
@@ -117,6 +170,15 @@ class CoverageDimension(CoverageModel):
         default=None, description="Manifest.", exclude_if=lambda value: value is None
     )
 
+    selection_summary: SelectionSummary | None = Field(
+        default=None,
+        description=(
+            "Optional discovery selection evidence only on established inspection scope, "
+            "sharing its identity and generation."
+        ),
+        exclude_if=lambda value: value is None,
+    )
+
     @model_validator(mode="after")
     def established(self) -> "CoverageDimension":
         if len({c.unit for c in self.counts}) != len(self.counts):
@@ -128,8 +190,12 @@ class CoverageDimension(CoverageModel):
             or any(c.total is None or c.represented != c.total for c in self.counts)
         ):
             raise ValueError("complete coverage requires exact totals and no unknown remainder")
-        if self.scope in ("unknown", "pending", "not_applicable") and (self.counts or self.ranges):
-            raise ValueError("unestablished coverage cannot assert counts or ranges")
+        if self.scope in ("unknown", "pending", "not_applicable") and (
+            self.counts or self.ranges or self.selection_summary is not None
+        ):
+            raise ValueError(
+                "unestablished coverage cannot assert counts, ranges or selection summary"
+            )
         if self.manifest and (
             self.generation != self.manifest.generation
             or self.identity is None
@@ -173,6 +239,12 @@ class ProcessingCoverage(CoverageModel):
 
     @model_validator(mode="after")
     def bounded_summary(self) -> "ProcessingCoverage":
+        if any(
+            getattr(self, dimension).selection_summary is not None
+            for dimension in DIMENSIONS
+            if dimension != "inspection"
+        ):
+            raise ValueError("selection summary belongs only to inspection")
         if len(self.model_dump_json().encode()) > 65536:
             raise ValueError("coverage summary exceeds 65536 bytes")
         return self

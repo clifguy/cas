@@ -954,7 +954,9 @@ async def test_the_backfill_preserves_structure_projected_under_a_request_config
     assert [(c.heading_path, c.content) for c in after[1:]] == [
         (c.heading_path, c.content) for c in before
     ]
-    assert received == [{"heading_style_map": {"Title": 1, "Subtitle": 1}}]
+    assert received == [
+        DocxAdapter().effective_config({"heading_style_map": {"Title": 1, "Subtitle": 1}})
+    ]
 
 
 async def test_a_title_edit_before_the_lock_is_not_overwritten_by_the_rewrite(vault):

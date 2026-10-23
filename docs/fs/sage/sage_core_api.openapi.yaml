@@ -16245,6 +16245,49 @@ components:
       - entries
       - unknown_remainder
       description: Bounded content-addressed detail (<=16384 UTF-8 bytes). generation/source hash/unknown remainder must match the referencing summary. Hash is SHA-256 over canonical compact sorted-key JSON of entries and unknown_remainder.
+    SelectionSummary:
+      type: object
+      additionalProperties: false
+      properties:
+        outcome:
+          type: string
+          enum:
+          - complete
+          - limited
+          - interrupted
+          description: Selection outcome independent of inspection scope; interrupted retains no selected inputs, tokens or occurrences.
+        selected_inputs:
+          type: integer
+          minimum: 0
+          maximum: 4096
+          description: Exact number of selected distinct complete inputs.
+        selected_tokens:
+          type: integer
+          minimum: 0
+          maximum: 32768
+          description: Exact selected input token count under the parent processing identity tokenization rule.
+        established_occurrences:
+          type: integer
+          minimum: 0
+          maximum: 400000
+          description: Established occurrences associated with selected inputs; a lower bound when associations_complete is false.
+        associations_complete:
+          type: boolean
+          description: Whether all established selected-input occurrence associations were retained; complete outcome requires true.
+        boundary:
+          anyOf:
+          - type: string
+            minLength: 1
+            maxLength: 512
+          - type: 'null'
+          description: Last inspected source location, absent when no location was established.
+      required:
+      - outcome
+      - selected_inputs
+      - selected_tokens
+      - established_occurrences
+      - associations_complete
+      description: Bounded discovery selection evidence sharing the enclosing inspection dimension generation, identity and processing attempt. Optional for historical or unestablished evidence. Zero selected inputs requires zero selected tokens and occurrences. Selection establishes no embedding or abstraction achievement.
     CoverageDimension:
       type: object
       additionalProperties: false
@@ -16295,6 +16338,11 @@ components:
           - $ref: '#/components/schemas/CoverageManifest'
           - type: 'null'
           description: Manifest.
+        selection_summary:
+          anyOf:
+          - $ref: '#/components/schemas/SelectionSummary'
+          - type: 'null'
+          description: Optional discovery selection evidence only on established inspection scope, sharing its identity and generation.
       required:
       - scope
       description: Established scope for the served artifact generation. Pending means work admitted without established scope, unknown means evidence unavailable, not_applicable means the dimension does not apply. Complete requires processing identity, exact totals and no unknown remainder. Limited describes only established observations; no aggregate percentage is defined.

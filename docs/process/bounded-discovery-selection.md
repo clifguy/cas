@@ -164,3 +164,15 @@ The selected adapter owns format semantics. Native facts and parser guards apply
 to the structured-data and workbook adapters; an explicitly selected narrative
 adapter retains narrative semantics even when the filename has a structured-file
 extension. A suffix alone does not override the caller's selected source type.
+
+Established inspection publishes an optional typed `selection_summary` through
+processing coverage. Its `outcome` is `complete`, `limited` or `interrupted`,
+independent of inspection scope: complete inspection may still have limited
+selection. `selected_inputs` counts distinct complete selected inputs and
+`selected_tokens` counts their sizing tokens under the parent identity's
+`tokenization` rule. `established_occurrences` sums retained selected-input
+associations and is a lower bound unless `associations_complete` is true.
+`boundary`, when present, is the last inspected source location. Interrupted
+selection retains zero selected evidence. Legacy or unestablished inspection
+omits this summary. It shares the inspection generation, attempt fence and
+identity; it establishes no embedding or abstraction coverage.

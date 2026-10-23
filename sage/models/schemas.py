@@ -31,6 +31,7 @@ from sage.models.coverage import CoverageManifest as CoverageManifest
 from sage.models.coverage import CoverageRange as CoverageRange
 from sage.models.coverage import ProcessingCoverage
 from sage.models.coverage import ProcessingIdentity as ProcessingIdentity
+from sage.models.coverage import SelectionSummary as SelectionSummary
 from sage.models.enums import (
     CatalogSortBy,
     DryRunValidator,

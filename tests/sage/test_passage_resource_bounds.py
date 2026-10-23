@@ -162,7 +162,14 @@ async def test_csv_projection_preserves_records_across_bounded_passages(tmp_path
     text = "date,type,detail,json\r\n" + row * repeats
     source = tmp_path / "events.csv"
     source.write_bytes(text.encode())
-    projection = await StructuredDataAdapter().project(source)
+    from sage.source_adapters.structure import FactLimits
+
+    # This large record-preservation control opts into the supported hard ceilings.
+    ceilings = FactLimits.hard_limits()
+    projection = await StructuredDataAdapter().project(
+        source,
+        config={"discovery_facts": {k: ceilings[k] for k in ("max_rows", "max_parse_nodes")}},
+    )
     assert not projection.headings
     service = object.__new__(IngestionService)
     service._embedding = StubEmbeddingProvider()
