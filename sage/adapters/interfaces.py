@@ -318,7 +318,11 @@ class ContentStore(ABC):
         surface: DocumentSurface | None = None,
         semantic_abstract: str | None = None,
     ) -> bool:
-        """Atomically publish evidence and affected artifacts, refusing stale attempts."""
+        """Atomically publish evidence and artifacts, refusing stale attempts.
+
+        Publishing passages also records indexed_at in that transaction; surface
+        or abstraction-only publication preserves the prior indexing time.
+        """
         raise NotImplementedError
 
     @abstractmethod
