@@ -10,6 +10,10 @@ on:
         description: SHA-256 of the exact reviewed specification bytes.
         type: string
         required: true
+      approved_bootstrap_sha256:
+        description: SHA-256 of the exact operator bootstrap receipt, preserving its original expiry.
+        type: string
+        required: true
 permissions:
   contents: read
 concurrency:
@@ -39,6 +43,9 @@ jobs:
       id-token: write
     env:
       GH_TOKEN: ${{ github.token }}
+      PERF_BOOTSTRAP_JSON: ${{ secrets.PERF_BOOTSTRAP_RECEIPT_JSON }}
+      PERF_BOOTSTRAP_SHA256: ${{ inputs.approved_bootstrap_sha256 }}
+      PERF_ENVIRONMENT: ${{ inputs.environment }}
       PERF_SPEC_JSON: ${{ secrets.PERF_APPROVED_SPEC_JSON }}
       PERF_APPROVED_SHA256: ${{ inputs.approved_sha256 }}
       PERF_OUTPUT: ingest-performance-results
@@ -81,6 +88,13 @@ jobs:
                   escaped = value.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
                   print('::add-mask::' + escaped)
           mask(json.loads(raw))
+          bootstrap_raw = os.environ['PERF_BOOTSTRAP_JSON'].encode()
+          if hashlib.sha256(bootstrap_raw).hexdigest() != os.environ['PERF_BOOTSTRAP_SHA256']:
+              raise SystemExit('bootstrap receipt digest differs')
+          mask(json.loads(bootstrap_raw))
+          descriptor = os.open(Path(os.environ['RUNNER_TEMP'], 'perf-bootstrap.json'), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(descriptor, 'wb') as handle:
+              handle.write(bootstrap_raw)
           descriptor = os.open(Path(os.environ['RUNNER_TEMP'], 'perf-spec.json'), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
           with os.fdopen(descriptor, 'wb') as handle:
               handle.write(raw)
@@ -90,6 +104,14 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Verify bootstrap handoff and preserve the original trial clock
+        run: |
+          principal="$(.venv/bin/python -c 'import base64,json; from deploy.performance_trial import Rest; print(json.loads(base64.urlsafe_b64decode(Rest().token("https://management.azure.com/.default").split(".")[1]+"==="))["oid"])')"
+          .venv/bin/python -m deploy.performance_bootstrap handoff \
+            --receipt "$RUNNER_TEMP/perf-bootstrap.json" \
+            --approved-bootstrap-sha256 "$PERF_BOOTSTRAP_SHA256" \
+            --spec "$RUNNER_TEMP/perf-spec.json" --approved-sha256 "$PERF_APPROVED_SHA256" \
+            --environment "$PERF_ENVIRONMENT" --principal "$principal" --output "$PERF_OUTPUT"
       - name: Compile isolated infrastructure
         run: az bicep build --file infra/performance.bicep --outfile "$RUNNER_TEMP/performance.json"
       - name: Provision and run isolated measurements

@@ -20,6 +20,7 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 
+from deploy.performance_bootstrap import verify_bootstrap
 from deploy.performance_limits import remaining
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -643,7 +644,15 @@ def provision(
     parameters = manifest_parameters(plan, principal, ingress_key)
     foundation = {}
     plan_hash = plan_digest(plan)
-    if existing or controller:
+    bootstrap_only = (
+        existing
+        and controller
+        and (output / "bootstrap-receipt.json").exists()
+        and not (output / "provision-receipt.json").exists()
+    )
+    if bootstrap_only:
+        verify_bootstrap(plan, az, output, principal)
+    if (existing or controller) and not bootstrap_only:
         receipt = output / "provision-receipt.json"
         if not (existing and controller and receipt.exists()):
             raise ValueError("partial foundation requires explicit inventory reconciliation")

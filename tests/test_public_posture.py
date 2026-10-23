@@ -451,6 +451,10 @@ PUBLISHED_TICKET_REF_ALLOWLIST: Final[dict[str, list[int]]] = {}
 # GUID (lower case) → 1-line rationale (T19). Only public constants belong
 # here: values that identify nothing in any tenant.
 PUBLIC_GUID_ALLOWLIST: Final[dict[str, str]] = {
+    "f58310d9-a9f6-439a-9e8d-f62e7b41a168": (
+        "built-in Azure role: Role Based Access Control Administrator"
+    ),
+    "acdd72a7-3385-48ef-bd42-f606fba81ae7": "built-in Azure role: Reader",
     "ba92f5b4-2d11-453d-a403-e96b0029c9fe": "built-in Azure role: Storage Blob Data Contributor",
     "b24988ac-6180-42a0-ab88-20f7382dd24c": "built-in Azure role: Contributor",
     "7f951dda-4ed3-4680-a7ca-43fe172d538d": "built-in Azure role: AcrPull",

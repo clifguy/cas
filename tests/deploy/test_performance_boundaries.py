@@ -128,9 +128,10 @@ def test_public_workflow_never_uploads_raw_evidence_or_dispatches_bindings():
 
     workflow = yaml.safe_load(Path(".github/workflows/ingest-performance.yml").read_text())
     inputs = workflow.get("on", workflow.get(True))["workflow_dispatch"]["inputs"]
-    assert set(inputs) == {"environment", "approved_sha256"}
+    assert set(inputs) == {"environment", "approved_sha256", "approved_bootstrap_sha256"}
     job = workflow["jobs"]["trial"]
     assert job["env"]["PERF_SPEC_JSON"] == "${{ secrets.PERF_APPROVED_SPEC_JSON }}"
+    assert job["env"]["PERF_BOOTSTRAP_JSON"] == "${{ secrets.PERF_BOOTSTRAP_RECEIPT_JSON }}"
     uploads = [x for x in job["steps"] if x.get("uses", "").startswith("actions/upload-artifact@")]
     assert len(uploads) == 2
     for step in uploads:
