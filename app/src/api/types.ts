@@ -51,6 +51,7 @@ export interface CoverageDimension {
 }
 
 export interface ProcessingCoverage {
+  served_abstraction_generation?: number | null;
   attempt: number;
   source_retention: CoverageDimension;
   inspection: CoverageDimension;

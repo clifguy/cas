@@ -290,7 +290,9 @@ async def test_crowded_exception_fails_safely_without_losing_retained_source(
         IngestRequest(source="crowded.md", source_type=SourceType.MARKDOWN), wait_for_pipeline=False
     )
     terminal = await await_pipeline_idle(graph_store, result.document.id, service=ingestion_service)
-    assert terminal.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+    assert terminal.pipeline_status == PipelineStatus.ABSTRACTION_SKIPPED
+    assert terminal.semantic_abstract is None
+    assert terminal.processing_coverage.abstraction_evidence.scope == "limited"
     assert terminal.pipeline_error is None
     assert terminal.processing_coverage.passage_embeddings.scope == "limited"
     assert terminal.processing_coverage.passage_embeddings.counts[0].represented == 0
@@ -333,7 +335,9 @@ async def test_small_crowded_exception_keeps_its_single_stored_passage(
         wait_for_pipeline=False,
     )
     terminal = await await_pipeline_idle(graph_store, result.document.id, service=ingestion_service)
-    assert terminal.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+    assert terminal.pipeline_status == PipelineStatus.ABSTRACTION_SKIPPED
+    assert terminal.semantic_abstract is None
+    assert terminal.processing_coverage.abstraction_evidence.scope == "limited"
     chunks = await stub_content_store.get_all_chunks(result.document.id)
     assert len(chunks) == 1
     assert chunks[0].heading_path == heading.rstrip()

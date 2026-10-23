@@ -1,6 +1,6 @@
 """Hosted AbstractionProvider implementation via the Anthropic Messages API.
 
-Generates a density-proportional semantic abstract with a hosted Claude
+Generates a selected-evidence semantic abstract with a hosted Claude
 model (e.g. Haiku) behind the same ``AbstractionProvider`` contract as the
 local Qwen3 provider. Because the call is a network request with no
 unified-memory budget, it is deliberately not serialized behind the local
@@ -171,9 +171,9 @@ class AnthropicAbstractionProvider(AbstractionProvider):
             from anthropic import AsyncAnthropic
 
             if self._api_key is not None:
-                self._client = AsyncAnthropic(api_key=self._api_key)
+                self._client = AsyncAnthropic(api_key=self._api_key, max_retries=0)
             else:
-                self._client = AsyncAnthropic()
+                self._client = AsyncAnthropic(max_retries=0)
         return self._client
 
     async def _resolve_input_limit(self) -> int | None:
@@ -310,9 +310,9 @@ class AnthropicAbstractionProvider(AbstractionProvider):
         it is deterministic in the document and no later attempt resolves it.
 
         Args:
-            text: Full document text from the projection stage.
+            text: Selected authored evidence, or direct-call legacy document text.
             max_tokens: Upper bound on abstract length in tokens. Carries the
-                density-proportional budget computed upstream; passed straight
+                selected-evidence budget computed upstream; passed straight
                 to the Messages API.
             doc_type: The document's type, surfaced to the model so it can
                 choose appropriate descriptive verbs. May be None.
@@ -328,13 +328,22 @@ class AnthropicAbstractionProvider(AbstractionProvider):
         if not text or not text.strip():
             raise RuntimeError("Cannot generate abstract from empty document text")
 
-        system_prompt = _format_system_prompt(doc_type)
+        from sage.adapters.interfaces import BoundedEvidenceText
+
+        system_prompt = _format_system_prompt(
+            doc_type, bounded=isinstance(text, BoundedEvidenceText)
+        )
 
         with span("abstraction.prepare"):
             limit = await self._resolve_input_limit()
             if limit is not None:
                 budget = _input_budget_tokens(limit, max_tokens, system_prompt)
-                text = await self._fit_to_budget(text, budget, system_prompt)
+                fitted = await self._fit_to_budget(text, budget, system_prompt)
+                from sage.adapters.interfaces import BoundedEvidenceText
+
+                if isinstance(text, BoundedEvidenceText) and fitted != text:
+                    raise AbstractionInputTooLargeError(self._model_id, None, budget)
+                text = fitted
         trace = current_trace()
         if trace is not None:
             trace.count("abstraction.submitted_characters", len(text))

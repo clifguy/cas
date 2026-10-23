@@ -698,7 +698,7 @@ class Document(BaseModel):
     semantic_abstract: str | None = Field(
         default=None,
         description=(
-            "LLM-generated abstract with density-proportional length. "
+            "LLM-generated abstract with selected-evidence length. "
             "Generated at ingestion Stage 3, regenerated on re-ingestion. "
             "Null if abstraction is disabled or pending (CAS-ADR-011)."
         ),

@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from typing import NamedTuple, TypedDict
 
 from sage.models.coverage import CoverageDimension, ProcessingCoverage, ProcessingIdentity
+from sage.models.discovery import EvidencePackage
 from sage.models.enums import ResolutionPolicy
 from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
 from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge
@@ -328,12 +329,41 @@ class ContentStore(ABC):
         surface: DocumentSurface | None = None,
         semantic_abstract: str | None = None,
         indexing_complete: bool = True,
+        text_repair: bool = False,
+        expected_abstract: str | None = None,
     ) -> bool:
         """Atomically publish evidence and artifacts, refusing stale attempts.
 
         Publishing passages also records indexed_at in that transaction; surface
         or abstraction-only publication preserves the prior indexing time.
+        Text repair requires an expected prior abstract, changes no processing
+        evidence or generation, and refuses a stale text/attempt snapshot.
         """
+        raise NotImplementedError
+
+    async def save_abstraction_evidence(
+        self, document_id: str, attempt: int, package: EvidencePackage
+    ) -> bool:
+        """Persist immutable authored evidence under the processing/source fence."""
+        raise NotImplementedError
+
+    async def read_abstraction_evidence(self, document_id: str) -> EvidencePackage | None:
+        """Read bounded evidence only, without loading passages or vectors."""
+        raise NotImplementedError
+
+    async def admit_abstraction(
+        self,
+        document_id: str,
+        attempt: int,
+        identity: ProcessingIdentity,
+        input_tokens: int,
+        output_tokens: int,
+        *,
+        max_calls: int,
+        max_input: int,
+        max_output: int,
+    ) -> str:
+        """Durably reserve a provider call and complete input/output upper bounds."""
         raise NotImplementedError
 
     async def admit_embedding(
@@ -791,12 +821,16 @@ class EmbeddingProvider(ABC):
         """
 
 
+class BoundedEvidenceText(str):
+    """Provider input whose established scope must survive fitting unchanged."""
+
+
 class AbstractionProvider(ABC):
     """Interface for semantic abstract generation (MLX/Qwen3 in production)."""
 
     @abstractmethod
     async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
-        """Generate a density-proportional semantic abstract.
+        """Generate a selected-evidence semantic abstract.
 
         doc_type is surfaced to the model so it can pick the right
         descriptive verbs (prescribes, argues, narrates, defines) and

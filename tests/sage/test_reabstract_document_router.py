@@ -61,6 +61,10 @@ async def _seed_doc(
                 )
             ],
         )
+    if with_chunks:
+        from tests.helpers.abstraction_evidence import seed_authored_evidence
+
+        await seed_authored_evidence(services.content_store, doc, "Body content for projection.")
     return doc.id
 
 

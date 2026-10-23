@@ -158,6 +158,14 @@ _CONFORMANCE_STREAMS: Final[str] = (
 )
 
 KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
+    (
+        "tests/sage/test_processing_recovery.py::"
+        "test_explicit_reabstract_uses_legacy_passages_without_reprojecting_source"
+    ): (
+        "replaced by test_explicit_reabstract_refuses_unverified_legacy_passages: "
+        "bounded abstraction cannot reconstruct all legacy passages as trusted source evidence; "
+        "the replacement asserts failure, no provider call, unknown scope and preserved passages"
+    ),
     ("tests/sage/test_deprecation_warnings.py::test_the_shipped_registry_is_valid_and_empty"): (
         "renamed test_the_shipped_registry_is_valid_and_holds_the_timestamp_token_forms: "
         "the registry now ships the deprecated timestamp form of both concurrency tokens"

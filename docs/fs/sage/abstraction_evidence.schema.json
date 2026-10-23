@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Bounded abstraction durable evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "package": {
+      "type": "object",
+      "description": "Immutable EvidencePackage of authored source excerpts, separately typed observations and exact selection identity; validated on read."
+    },
+    "accounting": {
+      "type": "object",
+      "description": "Source/selection identity, calls, reserved complete prompt/output tokens and limits. Reservations precede inference and survive retries/recovery."
+    }
+  },
+  "description": "Internal documents.abstraction_state JSONB. Replacing evidence preserves accounting for the source; source changes start a new attributable scope."
+}

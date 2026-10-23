@@ -13,6 +13,7 @@ import asyncio
 import contextlib
 import contextvars
 import dataclasses
+import hashlib
 import hmac
 import json
 import logging
@@ -44,6 +45,7 @@ from sage.adapters.abstraction_utils import (
 from sage.adapters.interfaces import (
     HEADING_PATH_SEPARATOR,
     AbstractionProvider,
+    BoundedEvidenceText,
     Chunk,
     ContentStore,
     EmbeddingProvider,
@@ -97,6 +99,7 @@ from sage.instrumentation.performance import (
     span,
 )
 from sage.models.coverage import CoverageDimension, ProcessingIdentity
+from sage.models.discovery import EvidencePackage
 from sage.models.enums import (
     SUCCESSFUL_TERMINAL_PIPELINE_STATUSES,
     TERMINAL_PIPELINE_STATUS_VALUES,
@@ -123,6 +126,10 @@ from sage.request_identity import (
     writer_name,
 )
 from sage.services._dry_run import doc_type_requirements
+from sage.services.bounded_abstraction import (
+    AbstractionAllowanceExhausted,
+    abstraction_request,
+)
 from sage.services.caller_paths import caller_basename
 from sage.services.deprecations import warnings_for
 from sage.services.discovery_inspection import InspectionAttempt, publish_inspection
@@ -808,7 +815,9 @@ class IngestionService:
         its attempts.
         """
         document_id = job.document_id
-        max_attempts = self._config.abstraction.max_attempts
+        max_attempts = min(
+            self._config.abstraction.max_attempts, self._config.abstraction.max_generation_calls
+        )
         last_exc: Exception | None = None
         try:
             for attempt in range(1, max_attempts + 1):
@@ -2717,12 +2726,17 @@ class IngestionService:
             )
             return
 
-        # BH-134: empty projection text (e.g., Word template with no body)
-        # transitions to abstraction_skipped rather than crashing the
-        # abstraction provider's strict-quality edge guard. Other projection
-        # surfaces -- style inventory, tags, metadata -- are already persisted
-        # by Stage 2.
         if not projection.text.strip():
+            if not await self._content_store.publish_processing(
+                document_id,
+                attempt,
+                {
+                    "abstraction_evidence": CoverageDimension(
+                        scope="not_applicable", limitations=["empty_readable_projection"]
+                    )
+                },
+            ):
+                raise _SupersededProcessing("stale empty abstraction outcome")
             await self._stamp_pipeline_status(
                 document_id, PipelineStatus.ABSTRACTION_SKIPPED, expected_attempt=attempt
             )
@@ -2785,11 +2799,7 @@ class IngestionService:
         published = await self._content_store.publish_processing(
             document_id,
             attempt,
-            {
-                "abstraction_evidence": CoverageDimension(
-                    limitations=["producer_evidence_unavailable"]
-                )
-            },
+            {"abstraction_evidence": doc.processing_coverage.abstraction_evidence},
             surface=surface,
             semantic_abstract=abstract,
         )
@@ -2821,6 +2831,10 @@ class IngestionService:
         # reconstruct its provenance. The storage fence rejects delayed work.
         package = projection.discovery_evidence
         if package is not None:
+            if not await self._content_store.save_abstraction_evidence(
+                document_id, attempt, package
+            ):
+                raise _SupersededProcessing("stale abstraction evidence capture")
             captured = InspectionAttempt(
                 document_id, attempt, package.identity.processing_identity().model_dump_json()
             )
@@ -3059,12 +3073,17 @@ class IngestionService:
 
     @observe_operation("abstraction")
     async def _generate_abstract_text(
-        self, text: str, doc_type: str | None, document_id: str = ""
+        self,
+        text: str,
+        doc_type: str | None,
+        document_id: str = "",
+        *,
+        target_tokens: int | None = None,
     ) -> str:
         """Generate a semantic abstract from document text.
 
         Shared core for both initial ingestion (stage 3) and reabstract.
-        Computes a density-proportional token budget, invokes the
+        Computes a selected-evidence token budget, invokes the
         abstraction provider, trims the result to the last complete
         sentence boundary, and runs the deterministic post-generation
         checks (CAS-ADR-020). An unattested acronym gloss (clause (e)) is
@@ -3096,7 +3115,11 @@ class IngestionService:
         """
         vault_id = self._config.vault.id
         word_count = len(text.split())
-        max_tokens = compute_max_tokens(word_count, self._config.abstraction)
+        max_tokens = (
+            target_tokens
+            if target_tokens is not None
+            else compute_max_tokens(word_count, self._config.abstraction)
+        )
 
         started_ns = time.perf_counter_ns()
         raw_abstract = await self._abstraction.generate_abstract(text, max_tokens, doc_type)
@@ -3284,14 +3307,7 @@ class IngestionService:
         await self._stamp_pipeline_status(
             document_id, PipelineStatus.ABSTRACTION_IN_PROGRESS, expected_attempt=attempt
         )
-        abstract = await self._generate_abstract_text(
-            projection.text, doc_type, document_id=document_id
-        )
-
-        await self._publish_abstract(document_id, abstract, attempt)
-        await self._stamp_pipeline_status(
-            document_id, PipelineStatus.ABSTRACTION_COMPLETE, expected_attempt=attempt
-        )
+        await self._abstract_package(document_id, doc_type, attempt, projection.discovery_evidence)
 
     async def reabstract(self, document_id: str) -> dict:
         """Re-run abstraction on an existing document via the abstraction queue.
@@ -3356,7 +3372,9 @@ class IngestionService:
             "dispatched_at": now.isoformat(),
         }
 
-    async def update_semantic_abstract(self, document_id: str, abstract: str) -> None:
+    async def update_semantic_abstract(
+        self, document_id: str, abstract: str, *, expected_abstract: str | None = None
+    ) -> None:
         """Replace a document's stored semantic abstract in place.
 
         The repair path CAS-ADR-020 clause (h) admits for stored output:
@@ -3369,6 +3387,8 @@ class IngestionService:
         Args:
             document_id: ID of the document whose abstract is replaced.
             abstract: The replacement abstract text.
+            expected_abstract: Prior text used to plan a maintenance repair;
+                refuses a changed record. Omission snapshots current stored text.
 
         Raises:
             DocumentNotFoundError: Document does not exist.
@@ -3377,30 +3397,178 @@ class IngestionService:
         if doc is None:
             raise DocumentNotFoundError(document_id)
 
-        attempt = await self._content_store.begin_processing_attempt(document_id)
-        await self._publish_abstract(document_id, abstract, attempt)
+        # A repair transforms already-served output; it neither consumes a new
+        # evidence package nor creates a generation. Preserve both the served
+        # lineage and any newer unsuccessful attempt's evidence/checkpoint.
+        if expected_abstract is not None and doc.semantic_abstract != expected_abstract:
+            raise ValueError("stored abstract changed since repair planning")
+        surface = compose_document_surface(
+            document_id, doc.model_copy(update={"semantic_abstract": abstract})
+        )
+        published = await self._content_store.publish_processing(
+            document_id,
+            doc.processing_coverage.attempt,
+            {},
+            surface=surface,
+            semantic_abstract=abstract,
+            text_repair=True,
+            expected_abstract=doc.semantic_abstract,
+        )
+        if not published:
+            raise ValueError("stored abstract or processing attempt changed during repair")
 
     async def _execute_abstract_from_chunks(
         self, document_id: str, doc_type: str | None, attempt: int | None = None
     ) -> None:
-        """Stage 3 from stored passages, raising on failure.
+        """Regenerate from durable bounded authored evidence, raising on failure.
 
-        Reconstructs the projection text from the document's passages,
-        regenerates the abstract, and rewrites the document surface for
-        retrieval. Used by the worker for reabstract jobs and for startup
-        recovery whose stage facts confirm that the latest projection indexed.
-
-        The abstraction input cannot include a previously generated abstract:
-        that text lives on the document surface, not among these passages, so
-        the guard against abstracting an abstract is structural rather than an
-        exclusion this method has to remember (CAS-ADR-049).
+        Reabstract and startup recovery share the initial ingestion budget and
+        publication path. Missing evidence is rebuilt from retained source under
+        bounded inspection; document-surface prose and stored passages are never
+        treated as an authored evidence package (CAS-ADR-049).
         """
         if attempt is None:
             attempt = await self._content_store.begin_processing_attempt(document_id)
-        chunks = await self._content_store.get_all_chunks(document_id)
-        projection_text = join_passages(chunks)
+        if not self._config.abstraction.enabled:
+            await self._stamp_pipeline_status(
+                document_id, PipelineStatus.ABSTRACTION_SKIPPED, expected_attempt=attempt
+            )
+            return
+        package = await self._content_store.read_abstraction_evidence(document_id)
+        if package is None:
+            package = await self._recover_abstraction_evidence(document_id, attempt)
+        await self._abstract_package(document_id, doc_type, attempt, package)
+
+    async def _recover_abstraction_evidence(
+        self, document_id: str, attempt: int
+    ) -> EvidencePackage:
+        """Inspect retained source within shared limits, never reconstruct all passages."""
+        from sage.source_adapters.structure import SourceFact
+
+        doc = await self._store.get_document(document_id)
+        if doc is None:
+            raise DocumentNotFoundError(document_id)
+        adapter = self._adapters.get(doc.source_type)
+        if adapter is None or doc.source_path is None:
+            raise AbstractionAllowanceExhausted("bounded source inspection unavailable")
+        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+
+        vault_source_store = resolve_stack_vault_source_store(get_stack_config())
+        storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
+        effective = self._merge_adapter_config(doc.source_type, doc.adapter_config)
+        selection, limits = discovery_configuration(effective)
+        with self._project_source(vault_source_store, storage_root, doc.source_path) as source:
+
+            def inspect() -> EvidencePackage:
+                # Streaming integrity validation is independent of tokenization.
+                with source.open("rb") as stream:
+                    observed_hash = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
+                if observed_hash != (doc.stored_content_hash or doc.source_content_hash):
+                    raise AbstractionAllowanceExhausted("retained source identity changed")
+                if adapter.NATIVE_FACTS:
+                    facts = adapter.discover_facts(source, None, limits)
+                    package = select_discovery(
+                        facts,
+                        source_hash=doc.source_content_hash,
+                        inspected_source_hash=observed_hash,
+                        adapter_version=f"{type(adapter).__name__}:{adapter.VERSION}",
+                        tokenizer=lambda s: len(s.encode()),
+                        tokenizer_identity="utf8-byte-tokens:1",
+                        config=selection,
+                        adapter_configuration=adapter.effective_config(
+                            {
+                                k: v
+                                for k, v in effective.items()
+                                if k not in ("discovery_selection", "discovery_facts")
+                            }
+                        ),
+                    )
+                elif source.suffix.lower() in (".md", ".txt"):
+                    with source.open("rb") as stream:
+                        raw = stream.read(selection.max_tokens + 1)
+                    limited = len(raw) > selection.max_tokens
+                    text = raw[: selection.max_tokens].decode("utf-8", errors="ignore")
+                    package = select_discovery(
+                        [SourceFact("retained source", "$text", "byte:0", 0, "text", text, text)],
+                        source_hash=doc.source_content_hash,
+                        inspected_source_hash=observed_hash,
+                        adapter_version=f"{type(adapter).__name__}:{adapter.VERSION}",
+                        tokenizer=lambda s: len(s.encode()),
+                        tokenizer_identity="utf8-byte-tokens:1",
+                        config=selection,
+                        adapter_configuration={"recovery": "retained lexical source"},
+                    )
+                    if limited:
+                        package = dataclasses.replace(
+                            package,
+                            inspection_complete=False,
+                            limitations=(*package.limitations, "bounded_retained_source_prefix"),
+                        )
+                else:
+                    raise AbstractionAllowanceExhausted(
+                        "legacy evidence unavailable; explicit source reprocessing required"
+                    )
+                return package
+
+            package = await offload(
+                _projection_executor(), "abstraction.inspection_recovery", inspect
+            )
+        if not await self._content_store.save_abstraction_evidence(document_id, attempt, package):
+            raise _SupersededProcessing("stale recovered evidence")
+        return package
+
+    async def _abstract_package(
+        self, document_id: str, doc_type: str | None, attempt: int, package
+    ) -> None:
+        if package is None:
+            raise AbstractionAllowanceExhausted("bounded authored evidence unavailable")
+        config = self._config.abstraction
+        request = abstraction_request(package, config, doc_type)
+        if not await self._content_store.publish_processing(
+            document_id, attempt, {"abstraction_evidence": request.evidence}
+        ):
+            raise _SupersededProcessing("stale abstraction evidence")
+        if not request.text:
+            await self._stamp_pipeline_status(
+                document_id, PipelineStatus.ABSTRACTION_SKIPPED, expected_attempt=attempt
+            )
+            return
+        from sage.adapters.abstraction_prompt import _format_system_prompt, wrap_source_document
+
+        # UTF-8 bytes upper-bound tokenizer work for the complete protected
+        # prompt. Include conservative provider chat-template/envelope headroom.
+        input_tokens = (
+            len(
+                (
+                    _format_system_prompt(doc_type, bounded=True)
+                    + wrap_source_document(request.text)
+                ).encode("utf-8")
+            )
+            + 1024
+        )
+        if input_tokens > config.max_input_tokens:
+            raise AbstractionAllowanceExhausted(
+                "complete protected abstraction prompt exceeds per-call input allowance"
+            )
+        decision = await self._content_store.admit_abstraction(
+            document_id,
+            attempt,
+            request.identity,
+            input_tokens,
+            request.target_tokens,
+            max_calls=config.max_generation_calls,
+            max_input=config.max_total_input_tokens,
+            max_output=config.max_total_output_tokens,
+        )
+        if decision == "stale":
+            raise _SupersededProcessing("stale abstraction admission")
+        if decision != "admitted":
+            raise AbstractionAllowanceExhausted("abstraction allowance " + decision)
         abstract = await self._generate_abstract_text(
-            projection_text, doc_type, document_id=document_id
+            BoundedEvidenceText(request.text),
+            doc_type,
+            document_id=document_id,
+            target_tokens=request.target_tokens,
         )
         await self._publish_abstract(document_id, abstract, attempt)
         await self._stamp_pipeline_status(

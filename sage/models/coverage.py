@@ -314,6 +314,13 @@ class ProcessingCoverage(CoverageModel):
         default_factory=CoverageDimension, description="Abstraction evidence."
     )
 
+    served_abstraction_generation: int | None = Field(
+        default=None,
+        ge=1,
+        description="Generation of the served abstract; null means historical identity "
+        "unknown. Evidence may describe a newer failed replacement attempt.",
+    )
+
     @model_validator(mode="after")
     def bounded_summary(self) -> "ProcessingCoverage":
         if any(

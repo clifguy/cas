@@ -602,7 +602,7 @@ paths:
         2. **Indexing**: The projection is chunked and embedded into the
            content store.
 
-        3. **Abstraction**: A local LLM generates a density-proportional
+        3. **Abstraction**: A local LLM generates a selected-evidence
            semantic abstract (if enabled in vault configuration).
 
 
@@ -5206,7 +5206,7 @@ components:
         semantic_abstract:
           type: [string, "null"]
           description: >-
-            LLM-generated abstract with density-proportional length.
+            LLM-generated abstract with selected-evidence length.
             Generated at ingestion Stage 3, regenerated on re-ingestion.
             Null if abstraction is disabled or pending (CAS-ADR-011).
         pipeline_status:
@@ -16352,6 +16352,11 @@ components:
         abstraction_evidence:
           $ref: '#/components/schemas/CoverageDimension'
           description: Abstraction evidence.
+        served_abstraction_generation:
+          type: [integer, 'null']
+          minimum: 1
+          default: null
+          description: Generation of the served abstract; null means historical identity unknown. Evidence may describe a newer failed replacement attempt.
         attempt:
           type: integer
           minimum: 0

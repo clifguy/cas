@@ -220,13 +220,18 @@ async def test_abstraction_input_is_identical(ingestion_service, graph_store):
     await graph_store.insert_document(_doc())
     seen: list[str] = []
 
-    async def record(text, doc_type, *, document_id=None):
+    async def record(text, doc_type, *, document_id=None, target_tokens=None):
         seen.append(text)
         return "abstract"
 
     whole = _chunks(ingestion_service, bound=100_000)
     split = _chunks(ingestion_service, bound=300)
     assert len(split) > len(whole)
+    from tests.helpers.abstraction_evidence import seed_authored_evidence
+
+    # Captured authored evidence is independent of the passage segmentation.
+    authored = whole[0].content[:2048]
+    await seed_authored_evidence(ingestion_service._content_store, _doc(), authored)
     ingestion_service._generate_abstract_text = record
 
     for chunks in (whole, split):
@@ -235,6 +240,8 @@ async def test_abstraction_input_is_identical(ingestion_service, graph_store):
 
     assert len(seen) == 2
     assert seen[1] == seen[0]
+    assert authored in seen[0]
+    assert "Source field: body" in seen[0]
 
 
 async def test_legacy_passages_sharing_a_heading_stay_separate(graph_store, store, minimal_config):

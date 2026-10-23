@@ -4,13 +4,26 @@
   "title": "SAGE Vault Configuration",
   "description": "Top-level vault configuration schema. A domain instantiation produces a single YAML file that validates against this schema. Sub-schemas are referenced for document types, lifecycle, metadata extraction, and edge inference. See SAGE Architecture Reference Sections 4.7, 7.2, and 8.3.",
   "type": "object",
-  "required": ["vault", "document_types", "lifecycle", "metadata_extraction", "edge_inference"],
+  "required": [
+    "vault",
+    "document_types",
+    "lifecycle",
+    "metadata_extraction",
+    "edge_inference"
+  ],
   "additionalProperties": false,
   "properties": {
     "vault": {
       "type": "object",
       "description": "Vault identity and storage configuration.",
-      "required": ["id", "name", "owner", "storage_root", "brain_root", "visibility"],
+      "required": [
+        "id",
+        "name",
+        "owner",
+        "storage_root",
+        "brain_root",
+        "visibility"
+      ],
       "additionalProperties": false,
       "properties": {
         "id": {
@@ -40,7 +53,11 @@
         },
         "visibility": {
           "type": "string",
-          "enum": ["personal", "team", "org"],
+          "enum": [
+            "personal",
+            "team",
+            "org"
+          ],
           "description": "Access scope for this vault."
         },
         "timezone": {
@@ -70,7 +87,17 @@
       "type": "object",
       "description": "Per-adapter projection parameters, keyed by source type. Each entry is the vault-level base for that adapter; a per-request `config` deep-merges over it, request keys winning on collision. Adapter availability is not declared here: it is a process-wide capability fixed by the installed adapter implementations (CAS-ADR-046).",
       "propertyNames": {
-        "enum": ["markdown", "docx", "xlsx", "pptx", "pdf", "email", "onenote", "teams_chat", "structured_data"]
+        "enum": [
+          "markdown",
+          "docx",
+          "xlsx",
+          "pptx",
+          "pdf",
+          "email",
+          "onenote",
+          "teams_chat",
+          "structured_data"
+        ]
       },
       "additionalProperties": {
         "type": "object",
@@ -87,7 +114,10 @@
           },
           "dialect": {
             "type": "string",
-            "enum": ["gfm", "pandoc"],
+            "enum": [
+              "gfm",
+              "pandoc"
+            ],
             "description": "For the markdown adapter: the Markdown dialect a document is read in, GFM or Pandoc Markdown. Unset, a document carrying a construct only Pandoc Markdown writes (a table ruled with dash lines, a grid table, a title block) is read as Pandoc Markdown and any other as GFM. A document read as Pandoc Markdown takes no heading from a table's rows or rules."
           },
           "heading_style_map": {
@@ -105,7 +135,10 @@
             "description": "For the xlsx adapter: how many data rows per sheet the projection previews."
           },
           "max_sheets": {
-            "type": ["integer", "null"],
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 1,
             "description": "For the xlsx adapter: cap on sheets projected from one workbook. Null projects every sheet."
           },
@@ -124,7 +157,7 @@
     },
     "abstraction": {
       "type": "object",
-      "description": "Per-vault configuration for the semantic abstract generation stage of the ingestion pipeline (CAS-ADR-011). Carries the vault-scope opt-in (`enabled`) and the density-proportional token-budget tuning. Provider and model identification are SAGE-process-wide (CAS-ADR-030) and live under the stack config, not here.",
+      "description": "Bounded authored-evidence abstraction. Provider placement remains process-wide.",
       "additionalProperties": false,
       "properties": {
         "enabled": {
@@ -135,17 +168,20 @@
         "max_abstract_tokens": {
           "type": "integer",
           "minimum": 50,
-          "description": "Upper bound on abstract length in tokens. Actual length is density-proportional."
+          "description": "Legacy tuning remains accepted. Bounded abstraction clamps the effective output allowance to 1500 tokens and warns for larger legacy values.",
+          "default": 1500
         },
         "base_abstract_tokens": {
           "type": "integer",
           "minimum": 0,
-          "description": "Minimum token floor for the density-proportional abstract budget. Combined with tokens_per_word as `min(base_abstract_tokens + word_count * tokens_per_word, max_abstract_tokens)` to set the per-document budget."
+          "description": "Target allowance, not a minimum output length. Legacy values over 1500 remain accepted with a warning and an effective clamp.",
+          "default": 150
         },
         "tokens_per_word": {
           "type": "number",
           "minimum": 0,
-          "description": "Per-word scaling factor for the density-proportional abstract budget. Combined with base_abstract_tokens as `min(base_abstract_tokens + word_count * tokens_per_word, max_abstract_tokens)` to set the per-document budget."
+          "description": "Target tokens per selected authored word. Legacy scales over 1 remain accepted with a warning and an effective clamp; this is not full-source density.",
+          "default": 0.02
         },
         "max_attempts": {
           "type": "integer",
@@ -164,6 +200,41 @@
           "minimum": 0,
           "default": 30.0,
           "description": "Upper bound in seconds on the abstraction worker's retry backoff delay, capping the exponential growth so a poison document cannot stall the queue indefinitely."
+        },
+        "tokens_per_breadth": {
+          "type": "number",
+          "default": 12,
+          "minimum": 0,
+          "maximum": 100,
+          "description": "Target tokens per represented region/field pair, at most 32 pairs."
+        },
+        "max_input_tokens": {
+          "type": "integer",
+          "default": 16384,
+          "minimum": 1,
+          "maximum": 32768,
+          "description": "Per-call complete protected prompt ceiling; conservative UTF-8 byte token upper bounds."
+        },
+        "max_generation_calls": {
+          "type": "integer",
+          "default": 3,
+          "minimum": 1,
+          "maximum": 3,
+          "description": "Source-scope provider calls including startup probes; retained across retries and recovery."
+        },
+        "max_total_input_tokens": {
+          "type": "integer",
+          "default": 49152,
+          "minimum": 1,
+          "maximum": 98304,
+          "description": "Cumulative complete prompt token allowance."
+        },
+        "max_total_output_tokens": {
+          "type": "integer",
+          "default": 4500,
+          "minimum": 1,
+          "maximum": 4500,
+          "description": "Cumulative reserved output tokens, including startup probes."
         }
       }
     },
@@ -189,7 +260,10 @@
           "description": "Master switch. When false, mcp_init wires the no-op timer to all services and the per-vault timing.log is never opened."
         },
         "log_path": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "default": null,
           "description": "Absolute path for the per-vault timing log, under the server's vault root. When null (default), mcp_init resolves to {brain_root}/timing.log."
         },
@@ -291,11 +365,20 @@
         },
         "max_keyword_characters": {
           "description": "Authored passage content and structure admitted to keyword indexing, independently of embedding selection.",
-          "type": ["integer", "null"], "minimum": 1, "maximum": 67108864, "default": null
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 67108864,
+          "default": null
         },
         "max_in_flight": {
           "description": "Distinct complete embedding inputs held in one provider increment.",
-          "type": "integer", "minimum": 1, "maximum": 32, "default": 8
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32,
+          "default": 8
         }
       }
     },

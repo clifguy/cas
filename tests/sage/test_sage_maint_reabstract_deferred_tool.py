@@ -76,6 +76,9 @@ async def _seed_one_skipped(services: SAGEServices, *, doc_id_label: str) -> str
         chunk_index=0,
     )
     await services.content_store.index_chunks(doc.id, [chunk])
+    from tests.helpers.abstraction_evidence import seed_authored_evidence
+
+    await seed_authored_evidence(services.content_store, doc, chunk.content)
     return doc.id
 
 
@@ -191,6 +194,9 @@ async def test_sage_maint_reabstract_deferred_vault_aggregates_streaming_events(
                     )
                 ],
             )
+            from tests.helpers.abstraction_evidence import seed_authored_evidence
+
+            await seed_authored_evidence(services.content_store, doc, body)
 
         result = await mcp_server.recompute_deferred_vault_abstracts(vault_id=vault_id)
 

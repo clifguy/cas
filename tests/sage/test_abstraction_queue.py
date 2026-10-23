@@ -344,10 +344,10 @@ async def test_reabstract_clears_stale_pipeline_error(
     ends at null for free, so the failure is asserted first -- the field is
     proved non-null before the repair that must clear it.
     """
+    ingestion_service._config.abstraction.max_attempts = 1
     _create_test_file(tmp_vault_dir, "samples/stale.md", "# Stale\n\nContent.")
-    # Fails the 3 attempts the ingest budget allows, then succeeds on the
-    # 4th call, which is the one the reabstract job makes.
-    provider = _FailNTimesProvider(3)
+    # One failed attempt leaves source allowance for the successful repair.
+    provider = _FailNTimesProvider(1)
     ingestion_service._abstraction = provider
 
     async def _no_sleep(_seconds):
@@ -362,7 +362,7 @@ async def test_reabstract_clears_stale_pipeline_error(
     terminal = await _await_terminal(graph_store, ingestion_service, result.document.id)
     assert terminal == PipelineStatus.FAILED
     failed = await graph_store.get_document(result.document.id)
-    assert "3 attempts" in failed.pipeline_error
+    assert "1 attempts" in failed.pipeline_error
 
     await ingestion_service.reabstract(result.document.id)
     terminal = await _await_terminal(graph_store, ingestion_service, result.document.id)
@@ -382,6 +382,7 @@ async def test_repeat_failure_replaces_prior_pipeline_error(
     passes just as well under an append. The absence of the older marker is
     what distinguishes replace from append.
     """
+    ingestion_service._config.abstraction.max_attempts = 1
     _create_test_file(tmp_vault_dir, "samples/twice.md", "# Twice\n\nContent.")
     ingestion_service._abstraction = _MarkedFailProvider("simulated failure A")
 
@@ -441,8 +442,10 @@ async def test_retry_backoff_bounded(tmp_vault_dir, minimal_vault_config_dict, g
     finally:
         await service.stop_worker()
 
-    # 5 attempts → 4 inter-attempt backoffs: k=1..4 → 1, 2, min(4,3)=3, min(8,3)=3.
-    assert delays == [1.0, 2.0, 3.0, 3.0]
+    # The generation hard ceiling bounds a legacy max_attempts=5 to three calls.
+    assert delays == [1.0, 2.0]
+    assert service._compute_backoff(3) == service._compute_backoff(4) == 3.0
+    assert provider.calls == 3
 
 
 # ==========================================================================

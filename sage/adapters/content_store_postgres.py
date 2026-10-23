@@ -56,6 +56,7 @@ from sage.models.coverage import (
     ProcessingIdentity,
     canonical_configuration_hash,
 )
+from sage.models.discovery import EvidencePackage
 from sage.models.enums import TERMINAL_PIPELINE_STATUSES, PipelineStatus
 from sage.storage.postgres.schema import (
     CHUNKS_TSV_CURRENT_MARKERS,
@@ -665,6 +666,85 @@ class PostgresContentStore(ContentStore):
                 raise ValueError("processing document does not exist")
             return row[0]
 
+    async def save_abstraction_evidence(
+        self, document_id: str, attempt: int, package: EvidencePackage
+    ) -> bool:
+        from sage.models.abstraction_evidence import encode_package
+
+        payload = encode_package(package)
+        async with self._pool.connection() as conn:
+            cur = await conn.execute(
+                "UPDATE documents SET abstraction_state = "
+                "jsonb_set(COALESCE(abstraction_state, '{}'::jsonb), '{package}', %s) "
+                "WHERE id = %s AND (processing_coverage->>'attempt')::bigint = %s "
+                "AND source_content_hash = %s",
+                (Jsonb(payload), document_id, attempt, package.identity.source_hash),
+            )
+            return bool(cur.rowcount)
+
+    async def read_abstraction_evidence(self, document_id: str) -> EvidencePackage | None:
+        from sage.models.abstraction_evidence import decode_package
+
+        async with self._pool.connection() as conn:
+            row = await (
+                await conn.execute(
+                    "SELECT abstraction_state->'package', source_content_hash "
+                    "FROM documents WHERE id = %s",
+                    (document_id,),
+                )
+            ).fetchone()
+        if row is None or row[0] is None:
+            return None
+        try:
+            package = decode_package(row[0])
+        except KeyError, TypeError, ValueError:
+            return None
+        return package if package.identity.source_hash == row[1] else None
+
+    async def admit_abstraction(
+        self,
+        document_id: str,
+        attempt: int,
+        identity: ProcessingIdentity,
+        input_tokens: int,
+        output_tokens: int,
+        *,
+        max_calls: int,
+        max_input: int,
+        max_output: int,
+    ) -> str:
+        from sage.models.abstraction_evidence import reserve_generation
+
+        async with self._pool.connection() as conn, conn.transaction():
+            row = await (
+                await conn.execute(
+                    "SELECT abstraction_state, source_content_hash FROM documents WHERE id = %s "
+                    "AND (processing_coverage->>'attempt')::bigint = %s FOR UPDATE",
+                    (document_id, attempt),
+                )
+            ).fetchone()
+            if row is None:
+                return "stale"
+            if row[1] != identity.source_hash:
+                return "scope_changed"
+            state = row[0] or {}
+            result, ledger = reserve_generation(
+                state.get("accounting"),
+                identity,
+                input_tokens,
+                output_tokens,
+                max_calls=max_calls,
+                max_input=max_input,
+                max_output=max_output,
+            )
+            if result == "admitted":
+                state["accounting"] = ledger
+                await conn.execute(
+                    "UPDATE documents SET abstraction_state = %s WHERE id = %s",
+                    (Jsonb(state), document_id),
+                )
+            return result
+
     async def admit_embedding(
         self,
         document_id: str,
@@ -864,6 +944,8 @@ class PostgresContentStore(ContentStore):
         surface: DocumentSurface | None = None,
         semantic_abstract: str | None = None,
         indexing_complete: bool = True,
+        text_repair: bool = False,
+        expected_abstract: str | None = None,
     ) -> bool:
         """Commit artifact replacements and their evidence together under a database fence.
 
@@ -871,7 +953,13 @@ class PostgresContentStore(ContentStore):
         projection. Stale producers cannot change either artifacts or the summary.
         Pipeline scheduling and outcome remain owned by pipeline_status.
         """
-        if attempt < 1 or (not dimensions and surface is None) or set(dimensions) - set(DIMENSIONS):
+        if text_repair and (dimensions or chunks is not None or semantic_abstract is None):
+            raise ValueError("text repair cannot publish processing evidence or passages")
+        if (
+            attempt < (0 if text_repair else 1)
+            or (not dimensions and surface is None)
+            or set(dimensions) - set(DIMENSIONS)
+        ):
             raise ValueError("invalid processing publication")
         if (
             chunks is None
@@ -914,13 +1002,15 @@ class PostgresContentStore(ContentStore):
             ),
         ):
             cur = await conn.execute(
-                "SELECT processing_coverage, source_content_hash, embedding_accounting "
+                "SELECT processing_coverage, source_content_hash, embedding_accounting, "
+                "semantic_abstract "
                 "FROM documents "
-                "WHERE id = %s AND (processing_coverage->>'attempt')::bigint = %s FOR UPDATE",
+                "WHERE id = %s AND "
+                "COALESCE((processing_coverage->>'attempt')::bigint, 0) = %s FOR UPDATE",
                 (document_id, attempt),
             )
             row = await cur.fetchone()
-            if row is None:
+            if row is None or (text_repair and row[3] != expected_abstract):
                 return False
             current = ProcessingCoverage.model_validate(row[0] or {})
             # Check the durable allowance in the same transaction as replacement.
@@ -945,6 +1035,8 @@ class PostgresContentStore(ContentStore):
                 if value.identity is not None and value.identity.source_hash != row[1]:
                     raise ValueError("coverage source identity mismatch")
                 changes[name] = value.model_dump(mode="json")
+            if semantic_abstract is not None and not text_repair:
+                changes["served_abstraction_generation"] = attempt
             merged = ProcessingCoverage.model_validate({**current.model_dump(), **changes})
             if chunks is not None:
                 with span("database.write_chunks"):

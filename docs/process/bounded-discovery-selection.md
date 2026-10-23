@@ -283,3 +283,82 @@ recompute and recovery preserve both; a previously unrecorded resident source us
 its retained digest for both identities. The bounded published summary retains the
 inspected digest; its full-configuration digest also binds it when settings are
 omitted. This changes no source bytes, stored provenance, or publication comparison.
+
+## Bounded abstraction (T-0759)
+
+Generation consumes the immutable authored `EvidencePackage` captured by shared
+inspection. Its complete selected inputs already contain source context. Prior
+abstracts and other document-surface prose are excluded by construction. Computed
+observations remain separately typed and never enter this ticket's model input.
+A protected system instruction identifies the selected scope and prohibits
+full-source counts, absence, importance or comprehensive assessment claims.
+
+The target output allowance in tokens is
+`min(1500, configured_output_cap, floor(base + selected_words * text_scale + min(region_field_pairs, 32) * breadth_scale))`,
+with defaults `base=150`, `text_scale=0.02`, `breadth_scale=12`, and
+`configured_output_cap=1500`. The effective target is at least one token so the
+provider receives a valid call; adequate prose is never padded to reach it.
+Words and region/field pairs describe supplied authored evidence under its
+selection identity. Vectors, information-density scores, variance, extra
+embeddings and generative selection are unnecessary.
+
+Legacy `max_abstract_tokens`, `base_abstract_tokens` and `tokens_per_word` settings
+remain accepted. Values beyond shared effective bounds warn and clamp; output
+never exceeds 1500, the base contribution 1500, or text scale 1. The names now
+measure selected authored evidence, with no full-source density promise.
+`tokens_per_breadth` accepts 0 through 100. No existing abstract is silently
+regenerated when these defaults change.
+
+`max_input_tokens` bounds each complete protected prompt (default 16384, maximum
+32768). Input accounting uses conservative UTF-8 byte-token upper bounds for
+system instructions, framed source and 1024 tokens of provider-envelope headroom.
+The local provider also checks the actual serialized prompt against that
+reservation and its context window. Request construction supplies native region/field context once per group. If the
+complete protected prompt still does not fit, it reduces complete excerpts at stable
+source-spread positions, recomputes sizing over the supplied subset, and records
+`abstraction_prompt_budget` plus its smaller represented-token count before generation.
+Providers may refuse an additional context overrun; they cannot silently shrink
+established evidence under an unchanged coverage claim.
+
+`max_generation_calls` defaults to three and cannot exceed three. Each queued job
+is also bounded by `max_attempts`; a smaller per-job retry count does not reset the
+source-wide call allowance. Cumulative defaults are 49152 input tokens (maximum 98304) and
+4500 reserved output tokens (maximum 4500). A durable source/selection ledger
+reserves a call and its complete prompt/output allowances **before** inference.
+Uncertain, failed and interrupted calls retain their reservations across retry,
+reabstract, restart and recompute; changing the selection identity or allowances
+refuses further consumption instead of resetting the ledger. A new delivered-source
+`identity.source_hash` establishes a new attributable source scope. Changing only
+the inspected retained-byte digest changes selection identity and is refused as
+`scope_changed`; it does not reset prior consumption. Ordinary reabstract is
+not permission to expand consumed work. Hosted SDK generation retries are disabled.
+Bounded local work validates the actual first generation instead of issuing an
+additional startup probe; direct legacy adapter calls retain their probe behavior.
+
+The bounded package is persisted separately from passages in
+`documents.abstraction_state`. Reabstract and startup recovery read that package
+without loading every passage or vector. Missing legacy evidence is rebuilt only
+by bounded retained-source inspection with an independently verified hash; native
+formats use the shared fact reader, Markdown/text use an explicitly limited
+lexical prefix. Unsupported legacy formats require explicit source reprocessing;
+unverified stored passages are never promoted to trusted evidence.
+
+`processing_coverage.abstraction_evidence` publishes when the input is established,
+before generation. Pipeline status independently records success, failure,
+interruption or skipping. Disabled generation before construction leaves evidence
+unknown; failure after construction preserves established scope. A failed
+replacement preserves the previously served abstract. The nullable
+`served_abstraction_generation` identifies that abstract's generation separately
+from newer attempt evidence; null means historical identity unknown. Publication
+of a replacement abstract and its evidence is atomic under the processing fence.
+A text-only maintenance repair preserves the served generation, current attempted
+evidence, cumulative allowances and recovery checkpoint. It does not allocate a
+processing attempt or relabel evidence. Repair publication compares the expected
+prior abstract and processing attempt atomically; stale repairs are refused.
+
+When no generated abstract exists, document-level orientation can show a labeled
+**Derived inventory** of established inspection counts and their scope. It remains
+outside authored passages and matchable document text, and cannot independently
+admit a result. Retained source, readable projection and completed keyword/vector
+work remain usable after abstraction failure. Operators must apply the ordinary
+idempotent vault schema migration for the nullable durable-state column.

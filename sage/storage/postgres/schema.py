@@ -157,6 +157,7 @@ CREATE TABLE IF NOT EXISTS documents (
     relocated_to jsonb,
     processing_coverage jsonb,
     embedding_accounting jsonb,
+    abstraction_state jsonb,
     processing_resume_stage text CHECK (processing_resume_stage IN ('indexing', 'abstraction')),
     version_token bigint NOT NULL DEFAULT 1
 );
@@ -413,6 +414,7 @@ ADDITIVE_COLUMNS: tuple[str, ...] = (
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS stored_content_hash text;",
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS processing_coverage jsonb;",
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS embedding_accounting jsonb;",
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS abstraction_state jsonb;",
     "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS keyword_indexed boolean NOT NULL DEFAULT true;",
     "ALTER TABLE document_surface ADD COLUMN IF NOT EXISTS "
     "authored_embedding boolean NOT NULL DEFAULT false;",

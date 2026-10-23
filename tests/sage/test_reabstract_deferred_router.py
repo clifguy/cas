@@ -64,6 +64,9 @@ async def _seed_one_skipped(
         chunk_index=0,
     )
     await services.content_store.index_chunks(doc.id, [chunk])
+    from tests.helpers.abstraction_evidence import seed_authored_evidence
+
+    await seed_authored_evidence(services.content_store, doc, chunk.content)
     return doc.id
 
 
@@ -174,6 +177,9 @@ async def test_post_reabstract_deferred_streams_failure_without_aborting(
             doc.id,
             [Chunk(document_id=doc.id, heading_path="Body", content=body, chunk_index=0)],
         )
+        from tests.helpers.abstraction_evidence import seed_authored_evidence
+
+        await seed_authored_evidence(services.content_store, doc, body)
 
     transport = ASGITransport(app=app)
     try:
