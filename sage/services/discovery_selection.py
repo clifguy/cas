@@ -132,11 +132,21 @@ def select_discovery(
     Exceptions propagate as failed inspection, never completed evidence.
     """
     actual_limits = getattr(facts, "limits", None)
+    narrative_input_bytes = getattr(facts, "narrative_input_bytes", None)
     if actual_limits is not None:
-        actual_configuration = asdict(actual_limits)
-        if fact_configuration is not None and fact_configuration != actual_configuration:
+        base_configuration = asdict(actual_limits)
+        actual_configuration = dict(base_configuration)
+        if narrative_input_bytes is not None:
+            actual_configuration["narrative_input_bytes"] = narrative_input_bytes
+        if fact_configuration is not None and fact_configuration not in (
+            base_configuration,
+            actual_configuration,
+        ):
             raise ValueError("fact configuration differs from effective stream limits")
         fact_configuration = actual_configuration
+    elif narrative_input_bytes is not None:
+        fact_configuration = dict(fact_configuration or {})
+        fact_configuration["narrative_input_bytes"] = narrative_input_bytes
     identity = selection_identity(
         source_hash=source_hash,
         adapter_version=adapter_version,

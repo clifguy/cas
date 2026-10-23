@@ -294,3 +294,96 @@ def test_published_policy_schema_matches_actual_configuration_boundaries(kind):
         validator.validate({kind: {"unknown_option": 1}})
     published = schema["$defs"][kind]["properties"]
     assert {k: v["default"] for k, v in published.items()} == asdict(runtime())
+
+
+@pytest.mark.parametrize("unit,budget", [("a", None), ("🙂", None), ("a", 8), ("🙂", 8)])
+def test_actual_narrative_factory_selects_usable_default_and_small_budget(tmp_path, unit, budget):
+    from sage.source_adapters.base import ProjectionResult
+    from sage.source_adapters.structure import FactLimits, source_facts
+
+    text = unit * 32768
+    config = SelectionConfig() if budget is None else SelectionConfig(max_tokens=budget)
+    projection = ProjectionResult(text, [], "hash", "1", "title")
+    facts = source_facts(
+        tmp_path / "source.md", projection, FactLimits(), narrative_input_bytes=budget
+    )
+    package = select_discovery(
+        facts,
+        source_hash="0" * 64,
+        adapter_version="markdown:1",
+        tokenizer=lambda value: len(value.encode()),
+        tokenizer_identity="utf8-byte-tokens:1",
+        config=config,
+    )
+    assert package.selected
+    assert all(len(item.input_text.encode()) <= config.max_tokens for item in package.selected)
+    assert package.selected_tokens <= config.max_tokens
+    assert package.inspection_complete
+
+
+def test_narrative_context_alone_over_budget_is_honestly_excluded(tmp_path):
+    from sage.source_adapters.base import HeadingNode, ProjectionResult
+    from sage.source_adapters.structure import FactLimits, source_facts
+
+    context = "Authored context"
+    projection = ProjectionResult(
+        "body", [HeadingNode(1, context, context, "body")], "hash", "1", "title"
+    )
+    facts = source_facts(tmp_path / "source.md", projection, FactLimits(), narrative_input_bytes=4)
+    values = list(facts)
+    assert values and all(fact.context == context for fact in values)
+    assert "".join(fact.value for fact in values) == "body"
+    package = select_discovery(
+        values,
+        source_hash="0" * 64,
+        adapter_version="markdown:1",
+        tokenizer=lambda value: len(value.encode()),
+        tokenizer_identity="utf8-byte-tokens:1",
+        config=SelectionConfig(max_tokens=4),
+    )
+    assert package.selected == ()
+    assert "selection_budget" in package.limitations
+
+
+def test_narrative_effective_segmentation_budget_changes_captured_identity(tmp_path):
+    from sage.source_adapters.base import ProjectionResult
+    from sage.source_adapters.structure import FactLimits, source_facts
+
+    projection = ProjectionResult("x" * 256, [], "hash", "1", "title")
+    identities = []
+    for budget in (64, 128):
+        facts = source_facts(
+            tmp_path / "source.md", projection, FactLimits(), narrative_input_bytes=budget
+        )
+        package = select_discovery(
+            facts,
+            source_hash="0" * 64,
+            adapter_version="markdown:1",
+            tokenizer=lambda value: len(value.encode()),
+            tokenizer_identity="utf8-byte-tokens:1",
+        )
+        actual = package.identity.processing_identity().configuration["facts"]
+        assert actual["narrative_input_bytes"] == budget
+        identities.append(package.identity)
+    assert identities[0] != identities[1]
+
+
+def test_narrative_declared_budget_must_match_actual_stream(tmp_path):
+    from dataclasses import asdict
+
+    from sage.source_adapters.base import ProjectionResult
+    from sage.source_adapters.structure import FactLimits, source_facts
+
+    limits = FactLimits()
+    projection = ProjectionResult("x" * 256, [], "hash", "1", "title")
+    facts = source_facts(tmp_path / "source.md", projection, limits, narrative_input_bytes=64)
+    declared = {**asdict(limits), "narrative_input_bytes": 128}
+    with pytest.raises(ValueError, match="fact configuration differs"):
+        select_discovery(
+            facts,
+            source_hash="0" * 64,
+            adapter_version="markdown:1",
+            tokenizer=lambda value: len(value.encode()),
+            tokenizer_identity="utf8-byte-tokens:1",
+            fact_configuration=declared,
+        )

@@ -279,6 +279,8 @@ class SourceAdapter(ABC):
         source_path: Path,
         projection: ProjectionResult | None = None,
         limits: "FactLimits | None" = None,
+        *,
+        narrative_input_bytes: int | None = None,
     ) -> "FactStream":
         """Expose bounded native facts independently of the readable projection.
 
@@ -289,7 +291,11 @@ class SourceAdapter(ABC):
         from sage.source_adapters.structure import FactLimits, source_facts
 
         return source_facts(
-            source_path, projection, limits or FactLimits(), native=self.NATIVE_FACTS
+            source_path,
+            projection,
+            limits or FactLimits(),
+            native=self.NATIVE_FACTS,
+            narrative_input_bytes=narrative_input_bytes,
         )
 
     @abstractmethod

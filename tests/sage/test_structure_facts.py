@@ -229,7 +229,7 @@ def test_long_narrative_paragraph_keeps_late_text_and_stable_offsets(tmp_path):
     projection = ProjectionResult(text, [], "hash", "1", "title")
     stream = source_facts(tmp_path / "source.md", projection, FactLimits())
     actual = list(stream)
-    assert [len(fact.value) for fact in actual] == [16384, 16384, 7242]
+    assert [len(fact.value) for fact in actual] == [8192, 8192, 8192, 8192, 7242]
     assert "".join(fact.value for fact in actual) == text
     assert actual[-1].location == "document:char:32768"
     assert actual[-1].value.endswith(" late text")
@@ -428,3 +428,58 @@ async def test_native_json_entry_respects_explicit_nondefault_depth(tmp_path):
     import json
 
     assert json.loads(projected.text) == json.loads(path.read_text())
+
+
+@pytest.mark.parametrize("unit,length,expected_chars", [("a", 32768, 8192), ("🙂", 32768, 2048)])
+def test_narrative_default_utf8_segments_preserve_exact_divisible_source(
+    tmp_path, unit, length, expected_chars
+):
+    text = unit * length
+    projection = ProjectionResult(text, [], "hash", "1", "title")
+    stream = source_facts(tmp_path / "source.md", projection, FactLimits())
+    actual = list(stream)
+    assert all(len(fact.value) == expected_chars for fact in actual)
+    assert "".join(fact.value for fact in actual) == text
+    assert [fact.location for fact in actual] == [
+        f"document:char:{offset}" for offset in range(0, length, expected_chars)
+    ]
+    assert stream.narrative_input_bytes == 8192
+
+
+def test_narrative_explicit_utf8_budget_includes_authored_context(tmp_path):
+    text = "🙂" * 8
+    projection = ProjectionResult(text, [HeadingNode(1, "題", "題", text)], "hash", "1", "title")
+    stream = source_facts(
+        tmp_path / "source.md", projection, FactLimits(), narrative_input_bytes=13
+    )
+    actual = list(stream)
+    assert [fact.value for fact in actual] == ["🙂🙂"] * 4
+    assert [fact.location for fact in actual] == [f"題:char:{i}" for i in (0, 2, 4, 6)]
+    assert all(len(f"{fact.context}\n\n{fact.rendering}".encode()) == 13 for fact in actual)
+    assert stream.narrative_input_bytes == 13
+
+
+def test_narrative_unicode_unit_larger_than_budget_stays_whole(tmp_path):
+    projection = ProjectionResult("🙂🙂", [], "hash", "1", "title")
+    stream = source_facts(tmp_path / "source.md", projection, FactLimits(), narrative_input_bytes=1)
+    actual = list(stream)
+    assert [fact.value for fact in actual] == ["🙂", "🙂"]
+    assert [fact.location for fact in actual] == ["document:char:0", "document:char:1"]
+    assert stream.exhausted
+
+
+def test_narrative_context_comes_from_heading_not_reserved_region_names(tmp_path):
+    projection = ProjectionResult(
+        "lead\nxy",
+        [HeadingNode(1, "document", "document", "xy")],
+        "hash",
+        "1",
+        "title",
+        preamble="lead",
+    )
+    facts = list(
+        source_facts(tmp_path / "source.md", projection, FactLimits(), narrative_input_bytes=11)
+    )
+    assert [fact.value for fact in facts] == ["lead", "x", "y"]
+    assert [fact.context for fact in facts] == ["", "document", "document"]
+    assert [fact.region for fact in facts] == ["preamble", "document", "document"]

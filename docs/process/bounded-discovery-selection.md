@@ -34,12 +34,14 @@ reinterpret an earlier package.
 | Retained input/association payload | 16 MiB | 64 MiB | UTF-8 bytes plus reserved run storage |
 | Association runs | 16,384 | 65,536 | contiguous source-order runs |
 
-A scalar fact is one cell or native scalar, not one table row. Source parser work
+A scalar fact is one cell, native scalar or bounded narrative segment, not one
+table row. Source parser work
 has separate admission, depth, node, row and column bounds in `FactLimits`;
 selection does not redefine those units. Existing ZIP guards remain independently
 enforced before workbook parsing (256 MiB expanded bytes, 10,000 members and
-compression-ratio checks). These limits apply to inspection; exhausting one records limited inspection and
-does not narrow the existing source-admission API.
+compression-ratio checks). These selector limits qualify inspection or selection;
+they do not authorize
+parsing beyond the separate projection-admission limits below.
 
 ## Classification and authored evidence
 
@@ -51,6 +53,22 @@ significance. Empty text contributes inventory but no excerpt. Text inputs inclu
 source-authored context where supplied by the adapter. Derived structural locations
 are metadata, not purported quotations. Unsupported embedded encodings remain
 text; suggestive headers do not license application-specific decoding.
+
+Narrative paragraphs are streamed as contiguous segments with stable Unicode
+character offsets. Their complete contextual input has a UTF-8 byte ceiling,
+`narrative_input_bytes`: the adapter/factory default comes from
+`SelectionConfig().max_tokens` (8,192), and ingestion passes its frozen effective
+selection budget under the explicit `utf8-byte-tokens:1` sizing rule. The read-only
+`FactStream.narrative_input_bytes` records the actual setting in processing identity
+facts; two different segmentation settings cannot silently share an identity.
+Each segment reserves the authored context's UTF-8 bytes and the two newline
+separator bytes before adding content. Iteration sizes individual Unicode units,
+without encoding the entire source or splitting a unit's UTF-8 representation.
+If context or one Unicode unit cannot fit, the whole unit and authored context
+remain available for truthful `selection_budget` exclusion; context is never
+silently dropped, and iteration always advances. This deterministic byte sizing
+is not a future embedding model's token estimate and does not alter readable
+projection or passage inputs.
 
 An input exceeding the per-input character guard is omitted with a limitation,
 never silently truncated. Complete contextual input equality alone deduplicates
@@ -89,10 +107,11 @@ or rendering bounds may require reading one boundary fact, which is not included
 in observed counts. Cancellation returns an interrupted package with no completed
 selection. Parse errors propagate as failures rather than completed evidence.
 
-The evidence package records observed scalar facts and characters, the last
-established location, limitations and separate inspection/association completeness.
+The evidence package records observed fact occurrences (including narrative
+segments) and characters, the last established location, limitations and separate
+inspection/association completeness.
 A selected subset does not make inspection incomplete; it qualifies selection.
-The inspection publisher records scalar observations as `occurrences`, preserving
+The inspection publisher records these fact observations as `occurrences`, preserving
 the coverage contract's existing units. It publishes a bounded summary, not a
 complete inventory manifest, and never settles embedding or abstraction coverage.
 Identity is captured before work, validated against the package, and publication

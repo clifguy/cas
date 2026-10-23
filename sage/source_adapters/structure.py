@@ -61,8 +61,14 @@ class FactLimits:
 class FactStream:
     """Single-pass facts and known limitations, settled only when consumed."""
 
-    def __init__(self, factory: Callable[[], Iterator[SourceFact]], limits: FactLimits) -> None:
+    def __init__(
+        self,
+        factory: Callable[[], Iterator[SourceFact]],
+        limits: FactLimits,
+        narrative_input_bytes: int | None = None,
+    ) -> None:
         self._limits = limits
+        self._narrative_input_bytes = narrative_input_bytes
         self.limitations: list[str] = []
         self.exhausted = False
         self._iterator = factory()
@@ -71,6 +77,11 @@ class FactStream:
     def limits(self) -> FactLimits:
         """The immutable parser limits used for this stream."""
         return self._limits
+
+    @property
+    def narrative_input_bytes(self) -> int | None:
+        """Effective complete-input UTF-8 byte ceiling, when narrative applies."""
+        return self._narrative_input_bytes
 
     def __iter__(self) -> Iterator[SourceFact]:
         return self._iterator
@@ -96,23 +107,14 @@ def source_facts(
     limits: FactLimits,
     *,
     native: bool | None = None,
+    narrative_input_bytes: int | None = None,
 ) -> FactStream:
     """Inspect native data lazily; stop without reading a remainder to count it."""
     stream: FactStream
 
     def generate() -> Iterator[SourceFact]:
         try:
-            if native is not False and path.suffix.lower() in {
-                ".json",
-                ".jsonl",
-                ".yaml",
-                ".yml",
-                ".toml",
-                ".xml",
-                ".csv",
-                ".tsv",
-                ".xlsx",
-            }:
+            if native_source:
                 if path.stat().st_size > limits.max_source_bytes:
                     raise _BoundReached("source byte admission limit reached; source not inspected")
                 for fact in _native(path, limits, stream.limitations):
@@ -129,7 +131,7 @@ def source_facts(
                                 stream.limitations.append(limitation)
                     yield fact
             elif projection is not None:
-                yield from _narrative(projection, limits)
+                yield from _narrative(projection, limits, effective_bytes)
             else:
                 stream.limitations.append("no native facts reader or narrative projection")
                 return
@@ -142,30 +144,69 @@ def source_facts(
             raise SourceReadError(f"Cannot inspect source {path}: {exc}") from exc
         stream.exhausted = True
 
-    stream = FactStream(generate, limits)
+    effective_bytes = None
+    native_source = native is not False and path.suffix.lower() in {
+        ".json",
+        ".jsonl",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".xml",
+        ".csv",
+        ".tsv",
+        ".xlsx",
+    }
+    if not native_source and projection is not None:
+        from sage.models.discovery import SelectionConfig
+
+        effective_bytes = (
+            SelectionConfig().max_tokens if narrative_input_bytes is None else narrative_input_bytes
+        )
+        maximum = SelectionConfig.hard_limits()["max_tokens"]
+        if type(effective_bytes) is not int or not 1 <= effective_bytes <= maximum:
+            raise ValueError(f"narrative_input_bytes must be an integer in 1..{maximum}")
+    stream = FactStream(generate, limits, effective_bytes)
     return stream
 
 
-def _narrative(projection: "ProjectionResult", limits: FactLimits) -> Iterator[SourceFact]:
-    bodies = ((h.path, h.content) for h in projection.headings)
+def _narrative(
+    projection: "ProjectionResult", limits: FactLimits, narrative_input_bytes: int
+) -> Iterator[SourceFact]:
+    bodies = ((h.path, h.content, h.path) for h in projection.headings)
     if not projection.headings:
-        bodies = iter((("document", projection.text),))
+        bodies = iter((("document", projection.text, ""),))
     elif projection.preamble:
         from itertools import chain
 
-        bodies = chain((("preamble", projection.preamble),), bodies)
+        bodies = chain((("preamble", projection.preamble, ""),), bodies)
     order = 0
-    for region, text in bodies:
+    for region, text, context in bodies:
         if len(region) > 500:
             raise _BoundReached("narrative location length limit; remainder unknown")
         # Split incrementally, avoiding a parallel list of the whole projection.
         import re
 
+        context_bytes = len(context.encode("utf-8")) + (2 if context else 0)
+        # Keep an indivisible Unicode unit when no complete input can fit.
+        # Its authored context remains intact so selection reports the actual
+        # budget exclusion; advancing at least one unit also guarantees progress.
+        available_bytes = max(1, narrative_input_bytes - context_bytes)
         for match in re.finditer(r"\S[\s\S]*?(?=\n\s*\n|\Z)", text):
-            for segment_start in range(match.start(), match.end(), 16_384):
+            segment_start = match.start()
+            while segment_start < match.end():
                 if order >= limits.max_parse_nodes:
                     raise _BoundReached("narrative fact limit reached; remainder unknown")
-                value = text[segment_start : min(segment_start + 16_384, match.end())]
+                segment_end = segment_start
+                used_bytes = 0
+                while segment_end < match.end():
+                    width = len(text[segment_end].encode("utf-8"))
+                    if segment_end > segment_start and used_bytes + width > available_bytes:
+                        break
+                    used_bytes += width
+                    segment_end += 1
+                    if used_bytes >= available_bytes:
+                        break
+                value = text[segment_start:segment_end]
                 yield SourceFact(
                     region,
                     "text",
@@ -174,9 +215,10 @@ def _narrative(projection: "ProjectionResult", limits: FactLimits) -> Iterator[S
                     region,
                     value,
                     value,
-                    region if region != "document" else "",
+                    context,
                 )
                 order += 1
+                segment_start = segment_end
 
 
 def _walk(

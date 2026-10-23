@@ -281,6 +281,9 @@ async def _run_inspected_projection(
     configured.pop("discovery_facts", None)
     effective = adapter.effective_config(configured)
     captured_adapter_configuration = deepcopy(effective)
+    captured_fact_configuration = dataclasses.asdict(fact_limits)
+    if not adapter.NATIVE_FACTS:
+        captured_fact_configuration["narrative_input_bytes"] = selection_config.max_tokens
     # Validate configuration identity before any source materializer runs.
     # Source identity is bound to the actual projection hash when it returns.
     try:
@@ -290,7 +293,7 @@ async def _run_inspected_projection(
             tokenizer_identity="utf8-byte-tokens:1",
             config=selection_config,
             adapter_configuration=captured_adapter_configuration,
-            fact_configuration=dataclasses.asdict(fact_limits),
+            fact_configuration=captured_fact_configuration,
         )
     except (TypeError, ValueError) as exc:
         raise AdapterConfigError(
@@ -303,14 +306,19 @@ async def _run_inspected_projection(
 
     def inspect() -> None:
         projection.discovery_evidence = select_discovery(
-            adapter.discover_facts(project_path, projection, fact_limits),
+            adapter.discover_facts(
+                project_path,
+                projection,
+                fact_limits,
+                narrative_input_bytes=selection_config.max_tokens,
+            ),
             source_hash=projection.content_hash,
             adapter_version=f"{type(adapter).__name__}:{projection.adapter_version}",
             tokenizer=lambda text: len(text.encode("utf-8")),
             tokenizer_identity="utf8-byte-tokens:1",
             config=selection_config,
             adapter_configuration=captured_adapter_configuration,
-            fact_configuration=dataclasses.asdict(fact_limits),
+            fact_configuration=captured_fact_configuration,
         )
 
     await asyncio.get_running_loop().run_in_executor(_projection_executor(), context.run, inspect)

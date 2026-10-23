@@ -536,3 +536,56 @@ async def test_explicit_structured_source_type_keeps_native_refusal(
         await ingestion_service.ingest(
             IngestRequest(source=str(source), source_type=SourceType.STRUCTURED_DATA)
         )
+
+
+@pytest.mark.parametrize("budget", [8192, 64])
+@pytest.mark.parametrize("glyph", ["a", "🙂"])
+async def test_ingest_narrative_uses_effective_byte_budget_with_authored_context(
+    ingestion_service, tmp_vault_dir, monkeypatch, budget, glyph
+):
+    import sage.services.ingestion as ingestion
+    from sage.models.schemas import IngestRequest
+
+    captured = []
+    projected_configurations = []
+    identity_builder = ingestion.selection_identity
+    projector = ingestion._run_projection
+
+    def capture_identity(**kwargs):
+        identity = identity_builder(**kwargs)
+        captured.append(json.loads(identity.configuration_json))
+        return identity
+
+    async def project_with_frozen_identity(*args, **kwargs):
+        assert captured, "effective narrative byte identity must exist before source work"
+        frozen = json.loads(json.dumps(captured[-1]))
+        assert frozen["facts"].get("narrative_input_bytes") == budget
+        assert frozen["selection"]["max_tokens"] == budget
+        projected_configurations.append(frozen)
+        ingestion_service._config.adapter_defaults = {
+            "markdown": {"discovery_selection": {"max_tokens": 32}}
+        }
+        return await projector(*args, **kwargs)
+
+    monkeypatch.setattr(ingestion, "selection_identity", capture_identity)
+    monkeypatch.setattr(ingestion, "_run_projection", project_with_frozen_identity)
+    source = tmp_vault_dir / "long-narrative.md"
+    body = glyph * 32768
+    source.write_text("# Authored heading\n\n" + body)
+    request_config = {"discovery_selection": {"max_tokens": budget}} if budget != 8192 else None
+    result = await ingestion_service.ingest(
+        IngestRequest(source=str(source), config=request_config)
+    )
+    dimension = result.document.processing_coverage.inspection
+    summary = dimension.selection_summary
+    assert dimension.counts[0].observed > 1, "long narrative must span multiple inspected facts"
+    assert summary.selected_inputs > 0
+    assert 0 < summary.selected_tokens <= budget
+    assert dimension.identity.configuration["selection"]["max_tokens"] == budget
+    assert dimension.identity.configuration["facts"]["narrative_input_bytes"] == budget
+    assert dimension.counts[0].observed >= len(body.encode()) // budget
+    assert dimension.identity.configuration == projected_configurations[0]
+    assert (
+        ingestion_service._config.adapter_defaults["markdown"]["discovery_selection"]["max_tokens"]
+        == 32
+    )
