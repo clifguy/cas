@@ -197,8 +197,35 @@ def verify_groups(plan, az, *, empty):
             raise ValueError("bootstrap group is populated or in a different region")
 
 
+def role_definition_id(definition):
+    subscription = definition["AssignableScopes"][0].split("/")[2]
+    return (
+        "/subscriptions/"
+        + subscription
+        + "/providers/Microsoft.Authorization/roleDefinitions/"
+        + definition["Id"]
+    )
+
+
+def read_role_definition(definition):
+    """Only an exact resource GET returning 404 establishes role absence."""
+    from deploy.performance_trial import RemoteError, Rest
+
+    try:
+        row = Rest().arm("GET", role_definition_id(definition), api="2022-04-01").json()
+        if not isinstance(row, dict):
+            raise ValueError("invalid custom role response; reconcile intent")
+        return row
+    except RemoteError as error:
+        if error.status != 404:
+            raise
+        return None
+
+
 def role_definition_matches(row, definition):
-    """Compare privilege fields while accepting Azure's nullable metadata fields."""
+    """Bind identity and privileges in ARM and flattened CLI readbacks."""
+    properties = row.get("properties", row)
+    role_type = properties.get("type") if "properties" in row else properties.get("roleType")
     expected = [
         {
             k[0].lower() + k[1:]: definition[k]
@@ -206,16 +233,19 @@ def role_definition_matches(row, definition):
         }
     ]
     permissions = []
-    for original in row.get("permissions", []):
+    for original in properties.get("permissions", []):
         permission = dict(original)
         for key in ("condition", "conditionVersion"):
             if permission.pop(key, None) is not None:
                 return False
         permissions.append(permission)
     return (
-        permissions == expected
-        and row.get("assignableScopes") == definition["AssignableScopes"]
-        and row.get("roleType") == "CustomRole"
+        row.get("id", "").casefold() == role_definition_id(definition).casefold()
+        and row.get("name", "").casefold() == definition["Id"].casefold()
+        and properties.get("roleName") == definition["Name"]
+        and permissions == expected
+        and properties.get("assignableScopes") == definition["AssignableScopes"]
+        and role_type == "CustomRole"
     )
 
 
@@ -280,7 +310,9 @@ def verify_bootstrap(plan, az, output, principal):
     verify_access(plan, principal, az, empty_groups=True)
 
 
-def bootstrap(spec_path, approved_sha, environment, principal, output, az, *, now=None):
+def bootstrap(
+    spec_path, approved_sha, environment, principal, output, az, *, now=None, role_reader=None
+):
     """Create empty groups and scoped assignments, retaining intent before mutation.
 
     A partial receipt is deliberately not replayable: its operator must reconcile
@@ -354,14 +386,43 @@ def bootstrap(spec_path, approved_sha, environment, principal, output, az, *, no
             "purpose=ingest-performance",
         )
     verify_groups(plan, az, empty=True)
+    role_reader = role_reader or read_role_definition
     for definition in role_definitions(plan):
-        rows = az("role", "definition", "list", "--name", definition["Id"])
-        if not rows:
-            az("role", "definition", "create", "--role-definition", json.dumps(definition))
+        existing = role_reader(definition)
+        if existing is None:
+            # CLI role-definition create generates its own ID, ignoring supplied Id.
+            # ARM PUT binds the identity used by every later assignment/readback.
+            properties = {
+                "roleName": definition["Name"],
+                "description": definition["Description"],
+                "type": "CustomRole",
+                "permissions": [
+                    {
+                        key[0].lower() + key[1:]: definition[key]
+                        for key in ("Actions", "NotActions", "DataActions", "NotDataActions")
+                    }
+                ],
+                "assignableScopes": definition["AssignableScopes"],
+            }
+            created = az(
+                "rest",
+                "--method",
+                "put",
+                "--url",
+                "https://management.azure.com"
+                + role_definition_id(definition)
+                + "?api-version=2022-04-01",
+                "--body",
+                json.dumps({"properties": properties}),
+            )
+            if not role_definition_matches(created, definition):
+                raise ValueError("created custom role differs; reconcile intent")
+            readback = role_reader(definition)
+            if readback is None or not role_definition_matches(readback, definition):
+                raise ValueError("created custom role readback differs; reconcile intent")
         else:
             # Existing role bytes must be checked before any assignment uses it.
-            r = rows[0]
-            if len(rows) != 1 or not role_definition_matches(r, definition):
+            if not role_definition_matches(existing, definition):
                 raise ValueError("existing custom role differs")
     for row in expected:
         args = [
