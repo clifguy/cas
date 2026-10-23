@@ -718,7 +718,10 @@ class PostgresGraphStore(GraphStore):
         params: list[object] = []
 
         if default_exclude_failed and (not filters or "pipeline_status" not in filters):
-            where_clauses.append("pipeline_status != %s")
+            where_clauses.append(
+                "(pipeline_status != %s OR processing_coverage->'projection'->>'scope' "
+                "IN ('limited', 'complete'))"
+            )
             params.append("failed")
 
         if filters:

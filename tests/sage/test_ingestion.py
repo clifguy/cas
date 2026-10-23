@@ -2292,18 +2292,20 @@ async def test_recompute_pipeline_single_flight_409(
     )
     doc_id = result.document.id
 
-    # Gate the embed step so the first recompute_pipeline holds its
+    # Gate the abstraction step so the first recompute_pipeline holds its
     # reservation through the contention window.
     entered = asyncio.Event()
     gate = asyncio.Event()
-    original_embed = ingestion_service._embedding.embed
+    released = asyncio.Event()
+    original_generate = ingestion_service._abstraction.generate_abstract
 
-    async def gated_embed(texts):
+    async def gated_generate(*args):
         entered.set()
         await gate.wait()
-        return await original_embed(texts)
+        released.set()
+        return await original_generate(*args)
 
-    ingestion_service._embedding.embed = gated_embed
+    ingestion_service._abstraction.generate_abstract = gated_generate
 
     window_before = datetime.now(timezone.utc)
     first = await ingestion_service.recompute_pipeline(doc_id)
@@ -2312,6 +2314,7 @@ async def test_recompute_pipeline_single_flight_409(
 
     await asyncio.wait_for(entered.wait(), timeout=2.0)
     assert not gate.is_set()
+    assert not released.is_set()
 
     try:
         with pytest.raises(RecomputePipelineAlreadyInFlightError) as excinfo:

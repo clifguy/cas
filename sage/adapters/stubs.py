@@ -23,7 +23,7 @@ from sage.adapters.interfaces import (
     KeywordQueryParse,
     SearchResult,
 )
-from sage.models.coverage import CoverageDimension, ProcessingCoverage
+from sage.models.coverage import CoverageDimension, ProcessingCoverage, ProcessingIdentity
 from sage.models.enums import ResolutionPolicy
 from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
 from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge
@@ -54,6 +54,7 @@ class StubContentStore(ContentStore):
     def __init__(self) -> None:
         self._store: dict[str, list[Chunk]] = {}
         self._surfaces: dict[str, DocumentSurface] = {}
+        self._embedding_accounting: dict[str, dict] = {}
 
     def bind_processing_store(self, graph_store: GraphStore) -> None:
         self._processing_store = graph_store
@@ -112,7 +113,13 @@ class StubContentStore(ContentStore):
         chunks: list[Chunk] | None = None,
         surface: DocumentSurface | None = None,
         semantic_abstract: str | None = None,
+        indexing_complete: bool = True,
     ) -> bool:
+        if semantic_abstract is not None and surface is not None and surface.embedding is None:
+            previous = self._surfaces.get(document_id)
+            if previous is not None:
+                surface.embedding = previous.embedding
+                surface.authored_embedding = previous.authored_embedding
         if self._processing_delegate is not None:
             published = await self._processing_delegate.publish_processing(
                 document_id,
@@ -121,6 +128,7 @@ class StubContentStore(ContentStore):
                 chunks=chunks,
                 surface=surface,
                 semantic_abstract=semantic_abstract,
+                indexing_complete=indexing_complete,
             )
             if published:
                 if chunks is not None:
@@ -141,7 +149,7 @@ class StubContentStore(ContentStore):
             }
         )
         updates = {"processing_coverage": coverage}
-        if chunks is not None:
+        if chunks is not None and indexing_complete:
             updates["indexed_at"] = datetime.now(timezone.utc)
         if semantic_abstract is not None:
             updates["semantic_abstract"] = semantic_abstract
@@ -149,13 +157,136 @@ class StubContentStore(ContentStore):
             document_id,
             updates,
             advance_version=False,
-            processing_stage="abstraction" if chunks is not None else None,
+            processing_stage="abstraction" if chunks is not None and indexing_complete else None,
             advance_processing_attempt=False,
         )
         if chunks is not None:
             self._store[document_id] = chunks
         if surface is not None:
             self._surfaces[document_id] = surface
+        return True
+
+    async def admit_embedding(
+        self,
+        document_id: str,
+        attempt: int,
+        identity: ProcessingIdentity,
+        input_key: str,
+        tokens: int,
+        *,
+        max_inputs: int,
+        max_tokens: int,
+    ) -> str:
+        if self._processing_delegate is not None:
+            return await self._processing_delegate.admit_embedding(
+                document_id,
+                attempt,
+                identity,
+                input_key,
+                tokens,
+                max_inputs=max_inputs,
+                max_tokens=max_tokens,
+            )
+        doc = await self._processing_store.get_document(document_id)
+        if doc.processing_coverage.attempt != attempt:
+            return "stale"
+        ledger = self._embedding_accounting.setdefault(
+            document_id,
+            {
+                "identity": identity.model_dump_json(),
+                "inputs": {},
+                "tokens": 0,
+                "max_inputs": max_inputs,
+                "max_tokens": max_tokens,
+            },
+        )
+        if (
+            ledger["identity"] != identity.model_dump_json()
+            or ledger["max_inputs"] != max_inputs
+            or ledger["max_tokens"] != max_tokens
+        ):
+            return "scope_changed"
+        if input_key in ledger["inputs"]:
+            return "consumed"
+        if len(ledger["inputs"]) >= max_inputs or ledger["tokens"] + tokens > max_tokens:
+            return "limited"
+        ledger["inputs"][input_key] = tokens
+        ledger["tokens"] += tokens
+        return "admitted"
+
+    async def read_embedding_vectors(
+        self, document_id: str, indices: list[int]
+    ) -> dict[int, list[float]]:
+        if self._processing_delegate is not None:
+            return await self._processing_delegate.read_embedding_vectors(document_id, indices)
+        return {
+            c.chunk_index: c.embedding
+            for c in self._store.get(document_id, [])
+            if c.chunk_index in indices and c.embedding is not None
+        }
+
+    async def authorize_embedding_scope(
+        self,
+        document_id: str,
+        attempt: int,
+        decision: str,
+    ) -> bool:
+        if self._processing_delegate is not None:
+            return await self._processing_delegate.authorize_embedding_scope(
+                document_id,
+                attempt,
+                decision,
+            )
+        doc = await self._processing_store.get_document(document_id)
+        if doc.processing_coverage.attempt != attempt:
+            return False
+        if not decision.strip() or len(decision) > 512:
+            raise ValueError("reprocessing requires a bounded operator decision")
+        self._embedding_accounting.pop(document_id, None)
+        return True
+
+    async def publish_embedding_increment(
+        self,
+        document_id: str,
+        attempt: int,
+        vectors: dict[int, list[float]],
+        evidence: CoverageDimension,
+        *,
+        indexing_complete: bool = False,
+    ) -> bool:
+        if self._processing_delegate is not None:
+            success = await self._processing_delegate.publish_embedding_increment(
+                document_id,
+                attempt,
+                vectors,
+                evidence,
+                indexing_complete=indexing_complete,
+            )
+            if not success:
+                return False
+        else:
+            doc = await self._processing_store.get_document(document_id)
+            if doc.processing_coverage.attempt != attempt:
+                return False
+            coverage = doc.processing_coverage.model_copy(
+                update={
+                    "passage_embeddings": CoverageDimension.model_validate(
+                        {
+                            **evidence.model_dump(),
+                            "generation": attempt,
+                        }
+                    )
+                }
+            )
+            await self._processing_store.update_document(
+                document_id,
+                {"processing_coverage": coverage},
+                advance_version=False,
+                advance_processing_attempt=False,
+            )
+        for chunk in self._store.get(document_id, []):
+            if chunk.chunk_index in vectors:
+                chunk.embedding = vectors[chunk.chunk_index]
         return True
 
     async def index_chunks(self, document_id: str, chunks: list[Chunk]) -> None:
@@ -184,6 +315,7 @@ class StubContentStore(ContentStore):
         surface = self._surfaces.get(document_id)
         if surface is None:
             return False
+        surface.authored_embedding &= surface.matchable == matchable
         surface.matchable = matchable
         surface.orienting = orienting
         return True
@@ -309,6 +441,8 @@ class StubContentStore(ContentStore):
                     passages.append((sim, chunk.chunk_index, chunk))
         surfaces: list[tuple[float, str]] = []
         for surface in self._surfaces.values():
+            if not surface.authored_embedding:
+                continue
             if not _chunk_matches_filters(surface, filters):
                 continue
             if surface.embedding is not None and any(surface.embedding):

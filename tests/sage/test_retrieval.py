@@ -5802,14 +5802,44 @@ def _summary_with_every_discover_hit_field() -> DocumentSummary:
 # T1: exhaustive fields — the keystone F4-closure test.
 def test_from_summary_populates_every_discover_hit_field():
     summary = _summary_with_every_discover_hit_field()
+    from sage.models.coverage import CoverageDimension, ProcessingIdentity
+
+    identity = ProcessingIdentity(
+        source_hash="sha256:" + "0" * 64,
+        adapter="test:1",
+        policy="test",
+        configuration={},
+        tokenization="test",
+    )
+    for dimension, count in (
+        ("projection", 11),
+        ("keyword_indexing", 7),
+        ("passage_embeddings", 3),
+    ):
+        setattr(
+            summary.processing_coverage,
+            dimension,
+            CoverageDimension(
+                scope="limited",
+                identity=identity,
+                counts=[{"unit": "passages", "observed": 11, "represented": count, "total": 11}],
+            ),
+        )
     hit = DiscoverHit.from_summary(
         summary,
         chunk_content="sentinel chunk content",
         heading_path="Section 1 > Sentinel Heading",
         relevance_score=0.875,
         matched_chunk_count=7,
+        matched_passage_count=9,
     )
     # Three-branch closure-test idiom. DiscoverHit has no
+    assert (
+        hit.available_passage_count,
+        hit.keyword_indexed_passage_count,
+        hit.embedded_passage_count,
+        hit.matched_passage_count,
+    ) == (11, 7, 3, 9)
     # non-None-default scalar fields today; the elif is forward defense.
     for field_name, field_info in DiscoverHit.model_fields.items():
         value = getattr(hit, field_name)

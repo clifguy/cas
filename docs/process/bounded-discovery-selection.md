@@ -6,10 +6,10 @@ CAS-ADR-059 separates readable source content from deterministic discovery evide
 associations and separately typed derived observations. `capture_inspection_attempt`
 and `publish_inspection` settle inspection through the existing attempt fence.
 New ingest, recompute and recovery projection attempts inspect facts and settle
-inspection before inference. Selection does not execute embeddings or abstracts,
-replace projection, sample keyword indexing, or automatically reprocess stored
-documents. Existing embedding/abstraction inputs and spreadsheet preview settings
-remain unchanged.
+inspection before inference. The shared selector also selects complete authored
+passage inputs using the embedding provider's exact tokenizer. Content publication
+and keyword scope are independent of that selection. Abstraction inputs and
+spreadsheet preview settings retain their separate contracts.
 
 ## Effective policy and units
 
@@ -33,6 +33,8 @@ reinterpret an earlier package.
 | One tokenizer input | 32,768 | 32,768 | Unicode characters, context included |
 | Retained input/association payload | 16 MiB | 64 MiB | UTF-8 bytes plus reserved run storage |
 | Association runs | 16,384 | 65,536 | contiguous source-order runs |
+| In-flight embedding inputs | 8 | 32 | distinct complete inputs per provider call |
+| Keyword characters | complete supported projection | 64 Mi when explicitly limited | authored content and relative structure characters |
 
 A scalar fact is one cell, native scalar or bounded narrative segment, not one
 table row. Source parser work
@@ -204,6 +206,59 @@ associations and is a lower bound unless `associations_complete` is true.
 selection retains zero selected evidence. Legacy or unestablished inspection
 omits this summary. It shares the inspection generation, attempt fence and
 identity; it establishes no embedding or abstraction coverage.
+
+## Passage execution and reprocessing
+
+Source-fact inspection and passage selection have separate units and identities.
+Passage selection applies the same deterministic allocation and complete-input
+deduplication algorithm to each stored passage's authored address plus exact text.
+Its compressed occurrence runs identify stable passage indexes. Model token counts
+are exact; source-fact byte sizing remains separately identified. An oversized model
+input is excluded, never silently clipped. Every selected duplicate retains all
+established passage associations within the existing association bounds.
+
+All projected passages publish before inference, with genuine NULL vectors where
+none exist. Keyword indexing covers the full supported projection by default.
+`discovery_selection.max_keyword_characters` is an optional finite limit; null keeps
+the complete supported projection. A limited passage is still readable but cannot
+satisfy a keyword term. PostgreSQL's own tsvector ceiling is handled separately:
+readable bytes survive and keyword coverage records `backend_keyword_limit`.
+Existing stores must run the idempotent vault migration to rebuild the generated
+keyword expression before using the new omission path. Migration never treats old
+zero vectors or a terminal pipeline status as proof of embedding coverage.
+
+`max_in_flight` limits distinct complete inputs per call (default 8, maximum 32).
+Selection's existing `max_excerpts` and `max_tokens` limit total admitted distinct
+inputs and exact tokens. The existing provider remains the shared backpressure
+authority. A provider call need not be a model inference batch. Association vector
+writes use windows of at most 128 references and publish evidence atomically under
+the durable attempt fence. Earlier committed increments survive later failures.
+
+The document's internal source ledger debits before inference. Retry and recompute
+retain consumption, including uncertain interrupted calls, and reuse only positively
+established matching input vectors. Exhaustion or an unapproved scope change records
+a limitation rather than opening a transient retry loop. A source hash replacement
+records a new source decision. Changing scope for the same source requires an
+explicit operator decision, supported by the stored-passage reindex script's
+`--reprocessing-decision` argument; the ledger retains its reason, prior consumption
+and attempt. Omitting it is a conservative retry, and a second completed run consumes
+no further inference. Normal ingest/recompute never silently invokes that reset.
+
+`available_passage_count`, `keyword_indexed_passage_count`, `embedded_passage_count`
+and `matched_passage_count` describe distinct populations. Unknown optional counts
+are absent/null. The existing `matched_chunk_count` continues to count sections.
+Document-level hits contribute zero passages. Projection and keyword coverage remain
+available on reads and search, including partial embedding failures; empty results
+over unknown or limited discovery scope do not establish source absence.
+
+Document vectors used for independent semantic admission contain authored title/tag
+text only. Derived descriptions retain their keyword ranking and orientation role
+for authored-qualified results. Legacy document vectors are retained with unknown
+authored provenance and excluded from independent semantic admission until explicit
+reprocessing establishes it. Reabstracting updates derived orientation without
+spending another document-vector inference allowance. Metadata changes to authored
+title/tag inputs retain the old vector but quarantine its independent admission;
+orientation-only changes preserve established authored provenance.
 
 Inspection binds two byte identities. The processing identity's `source_hash` keeps
 established delivered-source provenance and the durable publication fence. Frozen

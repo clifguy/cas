@@ -160,19 +160,23 @@ async def test_migration_preserves_provenance_of_relocated_text(
 async def test_migration_carries_the_legacy_embedding_forward(
     store, postgres_graph_store, minimal_config, tmp_vault_dir
 ):
-    """The relocated row keeps a vector, so the corpus is not re-embedded.
-
-    A migration that dropped the embedding would leave every document
-    unreachable on the semantic arm until an operator reabstracted the vault.
-    """
+    """Retain the legacy vector without claiming it represents authored evidence."""
     await _seed_legacy(store, postgres_graph_store, "00000001_doc", "Some Title", ["Body"])
 
     await _maintenance(postgres_graph_store, store, minimal_config, tmp_vault_dir).migrate_vault()
 
     hits = await store.search_semantic([0.25] * EMBEDDING_DIM, limit=10)
-    assert any(h.document_id == "00000001_doc" and h.heading_path == "" for h in hits), (
-        "the relocated document-level row did not reach the semantic arm"
-    )
+    assert not any(h.document_id == "00000001_doc" and h.heading_path == "" for h in hits)
+    async with store._pool.connection() as conn:
+        vector, authored = await (
+            await conn.execute(
+                "SELECT embedding, authored_embedding FROM document_surface WHERE document_id = %s",
+                ("00000001_doc",),
+            )
+        ).fetchone()
+    assert list(vector) == [0.25] * EMBEDDING_DIM
+    assert authored is False
+    assert await store.search_bm25("some title")
 
 
 # ---------------------------------------------------------------------------

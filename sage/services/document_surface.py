@@ -64,17 +64,17 @@ def compose_document_surface(
         doc_type=doc.doc_type,
         lifecycle_status=doc.lifecycle_status,
         project=doc.project,
+        authored_embedding=embedding is None,
     )
 
 
 def embedding_text(surface: DocumentSurface) -> str:
     """Text to embed for a document-level row.
 
-    Both halves, because similarity is not matching: derived text exists to
-    make a document findable and triageable, which is a ranking and
-    orientation value the provenance rule preserves whole.
+    Only authored title/tag evidence may independently admit a semantic hit.
+    Derived orientation remains in its ranking field for qualified documents.
     """
-    return f"{surface.matchable}\n\n{surface.orienting}"
+    return surface.matchable
 
 
 async def refresh_derived_retrieval_text(

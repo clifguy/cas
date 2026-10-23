@@ -1,0 +1,23 @@
+classification: minor
+category: [capability, caller-adaptation, operator-adaptation]
+summary: >-
+  Preserve readable authored passages and complete keyword indexing independently
+  of bounded incremental embedding. Add explicit passage population counts,
+  durable source allowances, opt-in keyword limits and authored-vector provenance.
+  The data-integrity exemption removes derived-only semantic admission: those
+  vectors could otherwise report a source match without authored evidence.
+for_callers: >-
+  Reads and keyword discovery remain available after partial embedding failures;
+  inspect processing coverage and the separate available, keyword indexed, embedded
+  and matched passage counts. Keyword indexing remains complete by default.
+  Legacy ambiguous document vectors are retained but cannot independently admit
+  semantic hits under the data-integrity exemption; reprocess to establish authored
+  evidence. Operators run the idempotent vault migration to rebuild the keyword
+  expression and use an explicit recorded decision to expand a consumed source scope.
+exemption:
+  kind: data-integrity
+  reason: >-
+    Continuing to independently admit documents using vectors composed from
+    generated abstracts or filename prose permits a wrong-source match.
+    Preserving that admission beside authored-only admission would retain the
+    integrity defect; derived orientation still ranks already-qualified results.

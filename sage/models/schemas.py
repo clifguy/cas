@@ -4490,6 +4490,32 @@ class DiscoverHit(BaseModel):
         ),
     )
 
+    available_passage_count: int | None = Field(
+        default=None,
+        ge=0,
+        description="Established readable authored passage count; null when unknown.",
+    )
+    keyword_indexed_passage_count: int | None = Field(
+        default=None,
+        ge=0,
+        description="Established keyword indexed authored passage count; null when unknown.",
+    )
+    embedded_passage_count: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Established authored passages with genuine embedding evidence; null when unknown."
+        ),
+    )
+    matched_passage_count: int | None = Field(
+        default=None,
+        ge=0,
+        description=(
+            "Matching stored authored passages, independent of section count; "
+            "document surface hits count zero."
+        ),
+    )
+
     @classmethod
     def from_summary(
         cls,
@@ -4499,6 +4525,7 @@ class DiscoverHit(BaseModel):
         heading_path: str | None = None,
         relevance_score: float | None = None,
         matched_chunk_count: int | None = None,
+        matched_passage_count: int | None = None,
     ) -> "DiscoverHit":
         """Build a DiscoverHit from a DocumentSummary plus optional chunk fields.
 
@@ -4514,12 +4541,31 @@ class DiscoverHit(BaseModel):
         only returned by the catalog+documents+response_mode=light path;
         every other path supplies a full ``DocumentSummary``.
         """
+        counts = {}
+        for field, dimension in (
+            ("available_passage_count", "projection"),
+            ("keyword_indexed_passage_count", "keyword_indexing"),
+            ("embedded_passage_count", "passage_embeddings"),
+        ):
+            counts[field] = next(
+                (
+                    c.represented
+                    for c in getattr(
+                        document.processing_coverage,
+                        dimension,
+                    ).counts
+                    if c.unit == "passages"
+                ),
+                None,
+            )
         return cls(
             document=document,
             chunk_content=chunk_content,
             heading_path=heading_path,
             relevance_score=relevance_score,
             matched_chunk_count=matched_chunk_count,
+            matched_passage_count=matched_passage_count,
+            **counts,
         )
 
 

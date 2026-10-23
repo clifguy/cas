@@ -1,42 +1,25 @@
 #!/usr/bin/env python3
-"""Re-index existing chunks with heading-context embedding.
+"""Re-index stored authored passages under bounded deterministic discovery policy.
 
-Recomputes embeddings for every chunk in a vault so the embedder receives
-``heading_path + content`` instead of ``content`` alone, and rebuilds the
-content store's FTS indexes (which now cover both ``content`` and
-``heading_path`` columns). Result: BM25 and semantic search both find
-chunks via heading-text-only queries — the agent equivalent of Word's Find
-on a heading.
+Does not reproject or abstract. Authored content and stable addresses remain intact;
+readable and keyword scope publish before bounded embedding increments. The source
+ledger retains admitted work through retries, and completed repeated runs are no-ops.
+An explicit --reprocessing-decision records operator authority for expanded scope.
+The document adapter version remains the one that shaped its stored passages.
 
-Does NOT re-run projection or abstraction. Only the chunk store is touched:
-``heading_path`` and ``content`` fields stay the same; only the embedding
-vectors change. The document record is not written: its ``adapter_version``
-names the adapter that shaped the stored passages, and since nothing here
-re-projects, stamping the current adapter's version would tell a
-version-gated backfill that passages it has never examined are current.
-
-Every document with stored chunks is re-embedded, whatever its source type,
-since the input is the stored passages rather than the source. A document
-with no chunks is skipped. The script keeps no record of what it has done, so
-re-running it re-embeds every such document again, at the cost of the first
-run.
+The historical --batch-size argument is retained as a compatibility hint; shared
+policy's max_in_flight remains the dispatch ceiling. No source-specific scheduler
+or provider tuning is introduced.
 
 Usage::
 
-    # Dry run: show the plan without modifying anything
     .venv/bin/python -m scripts.reindex_chunks_with_heading_context VAULT_ID
+    .venv/bin/python -m scripts.reindex_chunks_with_heading_context VAULT_ID --execute
+    .venv/bin/python -m scripts.reindex_chunks_with_heading_context VAULT_ID --execute \
+        --reprocessing-decision "Owner requested expanded selection"
 
-    # Apply
-    .venv/bin/python -m scripts.reindex_chunks_with_heading_context \\
-        VAULT_ID --execute
-
-    # Custom batch size for embedding (default 64)
-    .venv/bin/python -m scripts.reindex_chunks_with_heading_context \\
-        VAULT_ID --execute --batch-size 32
-
-The script is safe to run while the SAGE MCP server is running. Each
-document's chunks are replaced atomically via ``index_chunks``'s existing
-delete-then-insert path, and the FTS index is rebuilt incrementally.
+Only an explicit execute invocation writes. Publications use the current durable
+attempt fence, so a concurrent newer generation rejects stale work.
 """
 
 from __future__ import annotations
@@ -48,7 +31,7 @@ from datetime import datetime, timedelta, timezone
 
 from sage.config import load_vault_config
 from sage.mcp_init import initialize_services
-from sage.services.passage_split import embedding_input
+from sage.services.selective_embedding import reindex_passages
 from sage.vault_management import config_path_for_vault
 
 
@@ -66,6 +49,7 @@ async def reindex_with_services(
     execute: bool,
     batch_size: int,
     label: str = "vault",
+    reprocessing_decision: str | None = None,
 ) -> int:
     """Re-index every chunk in the given vault services.
 
@@ -73,6 +57,7 @@ async def reindex_with_services(
     (graph store, content store, embedding provider) without exercising
     the full production initialization path. Returns 0 on success.
     """
+    store.bind_processing_store(graph)
     documents = await graph.list_all_documents()
 
     plan: list[tuple[object, int]] = []  # (doc, chunk_count)
@@ -116,19 +101,19 @@ async def reindex_with_services(
             print(f"[{i:4d}/{len(plan)}]  {doc.id}  {_truncate(doc.title, 40):40s}  (no chunks)")
             continue
 
-        for start in range(0, len(chunks), batch_size):
-            batch = chunks[start : start + batch_size]
-            texts = [embedding_input(c.heading_path, c.content) for c in batch]
-            new_embeddings = await embedder.embed(texts)
-            for c, emb in zip(batch, new_embeddings):
-                c.embedding = emb
+        changed = await reindex_passages(
+            store,
+            embedder,
+            doc,
+            chunks,
+            decision=reprocessing_decision,
+        )
 
-        await store.index_chunks(doc.id, chunks)
-        n_done += 1
+        n_done += int(changed)
         print(
             f"[{i:4d}/{len(plan)}]  {doc.id}  "
             f"{_truncate(doc.title, 40):40s}  "
-            f"chunks={len(chunks):5d}  ✓"
+            f"chunks={len(chunks):5d}  {'updated' if changed else 'unchanged'}"
         )
 
     elapsed = datetime.now(timezone.utc) - started
@@ -149,7 +134,13 @@ async def reindex_with_services(
     return 0
 
 
-async def reindex_vault(vault_id: str, *, execute: bool, batch_size: int) -> int:
+async def reindex_vault(
+    vault_id: str,
+    *,
+    execute: bool,
+    batch_size: int,
+    reprocessing_decision: str | None = None,
+) -> int:
     """Plan and (optionally) apply re-indexing for a vault. Production entry.
 
     Constructs services with a stub abstraction provider so this script
@@ -180,6 +171,7 @@ async def reindex_vault(vault_id: str, *, execute: bool, batch_size: int) -> int
             execute=execute,
             batch_size=batch_size,
             label=vault_id,
+            reprocessing_decision=reprocessing_decision,
         )
     finally:
         await services.graph_store.close()
@@ -202,11 +194,25 @@ def main() -> None:
         "--batch-size",
         type=int,
         default=64,
-        help="Embedder batch size (default: 64).",
+        help="Compatibility hint (default: 64); discovery policy bounds actual dispatch.",
+    )
+    parser.add_argument(
+        "--reprocessing-decision",
+        help=(
+            "Explicit reason for expanding/resetting the current source allowance; "
+            "omitted for retry."
+        ),
     )
     args = parser.parse_args()
 
-    rc = asyncio.run(reindex_vault(args.vault_id, execute=args.execute, batch_size=args.batch_size))
+    rc = asyncio.run(
+        reindex_vault(
+            args.vault_id,
+            execute=args.execute,
+            batch_size=args.batch_size,
+            reprocessing_decision=args.reprocessing_decision,
+        )
+    )
     raise SystemExit(rc)
 
 

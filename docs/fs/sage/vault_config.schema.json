@@ -288,6 +288,14 @@
           "minimum": 1,
           "maximum": 65536,
           "default": 16384
+        },
+        "max_keyword_characters": {
+          "description": "Authored passage content and structure admitted to keyword indexing, independently of embedding selection.",
+          "type": ["integer", "null"], "minimum": 1, "maximum": 67108864, "default": null
+        },
+        "max_in_flight": {
+          "description": "Distinct complete embedding inputs held in one provider increment.",
+          "type": "integer", "minimum": 1, "maximum": 32, "default": 8
         }
       }
     },

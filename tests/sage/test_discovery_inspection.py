@@ -240,7 +240,11 @@ async def test_real_ingest_publishes_settled_inspection_before_inference_failure
         "dialect": None
     }
     assert read.pipeline_status.value == "failed"
-    assert read.processing_coverage.passage_embeddings.scope == "unknown"
+    assert read.processing_coverage.passage_embeddings.scope == "limited"
+    assert read.processing_coverage.projection.scope == "complete"
+    assert read.processing_coverage.keyword_indexing.scope == "complete"
+    assert read.processing_coverage.passage_embeddings.counts[0].represented == 0
+    assert "embedding_failed" in read.processing_coverage.passage_embeddings.limitations
 
 
 async def test_ingest_inspection_captures_effective_adapter_configuration_before_projection(

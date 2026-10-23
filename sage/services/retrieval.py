@@ -1755,9 +1755,10 @@ class RetrievalService:
             # the storage-layer pattern: when the caller passes an
             # explicit pipeline_status filter (e.g., asking for failed
             # docs), the gate steps aside and honors the override.
-            if doc.pipeline_status == PipelineStatus.FAILED and (
-                request.filters is None or request.filters.pipeline_status is None
-            ):
+            if (
+                doc.pipeline_status == PipelineStatus.FAILED
+                and doc.processing_coverage.projection.scope not in ("limited", "complete")
+            ) and (request.filters is None or request.filters.pipeline_status is None):
                 continue
             # AUTHORITATIVE is applied here rather than pushed down, for the
             # reason the docstring gives: the query above is unbounded, so this
@@ -1917,6 +1918,7 @@ class RetrievalService:
         # own, which is what a tally of rows gave before sections were numbered.
         sections: dict[str, set[object]] = {}
         carried_counts: dict[str, int] = {}
+        carried_passages: dict[str, int | None] = {}
         surface_sourced: dict[str, bool] = {}
         doc_cache: dict[str, object | None] = {}
         include_content = request.response_mode != ResponseMode.LIGHT
@@ -1930,6 +1932,10 @@ class RetrievalService:
             # ranks above its own passages for a title-shaped query -- so the
             # passage test belongs on both branches, not only the first.
             if result.document_id in seen_docs:
+                if result.matched_passage_count is not None:
+                    carried_passages[result.document_id] = max(
+                        carried_passages[result.document_id] or 0, result.matched_passage_count
+                    )
                 if not result.is_document_surface:
                     sections[result.document_id].add(section)
                     # The excerpt belongs to a passage. Where the surface
@@ -1962,9 +1968,10 @@ class RetrievalService:
             # gate mirrors the storage-layer default_exclude_failed: skip the
             # post-filter when the request asks for failed docs (or any non-default
             # pipeline_status), otherwise apply it as a service-layer mirror.
-            if doc.pipeline_status == PipelineStatus.FAILED and (
-                request.filters is None or request.filters.pipeline_status is None
-            ):
+            if (
+                doc.pipeline_status == PipelineStatus.FAILED
+                and doc.processing_coverage.projection.scope not in ("limited", "complete")
+            ) and (request.filters is None or request.filters.pipeline_status is None):
                 continue
 
             # Scope gating
@@ -1987,15 +1994,18 @@ class RetrievalService:
                 chunk_content=result.content if include_content else None,
                 heading_path=visible_heading_path,
                 relevance_score=result.score,
+                matched_passage_count=result.matched_passage_count,
             )
             seen_docs[result.document_id] = hit
             sections[result.document_id] = set() if result.is_document_surface else {section}
             carried_counts[result.document_id] = result.matched_chunk_count
+            carried_passages[result.document_id] = result.matched_passage_count
             surface_sourced[result.document_id] = result.is_document_surface
 
         # Stamp matched_chunk_count on each hit
         for doc_id, hit in seen_docs.items():
             hit.matched_chunk_count = max(len(sections[doc_id]), carried_counts[doc_id])
+            hit.matched_passage_count = carried_passages[doc_id]
 
         return list(seen_docs.values())
 
@@ -2059,9 +2069,10 @@ class RetrievalService:
             # Service-layer mirror of the storage-layer default-exclude:
             # drop failed docs from the metadata-boost path only when the caller
             # has not asked for them. Explicit pipeline_status filters bypass.
-            if doc.pipeline_status == PipelineStatus.FAILED and (
-                request.filters is None or request.filters.pipeline_status is None
-            ):
+            if (
+                doc.pipeline_status == PipelineStatus.FAILED
+                and doc.processing_coverage.projection.scope not in ("limited", "complete")
+            ) and (request.filters is None or request.filters.pipeline_status is None):
                 continue
             if not self._passes_scope(doc, request):
                 continue
@@ -2079,6 +2090,7 @@ class RetrievalService:
                         chunk_content=None,
                         heading_path=None,
                         relevance_score=boost_score,
+                        matched_passage_count=0,
                     )
                 )
 
@@ -2304,7 +2316,10 @@ class RetrievalService:
             )
 
         # Pipeline gate (BH-021)
-        if doc.pipeline_status == PipelineStatus.FAILED:
+        if (
+            doc.pipeline_status == PipelineStatus.FAILED
+            and doc.processing_coverage.projection.scope not in ("limited", "complete")
+        ):
             raise PipelineIncompleteError(request.document_id)
 
         # Prefix match on heading_path (BH-029)
