@@ -584,3 +584,101 @@ def test_complete_prompt_fit_reports_the_smaller_actual_scope():
     assert 0 < request.evidence.counts[0].represented < evidence.selected_tokens
     assert "abstraction_prompt_budget" in request.evidence.limitations
     assert request.selected_words < sum(len(x.input_text.split()) for x in evidence.selected)
+
+
+async def test_recovery_preserves_delivered_and_retained_identities(
+    ingestion_service, tmp_vault_dir
+):
+    import hashlib
+
+    from sage.models.schemas import IngestRequest
+
+    source = tmp_vault_dir / "distinct-retained.md"
+    source.write_text("# Retained\nActual authored source.")
+    service = ingestion_service
+    doc = (await service.ingest(IngestRequest(source=str(source)))).document
+    stored = doc.source_content_hash
+    delivered = "sha256:" + hashlib.sha256(b"different delivered bytes").hexdigest()
+    assert stored != delivered
+    await service._store.update_document(
+        doc.id, {"source_content_hash": delivered, "stored_content_hash": stored}
+    )
+    attempt = await service._content_store.begin_processing_attempt(doc.id)
+    recovered = await service._recover_abstraction_evidence(doc.id, attempt)
+    assert recovered.identity.source_hash == delivered
+    assert recovered.identity.processing_identity().configuration["inspected_source_hash"] == stored
+
+
+async def test_recovery_refuses_recorded_retained_digest_mismatch(ingestion_service, tmp_vault_dir):
+    import hashlib
+
+    from sage.models.schemas import IngestRequest
+    from sage.services.bounded_abstraction import AbstractionAllowanceExhausted
+
+    source = tmp_vault_dir / "recorded-retained.md"
+    source.write_text("Original authored text.")
+    service = ingestion_service
+    doc = (await service.ingest(IngestRequest(source=str(source)))).document
+    await service._store.update_document(
+        doc.id,
+        {"stored_content_hash": "sha256:" + hashlib.sha256(b"other stored bytes").hexdigest()},
+    )
+    attempt = await service._content_store.begin_processing_attempt(doc.id)
+    with pytest.raises(AbstractionAllowanceExhausted, match="retained source identity changed"):
+        await service._recover_abstraction_evidence(doc.id, attempt)
+
+
+@pytest.mark.parametrize("remaining", [0, -1])
+def test_bounded_qwen_uses_actual_prompt_and_supplied_token_counts(monkeypatch, caplog, remaining):
+    import json
+    import logging
+    from types import SimpleNamespace
+
+    from sage.adapters.abstraction_qwen3 import Qwen3AbstractionProvider
+    from sage.adapters.interfaces import AbstractionInputTooLargeError, BoundedEvidenceText
+
+    class Tokenizer:
+        def encode(self, text):
+            return list(text.encode())
+
+        def decode(self, tokens):
+            return bytes(tokens).decode()
+
+        def apply_chat_template(self, messages, **kwargs):
+            return "|".join(message["content"] for message in messages)
+
+    provider = Qwen3AbstractionProvider("fake-model", context_window=8192)
+    provider._tokenizer = Tokenizer()
+    provider._model = object()
+    provider._native_context_window = None
+    monkeypatch.setattr(provider, "_ensure_loaded", lambda **kwargs: None)
+    monkeypatch.setattr(provider, "_build_opener_constraint", lambda _: None)
+    text = BoundedEvidenceText("authored fact. " * 140)
+    actual_prompt = len(provider._tokenizer.encode(provider._build_prompt(text, None)))
+    provider._context_window = actual_prompt + 100 + remaining
+    calls = []
+
+    def generate(*args, **kwargs):
+        calls.append(kwargs)
+        return iter(
+            [
+                SimpleNamespace(
+                    text="The selected excerpts describe a fact.", prompt_tokens=actual_prompt
+                )
+            ]
+        )
+
+    provider._generate_fn = generate
+    with caplog.at_level(logging.INFO, logger="sage.abstraction.timing"):
+        if remaining < 0:
+            with pytest.raises(AbstractionInputTooLargeError):
+                provider._generate_sync(text, 100, None)
+            assert calls == []
+        else:
+            assert (
+                provider._generate_sync(text, 100, None) == "The selected excerpts describe a fact."
+            )
+            assert len(calls) == 1
+            record = json.loads(caplog.records[-1].message)
+            assert record["input_tokens"] == record["retained_tokens"] == len(text.encode())
+            assert record["prompt_tokens"] == actual_prompt

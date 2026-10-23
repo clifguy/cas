@@ -3442,7 +3442,7 @@ class IngestionService:
                 # Streaming integrity validation is independent of tokenization.
                 with source.open("rb") as stream:
                     observed_hash = "sha256:" + hashlib.file_digest(stream, "sha256").hexdigest()
-                if observed_hash != doc.source_content_hash:
+                if observed_hash != (doc.stored_content_hash or doc.source_content_hash):
                     raise AbstractionAllowanceExhausted("retained source identity changed")
                 if adapter.NATIVE_FACTS:
                     facts = adapter.discover_facts(source, None, limits)

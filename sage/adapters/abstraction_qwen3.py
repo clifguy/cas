@@ -672,11 +672,12 @@ class Qwen3AbstractionProvider(AbstractionProvider):
     async def generate_abstract(self, text: str, max_tokens: int, doc_type: str | None) -> str:
         """Generate a semantic abstract from document text.
 
-        On first call, loads the MLX model and validates with a probe
-        generation. Subsequent calls reuse the loaded model.
+        On first call, loads the MLX model. Direct legacy calls validate with a
+        probe; bounded calls use their first admitted generation. Subsequent
+        calls reuse the loaded model.
 
         Args:
-            text: Full document text from the projection stage.
+            text: Selected authored evidence, or direct legacy document text.
             max_tokens: Upper bound on abstract length in tokens.
             doc_type: The document's type, surfaced to the model so it
                 can choose appropriate descriptive verbs (prescribes,
@@ -790,8 +791,8 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         """Blocking model load + inference. Runs on the dedicated executor.
 
         Lazily loads the MLX model on first use (AD-026 revised, AD-035),
-        truncates the input to the context window (AD-031), builds the
-        chat-template prompt (AD-028), and invokes the model with greedy
+        fits legacy input or validates the intact bounded prompt (AD-031),
+        builds the chat-template prompt (AD-028), and invokes the model with greedy
         decoding (AD-029). Errors from the model propagate naturally
         (AD-033). Always invoked through the single-thread executor so the
         ~16 GB load and the multi-second generation stay off the loop.
@@ -803,14 +804,14 @@ class Qwen3AbstractionProvider(AbstractionProvider):
             self._ensure_loaded(skip_probe=True)
         else:
             self._ensure_loaded()
-        outcome = self._truncate_for_context(text, max_tokens, doc_type)
-        if bounded and outcome.text != text:
-            from sage.adapters.interfaces import AbstractionInputTooLargeError
-
-            raise AbstractionInputTooLargeError(
-                self._model_id, outcome.input_tokens, self._context_window
-            )
-        prompt = self._build_prompt(text if bounded else outcome.text, doc_type)
+        if bounded:
+            # Its protected prompt differs from the legacy prompt. Measure the
+            # actual serialization rather than first applying legacy truncation.
+            outcome = TruncationOutcome(text=text, input_tokens=len(self._tokenizer.encode(text)))
+            prompt = self._build_prompt(text, doc_type)
+        else:
+            outcome = self._truncate_for_context(text, max_tokens, doc_type)
+            prompt = self._build_prompt(outcome.text, doc_type)
         if bounded:
             from sage.adapters.interfaces import AbstractionInputTooLargeError
 
@@ -866,19 +867,25 @@ class Qwen3AbstractionProvider(AbstractionProvider):
 
         ``document_chars`` measures the text handed to this provider, not
         whatever reached the model after fitting to the context window.
-        ``prompt_tokens`` is the model's own prompt length, so the constant
-        template overhead is its difference from ``retained_tokens`` -- a
-        figure the record yields on every generation, not only on one that
-        happened to truncate.
+        ``prompt_tokens`` is the model's own complete prompt length. Bounded
+        calls measure unchanged supplied text directly; legacy retained counts
+        are derived from the legacy template overhead.
         """
         if final is None:
             return
 
         prompt_tokens = getattr(final, "prompt_tokens", None)
-        overhead_tokens = self._overhead_tokens.get(doc_type)
+        from sage.adapters.interfaces import BoundedEvidenceText
+
         retained_tokens = None
-        if prompt_tokens is not None and overhead_tokens is not None:
-            retained_tokens = max(prompt_tokens - overhead_tokens, 0)
+        if isinstance(text, BoundedEvidenceText):
+            # Bounded input is either supplied intact or refused. Its exact
+            # token count was measured above; legacy template caches do not apply.
+            retained_tokens = outcome.input_tokens
+        else:
+            overhead_tokens = self._overhead_tokens.get(doc_type)
+            if prompt_tokens is not None and overhead_tokens is not None:
+                retained_tokens = max(prompt_tokens - overhead_tokens, 0)
 
         # Nothing was dropped when the truncation helper skipped the encode,
         # so the retained count is also the input count -- exact, not an
@@ -903,8 +910,7 @@ class Qwen3AbstractionProvider(AbstractionProvider):
             "document_chars": len(text),
             "input_tokens": input_tokens,
             "retained_tokens": retained_tokens,
-            # The same value retained_tokens was derived from, so the two
-            # cannot disagree about the template overhead between them.
+            # The complete prompt count reported by this generation.
             "prompt_tokens": prompt_tokens,
             "generated_tokens": generation_tokens,
             "prefill_ms": _phase_duration_ms(prompt_tokens, prompt_tps),
