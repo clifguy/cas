@@ -1,0 +1,27 @@
+classification: minor
+category: [capability, caller-adaptation]
+summary: >-
+  Adds shared deterministic bounded source inspection, authored evidence selection,
+  compressed associations and fenced inspection publication. Applies source-byte,
+  depth, node, expansion and table-work guards before projection materializers.
+  The security-exposure exemption permits immediate refusal of inputs beyond
+  these limits: previously accepted tiny YAML merge sources amplify native
+  materialization work exponentially, and nested JSON amplifies projected text.
+for_callers: >-
+  New ingest and recompute attempts report established inspection before inference.
+  Configure discovery_selection and discovery_facts through existing request
+  configuration or vault adapter defaults. Source and parser-work ceilings can now
+  refuse previously accepted inputs with source_unreadable; the security-exposure
+  exemption applies immediately to prevent availability/resource-exhaustion attacks.
+  Existing readable output within those limits, keyword indexing and inference
+  inputs remain unchanged. Selection tokens use an identified byte-level tokenizer,
+  independently of production embedding-model token windows.
+exemption:
+  kind: security-exposure
+  reason: >-
+    Previously unbounded structured materializers permit availability/resource
+    exhaustion from attacker-controlled source syntax. A controlled accepted
+    387-byte YAML merge source produces 87,381 flattened mapping pairs, versus
+    341 pairs from a 203-byte shallower source; 18,657 bytes of nested JSON produce
+    630,114 projected characters. Preallocation source/depth/node/expansion guards
+    close these reachable mechanisms while retaining bounded benign aliases.

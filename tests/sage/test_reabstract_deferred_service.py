@@ -26,6 +26,7 @@ Test surface pins the seven contracts from
 from __future__ import annotations
 
 import asyncio
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -954,7 +955,13 @@ async def test_reabstract_deferred_reports_still_skipped_when_document_lands_bac
     (storage_root / "still_skipped.md").write_text("# Doc\n\nBody text to project.\n")
 
     doc = _make_skipped_doc(_id("still_skipped"))
-    doc = doc.model_copy(update={"source_path": "still_skipped.md"})
+    doc = doc.model_copy(
+        update={
+            "source_path": "still_skipped.md",
+            "source_content_hash": "sha256:"
+            + hashlib.sha256((storage_root / "still_skipped.md").read_bytes()).hexdigest(),
+        }
+    )
     await _seed_doc_with_chunks(graph_store, stub_content_store, doc)
 
     # reabstract() verifies chunks synchronously before enqueue; the worker
@@ -1279,7 +1286,13 @@ async def test_reabstract_deferred_events_pair_status_and_outcome_for_still_skip
     (storage_root / "still_skipped_evt.md").write_text("# Doc\n\nBody text to project.\n")
 
     doc = _make_skipped_doc(_id("still_skipped_evt"))
-    doc = doc.model_copy(update={"source_path": "still_skipped_evt.md"})
+    doc = doc.model_copy(
+        update={
+            "source_path": "still_skipped_evt.md",
+            "source_content_hash": "sha256:"
+            + hashlib.sha256((storage_root / "still_skipped_evt.md").read_bytes()).hexdigest(),
+        }
+    )
     await _seed_doc_with_chunks(graph_store, stub_content_store, doc)
 
     real_has_chunks = stub_content_store.has_chunks

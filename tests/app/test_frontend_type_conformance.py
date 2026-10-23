@@ -217,6 +217,7 @@ ENROLLED: Final[Enrollment] = {
         "CoverageCount": "CoverageCount",
         "CoverageRange": "CoverageRange",
         "CoverageManifest": "CoverageManifest",
+        "SelectionSummary": "SelectionSummary",
         "Document": "Document",
         "DocumentDownloadUrlResponse": "DocumentDownloadUrlResponse",
         "DocumentSummary": "DocumentSummary",

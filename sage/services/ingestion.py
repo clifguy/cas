@@ -125,6 +125,8 @@ from sage.request_identity import (
 from sage.services._dry_run import doc_type_requirements
 from sage.services.caller_paths import caller_basename
 from sage.services.deprecations import warnings_for
+from sage.services.discovery_inspection import InspectionAttempt, publish_inspection
+from sage.services.discovery_selection import select_discovery, selection_identity
 from sage.services.document_surface import (
     compose_document_surface,
     embedding_text,
@@ -150,7 +152,9 @@ from sage.source_adapters.base import (
     ProjectionResult,
     SourceAdapter,
     SourceReadError,
+    discovery_configuration,
 )
+from sage.source_adapters.structure import FactLimits, check_projection_work
 from sage.storage.locks import DocumentLockManager
 from sage.storage.tier3_uniqueness import Tier3UniqueViolation
 
@@ -235,7 +239,11 @@ def _projection_executor() -> ThreadPoolExecutor:
 
 
 async def _run_projection(
-    adapter: "SourceAdapter", project_path: Path, config: dict | None
+    adapter: "SourceAdapter",
+    project_path: Path,
+    config: dict | None,
+    *,
+    fact_limits: FactLimits | None = None,
 ) -> "ProjectionResult":
     """Run ``adapter.project`` on a projection worker thread and return its result.
 
@@ -243,9 +251,22 @@ async def _run_projection(
     the worker, under a copy of the caller's context, so request-scoped
     context variables read the same there. Its exceptions propagate unchanged.
     """
+    discovery_configuration(config)
+    captured_config = deepcopy(config or {})
 
     def project() -> "ProjectionResult":
-        return asyncio.run(adapter.project(project_path, config))
+        configured = deepcopy(captured_config)
+        _, configured_limits = discovery_configuration(configured)
+        configured.pop("discovery_selection", None)
+        configured.pop("discovery_facts", None)
+        resolve = getattr(adapter, "effective_config", lambda value: value)
+        effective = resolve(configured)
+        limits = fact_limits or configured_limits
+        if getattr(adapter, "NATIVE_FACTS", False):
+            check_projection_work(project_path, limits)
+        if limits != FactLimits():
+            effective = {**effective, "discovery_facts": dataclasses.asdict(limits)}
+        return asyncio.run(adapter.project(project_path, effective))
 
     result = await offload(_projection_executor(), "projection", project)
     trace = current_trace()
@@ -256,6 +277,70 @@ async def _run_projection(
         except OSError:
             trace.count("source.size_unavailable", 1)
     return result
+
+
+async def _run_inspected_projection(
+    adapter: SourceAdapter,
+    project_path: Path,
+    config: dict | None,
+    *,
+    source_hash: str | None = None,
+) -> ProjectionResult:
+    """Capture actual projection settings and settle bounded inspection off-loop.
+
+    Selection uses conservative UTF-8 byte tokens, independently of production
+    embedding token windows. It neither loads nor calls an inference provider.
+    The frozen package travels with this projection through inline/queued work.
+    """
+    selection_config, fact_limits = discovery_configuration(config)
+    configured = deepcopy(config or {})
+    configured.pop("discovery_selection", None)
+    configured.pop("discovery_facts", None)
+    effective = adapter.effective_config(configured)
+    captured_adapter_configuration = deepcopy(effective)
+    captured_fact_configuration = dataclasses.asdict(fact_limits)
+    if not adapter.NATIVE_FACTS:
+        captured_fact_configuration["narrative_input_bytes"] = selection_config.max_tokens
+    # Validate configuration identity before any source materializer runs.
+    # Delivered provenance and inspected retained bytes are separate identities.
+    try:
+        selection_identity(
+            source_hash=source_hash if source_hash is not None else "sha256:" + "0" * 64,
+            inspected_source_hash="sha256:" + "0" * 64,
+            adapter_version=f"{type(adapter).__name__}:{adapter.VERSION}",
+            tokenizer_identity="utf8-byte-tokens:1",
+            config=selection_config,
+            adapter_configuration=captured_adapter_configuration,
+            fact_configuration=captured_fact_configuration,
+        )
+    except (TypeError, ValueError) as exc:
+        raise AdapterConfigError(
+            "effective_configuration",
+            "<configuration omitted: exceeds representation bounds>",
+            str(exc),
+        ) from exc
+    projection = await _run_projection(adapter, project_path, effective, fact_limits=fact_limits)
+
+    def inspect() -> None:
+        projection.discovery_evidence = select_discovery(
+            adapter.discover_facts(
+                project_path,
+                projection,
+                fact_limits,
+                narrative_input_bytes=selection_config.max_tokens,
+            ),
+            source_hash=source_hash if source_hash is not None else projection.content_hash,
+            inspected_source_hash=projection.content_hash,
+            adapter_version=f"{type(adapter).__name__}:{projection.adapter_version}",
+            tokenizer=lambda text: len(text.encode("utf-8")),
+            tokenizer_identity="utf8-byte-tokens:1",
+            config=selection_config,
+            adapter_configuration=captured_adapter_configuration,
+            fact_configuration=captured_fact_configuration,
+        )
+
+    await offload(_projection_executor(), "inspection", inspect)
+    return projection
 
 
 # Passage sizing shares a process-wide single worker across vaults. Neither a
@@ -1223,13 +1308,20 @@ class IngestionService:
             entry = defaults.get(source_type.value)
             if isinstance(entry, dict):
                 vault_config = entry
+        # Refuse excessive raw trees before recursive merge or any deep copy.
+        discovery_configuration(vault_config)
+        discovery_configuration(request_config)
         if vault_config is None and request_config is None:
             return None
         if vault_config is None:
-            return dict(request_config) if request_config else None
-        if not request_config:
-            return dict(vault_config)
-        return _deep_merge_dicts(vault_config, request_config)
+            merged = dict(request_config) if request_config else None
+        elif not request_config:
+            merged = dict(vault_config)
+        else:
+            merged = _deep_merge_dicts(vault_config, request_config)
+        # This merge runs in the existing pre-retention adapter validation path.
+        discovery_configuration(merged)
+        return merged
 
     @observe_operation("ingest")
     async def ingest(
@@ -1709,6 +1801,26 @@ class IngestionService:
     ) -> IngestResult | IngestPreview:
         """The body of ``ingest``, run once the call is admitted."""
         request, adapter, predecessor, _ran = await self._validate_without_bytes(request)
+        # Admit the exact frozen configuration before source retention or graph
+        # mutation. Later stages consume this same snapshot, not mutable defaults.
+        with _refuse_adapter_config(request.source_type):
+            merged_config = deepcopy(
+                self._merge_adapter_config(request.source_type, request.config)
+            )
+            try:
+                ProcessingIdentity.from_effective_configuration(
+                    source_hash="sha256:" + "0" * 64,
+                    adapter=f"{request.source_type.value}:{adapter.VERSION}",
+                    policy="coverage-v1",
+                    configuration=merged_config or {},
+                    tokenization="unknown",
+                )
+            except (TypeError, ValueError) as exc:
+                raise AdapterConfigError(
+                    "effective_configuration",
+                    "<configuration omitted: exceeds representation bounds>",
+                    str(exc),
+                ) from exc
 
         # A preview stops here, before the source is read into the vault.
         # Everything above is a validator that reads nothing and writes
@@ -1890,14 +2002,15 @@ class IngestionService:
         # for adapter behavior across all ingests; the request override is
         # recorded on the document, so a later re-projection of this source
         # shapes its passages the way this call did.
-        merged_config = deepcopy(self._merge_adapter_config(request.source_type, request.config))
         with self._project_source(vault_source_store, storage_root, vault_relative) as project_path:
             with (
                 _refuse_unreadable_source(request.source_type, reported_source),
                 _translate_projection_failure(project_path, reported_source),
                 _refuse_adapter_config(request.source_type),
             ):
-                projection = await _run_projection(adapter, project_path, merged_config)
+                projection = await _run_inspected_projection(
+                    adapter, project_path, merged_config, source_hash=delivered_hash
+                )
                 retained_source_size = project_path.stat().st_size
 
         # Parse filename per vault config (CAS-ADR-015) only when the caller
@@ -2130,6 +2243,10 @@ class IngestionService:
             # unconfirmed different-path hash match before this point.
             if vault_relative != existing_doc.source_path:
                 updates["source_path"] = vault_relative
+            identity = self._coverage_identity(
+                existing_doc.model_copy(update={"adapter_version": projection.adapter_version}),
+                merged_config,
+            )
             doc = await self._store.update_document(
                 existing_doc.id, updates, processing_stage="indexing"
             )
@@ -2209,6 +2326,7 @@ class IngestionService:
                 relocated_from=request.relocated_from,
             )
             doc = Document(**{**base, **field_updates})
+            identity = self._coverage_identity(doc, merged_config)
             # New admission stores its first fence in the same INSERT as the
             # checkpoint/status. Keep this own token across all later awaits.
             doc = doc.model_copy(
@@ -2293,7 +2411,6 @@ class IngestionService:
         admitted_attempt = doc.processing_coverage.attempt
         if retained or is_new:
             attempt = admitted_attempt
-            identity = self._coverage_identity(doc, merged_config)
             retained_published = await self._content_store.publish_processing(
                 doc.id,
                 attempt,
@@ -2639,7 +2756,7 @@ class IngestionService:
     def _coverage_identity(
         self, doc: Document, effective_config: dict | None
     ) -> ProcessingIdentity:
-        return ProcessingIdentity(
+        return ProcessingIdentity.from_effective_configuration(
             source_hash=doc.source_content_hash,
             adapter=f"{doc.source_type.value}:{doc.adapter_version}",
             policy="coverage-v1",
@@ -2680,6 +2797,17 @@ class IngestionService:
         await self._stamp_pipeline_status(
             document_id, PipelineStatus.INDEXING_IN_PROGRESS, expected_attempt=attempt
         )
+
+        # Inspection settles before inference. The exact package was captured
+        # while the retained source was open; current mutable defaults cannot
+        # reconstruct its provenance. The storage fence rejects delayed work.
+        package = projection.discovery_evidence
+        if package is not None:
+            captured = InspectionAttempt(
+                document_id, attempt, package.identity.processing_identity().model_dump_json()
+            )
+            if not await publish_inspection(self._content_store, captured, package):
+                raise RuntimeError("stale inspection publication")
 
         # Build body chunks from the projection. Document-identity signals
         # live on the document surface (CAS-ADR-049), not inlined into
@@ -3206,7 +3334,9 @@ class IngestionService:
                     _translate_projection_failure(project_path, doc.source_path),
                     _refuse_adapter_config(doc.source_type),
                 ):
-                    projection = await _run_projection(adapter, project_path, merged_config)
+                    projection = await _run_inspected_projection(
+                        adapter, project_path, merged_config, source_hash=doc.source_content_hash
+                    )
             admitted = await self._store.update_document(
                 document_id,
                 {
@@ -3283,7 +3413,9 @@ class IngestionService:
             # than as a response, which makes the respelling matter more, not
             # less: a stamped message outlives the call that produced it.
             with _translate_projection_failure(project_path, doc.source_path):
-                projection = await _run_projection(adapter, project_path, merged_config)
+                projection = await _run_inspected_projection(
+                    adapter, project_path, merged_config, source_hash=doc.source_content_hash
+                )
         now = datetime.now(timezone.utc)
         await self._stamp_pipeline_status(
             document_id,

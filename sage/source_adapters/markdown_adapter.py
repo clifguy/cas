@@ -47,7 +47,12 @@ class MarkdownAdapter(SourceAdapter):
     EXTENSIONS = [".md", ".markdown"]
 
     def check_config(self, config: dict | None) -> None:
+        super().check_config(config)
         _declared_dialect(config)
+
+    def effective_config(self, config: dict | None) -> dict:
+        """Include internal defaults through the same resolvers projection uses."""
+        return {**super().effective_config(config), "dialect": _declared_dialect(config)}
 
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
         dialect = _declared_dialect(config)

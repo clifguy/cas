@@ -361,6 +361,16 @@ def _build_sentinel(
 
     if model.__name__ in SCHEMAS and spec is not None:
         return model.model_validate(_error_schema_sentinel(SCHEMAS[model.__name__], SCHEMAS))
+    if model.__name__ == "SelectionSummary":
+        return model.model_validate(
+            {
+                "outcome": "complete",
+                "selected_inputs": 0,
+                "selected_tokens": 0,
+                "established_occurrences": 0,
+                "associations_complete": True,
+            }
+        )
     if model.__name__ == "CoverageManifest":
         import hashlib
 

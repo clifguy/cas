@@ -6,8 +6,14 @@ projection (text with heading hierarchy) suitable for indexing.
 
 import re
 from abc import ABC, abstractmethod
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from sage.models.discovery import EvidencePackage, SelectionConfig
+    from sage.source_adapters.structure import FactLimits, FactStream
 
 # Filename-derived tier3 extraction for ADR sources. The cas vault names
 # ADR sources ``cas-adr-NNN_<title>.<ext>`` (lowercase prefix, exactly
@@ -211,11 +217,41 @@ class ProjectionResult:
     title: str  # Extracted document title
     metadata: dict = field(default_factory=dict)  # Extracted metadata
     preamble: str = ""  # Text before the first heading
+    discovery_evidence: "EvidencePackage | None" = None
+
+
+def discovery_configuration(config: dict | None) -> tuple["SelectionConfig", "FactLimits"]:
+    """Validate reserved live settings through their single policy authorities."""
+    from sage.models.discovery import SelectionConfig, check_configuration_tree
+    from sage.source_adapters.structure import FactLimits
+
+    try:
+        check_configuration_tree(config if config is not None else {})
+    except (TypeError, ValueError) as exc:
+        raise AdapterConfigError(
+            "discovery_configuration",
+            "<configuration omitted: exceeds representation bounds>",
+            str(exc),
+        ) from exc
+    resolved = []
+    for key, constructor in (
+        ("discovery_selection", SelectionConfig),
+        ("discovery_facts", FactLimits),
+    ):
+        value = (config or {}).get(key, {})
+        if not isinstance(value, dict):
+            raise AdapterConfigError(key, value, "expected a configuration mapping")
+        try:
+            resolved.append(constructor(**value))
+        except (TypeError, ValueError) as exc:
+            raise AdapterConfigError(key, value, str(exc)) from exc
+    return resolved[0], resolved[1]
 
 
 class SourceAdapter(ABC):
     """Abstract base for source file adapters."""
 
+    NATIVE_FACTS = False
     VERSION: str = "0.0.0"
     EXTENSIONS: list[str] = []
 
@@ -230,6 +266,37 @@ class SourceAdapter(ABC):
         Raises:
             AdapterConfigError: a value in ``config`` the adapter cannot use.
         """
+
+        discovery_configuration(config)
+
+    def effective_config(self, config: dict | None) -> dict:
+        """Resolve the actual projection settings for an immutable attempt snapshot."""
+        self.check_config(config)
+        return deepcopy(config or {})
+
+    def discover_facts(
+        self,
+        source_path: Path,
+        projection: ProjectionResult | None = None,
+        limits: "FactLimits | None" = None,
+        *,
+        narrative_input_bytes: int | None = None,
+    ) -> "FactStream":
+        """Expose bounded native facts independently of the readable projection.
+
+        Shared discovery policy selects evidence; this method neither changes
+        projection nor invokes an inference provider. Narrative formats require
+        their already established projection. Iteration owns resource closure.
+        """
+        from sage.source_adapters.structure import FactLimits, source_facts
+
+        return source_facts(
+            source_path,
+            projection,
+            limits or FactLimits(),
+            native=self.NATIVE_FACTS,
+            narrative_input_bytes=narrative_input_bytes,
+        )
 
     @abstractmethod
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:

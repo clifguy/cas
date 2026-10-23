@@ -27,6 +27,17 @@ export interface CoverageManifest {
   unknown_remainder: boolean;
 }
 
+export interface SelectionSummary {
+  outcome: 'complete' | 'limited' | 'interrupted';
+  selected_inputs: number;
+  /** Measured under the enclosing dimension's identity.tokenization rule. */
+  selected_tokens: number;
+  /** A lower bound when associations_complete is false. */
+  established_occurrences: number;
+  associations_complete: boolean;
+  boundary?: string | null;
+}
+
 export interface CoverageDimension {
   scope: 'unknown' | 'pending' | 'not_applicable' | 'limited' | 'complete';
   generation?: number | null;
@@ -36,6 +47,7 @@ export interface CoverageDimension {
   ranges?: CoverageRange[];
   unknown_remainder?: boolean;
   manifest?: CoverageManifest | null;
+  selection_summary?: SelectionSummary | null;
 }
 
 export interface ProcessingCoverage {
