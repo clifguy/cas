@@ -216,6 +216,39 @@ window; a new dispatch cannot extend it. Never refresh timestamps in a receipt.
 Only independently verified empty groups may enter initial foundation creation.
 Normal retained foundation resumes still require their own provision receipt.
 
+Preserve the approved files byte for byte when setting those secrets, including
+any final newline. The GitHub CLI's standard-input path trims terminal CR/LF;
+shell command substitution also removes final newlines. Use its explicit body
+argument with the file bytes decoded directly, for example from the clean checkout:
+
+```sh
+.venv/bin/python - <<'PY'
+import subprocess
+from pathlib import Path
+
+environment = "EXPERIMENT_ENVIRONMENT"
+for name, source in (
+    ("PERF_APPROVED_SPEC_JSON", Path("/private/path/spec.json")),
+    ("PERF_BOOTSTRAP_RECEIPT_JSON", Path("/private/path/bootstrap/bootstrap-receipt.json")),
+):
+    result = subprocess.run(
+        ["gh", "secret", "set", name, "--env", environment,
+         "--body", source.read_bytes().decode("utf-8")],
+        capture_output=True,
+    )
+    if result.returncode:
+        raise SystemExit("Environment secret upload failed; reconcile before dispatch.")
+PY
+```
+
+The body is briefly present in local process arguments; run this only on the
+trusted operator machine and never enable command/argument tracing. Do not print
+the body or exception arguments. Review and hash the original files before
+uploading; never normalize an approved file or edit receipt timestamps to repair
+a digest mismatch. The workflow checks both digests again. Its expected principal
+comes from the verified receipt; the handoff CLI independently obtains the signed-in
+token identity, leaving renewal masking directives on the runner's log channel.
+
 The existing expiry and export-bound cleanup rules continue to apply. Group
 removal removes group-local bootstrap assignments; it does not remove the separate
 operator's subscription/source grants or Graph grants. After export and verified
