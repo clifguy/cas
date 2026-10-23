@@ -52,6 +52,14 @@ param skuTier string = 'Burstable'
 @description('Provisioned storage for the Flexible Server, in gibibytes.')
 param storageSizeGB int = 32
 
+@minValue(7)
+@maxValue(35)
+@description('Backup retention; serving default is unchanged. Disposable trials select seven days.')
+param backupRetentionDays int = 35
+
+@description('Keep serving database deletion protection. Only isolated disposable stacks disable it.')
+param protectDeletion bool = true
+
 @description('Object id of the Entra principal granted server administrator. Empty skips the binding so the principal can be supplied at deploy time.')
 param aadAdminObjectId string = ''
 
@@ -108,7 +116,7 @@ resource server 'Microsoft.DBforPostgreSQL/flexibleServers@2024-08-01' = {
   properties: {
     version: postgresVersion
     backup: {
-      backupRetentionDays: 35
+      backupRetentionDays: backupRetentionDays
       geoRedundantBackup: geoRedundantBackup
     }
     storage: {
@@ -185,7 +193,7 @@ resource aadAdmin 'Microsoft.DBforPostgreSQL/flexibleServers/administrators@2024
 // ARM updates and the in-VNet bootstrap job run unaffected, so re-deploying the
 // stack stays idempotent. (A ReadOnly lock would block both and is never right
 // here.) Removing the lock is a deliberate out-of-band act, which is the point.
-resource serverDeleteLock 'Microsoft.Authorization/locks@2020-05-01' = {
+resource serverDeleteLock 'Microsoft.Authorization/locks@2020-05-01' = if (protectDeletion) {
   scope: server
   name: '${environmentName}-db-no-delete'
   properties: {

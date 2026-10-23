@@ -358,21 +358,25 @@ def test_postgres_declares_a_delete_lock() -> None:
 
 
 def test_postgres_lock_is_declared_unconditionally() -> None:
-    """The lock carries no deployment condition.
-
-    "Unconditionally" is the claim the module comment, the modules README, and the
-    operator runbook all make, and it is the whole of the protection: a lock behind
-    ``= if (<expr>)`` deploys for some tenants and not others, and the tenant it
-    silently skips is indistinguishable from one that never declared a lock. The
-    body-shape gates below all read the declaration's *body*, so a condition in its
-    head passes every one of them.
-    """
+    """Serving callers always retain deletion protection; only isolated trials opt out."""
     text = POSTGRES.read_text(encoding="utf-8")
-    assert _lock_block(text), "postgres.bicep must declare a resource lock"
-    assert not _lock_declaration_is_conditional(text), (
-        "the delete lock must be declared unconditionally; a `= if (...)` condition "
-        "would make the durable store's protection tenant-dependent"
-    )
+    assert _lock_block(text)
+    assert "param protectDeletion bool = true" in text
+    assert re.search(r"resource serverDeleteLock [^\n]+ = if \(protectDeletion\) \{", text)
+    root = POSTGRES.parents[1]
+    callers = []
+    for path in root.rglob("*.bicep"):
+        block = _module_block(path.read_text(), "modules/postgres.bicep")
+        if not block:
+            block = _module_block(path.read_text(), "./postgres.bicep")
+        if block:
+            callers.append(path)
+            if path.name == "performance-stack.bicep":
+                assert "protectDeletion: false" in block
+                assert "environmentName: 'perf-${runId}'" in block
+            else:
+                assert "protectDeletion:" not in block, path
+    assert len(callers) == 3
 
 
 def test_postgres_lock_is_scoped_to_the_server() -> None:

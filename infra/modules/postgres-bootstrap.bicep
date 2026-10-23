@@ -38,6 +38,15 @@ param acrName string
 @description('Immutable SAGE image tag the job runs ({version}-{short-sha}); never `latest`.')
 param imageTag string
 
+@description('Optional immutable SAGE image for isolated trials; empty preserves the serving tag path.')
+param imageDigest string = ''
+
+@description('Whether this same-group bootstrap declares registry access; isolated trials grant exact cross-group access separately.')
+param manageAcrPull bool = true
+
+@description('Optional bounded name for isolated trial jobs. Empty keeps the serving job name.')
+param jobName string = ''
+
 @description('Resource id of the bootstrap managed identity the job runs as (the server Entra administrator).')
 param bootstrapIdentityId string
 
@@ -82,7 +91,7 @@ resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
 // AcrPull for the bootstrap identity, scoped to the registry — the job pulls the
 // SAGE image with no stored credential. Mirrors the container-apps module's grant
 // pattern (guid name, subscription-scoped role-definition id, ServicePrincipal).
-resource bootstrapAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+resource bootstrapAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (manageAcrPull) {
   scope: acr
   name: guid(acr.id, bootstrapIdentityPrincipalId, acrPullRoleId)
   properties: {
@@ -98,7 +107,7 @@ resource bootstrapAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' =
 // bootstrap entrypoint as the bootstrap identity, whose Entra token authenticates
 // as the server administrator.
 resource bootstrapJob 'Microsoft.App/jobs@2024-03-01' = {
-  name: 'job-pg-bootstrap-${environmentName}'
+  name: empty(jobName) ? 'job-pg-bootstrap-${environmentName}' : jobName
   location: location
   tags: tags
   identity: {
@@ -128,7 +137,7 @@ resource bootstrapJob 'Microsoft.App/jobs@2024-03-01' = {
       containers: [
         {
           name: 'pg-bootstrap'
-          image: '${acrLoginServer}/sage:${imageTag}'
+          image: empty(imageDigest) ? '${acrLoginServer}/sage:${imageTag}' : imageDigest
           command: [
             'python'
             '-m'

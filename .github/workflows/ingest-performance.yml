@@ -1,0 +1,160 @@
+name: Azure ingestion performance
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: Existing tenant environment supplying the scoped deploy identity.
+        type: environment
+        required: true
+      approved_sha256:
+        description: SHA-256 of the exact reviewed specification bytes.
+        type: string
+        required: true
+permissions:
+  contents: read
+concurrency:
+  group: cas-ingest-performance-${{ inputs.environment }}
+  cancel-in-progress: false
+jobs:
+  versions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      python: ${{ steps.versions.outputs.python }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - id: versions
+        run: |
+          python="$(jq -er .python.version versions.json)"
+          echo "python=$python" >> "$GITHUB_OUTPUT"
+  trial:
+    needs: versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    environment: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PERF_SPEC_JSON: ${{ secrets.PERF_APPROVED_SPEC_JSON }}
+      PERF_APPROVED_SHA256: ${{ inputs.approved_sha256 }}
+      PERF_OUTPUT: ingest-performance-results
+      AZURE_CLIENT_ID: ${{ vars.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
+      AZURE_SUBSCRIPTION_ID: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Require committed manual main invocation
+        run: |
+          test "$GITHUB_REF" = refs/heads/main
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+      - name: Install uv
+        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
+        with:
+          enable-cache: true
+          prune-cache: true
+          python-version: ${{ needs.versions.outputs.python }}
+      - name: Install locked controller dependencies
+        run: uv sync --locked --extra test
+      - name: Materialize reviewed specification without shell interpretation
+        run: |
+          .venv/bin/python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          raw = os.environ['PERF_SPEC_JSON'].encode()
+          if hashlib.sha256(raw).hexdigest() != os.environ['PERF_APPROVED_SHA256']:
+              raise SystemExit('reviewed specification digest differs')
+          def mask(value):
+              if isinstance(value, dict):
+                  for item in value.values():
+                      mask(item)
+              elif isinstance(value, list):
+                  for item in value:
+                      mask(item)
+              elif isinstance(value, str) and len(value) > 3:
+                  escaped = value.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+                  print('::add-mask::' + escaped)
+          mask(json.loads(raw))
+          descriptor = os.open(Path(os.environ['RUNNER_TEMP'], 'perf-spec.json'), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+          with os.fdopen(descriptor, 'wb') as handle:
+              handle.write(raw)
+          PY
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Compile isolated infrastructure
+        run: az bicep build --file infra/performance.bicep --outfile "$RUNNER_TEMP/performance.json"
+      - name: Provision and run isolated measurements
+        run: >-
+          .venv/bin/python -m deploy.performance_trial run
+          --spec "$RUNNER_TEMP/perf-spec.json"
+          --approved-sha256 "$PERF_APPROVED_SHA256"
+          --output "$PERF_OUTPUT"
+      - name: Refresh and verify the current private export before cleanup
+        id: export
+        if: always()
+        run: |
+          .venv/bin/python -m deploy.performance_trial export \
+            --spec "$RUNNER_TEMP/perf-spec.json" \
+            --approved-sha256 "$PERF_APPROVED_SHA256" --output "$PERF_OUTPUT"
+          .venv/bin/python - <<'PYHASH'
+          import hashlib, os
+          from pathlib import Path
+          digest = hashlib.sha256(Path(os.environ['PERF_OUTPUT'], 'export-receipt.json').read_bytes()).hexdigest()
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as handle:
+              handle.write('receipt_sha256=' + digest + '\n')
+          PYHASH
+      - name: Seal private evidence for the owner before public artifact upload
+        id: seal_initial
+        if: always()
+        run: >-
+          .venv/bin/python -m deploy.performance_archive seal
+          --source "$PERF_OUTPUT" --output "$RUNNER_TEMP/perf-sealed-initial/evidence.enc"
+          --spec "$RUNNER_TEMP/perf-spec.json" --approved-sha256 "$PERF_APPROVED_SHA256"
+      - name: Archive measurements and partial receipts before cleanup
+        id: archive
+        if: always() && steps.seal_initial.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: azure-ingest-performance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/perf-sealed-initial/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Delete only verified trial resources after export
+        env:
+          PERF_EXPORT_RECEIPT_SHA256: ${{ steps.export.outputs.receipt_sha256 }}
+        if: always() && steps.export.outcome == 'success' && steps.archive.outcome == 'success'
+        run: |
+          if [ -f "$PERF_OUTPUT/export-receipt.json" ]; then
+            .venv/bin/python -m deploy.performance_trial cleanup \
+              --spec "$RUNNER_TEMP/perf-spec.json" \
+              --approved-sha256 "$PERF_APPROVED_SHA256" --output "$PERF_OUTPUT" \
+              --export-receipt-sha256 "$PERF_EXPORT_RECEIPT_SHA256"
+          elif [ -f "$PERF_OUTPUT/provision-receipt.json" ]; then
+            echo "Export is unverified; independent expiry controller retained."
+            exit 1
+          fi
+      - name: Seal private evidence for the owner before public artifact upload
+        id: seal_final
+        if: always()
+        run: >-
+          .venv/bin/python -m deploy.performance_archive seal
+          --source "$PERF_OUTPUT" --output "$RUNNER_TEMP/perf-sealed-final/evidence.enc"
+          --spec "$RUNNER_TEMP/perf-spec.json" --approved-sha256 "$PERF_APPROVED_SHA256"
+      - name: Retain encrypted cleanup readback
+        id: archive_final
+        if: always() && steps.seal_final.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: azure-ingest-cleanup-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/perf-sealed-final/
+          if-no-files-found: error
+          retention-days: 14

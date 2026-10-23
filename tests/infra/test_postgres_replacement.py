@@ -17,7 +17,9 @@ def test_replacement_configuration_preserves_incumbent() -> None:
     assert "param serverGeneration string = ''" in module
     assert "empty(serverGeneration)" in module
     server = _resource_block(module, "server")
-    assert "backupRetentionDays: 35" in server
+    assert "backupRetentionDays: backupRetentionDays" in server
+    assert "param backupRetentionDays int = 35" in module
+    assert "backupRetentionDays:" not in (ROOT / "infra/postgres-replacement.bicep").read_text()
     assert "geoRedundantBackup: geoRedundantBackup" in server
     assert "param geoRedundantBackup string = 'Disabled'" in module
     replacement = _strip_line_comments((ROOT / "infra/postgres-replacement.bicep").read_text())
