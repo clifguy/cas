@@ -44,6 +44,7 @@ from sage.adapters.interfaces import (
 )
 from sage.instrumentation.performance import observed_context
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
+from sage.models.coverage import ProcessingCoverage
 from sage.models.enums import (
     EdgeType,
     PipelineStatus,
@@ -380,7 +381,7 @@ class PostgresGraphStore(GraphStore):
     # Document operations
     # ------------------------------------------------------------------
 
-    async def insert_document(self, doc: Document) -> None:
+    async def insert_document(self, doc: Document, *, processing_stage: str | None = None) -> None:
         with self._query_timer.measure("insert_document"):
             try:
                 async with observed_context(
@@ -389,13 +390,19 @@ class PostgresGraphStore(GraphStore):
                     async with observed_context(
                         conn.transaction(), "graph.begin", "graph.commit", "graph.rollback"
                     ):
-                        await self._exec_insert_document(conn, doc)
+                        await self._exec_insert_document(
+                            conn, doc, processing_stage=processing_stage
+                        )
             except pg_errors.UniqueViolation as exc:
                 await self._maybe_raise_tier3_violation(exc, doc)
                 raise
 
-    async def _exec_insert_document(self, conn: Any, doc: Document) -> None:
+    async def _exec_insert_document(
+        self, conn: Any, doc: Document, *, processing_stage: str | None = None
+    ) -> None:
         """Issue the INSERT for a Document on ``conn`` without committing."""
+        if processing_stage not in (None, "indexing", "abstraction"):
+            raise ValueError("invalid processing stage")
         await conn.execute(
             """INSERT INTO documents (
                 id, title, source_type, source_path, lifecycle_status,
@@ -407,10 +414,11 @@ class PostgresGraphStore(GraphStore):
                 semantic_abstract, pipeline_status, pipeline_error, tier3_metadata,
                 adapter_config, metadata_confirmed, relocated_from, relocated_to,
                 created_client, created_agent, last_modified_client, last_modified_agent,
-                created_by_name, last_modified_by_name, version_token
+                created_by_name, last_modified_by_name, version_token, processing_resume_stage,
+                processing_coverage
             ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                       %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                      %s, %s, %s, %s, %s, %s, %s)""",
+                      %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (
                 doc.id,
                 doc.title,
@@ -448,6 +456,8 @@ class PostgresGraphStore(GraphStore):
                 doc.created_by_name,
                 doc.last_modified_by_name,
                 int(doc.version_token),
+                processing_stage,
+                Jsonb({"attempt": 1}) if processing_stage is not None else None,
             ),
         )
         await self._sync_document_tags(conn, doc.id, doc.tags)
@@ -520,9 +530,16 @@ class PostgresGraphStore(GraphStore):
             return self._row_to_document(row) if row is not None else None
 
     async def update_document(
-        self, doc_id: str, updates: dict, *, advance_version: bool = True
+        self,
+        doc_id: str,
+        updates: dict,
+        *,
+        advance_version: bool = True,
+        processing_stage: str | None = None,
+        advance_processing_attempt: bool = True,
+        expected_processing_attempt: int | None = None,
     ) -> Document | None:
-        if not updates:
+        if not updates and processing_stage is None:
             return await self.get_document(doc_id)
         async with observed_context(
             self._pool.connection(), "graph.pool", "graph.return", "graph.return_failed"
@@ -530,14 +547,35 @@ class PostgresGraphStore(GraphStore):
             async with observed_context(
                 conn.transaction(), "graph.begin", "graph.commit", "graph.rollback"
             ):
-                await self._exec_update_document(
-                    conn, doc_id, dict(updates), advance_version=advance_version
+                changed = await self._exec_update_document(
+                    conn,
+                    doc_id,
+                    dict(updates),
+                    advance_version=advance_version,
+                    processing_stage=processing_stage,
+                    advance_processing_attempt=advance_processing_attempt,
+                    expected_processing_attempt=expected_processing_attempt,
                 )
+                if not changed:
+                    return None
+                if processing_stage is not None:
+                    async with conn.cursor(row_factory=dict_row) as cur:
+                        await cur.execute("SELECT * FROM documents WHERE id = %s", (doc_id,))
+                        row = await cur.fetchone()
+                    return self._row_to_document(row) if row else None
         return await self.get_document(doc_id)
 
     async def _exec_update_document(
-        self, conn: Any, doc_id: str, updates: dict, *, advance_version: bool = True
-    ) -> None:
+        self,
+        conn: Any,
+        doc_id: str,
+        updates: dict,
+        *,
+        advance_version: bool = True,
+        processing_stage: str | None = None,
+        advance_processing_attempt: bool = True,
+        expected_processing_attempt: int | None = None,
+    ) -> bool:
         """Issue the UPDATE for a document on ``conn`` without committing.
 
         ``updates`` is a private copy the caller may mutate; collection and
@@ -549,11 +587,17 @@ class PostgresGraphStore(GraphStore):
         so two writes that race past every lock both count. The token is only
         ever advanced this way, never set, so it is refused as an update key.
         """
-        if not updates:
+        if not updates and processing_stage is None:
             return
+        if processing_stage not in (None, "indexing", "abstraction"):
+            raise ValueError("invalid processing stage")
         unknown = sorted(set(updates) - DOCUMENT_COLUMNS)
         if unknown:
             raise ValueError(f"not a documents column: {', '.join(unknown)}")
+        if "processing_resume_stage" in updates:
+            raise ValueError("processing stage uses the internal admission seam")
+        if "processing_coverage" in updates:
+            raise ValueError("coverage is written only through conditional publication")
         if "version_token" in updates:
             raise ValueError("version_token is advanced, never set")
         new_tags: list[str] | None = updates["tags"] if "tags" in updates else None
@@ -581,17 +625,35 @@ class PostgresGraphStore(GraphStore):
         if "is_chain_head" in updates:
             updates["is_chain_head"] = bool(updates["is_chain_head"])
 
+        if processing_stage is not None:
+            updates["processing_resume_stage"] = processing_stage
         set_clause = ", ".join(f"{k} = %s" for k in updates)
+        if processing_stage is not None and advance_processing_attempt:
+            set_clause += (
+                ", processing_coverage = jsonb_set(COALESCE(processing_coverage, '{}'::jsonb), "
+                "'{attempt}', to_jsonb(COALESCE((processing_coverage->>'attempt')::bigint, 0) + 1))"
+            )
         if advance_version:
             set_clause += ", version_token = version_token + 1"
         values = list(updates.values())
         values.append(doc_id)
-        await conn.execute(
-            f"UPDATE documents SET {set_clause} WHERE id = %s",  # noqa: S608 -- keys are checked against DOCUMENT_COLUMNS; values are %s params
+        predicate = "id = %s"
+        if expected_processing_attempt is not None:
+            predicate += " AND COALESCE((processing_coverage->>'attempt')::bigint, 0) = %s"
+            values.append(expected_processing_attempt)
+        cur = await conn.execute(
+            f"UPDATE documents SET {set_clause} WHERE {predicate}",  # noqa: S608 -- keys are checked against DOCUMENT_COLUMNS; values are %s params
             values,
         )
-        if new_tags is not None:
+        if cur.rowcount and new_tags is not None:
             await self._sync_document_tags(conn, doc_id, new_tags)
+        return bool(cur.rowcount)
+
+    async def get_processing_stage(self, doc_id: str) -> str | None:
+        row = await self._fetch_one(
+            "SELECT processing_resume_stage FROM documents WHERE id = %s", (doc_id,)
+        )
+        return row["processing_resume_stage"] if row else None
 
     async def list_all_documents(self) -> list[Document]:
         with self._query_timer.measure("list_all_documents"):
@@ -1065,6 +1127,8 @@ class PostgresGraphStore(GraphStore):
         predecessor_id: str,
         predecessor_updates: dict,
         edge: Edge,
+        *,
+        processing_stage: str | None = None,
     ) -> tuple[Document, Document]:
         updates_with_chain_head = {**predecessor_updates, "is_chain_head": False}
         try:
@@ -1075,8 +1139,19 @@ class PostgresGraphStore(GraphStore):
                     conn.transaction(), "graph.begin", "graph.commit", "graph.rollback"
                 ):
                     await self._exec_update_document(conn, predecessor_id, updates_with_chain_head)
-                    await self._exec_insert_document(conn, new_doc)
+                    await self._exec_insert_document(
+                        conn, new_doc, processing_stage=processing_stage
+                    )
                     await self._exec_insert_edge(conn, edge)
+                    # Return this admission's committed state, including edge
+                    # effects, rather than hydrating a later owner's fence.
+                    async with conn.cursor(row_factory=dict_row) as cur:
+                        await cur.execute("SELECT * FROM documents WHERE id = %s", (new_doc.id,))
+                        inserted = self._row_to_document(await cur.fetchone())
+                        await cur.execute(
+                            "SELECT * FROM documents WHERE id = %s", (predecessor_id,)
+                        )
+                        updated_pred = self._row_to_document(await cur.fetchone())
         except pg_errors.UniqueViolation as exc:
             await self._maybe_raise_tier3_violation(exc, new_doc, supersedes_id=predecessor_id)
             if exc.diag.constraint_name == _EDGES_UNIQ_INDEX:
@@ -1084,8 +1159,6 @@ class PostgresGraphStore(GraphStore):
                     edge.source_id, edge.target_id, edge.edge_type.value
                 ) from exc
             raise
-        inserted = await self.get_document(new_doc.id)
-        updated_pred = await self.get_document(predecessor_id)
         return inserted, updated_pred
 
     async def get_edges_by_source(self, source_id: str, edge_type: str | None = None) -> list[Edge]:
@@ -1978,6 +2051,7 @@ class PostgresGraphStore(GraphStore):
                 f"d.tags::text AS tags, "
                 f"d.document_date AS d_document_date, "
                 f"d.source_modified_at AS d_source_modified_at, "
+                f"d.processing_coverage AS d_processing_coverage, "
                 f"d.relocated_from AS d_relocated_from, "
                 f"d.relocated_to AS d_relocated_to "
                 f"FROM {walked} t "
@@ -2007,6 +2081,7 @@ class PostgresGraphStore(GraphStore):
                     "edge_created_agent": row["edge_created_agent"],
                     "edge_created_by_name": row["edge_created_by_name"],
                     "depth": row["depth"],
+                    "d_processing_coverage": row.get("d_processing_coverage"),
                     "d_title": row["title"],
                     "d_lifecycle_status": row["lifecycle_status"],
                     "d_source_type": row["source_type"],
@@ -2191,6 +2266,9 @@ class PostgresGraphStore(GraphStore):
             semantic_abstract=row["semantic_abstract"],
             pipeline_status=PipelineStatus(row["pipeline_status"]),
             pipeline_error=row["pipeline_error"],
+            processing_coverage=ProcessingCoverage.model_validate(
+                row.get("processing_coverage") or {}
+            ),
             tier3_metadata=row["tier3_metadata"],
             # ``.get`` for the same reason as ``stored_content_hash`` above.
             adapter_config=row.get("adapter_config"),

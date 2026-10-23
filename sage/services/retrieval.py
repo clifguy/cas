@@ -32,6 +32,7 @@ import pydantic_core
 from sage.adapters.interfaces import (
     ALL_FACET_FIELDS,
     DOCUMENT_FACET_FIELDS,
+    HEADING_PATH_SEPARATOR,
     PRINCIPAL_FIELDS,
     ContentStore,
     EmbeddingProvider,
@@ -634,6 +635,8 @@ class RetrievalService:
     ) -> None:
         self._graph = graph_store
         self._content = content_store
+        if content_store is not None:
+            content_store.bind_processing_store(graph_store)
         self._embedding = embedding_provider
         self._config = config
         self._query_timer = query_timer
@@ -1276,6 +1279,36 @@ class RetrievalService:
                         if isinstance(hit.document, DocumentSummary):
                             hit.document.semantic_abstract = None
 
+            if request.mode in (RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD):
+                limited = any(
+                    hit.document.processing_coverage.keyword_indexing.scope != "complete"
+                    or (
+                        request.mode == RetrievalMode.SEMANTIC
+                        and hit.document.processing_coverage.passage_embeddings.scope != "complete"
+                    )
+                    for hit in response.results
+                )
+                if limited:
+                    self._merge_hints(
+                        response,
+                        {
+                            "coverage_advisory": "Returned documents have unknown or limited "
+                            "discovery "
+                            "coverage; unmatched source content may exist."
+                        },
+                    )
+                elif not response.results:
+                    self._merge_hints(
+                        response,
+                        {
+                            "coverage_advisory": "No matches were returned. Full-source discovery "
+                            "coverage "
+                            "for this query scope is not established; this is not evidence "
+                            "of source "
+                            "absence."
+                        },
+                    )
+
             # Applied here rather than in _build_hints: that helper runs
             # only in semantic and keyword mode and only when the result
             # set is empty, whereas a filter value the vault does not
@@ -1833,16 +1866,17 @@ class RetrievalService:
         # Fetch more candidates than needed so RRF can re-rank
         fetch_limit = limit * 3
 
-        vector_results = await self._content.search_semantic(
-            query_embedding,
-            fetch_limit,
-            filters=filters,
-        )
-        bm25_results = await self._content.search_bm25(
-            query_text,
-            fetch_limit,
-            filters=filters,
-        )
+        async with self._content.processing_snapshot():
+            vector_results = await self._content.search_semantic(
+                query_embedding,
+                fetch_limit,
+                filters=filters,
+            )
+            bm25_results = await self._content.search_bm25(
+                query_text,
+                fetch_limit,
+                filters=filters,
+            )
 
         return rrf_fuse(vector_results, bm25_results, limit)
 
@@ -1915,6 +1949,13 @@ class RetrievalService:
             doc = doc_cache[result.document_id]
             if doc is None:
                 continue
+            if result.processing_coverage is not None:
+                doc = doc.model_copy(
+                    update={
+                        "processing_coverage": result.processing_coverage,
+                        "semantic_abstract": result.semantic_abstract,
+                    }
+                )
 
             # BH-020: failed pipeline = excluded from all retrieval, EXCEPT when
             # the caller passes an explicit pipeline_status filter. The
@@ -2268,9 +2309,18 @@ class RetrievalService:
 
         # Prefix match on heading_path (BH-029)
         with phases.phase("get_chunks_by_heading_prefix"):
-            chunks = await self._content.get_chunks_by_heading_prefix(
-                request.document_id, request.heading_path
+            coverage, served, abstract = await self._content.read_processing_artifacts(
+                request.document_id
             )
+            doc = doc.model_copy(
+                update={"processing_coverage": coverage, "semantic_abstract": abstract}
+            )
+            chunks = [
+                c
+                for c in served
+                if c.heading_path == request.heading_path
+                or c.heading_path.startswith(request.heading_path + HEADING_PATH_SEPARATOR)
+            ]
 
         # BH-030: no matching headings = 404, with available headings for guidance
         if not chunks:

@@ -2192,7 +2192,7 @@ class TestSageDiscoverCatalog:
 
         from sage.services.retrieval import DEFAULT_MCP_INLINE_BUDGET_BYTES
 
-        row_count = DEFAULT_MCP_INLINE_BUDGET_BYTES // 500
+        row_count = DEFAULT_MCP_INLINE_BUDGET_BYTES // 900
         services, _ = single_vault
         await self._seed_portfolio(services, row_count)
 
@@ -2227,8 +2227,16 @@ class TestSageDiscoverCatalog:
         assert degraded["hints"]["carried_shape"] == "DocumentSummaryLight"
         assert len(degraded["results"]) == len(full["results"]) == row_count
 
-        light_keys = {"id", "title", "lifecycle_status", "doc_type", "tier3_metadata"}
+        light_keys = {
+            "id",
+            "title",
+            "lifecycle_status",
+            "doc_type",
+            "tier3_metadata",
+            "processing_coverage",
+        }
         for row in degraded["results"]:
+            assert row["document"]["processing_coverage"]["projection"]["scope"] == "unknown"
             assert set(row["document"]) <= light_keys, (
                 f"degraded row carries fields outside the light shape: "
                 f"{set(row['document']) - light_keys}"

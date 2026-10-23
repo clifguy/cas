@@ -31,6 +31,7 @@ import yaml
 
 from sage.adapters.interfaces import (
     HEADING_PATH_SEPARATOR,
+    LEGACY_DOCUMENT_HEADER_HEADING_PATH,
     ContentStore,
     EmbeddingProvider,
     GraphStore,
@@ -152,6 +153,8 @@ class UtilitiesService:
     ) -> None:
         self._graph = graph_store
         self._content = content_store
+        if content_store is not None:
+            content_store.bind_processing_store(graph_store)
         self._embedding = embedding_provider
         self._config = config
 
@@ -181,7 +184,8 @@ class UtilitiesService:
                 document_id, await build_not_found_detail(self._graph, document_id)
             )
 
-        chunks = await self._content.get_all_chunks(document_id)
+        coverage, chunks = await self._content.read_processing_snapshot(document_id)
+        doc = doc.model_copy(update={"processing_coverage": coverage})
         if not chunks:
             raise NoProjectionError(document_id)
 
@@ -258,6 +262,7 @@ class UtilitiesService:
         target.write_text(projection_text, encoding="utf-8")
 
         return ExportProjectionResponse(
+            processing_coverage=doc.processing_coverage,
             document_id=document_id,
             output_path=str(target),
         )
@@ -355,6 +360,7 @@ class UtilitiesService:
                     document_id=doc.id,
                     text=projection_text,
                     write_to_path=write_to_path,
+                    processing_coverage=doc.processing_coverage,
                 )
 
             validate_write_to_path(write_to_path)
@@ -434,7 +440,14 @@ class UtilitiesService:
 
         doc, _ = await self._get_projection_text(document_id)
 
-        chunks = await self._content.get_chunks_by_heading_prefix(document_id, heading_path)
+        coverage, served = await self._content.read_processing_snapshot(document_id)
+        doc = doc.model_copy(update={"processing_coverage": coverage})
+        chunks = [
+            c
+            for c in served
+            if c.heading_path == heading_path
+            or c.heading_path.startswith(heading_path + HEADING_PATH_SEPARATOR)
+        ]
         if not chunks:
             available = await self._content.get_heading_paths(document_id)
             candidates = _rank_candidate_matches(heading_path, available)
@@ -465,26 +478,38 @@ class UtilitiesService:
     async def list_headings(self, document_id: str) -> ListHeadingsResponse:
         """Return the distinct heading paths of a document in document order.
 
-        Body content is not read; the column-only select in
-        get_heading_paths returns the structural table of contents without
-        loading chunk content. Replaces the antipattern of harvesting
-        available_headings from a deliberately-wrong read_section call.
+        The heading list and its coverage are read from one publication
+        snapshot. Replaces harvesting available_headings from a
+        deliberately-wrong read_section call.
 
         Args:
             document_id: Document to enumerate headings for.
 
         Returns:
             ListHeadingsResponse with the heading paths in document order.
-            The synthetic header chunk is excluded by
-            get_heading_paths so the returned paths are exactly those a
-            caller may pass to read_section.
+            The synthetic header chunk is excluded so the returned paths
+            are exactly those a caller may pass to read_section.
 
         Raises:
             DocumentNotFoundError: Document does not exist.
             NoProjectionError: Document has no stored projection chunks.
         """
-        doc, _ = await self._get_projection_text(document_id)
-        headings = await self._content.get_heading_paths(document_id)
+        doc = await self._graph.get_document(document_id)
+        if doc is None:
+            raise DocumentNotFoundError(
+                document_id, await build_not_found_detail(self._graph, document_id)
+            )
+        coverage, chunks = await self._content.read_processing_snapshot(document_id)
+        if not chunks:
+            raise NoProjectionError(document_id)
+        doc = doc.model_copy(update={"processing_coverage": coverage})
+        headings = list(
+            dict.fromkeys(
+                c.heading_path
+                for c in chunks
+                if c.heading_path != LEGACY_DOCUMENT_HEADER_HEADING_PATH
+            )
+        )
 
         response = ListHeadingsResponse.from_document(doc, headings=headings)
         response.read_meta = response.read_meta.stamped(self._config.fingerprint())

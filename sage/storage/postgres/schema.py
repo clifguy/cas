@@ -155,6 +155,8 @@ CREATE TABLE IF NOT EXISTS documents (
     is_chain_head boolean NOT NULL DEFAULT true,
     relocated_from jsonb,
     relocated_to jsonb,
+    processing_coverage jsonb,
+    processing_resume_stage text CHECK (processing_resume_stage IN ('indexing', 'abstraction')),
     version_token bigint NOT NULL DEFAULT 1
 );
 """
@@ -404,6 +406,9 @@ _TABLES: tuple[str, ...] = (
 # like the table and index DDL it runs alongside.
 ADDITIVE_COLUMNS: tuple[str, ...] = (
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS stored_content_hash text;",
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS processing_coverage jsonb;",
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS processing_resume_stage text "
+    "CHECK (processing_resume_stage IN ('indexing', 'abstraction'));",
     # Nullable with no default, deliberately: NULL is what "not yet derived"
     # means, and it is the value CHUNKS_TSV_EXPRESSION's coalesce reads to keep
     # an unmigrated vault on the pre-decision behaviour. A default of '' would

@@ -370,7 +370,11 @@ async def test_export_projection_tool_writes_under_the_storage_root(
         )
     )
 
-    assert via_tool == {"document_id": doc_id, "output_path": str(target)}
+    assert via_tool["processing_coverage"]["projection"]["scope"] == "unknown"
+    assert {key: value for key, value in via_tool.items() if key != "processing_coverage"} == {
+        "document_id": doc_id,
+        "output_path": str(target),
+    }
     assert target.read_text(encoding="utf-8") == await _projection_text(app, vault_id, doc_id)
 
 
@@ -426,7 +430,11 @@ async def test_export_projection_tool_overwrites_an_existing_file(
         )
     )
 
-    assert via_tool == {"document_id": doc_id, "output_path": str(target)}
+    assert via_tool["processing_coverage"]["projection"]["scope"] == "unknown"
+    assert {key: value for key, value in via_tool.items() if key != "processing_coverage"} == {
+        "document_id": doc_id,
+        "output_path": str(target),
+    }
     assert target.read_text(encoding="utf-8") == projection_text
 
 

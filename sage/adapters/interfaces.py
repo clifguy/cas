@@ -10,11 +10,13 @@ port depends only on the models leaf, never on a concrete store module.
 """
 
 from abc import ABC, abstractmethod
-from collections.abc import Sequence
+from collections.abc import AsyncIterator, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import NamedTuple, TypedDict
 
+from sage.models.coverage import CoverageDimension, ProcessingCoverage
 from sage.models.enums import ResolutionPolicy
 from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
 from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge
@@ -231,6 +233,9 @@ class SearchResult:
     matched_chunk_count: int = 1
     is_document_surface: bool = False
     section_index: int | None = None
+    processing_coverage: ProcessingCoverage | None = None
+    # Present with processing_coverage, including a legitimate absent abstract.
+    semantic_abstract: str | None = None
 
 
 @dataclass(frozen=True)
@@ -273,6 +278,59 @@ class ContentStoreOptimizeSnapshot(TypedDict):
 
 class ContentStore(ABC):
     """Interface for vector/full-text content store (Postgres in production)."""
+
+    @asynccontextmanager
+    async def processing_snapshot(self) -> AsyncIterator[None]:
+        """Keep retrieval arms on one serving snapshot where the binding supports it."""
+        yield
+
+    async def read_processing_snapshot(
+        self, document_id: str
+    ) -> tuple[ProcessingCoverage, list[Chunk]]:
+        """Read served passages and coverage from one publication snapshot."""
+        coverage, chunks, _ = await self.read_processing_artifacts(document_id)
+        return coverage, chunks
+
+    async def read_processing_artifacts(
+        self, document_id: str
+    ) -> tuple[ProcessingCoverage, list[Chunk], str | None]:
+        """Read passages, coverage and the generated abstract from one snapshot."""
+        raise NotImplementedError
+
+    def bind_processing_store(self, graph_store: "GraphStore") -> None:
+        """Bind the document authority for test bindings sharing in-memory state."""
+
+    async def update_processing_status(
+        self, document_id: str, attempt: int, updates: dict, *, processing_stage: str | None = None
+    ) -> bool:
+        """Write observations and an optional internal stage under the same attempt fence.
+
+        The checkpoint accepts indexing/abstraction; None preserves it. It does
+        not admit new work or advance the attempt. Pipeline status alone owns
+        recovery eligibility.
+        """
+        raise NotImplementedError
+
+    async def begin_processing_attempt(self, document_id: str) -> int:
+        """Allocate a durable monotonically increasing publication fence."""
+        raise NotImplementedError
+
+    async def publish_processing(
+        self,
+        document_id: str,
+        attempt: int,
+        dimensions: dict[str, CoverageDimension],
+        *,
+        chunks: list[Chunk] | None = None,
+        surface: DocumentSurface | None = None,
+        semantic_abstract: str | None = None,
+    ) -> bool:
+        """Atomically publish evidence and artifacts, refusing stale attempts.
+
+        Publishing passages also records indexed_at in that transaction; surface
+        or abstraction-only publication preserves the prior indexing time.
+        """
+        raise NotImplementedError
 
     @abstractmethod
     async def index_chunks(self, document_id: str, chunks: list[Chunk]) -> None:
@@ -864,8 +922,8 @@ class GraphStore(ABC):
 
     # --- Documents ---
     @abstractmethod
-    async def insert_document(self, doc: Document) -> None:
-        """Persist a new document record."""
+    async def insert_document(self, doc: Document, *, processing_stage: str | None = None) -> None:
+        """Persist a new record and optional internal indexing/abstraction checkpoint atomically."""
 
     @abstractmethod
     async def get_document(self, doc_id: str) -> Document | None:
@@ -873,7 +931,14 @@ class GraphStore(ABC):
 
     @abstractmethod
     async def update_document(
-        self, doc_id: str, updates: dict, *, advance_version: bool = True
+        self,
+        doc_id: str,
+        updates: dict,
+        *,
+        advance_version: bool = True,
+        processing_stage: str | None = None,
+        advance_processing_attempt: bool = True,
+        expected_processing_attempt: int | None = None,
     ) -> Document | None:
         """Apply a partial update; return the updated document or None if absent.
 
@@ -883,7 +948,18 @@ class GraphStore(ABC):
         stamp, an abstract, a re-projection) passes False, so a token a caller
         read before that write stays valid. The supersede operations always
         advance the predecessor's token.
+
+        ``processing_stage`` is an internal indexing/abstraction checkpoint, not
+        scheduling authority. When supplied, atomically admit that stage, the
+        metadata update, and a new publication attempt. Internal fenced status
+        observations use ``advance_processing_attempt=False``. An expected
+        attempt mismatch returns None without changing metadata or checkpoint.
+        The returned row includes this operation's admitted attempt.
         """
+
+    async def get_processing_stage(self, doc_id: str) -> str | None:
+        """Internal next-stage checkpoint; never a queue eligibility predicate."""
+        raise NotImplementedError
 
     @abstractmethod
     async def list_all_documents(self) -> list[Document]:
@@ -1068,8 +1144,15 @@ class GraphStore(ABC):
         predecessor_id: str,
         predecessor_updates: dict,
         edge: Edge,
+        *,
+        processing_stage: str | None = None,
     ) -> tuple[Document, Document]:
-        """Atomically insert a new document and supersede its predecessor."""
+        """Insert and supersede atomically; return both rows from that transaction.
+
+        Snapshots include edge effects and this insertion's own admission fence.
+        Return only after commit succeeds; later hydration must not substitute a
+        newer operation's processing attempt.
+        """
 
     @abstractmethod
     async def get_edges_by_source(self, source_id: str, edge_type: str | None = None) -> list[Edge]:

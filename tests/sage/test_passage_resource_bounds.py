@@ -76,7 +76,11 @@ def test_shared_sizing_bounds_actual_tokenizer_calls(heading, text):
         assert len(chunks) == 1  # Existing exceptional crowded-heading semantics.
 
 
-async def test_stage2_sizing_leaves_the_request_loop_responsive(ingestion_service):
+async def test_stage2_sizing_leaves_the_request_loop_responsive(ingestion_service, graph_store):
+    from tests.sage.test_postgres_graph_store import _doc
+
+    for index in (1, 2):
+        await graph_store.insert_document(_doc(index))
     started = threading.Event()
     release = threading.Event()
     sizing_threads = []
@@ -97,8 +101,8 @@ async def test_stage2_sizing_leaves_the_request_loop_responsive(ingestion_servic
         adapter_version="1",
         title="Test",
     )
-    task = asyncio.create_task(ingestion_service._stage2_indexing("missing", projection))
-    second = asyncio.create_task(ingestion_service._stage2_indexing("another", projection))
+    task = asyncio.create_task(ingestion_service._stage2_indexing("00000001_doc_1", projection))
+    second = asyncio.create_task(ingestion_service._stage2_indexing("00000002_doc_2", projection))
     try:
         for _ in range(100):
             if started.is_set():

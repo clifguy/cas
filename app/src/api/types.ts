@@ -1,3 +1,53 @@
+export interface ProcessingIdentity {
+  source_hash: string;
+  adapter: string;
+  policy: string;
+  configuration: Record<string, unknown>;
+  tokenization: string;
+}
+
+export interface CoverageCount {
+  unit: 'bytes' | 'characters' | 'records' | 'passages' | 'tokens' | 'regions' | 'fields' | 'occurrences';
+  observed: number;
+  represented: number;
+  total: number | null;
+}
+
+export interface CoverageRange {
+  location: string;
+  start: number;
+  end: number;
+}
+
+export interface CoverageManifest {
+  generation: number;
+  source_hash: string;
+  content_hash: string;
+  entries: CoverageRange[];
+  unknown_remainder: boolean;
+}
+
+export interface CoverageDimension {
+  scope: 'unknown' | 'pending' | 'not_applicable' | 'limited' | 'complete';
+  generation?: number | null;
+  identity?: ProcessingIdentity | null;
+  limitations?: string[];
+  counts?: CoverageCount[];
+  ranges?: CoverageRange[];
+  unknown_remainder?: boolean;
+  manifest?: CoverageManifest | null;
+}
+
+export interface ProcessingCoverage {
+  attempt: number;
+  source_retention: CoverageDimension;
+  inspection: CoverageDimension;
+  projection: CoverageDimension;
+  keyword_indexing: CoverageDimension;
+  passage_embeddings: CoverageDimension;
+  abstraction_evidence: CoverageDimension;
+}
+
 // TypeScript interfaces matching SAGE Core API and application backend response shapes.
 
 // --- Vault ---
@@ -108,6 +158,7 @@ export interface ProvenanceFilter {
 }
 
 export interface Document {
+  processing_coverage?: ProcessingCoverage;
   id: string;
   title: string;
   source_type: string;
@@ -152,6 +203,7 @@ export interface Document {
 }
 
 export interface DocumentSummary {
+  processing_coverage?: ProcessingCoverage;
   id: string;
   title: string;
   lifecycle_status: string;
@@ -822,6 +874,7 @@ export interface OpenDocumentResponse {
 }
 
 export interface DocumentDownloadUrlResponse {
+  processing_coverage?: ProcessingCoverage;
   download_url: string;
 }
 

@@ -956,3 +956,39 @@ async def test_app_028_proxy_forwards_every_value_of_a_repeated_query_name(path)
     assert response.status_code == 200
     (upstream,) = recorder
     assert upstream.url.query == b"tag=a&tag=b&x=1"
+
+
+async def test_proxy_preserves_processing_coverage_and_generation():
+    """Document evidence crosses the actual authenticated proxy without reduction."""
+    app = create_bff_app(stack_config=SageCoreConfig(profile="cloud"))
+    settings = _settings()
+    sessions = InMemorySessionStore()
+    await sessions.create_session(_session())
+    oidc = _StubOidc("coverage-token")
+    app.state.bff_auth = BffAuthContext(settings=settings, oidc=oidc, store=sessions)
+    recorder: list[httpx.Request] = []
+    payload = {
+        "id": "00000001_document",
+        "processing_coverage": {
+            "attempt": 4,
+            "projection": {
+                "scope": "limited",
+                "generation": 3,
+                "counts": [{"unit": "characters", "observed": 12, "represented": 8, "total": None}],
+            },
+            "inspection": {"scope": "unknown"},
+        },
+    }
+    app.state.sage_transport = HttpSageTransport(
+        ObOSageClient("http://sage.test", oidc, client=_mock_sage(recorder, json_body=payload))
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://bff.test",
+        cookies={settings.session_cookie_name: "sid-1"},
+    ) as client:
+        response = await client.get("/sage_vaults/test/documents/00000001_document")
+    assert response.status_code == 200
+    assert response.json() == payload
+    assert recorder[0].headers["authorization"] == "Bearer coverage-token"
+    assert recorder[0].url.path == "/sage_vaults/test/documents/00000001_document"

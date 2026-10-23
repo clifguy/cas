@@ -391,6 +391,8 @@ async def test_every_counted_failure_is_named_in_the_stderr_listing(make_doc, ca
     assert "1 failed" in captured.out
     assert doc.id in captured.err, captured.err
     assert ReabstractOutcome.INTERRUPTED.value in captured.err
+    assert "No provider failure is inferred" in captured.err
+    assert "No provider was reached" not in captured.err
 
 
 async def test_multi_status_worklist_follows_the_vocabulary_declaration_order(make_doc):

@@ -361,6 +361,24 @@ def _build_sentinel(
 
     if model.__name__ in SCHEMAS and spec is not None:
         return model.model_validate(_error_schema_sentinel(SCHEMAS[model.__name__], SCHEMAS))
+    if model.__name__ == "CoverageManifest":
+        import hashlib
+
+        payload = {"entries": [], "unknown_remainder": False}
+        digest = (
+            "sha256:"
+            + hashlib.sha256(
+                json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+        )
+        return model.model_validate(
+            {
+                "generation": 1,
+                "source_hash": "sha256:" + "0" * 64,
+                "content_hash": digest,
+                **payload,
+            }
+        )
     properties = properties or {}
     values: dict[str, Any] = {}
     for name, field in model.model_fields.items():

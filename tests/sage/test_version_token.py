@@ -484,16 +484,29 @@ async def test_the_indexing_reconcile_writes_under_the_document_lock(
 ):
     """Every content-store sync for the document runs under the lock caller writes take.
 
-    The reconcile reads the record and writes what changed; a caller write
-    landing between that read and those writes would have its own sync
-    overwritten unless both hold the same lock. The probe records the lock
-    state at each sync, so an unlocked reconcile shows as a False entry.
+    Publication reconciles the candidate before it becomes served. A caller
+    write between that read and publication could otherwise be overwritten.
+    Both the patch's sync and the publication must hold the document lock.
     """
     services, test_dir = vault_services
     entered, release = held_indexing
     content = services.ingestion_service._content_store
     original = content.update_chunk_metadata
+    publish = content.publish_processing
     observed: list[bool] = []
+    publications: list[bool] = []
+    reconciliations: list[bool] = []
+    graph = services.ingestion_service._store
+    read = graph.get_document
+    embedder = services.ingestion_service._embedding
+    embed = embedder.embed
+    pipeline_tasks = set()
+
+    async def tracking_embed(texts):
+        pipeline_tasks.add(asyncio.current_task())
+        return await embed(texts)
+
+    monkeypatch.setattr(embedder, "embed", tracking_embed)
     doc_id_box: list[str] = []
 
     async def probing(document_id, metadata):
@@ -501,7 +514,25 @@ async def test_the_indexing_reconcile_writes_under_the_document_lock(
             observed.append(services.ingestion_service._locks.lock(document_id).locked())
         return await original(document_id, metadata)
 
+    async def probing_publication(document_id, *args, **kwargs):
+        if doc_id_box and document_id == doc_id_box[0] and kwargs.get("chunks") is not None:
+            publications.append(services.ingestion_service._locks.lock(document_id).locked())
+        return await publish(document_id, *args, **kwargs)
+
+    async def probing_read(document_id):
+        if (
+            doc_id_box
+            and document_id == doc_id_box[0]
+            and release.is_set()
+            and asyncio.current_task() in pipeline_tasks
+            and not publications
+        ):
+            reconciliations.append(services.ingestion_service._locks.lock(document_id).locked())
+        return await read(document_id)
+
+    monkeypatch.setattr(graph, "get_document", probing_read)
     monkeypatch.setattr(content, "update_chunk_metadata", probing)
+    monkeypatch.setattr(content, "publish_processing", probing_publication)
 
     (test_dir / "locked.md").write_text("# locked\n\nBody.")
     ingested = _parse(await ingest_document(VAULT, "test/locked.md", "markdown"))
@@ -512,8 +543,9 @@ async def test_the_indexing_reconcile_writes_under_the_document_lock(
     release.set()
     await _settled(services, ingested["id"])
 
-    assert len(observed) >= 2, "both the patch's sync and the reconcile must have run"
-    assert all(observed), observed
+    assert reconciliations and all(reconciliations), reconciliations
+    assert observed and all(observed), observed
+    assert publications and all(publications), publications
 
 
 async def test_recording_the_examining_adapter_leaves_the_token_unchanged(vault_services):

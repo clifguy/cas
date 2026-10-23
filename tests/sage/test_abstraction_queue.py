@@ -858,8 +858,8 @@ async def test_restamp_reads_and_writes_under_one_hold_of_the_document_lock(
     to the correct implementation's. It is also the exact TOCTOU this guard
     exists to exclude: the document can settle between the two holds. The
     acquisition count is what separates them, so it is asserted alongside:
-    one hold, not two. The trailing read is ``update_document``'s own re-read,
-    inside that same hold.
+    one hold, not two. The write now goes through the database-fenced
+    processing-observation port, still inside that same hold.
     """
     doc_id = await _seed_indexed_doc(ingestion_service, tmp_vault_dir, "samples/s13.md")
     gated = _GatedAbstractionProvider()
@@ -872,7 +872,7 @@ async def test_restamp_reads_and_writes_under_one_hold_of_the_document_lock(
     observed: list[tuple[str, bool]] = []
     acquisitions = 0
     original_read = graph_store.get_document
-    original_write = graph_store.update_document
+    original_write = ingestion_service._content_store.update_processing_status
     original_acquire = lock.acquire
 
     async def _counting_acquire():
@@ -885,19 +885,19 @@ async def test_restamp_reads_and_writes_under_one_hold_of_the_document_lock(
             observed.append(("read", lock.locked()))
         return await original_read(document_id)
 
-    async def _probing_write(document_id, updates, **kwargs):
+    async def _probing_write(document_id, attempt, updates):
         if document_id == doc_id:
             observed.append(("write", lock.locked()))
-        return await original_write(document_id, updates, **kwargs)
+        return await original_write(document_id, attempt, updates)
 
     graph_store.get_document = _probing_read
-    graph_store.update_document = _probing_write
+    ingestion_service._content_store.update_processing_status = _probing_write
     lock.acquire = _counting_acquire
     try:
         await ingestion_service.stop_worker()
     finally:
         graph_store.get_document = original_read
-        graph_store.update_document = original_write
+        ingestion_service._content_store.update_processing_status = original_write
         del lock.acquire
 
     assert observed, "the settle pass made no store call for the stamped document"

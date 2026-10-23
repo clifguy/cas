@@ -47,6 +47,7 @@ from sage.api.errors import (
     TransferTokenInvalidError,
 )
 from sage.config import StackTransferConfig
+from sage.models.coverage import ProcessingCoverage
 from sage.models.schemas import canonicalize_sha256
 from sage.services.caller_paths import caller_basename, caller_path_is_absolute
 
@@ -625,6 +626,7 @@ def mint_download_recipe_for_source(
     content_hash: str,
     content_size: int,
     write_to_path: str,
+    processing_coverage: ProcessingCoverage | None = None,
 ) -> DownloadRecipe:
     """Mint a download recipe for a retained source file."""
     from sage.models.schemas import DownloadRecipe
@@ -641,6 +643,7 @@ def mint_download_recipe_for_source(
         ttl_seconds=ttl_seconds,
     )
     return DownloadRecipe(
+        processing_coverage=processing_coverage or ProcessingCoverage(),
         url=f"{base_url}/download/{minted.transfer_id}",
         token=minted.token,
         transfer_id=minted.transfer_id,
@@ -657,6 +660,7 @@ def mint_download_recipe_for_projection(
     document_id: str,
     text: str,
     write_to_path: str,
+    processing_coverage: ProcessingCoverage | None = None,
 ) -> DownloadRecipe:
     """Mint a download recipe for a projection, spooled at mint time."""
     from sage.models.schemas import DownloadRecipe
@@ -671,6 +675,7 @@ def mint_download_recipe_for_projection(
         ttl_seconds=ttl_seconds,
     )
     return DownloadRecipe(
+        processing_coverage=processing_coverage or ProcessingCoverage(),
         url=f"{base_url}/download/{minted.transfer_id}",
         token=minted.token,
         transfer_id=minted.transfer_id,

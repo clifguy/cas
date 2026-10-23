@@ -1,0 +1,178 @@
+"""Models derived from sage_core_api.openapi.yaml coverage components (CAS-ADR-059)."""
+
+import hashlib
+import json
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+BoundedText = Annotated[str, Field(min_length=1, max_length=512)]
+CoverageHash = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
+
+
+class CoverageModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+
+class ProcessingIdentity(CoverageModel):
+    source_hash: CoverageHash = Field(description="Source hash.")
+    adapter: BoundedText = Field(description="Adapter.")
+    policy: BoundedText = Field(description="Policy.")
+    configuration: dict = Field(max_length=32, description="Configuration.")
+    tokenization: BoundedText = Field(description="Tokenization.")
+
+    @model_validator(mode="after")
+    def bounded_configuration(self) -> "ProcessingIdentity":
+        if len(json.dumps(self.configuration).encode()) > 4096:
+            raise ValueError("effective configuration exceeds 4096 bytes")
+        return self
+
+
+class CoverageCount(CoverageModel):
+    unit: Literal[
+        "bytes", "characters", "records", "passages", "tokens", "regions", "fields", "occurrences"
+    ] = Field(description="Unit.")
+    observed: int = Field(ge=0, description="Observed.")
+    represented: int = Field(ge=0, description="Represented.")
+    total: int | None = Field(ge=0, description="Total.")
+
+    @model_validator(mode="after")
+    def consistent_counts(self) -> "CoverageCount":
+        if self.represented > self.observed or (
+            self.total is not None and self.observed > self.total
+        ):
+            raise ValueError("represented <= observed <= known total is required")
+        return self
+
+
+class CoverageRange(CoverageModel):
+    location: BoundedText = Field(description="Location.")
+    start: int = Field(ge=0, description="Start.")
+    end: int = Field(ge=0, description="End.")
+
+    @model_validator(mode="after")
+    def ordered(self) -> "CoverageRange":
+        if self.end < self.start:
+            raise ValueError("range end precedes start")
+        return self
+
+
+class CoverageManifest(CoverageModel):
+    generation: int = Field(ge=1, description="Generation.")
+    source_hash: CoverageHash = Field(description="Source hash.")
+    content_hash: CoverageHash = Field(description="Content hash.")
+    entries: list[CoverageRange] = Field(max_length=32, description="Entries.")
+    unknown_remainder: bool = Field(description="Unknown remainder.")
+
+    @model_validator(mode="after")
+    def identified(self) -> "CoverageManifest":
+        payload = json.dumps(
+            {
+                "entries": [x.model_dump() for x in self.entries],
+                "unknown_remainder": self.unknown_remainder,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+        if (
+            len(payload) > 16384
+            or self.content_hash != "sha256:" + hashlib.sha256(payload).hexdigest()
+        ):
+            raise ValueError("manifest content hash or size mismatch")
+        return self
+
+
+class CoverageDimension(CoverageModel):
+    scope: Literal["unknown", "pending", "not_applicable", "limited", "complete"] = Field(
+        default="unknown", description="Scope."
+    )
+    generation: int | None = Field(
+        default=None, ge=1, description="Generation.", exclude_if=lambda value: value is None
+    )
+    identity: ProcessingIdentity | None = Field(
+        default=None, description="Identity.", exclude_if=lambda value: value is None
+    )
+    counts: list[CoverageCount] = Field(
+        default_factory=list,
+        max_length=8,
+        description="Counts.",
+        exclude_if=lambda value: not value,
+    )
+    limitations: list[BoundedText] = Field(
+        default_factory=list,
+        max_length=16,
+        description="Limitations.",
+        exclude_if=lambda value: not value,
+    )
+    ranges: list[CoverageRange] = Field(
+        default_factory=list,
+        max_length=64,
+        description="Ranges.",
+        exclude_if=lambda value: not value,
+    )
+    unknown_remainder: bool = Field(
+        default=True, description="Unknown remainder.", exclude_if=lambda value: value is True
+    )
+    manifest: CoverageManifest | None = Field(
+        default=None, description="Manifest.", exclude_if=lambda value: value is None
+    )
+
+    @model_validator(mode="after")
+    def established(self) -> "CoverageDimension":
+        if len({c.unit for c in self.counts}) != len(self.counts):
+            raise ValueError("each count unit appears once")
+        if self.scope in ("limited", "complete") and self.identity is None:
+            raise ValueError("established coverage requires processing identity")
+        if self.scope == "complete" and (
+            self.unknown_remainder
+            or any(c.total is None or c.represented != c.total for c in self.counts)
+        ):
+            raise ValueError("complete coverage requires exact totals and no unknown remainder")
+        if self.scope in ("unknown", "pending", "not_applicable") and (self.counts or self.ranges):
+            raise ValueError("unestablished coverage cannot assert counts or ranges")
+        if self.manifest and (
+            self.generation != self.manifest.generation
+            or self.identity is None
+            or self.identity.source_hash != self.manifest.source_hash
+            or self.unknown_remainder != self.manifest.unknown_remainder
+        ):
+            raise ValueError("manifest identity differs from summary")
+        return self
+
+
+DIMENSIONS = (
+    "source_retention",
+    "inspection",
+    "projection",
+    "keyword_indexing",
+    "passage_embeddings",
+    "abstraction_evidence",
+)
+
+
+class ProcessingCoverage(CoverageModel):
+    attempt: int = Field(default=0, ge=0, description="Attempt.")
+    source_retention: CoverageDimension = Field(
+        default_factory=CoverageDimension, description="Source retention."
+    )
+    inspection: CoverageDimension = Field(
+        default_factory=CoverageDimension, description="Inspection."
+    )
+    projection: CoverageDimension = Field(
+        default_factory=CoverageDimension, description="Projection."
+    )
+    keyword_indexing: CoverageDimension = Field(
+        default_factory=CoverageDimension, description="Keyword indexing."
+    )
+    passage_embeddings: CoverageDimension = Field(
+        default_factory=CoverageDimension, description="Passage embeddings."
+    )
+    abstraction_evidence: CoverageDimension = Field(
+        default_factory=CoverageDimension, description="Abstraction evidence."
+    )
+
+    @model_validator(mode="after")
+    def bounded_summary(self) -> "ProcessingCoverage":
+        if len(self.model_dump_json().encode()) > 65536:
+            raise ValueError("coverage summary exceeds 65536 bytes")
+        return self

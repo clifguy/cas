@@ -1,0 +1,9 @@
+classification: minor
+category: [capability]
+summary: >-
+  Add system-owned processing coverage and fenced transactional publication of served
+  artifacts. Provision an optional coverage column without backfilling historical completeness.
+for_callers: >-
+  Document and discovery reads now report independent source, inspection, projection,
+  keyword, embedding and abstraction evidence coverage, including unknown scope.
+  Normal startup provisioning adds the optional storage column automatically without historical completeness backfill.

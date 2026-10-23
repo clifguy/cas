@@ -1153,9 +1153,19 @@ class TestPendingMetadata:
         assert [i["id"] for i in body["items"]] == ids
         # The wire omits an optional field whose value is null, so a row is
         # the required identity columns plus whichever optional ones are set.
-        light_keys = {"id", "title", "lifecycle_status", "doc_type", "tier3_metadata"}
+        light_keys = {
+            "id",
+            "title",
+            "lifecycle_status",
+            "doc_type",
+            "tier3_metadata",
+            "processing_coverage",
+        }
         required = {"id", "title", "lifecycle_status"}
         assert all(required <= set(i) <= light_keys for i in body["items"]), body["items"][0]
+        assert all(
+            i["processing_coverage"]["projection"]["scope"] == "unknown" for i in body["items"]
+        )
 
     async def test_pending_metadata_defaults_to_full_at_or_under_threshold(
         self, multi_vault_app, multi_client
