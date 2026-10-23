@@ -2,6 +2,7 @@
 
 import copy
 import json
+import uuid
 from datetime import timedelta
 
 import pytest
@@ -91,6 +92,11 @@ class Cloud:
         self.effects = []
         self.fail_assignment = False
 
+    def read_role_definition(self, definition):
+        rows = self.definitions.get(definition["Id"], [])
+        assert len(rows) <= 1
+        return copy.deepcopy(rows[0]) if rows else None
+
     def __call__(self, *args):
         from deploy.performance_bootstrap import assignment_shape
 
@@ -135,7 +141,13 @@ class Cloud:
             return self.groups[name]
         if args[:3] == ("role", "definition", "create"):
             definition = json.loads(value("--role-definition"))
+            generated = str(uuid.uuid4())
             row = {
+                "id": "/subscriptions/11111111-1111-1111-1111-111111111111"
+                + "/providers/Microsoft.Authorization/roleDefinitions/"
+                + generated,
+                "name": generated,
+                "roleName": definition["Name"],
                 "permissions": [
                     {
                         k[0].lower() + k[1:]: definition[k]
@@ -146,8 +158,26 @@ class Cloud:
                 "roleType": "CustomRole",
             }
             row["permissions"][0].update(condition=None, conditionVersion=None)
-            self.definitions[definition["Id"]] = [row]
+            self.definitions[generated] = [row]
             return row
+        if args[:1] == ("rest",) and value("--method") == "put":
+            url = value("--url")
+            assert url.startswith("https://management.azure.com/subscriptions/")
+            rid, query = url.removeprefix("https://management.azure.com").split("?")
+            assert query == "api-version=2022-04-01"
+            body = json.loads(value("--body"))
+            properties = body["properties"]
+            row = {
+                "id": rid,
+                "name": rid.rsplit("/", 1)[1],
+                "roleName": properties["roleName"],
+                "permissions": properties["permissions"],
+                "assignableScopes": properties["assignableScopes"],
+                "roleType": properties["type"],
+            }
+            row["permissions"][0].update(condition=None, conditionVersion=None)
+            self.definitions[row["name"]] = [copy.deepcopy(row)]
+            return {"id": rid, "name": row["name"], "properties": copy.deepcopy(properties)}
         if args[:3] == ("role", "assignment", "create"):
             if self.fail_assignment:
                 raise TimeoutError("uncertain assignment")
@@ -167,11 +197,8 @@ class Cloud:
         raise AssertionError(args)
 
 
-@pytest.fixture
-def bootstrapped(tmp_path):
+def bootstrap_input(tmp_path):
     import hashlib
-
-    from deploy.performance_bootstrap import bootstrap
 
     raw_plan = plan()
     raw_plan.pop("created_at")
@@ -182,7 +209,17 @@ def bootstrapped(tmp_path):
     sha = hashlib.sha256(source.read_bytes()).hexdigest()
     output = tmp_path / "bootstrap"
     cloud = Cloud(output)
-    receipt = bootstrap(source, sha, ENVIRONMENT, PRINCIPAL, output, cloud)
+    return source, sha, output, cloud
+
+
+@pytest.fixture
+def bootstrapped(tmp_path):
+    from deploy.performance_bootstrap import bootstrap
+
+    source, sha, output, cloud = bootstrap_input(tmp_path)
+    receipt = bootstrap(
+        source, sha, ENVIRONMENT, PRINCIPAL, output, cloud, role_reader=cloud.read_role_definition
+    )
     return source, sha, output, cloud, receipt
 
 
@@ -209,6 +246,7 @@ def test_actual_bootstrap_is_scoped_and_repeat_preserves_clock(bootstrapped):
         output,
         cloud,
         now=utc(receipt["plan"]["created_at"]) + timedelta(minutes=5),
+        role_reader=cloud.read_role_definition,
     )
     assert result == receipt
     assert len(cloud.effects) == before
@@ -348,11 +386,27 @@ def test_partial_assignment_is_retained_and_never_replayed(bootstrapped, tmp_pat
     cloud = Cloud(output)
     cloud.fail_assignment = True
     with pytest.raises(TimeoutError):
-        bootstrap(source, sha, ENVIRONMENT, PRINCIPAL, output, cloud)
+        bootstrap(
+            source,
+            sha,
+            ENVIRONMENT,
+            PRINCIPAL,
+            output,
+            cloud,
+            role_reader=cloud.read_role_definition,
+        )
     assert json.loads((output / "bootstrap-receipt.json").read_text())["status"] == "intent"
     before = len(cloud.effects)
     with pytest.raises(ValueError, match="readiness"):
-        bootstrap(source, sha, ENVIRONMENT, PRINCIPAL, output, cloud)
+        bootstrap(
+            source,
+            sha,
+            ENVIRONMENT,
+            PRINCIPAL,
+            output,
+            cloud,
+            role_reader=cloud.read_role_definition,
+        )
     assert len(cloud.effects) == before
 
 
@@ -465,7 +519,9 @@ def test_production_federation_refused_before_bootstrap_effects(bootstrapped, tm
         return cloud(*args)
 
     with pytest.raises(ValueError, match="federation"):
-        bootstrap(source, sha, ENVIRONMENT, PRINCIPAL, output, az)
+        bootstrap(
+            source, sha, ENVIRONMENT, PRINCIPAL, output, az, role_reader=cloud.read_role_definition
+        )
     assert cloud.effects == []
     assert not (output / "bootstrap-receipt.json").exists()
 
@@ -517,9 +573,19 @@ def test_actual_effects_do_not_grant_custom_subscription_writes(bootstrapped):
     import re
 
     definitions = [
-        json.loads(effect[effect.index("--role-definition") + 1])
+        {
+            "Name": body["properties"]["roleName"],
+            "Id": effect[effect.index("--url") + 1].split("?")[0].rsplit("/", 1)[1],
+            "IsCustom": body["properties"]["type"] == "CustomRole",
+            "AssignableScopes": body["properties"]["assignableScopes"],
+            **{
+                key[0].upper() + key[1:]: value
+                for key, value in body["properties"]["permissions"][0].items()
+            },
+        }
         for effect in cloud.effects
-        if effect[:3] == ("role", "definition", "create")
+        if effect[:1] == ("rest",) and effect[effect.index("--method") + 1] == "put"
+        for body in [json.loads(effect[effect.index("--body") + 1])]
     ]
     custom = {d["Name"].split(" (")[0]: d for d in definitions}
     assert set(custom) == {
@@ -639,6 +705,9 @@ def test_actual_effects_do_not_grant_custom_subscription_writes(bootstrapped):
         "conditionVersion",
         "roleType",
         "scope",
+        "id",
+        "name",
+        "roleName",
     ],
 )
 def test_existing_role_uses_real_azure_shape_and_rejects_privilege_drift(
@@ -659,12 +728,310 @@ def test_existing_role_uses_real_azure_shape_and_rejects_privilege_drift(
         row["roleType"] = "BuiltInRole"
     elif drift == "scope":
         row["assignableScopes"] = ["/foreign"]
+    elif drift in ("id", "name", "roleName"):
+        row[drift] = "foreign"
     if drift:
         with pytest.raises(ValueError, match="existing custom role"):
-            bootstrap(source, sha, ENVIRONMENT, PRINCIPAL, output, cloud)
+            bootstrap(
+                source,
+                sha,
+                ENVIRONMENT,
+                PRINCIPAL,
+                output,
+                cloud,
+                role_reader=cloud.read_role_definition,
+            )
         assert cloud.assignments == []
         assert json.loads((output / "bootstrap-receipt.json").read_text())["status"] == "intent"
     else:
-        result = bootstrap(source, sha, ENVIRONMENT, PRINCIPAL, output, cloud)
+        result = bootstrap(
+            source,
+            sha,
+            ENVIRONMENT,
+            PRINCIPAL,
+            output,
+            cloud,
+            role_reader=cloud.read_role_definition,
+        )
         assert result["status"] == "ready"
         assert len(cloud.assignments) == 13
+
+
+def test_bootstrap_role_ids_match_every_assignment_and_readback(tmp_path):
+    from deploy.performance_bootstrap import bootstrap
+
+    source, sha, output, cloud = bootstrap_input(tmp_path)
+    receipt = bootstrap(
+        source, sha, ENVIRONMENT, PRINCIPAL, output, cloud, role_reader=cloud.read_role_definition
+    )
+    puts = [effect for effect in cloud.effects if effect[:1] == ("rest",)]
+    assert len(puts) == 3
+    assert not any(effect[:3] == ("role", "definition", "create") for effect in cloud.effects)
+    for effect in puts:
+        rid = (
+            effect[effect.index("--url") + 1]
+            .split("?")[0]
+            .removeprefix("https://management.azure.com")
+        )
+        role = rid.rsplit("/", 1)[1]
+        row = cloud.definitions[role][0]
+        assert row["id"] == rid and row["name"] == role
+        assert any(assignment["roleDefinitionId"] == rid for assignment in cloud.assignments)
+    assert receipt["status"] == "ready"
+
+
+@pytest.mark.parametrize("phase", ["response", "readback"])
+@pytest.mark.parametrize("drift", ["id", "name", "roleName", "actions", "scope"])
+def test_created_role_drift_blocks_assignments_and_ready_receipt(tmp_path, phase, drift):
+    from deploy.performance_bootstrap import bootstrap
+
+    source, sha, output, cloud = bootstrap_input(tmp_path)
+
+    def change(row):
+        if drift in ("id", "name"):
+            row[drift] = "foreign"
+        else:
+            props = row.get("properties", row)
+            if drift == "roleName":
+                props["roleName"] = "foreign"
+            elif drift == "actions":
+                props["permissions"][0]["actions"].append("*")
+            else:
+                props["assignableScopes"] = ["/foreign"]
+
+    def az(*args):
+        result = cloud(*args)
+        if args[:1] == ("rest",):
+            if phase == "response":
+                change(result)
+            else:
+                change(next(iter(cloud.definitions.values()))[0])
+        return result
+
+    with pytest.raises(ValueError, match="custom role"):
+        bootstrap(
+            source, sha, ENVIRONMENT, PRINCIPAL, output, az, role_reader=cloud.read_role_definition
+        )
+    assert any(effect[:1] == ("rest",) for effect in cloud.effects)
+    assert cloud.assignments == []
+    assert json.loads((output / "bootstrap-receipt.json").read_text())["status"] == "intent"
+
+
+@pytest.mark.parametrize("drift", [False, True])
+def test_omitted_listing_never_overwrites_existing_role(bootstrapped, tmp_path, drift):
+    from deploy.performance_bootstrap import bootstrap
+
+    source, sha, _, original, _ = bootstrapped
+    output = tmp_path / "omitted-listing"
+    cloud = Cloud(output)
+    cloud.definitions = copy.deepcopy(original.definitions)
+    role = next(iter(cloud.definitions))
+    if drift:
+        cloud.definitions[role][0]["permissions"][0]["actions"] = [
+            "Microsoft.Resources/deployments/read"
+        ]
+    before = copy.deepcopy(cloud.definitions)
+
+    def az(*args):
+        if args[:3] == ("role", "definition", "list") and args[-1] == role:
+            return []
+        return cloud(*args)
+
+    if drift:
+        assert az("role", "definition", "list", "--name", role) == []
+        with pytest.raises(ValueError, match="existing custom role"):
+            bootstrap(
+                source,
+                sha,
+                ENVIRONMENT,
+                PRINCIPAL,
+                output,
+                az,
+                role_reader=cloud.read_role_definition,
+            )
+        assert cloud.assignments == []
+        assert json.loads((output / "bootstrap-receipt.json").read_text())["status"] == "intent"
+    else:
+        # Hide only the initial list; final access verification still needs a complete inventory.
+        def visible_az(*args):
+            if args[:3] == ("role", "definition", "list") and not cloud.assignments:
+                return []
+            return cloud(*args)
+
+        assert visible_az("role", "definition", "list", "--name", role) == []
+        result = bootstrap(
+            source,
+            sha,
+            ENVIRONMENT,
+            PRINCIPAL,
+            output,
+            visible_az,
+            role_reader=cloud.read_role_definition,
+        )
+        assert result["status"] == "ready" and len(cloud.assignments) == 13
+    assert cloud.definitions == before
+    assert not any(effect[:1] == ("rest",) for effect in cloud.effects)
+
+
+@pytest.mark.parametrize("error", ["forbidden", "server", "transport"])
+def test_unknown_role_read_stops_before_role_writes(tmp_path, error):
+    from deploy.performance_bootstrap import bootstrap
+    from deploy.performance_trial import RemoteError
+
+    source, sha, output, cloud = bootstrap_input(tmp_path)
+    failure = (
+        TimeoutError("transport")
+        if error == "transport"
+        else RemoteError(403 if error == "forbidden" else 500)
+    )
+
+    def unreadable(definition):
+        raise failure
+
+    with pytest.raises(type(failure)):
+        bootstrap(source, sha, ENVIRONMENT, PRINCIPAL, output, cloud, role_reader=unreadable)
+    assert cloud.assignments == [] and cloud.definitions == {}
+    assert not any(effect[:1] == ("rest",) for effect in cloud.effects)
+    assert json.loads((output / "bootstrap-receipt.json").read_text())["status"] == "intent"
+
+
+@pytest.mark.parametrize("status", [200, 404, 403, 500, "timeout"])
+def test_exact_role_get_only_treats_not_found_as_absent(monkeypatch, status):
+    import httpx
+
+    from deploy import performance_trial as trial
+    from deploy.performance_bootstrap import read_role_definition
+
+    definition = {
+        "Id": "11111111-1111-1111-1111-111111111111",
+        "AssignableScopes": ["/subscriptions/22222222-2222-2222-2222-222222222222"],
+    }
+    seen = []
+    body = {"id": "stored-role"}
+
+    def respond(request):
+        seen.append(request)
+        if status == "timeout":
+            raise httpx.ReadTimeout("unknown", request=request)
+        return httpx.Response(status, json=body)
+
+    rest = trial.Rest()
+    rest.client.close()
+    rest.client = httpx.Client(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(rest, "token", lambda scope: "fake-token")
+    monkeypatch.setattr(trial, "Rest", lambda: rest)
+    try:
+        if status in (200, 404):
+            assert read_role_definition(definition) == (body if status == 200 else None)
+        elif status == "timeout":
+            with pytest.raises(httpx.ReadTimeout):
+                read_role_definition(definition)
+        else:
+            with pytest.raises(trial.RemoteError) as failure:
+                read_role_definition(definition)
+            assert failure.value.status == status
+        assert len(seen) == 1
+        assert seen[0].method == "GET"
+        assert str(seen[0].url) == (
+            "https://management.azure.com/subscriptions/22222222-2222-2222-2222-222222222222"
+            "/providers/Microsoft.Authorization/roleDefinitions/11111111-1111-1111-1111-111111111111"
+            "?api-version=2022-04-01"
+        )
+    finally:
+        rest.client.close()
+
+
+@pytest.mark.parametrize("body", [None, [], False, 17, "invalid"])
+@pytest.mark.parametrize("phase", ["initial", "readback"])
+def test_malformed_success_role_reads_do_not_authorize_writes(tmp_path, monkeypatch, body, phase):
+    import httpx
+
+    from deploy import performance_trial as trial
+    from deploy.performance_bootstrap import bootstrap
+
+    source, sha, output, cloud = bootstrap_input(tmp_path)
+    seen = []
+
+    def respond(request):
+        seen.append(request)
+        if phase == "readback" and len(seen) == 1:
+            return httpx.Response(404, json={"error": {"code": "RoleDefinitionDoesNotExist"}})
+        return httpx.Response(200, content=json.dumps(body).encode())
+
+    rest = trial.Rest()
+    rest.client.close()
+    rest.client = httpx.Client(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(rest, "token", lambda scope: "fake-token")
+    monkeypatch.setattr(trial, "Rest", lambda: rest)
+    try:
+        with pytest.raises(ValueError, match="invalid.*response"):
+            bootstrap(source, sha, ENVIRONMENT, PRINCIPAL, output, cloud)
+        assert len(seen) == (1 if phase == "initial" else 2)
+        assert all(request.method == "GET" for request in seen)
+        assert len(cloud.definitions) == (0 if phase == "initial" else 1)
+        assert cloud.assignments == []
+        puts = [effect for effect in cloud.effects if effect[:1] == ("rest",)]
+        assert len(puts) == (0 if phase == "initial" else 1)
+        assert json.loads((output / "bootstrap-receipt.json").read_text())["status"] == "intent"
+    finally:
+        rest.client.close()
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_default_http_reader_creates_or_reuses_exact_roles(
+    bootstrapped, tmp_path, monkeypatch, existing
+):
+    import httpx
+
+    from deploy import performance_trial as trial
+    from deploy.performance_bootstrap import bootstrap
+
+    source, sha, _, original, _ = bootstrapped
+    output = tmp_path / "default-reader"
+    cloud = Cloud(output)
+    if existing:
+        cloud.definitions = copy.deepcopy(original.definitions)
+    before = copy.deepcopy(cloud.definitions)
+    seen = []
+
+    def respond(request):
+        seen.append(request)
+        role = request.url.path.rsplit("/", 1)[1]
+        rows = cloud.definitions.get(role, [])
+        if not rows:
+            return httpx.Response(404, json={"error": {"code": "RoleDefinitionDoesNotExist"}})
+        row = rows[0]
+        return httpx.Response(
+            200,
+            json={
+                "id": row["id"],
+                "name": row["name"],
+                "properties": {
+                    "roleName": row["roleName"],
+                    "type": row["roleType"],
+                    "assignableScopes": row["assignableScopes"],
+                    "permissions": row["permissions"],
+                },
+            },
+        )
+
+    rest = trial.Rest()
+    rest.client.close()
+    rest.client = httpx.Client(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(rest, "token", lambda scope: "fake-token")
+    monkeypatch.setattr(trial, "Rest", lambda: rest)
+    try:
+        receipt = bootstrap(source, sha, ENVIRONMENT, PRINCIPAL, output, cloud)
+        assert receipt["status"] == "ready" and len(cloud.assignments) == 13
+        assert len(seen) == (3 if existing else 6)
+        assert all(request.method == "GET" for request in seen)
+        puts = [effect for effect in cloud.effects if effect[:1] == ("rest",)]
+        assert len(puts) == (0 if existing else 3)
+        if existing:
+            assert cloud.definitions == before
+        for rows in cloud.definitions.values():
+            assert any(
+                assignment["roleDefinitionId"] == rows[0]["id"] for assignment in cloud.assignments
+            )
+    finally:
+        rest.client.close()
