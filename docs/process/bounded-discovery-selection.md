@@ -45,6 +45,15 @@ parsing beyond the separate projection-admission limits below.
 
 ## Classification and authored evidence
 
+YAML set, ordered-map, pairs and binary tags are retained as authored lexical
+lines, including when nested, with explicit unresolved-native limitations.
+Their Python set/tuple/byte representations are not selected as source text,
+and binary content is not implicitly decoded. This uses the same bounded,
+incremental lexical-line reader as YAML aliases, without building a parallel
+whole-source line list. The readable projection keeps its existing parser and
+representation; lexical fallback establishes useful authored evidence while
+leaving full native inspection unresolved.
+
 Native nulls, booleans, numbers and dates produce inventory observations. Exact
 lowercase `true`/`false`, canonical decimal/exponent syntax, valid ISO calendar
 dates (`YYYY-MM-DD`) and UUID lexical shapes receive their corresponding syntax

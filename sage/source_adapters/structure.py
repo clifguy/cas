@@ -370,6 +370,7 @@ def _native(path: Path, limits: FactLimits, limitations: list[str]) -> Iterator[
         # path depth; repeated dotted keys can allocate nested native tables.
         depth = nodes = 0
         aliases = False
+        unresolved_native: set[str] = set()
         if suffix in {".yaml", ".yml"}:
             for event in yaml.parse(text):
                 nodes += 1
@@ -380,20 +381,30 @@ def _native(path: Path, limits: FactLimits, limitations: list[str]) -> Iterator[
                 elif isinstance(event, (yaml.MappingEndEvent, yaml.SequenceEndEvent)):
                     depth -= 1
                 aliases |= isinstance(event, yaml.AliasEvent)
+                tag = getattr(event, "tag", None)
+                if tag in {
+                    "tag:yaml.org,2002:set",
+                    "tag:yaml.org,2002:omap",
+                    "tag:yaml.org,2002:pairs",
+                    "tag:yaml.org,2002:binary",
+                }:
+                    unresolved_native.add(tag.rsplit(":", 1)[-1])
                 if depth > limits.max_depth or nodes > limits.max_parse_nodes:
                     raise _BoundReached(
                         "YAML parser depth/node limit reached before tree allocation"
                     )
-            if aliases:
-                limitations.append(
-                    "YAML aliases retained lexically; expanded native values uninspected"
-                )
-                for order, line in enumerate(text.splitlines()):
-                    if order >= limits.max_parse_nodes:
-                        raise _BoundReached("YAML lexical line limit reached; remainder unknown")
-                    yield SourceFact(
-                        "document", "$source", f"line:{order + 1}", order, "document", line, line
+            if aliases or unresolved_native:
+                if aliases:
+                    limitations.append(
+                        "YAML aliases retained lexically; expanded native values uninspected"
                     )
+                if unresolved_native:
+                    limitations.append(
+                        "YAML native "
+                        + ", ".join(sorted(unresolved_native))
+                        + " retained lexically; native values unresolved"
+                    )
+                yield from _yaml_lexical_facts(text, limits)
                 return
             documents = list(yaml.safe_load_all(text))
             data = documents[0] if len(documents) == 1 else documents
@@ -421,6 +432,23 @@ def _native(path: Path, limits: FactLimits, limitations: list[str]) -> Iterator[
                 comment,
             )
             order += 1
+
+
+def _yaml_lexical_facts(text: str, limits: FactLimits) -> Iterator[SourceFact]:
+    """Retain authored YAML lines without a whole-source splitlines allocation."""
+    import re
+
+    line_end = re.compile(r"\r\n|[\r\n\x85\u2028\u2029]")
+    start = order = 0
+    while start < len(text):
+        if order >= limits.max_parse_nodes:
+            raise _BoundReached("YAML lexical line limit reached; remainder unknown")
+        match = line_end.search(text, start)
+        end = match.start() if match else len(text)
+        line = text[start:end]
+        yield SourceFact("document", "$source", f"line:{order + 1}", order, "document", line, line)
+        order += 1
+        start = match.end() if match else len(text)
 
 
 def _comments(text: str, spans: list[tuple[int, int]]) -> Iterator[tuple[int, str]]:

@@ -2,12 +2,64 @@
 
 import hashlib
 import json
+from copy import deepcopy
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 BoundedText = Annotated[str, Field(min_length=1, max_length=512)]
 CoverageHash = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
+
+
+PROCESSING_CONFIGURATION_MAX_BYTES = 4096
+PROCESSING_CONFIGURATION_MAX_KEYS = 32
+
+
+def processing_configuration_fits(configuration: dict) -> bool:
+    """Use the coverage model's actual default JSON spacing and ASCII escaping."""
+    if len(configuration) > PROCESSING_CONFIGURATION_MAX_KEYS:
+        return False
+    size = 0
+    for chunk in json.JSONEncoder().iterencode(configuration):
+        size += len(chunk.encode("utf-8"))
+        if size > PROCESSING_CONFIGURATION_MAX_BYTES:
+            return False
+    return True
+
+
+def canonical_configuration_hash(configuration: dict) -> str:
+    """Identify the full canonical configuration, independently of summary omissions."""
+    digest = hashlib.sha256()
+    encoder = json.JSONEncoder(sort_keys=True, separators=(",", ":"), allow_nan=False)
+    for chunk in encoder.iterencode(configuration):
+        digest.update(chunk.encode("utf-8"))
+    return "sha256:" + digest.hexdigest()
+
+
+def bounded_processing_configuration(
+    configuration: dict,
+    *,
+    preserve_fields: tuple[str, ...] = (),
+    omission_details: dict | None = None,
+) -> dict:
+    """Retain exact small settings or a bounded, explicitly omitted full identity.
+
+    Optional stage details are retained only when the same wire bound admits
+    them. The full configuration's canonical digest is always present after
+    omission, including when an individual retained field cannot fit.
+    """
+    if processing_configuration_fits(configuration):
+        return deepcopy(configuration)
+    summary = {
+        "effective_configuration_sha256": canonical_configuration_hash(configuration),
+        "effective_configuration_omitted": True,
+    }
+    extras = dict(omission_details or {})
+    extras.update({key: configuration[key] for key in preserve_fields if key in configuration})
+    for key, value in extras.items():
+        if key not in summary and processing_configuration_fits({**summary, key: value}):
+            summary[key] = deepcopy(value)
+    return summary
 
 
 class CoverageModel(BaseModel):
@@ -18,12 +70,37 @@ class ProcessingIdentity(CoverageModel):
     source_hash: CoverageHash = Field(description="Source hash.")
     adapter: BoundedText = Field(description="Adapter.")
     policy: BoundedText = Field(description="Policy.")
-    configuration: dict = Field(max_length=32, description="Configuration.")
+    configuration: dict = Field(
+        max_length=PROCESSING_CONFIGURATION_MAX_KEYS, description="Configuration."
+    )
     tokenization: BoundedText = Field(description="Tokenization.")
+
+    @classmethod
+    def from_effective_configuration(
+        cls,
+        *,
+        source_hash: str,
+        adapter: str,
+        policy: str,
+        configuration: dict,
+        tokenization: str,
+        preserve_fields: tuple[str, ...] = (),
+        omission_details: dict | None = None,
+    ) -> "ProcessingIdentity":
+        """Construct an identity from the same bounded representation for every stage."""
+        return cls(
+            source_hash=source_hash,
+            adapter=adapter,
+            policy=policy,
+            configuration=bounded_processing_configuration(
+                configuration, preserve_fields=preserve_fields, omission_details=omission_details
+            ),
+            tokenization=tokenization,
+        )
 
     @model_validator(mode="after")
     def bounded_configuration(self) -> "ProcessingIdentity":
-        if len(json.dumps(self.configuration).encode()) > 4096:
+        if not processing_configuration_fits(self.configuration):
             raise ValueError("effective configuration exceeds 4096 bytes")
         return self
 

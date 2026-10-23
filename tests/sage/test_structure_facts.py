@@ -15,21 +15,93 @@ def facts(tmp_path: Path, suffix: str, text: str, **limits):
     return list(stream), stream
 
 
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("suffix", "text", "expected"),
+    ("suffix", "text", "expected", "expected_rendering", "selected_inputs"),
     [
-        (".json", '{"value": [true, 2, "{\\"a\\":1}"]}', [True, 2, '{"a":1}']),
-        (".jsonl", '{"v":1}\n{"v":"late text"}\n', [1, "late text"]),
-        (".yaml", 'value: [true, 2, "hello"]', [True, 2, "hello"]),
-        (".yml", 'value: [true, 2, "hello"]', [True, 2, "hello"]),
-        (".toml", 'value = [true, 2, "hello"]', [True, 2, "hello"]),
-        (".csv", 'name,value\n"multi\nline",2\n', ["name", "value", "multi\nline", "2"]),
-        (".tsv", "name\tvalue\na\t2\n", ["name", "value", "a", "2"]),
+        (
+            ".json",
+            '{"value": [true, 2, "{\\"a\\":1}"]}',
+            [True, 2, '{"a":1}'],
+            ["true", "2", '{"a":1}'],
+            ["value", 'value\n\n{"a":1}'],
+        ),
+        (
+            ".jsonl",
+            '{"v":1}\n{"v":"late text"}\n',
+            [1, "late text"],
+            ["1", "late text"],
+            ["v", "v\n\nlate text"],
+        ),
+        (
+            ".yaml",
+            'value: [true, 2, "hello"]',
+            [True, 2, "hello"],
+            ["true", "2", "hello"],
+            ["value", "value\n\nhello"],
+        ),
+        (
+            ".yml",
+            'value: [true, 2, "hello"]',
+            [True, 2, "hello"],
+            ["true", "2", "hello"],
+            ["value", "value\n\nhello"],
+        ),
+        (
+            ".toml",
+            'value = [true, 2, "hello"]',
+            [True, 2, "hello"],
+            ["true", "2", "hello"],
+            ["value", "value\n\nhello"],
+        ),
+        (
+            ".csv",
+            'name,value\n"multi\nline",2\n',
+            ["name", "value", "multi\nline", "2"],
+            ["name", "value", "multi\nline", "2"],
+            ["name", "value", "multi\nline"],
+        ),
+        (
+            ".tsv",
+            "name\tvalue\na\t2\n",
+            ["name", "value", "a", "2"],
+            ["name", "value", "a", "2"],
+            ["name", "value", "a"],
+        ),
+        (
+            ".xml",
+            '<p id="one">before <b>bold</b> after</p>',
+            ["one", "before ", "bold", " after"],
+            ["one", "before ", "bold", " after"],
+            ["one", "before ", "bold", " after"],
+        ),
     ],
 )
-def test_native_types_and_lexical_strings(tmp_path, suffix, text, expected):
-    actual, stream = facts(tmp_path, suffix, text)
+async def test_native_types_and_lexical_strings(
+    tmp_path, suffix, text, expected, expected_rendering, selected_inputs
+):
+    from sage.services.discovery_selection import select_discovery
+    from sage.source_adapters.structured_data_adapter import StructuredDataAdapter
+
+    path = tmp_path / f"source{suffix}"
+    path.write_text(text)
+    adapter = StructuredDataAdapter()
+    projection = await adapter.project(path)
+    stream = adapter.discover_facts(path, projection)
+    actual = list(stream)
     assert [fact.value for fact in actual] == expected
+    assert all(
+        type(fact.value) is type(value) for fact, value in zip(actual, expected, strict=True)
+    )
+    assert [fact.rendering for fact in actual] == expected_rendering
+    package = select_discovery(
+        actual,
+        source_hash=projection.content_hash,
+        adapter_version=adapter.VERSION,
+        tokenizer=lambda value: len(value.encode()),
+        tokenizer_identity="utf8-byte-tokens:1",
+    )
+    assert [item.input_text for item in package.selected] == selected_inputs
     assert stream.exhausted
     assert not stream.limitations or any(
         "embedded structure unresolved" in item for item in stream.limitations
@@ -93,7 +165,8 @@ def test_xml_entities_are_refused(tmp_path):
         facts(tmp_path, ".xml", '<!DOCTYPE x [<!ENTITY e "expand">]><x>&e;</x>')
 
 
-def test_xlsx_late_rows_have_stable_addresses_and_native_types(tmp_path):
+@pytest.mark.asyncio
+async def test_xlsx_late_rows_have_stable_addresses_and_native_types(tmp_path):
     from openpyxl import Workbook
 
     path = tmp_path / "source.xlsx"
@@ -106,12 +179,43 @@ def test_xlsx_late_rows_have_stable_addresses_and_native_types(tmp_path):
     second = workbook.create_sheet("Other")
     second.cell(3, 1, "second sheet")
     workbook.save(path)
-    stream = source_facts(path, None, FactLimits())
+    from sage.services.discovery_selection import select_discovery
+    from sage.source_adapters.xlsx_adapter import XlsxAdapter
+
+    adapter = XlsxAdapter()
+    projection = await adapter.project(path)
+    stream = adapter.discover_facts(path, projection)
     actual = list(stream)
     assert [(fact.location, fact.value) for fact in actual][-3:] == [
         ("Data!B20", "late narrative"),
         ("Data!A21", True),
         ("Other!A3", "second sheet"),
+    ]
+    expected_values = ["label", "value", "late narrative", True, "second sheet"]
+    assert [fact.value for fact in actual] == expected_values
+    assert all(
+        type(fact.value) is type(value) for fact, value in zip(actual, expected_values, strict=True)
+    )
+    assert [fact.rendering for fact in actual] == [
+        "label",
+        "value",
+        "late narrative",
+        "true",
+        "second sheet",
+    ]
+    package = select_discovery(
+        actual,
+        source_hash=projection.content_hash,
+        adapter_version=adapter.VERSION,
+        tokenizer=lambda value: len(value.encode()),
+        tokenizer_identity="utf8-byte-tokens:1",
+    )
+    assert [item.input_text for item in package.selected] == [
+        "Data\n\nlabel",
+        "Data\n\nvalue",
+        "Data\n\nlate narrative",
+        "Data",
+        "Other\n\nsecond sheet",
     ]
     assert stream.exhausted
 

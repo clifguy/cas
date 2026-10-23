@@ -1706,6 +1706,26 @@ class IngestionService:
     ) -> IngestResult | IngestPreview:
         """The body of ``ingest``, run once the call is admitted."""
         request, adapter, predecessor, _ran = await self._validate_without_bytes(request)
+        # Admit the exact frozen configuration before source retention or graph
+        # mutation. Later stages consume this same snapshot, not mutable defaults.
+        with _refuse_adapter_config(request.source_type):
+            merged_config = deepcopy(
+                self._merge_adapter_config(request.source_type, request.config)
+            )
+            try:
+                ProcessingIdentity.from_effective_configuration(
+                    source_hash="sha256:" + "0" * 64,
+                    adapter=f"{request.source_type.value}:{adapter.VERSION}",
+                    policy="coverage-v1",
+                    configuration=merged_config or {},
+                    tokenization="unknown",
+                )
+            except (TypeError, ValueError) as exc:
+                raise AdapterConfigError(
+                    "effective_configuration",
+                    "<configuration omitted: exceeds representation bounds>",
+                    str(exc),
+                ) from exc
 
         # A preview stops here, before the source is read into the vault.
         # Everything above is a validator that reads nothing and writes
@@ -1887,7 +1907,6 @@ class IngestionService:
         # for adapter behavior across all ingests; the request override is
         # recorded on the document, so a later re-projection of this source
         # shapes its passages the way this call did.
-        merged_config = deepcopy(self._merge_adapter_config(request.source_type, request.config))
         with self._project_source(vault_source_store, storage_root, vault_relative) as project_path:
             with (
                 _refuse_unreadable_source(request.source_type, reported_source),
@@ -2127,6 +2146,10 @@ class IngestionService:
             # unconfirmed different-path hash match before this point.
             if vault_relative != existing_doc.source_path:
                 updates["source_path"] = vault_relative
+            identity = self._coverage_identity(
+                existing_doc.model_copy(update={"adapter_version": projection.adapter_version}),
+                merged_config,
+            )
             doc = await self._store.update_document(existing_doc.id, updates)
             is_new = False
 
@@ -2204,6 +2227,7 @@ class IngestionService:
                 relocated_from=request.relocated_from,
             )
             doc = Document(**{**base, **field_updates})
+            identity = self._coverage_identity(doc, merged_config)
             if predecessor is not None and self._lifecycle_service is not None:
                 # CAS-ADR-038 Primitive C: serialize same-predecessor
                 # supersedes under a per-predecessor lock so the fresh
@@ -2279,7 +2303,6 @@ class IngestionService:
 
         if retained or is_new:
             attempt = await self._content_store.begin_processing_attempt(doc.id)
-            identity = self._coverage_identity(doc, merged_config)
             await self._content_store.publish_processing(
                 doc.id,
                 attempt,
@@ -2610,7 +2633,7 @@ class IngestionService:
     def _coverage_identity(
         self, doc: Document, effective_config: dict | None
     ) -> ProcessingIdentity:
-        return ProcessingIdentity(
+        return ProcessingIdentity.from_effective_configuration(
             source_hash=doc.source_content_hash,
             adapter=f"{doc.source_type.value}:{doc.adapter_version}",
             policy="coverage-v1",

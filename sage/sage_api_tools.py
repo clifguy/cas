@@ -106,6 +106,18 @@ _EDGE_ID_ADAPTER: TypeAdapter[str] = TypeAdapter(EdgeIdStr)
 _DOCUMENT_DATE_ADAPTER: TypeAdapter[str | None] = TypeAdapter(DocumentDateStr)
 _SHA256_ADAPTER: TypeAdapter[str] = TypeAdapter(Sha256Str)
 
+_SELECTION_COVERAGE_NOTE = (
+    "`inspection.selection_summary`: complete|limited|interrupted; exact "
+    "selected_inputs/selected_tokens (identity.tokenization); established_occurrences "
+    "lower-bound unless associations_complete (counts retained occurrences); "
+    "boundary=last inspected location; no inference coverage"
+)
+_SELECTION_VAULT_ID = shaped_param(
+    str,
+    VaultIdStr,
+    "Vault identifier; `list_vaults` lists registered vaults. " + _SELECTION_COVERAGE_NOTE,
+)
+
 # Each batch argument publishes the shape its tool body validates an item
 # against, while still arriving as plain mappings (see ``sage._mcp_item_schema``).
 _BATCH_SHAPE_NOTE = (
@@ -196,9 +208,9 @@ _METADATA_ITEMS = published_item_list(
 
 #: What a batch tool's ``response_mode`` adds on the MCP surface.
 _BATCH_RESPONSE_MODE_NOTE = (
-    f"The inline budget is {DEFAULT_MCP_INLINE_BUDGET_BYTES:,} bytes, set per "
-    "process by SAGE_MCP_INLINE_BUDGET_BYTES. An invalid value is refused as "
-    "invalid_parameter before any per-item work."
+    f"Inline budget: {DEFAULT_MCP_INLINE_BUDGET_BYTES:,} bytes per process "
+    "(SAGE_MCP_INLINE_BUDGET_BYTES); invalid values refuse invalid_parameter "
+    "before any per-item work."
 )
 
 #: How a download-capable ``write_to_path`` behaves on each delivery arm,
@@ -207,18 +219,13 @@ _BATCH_RESPONSE_MODE_NOTE = (
 _WRITE_TO_PATH_RECIPE = (
     "Where the server shares the caller's filesystem, the target must not "
     "exist (write_path_exists) and its parent must exist and be "
-    "writable, and a failure to open the target for exclusive creation "
-    "reports write_path_invalid. Where the server does not share the caller's "
-    "filesystem, the response is a download recipe carrying this path for the "
-    "caller's own environment to write, and the path is read with that "
-    "environment's conventions -- a Windows drive-letter or UNC spelling is "
-    "accepted on that arm. The path must be absolute either way, and is "
-    "checked before the {subject} is read, so a malformed path reports "
-    "write_path_invalid {regardless}. A minted recipe's token lapses 900 "
-    "seconds after issue by default and the fetch must finish inside that "
-    "window; the recipe's own `expires_at` is authoritative where a "
-    "deployment has tuned the lifetime, and a lapsed recipe is re-issued "
-    "rather than resumed."
+    "writable. Exclusive creation; open failures "
+    "report write_path_invalid. Unshared filesystem: a download recipe carries "
+    "the path for the caller's environment, accepting Windows drive-letter/UNC "
+    "spelling. Either arm requires an absolute path, checked before reading "
+    "the {subject}: malformed paths report write_path_invalid {regardless}. "
+    "Fetch must finish within 900 seconds of issue by default; expires_at "
+    "is authoritative when tuned. Re-issue lapsed recipes; they cannot resume."
 )
 
 _GET_DOCUMENT_WRITE_TO_PATH = (
@@ -482,22 +489,15 @@ _SEARCH_RESPONSE_MODE = _discover_param(
         "Else hints.recommended_limit gives a fitting size. Explicit "
         "response_mode disables both. 45,000 bytes; override "
         "SAGE_MCP_INLINE_BUDGET_BYTES."
-        " `inspection.selection_summary`: complete|limited|interrupted; "
-        "exact selected_inputs/selected_tokens (identity.tokenization); "
-        "established_occurrences lower-bound unless associations_complete; "
-        "boundary=last inspected location; "
-        "no inference coverage."
     ),
 )
 
 
 #: How long an upload recipe's token lives, shared by the tools that mint one.
 _UPLOAD_RECIPE_LIFETIME = (
-    "An upload recipe's tokens lapse 900 seconds after issue by default "
-    "(its expires_at is authoritative), and the byte delivery and the "
-    "completion call must both finish inside that window. A token is also "
-    "reclaimed once 3 refused deliveries have been made against it by "
-    "default. A lapsed recipe cannot be resumed: re-issue this call."
+    "Default: delivery/completion within 900 seconds of issue "
+    "(expires_at authoritative); tokens reclaimed after 3 refused deliveries. "
+    "Re-issue lapsed recipes; no resume."
 )
 
 _INGEST_SOURCE = _ingest_param(
@@ -810,7 +810,7 @@ def register_sage_tools(
 
     @mcp.tool(annotations=WRITE_DESTRUCTIVE)
     async def ingest_document(
-        vault_id: VaultIdParam,
+        vault_id: _SELECTION_VAULT_ID,
         source: _INGEST_SOURCE = None,
         source_type: _INGEST_SOURCE_TYPE = None,
         config: _INGEST_CONFIG = None,
@@ -1010,7 +1010,7 @@ def register_sage_tools(
 
     @mcp.tool(annotations=READ_ONLY)
     async def get_document(
-        vault_id: VaultIdParam,
+        vault_id: _SELECTION_VAULT_ID,
         document_id: shaped_param(
             str | None,
             DocumentIdStr,
@@ -1023,11 +1023,6 @@ def register_sage_tools(
                     "True: base64 `content` (any `body_form`) and `content_size`. "
                     "content_too_large (413)>100MB (SAGE_MAX_INLINE_CONTENT_BYTES); "
                     "exclusive `write_to_path`. "
-                    "`inspection.selection_summary`: complete|limited|interrupted; "
-                    "exact selected_inputs/selected_tokens (identity.tokenization); "
-                    "established_occurrences lower-bound unless associations_complete; "
-                    "boundary=last inspected location; "
-                    "no inference coverage."
                 )
             ),
         ] = False,
@@ -1050,7 +1045,7 @@ def register_sage_tools(
         - write_to_path=/abs/path: filesystem bytes with metadata only
           (written_to, content_size, content_hash), for large files.
 
-        Creation/latest modification provenance:
+        Write provenance for the creation and the most recent modification:
         ``created_by`` / ``last_modified_by`` key the principal stably and
         ``created_client`` / ``last_modified_client`` name the client
         application, both server-derived from validated tokens on authenticated
@@ -1104,7 +1099,7 @@ def register_sage_tools(
 
     @mcp.tool(annotations=WRITE_DESTRUCTIVE)
     async def update_lifecycles(
-        vault_id: VaultIdParam,
+        vault_id: _SELECTION_VAULT_ID,
         items: _LIFECYCLE_ITEMS,
         response_mode: model_param(
             str | None, BulkLifecycleRequest, "response_mode", mcp=_BATCH_RESPONSE_MODE_NOTE
@@ -1254,7 +1249,7 @@ def register_sage_tools(
 
     @mcp.tool(annotations=WRITE_DESTRUCTIVE)
     async def update_metadata(
-        vault_id: VaultIdParam,
+        vault_id: _SELECTION_VAULT_ID,
         items: _METADATA_ITEMS,
         response_mode: model_param(
             str | None, BulkMetadataRequest, "response_mode", mcp=_BATCH_RESPONSE_MODE_NOTE
@@ -1441,7 +1436,7 @@ def register_sage_tools(
 
     @mcp.tool(annotations=READ_ONLY)
     async def traverse(
-        vault_id: VaultIdParam,
+        vault_id: _SELECTION_VAULT_ID,
         start_id: model_param(
             str | None,
             TraverseRequest,
@@ -1643,7 +1638,7 @@ def register_sage_tools(
 
     @mcp.tool(annotations=READ_ONLY)
     async def search(
-        vault_id: VaultIdParam,
+        vault_id: _SELECTION_VAULT_ID,
         mode: _SEARCH_MODE = None,
         query: _SEARCH_QUERY = None,
         scope: _SEARCH_SCOPE = "all",
@@ -1789,7 +1784,7 @@ def register_sage_tools(
 
     @mcp.tool(annotations=READ_ONLY)
     async def read_projection(
-        vault_id: VaultIdParam,
+        vault_id: _SELECTION_VAULT_ID,
         document_id: shaped_param(
             str | None,
             DocumentIdStr,
@@ -1879,7 +1874,7 @@ def register_sage_tools(
 
     @mcp.tool(annotations=READ_ONLY)
     async def read_section(
-        vault_id: VaultIdParam,
+        vault_id: _SELECTION_VAULT_ID,
         heading_path: Annotated[
             str,
             NumericText,
@@ -1949,7 +1944,7 @@ def register_sage_tools(
 
     @mcp.tool(annotations=READ_ONLY)
     async def list_headings(
-        vault_id: VaultIdParam,
+        vault_id: _SELECTION_VAULT_ID,
         document_id: shaped_param(
             str | None,
             DocumentIdStr,
@@ -2445,7 +2440,7 @@ def register_sage_tools(
 
     @mcp.tool(annotations=READ_ONLY)
     async def list_pending_metadata(
-        vault_id: VaultIdParam,
+        vault_id: _SELECTION_VAULT_ID,
         limit: Annotated[
             int,
             Field(
@@ -3146,16 +3141,16 @@ def register_sage_tools(
 
     @mcp.tool(name="export_projection", annotations=WRITE_DESTRUCTIVE)
     async def export_projection(
-        vault_id: VaultIdParam,
+        vault_id: _SELECTION_VAULT_ID,
         document_id: _EXPORT_DOCUMENT_ID,
         output_path: _EXPORT_OUTPUT_PATH,
     ) -> dict:
         """Write stored projection to a Markdown file for inspection.
 
-        Exports the stored projection text for a document to a
-        specified file path inside the vault's ``storage_root``. Used for
-        debugging and manual inspection of the adapter's output. The
-        projection is the structured plain-text rendering produced by
+        Exports the stored projection text for a document to a specified file
+        path inside the vault's ``storage_root``. Used for debugging and manual
+        inspection of the adapter's output.
+        The projection is the structured plain-text rendering produced by
         the source adapter during ingestion.
 
         ``output_path`` may be relative (resolved against ``storage_root``)

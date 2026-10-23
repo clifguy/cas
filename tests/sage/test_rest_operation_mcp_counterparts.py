@@ -131,16 +131,57 @@ def _client(app: FastAPI) -> AsyncClient:
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
-async def _ingest(services: SAGEServices, tmp_vault_dir: Path, name: str) -> str:
+async def _ingest(
+    services: SAGEServices, tmp_vault_dir: Path, name: str, *, body: str | None = None
+) -> str:
     source = tmp_vault_dir / "sources" / "samples" / f"{name}.md"
     source.parent.mkdir(parents=True, exist_ok=True)
-    source.write_text(f"# {name}\n\nBody content for {name}.")
+    source.write_text(f"# {name}\n\n{body if body is not None else f'Body content for {name}.'}")
     result = await services.ingestion_service.ingest(
         IngestRequest(source=f"samples/{name}.md", source_type=SourceType.MARKDOWN)
     )
     doc_id = result.document.id
     await await_pipeline_idle(services.graph_store, doc_id, service=services.ingestion_service)
     return doc_id
+
+
+_EXPORT_BODY = "Repeated evidence.\n\nRepeated evidence.\n\nFinal evidence."
+
+
+async def _publish_export_inspection(services, tmp_vault_dir, doc_id, name):
+    from sage.adapters.content_store_postgres import PostgresContentStore
+    from sage.models.wire import to_wire
+    from sage.services.discovery_inspection import InspectionAttempt, publish_inspection
+    from sage.services.discovery_selection import SelectionConfig, select_discovery
+
+    doc = await services.graph_store.get_document(doc_id)
+    adapter = services.ingestion_service._adapters[SourceType.MARKDOWN]
+    source = tmp_vault_dir / "sources" / "samples" / f"{name}.md"
+    projection = await adapter.project(source)
+    package = select_discovery(
+        adapter.discover_facts(source, projection),
+        source_hash=doc.source_content_hash,
+        adapter_version=f"{type(adapter).__name__}:{projection.adapter_version}",
+        tokenizer=lambda text: len(text.encode()),
+        tokenizer_identity="utf8-byte-tokens:1",
+        config=SelectionConfig(max_values=3, max_association_runs=1),
+    )
+    store = PostgresContentStore(services.graph_store._pool)
+    generation = await store.begin_processing_attempt(doc_id)
+    assert generation > 1
+    attempt = InspectionAttempt(
+        doc_id, generation, package.identity.processing_identity().model_dump_json()
+    )
+    assert await publish_inspection(store, attempt, package)
+    coverage, _, _ = await store.read_processing_artifacts(doc_id)
+    expected = to_wire(coverage)
+    assert expected["inspection"]["generation"] == generation
+    summary = expected["inspection"]["selection_summary"]
+    assert summary["outcome"] == "limited"
+    assert summary["associations_complete"] is False
+    assert summary["established_occurrences"] == 2
+    assert len(package.selected[0].associations) == 1
+    return expected
 
 
 async def _projection_text(app: FastAPI, vault_id: str, doc_id: str) -> str:
@@ -358,7 +399,9 @@ async def test_export_projection_tool_writes_under_the_storage_root(
 ):
     """EX-1: the projection lands at the storage-root-relative path, parents created."""
     app, vault_id = yaml_app
-    doc_id = await _ingest(app.state.vault_registry[vault_id], tmp_vault_dir, "ex_one")
+    services = app.state.vault_registry[vault_id]
+    doc_id = await _ingest(services, tmp_vault_dir, "ex_one", body=_EXPORT_BODY)
+    coverage = await _publish_export_inspection(services, tmp_vault_dir, doc_id, "ex_one")
     maint = app.state.mcp_mounts["/mcp_maint"]
     target = tmp_vault_dir / "sources" / "exports" / "a" / "doc.md"
     assert not target.parent.exists()
@@ -370,8 +413,8 @@ async def test_export_projection_tool_writes_under_the_storage_root(
         )
     )
 
-    assert via_tool["processing_coverage"]["projection"]["scope"] == "unknown"
-    assert {key: value for key, value in via_tool.items() if key != "processing_coverage"} == {
+    assert via_tool == {
+        "processing_coverage": coverage,
         "document_id": doc_id,
         "output_path": str(target),
     }
@@ -415,7 +458,9 @@ async def test_export_projection_tool_overwrites_an_existing_file(
 ):
     """EX-3: an occupied target is replaced, as the REST operation replaces it."""
     app, vault_id = yaml_app
-    doc_id = await _ingest(app.state.vault_registry[vault_id], tmp_vault_dir, "ex_over")
+    services = app.state.vault_registry[vault_id]
+    doc_id = await _ingest(services, tmp_vault_dir, "ex_over", body=_EXPORT_BODY)
+    coverage = await _publish_export_inspection(services, tmp_vault_dir, doc_id, "ex_over")
     target = tmp_vault_dir / "sources" / "exports" / "x.md"
     target.parent.mkdir(parents=True)
     target.write_text("stale", encoding="utf-8")
@@ -430,8 +475,8 @@ async def test_export_projection_tool_overwrites_an_existing_file(
         )
     )
 
-    assert via_tool["processing_coverage"]["projection"]["scope"] == "unknown"
-    assert {key: value for key, value in via_tool.items() if key != "processing_coverage"} == {
+    assert via_tool == {
+        "processing_coverage": coverage,
         "document_id": doc_id,
         "output_path": str(target),
     }
@@ -649,3 +694,50 @@ async def test_recompute_views_refused_under_the_cloud_profile_before_the_wipe(
     jsonschema.validate(via_tool, tool_error_schema("", "recompute_views"))
     assert sentinel.read_text(encoding="utf-8") == "kept"
     assert not (views / "by_lifecycle").exists()
+
+
+@pytest.mark.parametrize("kind", ["source", "projection"])
+async def test_download_recipes_preserve_established_selection_coverage(
+    yaml_app, tmp_vault_dir, tmp_path, monkeypatch, tool_payload, kind
+):
+    """Both byte-delivery recipes preserve the actual fenced inspection generation."""
+    import hashlib
+
+    from sage.services import transfer
+
+    app, vault_id = yaml_app
+    services = app.state.vault_registry[vault_id]
+    name = f"recipe_{kind}"
+    doc_id = await _ingest(services, tmp_vault_dir, name, body=_EXPORT_BODY)
+    expected = await _publish_export_inspection(services, tmp_vault_dir, doc_id, name)
+    staging = tmp_path / "transfers"
+    staging.mkdir()
+    monkeypatch.setattr(transfer, "_transfer_store", transfer.TransferStore(staging_root=staging))
+    monkeypatch.setattr(transfer, "_transfer_coordinates", lambda: ("http://test", 900, 3))
+    monkeypatch.setattr("sage.mcp_init.caller_local_filesystem_reachable", lambda: False)
+    tool_name = "get_document" if kind == "source" else "read_projection"
+    recipe = tool_payload(
+        await app.state.mcp_mounts["/mcp"].call_tool(
+            tool_name,
+            {
+                "vault_id": vault_id,
+                "document_id": doc_id,
+                "write_to_path": str(tmp_path / "received.md"),
+            },
+        )
+    )
+    assert recipe["status"] == "download_required", recipe
+    assert recipe["processing_coverage"] == expected
+    expected_bytes = (
+        (tmp_vault_dir / "sources" / "samples" / f"{name}.md").read_bytes()
+        if kind == "source"
+        else (await _projection_text(app, vault_id, doc_id)).encode()
+    )
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get(
+            f"/download/{recipe['transfer_id']}", headers={"X-Download-Token": recipe["token"]}
+        )
+    assert response.status_code == 200, response.text
+    assert response.content == expected_bytes
+    assert recipe["content_size"] == len(expected_bytes)
+    assert recipe["content_hash"] == "sha256:" + hashlib.sha256(expected_bytes).hexdigest()

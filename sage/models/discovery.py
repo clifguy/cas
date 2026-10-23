@@ -1,10 +1,9 @@
 """Internal immutable authored and derived discovery evidence contracts."""
 
-import hashlib
 import json
 from dataclasses import asdict, dataclass
 
-from sage.models.coverage import ProcessingIdentity
+from sage.models.coverage import ProcessingIdentity, canonical_configuration_hash
 
 
 @dataclass(frozen=True)
@@ -17,21 +16,19 @@ class SelectionIdentity:
 
     def processing_identity(self) -> ProcessingIdentity:
         configuration = json.loads(self.configuration_json)
-        if len(self.configuration_json.encode("utf-8")) > 4096:
-            adapter = json.dumps(configuration["adapter"], sort_keys=True, separators=(",", ":"))
-            configuration = {
-                "selection": configuration["selection"],
-                "facts": configuration["facts"],
-                "adapter_configuration_sha256": "sha256:"
-                + hashlib.sha256(adapter.encode()).hexdigest(),
-                "adapter_configuration_omitted": True,
-            }
-        return ProcessingIdentity(
+        return ProcessingIdentity.from_effective_configuration(
             source_hash=self.source_hash,
             adapter=self.adapter_version,
             policy=self.policy,
             configuration=configuration,
             tokenization=self.tokenizer_identity,
+            preserve_fields=("selection", "facts"),
+            omission_details={
+                "adapter_configuration_sha256": canonical_configuration_hash(
+                    configuration.get("adapter", {})
+                ),
+                "adapter_configuration_omitted": True,
+            },
         )
 
 

@@ -1322,17 +1322,12 @@ class IngestRequest(BaseModel):
     needs_review: bool = Field(
         default=False,
         description=(
-            "When true, the document is held in the metadata-review queue "
-            "after ingest: filename inference runs, parsed values populate "
-            "the document where the caller did not supply them, and "
-            "metadata_confirmed is set to false so the document appears in "
-            "pending-metadata. When false (default), "
-            "filename inference is skipped entirely; the document is "
-            "committed with caller-supplied metadata authoritative and "
-            "metadata_confirmed=true. Bulk-ingest UIs that want human "
-            "confirmation of inferred values pass needs_review=true "
-            "explicitly; agent ingests with prepared metadata leave it at "
-            "the default."
+            "When true, filename inference runs, parsed values populate fields the caller"
+            " did not supply; hold in the metadata-review queue with "
+            "metadata_confirmed=false in pending-metadata. False (default): skip filename"
+            " inference; commit caller-authoritative metadata with "
+            "metadata_confirmed=true. Bulk UIs needing human confirmation pass true; "
+            "agents with prepared metadata keep false."
         ),
     )
     metadata: dict[str, str | list[str] | None] | None = Field(
@@ -1444,22 +1439,16 @@ class IngestRequest(BaseModel):
     dry_run: bool = Field(
         default=False,
         description=(
-            "When true, run the validators that do not require reading the "
-            "source into the vault, compute the would-be verdict, and do "
-            "NOT persist. Nothing is retained into the vault's import area, "
-            "no projection, indexing or abstraction runs, and no record is "
-            "written. The response is an `IngestPreview` rather than a "
-            "document: it carries `dry_run=true`, the resolved doc_type, "
-            "the delivered content hash and the duplicate verdict, whether "
-            "the ingest would supersede, and the target doc_type's full "
-            "declared requirement set. Because a preview does not project, "
-            "an adapter-extracted `tier3_metadata` payload cannot be "
-            "evaluated; `tier3_validated` reports false when the caller "
-            "supplied none, and a real run may still refuse. When the "
-            "source must first be uploaded, the response is the "
-            "`UploadRecipe` instead, returned only after the validators "
-            "that read no bytes have passed; its leg's "
-            "`dry_run_validated` names them."
+            "Dry run reports what this call would do and persists nothing, returning "
+            "`IngestPreview` rather than a document. Validate without reading the source "
+            "into the vault: no import retention, projection, indexing, abstraction or "
+            "record. `IngestPreview` carries dry_run=true, resolved doc_type, delivered "
+            "content hash, duplicate verdict, would-supersede verdict and full declared "
+            "requirements. Because nothing is projected, an adapter-extracted "
+            "`tier3_metadata` cannot be evaluated; `tier3_validated` is false when the "
+            "caller supplied none, and a real run may refuse. If upload is needed, return"
+            " `UploadRecipe` after byte-independent validators; its leg names them in "
+            "`dry_run_validated`."
         ),
     )
 
@@ -2053,15 +2042,11 @@ class BulkLifecycleRequest(BaseModel):
     response_mode: ResponseMode | None = Field(
         default=None,
         description=(
-            'Per-item payload depth. "full" returns each '
-            "success item's complete `document` body (including the "
-            'potentially-large `semantic_abstract`); "light" strips the '
-            "per-item `document` field entirely, returning only identity "
-            "+ status + warnings + error so the response stays inside "
-            "the MCP inline-output budget. Failure entries carry the "
-            "full structured error envelope regardless of mode. When "
-            'unset, batches with more than 5 items default to "light", '
-            'smaller batches default to "full".'
+            'Payload depth: "full" returns the complete `document`, with '
+            '`semantic_abstract`; "light" omits `document`, retaining identity + status +'
+            " warnings + error within the MCP budget. Failure entries retain full "
+            "structured errors in either mode. Unset: more than 5 items defaults to "
+            '"light", otherwise "full".'
         ),
     )
     agent: AgentNameStr | None = Field(
@@ -2071,19 +2056,11 @@ class BulkLifecycleRequest(BaseModel):
     dry_run: bool = Field(
         default=False,
         description=(
-            "When true, every item runs in dry-run "
-            "mode — validators execute, the would-be projection of the "
-            "post-state is computed, and each per-item result carries a "
-            "`changes` block with a single `lifecycle_status` "
-            "entry on state-changing transitions (preserved under "
-            "`response_mode=light`). No persistence occurs. Per-item "
-            "override is not supported. **Limitation:** each item's "
-            "dry-run is evaluated against the committed state at batch "
-            "start; no item's would-be effects are visible to "
-            "subsequent items. For full preview accuracy under "
-            "sequential dependencies (e.g., item N supersedes a "
-            "document and item N+1 tries to mutate it), dry-run each "
-            "item separately."
+            "Dry-run validates every item and computes would-be post-state; `changes` "
+            "carries a single `lifecycle_status` delta on state-changing transitions, "
+            "including under `response_mode=light`. No writes or per-item override. Each "
+            "item sees committed state at batch start, never earlier previews; dry-run "
+            "sequentially dependent items separately for accuracy."
         ),
     )
 
@@ -2545,15 +2522,11 @@ class BulkMetadataRequest(BaseModel):
     response_mode: ResponseMode | None = Field(
         default=None,
         description=(
-            'Per-item payload depth. "full" returns each '
-            "success item's complete `document` body (including the "
-            'potentially-large `semantic_abstract`); "light" strips the '
-            "per-item `document` field entirely, returning only identity "
-            "+ status + warnings + error so the response stays inside "
-            "the MCP inline-output budget. Failure entries carry the "
-            "full structured error envelope regardless of mode. When "
-            'unset, batches with more than 5 items default to "light", '
-            'smaller batches default to "full".'
+            'Payload depth: "full" returns the complete `document`, with '
+            '`semantic_abstract`; "light" omits `document`, retaining identity + status +'
+            " warnings + error within the MCP budget. Failure entries retain full "
+            "structured errors in either mode. Unset: more than 5 items defaults to "
+            '"light", otherwise "full".'
         ),
     )
     agent: AgentNameStr | None = Field(
@@ -2563,18 +2536,11 @@ class BulkMetadataRequest(BaseModel):
     dry_run: bool = Field(
         default=False,
         description=(
-            "When true, every item runs in dry-run "
-            "mode — validators execute, the would-be projection of the "
-            "post-state is computed, and each per-item result carries a "
-            "`changes` block enumerating field-level deltas "
-            "(preserved under `response_mode=light`). No persistence "
-            "occurs. Per-item override is not supported. "
-            "**Limitation:** each item's dry-run is evaluated against "
-            "the committed state at batch start; no item's would-be "
-            "effects are visible to subsequent items. For full preview "
-            "accuracy under sequential dependencies (e.g., item N adds "
-            "tag X and item N+1 tries to add the same tag), dry-run "
-            "each item separately."
+            "Dry-run validates every item and computes would-be post-state; `changes` "
+            "carries field-level deltas, including under `response_mode=light`. No writes"
+            " or per-item override. Each item sees committed state at batch start, never "
+            "earlier previews; dry-run sequentially dependent items separately for "
+            "accuracy."
         ),
     )
 
