@@ -661,6 +661,10 @@ async def test_inference_interruption_requires_the_observed_target_claim(claimed
         await control.wait("fresh")
         assert ingestion.stopped == [{"fresh"}]
         assert control.entry_observed and control.claimed_ids == {"fresh"}
+        control.record_completion(["unrelated prior-source inference"])
+        assert control.completed_inputs == 0
+        control.record_completion(["authored FRESH_WITNESS input"])
+        assert control.completed_inputs == 1
         assert not ingestion._inflight
     else:
         with pytest.raises(RuntimeError, match="did not own"):
@@ -678,3 +682,89 @@ def test_trial_fresh_sources_are_distinct_from_consumed_benchmarks(tmp_path):
     assert len({x["source_sha256"] for x in (original, witness, startup)}) == 3
     assert "FRESH_RECOVERY_WITNESS" in (tmp_path / "witness.csv").read_text()
     assert "FRESH_STARTUP_WITNESS" in (tmp_path / "startup.csv").read_text()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [False, True])
+async def test_inference_drain_waits_for_cancelled_callers_real_quantum(failure):
+    import asyncio
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+
+    from scripts.embedding_contention_trial import drain_inference
+
+    actual = Future()
+    provider = SimpleNamespace(_inference_jobs=[actual])
+    completions = []
+    task = asyncio.create_task(drain_inference(provider))
+    try:
+        await asyncio.sleep(0)
+        assert not task.done(), "cancelled waiter must not imply actual inference completion"
+        if failure:
+            actual.set_exception(ValueError("actual model failure"))
+            with pytest.raises(RuntimeError, match="submitted inference failed"):
+                await task
+        else:
+            completions.append("prior-source")
+            actual.set_result([[1.0]])
+            await task
+            baseline = list(completions)
+            await asyncio.sleep(0)
+            assert completions == baseline == ["prior-source"]
+    finally:
+        if not actual.done():
+            actual.set_result([])
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_medium_replay_measurement_drains_prior_source_before_baseline(monkeypatch):
+    import asyncio
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+
+    from scripts import embedding_contention_trial as trial
+
+    pending = Future()
+    provider = SimpleNamespace(_inference_jobs=[pending], dimensions=2)
+    completions = []
+    state = {"attempt": 1}
+
+    async def evidence(*args):
+        return {
+            "processing_coverage": {"attempt": state["attempt"]},
+            "embedding_accounting": {"inputs": {"old": 4}, "tokens": 4},
+            "embedding_coverage_valid": True,
+        }
+
+    async def vectors(*args):
+        return [[1.0, 0.0]]
+
+    async def chunks(*args):
+        return [SimpleNamespace(content="original medium projection")]
+
+    async def recompute(document_id):
+        assert document_id == "medium"
+        assert pending.done(), "a prior source is still encoding at the medium baseline"
+        state["attempt"] += 1
+
+    async def settled(document_id):
+        pass
+
+    monkeypatch.setattr(trial, "read_embedding_evidence", evidence)
+    monkeypatch.setattr(trial, "read_stored_vectors", vectors)
+    services = SimpleNamespace(
+        content_store=SimpleNamespace(get_all_chunks=chunks),
+        ingestion_service=SimpleNamespace(recompute_pipeline=recompute),
+    )
+
+    def finish_prior_source():
+        completions.append("prior source")
+        pending.set_result([[1.0, 0.0]])
+
+    asyncio.get_running_loop().call_soon(finish_prior_source)
+    proof = await trial.verify_unchanged_medium(
+        services, provider, "medium", settled, lambda: len(completions)
+    )
+    assert all(proof.values())
+    assert completions == ["prior source"] and state["attempt"] == 2

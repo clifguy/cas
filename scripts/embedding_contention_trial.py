@@ -26,6 +26,49 @@ from pathlib import Path
 from unittest.mock import patch
 
 
+async def drain_inference(provider: object) -> None:
+    """Finish real submitted quanta before attributing later source activity."""
+    outcomes = await asyncio.gather(
+        *(asyncio.wrap_future(job) for job in tuple(provider._inference_jobs)),
+        return_exceptions=True,
+    )
+    require(
+        not any(isinstance(outcome, BaseException) for outcome in outcomes),
+        "submitted inference failed while draining",
+    )
+
+
+async def verify_unchanged_medium(
+    services: object,
+    provider: object,
+    document_id: str,
+    settle: Callable[[str], Awaitable[object]],
+    completed: Callable[[], int],
+) -> dict:
+    """Attribute replay only after prior callers' real model work has drained."""
+    await drain_inference(provider)
+    store = services.content_store
+    before = await read_embedding_evidence(store, document_id, provider.dimensions)
+    vectors = await read_stored_vectors(store, document_id)
+    chunks = await store.get_all_chunks(document_id)
+    calls = completed()
+    await services.ingestion_service.recompute_pipeline(document_id)
+    await settle(document_id)
+    after = await read_embedding_evidence(store, document_id, provider.dimensions)
+    proof = {
+        "attempt_advanced": after["processing_coverage"]["attempt"]
+        > before["processing_coverage"]["attempt"],
+        "same_accounting": before["embedding_accounting"] == after["embedding_accounting"],
+        "same_vectors": vectors == await read_stored_vectors(store, document_id),
+        "same_projection": [x.content for x in chunks]
+        == [x.content for x in await store.get_all_chunks(document_id)],
+        "no_new_inference": calls == completed(),
+        "embedding_coverage_valid": after["embedding_coverage_valid"],
+    }
+    require(all(proof.values()), "unchanged medium replayed inference or changed its generation")
+    return proof
+
+
 class InferenceInterruption:
     """Request a real worker stop at real provider entry, without delaying inference."""
 
@@ -37,11 +80,15 @@ class InferenceInterruption:
         self.task = None
         self.claimed_ids = set()
         self.entry_observed = False
+        self.completed_inputs = 0
 
     def observe(self, texts: list[str]) -> None:
         if any(self.marker in text for text in texts):
             self.entry_observed = True
             self.loop.call_soon_threadsafe(self._request)
+
+    def record_completion(self, texts: list[str]) -> None:
+        self.completed_inputs += sum(self.marker in text for text in texts)
 
     def _request(self) -> None:
         if self.task is None:
@@ -621,8 +668,9 @@ async def worker(args: argparse.Namespace) -> int:
         for text in texts:
             key = hashlib.sha256(text.encode()).hexdigest()
             submitted_input_counts[key] = submitted_input_counts.get(key, 0) + 1
-        if interruption is not None:
-            interruption.observe(texts)
+        active_interruption = interruption
+        if active_interruption is not None:
+            active_interruption.observe(texts)
         if is_bulk:
             if len(report["bulk_input_shapes"]) < 16:
                 report["bulk_input_shapes"].extend(
@@ -634,6 +682,8 @@ async def worker(args: argparse.Namespace) -> int:
                     for text in texts
                 )
         result = readiness.run_inference(texts, original)
+        if active_interruption is not None:
+            active_interruption.record_completion(texts)
         completed += len(texts)
         if is_bulk:
             bulk_completed += len(texts)
@@ -671,11 +721,11 @@ async def worker(args: argparse.Namespace) -> int:
             nonlocal interruption
             ingestion = svc.ingestion_service
             require(not ingestion._inflight, "fresh interruption requires settled prior claims")
+            await drain_inference(provider)
             source = root / name
             entry = fixture(source, size, event=marker)
             projected = await StructuredDataAdapter().project(source)
             entry["projection_sha256"] = hashlib.sha256(projected.text.encode()).hexdigest()
-            before = completed
             interruption = InferenceInterruption(ingestion, marker)
             result = await ingestion.ingest(
                 IngestRequest(
@@ -705,7 +755,7 @@ async def worker(args: argparse.Namespace) -> int:
                 "source_sha256": entry["source_sha256"],
                 "provider_entry_observed": interruption.entry_observed,
                 "owned_claim_observed": interruption.claimed_ids == {entry["id"]},
-                "real_completed_inputs": completed - before,
+                "real_completed_inputs": interruption.completed_inputs,
                 "interrupted": doc.pipeline_status == "abstraction_interrupted",
                 "interrupted_status": doc.pipeline_status,
                 "claim_released_on_stop": entry["id"] not in ingestion._inflight,
@@ -917,38 +967,8 @@ async def worker(args: argparse.Namespace) -> int:
             bulk_pending = set(ingestion._inflight)
             await ingestion.stop_worker()
             require(not ingestion._inflight, "bulk shutdown stranded claims")
-            medium = manifest[1]
-            medium_before = await read_embedding_evidence(
-                svc.content_store, medium["id"], provider.dimensions
-            )
-            vectors_before = await read_stored_vectors(svc.content_store, medium["id"])
-            chunks_before = await svc.content_store.get_all_chunks(medium["id"])
-            calls_before = completed
-            await ingestion.recompute_pipeline(medium["id"])
-            await settle(medium["id"])
-            medium_after = await read_embedding_evidence(
-                svc.content_store, medium["id"], provider.dimensions
-            )
-            report["unchanged_medium"] = {
-                "attempt_advanced": medium_after["processing_coverage"]["attempt"]
-                > medium_before["processing_coverage"]["attempt"],
-                "same_accounting": medium_before["embedding_accounting"]
-                == medium_after["embedding_accounting"],
-                "same_vectors": vectors_before
-                == await read_stored_vectors(svc.content_store, medium["id"]),
-                "same_projection": [x.content for x in chunks_before]
-                == [x.content for x in await svc.content_store.get_all_chunks(medium["id"])],
-                "no_new_inference": completed == calls_before,
-                "embedding_coverage_valid": medium_after["embedding_coverage_valid"],
-            }
-            require(
-                report["unchanged_medium"]["same_accounting"]
-                and report["unchanged_medium"]["attempt_advanced"]
-                and report["unchanged_medium"]["no_new_inference"]
-                and report["unchanged_medium"]["same_vectors"]
-                and report["unchanged_medium"]["same_projection"]
-                and report["unchanged_medium"]["embedding_coverage_valid"],
-                "unchanged medium replayed inference or allowance",
+            report["unchanged_medium"] = await verify_unchanged_medium(
+                svc, provider, manifest[1]["id"], settle, lambda: completed
             )
             witness, control = await fresh_interrupted_source(
                 "fresh-recovery-witness.csv", 65536, "FRESH_RECOVERY_WITNESS"
