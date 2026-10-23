@@ -106,7 +106,7 @@ jobs:
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
       - name: Verify bootstrap handoff and preserve the original trial clock
         run: |
-          principal="$(.venv/bin/python -c 'import base64,json; from deploy.performance_trial import Rest; print(json.loads(base64.urlsafe_b64decode(Rest().token("https://management.azure.com/.default").split(".")[1]+"==="))["oid"])')"
+          principal="$(.venv/bin/python -c 'import json,os; from pathlib import Path; print(json.loads(Path(os.environ["RUNNER_TEMP"], "perf-bootstrap.json").read_bytes())["operator_principal"])')"
           .venv/bin/python -m deploy.performance_bootstrap handoff \
             --receipt "$RUNNER_TEMP/perf-bootstrap.json" \
             --approved-bootstrap-sha256 "$PERF_BOOTSTRAP_SHA256" \
