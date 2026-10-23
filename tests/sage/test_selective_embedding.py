@@ -924,3 +924,106 @@ async def test_trial_reads_atomic_sparse_evidence(
     assert (await read_embedding_evidence(content, doc.id, 768))[
         "embedding_accounting_valid"
     ] is False
+
+
+async def test_trial_worker_interruption_keeps_fresh_source_debits_and_consumed_medium(
+    pg_pool, ingestion_service_no_abstraction, tmp_vault_dir
+):
+    import asyncio
+    import hashlib
+
+    from sage.models.schemas import IngestRequest
+    from scripts.embedding_contention_trial import InferenceInterruption, read_embedding_evidence
+    from tests.helpers.pipeline_wait import drain_abstraction_queue
+
+    class Observed(SeededEmbeddingProvider):
+        dimensions = 768
+
+        def __init__(self):
+            super().__init__()
+            self.control = None
+            self.inputs = []
+            self.cancelled = False
+
+        async def embed(self, texts):
+            self.inputs.extend(texts)
+            if self.control and any("FRESH_WITNESS" in text for text in texts):
+                self.control.observe(texts)
+                # Controlled unit seam for cancellation; actual real-model
+                # entry/completion is a separate mandatory container gate.
+                try:
+                    await asyncio.Future()
+                except asyncio.CancelledError:
+                    self.cancelled = True
+                    raise
+            vectors = await super().embed(texts)
+            return [
+                [value / sum(x * x for x in vector) ** 0.5 for value in vector]
+                for vector in vectors
+            ]
+
+    service = ingestion_service_no_abstraction
+    service._content_store = content = PostgresContentStore(pg_pool)
+    service._embedding = provider = Observed()
+    medium_source = tmp_vault_dir / "consumed-medium.md"
+    medium_source.write_text("# Existing\nOriginal consumed saffron content.\n")
+    medium = (await service.ingest(IngestRequest(source=str(medium_source)))).document
+    before = await read_embedding_evidence(content, medium.id, provider.dimensions)
+    medium_vectors = await content.read_embedding_vectors(medium.id, [0])
+    calls = list(provider.inputs)
+    await service.recompute_pipeline(medium.id)
+    await drain_abstraction_queue(service)
+    after = await read_embedding_evidence(content, medium.id, provider.dimensions)
+    assert after["processing_coverage"]["attempt"] > before["processing_coverage"]["attempt"]
+    assert before["embedding_accounting"] == after["embedding_accounting"]
+    assert provider.inputs == calls
+    assert await content.read_embedding_vectors(medium.id, [0]) == medium_vectors
+
+    fresh_source = tmp_vault_dir / "fresh-witness.md"
+    fresh_source.write_text(
+        "\n".join(
+            f"# Region {index}\nFRESH_WITNESS authored value {index} saffron."
+            for index in range(12)
+        )
+    )
+    provider.control = control = InferenceInterruption(service, "FRESH_WITNESS")
+    fresh = (
+        await service.ingest(IngestRequest(source=str(fresh_source)), wait_for_pipeline=False)
+    ).document
+    await control.wait(fresh.id)
+    assert fresh.id != medium.id
+    assert provider.cancelled and control.claimed_ids == {fresh.id}
+    interrupted = await service._store.get_document(fresh.id)
+    assert interrupted.pipeline_status == "abstraction_interrupted"
+    assert fresh.id not in service._inflight
+    prior = await read_embedding_evidence(content, fresh.id, provider.dimensions)
+    assert prior["embedding_accounting"]["inputs"]
+    assert prior["embedded_passages"] == 0
+    assert prior["unembedded_passages"] == 12
+    source_hash = "sha256:" + hashlib.sha256(fresh_source.read_bytes()).hexdigest()
+    assert interrupted.source_content_hash == source_hash
+    submitted = list(provider.inputs)
+    provider.control = None
+    await service.recompute_pipeline(fresh.id)
+    await drain_abstraction_queue(service)
+    final = await read_embedding_evidence(content, fresh.id, provider.dimensions)
+    old = prior["embedding_accounting"]
+    new = final["embedding_accounting"]
+    assert old["identity"] == new["identity"] and old["source"] == new["source"] == source_hash
+    assert all(new["inputs"].get(key) == value for key, value in old["inputs"].items())
+    assert new["tokens"] >= old["tokens"]
+    assert not set(submitted) & set(provider.inputs[len(submitted) :])
+    assert (
+        final["vectors_valid"]
+        and final["embedding_coverage_valid"]
+        and final["embedding_accounting_valid"]
+    )
+    assert final["embedded_passages"] == 4
+    settled = await service._store.get_document(fresh.id)
+    assert settled.pipeline_status == "abstraction_skipped" and not settled.pipeline_error
+    assert fresh.id not in service._inflight
+    assert len(await content.get_all_chunks(fresh.id)) == 12
+    assert (await read_embedding_evidence(content, medium.id, provider.dimensions))[
+        "embedding_accounting"
+    ] == before["embedding_accounting"]
+    await service.stop_worker()

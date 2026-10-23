@@ -37,7 +37,45 @@ def valid_report():
                 "retained_source_matches": True,
             },
         ],
+        "startup_interruption": {
+            "document_id": "startup",
+            "interrupted": True,
+            "provider_entry_observed": True,
+            "owned_claim_observed": True,
+            "claim_released_on_stop": True,
+            "real_completed_inputs": 1,
+            "interrupted_embedding_accounting": {"inputs": {"debited": 5}},
+        },
+        "startup_recovery": {
+            key: True
+            for key in (
+                "same_identity",
+                "uncertain_debits_preserved",
+                "no_uncertain_replay",
+                "retained_source_matches",
+                "reconstruction_matches",
+                "vectors_valid",
+                "embedding_coverage_valid",
+                "embedding_accounting_valid",
+            )
+        },
+        "unchanged_medium": {
+            key: True
+            for key in (
+                "same_accounting",
+                "attempt_advanced",
+                "same_vectors",
+                "same_projection",
+                "no_new_inference",
+                "embedding_coverage_valid",
+            )
+        },
         "recovery_control": {
+            "real_completed_inputs": 1,
+            "provider_entry_observed": True,
+            "owned_claim_observed": True,
+            "uncertain_debits_preserved": True,
+            "no_uncertain_replay": True,
             "interrupted": True,
             "claim_released_on_stop": True,
             "settled": True,
@@ -458,6 +496,9 @@ async def test_worker_readiness_timeout_saves_without_retrying_diagnostics(
         {"id": "large", "pipeline_status": "indexing_in_progress"},
     ]
     (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    startup = valid_report()["startup_interruption"]
+    startup["document_id"] = "large"
+    (tmp_path / "fresh.json").write_text(json.dumps({"startup_interruption": startup}))
     diagnostic_calls = []
     original_timeouts = []
     diagnostic_error = ValueError("a diagnostic retry must not replace the readiness timeout")
@@ -535,6 +576,7 @@ async def test_worker_readiness_timeout_saves_without_retrying_diagnostics(
         report = json.loads((tmp_path / "recover.json").read_text())
         assert report["passed"] is False
         assert report["files"] == manifest
+        assert report["startup_interruption"] == startup
         assert len(report["failures"]) == 1
         failure = report["failures"][0]
         assert failure["kind"] == "large_bulk_readiness"
@@ -567,3 +609,72 @@ async def test_worker_readiness_timeout_saves_without_retrying_diagnostics(
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("phase", ["fresh", "recover"])
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "interrupted",
+        "provider_entry_observed",
+        "owned_claim_observed",
+        "claim_released_on_stop",
+        "real_completed_inputs",
+        "interrupted_embedding_accounting",
+    ],
+)
+def test_trial_requires_observed_fresh_startup_interruption(phase, missing):
+    report = valid_report()
+    report["phase"] = phase
+    assert trial_passed(report)
+    del report["startup_interruption"][missing]
+    assert not trial_passed(report)
+
+
+@pytest.mark.parametrize("section", ["startup_recovery", "unchanged_medium"])
+def test_trial_rejects_reset_replay_or_changed_prior_generation(section):
+    report = valid_report()
+    for key in report[section]:
+        rival = copy.deepcopy(report)
+        rival[section][key] = False
+        assert not trial_passed(rival), key
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claimed", [True, False])
+async def test_inference_interruption_requires_the_observed_target_claim(claimed):
+    import asyncio
+    from types import SimpleNamespace
+
+    from scripts.embedding_contention_trial import InferenceInterruption
+
+    ingestion = SimpleNamespace(_inflight={"fresh": object()} if claimed else {}, stopped=[])
+
+    async def stop():
+        ingestion.stopped.append(set(ingestion._inflight))
+        ingestion._inflight.clear()
+
+    ingestion.stop_worker = stop
+    control = InferenceInterruption(ingestion, "FRESH_WITNESS")
+    await asyncio.to_thread(control.observe, ["authored FRESH_WITNESS input"])
+    if claimed:
+        await control.wait("fresh")
+        assert ingestion.stopped == [{"fresh"}]
+        assert control.entry_observed and control.claimed_ids == {"fresh"}
+        assert not ingestion._inflight
+    else:
+        with pytest.raises(RuntimeError, match="did not own"):
+            await control.wait("fresh")
+
+
+def test_trial_fresh_sources_are_distinct_from_consumed_benchmarks(tmp_path):
+    from scripts.embedding_contention_trial import fixture
+
+    original = fixture(tmp_path / "medium.csv", 65536)
+    witness = fixture(tmp_path / "witness.csv", 65536, event="FRESH_RECOVERY_WITNESS")
+    startup = fixture(
+        tmp_path / "startup.csv", 65536, event="LARGE_BULK_TRIAL FRESH_STARTUP_WITNESS"
+    )
+    assert len({x["source_sha256"] for x in (original, witness, startup)}) == 3
+    assert "FRESH_RECOVERY_WITNESS" in (tmp_path / "witness.csv").read_text()
+    assert "FRESH_STARTUP_WITNESS" in (tmp_path / "startup.csv").read_text()
