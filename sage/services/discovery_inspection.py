@@ -34,6 +34,7 @@ def capture_inspection_attempt(
     config: "SelectionConfig | None" = None,
     adapter_configuration: dict | None = None,
     fact_configuration: dict | None = None,
+    inspected_source_hash: str | None = None,
 ) -> InspectionAttempt:
     """Freeze configuration through the same identity authority as selection."""
     from sage.services.discovery_selection import SelectionConfig, selection_identity
@@ -47,6 +48,7 @@ def capture_inspection_attempt(
         config=config if config is not None else SelectionConfig(),
         adapter_configuration=adapter_configuration,
         fact_configuration=fact_configuration,
+        inspected_source_hash=inspected_source_hash,
     ).processing_identity()
     return InspectionAttempt(document_id, generation, identity.model_dump_json())
 

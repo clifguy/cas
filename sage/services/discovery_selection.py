@@ -13,6 +13,9 @@ from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field, replace
 from datetime import date, datetime
 
+from pydantic import TypeAdapter
+
+from sage.models.coverage import CoverageHash
 from sage.models.discovery import (
     AuthoredExcerpt,
     DerivedObservation,
@@ -24,6 +27,7 @@ from sage.models.discovery import (
 )
 
 POLICY_VERSION = "bounded-discovery:1"
+_SOURCE_HASH_ADAPTER = TypeAdapter(CoverageHash)
 
 
 def selection_identity(
@@ -34,11 +38,22 @@ def selection_identity(
     config: SelectionConfig,
     adapter_configuration: dict | None = None,
     fact_configuration: dict | None = None,
+    inspected_source_hash: str | None = None,
 ) -> SelectionIdentity:
     """Capture effective immutable configuration; reject an unusable identity early."""
     from sage.source_adapters.structure import FactLimits
 
+    source_hash = _SOURCE_HASH_ADAPTER.validate_python(
+        source_hash if source_hash.startswith("sha256:") else "sha256:" + source_hash
+    )
+    inspected_source_hash = source_hash if inspected_source_hash is None else inspected_source_hash
+    inspected_source_hash = _SOURCE_HASH_ADAPTER.validate_python(
+        inspected_source_hash
+        if inspected_source_hash.startswith("sha256:")
+        else "sha256:" + inspected_source_hash
+    )
     configuration = {
+        "inspected_source_hash": inspected_source_hash,
         "selection": asdict(config),
         "adapter": adapter_configuration or {},
         "facts": fact_configuration if fact_configuration is not None else asdict(FactLimits()),
@@ -124,6 +139,7 @@ def select_discovery(
     cancelled: Callable[[], bool] | None = None,
     adapter_configuration: dict | None = None,
     fact_configuration: dict | None = None,
+    inspected_source_hash: str | None = None,
 ) -> EvidencePackage:
     """Inspect bounded facts, deduplicate full inputs, then fairly select authored text.
 
@@ -154,6 +170,7 @@ def select_discovery(
         config=config,
         adapter_configuration=adapter_configuration,
         fact_configuration=fact_configuration,
+        inspected_source_hash=inspected_source_hash,
     )
     candidates: dict[str, _Candidate] = {}
     priorities: list[tuple[int, str]] = []

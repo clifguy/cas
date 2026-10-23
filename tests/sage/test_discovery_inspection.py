@@ -584,7 +584,14 @@ async def test_ingest_narrative_uses_effective_byte_budget_with_authored_context
     assert dimension.identity.configuration["selection"]["max_tokens"] == budget
     assert dimension.identity.configuration["facts"]["narrative_input_bytes"] == budget
     assert dimension.counts[0].observed >= len(body.encode()) // budget
-    assert dimension.identity.configuration == projected_configurations[0]
+    import hashlib
+
+    frozen = dict(projected_configurations[0])
+    assert frozen.pop("inspected_source_hash") == "sha256:" + "0" * 64
+    assert dimension.identity.configuration == {
+        **frozen,
+        "inspected_source_hash": "sha256:" + hashlib.sha256(source.read_bytes()).hexdigest(),
+    }
     assert (
         ingestion_service._config.adapter_defaults["markdown"]["discovery_selection"]["max_tokens"]
         == 32

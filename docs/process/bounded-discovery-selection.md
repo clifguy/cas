@@ -15,7 +15,7 @@ remain unchanged.
 
 `SelectionConfig` in `sage/services/discovery_selection.py` is the policy authority.
 Configuration is explicit per call, validated before iteration and frozen in the
-returned identity with source SHA-256, adapter version, effective adapter settings,
+returned identity with delivered-source SHA-256, adapter version, effective adapter settings,
 FactLimits, selection settings, policy version and an explicit tokenizer identity. A tokenizer is a deterministic token-count callable;
 no inference provider participates. Callers must identify the actual tokenizer,
 not an anticipated later embedder. Defaults changing in a later version do not
@@ -204,3 +204,13 @@ associations and is a lower bound unless `associations_complete` is true.
 selection retains zero selected evidence. Legacy or unestablished inspection
 omits this summary. It shares the inspection generation, attempt fence and
 identity; it establishes no embedding or abstraction coverage.
+
+Inspection binds two byte identities. The processing identity's `source_hash` keeps
+established delivered-source provenance and the durable publication fence. Frozen
+selection configuration separately records `inspected_source_hash`, the SHA-256 of
+the retained bytes actually projected and inspected. These may differ when a source
+store rewrites an Office package. Ingest (including force and resident reuse),
+recompute and recovery preserve both; a previously unrecorded resident source uses
+its retained digest for both identities. The bounded published summary retains the
+inspected digest; its full-configuration digest also binds it when settings are
+omitted. This changes no source bytes, stored provenance, or publication comparison.

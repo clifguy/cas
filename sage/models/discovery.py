@@ -22,7 +22,7 @@ class SelectionIdentity:
             policy=self.policy,
             configuration=configuration,
             tokenization=self.tokenizer_identity,
-            preserve_fields=("selection", "facts"),
+            preserve_fields=("selection", "facts", "inspected_source_hash"),
             omission_details={
                 "adapter_configuration_sha256": canonical_configuration_hash(
                     configuration.get("adapter", {})

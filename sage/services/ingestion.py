@@ -267,7 +267,11 @@ async def _run_projection(
 
 
 async def _run_inspected_projection(
-    adapter: SourceAdapter, project_path: Path, config: dict | None
+    adapter: SourceAdapter,
+    project_path: Path,
+    config: dict | None,
+    *,
+    source_hash: str | None = None,
 ) -> ProjectionResult:
     """Capture actual projection settings and settle bounded inspection off-loop.
 
@@ -285,10 +289,11 @@ async def _run_inspected_projection(
     if not adapter.NATIVE_FACTS:
         captured_fact_configuration["narrative_input_bytes"] = selection_config.max_tokens
     # Validate configuration identity before any source materializer runs.
-    # Source identity is bound to the actual projection hash when it returns.
+    # Delivered provenance and inspected retained bytes are separate identities.
     try:
         selection_identity(
-            source_hash="sha256:" + "0" * 64,
+            source_hash=source_hash if source_hash is not None else "sha256:" + "0" * 64,
+            inspected_source_hash="sha256:" + "0" * 64,
             adapter_version=f"{type(adapter).__name__}:{adapter.VERSION}",
             tokenizer_identity="utf8-byte-tokens:1",
             config=selection_config,
@@ -312,7 +317,8 @@ async def _run_inspected_projection(
                 fact_limits,
                 narrative_input_bytes=selection_config.max_tokens,
             ),
-            source_hash=projection.content_hash,
+            source_hash=source_hash if source_hash is not None else projection.content_hash,
+            inspected_source_hash=projection.content_hash,
             adapter_version=f"{type(adapter).__name__}:{projection.adapter_version}",
             tokenizer=lambda text: len(text.encode("utf-8")),
             tokenizer_identity="utf8-byte-tokens:1",
@@ -1913,7 +1919,9 @@ class IngestionService:
                 _translate_projection_failure(project_path, reported_source),
                 _refuse_adapter_config(request.source_type),
             ):
-                projection = await _run_inspected_projection(adapter, project_path, merged_config)
+                projection = await _run_inspected_projection(
+                    adapter, project_path, merged_config, source_hash=delivered_hash
+                )
                 retained_source_size = project_path.stat().st_size
 
         # Parse filename per vault config (CAS-ADR-015) only when the caller
@@ -3203,7 +3211,7 @@ class IngestionService:
                     _refuse_adapter_config(doc.source_type),
                 ):
                     projection = await _run_inspected_projection(
-                        adapter, project_path, merged_config
+                        adapter, project_path, merged_config, source_hash=doc.source_content_hash
                     )
             await self._store.update_document(
                 document_id,
@@ -3265,7 +3273,9 @@ class IngestionService:
             # than as a response, which makes the respelling matter more, not
             # less: a stamped message outlives the call that produced it.
             with _translate_projection_failure(project_path, doc.source_path):
-                projection = await _run_inspected_projection(adapter, project_path, merged_config)
+                projection = await _run_inspected_projection(
+                    adapter, project_path, merged_config, source_hash=doc.source_content_hash
+                )
         now = datetime.now(timezone.utc)
         await self._stamp_pipeline_status(
             document_id,
