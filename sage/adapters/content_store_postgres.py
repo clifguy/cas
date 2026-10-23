@@ -615,7 +615,9 @@ class PostgresContentStore(ContentStore):
                 row[1] if row else None,
             )
 
-    async def update_processing_status(self, document_id: str, attempt: int, updates: dict) -> bool:
+    async def update_processing_status(
+        self, document_id: str, attempt: int, updates: dict, *, processing_stage: str | None = None
+    ) -> bool:
         allowed = {
             "pipeline_status",
             "pipeline_error",
@@ -626,6 +628,10 @@ class PostgresContentStore(ContentStore):
         }
         if not updates or set(updates) - allowed:
             raise ValueError("invalid processing observation fields")
+        if processing_stage not in (None, "indexing", "abstraction"):
+            raise ValueError("invalid processing stage")
+        if processing_stage is not None:
+            updates = {**updates, "processing_resume_stage": processing_stage}
         async with self._pool.connection() as conn:
             assignments = ", ".join(f"{key} = %s" for key in updates)
             cur = await conn.execute(
@@ -738,11 +744,14 @@ class PostgresContentStore(ContentStore):
                 )
             await conn.execute(
                 "UPDATE documents SET processing_coverage = %s, "
-                "indexed_at = CASE WHEN %s THEN %s ELSE indexed_at END WHERE id = %s",
+                "indexed_at = CASE WHEN %s THEN %s ELSE indexed_at END, "
+                "processing_resume_stage = CASE WHEN %s THEN 'abstraction' "
+                "ELSE processing_resume_stage END WHERE id = %s",
                 (
                     Jsonb(merged.model_dump(mode="json")),
                     chunks is not None,
                     datetime.now(timezone.utc).isoformat(),
+                    chunks is not None,
                     document_id,
                 ),
             )

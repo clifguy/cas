@@ -300,8 +300,15 @@ class ContentStore(ABC):
     def bind_processing_store(self, graph_store: "GraphStore") -> None:
         """Bind the document authority for test bindings sharing in-memory state."""
 
-    async def update_processing_status(self, document_id: str, attempt: int, updates: dict) -> bool:
-        """Write authoritative pipeline observations only while their attempt is current."""
+    async def update_processing_status(
+        self, document_id: str, attempt: int, updates: dict, *, processing_stage: str | None = None
+    ) -> bool:
+        """Write observations and an optional internal stage under the same attempt fence.
+
+        The checkpoint accepts indexing/abstraction; None preserves it. It does
+        not admit new work or advance the attempt. Pipeline status alone owns
+        recovery eligibility.
+        """
         raise NotImplementedError
 
     async def begin_processing_attempt(self, document_id: str) -> int:
@@ -915,8 +922,8 @@ class GraphStore(ABC):
 
     # --- Documents ---
     @abstractmethod
-    async def insert_document(self, doc: Document) -> None:
-        """Persist a new document record."""
+    async def insert_document(self, doc: Document, *, processing_stage: str | None = None) -> None:
+        """Persist a new record and optional internal indexing/abstraction checkpoint atomically."""
 
     @abstractmethod
     async def get_document(self, doc_id: str) -> Document | None:
@@ -924,7 +931,14 @@ class GraphStore(ABC):
 
     @abstractmethod
     async def update_document(
-        self, doc_id: str, updates: dict, *, advance_version: bool = True
+        self,
+        doc_id: str,
+        updates: dict,
+        *,
+        advance_version: bool = True,
+        processing_stage: str | None = None,
+        advance_processing_attempt: bool = True,
+        expected_processing_attempt: int | None = None,
     ) -> Document | None:
         """Apply a partial update; return the updated document or None if absent.
 
@@ -934,7 +948,18 @@ class GraphStore(ABC):
         stamp, an abstract, a re-projection) passes False, so a token a caller
         read before that write stays valid. The supersede operations always
         advance the predecessor's token.
+
+        ``processing_stage`` is an internal indexing/abstraction checkpoint, not
+        scheduling authority. When supplied, atomically admit that stage, the
+        metadata update, and a new publication attempt. Internal fenced status
+        observations use ``advance_processing_attempt=False``. An expected
+        attempt mismatch returns None without changing metadata or checkpoint.
+        The returned row includes this operation's admitted attempt.
         """
+
+    async def get_processing_stage(self, doc_id: str) -> str | None:
+        """Internal next-stage checkpoint; never a queue eligibility predicate."""
+        raise NotImplementedError
 
     @abstractmethod
     async def list_all_documents(self) -> list[Document]:
@@ -1119,6 +1144,8 @@ class GraphStore(ABC):
         predecessor_id: str,
         predecessor_updates: dict,
         edge: Edge,
+        *,
+        processing_stage: str | None = None,
     ) -> tuple[Document, Document]:
         """Atomically insert a new document and supersede its predecessor."""
 

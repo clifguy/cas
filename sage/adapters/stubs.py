@@ -73,15 +73,23 @@ class StubContentStore(ContentStore):
             doc.semantic_abstract,
         )
 
-    async def update_processing_status(self, document_id: str, attempt: int, updates: dict) -> bool:
+    async def update_processing_status(
+        self, document_id: str, attempt: int, updates: dict, *, processing_stage: str | None = None
+    ) -> bool:
         if self._processing_delegate is not None:
             return await self._processing_delegate.update_processing_status(
-                document_id, attempt, updates
+                document_id, attempt, updates, processing_stage=processing_stage
             )
         doc = await self._processing_store.get_document(document_id)
         if doc.processing_coverage.attempt != attempt:
             return False
-        await self._processing_store.update_document(document_id, updates, advance_version=False)
+        await self._processing_store.update_document(
+            document_id,
+            updates,
+            advance_version=False,
+            processing_stage=processing_stage,
+            advance_processing_attempt=False,
+        )
         return True
 
     async def begin_processing_attempt(self, document_id: str) -> int:
@@ -137,7 +145,13 @@ class StubContentStore(ContentStore):
             updates["indexed_at"] = datetime.now(timezone.utc)
         if semantic_abstract is not None:
             updates["semantic_abstract"] = semantic_abstract
-        await self._processing_store.update_document(document_id, updates, advance_version=False)
+        await self._processing_store.update_document(
+            document_id,
+            updates,
+            advance_version=False,
+            processing_stage="abstraction" if chunks is not None else None,
+            advance_processing_attempt=False,
+        )
         if chunks is not None:
             self._store[document_id] = chunks
         if surface is not None:
@@ -752,6 +766,7 @@ class StubGraphStore(GraphStore):
 
     def __init__(self) -> None:
         self._docs: dict[str, Document] = {}
+        self._processing_stages: dict[str, str | None] = {}
         # Held beside the documents, as the durable store holds it in a column
         # the Document model does not carry.
         self._reprojection_skips: dict[str, tuple[str | None, str]] = {}
@@ -774,25 +789,62 @@ class StubGraphStore(GraphStore):
         self.close_calls += 1
 
     # --- Documents ---
-    async def insert_document(self, doc: Document) -> None:
+    async def insert_document(self, doc: Document, *, processing_stage: str | None = None) -> None:
+        if processing_stage not in (None, "indexing", "abstraction"):
+            raise ValueError("invalid processing stage")
+        if processing_stage is not None:
+            doc = doc.model_copy(
+                update={
+                    "processing_coverage": doc.processing_coverage.model_copy(update={"attempt": 1})
+                }
+            )
         self._docs[doc.id] = doc
+        self._processing_stages[doc.id] = processing_stage
 
     async def get_document(self, doc_id: str) -> Document | None:
         return self._docs.get(doc_id)
 
     async def update_document(
-        self, doc_id: str, updates: dict, *, advance_version: bool = True
+        self,
+        doc_id: str,
+        updates: dict,
+        *,
+        advance_version: bool = True,
+        processing_stage: str | None = None,
+        advance_processing_attempt: bool = True,
+        expected_processing_attempt: int | None = None,
     ) -> Document | None:
         doc = self._docs.get(doc_id)
         if doc is None:
             return None
+        if (
+            expected_processing_attempt is not None
+            and doc.processing_coverage.attempt != expected_processing_attempt
+        ):
+            return None
         if "version_token" in updates:
             raise ValueError("version_token is advanced, never set")
+        if processing_stage not in (None, "indexing", "abstraction"):
+            raise ValueError("invalid processing stage")
+        if "processing_resume_stage" in updates:
+            raise ValueError("processing stage uses the internal admission seam")
+        if processing_stage is not None:
+            self._processing_stages[doc_id] = processing_stage
+            if advance_processing_attempt:
+                updates = {
+                    **updates,
+                    "processing_coverage": doc.processing_coverage.model_copy(
+                        update={"attempt": doc.processing_coverage.attempt + 1}
+                    ),
+                }
         if advance_version:
             updates = {**updates, "version_token": str(int(doc.version_token) + 1)}
         updated = doc.model_copy(update=updates)
         self._docs[doc_id] = updated
         return updated
+
+    async def get_processing_stage(self, doc_id: str) -> str | None:
+        return self._processing_stages.get(doc_id)
 
     async def list_all_documents(self) -> list[Document]:
         return list(self._docs.values())
@@ -886,6 +938,8 @@ class StubGraphStore(GraphStore):
         predecessor_id: str,
         predecessor_updates: dict,
         edge: Edge,
+        *,
+        processing_stage: str | None = None,
     ) -> tuple[Document, Document]:
         raise self._unsupported("insert_with_supersede_atomic")
 
@@ -1021,6 +1075,7 @@ class StubGraphStore(GraphStore):
 
     async def remove_document(self, document_id: str) -> None:
         self._docs.pop(document_id, None)
+        self._processing_stages.pop(document_id, None)
         self._edges = {
             eid: e
             for eid, e in self._edges.items()

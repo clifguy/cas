@@ -419,9 +419,8 @@ class _AbstractionJob:
 
     ``projection`` is carried in memory for ingest-time and recompute jobs
     (Stage 2-3). When ``None`` the worker derives the input at processing
-    time: explicit abstract-only requests use the admitted stored passages;
-    startup recovery uses durable stage facts to decide whether the latest
-    projection indexed, or needs source re-projection and Stage2.
+    time from the document's durable next-stage checkpoint. Queue reconstruction
+    loses no operation intent; only pipeline_status selects pending documents.
     """
 
     document_id: str
@@ -429,7 +428,6 @@ class _AbstractionJob:
     doc_type: str | None
     attempts: int = 0
     processing_attempt: int | None = None
-    abstract_only: bool = False
 
 
 @dataclass
@@ -756,15 +754,14 @@ class IngestionService:
         claim = self._inflight.get(document_id)
         if claim is not None:
             claim.processing_attempt = job.processing_attempt
-        if job.projection is not None:
+        if (
+            job.projection is not None
+            and await self._store.get_processing_stage(document_id) != "abstraction"
+        ):
             await self._execute_pipeline_stages(
                 document_id, job.projection, job.doc_type, job.processing_attempt
             )
-        elif (
-            await self._content_store.has_chunks(document_id)
-            if job.abstract_only
-            else await self._indexed_projection_is_current(document_id)
-        ):
+        elif await self._indexed_projection_is_current(document_id):
             await self._execute_abstract_from_chunks(
                 document_id, job.doc_type, job.processing_attempt
             )
@@ -778,14 +775,22 @@ class IngestionService:
         """Reuse passages only after indexing the latest source projection.
 
         Retained passages may belong to an earlier projection. The existing
-        server-owned stage timestamps record what completed, independently of
-        the interrupted execution status and the served coverage scope.
+        durable next-stage checkpoint preserves the admitted operation across
+        interruption, independently of scheduling status and served coverage.
+        Timestamps are only compatibility evidence for pre-checkpoint rows.
         """
+        stage = await self._store.get_processing_stage(document_id)
+        if stage is not None:
+            return stage == "abstraction" and await self._content_store.has_chunks(document_id)
+        # Compatibility for rows admitted before durable checkpoints existed.
+        # Unknown historical facts are not backfilled into coverage or a stage.
         doc = await self._store.get_document(document_id)
         return bool(
             doc is not None
-            and doc.indexed_at is not None
-            and (doc.projected_at is None or doc.indexed_at >= doc.projected_at)
+            and (
+                doc.projected_at is None
+                or (doc.indexed_at is not None and doc.indexed_at >= doc.projected_at)
+            )
             and await self._content_store.has_chunks(document_id)
         )
 
@@ -809,7 +814,9 @@ class IngestionService:
         extra: dict | None = None,
         *,
         expected_attempt: int | None = None,
-    ) -> None:
+        processing_stage: str | None = None,
+        expected_admission_attempt: int | None = None,
+    ) -> int | None:
         """Write a pipeline_status transition under the document lock.
 
         Execution-driven transitions go through here; artifact invalidation
@@ -838,11 +845,39 @@ class IngestionService:
         async with self._locks.lock(document_id):
             if expected_attempt is not None:
                 if not await self._content_store.update_processing_status(
-                    document_id, expected_attempt, updates
+                    document_id,
+                    expected_attempt,
+                    updates,
+                    **(
+                        {"processing_stage": processing_stage}
+                        if processing_stage is not None
+                        else {}
+                    ),
                 ):
                     raise _SupersededProcessing("stale processing observation")
             else:
-                await self._store.update_document(document_id, updates, advance_version=False)
+                doc = await self._store.update_document(
+                    document_id,
+                    updates,
+                    advance_version=False,
+                    **(
+                        {"processing_stage": processing_stage}
+                        if processing_stage is not None
+                        else {}
+                    ),
+                    **(
+                        {"expected_processing_attempt": expected_admission_attempt}
+                        if expected_admission_attempt is not None
+                        else {}
+                    ),
+                )
+                if processing_stage is not None:
+                    if doc is None:
+                        if expected_admission_attempt is not None:
+                            raise _SupersededProcessing("stale processing admission")
+                        raise DocumentNotFoundError(document_id)
+                    return doc.processing_coverage.attempt
+        return None
 
     async def _stamp_abstraction_failed(
         self,
@@ -1050,10 +1085,35 @@ class IngestionService:
             # Skip documents a live operation already claimed.
             if self._try_claim(doc.id, "recovery") is not None:
                 continue
-            self._enqueue_abstraction_job(
-                _AbstractionJob(document_id=doc.id, projection=None, doc_type=doc.doc_type)
-            )
-            enqueued += 1
+            try:
+                stage = (
+                    "abstraction"
+                    if await self._indexed_projection_is_current(doc.id)
+                    else "indexing"
+                )
+                try:
+                    attempt = await self._stamp_pipeline_status(
+                        doc.id,
+                        doc.pipeline_status,
+                        processing_stage=stage,
+                        expected_admission_attempt=doc.processing_coverage.attempt,
+                    )
+                except _SupersededProcessing:
+                    self._release_claim(doc.id)
+                    continue
+                self._inflight[doc.id].processing_attempt = attempt
+                self._enqueue_abstraction_job(
+                    _AbstractionJob(
+                        document_id=doc.id,
+                        projection=None,
+                        doc_type=doc.doc_type,
+                        processing_attempt=attempt,
+                    )
+                )
+                enqueued += 1
+            except BaseException:
+                self._release_claim(doc.id)
+                raise
         return enqueued
 
     def infer_source_type(self, source: str) -> SourceType | None:
@@ -2040,7 +2100,9 @@ class IngestionService:
             # unconfirmed different-path hash match before this point.
             if vault_relative != existing_doc.source_path:
                 updates["source_path"] = vault_relative
-            doc = await self._store.update_document(existing_doc.id, updates)
+            doc = await self._store.update_document(
+                existing_doc.id, updates, processing_stage="indexing"
+            )
             is_new = False
 
             # Served passages remain available until conditional replacement publication.
@@ -2117,6 +2179,13 @@ class IngestionService:
                 relocated_from=request.relocated_from,
             )
             doc = Document(**{**base, **field_updates})
+            # New admission stores its first fence in the same INSERT as the
+            # checkpoint/status. Keep this own token across all later awaits.
+            doc = doc.model_copy(
+                update={
+                    "processing_coverage": doc.processing_coverage.model_copy(update={"attempt": 1})
+                }
+            )
             if predecessor is not None and self._lifecycle_service is not None:
                 # CAS-ADR-038 Primitive C: serialize same-predecessor
                 # supersedes under a per-predecessor lock so the fresh
@@ -2158,6 +2227,7 @@ class IngestionService:
                             fresh_pred.id,
                             transition.predecessor_updates,
                             transition.edge,
+                            processing_stage="indexing",
                         )
                     except Tier3UniqueViolation as exc:
                         raise Tier3UniqueConstraintViolation(
@@ -2180,7 +2250,7 @@ class IngestionService:
                         )
             else:
                 try:
-                    await self._store.insert_document(doc)
+                    await self._store.insert_document(doc, processing_stage="indexing")
                 except Tier3UniqueViolation as exc:
                     raise Tier3UniqueConstraintViolation(
                         doc_type=exc.doc_type,
@@ -2190,10 +2260,11 @@ class IngestionService:
                     ) from exc
             is_new = True
 
+        admitted_attempt = doc.processing_coverage.attempt
         if retained or is_new:
-            attempt = await self._content_store.begin_processing_attempt(doc.id)
+            attempt = admitted_attempt
             identity = self._coverage_identity(doc, merged_config)
-            await self._content_store.publish_processing(
+            retained_published = await self._content_store.publish_processing(
                 doc.id,
                 attempt,
                 {
@@ -2212,6 +2283,9 @@ class IngestionService:
                     ),
                 },
             )
+            if not retained_published:
+                raise _SupersededProcessing("stale source retention publication")
+            admitted_attempt = attempt
             doc = await self._store.get_document(doc.id) or doc
 
         # The supersede lifecycle transition was bundled into the same
@@ -2229,15 +2303,23 @@ class IngestionService:
         # durability comes from the graph store's pipeline_status, re-derived
         # on startup by recover_incomplete_documents.
         if wait_for_pipeline:
-            await self._run_background_pipeline(doc.id, projection, doc.doc_type)
+            await self._run_background_pipeline(
+                doc.id, projection, doc.doc_type, attempt=admitted_attempt
+            )
             doc = await self._store.get_document(doc.id) or doc
         else:
             # The freshly-inserted document id effectively never collides, but
             # allow_join keeps the rare force-reingest race from raising; the
             # serial worker prevents overlap.
             self._try_claim(doc.id, "ingest", allow_join=True)
+            self._inflight[doc.id].processing_attempt = admitted_attempt
             self._enqueue_abstraction_job(
-                _AbstractionJob(document_id=doc.id, projection=projection, doc_type=doc.doc_type)
+                _AbstractionJob(
+                    document_id=doc.id,
+                    projection=projection,
+                    doc_type=doc.doc_type,
+                    processing_attempt=admitted_attempt,
+                )
             )
 
         return IngestResult(document=doc, is_new=is_new, warnings=attribution_warnings)
@@ -2415,6 +2497,8 @@ class IngestionService:
         document_id: str,
         projection: ProjectionResult,
         doc_type: str | None,
+        *,
+        attempt: int | None = None,
     ) -> None:
         """Run Stages 2-3 inline for the wait_for_pipeline=True path.
 
@@ -2423,7 +2507,8 @@ class IngestionService:
         (``_process_abstraction_job``), which layers bounded retry on top of
         ``_execute_pipeline_stages``.
         """
-        attempt = await self._content_store.begin_processing_attempt(document_id)
+        if attempt is None:
+            attempt = await self._content_store.begin_processing_attempt(document_id)
         try:
             await self._execute_pipeline_stages(document_id, projection, doc_type, attempt)
         except _SupersededProcessing:
@@ -2939,14 +3024,20 @@ class IngestionService:
         # the claim so future calls can proceed (otherwise the orphan claim
         # would permanently 409 every subsequent reabstract against this doc).
         try:
-            await self._stamp_pipeline_status(document_id, PipelineStatus.ABSTRACTION_IN_PROGRESS)
+            attempt = await self._stamp_pipeline_status(
+                document_id, PipelineStatus.ABSTRACTION_IN_PROGRESS, processing_stage="abstraction"
+            )
+            self._inflight[document_id].processing_attempt = attempt
         except Exception:
             self._release_claim(document_id)
             raise
 
         self._enqueue_abstraction_job(
             _AbstractionJob(
-                document_id=document_id, projection=None, doc_type=doc.doc_type, abstract_only=True
+                document_id=document_id,
+                projection=None,
+                doc_type=doc.doc_type,
+                processing_attempt=attempt,
             )
         )
 
@@ -3082,7 +3173,7 @@ class IngestionService:
                     _refuse_adapter_config(doc.source_type),
                 ):
                     projection = await _run_projection(adapter, project_path, merged_config)
-            await self._store.update_document(
+            admitted = await self._store.update_document(
                 document_id,
                 {
                     "pipeline_status": PipelineStatus.PROJECTION_COMPLETE.value,
@@ -3092,7 +3183,11 @@ class IngestionService:
                     "updated_at": start_time.isoformat(),
                 },
                 advance_version=False,
+                processing_stage="indexing",
             )
+            if admitted is None:
+                raise DocumentNotFoundError(document_id)
+            self._inflight[document_id].processing_attempt = admitted.processing_coverage.attempt
         except Exception:
             self._release_claim(document_id)
             raise
@@ -3100,7 +3195,12 @@ class IngestionService:
         # Keep the served generation during replacement work.
 
         self._enqueue_abstraction_job(
-            _AbstractionJob(document_id=document_id, projection=projection, doc_type=doc.doc_type)
+            _AbstractionJob(
+                document_id=document_id,
+                projection=projection,
+                doc_type=doc.doc_type,
+                processing_attempt=admitted.processing_coverage.attempt,
+            )
         )
 
         logger.info("recompute_pipeline enqueued for %s at %s", document_id, start_time.isoformat())
@@ -3122,6 +3222,12 @@ class IngestionService:
         that as an attempt failure
         and ultimately stamps FAILED.
         """
+        await self._stamp_pipeline_status(
+            document_id,
+            PipelineStatus.INDEXING_IN_PROGRESS,
+            expected_attempt=attempt,
+            processing_stage="indexing",
+        )
         doc = await self._store.get_document(document_id)
         if doc is None:
             raise DocumentNotFoundError(document_id)
