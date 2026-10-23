@@ -27,7 +27,7 @@ def validate_target(plan: dict, live: dict) -> str:
         raise ValueError("wrong resource group")
     if live.get("tags", {}).get("benchmarkRun") != plan["run_id"]:
         raise ValueError("missing exact trial ownership tag")
-    if not re.fullmatch(r"perf-[a-z0-9-]{1,40}", target["vault_id"]):
+    if not re.fullmatch(r"perf_[a-z0-9_]{1,40}", target["vault_id"]):
         raise ValueError("trial requires an isolated performance vault")
     if (
         live["properties"]["environmentId"].casefold()
@@ -56,6 +56,9 @@ def validate_target(plan: dict, live: dict) -> str:
     ) != target.get("args"):
         raise ValueError("container command differs from the approved image entry")
     environment = {row["name"]: row.get("value") for row in containers[0].get("env", [])}
+    for name, value in target.get("runtime_env", {}).items():
+        if environment.get(name) != value:
+            raise ValueError("trial runtime controls differ from approved target")
     config_path = environment.get("SAGE_CONFIG_PATH")
     secret_name = target["config_secret_name"]
     if not re.fullmatch("[a-z0-9-]+", secret_name) or not config_path:
@@ -70,6 +73,17 @@ def validate_target(plan: dict, live: dict) -> str:
                         mounted = mounted or str(path) == config_path
     if not mounted:
         raise ValueError("approved cloud configuration is not mounted at the active path")
+    for secret, expected_path in target.get("mounted_script_paths", {}).items():
+        bindings = [
+            str(PurePosixPath(mount["mountPath"]) / item["path"])
+            for mount in containers[0].get("volumeMounts", [])
+            for volume in template.get("volumes", [])
+            if volume["name"] == mount["volumeName"] and volume.get("storageType") == "Secret"
+            for item in volume.get("secrets", [])
+            if item["secretRef"] == secret
+        ]
+        if bindings != [expected_path]:
+            raise ValueError("reviewed trial script is not mounted at the approved path")
     origin = target["origin"]
     url = urlsplit(origin)
     if url.scheme != "https" or url.username or url.password or url.path not in ("", "/"):
@@ -160,7 +174,7 @@ async def ingest_source(client: httpx.AsyncClient, origin: str, vault_id: str, p
     digest = hashlib.sha256(raw).hexdigest()
     payload = {
         "source": str(path.resolve()),
-        "source_type": "markdown" if path.suffix == ".md" else "csv",
+        "source_type": "markdown" if path.suffix == ".md" else "structured_data",
         "sha256": digest,
         "metadata": {"title": path.stem, "doc_type": "misc"},
         "needs_review": False,

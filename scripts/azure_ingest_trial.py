@@ -7,6 +7,7 @@ provisions Azure resources.
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import re
@@ -17,6 +18,7 @@ from pathlib import Path
 
 import httpx
 
+from deploy.performance_limits import deadline_scope, remaining
 from sage.utils.azure_ingest_trial import (
     emit_jsonl,
     ingest_source,
@@ -33,7 +35,7 @@ def azure(*args):
         ["az", *args, "-o", "json", "--only-show-errors"],
         capture_output=True,
         text=True,
-        timeout=120,
+        timeout=remaining(120),
         check=False,
     )
     if result.returncode:
@@ -72,7 +74,7 @@ def prepare(args):
                 f"/subscriptions/{subscription}/resourceGroups/{group}"
                 f"/providers/Microsoft.App/containerApps/{app}"
             ),
-            "vault_id": "perf-" + args.run_id,
+            "vault_id": "perf_" + args.run_id.replace("-", "_"),
             "environment_resource_id": None,
             "postgres_resource_id": None,
             "postgres_database": None,
@@ -131,6 +133,21 @@ def runtime_snapshot(plan):
         "[?name=='" + target["config_secret_name"] + "'].value | [0]",
     )
     validate_backend(plan, postgres, config)
+    for secret, expected_hash in target.get("mounted_script_hashes", {}).items():
+        value = azure(
+            "containerapp",
+            "secret",
+            "list",
+            *common,
+            "--show-values",
+            "--query",
+            "[?name=='" + secret + "'].value | [0]",
+        )
+        if (
+            not isinstance(value, str)
+            or hashlib.sha256(value.encode()).hexdigest() != expected_hash
+        ):
+            raise ValueError("mounted trial script differs from reviewed source")
     replicas = azure(
         "containerapp", "replica", "list", *common, "--revision", target["revision_name"]
     )
@@ -169,6 +186,31 @@ async def restart_trial(plan):
 
 
 async def execute(args):
+    plan = json.loads(args.manifest.read_text())
+    limit = plan["proposed_limits"]["per_run_seconds"]
+    if type(limit) is not int or not 1 <= limit <= 900:
+        raise ValueError("invalid per-run deadline")
+    try:
+        with deadline_scope(limit):
+            async with asyncio.timeout(remaining(limit)):
+                return await _execute(args)
+    except BaseException as exc:
+        if args.output.exists():
+            rows = args.output.read_text().splitlines()
+            if not rows or json.loads(rows[-1]).get("kind") != "failure":
+                with args.output.open("a") as handle:
+                    emit_jsonl(
+                        handle,
+                        {
+                            "kind": "failure",
+                            "outcome": "partial_or_uncertain",
+                            "exception_class": type(exc).__name__,
+                        },
+                    )
+        raise
+
+
+async def _execute(args):
     plan = json.loads(args.manifest.read_text())
     vault = plan["target"]["vault_id"]
     limit = plan["proposed_limits"]["per_run_seconds"]
@@ -209,8 +251,17 @@ async def execute(args):
             from sage.auth import INGRESS_KEY_HEADER
 
             headers[INGRESS_KEY_HEADER] = os.environ["SAGE_TRIAL_INGRESS_KEY"]
+
+        async def refresh_token(request):
+            callback = getattr(args, "token_refresh", None)
+            if callback is not None:
+                request.headers["Authorization"] = "Bearer " + await asyncio.to_thread(callback)
+
         async with httpx.AsyncClient(
-            headers=headers, follow_redirects=False, timeout=limit
+            headers=headers,
+            follow_redirects=False,
+            timeout=limit,
+            event_hooks={"request": [refresh_token]},
         ) as client:
             try:
                 async with asyncio.timeout(limit):

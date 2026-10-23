@@ -57,6 +57,9 @@ jobs:
       - name: Build and lint Bicep
         run: az bicep build --file infra/main.bicep --outfile "${RUNNER_TEMP}/main.json"
 
+      - name: Build and lint isolated performance Bicep
+        run: az bicep build --file infra/performance.bicep --outfile "${RUNNER_TEMP}/performance.json"
+
   build:
     # Build both images from the committed commit and push the immutable
     # {version}-{short-sha} tag to the selected tenant's registry, via the shared

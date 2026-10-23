@@ -1,0 +1,17 @@
+[
+  {
+    "name": "narrative.md",
+    "bytes": 304088,
+    "sha256": "d83d9f84591100826de933d960f87c95939404d8d3a86b7512c62fc4f61851ca"
+  },
+  {
+    "name": "structured.csv",
+    "bytes": 233081,
+    "sha256": "e7e763bdd9d4fd87bb35d8987d7fea7dff089e5245b2e2cd410b6e7e74455d19"
+  },
+  {
+    "name": "witness.md",
+    "bytes": 188,
+    "sha256": "1b7da4194bb92fbb277f17e134f22e39b4bc0dfef8344009cee44676dd3f1ef6"
+  }
+]

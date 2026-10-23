@@ -13,7 +13,7 @@ def target():
         "target": {
             "resource_group": "rg-perf",
             "app_resource_id": app,
-            "vault_id": "perf-run-one",
+            "vault_id": "perf_run_one",
             "config_secret_name": "sage-cloud-config",
             "environment_resource_id": app.replace(
                 "containerApps/perf", "managedEnvironments/perf"
@@ -115,13 +115,21 @@ def test_failed_probe_cannot_be_hidden_in_latency_summary():
 
 
 async def test_digest_bound_upload_keeps_bearer_out_of_byte_leg(tmp_path, monkeypatch):
+    await _exercise_digest_bound_upload(tmp_path, monkeypatch, ".md")
+
+
+async def test_csv_upload_uses_structured_data_and_scoped_byte_auth(tmp_path, monkeypatch):
+    await _exercise_digest_bound_upload(tmp_path, monkeypatch, ".csv")
+
+
+async def _exercise_digest_bound_upload(tmp_path, monkeypatch, suffix):
     import hashlib
 
     import httpx
 
     from sage.utils.azure_ingest_trial import ingest_source
 
-    path = tmp_path / "witness.md"
+    path = tmp_path / ("witness" + suffix)
     path.write_text("A positive search witness.")
     digest = hashlib.sha256(path.read_bytes()).hexdigest()
     observed = []
@@ -491,3 +499,27 @@ async def test_trial_restart_refuses_unsafe_target_before_control_write(monkeypa
     with pytest.raises(ValueError, match="distinct resource group"):
         await cli.restart_trial(plan)
     assert len(calls) == 2
+
+
+def test_trial_vault_is_a_valid_postgres_schema():
+    from sage.storage.postgres.schema import refuse_reserved_schema
+
+    plan, live = target()
+    plan["target"]["vault_id"] = "perf_run_one"
+    refuse_reserved_schema(plan["target"]["vault_id"])
+    assert validate_target(plan, live) == "https://perf.example.com"
+
+
+def test_reviewed_script_secret_must_be_mounted_at_approved_entry_path():
+    plan, live = target()
+    plan["target"]["mounted_script_paths"] = {"trial-runtime": "/etc/sage/performance_runtime.py"}
+    template = live["properties"]["template"]
+    mount = template["containers"][0]["volumeMounts"][0]
+    volume = next(x for x in template["volumes"] if x["name"] == mount["volumeName"])
+    expected = mount["mountPath"] + "/performance_runtime.py"
+    plan["target"]["mounted_script_paths"]["trial-runtime"] = expected
+    volume["secrets"].append({"secretRef": "trial-runtime", "path": "performance_runtime.py"})
+    validate_target(plan, live)
+    volume["secrets"][-1]["path"] = "unused.py"
+    with pytest.raises(ValueError, match="script"):
+        validate_target(plan, live)

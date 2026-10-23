@@ -240,10 +240,38 @@ def _expected_condition() -> str:
     )
 
 
+def _production_templates() -> list[Path]:
+    trial_only = {
+        "performance.bicep",
+        "modules/performance-access.bicep",
+        "modules/performance-cleanup-access.bicep",
+        "modules/performance-cleanup.bicep",
+        "modules/performance-evidence-access.bicep",
+        "modules/performance-identities.bicep",
+        "modules/performance-stack.bicep",
+    }
+    # Preserve standalone production modules too, not only main's import graph.
+    # A production import of a trial template adds it back through the walk.
+    pending = [
+        x
+        for x in INFRA_DIR.rglob("*.bicep")
+        if x.relative_to(INFRA_DIR).as_posix() not in trial_only
+    ]
+    found: set[Path] = set()
+    while pending:
+        path = pending.pop().resolve()
+        if path in found:
+            continue
+        found.add(path)
+        for child in re.findall(r"^module\s+\w+\s+'([^']+)'", path.read_text(), re.MULTILINE):
+            pending.append(path.parent / child)
+    return sorted(found)
+
+
 def _template_role_ids() -> set[str]:
     """Every role-definition id a template assigns, resolved through its var."""
     ids: set[str] = set()
-    for bicep in sorted(INFRA_DIR.rglob("*.bicep")):
+    for bicep in _production_templates():
         text = bicep.read_text(encoding="utf-8")
         for name in _ROLE_VAR_RE.findall(text):
             match = re.search(_VAR_RE.format(name=re.escape(name)), text, re.MULTILINE)
@@ -259,7 +287,7 @@ def _template_namespaces() -> set[str]:
     """Every resource-provider namespace a template declares a resource in."""
     return {
         namespace
-        for bicep in INFRA_DIR.rglob("*.bicep")
+        for bicep in _production_templates()
         for namespace in _RESOURCE_RE.findall(bicep.read_text(encoding="utf-8"))
     } - _ALWAYS_REGISTERED
 
