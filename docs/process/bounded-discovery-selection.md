@@ -349,6 +349,10 @@ replacement preserves the previously served abstract. The nullable
 `served_abstraction_generation` identifies that abstract's generation separately
 from newer attempt evidence; null means historical identity unknown. Publication
 of a replacement abstract and its evidence is atomic under the processing fence.
+A text-only maintenance repair preserves the served generation, current attempted
+evidence, cumulative allowances and recovery checkpoint. It does not allocate a
+processing attempt or relabel evidence. Repair publication compares the expected
+prior abstract and processing attempt atomically; stale repairs are refused.
 
 When no generated abstract exists, document-level orientation can show a labeled
 **Derived inventory** of established inspection counts and their scope. It remains

@@ -3372,7 +3372,9 @@ class IngestionService:
             "dispatched_at": now.isoformat(),
         }
 
-    async def update_semantic_abstract(self, document_id: str, abstract: str) -> None:
+    async def update_semantic_abstract(
+        self, document_id: str, abstract: str, *, expected_abstract: str | None = None
+    ) -> None:
         """Replace a document's stored semantic abstract in place.
 
         The repair path CAS-ADR-020 clause (h) admits for stored output:
@@ -3385,6 +3387,8 @@ class IngestionService:
         Args:
             document_id: ID of the document whose abstract is replaced.
             abstract: The replacement abstract text.
+            expected_abstract: Prior text used to plan a maintenance repair;
+                refuses a changed record. Omission snapshots current stored text.
 
         Raises:
             DocumentNotFoundError: Document does not exist.
@@ -3393,8 +3397,25 @@ class IngestionService:
         if doc is None:
             raise DocumentNotFoundError(document_id)
 
-        attempt = await self._content_store.begin_processing_attempt(document_id)
-        await self._publish_abstract(document_id, abstract, attempt)
+        # A repair transforms already-served output; it neither consumes a new
+        # evidence package nor creates a generation. Preserve both the served
+        # lineage and any newer unsuccessful attempt's evidence/checkpoint.
+        if expected_abstract is not None and doc.semantic_abstract != expected_abstract:
+            raise ValueError("stored abstract changed since repair planning")
+        surface = compose_document_surface(
+            document_id, doc.model_copy(update={"semantic_abstract": abstract})
+        )
+        published = await self._content_store.publish_processing(
+            document_id,
+            doc.processing_coverage.attempt,
+            {},
+            surface=surface,
+            semantic_abstract=abstract,
+            text_repair=True,
+            expected_abstract=doc.semantic_abstract,
+        )
+        if not published:
+            raise ValueError("stored abstract or processing attempt changed during repair")
 
     async def _execute_abstract_from_chunks(
         self, document_id: str, doc_type: str | None, attempt: int | None = None

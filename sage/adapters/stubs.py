@@ -122,7 +122,11 @@ class StubContentStore(ContentStore):
         surface: DocumentSurface | None = None,
         semantic_abstract: str | None = None,
         indexing_complete: bool = True,
+        text_repair: bool = False,
+        expected_abstract: str | None = None,
     ) -> bool:
+        if text_repair and (dimensions or chunks is not None or semantic_abstract is None):
+            raise ValueError("text repair cannot publish processing evidence or passages")
         if self._processing_delegate is not None:
             published = await self._processing_delegate.publish_processing(
                 document_id,
@@ -132,6 +136,8 @@ class StubContentStore(ContentStore):
                 surface=surface,
                 semantic_abstract=semantic_abstract,
                 indexing_complete=indexing_complete,
+                text_repair=text_repair,
+                expected_abstract=expected_abstract,
             )
             if published:
                 if chunks is not None:
@@ -140,7 +146,9 @@ class StubContentStore(ContentStore):
                     self._surfaces[document_id] = surface
             return published
         doc = await self._processing_store.get_document(document_id)
-        if doc.processing_coverage.attempt != attempt:
+        if doc.processing_coverage.attempt != attempt or (
+            text_repair and doc.semantic_abstract != expected_abstract
+        ):
             return False
         if chunks is not None and (ledger := self._embedding_accounting.get(document_id)):
             identity = dimensions["passage_embeddings"].identity
@@ -171,9 +179,9 @@ class StubContentStore(ContentStore):
                 },
             }
         )
-        if semantic_abstract is not None:
+        if semantic_abstract is not None and not text_repair:
             coverage.served_abstraction_generation = attempt
-        updates = {"processing_coverage": coverage}
+        updates = {} if text_repair else {"processing_coverage": coverage}
         if chunks is not None and indexing_complete:
             updates["indexed_at"] = datetime.now(timezone.utc)
         if semantic_abstract is not None:

@@ -184,7 +184,7 @@ async def run(args: argparse.Namespace) -> int:
             if plan.residual:
                 continue
             await services.ingestion_service.update_semantic_abstract(
-                plan.doc_id, plan.abstract_after
+                plan.doc_id, plan.abstract_after, expected_abstract=plan.abstract_before
             )
             repaired += 1
 

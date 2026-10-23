@@ -944,6 +944,8 @@ class PostgresContentStore(ContentStore):
         surface: DocumentSurface | None = None,
         semantic_abstract: str | None = None,
         indexing_complete: bool = True,
+        text_repair: bool = False,
+        expected_abstract: str | None = None,
     ) -> bool:
         """Commit artifact replacements and their evidence together under a database fence.
 
@@ -951,7 +953,13 @@ class PostgresContentStore(ContentStore):
         projection. Stale producers cannot change either artifacts or the summary.
         Pipeline scheduling and outcome remain owned by pipeline_status.
         """
-        if attempt < 1 or (not dimensions and surface is None) or set(dimensions) - set(DIMENSIONS):
+        if text_repair and (dimensions or chunks is not None or semantic_abstract is None):
+            raise ValueError("text repair cannot publish processing evidence or passages")
+        if (
+            attempt < (0 if text_repair else 1)
+            or (not dimensions and surface is None)
+            or set(dimensions) - set(DIMENSIONS)
+        ):
             raise ValueError("invalid processing publication")
         if (
             chunks is None
@@ -994,13 +1002,15 @@ class PostgresContentStore(ContentStore):
             ),
         ):
             cur = await conn.execute(
-                "SELECT processing_coverage, source_content_hash, embedding_accounting "
+                "SELECT processing_coverage, source_content_hash, embedding_accounting, "
+                "semantic_abstract "
                 "FROM documents "
-                "WHERE id = %s AND (processing_coverage->>'attempt')::bigint = %s FOR UPDATE",
+                "WHERE id = %s AND "
+                "COALESCE((processing_coverage->>'attempt')::bigint, 0) = %s FOR UPDATE",
                 (document_id, attempt),
             )
             row = await cur.fetchone()
-            if row is None:
+            if row is None or (text_repair and row[3] != expected_abstract):
                 return False
             current = ProcessingCoverage.model_validate(row[0] or {})
             # Check the durable allowance in the same transaction as replacement.
@@ -1025,7 +1035,7 @@ class PostgresContentStore(ContentStore):
                 if value.identity is not None and value.identity.source_hash != row[1]:
                     raise ValueError("coverage source identity mismatch")
                 changes[name] = value.model_dump(mode="json")
-            if semantic_abstract is not None:
+            if semantic_abstract is not None and not text_repair:
                 changes["served_abstraction_generation"] = attempt
             merged = ProcessingCoverage.model_validate({**current.model_dump(), **changes})
             if chunks is not None:
