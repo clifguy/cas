@@ -926,14 +926,19 @@ async def test_trial_reads_atomic_sparse_evidence(
     ] is False
 
 
+@pytest.mark.parametrize("window", [1, 8])
 async def test_trial_worker_interruption_keeps_fresh_source_debits_and_consumed_medium(
-    pg_pool, ingestion_service_no_abstraction, tmp_vault_dir
+    pg_pool, ingestion_service_no_abstraction, tmp_vault_dir, window
 ):
     import asyncio
     import hashlib
 
     from sage.models.schemas import IngestRequest
-    from scripts.embedding_contention_trial import InferenceInterruption, read_embedding_evidence
+    from scripts.embedding_contention_trial import (
+        InferenceInterruption,
+        fresh_witness_config,
+        read_embedding_evidence,
+    )
     from tests.helpers.pipeline_wait import drain_abstraction_queue
 
     class Observed(SeededEmbeddingProvider):
@@ -988,7 +993,15 @@ async def test_trial_worker_interruption_keeps_fresh_source_debits_and_consumed_
     )
     provider.control = control = InferenceInterruption(service, "FRESH_WITNESS")
     fresh = (
-        await service.ingest(IngestRequest(source=str(fresh_source)), wait_for_pipeline=False)
+        await service.ingest(
+            IngestRequest(
+                source=str(fresh_source),
+                config=fresh_witness_config()
+                if window == 1
+                else {"discovery_selection": {"max_in_flight": window}},
+            ),
+            wait_for_pipeline=False,
+        )
     ).document
     await control.wait(fresh.id)
     assert fresh.id != medium.id
@@ -997,7 +1010,16 @@ async def test_trial_worker_interruption_keeps_fresh_source_debits_and_consumed_
     assert interrupted.pipeline_status == "abstraction_interrupted"
     assert fresh.id not in service._inflight
     prior = await read_embedding_evidence(content, fresh.id, provider.dimensions)
-    assert prior["embedding_accounting"]["inputs"]
+    assert len(prior["embedding_accounting"]["inputs"]) == window
+    assert (
+        prior["processing_coverage"]["passage_embeddings"]["identity"]["configuration"][
+            "selection"
+        ]["max_in_flight"]
+        == window
+    )
+    assert (await service._store.get_document(fresh.id)).adapter_config["discovery_selection"][
+        "max_in_flight"
+    ] == window
     assert prior["embedded_passages"] == 0
     assert prior["unembedded_passages"] == 12
     source_hash = "sha256:" + hashlib.sha256(fresh_source.read_bytes()).hexdigest()
@@ -1018,7 +1040,13 @@ async def test_trial_worker_interruption_keeps_fresh_source_debits_and_consumed_
         and final["embedding_coverage_valid"]
         and final["embedding_accounting_valid"]
     )
-    assert final["embedded_passages"] == 4
+    assert final["embedded_passages"] == 12 - window
+    assert (
+        final["processing_coverage"]["passage_embeddings"]["identity"]["configuration"][
+            "selection"
+        ]["max_in_flight"]
+        == window
+    )
     settled = await service._store.get_document(fresh.id)
     assert settled.pipeline_status == "abstraction_skipped" and not settled.pipeline_error
     assert fresh.id not in service._inflight

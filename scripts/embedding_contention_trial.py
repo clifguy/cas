@@ -26,6 +26,11 @@ from pathlib import Path
 from unittest.mock import patch
 
 
+def fresh_witness_config() -> dict:
+    """Capture one input per fresh increment; retries reuse this stored scope."""
+    return {"discovery_selection": {"max_in_flight": 1}}
+
+
 async def drain_inference(provider: object) -> None:
     """Finish real submitted quanta before attributing later source activity."""
     outcomes = await asyncio.gather(
@@ -117,6 +122,7 @@ class BulkReadiness:
     ) -> None:
         self.failures = failures if failures is not None else []
         self.target_id = target_id
+        self.target_marker = "LARGE_BULK_TRIAL"
         self.clock = clock
         self.started = threading.Event()
         self._scope = threading.local()
@@ -126,6 +132,18 @@ class BulkReadiness:
         self._prepared_chunks = 0
         self._last_progress = clock()
         self._wait_start = None
+
+    def retarget(self, marker: str) -> None:
+        """Start independent observed preparation for a newly authored witness."""
+        with self._lock:
+            self.target_id = None
+            self.target_marker = marker
+            self.started.clear()
+            self._stage = "waiting"
+            self._sizing_completions = 0
+            self._prepared_chunks = 0
+            self._last_progress = self.clock()
+            self._wait_start = None
 
     def _progress(self, stage: str) -> None:
         self._stage = stage
@@ -141,7 +159,7 @@ class BulkReadiness:
             # ingestion binds it from the actual largest-source marker.
             with self._lock:
                 target = document_id == self.target_id or (
-                    self.target_id is None and "LARGE_BULK_TRIAL" in projection.text
+                    self.target_id is None and self.target_marker in projection.text
                 )
                 if target:
                     self.target_id = document_id
@@ -181,7 +199,7 @@ class BulkReadiness:
     def run_inference(
         self, texts: list[str], original: Callable[[list[str]], list[list[float]]]
     ) -> list[list[float]]:
-        if any("LARGE_BULK_TRIAL" in text for text in texts):
+        if any(self.target_marker in text for text in texts):
             with self._lock:
                 self._progress("inference")
                 self.started.set()
@@ -206,6 +224,7 @@ class BulkReadiness:
             now = self.clock()
             return {
                 "target_id": self.target_id,
+                "target_marker": self.target_marker,
                 "stage": self._stage,
                 "sizing_completions": self._sizing_completions,
                 "prepared_chunks": self._prepared_chunks,
@@ -237,6 +256,18 @@ class BulkReadiness:
                     await checkpoint()
                     last_checkpoint = self.clock()
                 await sleep(0.05)
+
+
+async def wait_for_witness_inference(
+    readiness: BulkReadiness,
+    interruption: InferenceInterruption,
+    document_id: str,
+    checkpoint: Callable[[], Awaitable[None]],
+) -> None:
+    # Preparation is real work, not a missed provider signal. Reuse the actual
+    # progress/inactivity/absolute readiness bounds before awaiting worker stop.
+    await readiness.wait(checkpoint)
+    await interruption.wait(document_id)
 
 
 @asynccontextmanager
@@ -369,6 +400,9 @@ def trial_passed(report: dict) -> bool:
         and startup.get("owned_claim_observed") is True
         and startup.get("claim_released_on_stop") is True
         and startup.get("real_completed_inputs", 0) > 0
+        and startup.get("max_in_flight") == 1
+        and startup.get("readiness", {}).get("target_id") == startup.get("document_id")
+        and startup.get("readiness", {}).get("stage") == "inference"
         and startup.get("interrupted_embedding_accounting", {}).get("inputs")
     ):
         return False
@@ -419,6 +453,9 @@ def trial_passed(report: dict) -> bool:
         if (
             not all(control.get(key) is True for key in required)
             or control.get("real_completed_inputs", 0) <= 0
+            or control.get("max_in_flight") != 1
+            or control.get("readiness", {}).get("target_id") != control.get("document_id")
+            or control.get("readiness", {}).get("stage") != "inference"
         ):
             return False
         shutdown = report.get("shutdown", {})
@@ -639,7 +676,7 @@ async def worker(args: argparse.Namespace) -> int:
     path = root / f"{args.phase}.json"
 
     def save() -> None:
-        report["large_bulk_readiness"] = readiness.snapshot()
+        report["large_bulk_readiness"] = report.get("contention_readiness", readiness.snapshot())
         report["memory"] = memory()
         for kind in ("semantic", "lightweight"):
             values = sorted(report[f"{kind}_seconds"])
@@ -722,6 +759,7 @@ async def worker(args: argparse.Namespace) -> int:
             ingestion = svc.ingestion_service
             require(not ingestion._inflight, "fresh interruption requires settled prior claims")
             await drain_inference(provider)
+            readiness.retarget(marker)
             source = root / name
             entry = fixture(source, size, event=marker)
             projected = await StructuredDataAdapter().project(source)
@@ -731,12 +769,35 @@ async def worker(args: argparse.Namespace) -> int:
                 IngestRequest(
                     source=str(source),
                     source_type="structured_data",
+                    # A fresh one-input window guarantees a real interrupted
+                    # increment without consuming the entire selected scope.
+                    config=fresh_witness_config(),
                     metadata={"title": source.name, "doc_type": "reference_document"},
                 ),
                 wait_for_pipeline=False,
             )
             entry["id"] = result.document.id
-            await interruption.wait(entry["id"])
+
+            async def witness_checkpoint() -> None:
+                report["witness_preparation"] = {
+                    "document_id": entry["id"],
+                    "source_sha256": entry["source_sha256"],
+                    "readiness": readiness.snapshot(),
+                }
+                await checkpoint("preparing fresh witness: " + name)
+
+            try:
+                await wait_for_witness_inference(
+                    readiness, interruption, entry["id"], witness_checkpoint
+                )
+            except TimeoutError:
+                report["witness_preparation_failure"] = {
+                    "document_id": entry["id"],
+                    "readiness": readiness.snapshot(),
+                }
+                report["passed"] = False
+                save()
+                raise
             # Cancellation does not cancel submitted model threads. Observe their
             # real completion, while their already-debited result stays uncertain.
             outcomes = await asyncio.gather(
@@ -753,6 +814,10 @@ async def worker(args: argparse.Namespace) -> int:
             control = {
                 "document_id": entry["id"],
                 "source_sha256": entry["source_sha256"],
+                "readiness": readiness.snapshot(),
+                "max_in_flight": evidence["processing_coverage"]["passage_embeddings"]["identity"][
+                    "configuration"
+                ]["selection"]["max_in_flight"],
                 "provider_entry_observed": interruption.entry_observed,
                 "owned_claim_observed": interruption.claimed_ids == {entry["id"]},
                 "real_completed_inputs": interruption.completed_inputs,
@@ -768,7 +833,8 @@ async def worker(args: argparse.Namespace) -> int:
             require(
                 control["interrupted"]
                 and control["claim_released_on_stop"]
-                and control["real_completed_inputs"] > 0,
+                and control["real_completed_inputs"] > 0
+                and control["max_in_flight"] == 1,
                 "fresh witness was not genuinely interrupted",
             )
             entry.update(pipeline_status=doc.pipeline_status, pipeline_error=doc.pipeline_error)
@@ -897,6 +963,7 @@ async def worker(args: argparse.Namespace) -> int:
                 save()
                 await asyncio.sleep(0.1)
         report["large_bulk_progress_during_queries"] = bulk_completed - bulk_at_start
+        report["contention_readiness"] = readiness.snapshot()
         records = await svc.graph_store.list_all_documents()
         require(
             {record.id for record in records} == {entry["id"] for entry in manifest},

@@ -39,6 +39,8 @@ def valid_report():
         ],
         "startup_interruption": {
             "document_id": "startup",
+            "max_in_flight": 1,
+            "readiness": {"target_id": "startup", "stage": "inference"},
             "interrupted": True,
             "provider_entry_observed": True,
             "owned_claim_observed": True,
@@ -71,6 +73,9 @@ def valid_report():
             )
         },
         "recovery_control": {
+            "document_id": "witness",
+            "max_in_flight": 1,
+            "readiness": {"target_id": "witness", "stage": "inference"},
             "real_completed_inputs": 1,
             "provider_entry_observed": True,
             "owned_claim_observed": True,
@@ -498,6 +503,7 @@ async def test_worker_readiness_timeout_saves_without_retrying_diagnostics(
     (tmp_path / "manifest.json").write_text(json.dumps(manifest))
     startup = valid_report()["startup_interruption"]
     startup["document_id"] = "large"
+    startup["readiness"]["target_id"] = "large"
     (tmp_path / "fresh.json").write_text(json.dumps({"startup_interruption": startup}))
     diagnostic_calls = []
     original_timeouts = []
@@ -621,6 +627,8 @@ async def test_worker_readiness_timeout_saves_without_retrying_diagnostics(
         "claim_released_on_stop",
         "real_completed_inputs",
         "interrupted_embedding_accounting",
+        "max_in_flight",
+        "readiness",
     ],
 )
 def test_trial_requires_observed_fresh_startup_interruption(phase, missing):
@@ -768,3 +776,108 @@ async def test_medium_replay_measurement_drains_prior_source_before_baseline(mon
     )
     assert all(proof.values())
     assert completions == ["prior source"] and state["attempt"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("progress", [True, False])
+async def test_witness_wait_observes_preparation_before_provider_stop(progress):
+    import asyncio
+    from types import SimpleNamespace
+
+    from scripts.embedding_contention_trial import BulkReadiness, wait_for_witness_inference
+
+    clock = FakeClock()
+    readiness = BulkReadiness("old-source", clock=clock)
+    readiness.started.set()
+    readiness.retarget("FRESH_STARTUP_WITNESS")
+    provider = SimpleNamespace(count_tokens=len)
+    checkpoints = []
+    stopped = []
+
+    async def checkpoint():
+        checkpoints.append(readiness.snapshot())
+
+    async def interrupted(document_id):
+        assert document_id == "fresh-source"
+        assert readiness.started.is_set() and clock.now == 90
+        stopped.append(document_id)
+
+    actual_wait = readiness.wait
+
+    async def controlled_wait(checkpoint):
+        await actual_wait(checkpoint, sleep=clock.sleep)
+
+    readiness.wait = controlled_wait
+
+    def project(document_id, projection):
+        if progress:
+            for tick in (20, 40, 60, 80):
+                clock.actions[tick] = lambda: provider.count_tokens("actual target sizing")
+            clock.actions[90] = lambda: readiness.run_inference(
+                ["FRESH_STARTUP_WITNESS input"], lambda texts: [[1.0]]
+            )
+        asyncio.run(
+            wait_for_witness_inference(
+                readiness, SimpleNamespace(wait=interrupted), "fresh-source", checkpoint
+            )
+        )
+        return []
+
+    ingestion = SimpleNamespace(_chunk_projection=project, _embed_chunks=None)
+    readiness.instrument(ingestion, provider)
+    if progress:
+        await asyncio.to_thread(
+            ingestion._chunk_projection,
+            "fresh-source",
+            SimpleNamespace(text="FRESH_STARTUP_WITNESS"),
+        )
+        assert stopped == ["fresh-source"]
+        assert readiness.snapshot()["sizing_completions"] == 4
+    else:
+        with pytest.raises(TimeoutError):
+            await asyncio.to_thread(
+                ingestion._chunk_projection,
+                "fresh-source",
+                SimpleNamespace(text="FRESH_STARTUP_WITNESS"),
+            )
+        assert clock.now == 120 and not stopped
+    assert checkpoints and checkpoints[0]["target_id"] == "fresh-source"
+
+
+@pytest.mark.asyncio
+async def test_production_size_witness_preparation_keeps_its_exact_marker(tmp_path):
+    import asyncio
+
+    from sage.adapters.stubs import SeededEmbeddingProvider
+    from sage.services.ingestion import IngestionService
+    from sage.services.selective_embedding import select_passages
+    from sage.source_adapters.structured_data_adapter import StructuredDataAdapter
+    from scripts.embedding_contention_trial import BulkReadiness, fixture
+
+    marker = "LARGE_BULK_TRIAL FRESH_STARTUP_WITNESS"
+    source = tmp_path / "fresh-startup-large.csv"
+    entry = fixture(source, 27262976, event=marker)
+    assert entry["bytes"] >= 27262976
+    projection = await StructuredDataAdapter().project(source)
+    provider = SeededEmbeddingProvider()
+    service = IngestionService.__new__(IngestionService)
+    service._embedding = provider
+    readiness = BulkReadiness("old-source")
+    readiness.started.set()
+    readiness.instrument(service, provider)
+    readiness.retarget(marker)
+    chunks = await asyncio.to_thread(service._chunk_projection, "fresh-source", projection)
+    state = readiness.snapshot()
+    assert state["target_id"] == "fresh-source" and state["target_marker"] == marker
+    assert len(chunks) > 6000 and state["sizing_completions"] > 1000
+    assert state["prepared_chunks"] == len(chunks) and not readiness.started.is_set()
+    selection = await asyncio.to_thread(
+        select_passages, chunks, projection, provider, "sha256:" + entry["source_sha256"]
+    )
+    marked = [x.input_text for x in selection.package.selected if marker in x.input_text]
+    assert marked and len(selection.package.selected) > 1
+    # The exact pinned tokenizer's separate no-inference receipt establishes
+    # four of four marked selections; this cheap production-size fixture uses
+    # the byte-counted test port and proves marker reachability and >1 input.
+    readiness.run_inference([marked[0]], lambda texts: [[1.0]])
+    assert readiness.started.is_set()
