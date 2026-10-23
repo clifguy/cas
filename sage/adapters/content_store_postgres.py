@@ -45,6 +45,7 @@ from sage.adapters.interfaces import (
     KeywordQueryParse,
     SearchResult,
 )
+from sage.instrumentation.performance import observed_context, span
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
 from sage.models.coverage import DIMENSIONS, CoverageDimension, ProcessingCoverage
 from sage.models.enums import TERMINAL_PIPELINE_STATUSES, PipelineStatus
@@ -615,7 +616,9 @@ class PostgresContentStore(ContentStore):
                 row[1] if row else None,
             )
 
-    async def update_processing_status(self, document_id: str, attempt: int, updates: dict) -> bool:
+    async def update_processing_status(
+        self, document_id: str, attempt: int, updates: dict, *, processing_stage: str | None = None
+    ) -> bool:
         allowed = {
             "pipeline_status",
             "pipeline_error",
@@ -626,6 +629,10 @@ class PostgresContentStore(ContentStore):
         }
         if not updates or set(updates) - allowed:
             raise ValueError("invalid processing observation fields")
+        if processing_stage not in (None, "indexing", "abstraction"):
+            raise ValueError("invalid processing stage")
+        if processing_stage is not None:
+            updates = {**updates, "processing_resume_stage": processing_stage}
         async with self._pool.connection() as conn:
             assignments = ", ".join(f"{key} = %s" for key in updates)
             cur = await conn.execute(
@@ -695,7 +702,17 @@ class PostgresContentStore(ContentStore):
                     c.unit in bounds and c.represented > bounds[c.unit] for c in evidence.counts
                 ):
                     raise ValueError("coverage exceeds published artifacts")
-        async with self._pool.connection() as conn, conn.transaction():
+        async with (
+            observed_context(
+                self._pool.connection(),
+                "database.pool",
+                "database.return",
+                "database.return_failed",
+            ) as conn,
+            observed_context(
+                conn.transaction(), "database.begin", "database.commit", "database.rollback"
+            ),
+        ):
             cur = await conn.execute(
                 "SELECT processing_coverage, source_content_hash FROM documents "
                 "WHERE id = %s AND (processing_coverage->>'attempt')::bigint = %s FOR UPDATE",
@@ -715,10 +732,11 @@ class PostgresContentStore(ContentStore):
                 changes[name] = value.model_dump(mode="json")
             merged = ProcessingCoverage.model_validate({**current.model_dump(), **changes})
             if chunks is not None:
-                await conn.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
-                if chunks:
-                    async with conn.cursor() as cur:
-                        await cur.executemany(_INSERT_SQL, [self._chunk_row(c) for c in chunks])
+                with span("database.write_chunks"):
+                    await conn.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
+                    if chunks:
+                        async with conn.cursor() as cur:
+                            await cur.executemany(_INSERT_SQL, [self._chunk_row(c) for c in chunks])
             if surface is not None:
                 await conn.execute(
                     "DELETE FROM document_surface WHERE document_id = %s", (document_id,)
@@ -738,11 +756,14 @@ class PostgresContentStore(ContentStore):
                 )
             await conn.execute(
                 "UPDATE documents SET processing_coverage = %s, "
-                "indexed_at = CASE WHEN %s THEN %s ELSE indexed_at END WHERE id = %s",
+                "indexed_at = CASE WHEN %s THEN %s ELSE indexed_at END, "
+                "processing_resume_stage = CASE WHEN %s THEN 'abstraction' "
+                "ELSE processing_resume_stage END WHERE id = %s",
                 (
                     Jsonb(merged.model_dump(mode="json")),
                     chunks is not None,
                     datetime.now(timezone.utc).isoformat(),
+                    chunks is not None,
                     document_id,
                 ),
             )
@@ -756,19 +777,40 @@ class PostgresContentStore(ContentStore):
     async def index_chunks(self, document_id: str, chunks: list[Chunk]) -> None:
         """Replace all chunks for a document (delete-then-insert, atomic)."""
         with self._query_timer.measure("index_chunks", params={"chunks": len(chunks)}):
-            async with self._pool.connection() as conn, conn.transaction():
+            async with (
+                observed_context(
+                    self._pool.connection(),
+                    "database.pool",
+                    "database.return",
+                    "database.return_failed",
+                ) as conn,
+                observed_context(
+                    conn.transaction(), "database.begin", "database.commit", "database.rollback"
+                ),
+            ):
                 await self._invalidate_processing(
                     conn, document_id, ("projection", "keyword_indexing", "passage_embeddings")
                 )
-                await conn.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
-                if chunks:
-                    async with conn.cursor() as cur:
-                        await cur.executemany(_INSERT_SQL, [self._chunk_row(c) for c in chunks])
+                with span("database.write_chunks"):
+                    await conn.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
+                    if chunks:
+                        async with conn.cursor() as cur:
+                            await cur.executemany(_INSERT_SQL, [self._chunk_row(c) for c in chunks])
 
     async def upsert_document_surface(self, surface: DocumentSurface) -> None:
         """Write a document's document-level row; its passages are untouched."""
         with self._query_timer.measure("upsert_document_surface"):
-            async with self._pool.connection() as conn, conn.transaction():
+            async with (
+                observed_context(
+                    self._pool.connection(),
+                    "database.pool",
+                    "database.return",
+                    "database.return_failed",
+                ) as conn,
+                observed_context(
+                    conn.transaction(), "database.begin", "database.commit", "database.rollback"
+                ),
+            ):
                 await self._invalidate_processing(
                     conn, surface.document_id, ("keyword_indexing", "abstraction_evidence")
                 )
@@ -826,7 +868,17 @@ class PostgresContentStore(ContentStore):
         if not derived:
             return 0
         with self._query_timer.measure("update_indexed_structure", params={"paths": len(derived)}):
-            async with self._pool.connection() as conn, conn.transaction():
+            async with (
+                observed_context(
+                    self._pool.connection(),
+                    "database.pool",
+                    "database.return",
+                    "database.return_failed",
+                ) as conn,
+                observed_context(
+                    conn.transaction(), "database.begin", "database.commit", "database.rollback"
+                ),
+            ):
                 await self._invalidate_processing(conn, document_id, ("keyword_indexing",))
                 async with conn.cursor() as cur:
                     await cur.executemany(
@@ -839,7 +891,17 @@ class PostgresContentStore(ContentStore):
     async def remove_document(self, document_id: str) -> None:
         """Remove a document's passages and document surface (idempotent)."""
         with self._query_timer.measure("remove_document"):
-            async with self._pool.connection() as conn, conn.transaction():
+            async with (
+                observed_context(
+                    self._pool.connection(),
+                    "database.pool",
+                    "database.return",
+                    "database.return_failed",
+                ) as conn,
+                observed_context(
+                    conn.transaction(), "database.begin", "database.commit", "database.rollback"
+                ),
+            ):
                 await self._invalidate_processing(
                     conn,
                     document_id,
@@ -954,7 +1016,17 @@ class PostgresContentStore(ContentStore):
         the passage table's.
         """
         with self._query_timer.measure("rebuild_document_surface_vector"):
-            async with self._pool.connection() as conn, conn.transaction():
+            async with (
+                observed_context(
+                    self._pool.connection(),
+                    "database.pool",
+                    "database.return",
+                    "database.return_failed",
+                ) as conn,
+                observed_context(
+                    conn.transaction(), "database.begin", "database.commit", "database.rollback"
+                ),
+            ):
                 # A full-table rewrite can outlast the pool's statement timeout;
                 # lift it for this transaction only, the lock wait included.
                 await conn.execute("SET LOCAL statement_timeout = 0")
@@ -1010,7 +1082,17 @@ class PostgresContentStore(ContentStore):
         """
         with self._query_timer.measure("migrate_indexed_structure", params={"pairs": len(derived)}):
             written = 0
-            async with self._pool.connection() as conn, conn.transaction():
+            async with (
+                observed_context(
+                    self._pool.connection(),
+                    "database.pool",
+                    "database.return",
+                    "database.return_failed",
+                ) as conn,
+                observed_context(
+                    conn.transaction(), "database.begin", "database.commit", "database.rollback"
+                ),
+            ):
                 # A full-table rewrite can outlast the pool's statement timeout;
                 # lift it for this transaction only, the lock wait included.
                 await conn.execute("SET LOCAL statement_timeout = 0")
@@ -1078,7 +1160,17 @@ class PostgresContentStore(ContentStore):
             set_clause = ", ".join(f"{c} = %s" for c in cols)
             params: list[object] = [metadata[c] for c in cols]
             params.append(document_id)
-            async with self._pool.connection() as conn, conn.transaction():
+            async with (
+                observed_context(
+                    self._pool.connection(),
+                    "database.pool",
+                    "database.return",
+                    "database.return_failed",
+                ) as conn,
+                observed_context(
+                    conn.transaction(), "database.begin", "database.commit", "database.rollback"
+                ),
+            ):
                 await conn.execute(
                     f"UPDATE chunks SET {set_clause} WHERE document_id = %s",  # noqa: S608
                     params,
@@ -1223,7 +1315,17 @@ class PostgresContentStore(ContentStore):
                 limit,
                 limit,
             ]
-            async with self._read_connection() as conn, conn.transaction():
+            async with (
+                observed_context(
+                    self._read_connection(),
+                    "database.pool",
+                    "database.return",
+                    "database.return_failed",
+                ) as conn,
+                observed_context(
+                    conn.transaction(), "database.begin", "database.commit", "database.rollback"
+                ),
+            ):
                 await conn.execute("SET LOCAL hnsw.iterative_scan = strict_order")
                 cur = await conn.execute(sql, params)
                 rows = await cur.fetchall()

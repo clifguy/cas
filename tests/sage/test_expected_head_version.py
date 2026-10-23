@@ -394,11 +394,18 @@ async def _race_two_supersedes(
         return document
 
     async def insert(
-        new_doc: Document, predecessor_id: str, predecessor_updates: dict, edge: Edge
+        new_doc: Document,
+        predecessor_id: str,
+        predecessor_updates: dict,
+        edge: Edge,
+        *,
+        processing_stage: str | None = None,
     ) -> tuple[Document, Document]:
         # This observation is before the real transaction, not after its result.
         assert set(initial_reads) == set(contenders)
-        result = await original_insert(new_doc, predecessor_id, predecessor_updates, edge)
+        result = await original_insert(
+            new_doc, predecessor_id, predecessor_updates, edge, processing_stage=processing_stage
+        )
         commits.append(result[0].id)
         return result
 
@@ -522,12 +529,19 @@ async def test_parallel_late_predecessor_read_rejects_not_active(
         return document
 
     async def insert(
-        new_doc: Document, predecessor_id: str, predecessor_updates: dict, edge: Edge
+        new_doc: Document,
+        predecessor_id: str,
+        predecessor_updates: dict,
+        edge: Edge,
+        *,
+        processing_stage: str | None = None,
     ) -> tuple[Document, Document]:
         first_at_insert.set()
         await late_waiting.wait()
         assert late_waiting.is_set(), "commit started before the late contender arrived"
-        result = await original_insert(new_doc, predecessor_id, predecessor_updates, edge)
+        result = await original_insert(
+            new_doc, predecessor_id, predecessor_updates, edge, processing_stage=processing_stage
+        )
         commits.append(result[0].id)
         ordering.append("committed")
         committed.set()

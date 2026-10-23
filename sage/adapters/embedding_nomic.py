@@ -10,10 +10,12 @@ are imported; a mismatch refuses the load.
 """
 
 import asyncio
+import contextvars
 import hashlib
 import logging
 import os
 import threading
+import time
 from collections.abc import Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -23,6 +25,7 @@ from typing import Any
 
 from sage.adapters.interfaces import EmbeddingProvider
 from sage.adapters.tokenization import require_bounded_tokenizer_input
+from sage.instrumentation.performance import current_trace, span
 
 logger = logging.getLogger(__name__)
 
@@ -314,8 +317,13 @@ class NomicEmbeddingProvider(EmbeddingProvider):
         # The fast tokenizer changes its truncation state for each call. The
         # passage worker and inference worker must not borrow it concurrently.
         # Production sizing calls run off-loop, so waiting does not stop requests.
-        with self._tokenizer_work_lock():
-            return len(self._model.tokenizer(text)["input_ids"])
+        with span("sizing.tokenizer_lock"):
+            self._tokenizer_work_lock().acquire()
+        try:
+            with span("sizing.tokenize"):
+                return len(self._model.tokenizer(text)["input_ids"])
+        finally:
+            self._tokenizer_work_lock().release()
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts. Returns L2-normalized vectors.
@@ -364,10 +372,36 @@ class NomicEmbeddingProvider(EmbeddingProvider):
                 work.add_done_callback(partial(self._complete_inference, self._inference_slots))
         result: list[list[float]] = []
         for text in texts:
-            await self._inference_slots.acquire()
+            with span("embedding.admission"):
+                await self._inference_slots.acquire()
             try:
                 abandoned = threading.Event()
-                submitted = self._executor.submit(self._embed_quantum_sync, [text], abandoned)
+                trace = current_trace()
+                context = contextvars.copy_context()
+                queued_ns = time.perf_counter_ns()
+                if trace is not None:
+                    trace.retain()
+
+                def run(
+                    text: str = text,
+                    abandoned: threading.Event = abandoned,
+                    trace=trace,
+                    queued_ns: int = queued_ns,
+                ) -> list[list[float]]:
+                    if trace is not None:
+                        trace.observe("embedding.executor", queued_ns, time.perf_counter_ns())
+                    try:
+                        return self._embed_quantum_sync([text], abandoned)
+                    finally:
+                        if trace is not None:
+                            trace.finish()
+
+                try:
+                    submitted = self._executor.submit(context.run, run)
+                except BaseException:
+                    if trace is not None:
+                        trace.finish()
+                    raise
                 self._inference_jobs = [job for job in self._inference_jobs if not job.done()]
                 self._inference_jobs.append(submitted)
                 work = asyncio.wrap_future(submitted, loop=loop)
@@ -404,6 +438,9 @@ class NomicEmbeddingProvider(EmbeddingProvider):
     ) -> list[list[float]]:
         """Drain abandoned queue items without borrowing model/tokenizer state."""
         if abandoned.is_set():
+            trace = current_trace()
+            if trace is not None:
+                trace.count("embedding.abandoned", len(texts))
             return []
         return self._embed_sync(texts)
 
@@ -413,9 +450,44 @@ class NomicEmbeddingProvider(EmbeddingProvider):
         batch_size=8 bounds per-batch memory for long sequences (attention
         scales quadratically with sequence length).
         """
-        with self._tokenizer_work_lock():
-            embeddings = self._model.encode(texts, normalize_embeddings=True, batch_size=8)
-        return [vec.tolist() for vec in embeddings]
+        with span("embedding.tokenizer_lock"):
+            self._tokenizer_work_lock().acquire()
+        try:
+            trace = current_trace()
+            hook_name = "preprocess" if hasattr(self._model, "preprocess") else "tokenize"
+            original = getattr(self._model, hook_name, None)
+            owned = hook_name in getattr(self._model, "__dict__", {})
+            if trace is not None:
+                trace.count("embedding.texts", len(texts))
+                trace.count("embedding.characters", sum(map(len, texts)))
+            if trace is not None and callable(original):
+
+                def tokenize(*args: Any, **kwargs: Any) -> Any:
+                    with span("embedding.tokenize"):
+                        features = original(*args, **kwargs)
+                    mask = features.get("attention_mask")
+                    if mask is not None:
+                        trace.count("embedding.tokens", int(mask.sum().item()))
+                        for length in mask.sum(-1).tolist():
+                            trace.extent("embedding.token_length", int(length))
+                        trace.count("embedding.tokenized_batches", 1)
+                    return features
+
+                setattr(self._model, hook_name, tokenize)
+            try:
+                # Includes tokenization; its separately measured child stage
+                # must not be added again to this inclusive duration.
+                with span("embedding.encode"):
+                    embeddings = self._model.encode(texts, normalize_embeddings=True, batch_size=8)
+            finally:
+                if trace is not None and callable(original):
+                    if owned:
+                        setattr(self._model, hook_name, original)
+                    else:
+                        delattr(self._model, hook_name)
+            return [vec.tolist() for vec in embeddings]
+        finally:
+            self._tokenizer_work_lock().release()
 
 
 # ── Process-level singleton ─────────────────────────────────

@@ -62,16 +62,28 @@ A metadata mutation captures its final document after derived-text maintenance,
 inside the document lock. Each bulk item retains its own response snapshot.
 A preview keeps current evidence because it does not rewrite served artifacts.
 
-Recovery selects pending work from execution status, then uses the existing stage
-timestamps to distinguish the latest projection from retained prior passages.
-`projected_at` records the adapter run; `indexed_at` advances atomically with
-passage publication. Older or missing indexing requires source reprojection and
-indexing; indexing that covers the latest projection permits Stage3-only recovery.
-Interrupted replacement therefore cannot complete by abstracting the retained old
-generation. Stage3 failures retain the correctly published passage generation,
-and failed replacement indexing leaves the prior served generation available.
+Recovery selects pending documents solely from existing `pipeline_status`.
+An internal nullable next-stage checkpoint on that same row preserves admitted
+work: `indexing` for a new projection/replacement, `abstraction` for an explicit
+stored-passage request. Admission records status, checkpoint and attempt fence
+atomically with its document writes. Passage publication advances the checkpoint
+to abstraction in the same transaction as passages, coverage and `indexed_at`.
+Failure or a stale fence changes none of that publication group. Interrupted work
+retains its checkpoint; a fresh service recovers the requested stage without
+reconstructing intent from volatile jobs or timestamps. Retry after published
+Stage2 reuses those passages instead of repeating correct indexing.
 
-An explicit reabstract request remains Stage3-only over its admitted stored
-passages, including legacy rows without stage timestamps. That immediate caller
-intent is distinct from startup recovery, which must reconstruct unfinished work
-from durable facts. Missing passages are still refused before provider dispatch.
+An explicit reabstract request remains Stage3-only over admitted stored passages,
+including legacy rows with null timestamps or unavailable source files. Missing
+passages are refused at admission; if they disappear later, source reprojection
+first records the indexing checkpoint under the current fence. Newer owners
+cannot be overwritten by stale recovery/admission or publication observations.
+
+Provisioning adds the nullable internal checkpoint idempotently and leaves old
+rows null. It is neither caller-writable metadata nor returned document data,
+and cannot schedule a terminal document. Null historical checkpoints use existing
+stage facts only for compatibility: a known newer projection requires indexing;
+legacy passage-only work remains recoverable. No historical completeness, stage
+or coverage is backfilled. The queue remains volatile under CAS-ADR-041.
+
+Admission keeps its own publication fence through source retention, inline execution, and queued retries. Initial insertion establishes that fence with status and stage; later reads never adopt another worker's attempt.
