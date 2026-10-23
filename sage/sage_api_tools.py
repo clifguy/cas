@@ -222,9 +222,9 @@ _WRITE_TO_PATH_RECIPE = (
 )
 
 _GET_DOCUMENT_WRITE_TO_PATH = (
-    "Absolute path on the machine running the SAGE server process: "
+    "Absolute path on machine running the SAGE server process: "
     "Streams retained source bytes (vault's "
-    "configured source store; no inline-content ceiling), returning "
+    "configured source store; no inline ceiling), returning "
     "`written_to`, `content_size` and `content_hash`. "
     + _WRITE_TO_PATH_RECIPE.format(
         subject="document", regardless="whether or not the document exists"
@@ -1020,9 +1020,9 @@ def register_sage_tools(
             bool,
             Field(
                 description=(
-                    "True adds `content` (base64 for any `body_form`) and `content_size`. "
-                    "content_too_large (413) above 100 MB (SAGE_MAX_INLINE_CONTENT_BYTES); "
-                    "use exclusive `write_to_path`. "
+                    "True: base64 `content` (any `body_form`) and `content_size`. "
+                    "content_too_large (413)>100MB (SAGE_MAX_INLINE_CONTENT_BYTES); "
+                    "exclusive `write_to_path`. "
                     "`inspection.selection_summary`: complete|limited|interrupted; "
                     "exact selected_inputs/selected_tokens (identity.tokenization); "
                     "established_occurrences lower-bound unless associations_complete; "
@@ -1064,14 +1064,14 @@ def register_sage_tools(
         - ``invalid_vault_id`` (400)
         - ``vault_not_found`` (404)
         - ``invalid_document_id`` (400)
-        - ``document_not_found`` (404): document absent.
-        - ``content_file_missing`` (404): vault-local file absent.
+        - ``document_not_found`` (404): no document with that id.
+        - ``content_file_missing`` (404): the vault-local file is absent.
         - ``content_too_large`` (413)
         - ``content_delivery_conflict`` (400): both delivery modes set.
         - ``write_path_exists`` (409)
         - ``write_path_invalid`` (400)
-        - ``vault_source_store_refused`` (502): resolve at store before
-          retrying; ``detail.store_status`` is its status.
+        - ``vault_source_store_refused`` (502): resolve it at the store before
+          retrying; ``detail.store_status`` carries its status.
         - ``vault_source_store_unavailable`` (503): retryable.
         """
         try:
