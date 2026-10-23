@@ -163,3 +163,66 @@ and remove only the owned foundation after exporting the available evidence.
 A subscription budget is not a hard spending stop. The bounded allocation,
 request/input limits, conservative rate estimate and independently scheduled
 expiry are the controls; preserve their readbacks and actual cleanup outcome.
+
+## One-time scoped operator bootstrap
+
+Use a separate experiment application and GitHub environment, with one exact
+`repo:clifguy/cas:environment:<environment>` federated subject and a main-only
+deployment branch policy. The production deployment application's grants remain
+unchanged. Azure requires a resource group to exist before it accepts group-scoped
+role assignments. From the merged checkout, the human bootstrap operator runs:
+
+```sh
+.venv/bin/python -m deploy.performance_bootstrap bootstrap \
+  --spec /private/path/spec.json --approved-sha256 SPEC_SHA256 \
+  --environment EXPERIMENT_ENVIRONMENT --principal EXPERIMENT_SP_OBJECT_ID \
+  --output /private/path/bootstrap
+```
+
+The operator needs group creation, custom role definition and assignment rights.
+The command creates only the two empty, owned groups and the exact scoped grants.
+The experiment application gets subscription deployment orchestration and specific
+read-only prerequisite inspection, Contributor on the two trial groups, conditioned
+RBAC administration restricted by role and ServicePrincipal type: Contributor in
+the trial group and Blob Data Contributor in the control group, source deployment
+orchestration, registry read/pull and conditioned AcrPull assignment, secret-scope
+conditioned Secrets User assignment, and read-only source configuration access.
+These role/type conditions do not restrict PrincipalId: they permit assignments to
+any service principal at their exact scope. The separate ARM preview binds the
+actual expiry, runtime, bootstrap and export role assignments to their known
+principal IDs before deployment. The same distinction applies to registry, secret
+and blob delegation. It never grants subscription Contributor/Owner or subscription
+RBAC administration.
+The bootstrap checks that the principal is an application with only the exact
+experiment-environment federation. It does not assign Graph administrative roles;
+the separate tenant-administrator prerequisites above still apply, including the
+SAGE audience's required application role.
+
+Retain `bootstrap-receipt.json` privately. Intent is persisted before any mutation;
+ready is written only after live group, role-definition and assignment readbacks.
+A successful repeat verifies the same empty inventory without renewing its clock
+or issuing writes. An interrupted intent is deliberately refused: reconcile its
+recorded groups and assignments before deciding on recovery, rather than pretending
+it is a completed foundation. No billable foundation or stack is created here.
+A partial bootstrap must be reconciled by the human bootstrap operator; do not
+fabricate a ready receipt to resume it.
+
+Set the exact ready receipt bytes in `PERF_BOOTSTRAP_RECEIPT_JSON` in the selected
+experiment environment. Dispatch with both `approved_sha256` for the specification
+and `approved_bootstrap_sha256` for the receipt. The committed workflow verifies
+both hashes, the actual signed-in principal and environment, and materializes the
+original runtime plan. Time spent bootstrapping counts against the four-hour
+window; a new dispatch cannot extend it. Never refresh timestamps in a receipt.
+Only independently verified empty groups may enter initial foundation creation.
+Normal retained foundation resumes still require their own provision receipt.
+
+The existing expiry and export-bound cleanup rules continue to apply. Group
+removal removes group-local bootstrap assignments; it does not remove the separate
+operator's subscription/source grants or Graph grants. After export and verified
+trial cleanup, the human bootstrap operator must revoke the exact assignments in
+the retained bootstrap receipt, remove the temporary Graph/SAGE assignments and
+disable or remove the experiment federation/application and environment when no
+longer needed. Retain their final readbacks. Custom read/orchestration role
+definitions are non-billable; remove them only after verifying no other assignments
+use them. Do not claim this operator-access cleanup ran merely because the CI
+resource cleanup passed.
