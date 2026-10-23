@@ -436,6 +436,11 @@ async def test_controlled_bounded_csv_complete_pipeline(pg_pool, ingestion_servi
             ),
         ),
         (
+            "selected-dates",
+            "# Widget examples\nSupplied examples label a widget on 2025-10-01 "
+            "and update a widget on 2025-10-03.",
+        ),
+        (
             "instruction-data",
             (
                 "# Source\nThis source records a model instruction: "
@@ -465,7 +470,7 @@ async def test_controlled_bounded_csv_complete_pipeline(pg_pool, ingestion_servi
         )
     report["clean_controls"] = controls
     report["all_actual_model_calls"] = model_calls
-    assert len(model_calls) == len(calls) == 3
+    assert len(model_calls) == len(calls) == 4
     Path(os.environ["SAGE_BOUNDED_CSV_REPORT"]).write_text(json.dumps(report, indent=2))
     timing_logger.removeHandler(handler)
     await provider.unload()
