@@ -327,8 +327,10 @@ source-wide call allowance. Cumulative defaults are 49152 input tokens (maximum 
 reserves a call and its complete prompt/output allowances **before** inference.
 Uncertain, failed and interrupted calls retain their reservations across retry,
 reabstract, restart and recompute; changing the selection identity or allowances
-refuses further consumption instead of resetting the ledger. A new retained
-source hash establishes a new attributable source scope. Ordinary reabstract is
+refuses further consumption instead of resetting the ledger. A new delivered-source
+`identity.source_hash` establishes a new attributable source scope. Changing only
+the inspected retained-byte digest changes selection identity and is refused as
+`scope_changed`; it does not reset prior consumption. Ordinary reabstract is
 not permission to expand consumed work. Hosted SDK generation retries are disabled.
 Bounded local work validates the actual first generation instead of issuing an
 additional startup probe; direct legacy adapter calls retain their probe behavior.
