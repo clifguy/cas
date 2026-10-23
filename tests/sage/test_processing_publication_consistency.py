@@ -202,12 +202,12 @@ async def test_retention_identity_records_the_effective_attempt_configuration(
     original = ingestion._run_projection
     captured = []
 
-    async def project(adapter, path, config):
+    async def project(adapter, path, config, **kwargs):
         captured.append(deepcopy(config or {}))
         ingestion_service._config.adapter_defaults["markdown"]["changed_after_attempt"] = True
         if "nested" in defaults:
             ingestion_service._config.adapter_defaults["markdown"]["nested"]["base"] = 99
-        return await original(adapter, path, config)
+        return await original(adapter, path, config, **kwargs)
 
     monkeypatch.setattr(ingestion, "_run_projection", project)
     source = tmp_vault_dir / "identity.md"

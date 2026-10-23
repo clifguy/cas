@@ -304,7 +304,7 @@ async def test_ingest_retention_survives_abstraction_failure(
     )
     assert read.processing_coverage.source_retention.counts[0].total == source.stat().st_size
     assert read.processing_coverage.source_retention.counts[0].represented == source.stat().st_size
-    assert read.processing_coverage.inspection.scope == "unknown"
+    assert read.processing_coverage.inspection.scope == "complete"
     assert read.processing_coverage.abstraction_evidence.scope == "unknown"
 
 

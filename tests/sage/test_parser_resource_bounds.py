@@ -400,8 +400,47 @@ def test_every_projection_in_the_ingestion_service_runs_through_the_worker():
         for node in ast.walk(tree)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
-        and node.func.id == "_run_projection"
+        and node.func.id in {"_run_projection", "_run_inspected_projection"}
     ]
+    wrapper = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_run_inspected_projection"
+    )
+    assert any(
+        isinstance(node, ast.Await)
+        and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name)
+        and node.value.func.id == "_run_projection"
+        for node in ast.walk(wrapper)
+    ), "inspection wrapper must preserve the existing projection worker boundary"
+    worker = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "_run_projection"
+    )
+    materializer = next(
+        node
+        for node in ast.walk(worker)
+        if isinstance(node, ast.FunctionDef) and node.name == "project"
+    )
+    guards = [
+        node.lineno
+        for node in ast.walk(materializer)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "check_projection_work"
+    ]
+    projections = [
+        node.lineno
+        for node in ast.walk(materializer)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "project"
+    ]
+    assert guards and projections and max(guards) < min(projections), (
+        "every original projector must pass admission on its worker before materialization"
+    )
     assert direct == []
     assert len(helper_calls) >= 4
 

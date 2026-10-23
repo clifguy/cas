@@ -312,7 +312,15 @@ class PptxAdapter(SourceAdapter):
     EXTENSIONS = [".pptx", ".potx"]
 
     def check_config(self, config: dict | None) -> None:
+        super().check_config(config)
         positive_int(config, "max_slides", _DEFAULT_MAX_SLIDES)
+
+    def effective_config(self, config: dict | None) -> dict:
+        """Include internal defaults through the same resolvers projection uses."""
+        return {
+            **super().effective_config(config),
+            "max_slides": positive_int(config, "max_slides", _DEFAULT_MAX_SLIDES),
+        }
 
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
         max_slides = positive_int(config, "max_slides", _DEFAULT_MAX_SLIDES)

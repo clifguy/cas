@@ -3723,7 +3723,7 @@ async def test_recompute_pipeline_reprojects_with_the_stored_request_config(
     await service.recompute_pipeline(result.document.id)
 
     assert adapter.configs, "recompute_pipeline did not re-project"
-    assert adapter.configs[-1] == _MERGED_DOCX_CONFIG
+    assert adapter.configs[-1] == adapter.effective_config(_MERGED_DOCX_CONFIG)
     await await_pipeline_idle(graph_store, result.document.id, service=service)
     assert "SUBTITLED" in await stub_content_store.get_heading_paths(result.document.id)
 
@@ -3744,7 +3744,7 @@ async def test_worker_recovery_reprojects_with_the_stored_request_config(
     adapter.configs.clear()
     projection = await service._reproject_from_source(result.document.id)
 
-    assert adapter.configs == [_MERGED_DOCX_CONFIG]
+    assert adapter.configs == [adapter.effective_config(_MERGED_DOCX_CONFIG)]
     assert projection.headings, "the reprojection must read the subtitle as a heading"
 
 

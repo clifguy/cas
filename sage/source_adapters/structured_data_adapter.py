@@ -65,6 +65,7 @@ from sage.source_adapters.base import (
     ProjectionResult,
     SourceAdapter,
     SourceReadError,
+    discovery_configuration,
     extract_adr_id_from_filename,
 )
 
@@ -92,10 +93,14 @@ _INDENT = "  "
 
 
 class StructuredDataAdapter(SourceAdapter):
+    NATIVE_FACTS = True
     VERSION = "0.3.0"
     EXTENSIONS = [_JSON, _JSON_LINES, *_YAML, _TOML, _XML, *_DELIMITERS]
 
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
+        from sage.source_adapters.structure import check_projection_work
+
+        check_projection_work(source_path, discovery_configuration(config)[1])
         raw_bytes = source_path.read_bytes()
         content_hash = hashlib.sha256(raw_bytes).hexdigest()
         suffix = source_path.suffix.lower()

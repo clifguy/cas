@@ -22,6 +22,7 @@ from sage.source_adapters.base import (
     SourceAdapter,
     SourceReadError,
     check_zip_package,
+    discovery_configuration,
     optional_positive_int,
     positive_int,
 )
@@ -76,17 +77,30 @@ class XlsxAdapter(SourceAdapter):
     # content, plus FTS index on heading_path).
     # 0.3.0: chunker emits one chunk per heading regardless of body content
     # (Word-Find equivalence for empty-content parents).
+    NATIVE_FACTS = True
     VERSION = "0.3.0"
     EXTENSIONS = [".xlsx"]
 
     def check_config(self, config: dict | None) -> None:
+        super().check_config(config)
         positive_int(config, "preview_rows", _DEFAULT_PREVIEW_ROWS)
         optional_positive_int(config, "max_sheets")
+
+    def effective_config(self, config: dict | None) -> dict:
+        """Include internal defaults through the same resolvers projection uses."""
+        return {
+            **super().effective_config(config),
+            "preview_rows": positive_int(config, "preview_rows", _DEFAULT_PREVIEW_ROWS),
+            "max_sheets": optional_positive_int(config, "max_sheets"),
+        }
 
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
         preview_rows = positive_int(config, "preview_rows", _DEFAULT_PREVIEW_ROWS)
         max_sheets = optional_positive_int(config, "max_sheets")
 
+        from sage.source_adapters.structure import check_projection_work
+
+        check_projection_work(source_path, discovery_configuration(config)[1])
         raw_bytes = source_path.read_bytes()
         content_hash = hashlib.sha256(raw_bytes).hexdigest()
 

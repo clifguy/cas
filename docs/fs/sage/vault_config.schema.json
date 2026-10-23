@@ -77,6 +77,14 @@
         "description": "Projection parameters for one adapter. Structure varies by source type; a key the receiving adapter does not read is ignored.",
         "additionalProperties": true,
         "properties": {
+          "discovery_selection": {
+            "$ref": "#/$defs/discovery_selection",
+            "description": "Shared deterministic selection settings for every adapter. Optional keys name SelectionConfig limits; unspecified values use shared defaults. Positive integer values are bounded by shared hard maxima; unknown keys are refused. Request config deep-merges over these vault defaults."
+          },
+          "discovery_facts": {
+            "$ref": "#/$defs/discovery_facts",
+            "description": "Shared source/parser inspection settings for every adapter: max_source_bytes, max_depth, max_parse_nodes, max_rows and max_columns. Positive integers use shared defaults and hard maxima. Structured projection admission enforces these limits before materializers; source_unreadable refuses excessive source or parse work."
+          },
           "dialect": {
             "type": "string",
             "enum": ["gfm", "pandoc"],
@@ -202,6 +210,110 @@
           "exclusiveMinimum": 0,
           "default": 60.0,
           "description": "Period at which the background flusher emits a summary record containing the per-label suppressed counts accumulated since the previous flush."
+        }
+      }
+    }
+  },
+  "$defs": {
+    "discovery_selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_values": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 400000,
+          "default": 100000
+        },
+        "max_regions": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1024,
+          "default": 256
+        },
+        "max_fields": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096,
+          "default": 1024
+        },
+        "max_characters": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864,
+          "default": 16777216
+        },
+        "max_candidates": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32768,
+          "default": 8192
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32768,
+          "default": 8192
+        },
+        "max_excerpts": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096,
+          "default": 1024
+        },
+        "max_candidate_characters": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32768,
+          "default": 32768
+        },
+        "max_retained_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 67108864,
+          "default": 16777216
+        },
+        "max_association_runs": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65536,
+          "default": 16384
+        }
+      }
+    },
+    "discovery_facts": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "max_source_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 268435456,
+          "default": 67108864
+        },
+        "max_depth": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 128,
+          "default": 64
+        },
+        "max_parse_nodes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1600000,
+          "default": 400000
+        },
+        "max_rows": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 400000,
+          "default": 100000
+        },
+        "max_columns": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1024,
+          "default": 256
         }
       }
     }

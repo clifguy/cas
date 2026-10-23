@@ -1293,8 +1293,9 @@ class IngestRequest(BaseModel):
     config: dict | None = Field(
         default=None,
         description=(
-            "Adapter-specific configuration overrides. Structure depends on the adapter type; "
-            "the markdown adapter, for example, takes the dialect to read the document in."
+            "Adapter overrides; shape depends on format. discovery_selection and "
+            "discovery_facts mappings bound selection/parser work; unknown nested keys "
+            "or values beyond hard maxima fail."
         ),
     )
     created_by: str | None = Field(
