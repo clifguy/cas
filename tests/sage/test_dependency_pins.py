@@ -59,23 +59,22 @@ SECURITY_FLOORS: Final[dict[str, tuple[str, str]]] = {
     "anyio": ("4.14.2", "GHSA-82r6-8w77-94w6"),
     "certifi": ("2026.10.19", "GHSA-6q48-6c7w-9gw2"),
     "cryptography": ("50.0.0", "GHSA-g6cj-pr64-35w5"),
+    "filelock": ("4.2.1", "CVE-2026-112940 / CVE-2026-112913 / CVE-2026-112907"),
     "mcp": ("1.30.0", "GHSA-84m7-p3x7-pcfv"),
     "pillow": ("13.0.0", "GHSA-4rr5-89j8-mwwm"),
     "pyjwt": ("2.15.0", "GHSA-42vr-xj54-vc7v"),
     "pypdf": ("6.21.1", "GHSA-5hx5-vpf9-5wcv"),
     "sentence-transformers": ("5.6.0", "GHSA-jhr6-gm9c-rqjv"),
-    "setuptools": ("83.0.0", "GHSA-h35f-9h28-mq5c"),
+    "setuptools": ("84.1.0", "GHSA-xmj3-9gf7-h52w"),
     "torch": ("2.13.0", "GHSA-rrmf-rvhw-rf47"),
     "transformers": ("5.10.0", "GHSA-xrqw-3rrv-vx5w"),
     "urllib3": ("2.8.0", "GHSA-vxq7-64xx-v4gw"),
     "virtualenv": ("21.14.9", "GHSA-cw65-gx24-rc82"),
 }
 
-# The setuptools and torch floors above are one remediation, not two. torch 2.12.0 declares
-# ``setuptools<82``, so the setuptools fix was unreachable until torch moved;
-# torch 2.13.0 relaxes that to ``setuptools>=77.0.3``. setuptools is reached
-# only as a torch dependency, so a revert of the torch floor silently walks
-# setuptools back below its own -- keep the pair together.
+# torch 2.12.0 declares ``setuptools<82``, which excludes the fixed setuptools
+# floor; torch 2.13.0 relaxes that to ``setuptools>=77.0.3``. Keep the torch floor
+# so a later resolve cannot force setuptools back below its security floor.
 
 
 def _pyproject() -> dict:
@@ -245,6 +244,16 @@ def test_security_tool_certifi_floor(tool: str) -> None:
     floor, advisory = SECURITY_FLOORS["certifi"]
     below = [v for v in versions if Version(v) < Version(floor)]
     assert not below, f"{tool}.txt resolves certifi {below}, below {floor} ({advisory})"
+
+
+def test_audit_tool_filelock_floor() -> None:
+    """The scanner's separate install must also contain the fixed locking library."""
+    text = (REPO_ROOT / "requirements/security/pip-audit.txt").read_text(encoding="utf-8")
+    versions = re.findall(r"^filelock==(\S+)", text, re.MULTILINE)
+    assert versions, "pip-audit.txt must pin filelock explicitly"
+    floor, advisory = SECURITY_FLOORS["filelock"]
+    below = [v for v in versions if Version(v) < Version(floor)]
+    assert not below, f"pip-audit.txt resolves filelock {below}, below {floor} ({advisory})"
 
 
 def test_torch_is_direct_dependency() -> None:
