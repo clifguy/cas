@@ -222,8 +222,8 @@ _WRITE_TO_PATH_RECIPE = (
 )
 
 _GET_DOCUMENT_WRITE_TO_PATH = (
-    "Absolute path on SAGE server: "
-    "Streams retained source bytes there (vault's "
+    "Absolute path on the machine running the SAGE server process: "
+    "Streams retained source bytes (vault's "
     "configured source store; no inline-content ceiling), returning "
     "`written_to`, `content_size` and `content_hash`. "
     + _WRITE_TO_PATH_RECIPE.format(
@@ -477,7 +477,7 @@ _SEARCH_RESPONSE_MODE = _discover_param(
     mcp=(
         "Unset documents mode fits the budget: catalog becomes light "
         "(catalog_response_degraded_to_light); semantic/keyword shorten long "
-        "chunk_content to excerpt length, at least 200 characters "
+        "chunk_content to excerpt length, never fewer than 200 characters "
         "(scored_response_excerpted). Read whole via deterministic. "
         "Else hints.recommended_limit gives a fitting size. Explicit "
         "response_mode disables both. 45,000 bytes; override "
@@ -1064,14 +1064,14 @@ def register_sage_tools(
         - ``invalid_vault_id`` (400)
         - ``vault_not_found`` (404)
         - ``invalid_document_id`` (400)
-        - ``document_not_found`` (404): no document with that id.
-        - ``content_file_missing`` (404): the vault-local file is absent.
+        - ``document_not_found`` (404): document absent.
+        - ``content_file_missing`` (404): vault-local file absent.
         - ``content_too_large`` (413)
         - ``content_delivery_conflict`` (400): both delivery modes set.
         - ``write_path_exists`` (409)
         - ``write_path_invalid`` (400)
-        - ``vault_source_store_refused`` (502): resolve it at the store before
-          retrying; ``detail.store_status`` carries its status.
+        - ``vault_source_store_refused`` (502): resolve at store before
+          retrying; ``detail.store_status`` is its status.
         - ``vault_source_store_unavailable`` (503): retryable.
         """
         try:
