@@ -107,6 +107,9 @@ async def _seed_doc_with_chunks(
         chunk_index=0,
     )
     await content_store.index_chunks(doc.id, [chunk])
+    from tests.helpers.abstraction_evidence import seed_authored_evidence
+
+    await seed_authored_evidence(content_store, doc, body_text)
 
 
 def _build_ingestion_service(

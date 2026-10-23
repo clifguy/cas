@@ -295,7 +295,7 @@ async def test_source_reprojection_cannot_overwrite_a_newer_attempt(
     assert after.processing_coverage == before.processing_coverage
 
 
-async def test_explicit_reabstract_uses_legacy_passages_without_reprojecting_source(
+async def test_explicit_reabstract_refuses_unverified_legacy_passages(
     ingestion_service, pg_pool, postgres_graph_store, monkeypatch
 ):
     from tests.sage.test_processing_coverage import _chunks, _doc
@@ -319,8 +319,10 @@ async def test_explicit_reabstract_uses_legacy_passages_without_reprojecting_sou
     await service.reabstract(doc.id)
     await drain_abstraction_queue(service)
     after = await postgres_graph_store.get_document(doc.id)
-    assert after.pipeline_status.value == "abstraction_complete"
-    assert generated == ["LEGACY PASSAGES"]
+    assert after.pipeline_status.value == "failed"
+    assert generated == []
+    assert after.semantic_abstract is None
+    assert after.processing_coverage.abstraction_evidence.scope == "unknown"
     assert after.indexed_at is None and after.projected_at is None
     assert await service._content_store.get_all_chunks(doc.id) == _chunks("LEGACY PASSAGES")
     assert after.processing_coverage.projection == before.processing_coverage.projection

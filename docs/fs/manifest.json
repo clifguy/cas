@@ -185,6 +185,14 @@
       "version": "3.3",
       "role": "The per-change release classification record (patch or minor, with category and release-note text) that every change to the published contract adds under changes/unreleased/, and that the release step folds into revision_history.",
       "instantiation_checklist_items": []
+    },
+    {
+      "path": "sage/abstraction_evidence.schema.json",
+      "title": "Bounded abstraction durable evidence",
+      "status": "draft",
+      "version": null,
+      "role": "Internal authored-evidence package and source-scoped generation reservation storage contract.",
+      "instantiation_checklist_items": []
     }
   ],
   "deferred": [],

@@ -29,6 +29,7 @@ from sage.models.coverage import (
     ProcessingIdentity,
     canonical_configuration_hash,
 )
+from sage.models.discovery import EvidencePackage
 from sage.models.enums import ResolutionPolicy
 from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
 from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge
@@ -60,6 +61,7 @@ class StubContentStore(ContentStore):
         self._store: dict[str, list[Chunk]] = {}
         self._surfaces: dict[str, DocumentSurface] = {}
         self._embedding_accounting: dict[str, dict] = {}
+        self._abstraction_state: dict[str, dict] = {}
         self._embedding_authorizations: dict[str, str] = {}
 
     def bind_processing_store(self, graph_store: GraphStore) -> None:
@@ -169,6 +171,8 @@ class StubContentStore(ContentStore):
                 },
             }
         )
+        if semantic_abstract is not None:
+            coverage.served_abstraction_generation = attempt
         updates = {"processing_coverage": coverage}
         if chunks is not None and indexing_complete:
             updates["indexed_at"] = datetime.now(timezone.utc)
@@ -186,6 +190,83 @@ class StubContentStore(ContentStore):
         if surface is not None:
             self._surfaces[document_id] = surface
         return True
+
+    async def save_abstraction_evidence(
+        self, document_id: str, attempt: int, package: EvidencePackage
+    ) -> bool:
+        from sage.models.abstraction_evidence import encode_package
+
+        if self._processing_delegate is not None:
+            return await self._processing_delegate.save_abstraction_evidence(
+                document_id, attempt, package
+            )
+        doc = await self._processing_store.get_document(document_id)
+        if (
+            doc.processing_coverage.attempt != attempt
+            or doc.source_content_hash != package.identity.source_hash
+        ):
+            return False
+        self._abstraction_state.setdefault(document_id, {})["package"] = encode_package(package)
+        return True
+
+    async def read_abstraction_evidence(self, document_id: str) -> EvidencePackage | None:
+        from sage.models.abstraction_evidence import decode_package
+
+        if self._processing_delegate is not None:
+            return await self._processing_delegate.read_abstraction_evidence(document_id)
+        data = self._abstraction_state.get(document_id, {}).get("package")
+        if data is None:
+            return None
+        try:
+            package = decode_package(data)
+        except KeyError, TypeError, ValueError:
+            return None
+        doc = await self._processing_store.get_document(document_id)
+        return package if package.identity.source_hash == doc.source_content_hash else None
+
+    async def admit_abstraction(
+        self,
+        document_id: str,
+        attempt: int,
+        identity: ProcessingIdentity,
+        input_tokens: int,
+        output_tokens: int,
+        *,
+        max_calls: int,
+        max_input: int,
+        max_output: int,
+    ) -> str:
+        from sage.models.abstraction_evidence import reserve_generation
+
+        if self._processing_delegate is not None:
+            return await self._processing_delegate.admit_abstraction(
+                document_id,
+                attempt,
+                identity,
+                input_tokens,
+                output_tokens,
+                max_calls=max_calls,
+                max_input=max_input,
+                max_output=max_output,
+            )
+        doc = await self._processing_store.get_document(document_id)
+        if doc.processing_coverage.attempt != attempt:
+            return "stale"
+        if doc.source_content_hash != identity.source_hash:
+            return "scope_changed"
+        state = self._abstraction_state.setdefault(document_id, {})
+        result, ledger = reserve_generation(
+            state.get("accounting"),
+            identity,
+            input_tokens,
+            output_tokens,
+            max_calls=max_calls,
+            max_input=max_input,
+            max_output=max_output,
+        )
+        if result == "admitted":
+            state["accounting"] = ledger
+        return result
 
     async def admit_embedding(
         self,

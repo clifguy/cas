@@ -1,6 +1,6 @@
 """Utility functions for semantic abstract generation.
 
-compute_max_tokens: density-proportional token budget based on document
+compute_max_tokens: selected-evidence token budget based on document
 word count and AbstractionConfig parameters.
 
 trim_to_sentence_boundary: post-generation trimming to prevent
@@ -36,7 +36,7 @@ from sage.config import VaultAbstractionConfig
 
 
 def compute_max_tokens(word_count: int, config: VaultAbstractionConfig) -> int:
-    """Compute a density-proportional max_tokens budget.
+    """Compute a selected-evidence max_tokens budget.
 
     Formula: min(base + word_count * tokens_per_word, hard_cap)
 

@@ -99,6 +99,7 @@ _DOCUMENT_COLUMNS = (
     "last_modified_by",
     "updated_at",
     "semantic_abstract",
+    "processing_coverage",
 )
 
 # How the report names the state its figures were measured in. Spelled out
@@ -262,6 +263,11 @@ def _document_from_row(row: dict) -> Document:
     """
     values = {name: row[name] for name in _DOCUMENT_COLUMNS}
     values["tags"] = values["tags"] or []
+    from sage.models.coverage import ProcessingCoverage
+
+    values["processing_coverage"] = ProcessingCoverage.model_validate(
+        values["processing_coverage"] or {}
+    )
     return Document.model_construct(**values)
 
 

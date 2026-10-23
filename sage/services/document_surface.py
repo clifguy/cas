@@ -52,8 +52,13 @@ def compose_document_surface(
     matchable = " ".join(
         part for part in (expand_for_index(doc.title or ""), expand_for_index(tags_line)) if part
     )
+    inventory = ""
+    inspected = doc.processing_coverage.inspection
+    if not doc.semantic_abstract and inspected.identity is not None:
+        counts = ", ".join(f"{c.observed} {c.unit}" for c in inspected.counts)
+        inventory = f"Derived inventory ({inspected.scope} inspected scope): {counts}."
     orienting = " ".join(
-        part for part in (doc.semantic_abstract or "", stem, expand_for_index(stem)) if part
+        part for part in (doc.semantic_abstract or inventory, stem, expand_for_index(stem)) if part
     )
 
     return DocumentSurface(

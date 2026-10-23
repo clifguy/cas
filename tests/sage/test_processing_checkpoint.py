@@ -14,6 +14,7 @@ from sage.models.enums import PipelineStatus
 from sage.models.schemas import BulkMetadataRequest, IngestRequest
 from sage.services.ingestion import IngestionService
 from sage.services.metadata import MetadataService
+from tests.helpers.abstraction_evidence import seed_authored_evidence
 from tests.helpers.pipeline_wait import drain_abstraction_queue
 from tests.sage.test_processing_coverage import _chunks, _doc, _evidence
 from tests.sage.test_processing_coverage_wire import _decode
@@ -49,13 +50,14 @@ async def test_stored_passage_intent_survives_restart(
         await conn.execute(
             "UPDATE documents SET processing_resume_stage = NULL WHERE id = %s", (doc.id,)
         )
+    await seed_authored_evidence(store, doc, "LEGACY PASSAGES")
     before = await postgres_graph_store.get_document(doc.id)
     served = await store.get_all_chunks(doc.id)
     entered = asyncio.Event()
     real_generate = service._generate_abstract_text
 
     async def hold(text, *args, **kwargs):
-        assert text == "LEGACY PASSAGES"
+        assert text == "Source region: document\nSource field: body\nLEGACY PASSAGES"
         entered.set()
         await asyncio.Event().wait()
 
@@ -104,7 +106,7 @@ async def test_stored_passage_intent_survives_restart(
                 await drain_abstraction_queue(recovered)
             finally:
                 await recovered.stop_worker()
-            assert generated == ["LEGACY PASSAGES"]
+            assert generated == ["Source region: document\nSource field: body\nLEGACY PASSAGES"]
         else:
             await drain_abstraction_queue(service)
         after = await postgres_graph_store.get_document(doc.id)
@@ -288,6 +290,7 @@ async def test_recovery_admission_cannot_steal_a_newer_live_owner(
     doc = _doc(1)
     await postgres_graph_store.insert_document(doc)
     await old._content_store.index_chunks(doc.id, _chunks("LEGACY PASSAGES"))
+    await seed_authored_evidence(old._content_store, doc, "LEGACY PASSAGES")
     newer = IngestionService(
         old._store,
         old._locks,
@@ -301,7 +304,7 @@ async def test_recovery_admission_cannot_steal_a_newer_live_owner(
     generate = newer._generate_abstract_text
 
     async def hold(text, *args, **kwargs):
-        assert text == "LEGACY PASSAGES"
+        assert text == "Source region: document\nSource field: body\nLEGACY PASSAGES"
         entered.set()
         await release.wait()
         return await generate(text, *args, **kwargs)
@@ -360,6 +363,7 @@ async def test_recovered_abstract_intent_preserves_provider_retry_and_failure_se
     doc = _doc(1)
     await postgres_graph_store.insert_document(doc)
     await service._content_store.index_chunks(doc.id, _chunks("LEGACY PASSAGES"))
+    await seed_authored_evidence(service._content_store, doc, "LEGACY PASSAGES")
     queue = asyncio.Queue()
     service._abstraction_queue = queue
     monkeypatch.setattr(service, "_ensure_worker_running", lambda: queue)
@@ -392,7 +396,9 @@ async def test_recovered_abstract_intent_preserves_provider_retry_and_failure_se
         assert await recovered.recover_incomplete_documents() == 1
         await drain_abstraction_queue(recovered)
         after = await postgres_graph_store.get_document(doc.id)
-        assert calls == ["LEGACY PASSAGES"] * (2 if failure == "retryable" else 1)
+        assert calls == ["Source region: document\nSource field: body\nLEGACY PASSAGES"] * (
+            2 if failure == "retryable" else 1
+        )
         assert await postgres_graph_store.get_processing_stage(doc.id) == "abstraction"
         assert after.pipeline_status.value == (
             "failed" if failure == "nonretryable" else "abstraction_complete"

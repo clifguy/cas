@@ -305,7 +305,13 @@ async def test_ingest_retention_survives_abstraction_failure(
     assert read.processing_coverage.source_retention.counts[0].total == source.stat().st_size
     assert read.processing_coverage.source_retention.counts[0].represented == source.stat().st_size
     assert read.processing_coverage.inspection.scope == "complete"
-    assert read.processing_coverage.abstraction_evidence.scope == "unknown"
+    assert read.processing_coverage.abstraction_evidence.scope == "complete"
+    assert (
+        read.processing_coverage.abstraction_evidence.identity.source_hash
+        == read.source_content_hash
+    )
+    assert read.semantic_abstract is None
+    assert read.processing_coverage.served_abstraction_generation is None
 
 
 async def test_same_achieved_scope_survives_distinct_pipeline_outcomes(

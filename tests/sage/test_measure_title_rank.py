@@ -217,6 +217,7 @@ def _row(title: str, **overrides) -> dict:
         "created_at": now,
         "last_modified_by": "t",
         "updated_at": now,
+        "processing_coverage": {},
         "semantic_abstract": "Generated summary.",
     }
     return row | overrides

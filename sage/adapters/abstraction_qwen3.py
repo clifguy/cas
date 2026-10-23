@@ -1,7 +1,7 @@
 """Qwen3 AbstractionProvider implementation via MLX.
 
 Uses mlx-lm to load the configured Qwen3-family model and generate
-density-proportional semantic abstracts on Apple Silicon.
+selected-evidence semantic abstracts on Apple Silicon.
 """
 
 import asyncio
@@ -485,7 +485,7 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         # "infinitely idle" so a freshly-loaded model is not reaped.
         self._last_used_at: float | None = None
 
-    def _ensure_loaded(self) -> None:
+    def _ensure_loaded(self, *, skip_probe: bool = False) -> None:
         """Load the MLX model on first use. Idempotent: skips if already loaded.
 
         Raises:
@@ -522,42 +522,44 @@ class Qwen3AbstractionProvider(AbstractionProvider):
                 f"Failed to load abstraction model '{self._model_id}': {exc}"
             ) from exc
 
-        # Validation probe (AD-026)
-        try:
-            messages = [
-                {"role": "system", "content": _format_system_prompt(None)},
-                {"role": "user", "content": "Test document content."},
-            ]
-            probe_prompt = tokenizer.apply_chat_template(
-                messages,
-                tokenize=False,
-                add_generation_prompt=True,
-                enable_thinking=False,
-            )
-            probe_result = "".join(
-                response.text
-                for response in stream_generate(
-                    model,
-                    tokenizer,
-                    prompt=probe_prompt,
-                    max_tokens=20,
-                    sampler=self._greedy_sampler,
+        if not skip_probe:
+            # Validation probe (AD-026)
+            try:
+                messages = [
+                    {"role": "system", "content": _format_system_prompt(None)},
+                    {"role": "user", "content": "Test document content."},
+                ]
+                probe_prompt = tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=True,
+                    enable_thinking=False,
                 )
-            )
-            if not probe_result or not probe_result.strip():
-                raise RuntimeError("Probe generation returned empty output")
-        except RuntimeError:
-            self._generate_fn = None
-            self._greedy_sampler = None
-            raise
-        except Exception as exc:
-            self._generate_fn = None
-            self._greedy_sampler = None
-            raise RuntimeError(
-                f"Abstraction model probe failed for '{self._model_id}': {exc}"
-            ) from exc
+                probe_result = "".join(
+                    response.text
+                    for response in stream_generate(
+                        model,
+                        tokenizer,
+                        prompt=probe_prompt,
+                        max_tokens=20,
+                        sampler=self._greedy_sampler,
+                    )
+                )
+                if not probe_result or not probe_result.strip():
+                    raise RuntimeError("Probe generation returned empty output")
+            except RuntimeError:
+                self._generate_fn = None
+                self._greedy_sampler = None
+                raise
+            except Exception as exc:
+                self._generate_fn = None
+                self._greedy_sampler = None
+                raise RuntimeError(
+                    f"Abstraction model probe failed for '{self._model_id}': {exc}"
+                ) from exc
 
-        # Commit loaded state only after probe succeeds
+        # Direct calls validate with the probe; bounded calls validate through their
+        # first admitted generation so no unaccounted startup inference occurs.
         self._model = model
         self._tokenizer = tokenizer
         self._native_context_window = _resolve_native_context_window(model)
@@ -593,8 +595,15 @@ class Qwen3AbstractionProvider(AbstractionProvider):
 
     def _build_prompt(self, text: str, doc_type: str | None) -> str:
         """Build a chat-template prompt for abstract generation."""
+        from sage.adapters.interfaces import BoundedEvidenceText
+
         messages = [
-            {"role": "system", "content": _format_system_prompt(doc_type)},
+            {
+                "role": "system",
+                "content": _format_system_prompt(
+                    doc_type, bounded=isinstance(text, BoundedEvidenceText)
+                ),
+            },
             {"role": "user", "content": wrap_source_document(text)},
         ]
         return self._tokenizer.apply_chat_template(
@@ -688,7 +697,12 @@ class Qwen3AbstractionProvider(AbstractionProvider):
             raise RuntimeError("Cannot generate abstract from empty document text")
         # Neutralized before the context budget is measured, so truncation
         # sizes the text the prompt will actually carry.
+        from sage.adapters.interfaces import BoundedEvidenceText
+
+        bounded = isinstance(text, BoundedEvidenceText)
         text = neutralize_source_text(text)
+        if bounded:
+            text = BoundedEvidenceText(text)
 
         async with _generation_lock:
             # Preflight unified-memory check (guardrail 1).
@@ -782,9 +796,39 @@ class Qwen3AbstractionProvider(AbstractionProvider):
         (AD-033). Always invoked through the single-thread executor so the
         ~16 GB load and the multi-second generation stay off the loop.
         """
-        self._ensure_loaded()
+        from sage.adapters.interfaces import BoundedEvidenceText
+
+        bounded = isinstance(text, BoundedEvidenceText)
+        if bounded:
+            self._ensure_loaded(skip_probe=True)
+        else:
+            self._ensure_loaded()
         outcome = self._truncate_for_context(text, max_tokens, doc_type)
-        prompt = self._build_prompt(outcome.text, doc_type)
+        if bounded and outcome.text != text:
+            from sage.adapters.interfaces import AbstractionInputTooLargeError
+
+            raise AbstractionInputTooLargeError(
+                self._model_id, outcome.input_tokens, self._context_window
+            )
+        prompt = self._build_prompt(text if bounded else outcome.text, doc_type)
+        if bounded:
+            from sage.adapters.interfaces import AbstractionInputTooLargeError
+
+            protected = len(self._tokenizer.encode(prompt))
+            if protected + max_tokens > self._effective_context_window():
+                raise AbstractionInputTooLargeError(
+                    self._model_id, protected, self._effective_context_window()
+                )
+            upper = (
+                len(
+                    (
+                        _format_system_prompt(doc_type, bounded=True) + wrap_source_document(text)
+                    ).encode()
+                )
+                + 1024
+            )
+            if protected > upper:
+                raise AbstractionInputTooLargeError(self._model_id, protected, upper)
 
         constraint = self._build_opener_constraint(doc_type)
         result = ""

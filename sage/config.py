@@ -1127,7 +1127,7 @@ class LifecycleConfig(BaseModel):
 class VaultAbstractionConfig(BaseModel):
     """Per-vault abstraction config (CAS-ADR-030).
 
-    Carries the vault-scope opt-in (`enabled`) and the density-proportional
+    Carries the vault-scope opt-in (`enabled`) and the selected-evidence
     token-budget tuning. Provider and model identification moved to stack
     scope (see `StackAbstractionConfig`).
     """
@@ -1135,67 +1135,114 @@ class VaultAbstractionConfig(BaseModel):
     enabled: bool = Field(
         default=True,
         description=(
-            "Whether to generate semantic abstracts during ingestion. If "
-            "false, ingestion completes with pipeline_status "
-            "'abstraction_skipped'. If true and the LLM fails at runtime, "
-            "pipeline_status is 'failed' (strict quality gate)."
+            "Whether to generate semantic abstracts during ingestion. If false, "
+            "ingestion completes with pipeline_status 'abstraction_skipped'. If true "
+            "and the LLM fails at runtime, pipeline_status is 'failed' (strict "
+            "quality gate)."
         ),
     )
     max_abstract_tokens: int = Field(
         default=1500,
+        ge=50,
         description=(
-            "Upper bound on abstract length in tokens. Actual length is density-proportional."
+            "Legacy tuning remains accepted. Bounded abstraction clamps the effective "
+            "output allowance to 1500 tokens and warns for larger legacy values."
         ),
     )
     base_abstract_tokens: int = Field(
         default=150,
+        ge=0,
         description=(
-            "Minimum token floor for the density-proportional abstract "
-            "budget. Combined with tokens_per_word as "
-            "`min(base_abstract_tokens + word_count * tokens_per_word, "
-            "max_abstract_tokens)` to set the per-document budget."
+            "Target allowance, not a minimum output length. Legacy values over 1500 "
+            "remain accepted with a warning and an effective clamp."
         ),
     )
     tokens_per_word: float = Field(
         default=0.02,
+        ge=0,
         description=(
-            "Per-word scaling factor for the density-proportional abstract "
-            "budget. Combined with base_abstract_tokens as "
-            "`min(base_abstract_tokens + word_count * tokens_per_word, "
-            "max_abstract_tokens)` to set the per-document budget."
+            "Target tokens per selected authored word. Legacy scales over 1 remain "
+            "accepted with a warning and an effective clamp; this is not full-source "
+            "density."
         ),
     )
+    tokens_per_breadth: float = Field(
+        default=12,
+        ge=0,
+        le=100,
+        description="Target tokens per represented region/field pair, at most 32 pairs.",
+    )
+    max_input_tokens: int = Field(
+        default=16384,
+        ge=1,
+        le=32768,
+        description=(
+            "Per-call complete protected prompt ceiling; conservative UTF-8 byte "
+            "token upper bounds."
+        ),
+    )
+    max_generation_calls: int = Field(
+        default=3,
+        ge=1,
+        le=3,
+        description=(
+            "Source-scope provider calls including startup probes; retained across "
+            "retries and recovery."
+        ),
+    )
+    max_total_input_tokens: int = Field(
+        default=49152, ge=1, le=98304, description="Cumulative complete prompt token allowance."
+    )
+    max_total_output_tokens: int = Field(
+        default=4500,
+        ge=1,
+        le=4500,
+        description="Cumulative reserved output tokens, including startup probes.",
+    )
+
     max_attempts: int = Field(
         default=3,
         ge=1,
         description=(
-            "Maximum number of attempts the abstraction worker makes for a "
-            "queued document before stamping pipeline_status 'failed'. "
-            "Applies only to queued work (concurrent ingest, reabstract, "
-            "recompute, startup recovery); the synchronous wait-for-pipeline "
-            "path remains fail-fast. The first attempt counts toward this "
-            "total, so max_attempts=3 means one initial try plus two retries."
+            "Maximum number of attempts the abstraction worker makes for a queued "
+            "document before stamping pipeline_status 'failed'. Applies only to "
+            "queued work (concurrent ingest, reabstract, recompute, startup "
+            "recovery); the synchronous wait-for-pipeline path remains fail-fast. The "
+            "first attempt counts toward this total, so max_attempts=3 means one "
+            "initial try plus two retries."
         ),
     )
     retry_backoff_base_seconds: float = Field(
         default=1.0,
         ge=0,
         description=(
-            "Base delay in seconds for the abstraction worker's exponential "
-            "retry backoff. The delay before retry k (1-indexed) is "
-            "min(retry_backoff_base_seconds * 2**(k-1), "
-            "retry_backoff_max_seconds)."
+            "Base delay in seconds for the abstraction worker's exponential retry "
+            "backoff. The delay before retry k (1-indexed) is "
+            "min(retry_backoff_base_seconds * 2**(k-1), retry_backoff_max_seconds)."
         ),
     )
     retry_backoff_max_seconds: float = Field(
         default=30.0,
         ge=0,
         description=(
-            "Upper bound in seconds on the abstraction worker's retry backoff "
-            "delay, capping the exponential growth so a poison document cannot "
-            "stall the queue indefinitely."
+            "Upper bound in seconds on the abstraction worker's retry backoff delay, "
+            "capping the exponential growth so a poison document cannot stall the "
+            "queue indefinitely."
         ),
     )
+
+    @model_validator(mode="after")
+    def warn_legacy_sizing(self) -> "VaultAbstractionConfig":
+        if (
+            self.max_abstract_tokens > 1500
+            or self.base_abstract_tokens > 1500
+            or self.tokens_per_word > 1
+        ):
+            logger.warning(
+                "legacy abstraction sizing exceeds shared bounds; bounded evidence uses "
+                "effective clamps"
+            )
+        return self
 
 
 class StackAbstractionConfig(BaseModel):
@@ -1822,12 +1869,11 @@ class VaultConfig(BaseModel):
     adapter_defaults: dict = Field(
         default_factory=dict,
         description=(
-            "Per-adapter projection parameters, keyed by source type. Each "
-            "entry is the vault-level base for that adapter; a per-request "
-            "`config` deep-merges over it, request keys winning on "
-            "collision. Adapter availability is not declared here: it is a "
-            "process-wide capability fixed by the installed adapter "
-            "implementations (CAS-ADR-046)."
+            "Per-adapter projection parameters, keyed by source type. Each entry is "
+            "the vault-level base for that adapter; a per-request `config` "
+            "deep-merges over it, request keys winning on collision. Adapter "
+            "availability is not declared here: it is a process-wide capability fixed "
+            "by the installed adapter implementations (CAS-ADR-046)."
         ),
     )
     metadata_extraction: dict = Field(description="Metadata extraction pipeline configuration.")
@@ -1835,12 +1881,7 @@ class VaultConfig(BaseModel):
     abstraction: VaultAbstractionConfig = Field(
         default_factory=VaultAbstractionConfig,
         description=(
-            "Per-vault configuration for the semantic abstract generation "
-            "stage of the ingestion pipeline (CAS-ADR-011). Carries the "
-            "vault-scope opt-in (`enabled`) and the density-proportional "
-            "token-budget tuning. Provider and model identification are "
-            "SAGE-process-wide (CAS-ADR-030) and live under the stack "
-            "config, not here."
+            "Bounded authored-evidence abstraction. Provider placement remains process-wide."
         ),
     )
     retrieval_health: RetrievalHealthConfig | None = Field(
@@ -1852,10 +1893,9 @@ class VaultConfig(BaseModel):
     timing: TimingConfig = Field(
         default_factory=TimingConfig,
         description=(
-            "Per-vault query-timing instrumentation configuration. "
-            "Enables structured timing records on the storage, content, "
-            "and retrieval layers, written to a per-vault rotating log "
-            "file under brain_root."
+            "Per-vault query-timing instrumentation configuration. Enables structured "
+            "timing records on the storage, content, and retrieval layers, written to "
+            "a per-vault rotating log file under brain_root."
         ),
     )
 

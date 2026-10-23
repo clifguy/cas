@@ -74,11 +74,13 @@ retains its checkpoint; a fresh service recovers the requested stage without
 reconstructing intent from volatile jobs or timestamps. Retry after published
 Stage2 reuses those passages instead of repeating correct indexing.
 
-An explicit reabstract request remains Stage3-only over admitted stored passages,
-including legacy rows with null timestamps or unavailable source files. Missing
-passages are refused at admission; if they disappear later, source reprojection
-first records the indexing checkpoint under the current fence. Newer owners
-cannot be overwritten by stale recovery/admission or publication observations.
+An explicit reabstract request remains Stage3-only over persisted bounded authored
+source evidence. Missing legacy evidence is recovered through bounded retained-source
+inspection with verified source identity; unavailable sources or unsupported legacy
+formats remain explicit failures. Stored passages remain readable, but their presence
+alone cannot establish source provenance. Missing passages are refused at admission;
+if they disappear later, source reprojection first records the indexing checkpoint
+under the current fence. Newer owners cannot be overwritten by stale observations.
 
 Provisioning adds the nullable internal checkpoint idempotently and leaves old
 rows null. It is neither caller-writable metadata nor returned document data,
