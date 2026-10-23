@@ -6,7 +6,7 @@ These return predictable results and require no external services.
 import math
 import re
 from collections.abc import Sequence
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from sage.adapters.interfaces import (
     HEADING_PATH_SEPARATOR,
@@ -133,6 +133,8 @@ class StubContentStore(ContentStore):
             }
         )
         updates = {"processing_coverage": coverage}
+        if chunks is not None:
+            updates["indexed_at"] = datetime.now(timezone.utc)
         if semantic_abstract is not None:
             updates["semantic_abstract"] = semantic_abstract
         await self._processing_store.update_document(document_id, updates, advance_version=False)

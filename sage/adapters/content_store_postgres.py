@@ -616,7 +616,14 @@ class PostgresContentStore(ContentStore):
             )
 
     async def update_processing_status(self, document_id: str, attempt: int, updates: dict) -> bool:
-        allowed = {"pipeline_status", "pipeline_error", "updated_at", "indexed_at"}
+        allowed = {
+            "pipeline_status",
+            "pipeline_error",
+            "updated_at",
+            "indexed_at",
+            "projected_at",
+            "adapter_version",
+        }
         if not updates or set(updates) - allowed:
             raise ValueError("invalid processing observation fields")
         async with self._pool.connection() as conn:
@@ -730,8 +737,14 @@ class PostgresContentStore(ContentStore):
                     ),
                 )
             await conn.execute(
-                "UPDATE documents SET processing_coverage = %s WHERE id = %s",
-                (Jsonb(merged.model_dump(mode="json")), document_id),
+                "UPDATE documents SET processing_coverage = %s, "
+                "indexed_at = CASE WHEN %s THEN %s ELSE indexed_at END WHERE id = %s",
+                (
+                    Jsonb(merged.model_dump(mode="json")),
+                    chunks is not None,
+                    datetime.now(timezone.utc).isoformat(),
+                    document_id,
+                ),
             )
             if semantic_abstract is not None:
                 await conn.execute(

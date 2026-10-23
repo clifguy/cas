@@ -672,8 +672,9 @@ class Document(BaseModel):
         default=None,
         description=(
             "Last time projection was chunked and embedded into content store. "
-            "Null until indexing completes (pipeline_status reaches "
-            "indexing_complete). Not updated by abstraction (Stage 3)."
+            "Set atomically with passage publication; null until indexing publishes. "
+            "Recovery compares this with projected_at to distinguish retained older "
+            "passages from the latest projection. Not updated by abstraction (Stage 3)."
         ),
     )
     source_modified_at: datetime | None = Field(

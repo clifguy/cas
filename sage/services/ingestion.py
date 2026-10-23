@@ -491,9 +491,9 @@ class _AbstractionJob:
 
     ``projection`` is carried in memory for ingest-time and recompute jobs
     (Stage 2-3). When ``None`` the worker derives the input at processing
-    time: from the document's chunks if they exist (Stage 3 only), otherwise
-    by re-projecting from source (Stage 1 then Stage 2-3) -- the startup
-    recovery path.
+    time: explicit abstract-only requests use the admitted stored passages;
+    startup recovery uses durable stage facts to decide whether the latest
+    projection indexed, or needs source re-projection and Stage2.
     """
 
     document_id: str
@@ -501,6 +501,7 @@ class _AbstractionJob:
     doc_type: str | None
     attempts: int = 0
     processing_attempt: int | None = None
+    abstract_only: bool = False
 
 
 @dataclass
@@ -819,8 +820,8 @@ class IngestionService:
 
     async def _run_job_work(self, job: _AbstractionJob) -> None:
         """Execute a single job attempt, dispatching by available input:
-        in-memory projection (Stage 2-3), existing chunks (Stage 3 only), or
-        re-projection from source (Stage 1 then Stage 2-3)."""
+        in-memory projection (Stage 2-3), current indexed projection (Stage 3
+        only), or re-projection from source (Stage 1 then Stage 2-3)."""
         document_id = job.document_id
         if job.processing_attempt is None:
             job.processing_attempt = await self._content_store.begin_processing_attempt(document_id)
@@ -831,15 +832,34 @@ class IngestionService:
             await self._execute_pipeline_stages(
                 document_id, job.projection, job.doc_type, job.processing_attempt
             )
-        elif await self._content_store.has_chunks(document_id):
+        elif (
+            await self._content_store.has_chunks(document_id)
+            if job.abstract_only
+            else await self._indexed_projection_is_current(document_id)
+        ):
             await self._execute_abstract_from_chunks(
                 document_id, job.doc_type, job.processing_attempt
             )
         else:
-            projection = await self._reproject_from_source(document_id)
+            projection = await self._reproject_from_source(document_id, job.processing_attempt)
             await self._execute_pipeline_stages(
                 document_id, projection, job.doc_type, job.processing_attempt
             )
+
+    async def _indexed_projection_is_current(self, document_id: str) -> bool:
+        """Reuse passages only after indexing the latest source projection.
+
+        Retained passages may belong to an earlier projection. The existing
+        server-owned stage timestamps record what completed, independently of
+        the interrupted execution status and the served coverage scope.
+        """
+        doc = await self._store.get_document(document_id)
+        return bool(
+            doc is not None
+            and doc.indexed_at is not None
+            and (doc.projected_at is None or doc.indexed_at >= doc.projected_at)
+            and await self._content_store.has_chunks(document_id)
+        )
 
     def _compute_backoff(self, attempt: int) -> float:
         """Exponential backoff with a configured cap: the delay before retry
@@ -2695,7 +2715,6 @@ class IngestionService:
         await self._stamp_pipeline_status(
             document_id,
             PipelineStatus.INDEXING_COMPLETE,
-            {"indexed_at": datetime.now(timezone.utc).isoformat()},
             expected_attempt=attempt,
         )
 
@@ -3016,7 +3035,9 @@ class IngestionService:
             raise
 
         self._enqueue_abstraction_job(
-            _AbstractionJob(document_id=document_id, projection=None, doc_type=doc.doc_type)
+            _AbstractionJob(
+                document_id=document_id, projection=None, doc_type=doc.doc_type, abstract_only=True
+            )
         )
 
         now = datetime.now(timezone.utc)
@@ -3059,7 +3080,7 @@ class IngestionService:
         Reconstructs the projection text from the document's passages,
         regenerates the abstract, and rewrites the document surface for
         retrieval. Used by the worker for reabstract jobs and for startup
-        recovery of documents that still have chunks.
+        recovery whose stage facts confirm that the latest projection indexed.
 
         The abstraction input cannot include a previously generated abstract:
         that text lives on the document surface, not among these passages, so
@@ -3181,13 +3202,16 @@ class IngestionService:
             "dispatched_at": start_time.isoformat(),
         }
 
-    async def _reproject_from_source(self, document_id: str) -> ProjectionResult:
+    async def _reproject_from_source(
+        self, document_id: str, attempt: int | None = None
+    ) -> ProjectionResult:
         """Stage 1 for the startup-recovery path: re-project a document from
         its source file while retaining served chunks.
 
-        Used by the worker for recovery jobs whose document has no chunks (e.g.
-        stranded at projection_complete). Raises if the document, adapter, or
-        source file is missing -- the worker treats that as an attempt failure
+        Used when passages are missing or belong to a projection older than
+        the latest completed adapter run (e.g. interrupted replacement). Raises
+        if the document, adapter, or source file is missing -- the worker treats
+        that as an attempt failure
         and ultimately stamps FAILED.
         """
         doc = await self._store.get_document(document_id)
@@ -3212,16 +3236,16 @@ class IngestionService:
             with _translate_projection_failure(project_path, doc.source_path):
                 projection = await _run_inspected_projection(adapter, project_path, merged_config)
         now = datetime.now(timezone.utc)
-        await self._store.update_document(
+        await self._stamp_pipeline_status(
             document_id,
+            PipelineStatus.PROJECTION_COMPLETE,
             {
-                "pipeline_status": PipelineStatus.PROJECTION_COMPLETE.value,
                 "pipeline_error": None,
                 "adapter_version": projection.adapter_version,
                 "projected_at": now.isoformat(),
                 "updated_at": now.isoformat(),
             },
-            advance_version=False,
+            expected_attempt=attempt,
         )
         # Keep the served generation during replacement work.
         return projection

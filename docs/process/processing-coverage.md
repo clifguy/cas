@@ -61,3 +61,17 @@ invalidates its published abstraction evidence. Unsupported producer facts stay 
 A metadata mutation captures its final document after derived-text maintenance,
 inside the document lock. Each bulk item retains its own response snapshot.
 A preview keeps current evidence because it does not rewrite served artifacts.
+
+Recovery selects pending work from execution status, then uses the existing stage
+timestamps to distinguish the latest projection from retained prior passages.
+`projected_at` records the adapter run; `indexed_at` advances atomically with
+passage publication. Older or missing indexing requires source reprojection and
+indexing; indexing that covers the latest projection permits Stage3-only recovery.
+Interrupted replacement therefore cannot complete by abstracting the retained old
+generation. Stage3 failures retain the correctly published passage generation,
+and failed replacement indexing leaves the prior served generation available.
+
+An explicit reabstract request remains Stage3-only over its admitted stored
+passages, including legacy rows without stage timestamps. That immediate caller
+intent is distinct from startup recovery, which must reconstruct unfinished work
+from durable facts. Missing passages are still refused before provider dispatch.
