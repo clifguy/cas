@@ -559,6 +559,10 @@ def _is_momentary_read_fault(exc: BaseException) -> bool:
     return isinstance(exc, OSError) and not isinstance(exc, _PATH_BOUND_READ_FAULTS)
 
 
+class _SupersededProcessing(RuntimeError):
+    """The durable publication fence belongs to a different attempt."""
+
+
 class IngestionService:
     def __init__(
         self,
@@ -771,6 +775,8 @@ class IngestionService:
                     return
                 except asyncio.CancelledError:
                     raise
+                except _SupersededProcessing:
+                    raise
                 except NonRetryableAbstractionError as exc:
                     # Deterministic in the input: every remaining attempt would
                     # reproduce it identically, so the budget is spent here
@@ -804,6 +810,10 @@ class IngestionService:
             await self._stamp_abstraction_failed(
                 document_id, max_attempts, last_exc, expected_attempt=job.processing_attempt
             )
+        except _SupersededProcessing:
+            # Invalidation settled the interrupted work transactionally, or a
+            # newer live attempt owns the status. Neither permits an old stamp.
+            logger.info("processing attempt superseded for document %s", document_id)
         finally:
             self._release_claim(document_id)
 
@@ -854,8 +864,9 @@ class IngestionService:
     ) -> None:
         """Write a pipeline_status transition under the document lock.
 
-        Every pipeline_status write goes through here so one rule holds at all
-        of them: reaching a successful terminal status clears
+        Execution-driven transitions go through here; artifact invalidation
+        settles superseded work in its own transaction. Reaching a successful
+        terminal status clears
         ``pipeline_error``. The field records the most recent failure, and a
         document that has since completed (or skipped) abstraction has no
         failure to report -- a stale string there reads as a live failure to
@@ -881,7 +892,7 @@ class IngestionService:
                 if not await self._content_store.update_processing_status(
                     document_id, expected_attempt, updates
                 ):
-                    raise RuntimeError("stale processing observation")
+                    raise _SupersededProcessing("stale processing observation")
             else:
                 await self._store.update_document(document_id, updates, advance_version=False)
 
@@ -2474,14 +2485,19 @@ class IngestionService:
         attempt = await self._content_store.begin_processing_attempt(document_id)
         try:
             await self._execute_pipeline_stages(document_id, projection, doc_type, attempt)
+        except _SupersededProcessing:
+            logger.info("processing attempt superseded for document %s", document_id)
         except Exception as exc:
             logger.exception("Pipeline failed for document %s", document_id)
-            await self._stamp_pipeline_status(
-                document_id,
-                PipelineStatus.FAILED,
-                {"pipeline_error": str(exc)},
-                expected_attempt=attempt,
-            )
+            try:
+                await self._stamp_pipeline_status(
+                    document_id,
+                    PipelineStatus.FAILED,
+                    {"pipeline_error": str(exc)},
+                    expected_attempt=attempt,
+                )
+            except _SupersededProcessing:
+                logger.info("processing attempt superseded for document %s", document_id)
 
     async def _execute_pipeline_stages(
         self,
@@ -2594,7 +2610,7 @@ class IngestionService:
             semantic_abstract=abstract,
         )
         if not published:
-            raise RuntimeError("stale processing publication")
+            raise _SupersededProcessing("stale processing publication")
 
     async def _stage2_indexing(
         self, document_id: str, projection: ProjectionResult, attempt: int | None = None
@@ -2673,7 +2689,7 @@ class IngestionService:
             if not await self._content_store.publish_processing(
                 document_id, attempt, evidence, chunks=chunks, surface=surface
             ):
-                raise RuntimeError("stale processing publication")
+                raise _SupersededProcessing("stale processing publication")
 
         # Mark indexing complete (BH-008)
         await self._stamp_pipeline_status(

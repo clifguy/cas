@@ -50,6 +50,14 @@ idempotently; null is legacy unknown evidence. No manual operator migration is a
 restored legacy store follows the same provisioning path. Purge removes coverage
 with its document; manifests are embedded bounded detail rather than separate orphans.
 Maintenance passage replacement invalidates affected evidence transactionally unless
-it publishes fresh evidence through the shared seam. Metadata changes preserve source and selected passage scope. Rewriting derived
-keyword text invalidates established keyword evidence; rewriting a document surface
-invalidates its established abstraction evidence. Unsupported producer facts stay unknown.
+it publishes fresh evidence through the shared seam. If the invalidated attempt is
+still active, the same transaction records `abstraction_interrupted` and its cause.
+The superseded worker releases its claim without publishing or stamping a newer
+attempt. Existing status-based recovery can resume interrupted work; no second
+schedule is created. Metadata changes preserve source and selected passage scope. Rewriting derived
+keyword text invalidates published keyword evidence; rewriting a document surface
+invalidates its published abstraction evidence. Unsupported producer facts stay unknown.
+
+A metadata mutation captures its final document after derived-text maintenance,
+inside the document lock. Each bulk item retains its own response snapshot.
+A preview keeps current evidence because it does not rewrite served artifacts.

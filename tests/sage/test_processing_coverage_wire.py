@@ -142,3 +142,66 @@ async def test_automatic_reduction_keeps_partial_evidence(vault_services, monkey
         hit["document"]["processing_coverage"]["projection"]["scope"] == "limited"
         for hit in response["results"]
     )
+
+
+@pytest.mark.parametrize("transport", ["rest", "mcp"])
+@pytest.mark.parametrize("response_mode", ["full", "light", None])
+@pytest.mark.parametrize("established", [False, True])
+async def test_metadata_mutation_wire_returns_post_maintenance_coverage(
+    vault_services, transport, response_mode, established
+):
+    from sage.adapters.content_store_postgres import PostgresContentStore
+    from sage.adapters.interfaces import DocumentSurface
+    from sage.models.coverage import CoverageDimension
+    from sage.models.wire import to_wire
+
+    services = vault_services
+    await services.graph_store.insert_document(_doc(1))
+    store = PostgresContentStore(services.graph_store._pool)
+    services.metadata_service._content = store
+    attempt = await store.begin_processing_attempt(_doc(1).id)
+    evidence = (
+        _evidence()
+        if established
+        else {
+            name: CoverageDimension()
+            for name in ("projection", "keyword_indexing", "passage_embeddings")
+        }
+    )
+    assert await store.publish_processing(
+        _doc(1).id,
+        attempt,
+        evidence,
+        chunks=_chunks("old"),
+        surface=DocumentSurface(document_id=_doc(1).id, matchable="old", orienting="abstract old"),
+    )
+    before = await services.graph_store.get_document(_doc(1).id)
+    assert before.processing_coverage.keyword_indexing.scope == (
+        "limited" if established else "unknown"
+    )
+    request = {"items": [{"document_id": _doc(1).id, "title": "Renamed"}]}
+    if response_mode is not None:
+        request["response_mode"] = response_mode
+    if transport == "mcp":
+        body = _decode(
+            await build_partitioned_server("sage").call_tool(
+                "update_metadata", {"vault_id": "test_vault", **request}
+            )
+        )
+    else:
+        app = create_app(config=services.config)
+        app.state.vault_registry = {"test_vault": services}
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/sage_vaults/test_vault/metadata", json=request)
+            assert response.status_code == 200
+            body = response.json()
+    persisted = await services.graph_store.get_document(_doc(1).id)
+    assert body["success_count"] == 1
+    assert persisted.title == "Renamed"
+    assert persisted.processing_coverage.keyword_indexing.generation > attempt
+    if response_mode == "light":
+        assert body["results"][0].get("document") is None
+    else:
+        document = body["results"][0]["document"]
+        assert document["title"] == persisted.title
+        assert document["processing_coverage"] == to_wire(persisted)["processing_coverage"]

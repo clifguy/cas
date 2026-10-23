@@ -249,12 +249,11 @@ async def run_sweep(
             print(f"[{index:5d}/{total}]  ok {doc.id}  {elapsed:6.1f}s", flush=True)
         elif status == PipelineStatus.ABSTRACTION_INTERRUPTED.value:
             # Named before the residual arm for the same reason the service
-            # sweep names it: the work was dropped by a stopped queue and
-            # never reached a provider, so reporting it as an llm_failure
-            # sends the operator after a fault that did not happen.
+            # sweep names it: stopped or superseded work does not establish
+            # a provider failure, so it is distinct from llm_failure.
             message = (
-                "abstraction work was dropped before it completed: the queue "
-                "draining it was stopped. No provider was reached"
+                "abstraction work was stopped or superseded before publication. "
+                "No provider failure is inferred; inspect pipeline_error for the cause"
             )
             entries.append(
                 ReabstractReportEntry(

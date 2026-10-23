@@ -3051,9 +3051,8 @@ paths:
         `GET /documents/{document_id}` for a terminal pipeline_status to
         observe the outcome, as a single bounded wait
         rather than one status read per unit of caller work. A wait must also
-        accept `abstraction_interrupted`, which means the queue draining the
-        work was stopped before it finished and the next server start re-runs
-        it. Use this to
+        accept `abstraction_interrupted`: the queue stopped or an artifact
+        rewrite superseded the attempt. The next server start re-runs it. Use this to
         refresh a stale-but-complete abstract after an abstraction-provider
         or model swap.
       tags: [Document Metadata]
@@ -4829,8 +4828,8 @@ components:
 
 
         "abstraction_interrupted" records abstraction work that was
-        dropped rather than attempted: the queue draining it was
-        stopped before the work ran or finished. It is terminal
+        dropped before publication: its queue was stopped or an
+        artifact rewrite superseded its attempt. It is terminal
         because nothing is left running to advance the document, and
         it is not a success -- pipeline_error carries the cause.
         Unlike the other non-success terminal status it says nothing
@@ -9334,7 +9333,7 @@ components:
         cause. `still_skipped`: the document settled back at abstraction_skipped, having
         declined abstraction. `timeout`: the wait ceiling elapsed while the document was still
         non-terminal; generation may still complete. `interrupted`: the document settled at
-        abstraction_interrupted after its work was dropped by a stopped queue. Every outcome
+        abstraction_interrupted after its work was stopped or superseded. Every outcome
         except success and skipped_pdf counts toward failed_count. Dispatch rejection, skipped
         abstraction, wait expiry, and queue interruption are reported separately from
         background failures.

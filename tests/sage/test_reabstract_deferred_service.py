@@ -1129,7 +1129,7 @@ async def test_a_worker_stop_mid_sweep_reports_interrupted_not_llm_failure(
     assert entry.document_id == doc.id
     assert entry.outcome == ReabstractOutcome.INTERRUPTED
     assert entry.error_message is not None
-    assert "No provider was reached" in entry.error_message
+    assert "No provider failure is inferred" in entry.error_message
 
     settled = await graph_store.get_document(doc.id)
     assert settled.pipeline_status == PipelineStatus.ABSTRACTION_INTERRUPTED.value

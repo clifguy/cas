@@ -2541,8 +2541,8 @@ def register_sage_tools(
         the outcome, wait for a terminal ``pipeline_status`` -- a single caller-side wait that
         returns once the status leaves ``abstraction_in_progress``, not one
         status request per unit of caller work. A wait must also accept
-        ``abstraction_interrupted``, which means the queue draining the work
-        was stopped before it finished and the next server start re-runs it.
+        ``abstraction_interrupted``: the queue stopped or an artifact rewrite
+        superseded the attempt. The next server start re-runs it.
         A document left at ``abstraction_in_progress`` after a process
         restart never reaches a terminal status on its own: enumerate such
         documents via ``search(mode="catalog", filters={"pipeline_status":
