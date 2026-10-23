@@ -77,6 +77,12 @@ class _CountingStore(PostgresContentStore):
         self.writes += 1
         await super().index_chunks(document_id, chunks)
 
+    async def publish_processing(self, document_id, attempt, dimensions, **kwargs):
+        result = await super().publish_processing(document_id, attempt, dimensions, **kwargs)
+        if result and kwargs.get("chunks") is not None:
+            self.writes += 1
+        return result
+
 
 class _CountingAbstraction(StubAbstractionProvider):
     def __init__(self) -> None:

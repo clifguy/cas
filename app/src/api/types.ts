@@ -339,6 +339,10 @@ export interface DiscoverHit {
   relevance_score?: number | null;
   // Sections of the document that matched, in the scored modes.
   matched_chunk_count?: number | null;
+  available_passage_count?: number | null;
+  keyword_indexed_passage_count?: number | null;
+  embedded_passage_count?: number | null;
+  matched_passage_count?: number | null;
 }
 
 // Filters narrowing a discover request.

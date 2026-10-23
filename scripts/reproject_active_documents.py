@@ -87,6 +87,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -94,8 +95,10 @@ from pathlib import Path
 from sage.adapters.stubs import StubAbstractionProvider
 from sage.config import load_vault_config
 from sage.mcp_init import SAGEServices, initialize_services
+from sage.models.coverage import canonical_configuration_hash
 from sage.models.enums import TERMINAL_PIPELINE_STATUSES, SourceType
 from sage.models.schemas import canonicalize_sha256
+from sage.services.ingestion import _run_inspected_projection
 from sage.vault_management import bound_vault_root, config_path_for_vault
 
 
@@ -228,8 +231,12 @@ async def reproject_vault_with_services(
             # config ingest used -- the vault's defaults merged under the
             # request config the document recorded -- so the rebuilt passages
             # keep the structure that config gave them.
-            projection = await adapter.project(
-                src_path, ingestion._merge_adapter_config(doc.source_type, doc.adapter_config)
+            effective_config = ingestion._merge_adapter_config(doc.source_type, doc.adapter_config)
+            projection = await _run_inspected_projection(
+                adapter,
+                src_path,
+                effective_config,
+                source_hash=doc.source_content_hash,
             )
 
             # Hash drift guard: source file changed since original ingest.
@@ -269,7 +276,14 @@ async def reproject_vault_with_services(
             prior_status = doc.pipeline_status
 
             # Stage 2: re-chunk (fix), re-embed, atomic replace.
-            await ingestion._stage2_indexing(doc.id, projection)
+            await ingestion._stage2_indexing(
+                doc.id,
+                projection,
+                reprocessing_decision=(
+                    f"reproject_active_documents:{doc.source_content_hash}:{adapter.VERSION}:"
+                    f"{canonical_configuration_hash(json.loads(projection.discovery_evidence.identity.configuration_json))}"
+                ),
+            )
 
             # Restore prior terminal pipeline_status so that
             # `search filter pipeline_status=abstraction_complete`

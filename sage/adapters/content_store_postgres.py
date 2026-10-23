@@ -24,6 +24,7 @@ plain Python lists.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
@@ -32,6 +33,7 @@ from datetime import datetime, timedelta, timezone
 from functools import wraps
 from typing import TYPE_CHECKING
 
+from psycopg.errors import ProgramLimitExceeded
 from psycopg.types.json import Jsonb
 
 from sage.adapters.interfaces import (
@@ -47,7 +49,13 @@ from sage.adapters.interfaces import (
 )
 from sage.instrumentation.performance import observed_context, span
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
-from sage.models.coverage import DIMENSIONS, CoverageDimension, ProcessingCoverage
+from sage.models.coverage import (
+    DIMENSIONS,
+    CoverageDimension,
+    ProcessingCoverage,
+    ProcessingIdentity,
+    canonical_configuration_hash,
+)
 from sage.models.enums import TERMINAL_PIPELINE_STATUSES, PipelineStatus
 from sage.storage.postgres.schema import (
     CHUNKS_TSV_CURRENT_MARKERS,
@@ -56,7 +64,6 @@ from sage.storage.postgres.schema import (
     DOCUMENT_SURFACE_TSV_CURRENT_MARKERS,
     DOCUMENT_SURFACE_TSV_GENERATION_EXPRESSION_PROBE,
     DOCUMENT_SURFACE_TSV_REBUILD,
-    EMBEDDING_DIM,
     TEXT_SEARCH_CONFIG,
 )
 from sage.utils.sql_patterns import escape_like
@@ -138,11 +145,11 @@ _METADATA_COLUMNS: tuple[str, ...] = ("doc_type", "lifecycle_status", "project")
 
 _INSERT_COLUMNS = (
     "document_id, heading_path, indexed_structure, content, chunk_index, "
-    "embedding, doc_type, lifecycle_status, project, section_index"
+    "embedding, doc_type, lifecycle_status, project, section_index, keyword_indexed"
 )
 _INSERT_SQL = (
     f"INSERT INTO chunks ({_INSERT_COLUMNS}) "  # noqa: S608 -- fixed column constant
-    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
 )
 
 # ``indexed_structure`` is read back as well as written, because a passage read
@@ -154,7 +161,7 @@ _INSERT_SQL = (
 # the pre-decision behaviour rather than an error.
 _SELECT_CHUNK_COLUMNS = (
     "document_id, heading_path, indexed_structure, content, chunk_index, "
-    "doc_type, lifecycle_status, project, section_index"
+    "doc_type, lifecycle_status, project, section_index, keyword_indexed"
 )
 
 # A passage's section, for a read that groups or counts by it. A passage written
@@ -504,7 +511,7 @@ class PostgresContentStore(ContentStore):
 
     @staticmethod
     def _chunk_row(chunk: Chunk) -> tuple[object, ...]:
-        embedding = chunk.embedding if chunk.embedding is not None else [0.0] * EMBEDDING_DIM
+        embedding = chunk.embedding
         return (
             chunk.document_id,
             chunk.heading_path,
@@ -516,6 +523,7 @@ class PostgresContentStore(ContentStore):
             chunk.lifecycle_status,
             chunk.project,
             chunk.section_index,
+            chunk.keyword_indexed,
         )
 
     @asynccontextmanager
@@ -657,6 +665,195 @@ class PostgresContentStore(ContentStore):
                 raise ValueError("processing document does not exist")
             return row[0]
 
+    async def admit_embedding(
+        self,
+        document_id: str,
+        attempt: int,
+        identity: ProcessingIdentity,
+        input_key: str,
+        tokens: int,
+        *,
+        max_inputs: int,
+        max_tokens: int,
+    ) -> str:
+        """Conservatively retain pre-dispatch debits across every attempt of a source."""
+        if not 1 <= max_inputs <= 4096 or not 1 <= max_tokens <= 32768 or tokens < 0:
+            raise ValueError("invalid embedding allowance")
+        key = hashlib.sha256(input_key.encode()).hexdigest()
+        identity_key = canonical_configuration_hash(identity.model_dump(mode="json"))
+        async with self._pool.connection() as conn, conn.transaction():
+            cur = await conn.execute(
+                "SELECT embedding_accounting, source_content_hash FROM documents WHERE id = %s "
+                "AND (processing_coverage->>'attempt')::bigint = %s FOR UPDATE",
+                (document_id, attempt),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return "stale"
+            if row[1] != identity.source_hash:
+                raise ValueError("embedding source identity mismatch")
+            previous = row[0] or {}
+            if previous.get("source") not in (None, identity.source_hash):
+                previous = {
+                    "authorization": {
+                        "decision": "source_replaced",
+                        "attempt": attempt,
+                        "previous_source": previous["source"],
+                        "previous_tokens": previous.get("tokens", 0),
+                    }
+                }
+            ledger = (
+                previous
+                if previous.get("identity")
+                else {
+                    "identity": identity_key,
+                    "source": identity.source_hash,
+                    "inputs": {},
+                    "tokens": 0,
+                    "max_inputs": max_inputs,
+                    "max_tokens": max_tokens,
+                    "authorization": previous.get("authorization"),
+                }
+            )
+            if (
+                ledger["identity"] != identity_key
+                or ledger["source"] != identity.source_hash
+                or ledger["max_inputs"] != max_inputs
+                or ledger["max_tokens"] != max_tokens
+            ):
+                return "scope_changed"
+            if key in ledger["inputs"]:
+                return "consumed"
+            if len(ledger["inputs"]) >= max_inputs or ledger["tokens"] + tokens > max_tokens:
+                return "limited"
+            ledger["inputs"][key] = tokens
+            ledger["tokens"] += tokens
+            await conn.execute(
+                "UPDATE documents SET embedding_accounting = %s WHERE id = %s",
+                (Jsonb(ledger), document_id),
+            )
+            return "admitted"
+
+    async def read_embedding_vectors(
+        self, document_id: str, indices: list[int]
+    ) -> dict[int, list[float]]:
+        if len(indices) > 4096:
+            raise ValueError("embedding recovery read exceeds selected passage bound")
+        rows = await self._fetchall(
+            "SELECT chunk_index, embedding FROM chunks WHERE document_id = %s "
+            "AND chunk_index = ANY(%s) AND embedding IS NOT NULL",
+            (document_id, indices),
+        )
+        return {
+            index: vector.tolist() if hasattr(vector, "tolist") else list(vector)
+            for index, vector in rows
+        }
+
+    async def embedding_scope_is_compatible(
+        self, document_id: str, identity: ProcessingIdentity
+    ) -> bool:
+        rows = await self._fetchall(
+            "SELECT embedding_accounting FROM documents WHERE id = %s", (document_id,)
+        )
+        if not rows:
+            return False
+        ledger = rows[0][0] or {}
+        return (
+            not ledger.get("identity")
+            or ledger.get("source") != identity.source_hash
+            or ledger["identity"] == canonical_configuration_hash(identity.model_dump(mode="json"))
+        )
+
+    async def authorize_embedding_scope(
+        self,
+        document_id: str,
+        attempt: int,
+        decision: str,
+    ) -> bool:
+        if not decision.strip() or len(decision) > 512:
+            raise ValueError("reprocessing requires a nonempty bounded operator decision")
+        async with self._pool.connection() as conn, conn.transaction():
+            cur = await conn.execute(
+                "SELECT embedding_accounting FROM documents WHERE id = %s "
+                "AND (processing_coverage->>'attempt')::bigint = %s FOR UPDATE",
+                (document_id, attempt),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return False
+            previous = row[0] or {}
+            if (previous.get("authorization") or {}).get("decision") == decision:
+                return True
+            authorization = {
+                "decision": decision,
+                "attempt": attempt,
+                "at": datetime.now(timezone.utc).isoformat(),
+                "previous_identity": previous.get("identity"),
+                "previous_tokens": previous.get("tokens", 0),
+            }
+            await conn.execute(
+                "UPDATE documents SET embedding_accounting = %s WHERE id = %s",
+                (Jsonb({"authorization": authorization}), document_id),
+            )
+            return True
+
+    async def publish_embedding_increment(
+        self,
+        document_id: str,
+        attempt: int,
+        vectors: dict[int, list[float]],
+        evidence: CoverageDimension,
+        *,
+        indexing_complete: bool = False,
+    ) -> bool:
+        """A vector increment cannot replace content, addresses or keyword scope."""
+        if len(vectors) > 128:
+            raise ValueError("embedding increment exceeds 128 established references")
+        async with self._pool.connection() as conn, conn.transaction():
+            cur = await conn.execute(
+                "SELECT processing_coverage, source_content_hash FROM documents WHERE id = %s "
+                "AND (processing_coverage->>'attempt')::bigint = %s FOR UPDATE",
+                (document_id, attempt),
+            )
+            row = await cur.fetchone()
+            if row is None:
+                return False
+            if evidence.identity is not None and evidence.identity.source_hash != row[1]:
+                raise ValueError("embedding source identity mismatch")
+            for index, vector in vectors.items():
+                cur = await conn.execute(
+                    "UPDATE chunks SET embedding = %s WHERE document_id = %s AND chunk_index = %s",
+                    (vector, document_id, index),
+                )
+                if cur.rowcount != 1:
+                    raise ValueError("embedding increment must address an existing passage")
+            cur = await conn.execute(
+                "SELECT count(*) FROM chunks WHERE document_id = %s AND embedding IS NOT NULL",
+                (document_id,),
+            )
+            represented = (await cur.fetchone())[0]
+            if any(c.unit == "passages" and c.represented > represented for c in evidence.counts):
+                raise ValueError("coverage exceeds published embeddings")
+            coverage = ProcessingCoverage.model_validate(row[0] or {})
+            value = CoverageDimension.model_validate(
+                {**evidence.model_dump(), "generation": attempt}
+            )
+            coverage.passage_embeddings = value
+            await conn.execute(
+                "UPDATE documents SET processing_coverage = %s, "
+                "processing_resume_stage = CASE WHEN %s THEN 'abstraction' "
+                "ELSE processing_resume_stage END, "
+                "indexed_at = CASE WHEN %s THEN %s ELSE indexed_at END WHERE id = %s",
+                (
+                    Jsonb(coverage.model_dump(mode="json")),
+                    indexing_complete,
+                    indexing_complete,
+                    datetime.now(timezone.utc).isoformat(),
+                    document_id,
+                ),
+            )
+            return True
+
     async def publish_processing(
         self,
         document_id: str,
@@ -666,6 +863,7 @@ class PostgresContentStore(ContentStore):
         chunks: list[Chunk] | None = None,
         surface: DocumentSurface | None = None,
         semantic_abstract: str | None = None,
+        indexing_complete: bool = True,
     ) -> bool:
         """Commit artifact replacements and their evidence together under a database fence.
 
@@ -673,7 +871,7 @@ class PostgresContentStore(ContentStore):
         projection. Stale producers cannot change either artifacts or the summary.
         Pipeline scheduling and outcome remain owned by pipeline_status.
         """
-        if attempt < 1 or not dimensions or set(dimensions) - set(DIMENSIONS):
+        if attempt < 1 or (not dimensions and surface is None) or set(dimensions) - set(DIMENSIONS):
             raise ValueError("invalid processing publication")
         if (
             chunks is None
@@ -696,6 +894,8 @@ class PostgresContentStore(ContentStore):
                     "characters": sum(len(c.content) for c in chunks),
                     "passages": sum(c.embedding is not None for c in chunks)
                     if name == "passage_embeddings"
+                    else sum(c.keyword_indexed for c in chunks)
+                    if name == "keyword_indexing"
                     else len(chunks),
                 }
                 if any(
@@ -714,7 +914,8 @@ class PostgresContentStore(ContentStore):
             ),
         ):
             cur = await conn.execute(
-                "SELECT processing_coverage, source_content_hash FROM documents "
+                "SELECT processing_coverage, source_content_hash, embedding_accounting "
+                "FROM documents "
                 "WHERE id = %s AND (processing_coverage->>'attempt')::bigint = %s FOR UPDATE",
                 (document_id, attempt),
             )
@@ -722,6 +923,20 @@ class PostgresContentStore(ContentStore):
             if row is None:
                 return False
             current = ProcessingCoverage.model_validate(row[0] or {})
+            # Check the durable allowance in the same transaction as replacement.
+            # A policy change must not erase established vectors before admission
+            # discovers that an attributable expansion decision is required.
+            if chunks is not None and (ledger := row[2] or {}).get("identity"):
+                identity = dimensions["passage_embeddings"].identity
+                if (
+                    ledger.get("source") == row[1]
+                    and identity is not None
+                    and ledger["identity"]
+                    != canonical_configuration_hash(identity.model_dump(mode="json"))
+                ):
+                    raise ValueError(
+                        "embedding scope changed; explicit reprocessing decision required"
+                    )
             changes = {}
             for name, evidence in dimensions.items():
                 payload = evidence.model_dump()
@@ -735,15 +950,62 @@ class PostgresContentStore(ContentStore):
                 with span("database.write_chunks"):
                     await conn.execute("DELETE FROM chunks WHERE document_id = %s", (document_id,))
                     if chunks:
-                        async with conn.cursor() as cur:
-                            await cur.executemany(_INSERT_SQL, [self._chunk_row(c) for c in chunks])
+                        try:
+                            async with conn.transaction(), conn.cursor() as cur:
+                                await cur.executemany(
+                                    _INSERT_SQL, [self._chunk_row(c) for c in chunks]
+                                )
+                        except ProgramLimitExceeded:
+                            # A backend keyword ceiling must not destroy the readable
+                            # projection. Identify only the rows the backend refuses,
+                            # preserving exact authored bytes and vector eligibility.
+                            for chunk in chunks:
+                                try:
+                                    async with conn.transaction():
+                                        await conn.execute(_INSERT_SQL, self._chunk_row(chunk))
+                                except ProgramLimitExceeded:
+                                    chunk.keyword_indexed = False
+                                    await conn.execute(_INSERT_SQL, self._chunk_row(chunk))
+                            keyword = merged.keyword_indexing.model_dump()
+                            keyword["limitations"] = list(
+                                dict.fromkeys(
+                                    [
+                                        *keyword.get("limitations", []),
+                                        "backend_keyword_limit",
+                                    ]
+                                )
+                            )[:16]
+                            if keyword.get("identity") is not None:
+                                keyword["scope"] = "limited"
+                                for count in keyword.get("counts", []):
+                                    if count["unit"] == "passages":
+                                        count["represented"] = sum(
+                                            c.keyword_indexed for c in chunks
+                                        )
+                            merged.keyword_indexing = CoverageDimension.model_validate(keyword)
             if surface is not None:
+                if surface.embedding is None:
+                    previous = await conn.execute(
+                        "SELECT embedding, authored_embedding, matchable FROM document_surface "
+                        "WHERE document_id = %s",
+                        (document_id,),
+                    )
+                    prior = await previous.fetchone()
+                    if prior and prior[0] is not None:
+                        surface.embedding = prior[0]
+                        surface.authored_embedding = bool(
+                            prior[1]
+                            and prior[2] == surface.matchable
+                            and current.passage_embeddings.identity is not None
+                            and current.passage_embeddings.identity.source_hash == row[1]
+                        )
                 await conn.execute(
                     "DELETE FROM document_surface WHERE document_id = %s", (document_id,)
                 )
                 await conn.execute(
                     "INSERT INTO document_surface (document_id, matchable, orienting, embedding, "
-                    "doc_type, lifecycle_status, project) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                    "doc_type, lifecycle_status, project, authored_embedding) "
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
                     (
                         document_id,
                         surface.matchable,
@@ -752,6 +1014,7 @@ class PostgresContentStore(ContentStore):
                         surface.doc_type,
                         surface.lifecycle_status,
                         surface.project,
+                        surface.authored_embedding,
                     ),
                 )
             await conn.execute(
@@ -761,9 +1024,9 @@ class PostgresContentStore(ContentStore):
                 "ELSE processing_resume_stage END WHERE id = %s",
                 (
                     Jsonb(merged.model_dump(mode="json")),
-                    chunks is not None,
+                    chunks is not None and indexing_complete,
                     datetime.now(timezone.utc).isoformat(),
-                    chunks is not None,
+                    chunks is not None and indexing_complete,
                     document_id,
                 ),
             )
@@ -821,8 +1084,8 @@ class PostgresContentStore(ContentStore):
                 await conn.execute(
                     "INSERT INTO document_surface"
                     " (document_id, matchable, orienting, embedding,"
-                    "  doc_type, lifecycle_status, project)"
-                    " VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    "  doc_type, lifecycle_status, project, authored_embedding)"
+                    " VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
                     (
                         surface.document_id,
                         surface.matchable,
@@ -831,6 +1094,7 @@ class PostgresContentStore(ContentStore):
                         surface.doc_type,
                         surface.lifecycle_status,
                         surface.project,
+                        surface.authored_embedding,
                     ),
                 )
 
@@ -848,16 +1112,17 @@ class PostgresContentStore(ContentStore):
     async def update_document_surface_text(
         self, document_id: str, matchable: str, orienting: str
     ) -> bool:
-        """Rewrite a document-level row's text, leaving its vector in place."""
+        """Retain vectors, quarantining admission when their authored input changes."""
         with self._query_timer.measure("update_document_surface_text"):
             async with self._pool.connection() as conn, conn.transaction():
                 await self._invalidate_processing(
                     conn, document_id, ("keyword_indexing", "abstraction_evidence")
                 )
                 cur = await conn.execute(
-                    "UPDATE document_surface SET matchable = %s, orienting = %s"
+                    "UPDATE document_surface SET authored_embedding = "
+                    "authored_embedding AND matchable = %s, matchable = %s, orienting = %s"
                     " WHERE document_id = %s",
-                    (matchable, orienting, document_id),
+                    (matchable, matchable, orienting, document_id),
                 )
                 return bool(cur.rowcount)
 
@@ -1252,7 +1517,7 @@ class PostgresContentStore(ContentStore):
             "search_semantic", params={"limit": limit, "filtered": bool(filters)}
         ):
             where, where_params = self._build_where(filters)
-            predicate = f" WHERE {where}" if where else ""
+            predicate = " WHERE authored_embedding" + (f" AND {where}" if where else "")
             arms = (
                 " (SELECT document_id, heading_path, content,"  # noqa: S608
                 " 1 - (embedding <=> %s::vector) AS score,"
@@ -1292,13 +1557,14 @@ class PostgresContentStore(ContentStore):
                 # count is of the sections its passages belong to, so a section
                 # divided into several passages counts once.
                 " docs AS (SELECT document_id, max(score) AS score,"
-                " count(DISTINCT section_key) AS matched_sections"
+                " count(DISTINCT section_key) AS matched_sections,"
+                " count(*) FILTER (WHERE NOT is_document_surface) AS matched_passages"
                 " FROM scored GROUP BY document_id)"
                 " SELECT d.document_id, COALESCE(b.heading_path, ''),"
                 " COALESCE(b.content, ''), d.score,"
                 # No passage row means only the document surface answered.
                 " (b.document_id IS NULL) AS is_document_surface,"
-                " b.section_key, d.matched_sections"
+                " b.section_key, d.matched_sections, d.matched_passages"
                 " FROM docs d LEFT JOIN best b USING (document_id)"
                 # Total, so the same survivors always come back in the same
                 # order: the id separates documents sharing a score.
@@ -1574,7 +1840,7 @@ class PostgresContentStore(ContentStore):
         # would multiply every row the ranking join produces.
         arm = (
             "(SELECT DISTINCT document_id FROM chunks"  # noqa: S608
-            f" WHERE {_passage_rows_only()} AND tsv @@ %s::tsquery{predicate}"
+            f" WHERE {_passage_rows_only()} AND keyword_indexed AND tsv @@ %s::tsquery{predicate}"
             " UNION"
             " SELECT DISTINCT document_id FROM document_surface"
             f" WHERE tsv_match @@ %s::tsquery{predicate})"
@@ -1627,17 +1893,20 @@ class PostgresContentStore(ContentStore):
             " row_number() OVER (PARTITION BY c.document_id ORDER BY"
             " ts_rank(c.tsv, %s::tsquery) DESC, c.chunk_index) AS rn"
             " FROM chunks c JOIN matched USING (document_id)"
-            f" WHERE {_passage_rows_only('c')} AND c.tsv @@ %s::tsquery{predicate}"
+            f" WHERE {_passage_rows_only('c')} AND c.keyword_indexed "
+            f"AND c.tsv @@ %s::tsquery{predicate}"
             " ) SELECT m.document_id,"
             " COALESCE(r.heading_path, ''), COALESCE(r.content, ''),"
             " GREATEST(COALESCE(r.chunk_score, 0), COALESCE(s.surf_score, 0)) AS doc_score,"
             " COALESCE(n.matched_chunks, 0) AS matched_chunks,"
             # No surviving passage row means nothing but the document surface
             # answered, which is what makes the row a document-level one.
-            " (r.document_id IS NULL) AS is_document_surface, r.section_key"
+            " (r.document_id IS NULL) AS is_document_surface, r.section_key,"
+            " COALESCE(n.matched_passages, 0) AS matched_passages"
             " FROM matched m"
             " LEFT JOIN (SELECT * FROM ranked WHERE rn = 1) r USING (document_id)"
-            " LEFT JOIN (SELECT document_id, max(section_rank) AS matched_chunks"
+            " LEFT JOIN (SELECT document_id, max(section_rank) AS matched_chunks,"
+            " count(*) AS matched_passages"
             " FROM ranked GROUP BY document_id) n USING (document_id)"
             " LEFT JOIN surf s USING (document_id)"
             " ORDER BY doc_score DESC, m.document_id LIMIT %s"
@@ -1701,7 +1970,7 @@ class PostgresContentStore(ContentStore):
             " row_number() OVER (PARTITION BY c.document_id ORDER BY"
             " ts_rank(c.tsv, q) DESC, c.chunk_index) AS rn"
             f" FROM chunks c, websearch_to_tsquery('{TEXT_SEARCH_CONFIG}', %s) AS q"
-            f" WHERE c.tsv @@ q AND {_passage_rows_only('c')}{predicate}"
+            f" WHERE c.keyword_indexed AND c.tsv @@ q AND {_passage_rows_only('c')}{predicate}"
         )
         surf = (
             "SELECT s.document_id, ts_rank(s.tsv_rank, q) AS surf_score"  # noqa: S608
@@ -1721,10 +1990,12 @@ class PostgresContentStore(ContentStore):
             # surface is a second unit of text rather than a second scope, so
             # it can win the document and cannot win the excerpt: a document
             # whose passages matched is represented by its best one.
-            " (r.document_id IS NULL) AS is_document_surface, r.section_key"
+            " (r.document_id IS NULL) AS is_document_surface, r.section_key,"
+            " COALESCE(n.matched_passages, 0) AS matched_passages"
             " FROM matched m"
             " LEFT JOIN (SELECT * FROM ranked WHERE rn = 1) r USING (document_id)"
-            " LEFT JOIN (SELECT document_id, max(section_rank) AS matched_chunks"
+            " LEFT JOIN (SELECT document_id, max(section_rank) AS matched_chunks,"
+            " count(*) AS matched_passages"
             " FROM ranked GROUP BY document_id) n USING (document_id)"
             " LEFT JOIN surf s USING (document_id)"
             # Total, for the reason the semantic verb's own sort gives. For
@@ -2019,6 +2290,7 @@ class PostgresContentStore(ContentStore):
             matched_chunk_count=int(row[4]),
             is_document_surface=bool(row[5]),
             section_index=row[6],
+            matched_passage_count=int(row[7]),
         )
 
     @staticmethod
@@ -2039,6 +2311,7 @@ class PostgresContentStore(ContentStore):
             matched_chunk_count=int(row[6]),
             is_document_surface=bool(row[4]),
             section_index=row[5],
+            matched_passage_count=int(row[7]),
         )
 
     @staticmethod
@@ -2053,6 +2326,7 @@ class PostgresContentStore(ContentStore):
             lifecycle_status=row[6],
             project=row[7],
             section_index=row[8],
+            keyword_indexed=row[9],
         )
 
     _escape_like = staticmethod(escape_like)

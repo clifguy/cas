@@ -26,7 +26,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 from zoneinfo import ZoneInfo
 
 import jsonschema
@@ -145,6 +145,14 @@ from sage.services.passage_split import (
     split_passage,
 )
 from sage.services.passage_structure import indexed_structure
+from sage.services.selective_embedding import (
+    PassageWork,
+    embed_selected,
+    embedding_coverage,
+    reindex_passages,
+    restore_selected_vectors,
+    select_passages,
+)
 from sage.services.transfer import DeliveryDeclaration, caller_local_delivery
 from sage.services.vault_source_errors import report_refusal_as
 from sage.source_adapters.base import (
@@ -350,14 +358,17 @@ async def _run_inspected_projection(
 _PASSAGE_EXECUTOR: ThreadPoolExecutor | None = None
 
 
-async def _run_passage_work(work: Callable[[], list[Chunk]]) -> list[Chunk]:
-    """Run blocking passage construction off the request loop, one at a time."""
+_PassageWorkResult = TypeVar("_PassageWorkResult")
+
+
+async def _run_passage_work(work: Callable[[], _PassageWorkResult]) -> _PassageWorkResult:
+    """Run blocking passage construction and sizing off the loop, one at a time."""
     global _PASSAGE_EXECUTOR
     if _PASSAGE_EXECUTOR is None:
         _PASSAGE_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sage-passage")
     result = await offload(_PASSAGE_EXECUTOR, "passages", work)
     trace = current_trace()
-    if trace is not None:
+    if trace is not None and isinstance(result, list):
         trace.count("passages", len(result))
     return result
 
@@ -2771,7 +2782,6 @@ class IngestionService:
         surface = compose_document_surface(
             document_id, doc.model_copy(update={"semantic_abstract": abstract})
         )
-        [surface.embedding] = await self._embedding.embed([embedding_text(surface)])
         published = await self._content_store.publish_processing(
             document_id,
             attempt,
@@ -2787,7 +2797,12 @@ class IngestionService:
             raise _SupersededProcessing("stale processing publication")
 
     async def _stage2_indexing(
-        self, document_id: str, projection: ProjectionResult, attempt: int | None = None
+        self,
+        document_id: str,
+        projection: ProjectionResult,
+        attempt: int | None = None,
+        *,
+        reprocessing_decision: str | None = None,
     ) -> None:
         """Stage 2: Chunk projection, embed, store in content store.
         Sets indexed_at on completion (BH-008).
@@ -2795,7 +2810,10 @@ class IngestionService:
         if attempt is None:
             attempt = await self._content_store.begin_processing_attempt(document_id)
         await self._stamp_pipeline_status(
-            document_id, PipelineStatus.INDEXING_IN_PROGRESS, expected_attempt=attempt
+            document_id,
+            PipelineStatus.INDEXING_IN_PROGRESS,
+            expected_attempt=attempt,
+            processing_stage="indexing",
         )
 
         # Inspection settles before inference. The exact package was captured
@@ -2821,26 +2839,47 @@ class IngestionService:
         # document-level text goes to its own surface, written below.
         chunks: list[Chunk] = list(body_chunks)
 
-        # Embed all chunks. Combine heading_path with content so that
-        # semantic search can reach chunks via heading-text-only queries
-        # (the equivalent of Word's Find on a heading). Stored chunk.content
-        # is unchanged — heading_path travels with the embedder input only.
-        #
-        # The *address* is what the embedder sees, deliberately and unchanged.
-        # CAS-ADR-049 Decision 3 moves the keyword arm's top weight to the
-        # relative structure and leaves the vector arm alone, so no corpus needs
-        # re-embedding to take that change.
-        if chunks:
-            await self._embed_chunks(chunks)
-
-        surface = None
-        if doc is not None:
-            surface = compose_document_surface(document_id, doc)
-            [surface.embedding] = await self._embedding.embed([embedding_text(surface)])
-        evidence = {
-            name: CoverageDimension(limitations=["producer_evidence_unavailable"])
-            for name in ("projection", "keyword_indexing", "passage_embeddings")
-        }
+        if doc is None:
+            raise _SupersededProcessing("processing document disappeared")
+        selection = await _run_passage_work(
+            lambda: select_passages(chunks, projection, self._embedding, doc.source_content_hash)
+        )
+        if reprocessing_decision is not None:
+            if not await self._content_store.authorize_embedding_scope(
+                document_id, attempt, reprocessing_decision
+            ):
+                raise _SupersededProcessing("stale reprocessing decision")
+        prior_embedding = doc.processing_coverage.passage_embeddings
+        if any(
+            reason in prior_embedding.limitations
+            for reason in (
+                "embedding_failed",
+                "embedding_interrupted",
+                "embedding_prior_uncertain_work",
+            )
+        ):
+            selection = dataclasses.replace(
+                selection,
+                recovery_limitations=("embedding_prior_uncertain_work",),
+            )
+        tags = projection.metadata.get("adapter_tags", [])
+        projection_limited = doc.source_type.value == "xlsx" or any(
+            str(t).endswith(":truncated") for t in tags
+        )
+        projected = CoverageDimension(
+            scope="limited" if projection_limited else "complete",
+            identity=selection.identity,
+            counts=[
+                {
+                    "unit": "passages",
+                    "observed": len(chunks),
+                    "represented": len(chunks),
+                    "total": None if projection_limited else len(chunks),
+                }
+            ],
+            limitations=["adapter_projection_limited"] if projection_limited else [],
+            unknown_remainder=projection_limited,
+        )
         # Reconcile the candidate before publishing under the same lock as
         # metadata writers. Post-publication maintenance writes would invalidate
         # this attempt's newly served evidence and fence its own completion.
@@ -2853,17 +2892,113 @@ class IngestionService:
                     chunk.project = current.project
                     chunk.indexed_structure = indexed_structure(chunk.heading_path, current.title)
                 fresh_surface = compose_document_surface(document_id, current)
-                if surface is None or embedding_text(fresh_surface) != embedding_text(surface):
-                    [fresh_surface.embedding] = await self._embedding.embed(
-                        [embedding_text(fresh_surface)]
-                    )
-                else:
-                    fresh_surface.embedding = surface.embedding
                 surface = fresh_surface
+            else:
+                raise _SupersededProcessing("processing document disappeared")
+            published_metadata = (
+                current.title,
+                current.doc_type,
+                current.lifecycle_status,
+                current.project,
+            )
+            await restore_selected_vectors(self._content_store, document_id, selection, chunks)
+            keyword_characters = 0
+            for chunk in chunks:
+                size = len(chunk.content) + len(chunk.indexed_structure or "")
+                chunk.keyword_indexed = (
+                    selection.config.max_keyword_characters is None
+                    or keyword_characters + size <= selection.config.max_keyword_characters
+                )
+                if chunk.keyword_indexed:
+                    keyword_characters += size
+            keyword_passages = sum(c.keyword_indexed for c in chunks)
+            keyword_limited = projection_limited or keyword_passages < len(chunks)
+            keyword = CoverageDimension(
+                scope="limited" if keyword_limited else "complete",
+                identity=selection.identity,
+                counts=[
+                    {
+                        "unit": "passages",
+                        "observed": len(chunks),
+                        "represented": keyword_passages,
+                        "total": None if projection_limited else len(chunks),
+                    }
+                ],
+                limitations=(["keyword_character_budget"] if keyword_passages < len(chunks) else [])
+                + projected.limitations,
+                unknown_remainder=projection_limited,
+            )
+            evidence = {
+                "projection": projected,
+                "keyword_indexing": keyword,
+                "passage_embeddings": embedding_coverage(selection, chunks, ["embedding_pending"]),
+            }
             if not await self._content_store.publish_processing(
-                document_id, attempt, evidence, chunks=chunks, surface=surface
+                document_id,
+                attempt,
+                evidence,
+                chunks=chunks,
+                surface=surface,
+                indexing_complete=False,
             ):
                 raise _SupersededProcessing("stale processing publication")
+
+        await self._embed_chunks(PassageWork(chunks, document_id, attempt, selection))
+        async with self._locks.lock(document_id):
+            current = await self._store.get_document(document_id)
+            if current is None:
+                raise _SupersededProcessing("processing document disappeared")
+            latest_metadata = (
+                current.title,
+                current.doc_type,
+                current.lifecycle_status,
+                current.project,
+            )
+            if latest_metadata != published_metadata:
+                for chunk in chunks:
+                    chunk.doc_type = current.doc_type
+                    chunk.lifecycle_status = current.lifecycle_status
+                    chunk.project = current.project
+                    chunk.indexed_structure = indexed_structure(chunk.heading_path, current.title)
+                coverage, _ = await self._content_store.read_processing_snapshot(document_id)
+                surface = compose_document_surface(document_id, current)
+                if not await self._content_store.publish_processing(
+                    document_id,
+                    attempt,
+                    {
+                        name: getattr(coverage, name)
+                        for name in ("projection", "keyword_indexing", "passage_embeddings")
+                    },
+                    chunks=chunks,
+                    surface=surface,
+                ):
+                    raise _SupersededProcessing("stale metadata reconciliation")
+        # Title/tags remain authored document-level evidence. Derived discovery
+        # prose never becomes an independent semantic admission vector.
+        if surface.matchable and len(surface.matchable) <= 32768:
+            surface_tokens = await _run_passage_work(
+                lambda: self._embedding.count_tokens(surface.matchable)
+            )
+            if surface_tokens <= self._embedding.max_input_tokens:
+                admission = await self._content_store.admit_embedding(
+                    document_id,
+                    attempt,
+                    selection.identity,
+                    surface.matchable,
+                    surface_tokens,
+                    max_inputs=selection.config.max_excerpts,
+                    max_tokens=selection.config.max_tokens,
+                )
+                if admission == "admitted":
+                    [surface.embedding] = await self._embedding.embed([surface.matchable])
+                    surface.authored_embedding = True
+                    if not await self._content_store.publish_processing(
+                        document_id,
+                        attempt,
+                        {},
+                        surface=surface,
+                    ):
+                        raise _SupersededProcessing("stale document surface publication")
 
         # Mark indexing complete (BH-008)
         await self._stamp_pipeline_status(
@@ -2876,9 +3011,19 @@ class IngestionService:
     async def _embed_chunks(self, chunks: list[Chunk]) -> None:
         """Build only a bounded window of model inputs and transient vectors.
 
-        Initial indexing and maintenance rewrites share this boundary. Retained
-        chunks/projections stay exact; model dispatch applies fair backpressure.
+        Indexing uses durable selective execution. The primitive list form
+        retains bounded dispatch windows for direct helper callers.
         """
+        if isinstance(chunks, PassageWork):
+            await embed_selected(
+                self._content_store,
+                self._embedding,
+                chunks.document_id,
+                chunks.attempt,
+                chunks.selection,
+                chunks,
+            )
+            return
         for start in range(0, len(chunks), 8):
             window = chunks[start : start + 8]
             texts = [embedding_input(c.heading_path, c.content) for c in window]
@@ -4193,7 +4338,9 @@ class IngestionService:
 
         return fits
 
-    async def divide_passages_over_input_bound(self) -> int:
+    async def divide_passages_over_input_bound(
+        self, *, reprocessing_decision: str | None = None
+    ) -> int:
         """Divide every stored section too long for the embedder, vault-wide.
 
         Stored passages are the durable form of a projection, so a section is
@@ -4213,12 +4360,16 @@ class IngestionService:
         for document_id in await self._content_store.documents_with_passages_longer_than(
             byte_bound
         ):
-            if await self._divide_stored_passages(document_id):
+            if await self._divide_stored_passages(
+                document_id, reprocessing_decision=reprocessing_decision
+            ):
                 rewritten += 1
         return rewritten
 
     @observe_operation("passages.rebuild")
-    async def _divide_stored_passages(self, document_id: str) -> bool:
+    async def _divide_stored_passages(
+        self, document_id: str, *, reprocessing_decision: str | None = None
+    ) -> bool:
         """Re-divide one document's stored sections under the embedder's bound.
 
         The division is ``_passages_for_sections``, the one ingest applies, so
@@ -4255,11 +4406,23 @@ class IngestionService:
                 chunk.doc_type = origin.doc_type
                 chunk.lifecycle_status = origin.lifecycle_status
                 chunk.project = origin.project
-            await self._embed_chunks(divided)
-            await self._content_store.index_chunks(document_id, divided)
+            doc = await self._store.get_document(document_id)
+            await reindex_passages(
+                self._content_store,
+                self._embedding,
+                doc,
+                divided,
+                decision=(
+                    f"{reprocessing_decision}:{doc.source_content_hash}:{self._embedding.max_input_tokens}"
+                    if reprocessing_decision is not None
+                    else None
+                ),
+            )
             return True
 
-    async def store_text_before_first_heading(self) -> tuple[int, list[tuple[str, str]]]:
+    async def store_text_before_first_heading(
+        self, *, reprocessing_decision: str | None = None
+    ) -> tuple[int, list[tuple[str, str]]]:
         """Store the text each document carries before its first heading, vault-wide.
 
         A document indexed before that text had a passage holds none of it, and
@@ -4304,7 +4467,9 @@ class IngestionService:
         rewritten = 0
         not_repaired: list[tuple[str, str]] = []
         for doc in candidates:
-            outcome = await self._bring_passages_current(doc, vault_source_store)
+            outcome = await self._bring_passages_current(
+                doc, vault_source_store, reprocessing_decision=reprocessing_decision
+            )
             if isinstance(outcome, str):
                 not_repaired.append((doc.id, outcome))
                 continue
@@ -4364,7 +4529,11 @@ class IngestionService:
 
     @observe_operation("projection.rebuild")
     async def _bring_passages_current(
-        self, doc: Document, vault_source_store: "VaultSourceStore"
+        self,
+        doc: Document,
+        vault_source_store: "VaultSourceStore",
+        *,
+        reprocessing_decision: str | None = None,
     ) -> bool | str:
         """Make a document's stored passages the ones its adapter now writes.
 
@@ -4453,8 +4622,17 @@ class IngestionService:
                 chunk.doc_type = stored[0].doc_type
                 chunk.lifecycle_status = stored[0].lifecycle_status
                 chunk.project = stored[0].project
-            await self._embed_chunks(fresh)
-            await self._content_store.index_chunks(document_id, fresh)
+            await reindex_passages(
+                self._content_store,
+                self._embedding,
+                current,
+                fresh,
+                decision=(
+                    f"{reprocessing_decision}:{current.source_content_hash}:{current.adapter_version}->{adapter.VERSION}"
+                    if reprocessing_decision is not None
+                    else None
+                ),
+            )
         await self._stamp_examined(document_id, adapter.VERSION)
         return True
 

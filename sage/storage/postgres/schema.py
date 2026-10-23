@@ -156,6 +156,7 @@ CREATE TABLE IF NOT EXISTS documents (
     relocated_from jsonb,
     relocated_to jsonb,
     processing_coverage jsonb,
+    embedding_accounting jsonb,
     processing_resume_stage text CHECK (processing_resume_stage IN ('indexing', 'abstraction')),
     version_token bigint NOT NULL DEFAULT 1
 );
@@ -250,10 +251,12 @@ CHUNKS_INDEXED_STRUCTURE_EXPRESSION = "coalesce(indexed_structure, heading_path)
 CHUNKS_INDEXED_CONTENT_EXPRESSION = "translate(content, '<>', '  ')"
 
 CHUNKS_TSV_EXPRESSION = (
+    "CASE WHEN keyword_indexed THEN "
     f"setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', "
     f"{CHUNKS_INDEXED_STRUCTURE_EXPRESSION}), 'A')"
     f" || setweight(to_tsvector('{TEXT_SEARCH_CONFIG}', "
     f"{CHUNKS_INDEXED_CONTENT_EXPRESSION}), 'D')"
+    " ELSE ''::tsvector END"
 )
 
 CHUNKS_TABLE = f"""\
@@ -264,6 +267,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     content text NOT NULL,
     chunk_index integer NOT NULL,
     section_index integer,
+    keyword_indexed boolean NOT NULL DEFAULT true,
     embedding vector({EMBEDDING_DIM}),
     doc_type text,
     lifecycle_status text,
@@ -311,6 +315,7 @@ CREATE TABLE IF NOT EXISTS document_surface (
     matchable text NOT NULL,
     orienting text NOT NULL,
     embedding vector({EMBEDDING_DIM}),
+    authored_embedding boolean NOT NULL DEFAULT false,
     doc_type text,
     lifecycle_status text,
     project text,
@@ -407,6 +412,10 @@ _TABLES: tuple[str, ...] = (
 ADDITIVE_COLUMNS: tuple[str, ...] = (
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS stored_content_hash text;",
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS processing_coverage jsonb;",
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS embedding_accounting jsonb;",
+    "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS keyword_indexed boolean NOT NULL DEFAULT true;",
+    "ALTER TABLE document_surface ADD COLUMN IF NOT EXISTS "
+    "authored_embedding boolean NOT NULL DEFAULT false;",
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS processing_resume_stage text "
     "CHECK (processing_resume_stage IN ('indexing', 'abstraction'));",
     # Nullable with no default, deliberately: NULL is what "not yet derived"
@@ -502,7 +511,11 @@ CHUNKS_TSV_REBUILD: tuple[str, ...] = (
 # the minimal discriminator for one property that survives that normalization:
 # weight A reads the relative structure rather than the address, and the content
 # is read with its markup brackets replaced.
-CHUNKS_TSV_CURRENT_MARKERS: tuple[str, ...] = ("indexed_structure", "translate(content")
+CHUNKS_TSV_CURRENT_MARKERS: tuple[str, ...] = (
+    "indexed_structure",
+    "translate(content",
+    "keyword_indexed",
+)
 
 CHUNKS_TSV_GENERATION_EXPRESSION_PROBE = (
     "SELECT generation_expression FROM information_schema.columns"

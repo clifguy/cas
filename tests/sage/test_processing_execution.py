@@ -66,19 +66,16 @@ async def test_metadata_during_active_processing_settles_the_owned_attempt(
         assert "fresh" in after.tags
     assert not any("unhandled error" in r.message for r in caplog.records)
     assert len(calls) == 1
-    if stage == "initial_index":
-        assert after.pipeline_status.value == "abstraction_complete"
-    else:
-        assert after.pipeline_status.value == "abstraction_interrupted"
-        assert after.processing_coverage.attempt > before.processing_coverage.attempt
-        assert after.pipeline_error and "artifact" in after.pipeline_error
-        assert after.semantic_abstract == before.semantic_abstract
-        assert await service.recover_incomplete_documents() == 1
-        await drain_abstraction_queue(service)
-        recovered = await service._store.get_document(document_id)
-        assert recovered.pipeline_status.value == "abstraction_complete"
-        assert recovered.pipeline_error is None
-        assert recovered.processing_coverage.attempt > after.processing_coverage.attempt
+    assert after.pipeline_status.value == "abstraction_interrupted"
+    assert after.processing_coverage.attempt > before.processing_coverage.attempt
+    assert after.pipeline_error and "artifact" in after.pipeline_error
+    assert after.semantic_abstract == before.semantic_abstract
+    assert await service.recover_incomplete_documents() == 1
+    await drain_abstraction_queue(service)
+    recovered = await service._store.get_document(document_id)
+    assert recovered.pipeline_status.value == "abstraction_complete"
+    assert recovered.pipeline_error is None
+    assert recovered.processing_coverage.attempt > after.processing_coverage.attempt
 
 
 @pytest.mark.parametrize("established", [False, True])
@@ -99,12 +96,13 @@ async def test_metadata_full_response_is_captured_after_invalidation_inside_the_
     document_id = result.document.id
     if established:
         coverage, chunks = await store.read_processing_snapshot(document_id)
+        assert coverage.passage_embeddings.identity is not None
         attempt = await store.begin_processing_attempt(document_id)
         assert await store.publish_processing(
             document_id,
             attempt,
             {
-                n: CoverageDimension(scope="limited", identity=coverage.source_retention.identity)
+                n: CoverageDimension(scope="limited", identity=coverage.passage_embeddings.identity)
                 for n in (
                     "projection",
                     "keyword_indexing",
@@ -116,7 +114,7 @@ async def test_metadata_full_response_is_captured_after_invalidation_inside_the_
         )
     before = await service._store.get_document(document_id)
     assert before.processing_coverage.keyword_indexing.scope == (
-        "limited" if established else "unknown"
+        "limited" if established else "complete"
     )
     changed = []
     reads = []

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import NamedTuple, TypedDict
 
-from sage.models.coverage import CoverageDimension, ProcessingCoverage
+from sage.models.coverage import CoverageDimension, ProcessingCoverage, ProcessingIdentity
 from sage.models.enums import ResolutionPolicy
 from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
 from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge
@@ -157,6 +157,7 @@ class Chunk:
     project: str | None = None
     indexed_structure: str | None = None
     section_index: int | None = None
+    keyword_indexed: bool = True
 
     @property
     def section_key(self) -> int:
@@ -195,6 +196,7 @@ class DocumentSurface:
     doc_type: str | None = None
     lifecycle_status: str | None = None
     project: str | None = None
+    authored_embedding: bool = True
 
 
 @dataclass
@@ -231,6 +233,7 @@ class SearchResult:
     content: str
     score: float
     matched_chunk_count: int = 1
+    matched_passage_count: int | None = None
     is_document_surface: bool = False
     section_index: int | None = None
     processing_coverage: ProcessingCoverage | None = None
@@ -324,12 +327,64 @@ class ContentStore(ABC):
         chunks: list[Chunk] | None = None,
         surface: DocumentSurface | None = None,
         semantic_abstract: str | None = None,
+        indexing_complete: bool = True,
     ) -> bool:
         """Atomically publish evidence and artifacts, refusing stale attempts.
 
         Publishing passages also records indexed_at in that transaction; surface
         or abstraction-only publication preserves the prior indexing time.
         """
+        raise NotImplementedError
+
+    async def admit_embedding(
+        self,
+        document_id: str,
+        attempt: int,
+        identity: ProcessingIdentity,
+        input_key: str,
+        tokens: int,
+        *,
+        max_inputs: int,
+        max_tokens: int,
+    ) -> str:
+        """Debit source-scoped inference before dispatch; retries retain consumption.
+
+        Returns admitted, consumed, limited, scope_changed or stale. Scope changes
+        require explicit reprocessing and cannot be smuggled through a retry.
+        """
+        raise NotImplementedError
+
+    async def publish_embedding_increment(
+        self,
+        document_id: str,
+        attempt: int,
+        vectors: dict[int, list[float]],
+        evidence: CoverageDimension,
+        *,
+        indexing_complete: bool = False,
+    ) -> bool:
+        """Publish only existing passage vectors and coverage under one attempt fence."""
+        raise NotImplementedError
+
+    async def read_embedding_vectors(
+        self, document_id: str, indices: list[int]
+    ) -> dict[int, list[float]]:
+        """Read at most 4096 selected vectors for conservative retry reconciliation."""
+        raise NotImplementedError
+
+    async def embedding_scope_is_compatible(
+        self, document_id: str, identity: ProcessingIdentity
+    ) -> bool:
+        """Read-only preflight before an unapproved maintenance attempt changes state."""
+        raise NotImplementedError
+
+    async def authorize_embedding_scope(
+        self,
+        document_id: str,
+        attempt: int,
+        decision: str,
+    ) -> bool:
+        """Explicit operator reprocessing decision; retries never invoke this reset."""
         raise NotImplementedError
 
     @abstractmethod

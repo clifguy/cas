@@ -495,18 +495,6 @@ async def test_the_indexing_reconcile_writes_under_the_document_lock(
     publish = content.publish_processing
     observed: list[bool] = []
     publications: list[bool] = []
-    reconciliations: list[bool] = []
-    graph = services.ingestion_service._store
-    read = graph.get_document
-    embedder = services.ingestion_service._embedding
-    embed = embedder.embed
-    pipeline_tasks = set()
-
-    async def tracking_embed(texts):
-        pipeline_tasks.add(asyncio.current_task())
-        return await embed(texts)
-
-    monkeypatch.setattr(embedder, "embed", tracking_embed)
     doc_id_box: list[str] = []
 
     async def probing(document_id, metadata):
@@ -515,22 +503,10 @@ async def test_the_indexing_reconcile_writes_under_the_document_lock(
         return await original(document_id, metadata)
 
     async def probing_publication(document_id, *args, **kwargs):
-        if doc_id_box and document_id == doc_id_box[0] and kwargs.get("chunks") is not None:
+        if kwargs.get("chunks") is not None:
             publications.append(services.ingestion_service._locks.lock(document_id).locked())
         return await publish(document_id, *args, **kwargs)
 
-    async def probing_read(document_id):
-        if (
-            doc_id_box
-            and document_id == doc_id_box[0]
-            and release.is_set()
-            and asyncio.current_task() in pipeline_tasks
-            and not publications
-        ):
-            reconciliations.append(services.ingestion_service._locks.lock(document_id).locked())
-        return await read(document_id)
-
-    monkeypatch.setattr(graph, "get_document", probing_read)
     monkeypatch.setattr(content, "update_chunk_metadata", probing)
     monkeypatch.setattr(content, "publish_processing", probing_publication)
 
@@ -538,12 +514,18 @@ async def test_the_indexing_reconcile_writes_under_the_document_lock(
     ingested = _parse(await ingest_document(VAULT, "test/locked.md", "markdown"))
     doc_id_box.append(ingested["id"])
     await asyncio.wait_for(entered.wait(), timeout=5)
+    before = await content.get_all_chunks(ingested["id"])
+    assert before and {c.doc_type for c in before} == {"misc"}
+    assert not await content.read_embedding_vectors(ingested["id"], [c.chunk_index for c in before])
     patched = await _patch(ingested["id"], doc_type="memo")
     assert patched["status"] == "success", patched
     release.set()
     await _settled(services, ingested["id"])
 
-    assert reconciliations and all(reconciliations), reconciliations
+    assert publications, "authored publication must already exist before inference"
+    after = await content.get_all_chunks(ingested["id"])
+    assert {c.doc_type for c in after} == {"memo"}
+    assert [c.content for c in after] == [c.content for c in before]
     assert observed and all(observed), observed
     assert publications and all(publications), publications
 

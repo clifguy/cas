@@ -95,9 +95,14 @@ async def test_recovery_publishes_the_requested_generation_without_repeating_com
     if before and stage == 2:
         assert (
             held_row.processing_coverage.projection.generation
-            == before.processing_coverage.projection.generation
+            > before.processing_coverage.projection.generation
         )
-        assert any("OLD ADAPTER" in c.content for c in held_chunks)
+        assert any("CURRENT SOURCE" in c.content for c in held_chunks)
+        assert held_row.processing_coverage.keyword_indexing.scope == "complete"
+        assert not await service._content_store.read_embedding_vectors(
+            document_id,
+            [c.chunk_index for c in held_chunks],
+        )
     elif stage == 3:
         assert any(expected in c.content for c in held_chunks)
 
@@ -195,7 +200,15 @@ async def test_failed_replacement_recovery_keeps_the_prior_served_generation(
     after = await service._store.get_document(document_id)
     assert after.pipeline_status.value == "failed"
     assert "controlled replacement embedding failure" in after.pipeline_error
-    assert after.processing_coverage.projection == before.processing_coverage.projection
+    assert (
+        after.processing_coverage.projection.identity
+        == before.processing_coverage.projection.identity
+    )
+    assert after.processing_coverage.projection.scope == "complete"
+    assert (
+        after.processing_coverage.projection.generation
+        > before.processing_coverage.projection.generation
+    )
     assert after.indexed_at == before.indexed_at
     assert await service._content_store.get_all_chunks(document_id) == old_chunks
     await service.stop_worker()

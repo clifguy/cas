@@ -98,17 +98,25 @@ class SelectionConfig:
     max_candidate_characters: int = 32768
     max_retained_bytes: int = 16 * 1024 * 1024
     max_association_runs: int = 16384
+    max_keyword_characters: int | None = None
+    max_in_flight: int = 8
 
     @classmethod
     def hard_limits(cls) -> dict[str, int]:
         """Single policy authority for selection hard maxima."""
         return {
-            name: 32768 if name == "max_candidate_characters" else item.default * 4
+            name: 67108864
+            if name == "max_keyword_characters"
+            else 32768
+            if name == "max_candidate_characters"
+            else item.default * 4
             for name, item in cls.__dataclass_fields__.items()
         }
 
     def __post_init__(self) -> None:
         for name, value in asdict(self).items():
+            if name == "max_keyword_characters" and value is None:
+                continue
             maximum = self.hard_limits()[name]
             if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= maximum:
                 raise ValueError(f"{name} must be an integer from 1 through {maximum}")

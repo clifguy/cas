@@ -2892,24 +2892,27 @@ async def test_recompute_pipeline_tool_concurrent_returns_409(vault_services):
     # engage. Wait for the document to go idle before contending for it.
     await _await_document_idle(vault_services, "test_vault", doc_id)
 
-    # Gate embed so the first recompute_pipeline call holds its
+    # Gate abstraction so the first recompute_pipeline call holds its
     # reservation while the second attempts entry.
     entered = asyncio.Event()
     gate = asyncio.Event()
-    original_embed = vault_services.ingestion_service._embedding.embed
+    released = asyncio.Event()
+    original_generate = vault_services.ingestion_service._abstraction.generate_abstract
 
-    async def gated_embed(texts):
+    async def gated_generate(*args):
         entered.set()
         await gate.wait()
-        return await original_embed(texts)
+        released.set()
+        return await original_generate(*args)
 
-    vault_services.ingestion_service._embedding.embed = gated_embed
+    vault_services.ingestion_service._abstraction.generate_abstract = gated_generate
 
     first = _parse(await recompute_pipeline("test_vault", doc_id))
     assert first["status"] == "recompute_pipeline_started"
 
     await asyncio.wait_for(entered.wait(), timeout=2.0)
     assert not gate.is_set()
+    assert not released.is_set()
 
     try:
         second = _parse(await recompute_pipeline("test_vault", doc_id))

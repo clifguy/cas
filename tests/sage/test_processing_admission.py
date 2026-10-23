@@ -104,7 +104,10 @@ async def test_supersede_keeps_its_own_admission_while_a_newer_owner_runs(
             after = await graph.get_document(child[0])
             assert after == snapshots[0]
             assert after.processing_coverage.attempt == 2
-            assert not await old._content_store.get_all_chunks(child[0])
+            pending_chunks = await old._content_store.get_all_chunks(child[0])
+            assert [c.content for c in pending_chunks] == ["SUCCESSOR NEW OWNER body"]
+            assert after.processing_coverage.projection.generation == 2
+            assert not await old._content_store.read_embedding_vectors(child[0], [0])
             release.set()
             await drain_abstraction_queue(newer)
             settled = await graph.get_document(child[0])

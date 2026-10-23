@@ -25,6 +25,8 @@ def valid_report():
                 "reconstruction_matches": True,
                 "stored_chunks": 3,
                 "vectors_valid": True,
+                "embedding_coverage_valid": True,
+                "embedding_accounting_valid": True,
                 "retained_source_matches": True,
             },
             {
@@ -35,13 +37,58 @@ def valid_report():
                 "retained_source_matches": True,
             },
         ],
+        "startup_interruption": {
+            "document_id": "startup",
+            "max_in_flight": 1,
+            "readiness": {"target_id": "startup", "stage": "inference"},
+            "interrupted": True,
+            "provider_entry_observed": True,
+            "owned_claim_observed": True,
+            "claim_released_on_stop": True,
+            "real_completed_inputs": 1,
+            "interrupted_embedding_accounting": {"inputs": {"debited": 5}},
+        },
+        "startup_recovery": {
+            key: True
+            for key in (
+                "same_identity",
+                "uncertain_debits_preserved",
+                "no_uncertain_replay",
+                "retained_source_matches",
+                "reconstruction_matches",
+                "vectors_valid",
+                "embedding_coverage_valid",
+                "embedding_accounting_valid",
+            )
+        },
+        "unchanged_medium": {
+            key: True
+            for key in (
+                "same_accounting",
+                "attempt_advanced",
+                "same_vectors",
+                "same_projection",
+                "no_new_inference",
+                "embedding_coverage_valid",
+            )
+        },
         "recovery_control": {
+            "document_id": "witness",
+            "max_in_flight": 1,
+            "readiness": {"target_id": "witness", "stage": "inference"},
+            "real_completed_inputs": 1,
+            "provider_entry_observed": True,
+            "owned_claim_observed": True,
+            "uncertain_debits_preserved": True,
+            "no_uncertain_replay": True,
             "interrupted": True,
             "claim_released_on_stop": True,
             "settled": True,
             "claim_released_after_settle": True,
             "reconstruction_matches": True,
             "vectors_valid": True,
+            "embedding_coverage_valid": True,
+            "embedding_accounting_valid": True,
             "retained_source_matches": True,
             "same_identity": True,
         },
@@ -60,6 +107,10 @@ def test_trial_accepts_documented_live_large_work_with_settled_recovery_control(
         "failed",
         "corrupted",
         "missing_vectors",
+        "false_coverage",
+        "false_accounting",
+        "recovery_coverage",
+        "recovery_accounting",
         "stranded",
         "unfinished_control",
         "duplicate",
@@ -81,6 +132,12 @@ def test_trial_rejects_false_recovery_acceptance(change):
         )
     elif change == "missing_vectors":
         report["files"][0]["vectors_valid"] = False
+    elif change in {"false_coverage", "false_accounting"}:
+        report["files"][0]["embedding_" + change.removeprefix("false_") + "_valid"] = False
+    elif change.startswith("recovery_"):
+        report["recovery_control"]["embedding_" + change.removeprefix("recovery_") + "_valid"] = (
+            False
+        )
     elif change == "stranded":
         large["claim_active"] = False
     elif change == "unfinished_control":
@@ -444,6 +501,10 @@ async def test_worker_readiness_timeout_saves_without_retrying_diagnostics(
         {"id": "large", "pipeline_status": "indexing_in_progress"},
     ]
     (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    startup = valid_report()["startup_interruption"]
+    startup["document_id"] = "large"
+    startup["readiness"]["target_id"] = "large"
+    (tmp_path / "fresh.json").write_text(json.dumps({"startup_interruption": startup}))
     diagnostic_calls = []
     original_timeouts = []
     diagnostic_error = ValueError("a diagnostic retry must not replace the readiness timeout")
@@ -521,6 +582,7 @@ async def test_worker_readiness_timeout_saves_without_retrying_diagnostics(
         report = json.loads((tmp_path / "recover.json").read_text())
         assert report["passed"] is False
         assert report["files"] == manifest
+        assert report["startup_interruption"] == startup
         assert len(report["failures"]) == 1
         failure = report["failures"][0]
         assert failure["kind"] == "large_bulk_readiness"
@@ -553,3 +615,269 @@ async def test_worker_readiness_timeout_saves_without_retrying_diagnostics(
     finally:
         task.cancel()
         await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.parametrize("phase", ["fresh", "recover"])
+@pytest.mark.parametrize(
+    "missing",
+    [
+        "interrupted",
+        "provider_entry_observed",
+        "owned_claim_observed",
+        "claim_released_on_stop",
+        "real_completed_inputs",
+        "interrupted_embedding_accounting",
+        "max_in_flight",
+        "readiness",
+    ],
+)
+def test_trial_requires_observed_fresh_startup_interruption(phase, missing):
+    report = valid_report()
+    report["phase"] = phase
+    assert trial_passed(report)
+    del report["startup_interruption"][missing]
+    assert not trial_passed(report)
+
+
+@pytest.mark.parametrize("section", ["startup_recovery", "unchanged_medium"])
+def test_trial_rejects_reset_replay_or_changed_prior_generation(section):
+    report = valid_report()
+    for key in report[section]:
+        rival = copy.deepcopy(report)
+        rival[section][key] = False
+        assert not trial_passed(rival), key
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("claimed", [True, False])
+async def test_inference_interruption_requires_the_observed_target_claim(claimed):
+    import asyncio
+    from types import SimpleNamespace
+
+    from scripts.embedding_contention_trial import InferenceInterruption
+
+    ingestion = SimpleNamespace(_inflight={"fresh": object()} if claimed else {}, stopped=[])
+
+    async def stop():
+        ingestion.stopped.append(set(ingestion._inflight))
+        ingestion._inflight.clear()
+
+    ingestion.stop_worker = stop
+    control = InferenceInterruption(ingestion, "FRESH_WITNESS")
+    await asyncio.to_thread(control.observe, ["authored FRESH_WITNESS input"])
+    if claimed:
+        await control.wait("fresh")
+        assert ingestion.stopped == [{"fresh"}]
+        assert control.entry_observed and control.claimed_ids == {"fresh"}
+        control.record_completion(["unrelated prior-source inference"])
+        assert control.completed_inputs == 0
+        control.record_completion(["authored FRESH_WITNESS input"])
+        assert control.completed_inputs == 1
+        assert not ingestion._inflight
+    else:
+        with pytest.raises(RuntimeError, match="did not own"):
+            await control.wait("fresh")
+
+
+def test_trial_fresh_sources_are_distinct_from_consumed_benchmarks(tmp_path):
+    from scripts.embedding_contention_trial import fixture
+
+    original = fixture(tmp_path / "medium.csv", 65536)
+    witness = fixture(tmp_path / "witness.csv", 65536, event="FRESH_RECOVERY_WITNESS")
+    startup = fixture(
+        tmp_path / "startup.csv", 65536, event="LARGE_BULK_TRIAL FRESH_STARTUP_WITNESS"
+    )
+    assert len({x["source_sha256"] for x in (original, witness, startup)}) == 3
+    assert "FRESH_RECOVERY_WITNESS" in (tmp_path / "witness.csv").read_text()
+    assert "FRESH_STARTUP_WITNESS" in (tmp_path / "startup.csv").read_text()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [False, True])
+async def test_inference_drain_waits_for_cancelled_callers_real_quantum(failure):
+    import asyncio
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+
+    from scripts.embedding_contention_trial import drain_inference
+
+    actual = Future()
+    provider = SimpleNamespace(_inference_jobs=[actual])
+    completions = []
+    task = asyncio.create_task(drain_inference(provider))
+    try:
+        await asyncio.sleep(0)
+        assert not task.done(), "cancelled waiter must not imply actual inference completion"
+        if failure:
+            actual.set_exception(ValueError("actual model failure"))
+            with pytest.raises(RuntimeError, match="submitted inference failed"):
+                await task
+        else:
+            completions.append("prior-source")
+            actual.set_result([[1.0]])
+            await task
+            baseline = list(completions)
+            await asyncio.sleep(0)
+            assert completions == baseline == ["prior-source"]
+    finally:
+        if not actual.done():
+            actual.set_result([])
+        await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_medium_replay_measurement_drains_prior_source_before_baseline(monkeypatch):
+    import asyncio
+    from concurrent.futures import Future
+    from types import SimpleNamespace
+
+    from scripts import embedding_contention_trial as trial
+
+    pending = Future()
+    provider = SimpleNamespace(_inference_jobs=[pending], dimensions=2)
+    completions = []
+    state = {"attempt": 1}
+
+    async def evidence(*args):
+        return {
+            "processing_coverage": {"attempt": state["attempt"]},
+            "embedding_accounting": {"inputs": {"old": 4}, "tokens": 4},
+            "embedding_coverage_valid": True,
+        }
+
+    async def vectors(*args):
+        return [[1.0, 0.0]]
+
+    async def chunks(*args):
+        return [SimpleNamespace(content="original medium projection")]
+
+    async def recompute(document_id):
+        assert document_id == "medium"
+        assert pending.done(), "a prior source is still encoding at the medium baseline"
+        state["attempt"] += 1
+
+    async def settled(document_id):
+        pass
+
+    monkeypatch.setattr(trial, "read_embedding_evidence", evidence)
+    monkeypatch.setattr(trial, "read_stored_vectors", vectors)
+    services = SimpleNamespace(
+        content_store=SimpleNamespace(get_all_chunks=chunks),
+        ingestion_service=SimpleNamespace(recompute_pipeline=recompute),
+    )
+
+    def finish_prior_source():
+        completions.append("prior source")
+        pending.set_result([[1.0, 0.0]])
+
+    asyncio.get_running_loop().call_soon(finish_prior_source)
+    proof = await trial.verify_unchanged_medium(
+        services, provider, "medium", settled, lambda: len(completions)
+    )
+    assert all(proof.values())
+    assert completions == ["prior source"] and state["attempt"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("progress", [True, False])
+async def test_witness_wait_observes_preparation_before_provider_stop(progress):
+    import asyncio
+    from types import SimpleNamespace
+
+    from scripts.embedding_contention_trial import BulkReadiness, wait_for_witness_inference
+
+    clock = FakeClock()
+    readiness = BulkReadiness("old-source", clock=clock)
+    readiness.started.set()
+    readiness.retarget("FRESH_STARTUP_WITNESS")
+    provider = SimpleNamespace(count_tokens=len)
+    checkpoints = []
+    stopped = []
+
+    async def checkpoint():
+        checkpoints.append(readiness.snapshot())
+
+    async def interrupted(document_id):
+        assert document_id == "fresh-source"
+        assert readiness.started.is_set() and clock.now == 90
+        stopped.append(document_id)
+
+    actual_wait = readiness.wait
+
+    async def controlled_wait(checkpoint):
+        await actual_wait(checkpoint, sleep=clock.sleep)
+
+    readiness.wait = controlled_wait
+
+    def project(document_id, projection):
+        if progress:
+            for tick in (20, 40, 60, 80):
+                clock.actions[tick] = lambda: provider.count_tokens("actual target sizing")
+            clock.actions[90] = lambda: readiness.run_inference(
+                ["FRESH_STARTUP_WITNESS input"], lambda texts: [[1.0]]
+            )
+        asyncio.run(
+            wait_for_witness_inference(
+                readiness, SimpleNamespace(wait=interrupted), "fresh-source", checkpoint
+            )
+        )
+        return []
+
+    ingestion = SimpleNamespace(_chunk_projection=project, _embed_chunks=None)
+    readiness.instrument(ingestion, provider)
+    if progress:
+        await asyncio.to_thread(
+            ingestion._chunk_projection,
+            "fresh-source",
+            SimpleNamespace(text="FRESH_STARTUP_WITNESS"),
+        )
+        assert stopped == ["fresh-source"]
+        assert readiness.snapshot()["sizing_completions"] == 4
+    else:
+        with pytest.raises(TimeoutError):
+            await asyncio.to_thread(
+                ingestion._chunk_projection,
+                "fresh-source",
+                SimpleNamespace(text="FRESH_STARTUP_WITNESS"),
+            )
+        assert clock.now == 120 and not stopped
+    assert checkpoints and checkpoints[0]["target_id"] == "fresh-source"
+
+
+@pytest.mark.asyncio
+async def test_production_size_witness_preparation_keeps_its_exact_marker(tmp_path):
+    import asyncio
+
+    from sage.adapters.stubs import SeededEmbeddingProvider
+    from sage.services.ingestion import IngestionService
+    from sage.services.selective_embedding import select_passages
+    from sage.source_adapters.structured_data_adapter import StructuredDataAdapter
+    from scripts.embedding_contention_trial import BulkReadiness, fixture
+
+    marker = "LARGE_BULK_TRIAL FRESH_STARTUP_WITNESS"
+    source = tmp_path / "fresh-startup-large.csv"
+    entry = fixture(source, 27262976, event=marker)
+    assert entry["bytes"] >= 27262976
+    projection = await StructuredDataAdapter().project(source)
+    provider = SeededEmbeddingProvider()
+    service = IngestionService.__new__(IngestionService)
+    service._embedding = provider
+    readiness = BulkReadiness("old-source")
+    readiness.started.set()
+    readiness.instrument(service, provider)
+    readiness.retarget(marker)
+    chunks = await asyncio.to_thread(service._chunk_projection, "fresh-source", projection)
+    state = readiness.snapshot()
+    assert state["target_id"] == "fresh-source" and state["target_marker"] == marker
+    assert len(chunks) > 6000 and state["sizing_completions"] > 1000
+    assert state["prepared_chunks"] == len(chunks) and not readiness.started.is_set()
+    selection = await asyncio.to_thread(
+        select_passages, chunks, projection, provider, "sha256:" + entry["source_sha256"]
+    )
+    marked = [x.input_text for x in selection.package.selected if marker in x.input_text]
+    assert marked and len(selection.package.selected) > 1
+    # The exact pinned tokenizer's separate no-inference receipt establishes
+    # four of four marked selections; this cheap production-size fixture uses
+    # the byte-counted test port and proves marker reachability and >1 input.
+    readiness.run_inference([marked[0]], lambda texts: [[1.0]])
+    assert readiness.started.is_set()

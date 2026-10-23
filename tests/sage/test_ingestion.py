@@ -2292,18 +2292,20 @@ async def test_recompute_pipeline_single_flight_409(
     )
     doc_id = result.document.id
 
-    # Gate the embed step so the first recompute_pipeline holds its
+    # Gate the abstraction step so the first recompute_pipeline holds its
     # reservation through the contention window.
     entered = asyncio.Event()
     gate = asyncio.Event()
-    original_embed = ingestion_service._embedding.embed
+    released = asyncio.Event()
+    original_generate = ingestion_service._abstraction.generate_abstract
 
-    async def gated_embed(texts):
+    async def gated_generate(*args):
         entered.set()
         await gate.wait()
-        return await original_embed(texts)
+        released.set()
+        return await original_generate(*args)
 
-    ingestion_service._embedding.embed = gated_embed
+    ingestion_service._abstraction.generate_abstract = gated_generate
 
     window_before = datetime.now(timezone.utc)
     first = await ingestion_service.recompute_pipeline(doc_id)
@@ -2312,6 +2314,7 @@ async def test_recompute_pipeline_single_flight_409(
 
     await asyncio.wait_for(entered.wait(), timeout=2.0)
     assert not gate.is_set()
+    assert not released.is_set()
 
     try:
         with pytest.raises(RecomputePipelineAlreadyInFlightError) as excinfo:
@@ -3767,20 +3770,40 @@ async def test_the_reprojection_script_reprojects_with_the_stored_request_config
     await await_pipeline_idle(graph_store, result.document.id, service=service)
 
     adapter.configs.clear()
-    await reproject_active_documents.reproject_vault_with_services(
-        service._config.vault.id,
-        SimpleNamespace(
-            config=service._config,
-            graph_store=graph_store,
-            ingestion_service=service,
-            content_store=stub_content_store,
-        ),
-        execute=True,
-        allow_hash_drift=False,
-        source_types=frozenset({SourceType.DOCX.value}),
-    )
+    ledgers = []
+    for _ in range(2):
+        outcome = await reproject_active_documents.reproject_vault_with_services(
+            service._config.vault.id,
+            SimpleNamespace(
+                config=service._config,
+                graph_store=graph_store,
+                ingestion_service=service,
+                content_store=stub_content_store,
+            ),
+            execute=True,
+            allow_hash_drift=False,
+            source_types=frozenset({SourceType.DOCX.value}),
+        )
+        assert outcome == (1, 0, 0)
+        async with graph_store._pool.connection() as conn:
+            ledger = (
+                await (
+                    await conn.execute(
+                        "SELECT embedding_accounting FROM documents WHERE id=%s",
+                        (result.document.id,),
+                    )
+                ).fetchone()
+            )[0]
+        assert ledger["authorization"]["decision"].startswith("reproject_active_documents:")
+        ledgers.append(ledger)
+    assert ledgers[0] == ledgers[1]
 
-    assert adapter.configs == [_MERGED_DOCX_CONFIG]
+    assert adapter.configs == [adapter.effective_config(_MERGED_DOCX_CONFIG)] * 2
+    current = await graph_store.get_document(result.document.id)
+    assert current.adapter_config == _REQUEST_DOCX_CONFIG
+    assert current.processing_coverage.inspection.identity.configuration[
+        "adapter"
+    ] == adapter.effective_config(_MERGED_DOCX_CONFIG)
     assert "SUBTITLED" in await stub_content_store.get_heading_paths(result.document.id)
 
 

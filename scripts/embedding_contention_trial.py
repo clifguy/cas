@@ -26,6 +26,90 @@ from pathlib import Path
 from unittest.mock import patch
 
 
+def fresh_witness_config() -> dict:
+    """Capture one input per fresh increment; retries reuse this stored scope."""
+    return {"discovery_selection": {"max_in_flight": 1}}
+
+
+async def drain_inference(provider: object) -> None:
+    """Finish real submitted quanta before attributing later source activity."""
+    outcomes = await asyncio.gather(
+        *(asyncio.wrap_future(job) for job in tuple(provider._inference_jobs)),
+        return_exceptions=True,
+    )
+    require(
+        not any(isinstance(outcome, BaseException) for outcome in outcomes),
+        "submitted inference failed while draining",
+    )
+
+
+async def verify_unchanged_medium(
+    services: object,
+    provider: object,
+    document_id: str,
+    settle: Callable[[str], Awaitable[object]],
+    completed: Callable[[], int],
+) -> dict:
+    """Attribute replay only after prior callers' real model work has drained."""
+    await drain_inference(provider)
+    store = services.content_store
+    before = await read_embedding_evidence(store, document_id, provider.dimensions)
+    vectors = await read_stored_vectors(store, document_id)
+    chunks = await store.get_all_chunks(document_id)
+    calls = completed()
+    await services.ingestion_service.recompute_pipeline(document_id)
+    await settle(document_id)
+    after = await read_embedding_evidence(store, document_id, provider.dimensions)
+    proof = {
+        "attempt_advanced": after["processing_coverage"]["attempt"]
+        > before["processing_coverage"]["attempt"],
+        "same_accounting": before["embedding_accounting"] == after["embedding_accounting"],
+        "same_vectors": vectors == await read_stored_vectors(store, document_id),
+        "same_projection": [x.content for x in chunks]
+        == [x.content for x in await store.get_all_chunks(document_id)],
+        "no_new_inference": calls == completed(),
+        "embedding_coverage_valid": after["embedding_coverage_valid"],
+    }
+    require(all(proof.values()), "unchanged medium replayed inference or changed its generation")
+    return proof
+
+
+class InferenceInterruption:
+    """Request a real worker stop at real provider entry, without delaying inference."""
+
+    def __init__(self, ingestion: object, marker: str) -> None:
+        self.ingestion = ingestion
+        self.marker = marker
+        self.loop = asyncio.get_running_loop()
+        self.requested = asyncio.Event()
+        self.task = None
+        self.claimed_ids = set()
+        self.entry_observed = False
+        self.completed_inputs = 0
+
+    def observe(self, texts: list[str]) -> None:
+        if any(self.marker in text for text in texts):
+            self.entry_observed = True
+            self.loop.call_soon_threadsafe(self._request)
+
+    def record_completion(self, texts: list[str]) -> None:
+        self.completed_inputs += sum(self.marker in text for text in texts)
+
+    def _request(self) -> None:
+        if self.task is None:
+            self.claimed_ids = set(self.ingestion._inflight)
+            self.task = asyncio.create_task(self.ingestion.stop_worker())
+            self.requested.set()
+
+    async def wait(self, document_id: str) -> None:
+        await asyncio.wait_for(self.requested.wait(), 30)
+        await self.task
+        require(
+            self.entry_observed and self.claimed_ids == {document_id},
+            "fresh witness did not own the observed inference interruption",
+        )
+
+
 class BulkReadiness:
     """Observe target preparation without mistaking queued work for inference."""
 
@@ -38,6 +122,7 @@ class BulkReadiness:
     ) -> None:
         self.failures = failures if failures is not None else []
         self.target_id = target_id
+        self.target_marker = "LARGE_BULK_TRIAL"
         self.clock = clock
         self.started = threading.Event()
         self._scope = threading.local()
@@ -47,6 +132,18 @@ class BulkReadiness:
         self._prepared_chunks = 0
         self._last_progress = clock()
         self._wait_start = None
+
+    def retarget(self, marker: str) -> None:
+        """Start independent observed preparation for a newly authored witness."""
+        with self._lock:
+            self.target_id = None
+            self.target_marker = marker
+            self.started.clear()
+            self._stage = "waiting"
+            self._sizing_completions = 0
+            self._prepared_chunks = 0
+            self._last_progress = self.clock()
+            self._wait_start = None
 
     def _progress(self, stage: str) -> None:
         self._stage = stage
@@ -62,7 +159,7 @@ class BulkReadiness:
             # ingestion binds it from the actual largest-source marker.
             with self._lock:
                 target = document_id == self.target_id or (
-                    self.target_id is None and "LARGE_BULK_TRIAL" in projection.text
+                    self.target_id is None and self.target_marker in projection.text
                 )
                 if target:
                     self.target_id = document_id
@@ -102,7 +199,7 @@ class BulkReadiness:
     def run_inference(
         self, texts: list[str], original: Callable[[list[str]], list[list[float]]]
     ) -> list[list[float]]:
-        if any("LARGE_BULK_TRIAL" in text for text in texts):
+        if any(self.target_marker in text for text in texts):
             with self._lock:
                 self._progress("inference")
                 self.started.set()
@@ -127,6 +224,7 @@ class BulkReadiness:
             now = self.clock()
             return {
                 "target_id": self.target_id,
+                "target_marker": self.target_marker,
                 "stage": self._stage,
                 "sizing_completions": self._sizing_completions,
                 "prepared_chunks": self._prepared_chunks,
@@ -158,6 +256,18 @@ class BulkReadiness:
                     await checkpoint()
                     last_checkpoint = self.clock()
                 await sleep(0.05)
+
+
+async def wait_for_witness_inference(
+    readiness: BulkReadiness,
+    interruption: InferenceInterruption,
+    document_id: str,
+    checkpoint: Callable[[], Awaitable[None]],
+) -> None:
+    # Preparation is real work, not a missed provider signal. Reuse the actual
+    # progress/inactivity/absolute readiness bounds before awaiting worker stop.
+    await readiness.wait(checkpoint)
+    await interruption.wait(document_id)
 
 
 @asynccontextmanager
@@ -196,7 +306,7 @@ def memory() -> dict:
     return result
 
 
-def fixture(path: Path, size: int) -> dict:
+def fixture(path: Path, size: int, *, event: str | None = None) -> dict:
     output = io.StringIO(newline="")
     writer = csv.writer(output)
     writer.writerow(["Time", "Operation", "Payload"])
@@ -219,9 +329,12 @@ def fixture(path: Path, size: int) -> dict:
         writer.writerow(
             [
                 "2026-10-21",
-                "LARGE_BULK_TRIAL"
-                if size > 1024**2
-                else ("RECOVERY_WITNESS" if size == 65536 else "AuditEvent"),
+                event
+                or (
+                    "LARGE_BULK_TRIAL"
+                    if size > 1024**2
+                    else ("RECOVERY_WITNESS" if size == 65536 else "AuditEvent")
+                ),
                 json.dumps(payload) + "\nAudit continuation",
             ]
         )
@@ -263,6 +376,8 @@ def trial_passed(report: dict) -> bool:
         if entry.get("stored_chunks", 0) > 0 and (
             entry.get("reconstruction_matches") is not True
             or entry.get("vectors_valid") is not True
+            or entry.get("embedding_coverage_valid") is not True
+            or entry.get("embedding_accounting_valid") is not True
         ):
             return False
         if status in successful:
@@ -278,7 +393,46 @@ def trial_passed(report: dict) -> bool:
             or entry.get("claim_active") is not True
         ):
             return False
+    startup = report.get("startup_interruption", {})
+    if not (
+        startup.get("interrupted") is True
+        and startup.get("provider_entry_observed") is True
+        and startup.get("owned_claim_observed") is True
+        and startup.get("claim_released_on_stop") is True
+        and startup.get("real_completed_inputs", 0) > 0
+        and startup.get("max_in_flight") == 1
+        and startup.get("readiness", {}).get("target_id") == startup.get("document_id")
+        and startup.get("readiness", {}).get("stage") == "inference"
+        and startup.get("interrupted_embedding_accounting", {}).get("inputs")
+    ):
+        return False
     if report.get("phase") == "recover":
+        if not all(
+            report.get("startup_recovery", {}).get(key) is True
+            for key in (
+                "same_identity",
+                "uncertain_debits_preserved",
+                "no_uncertain_replay",
+                "retained_source_matches",
+                "reconstruction_matches",
+                "vectors_valid",
+                "embedding_coverage_valid",
+                "embedding_accounting_valid",
+            )
+        ):
+            return False
+        if not all(
+            report.get("unchanged_medium", {}).get(key) is True
+            for key in (
+                "same_accounting",
+                "attempt_advanced",
+                "same_vectors",
+                "same_projection",
+                "no_new_inference",
+                "embedding_coverage_valid",
+            )
+        ):
+            return False
         control = report.get("recovery_control", {})
         required = (
             "interrupted",
@@ -287,10 +441,22 @@ def trial_passed(report: dict) -> bool:
             "claim_released_after_settle",
             "reconstruction_matches",
             "vectors_valid",
+            "embedding_coverage_valid",
+            "embedding_accounting_valid",
             "retained_source_matches",
             "same_identity",
+            "provider_entry_observed",
+            "owned_claim_observed",
+            "uncertain_debits_preserved",
+            "no_uncertain_replay",
         )
-        if not all(control.get(key) is True for key in required):
+        if (
+            not all(control.get(key) is True for key in required)
+            or control.get("real_completed_inputs", 0) <= 0
+            or control.get("max_in_flight") != 1
+            or control.get("readiness", {}).get("target_id") != control.get("document_id")
+            or control.get("readiness", {}).get("stage") != "inference"
+        ):
             return False
         shutdown = report.get("shutdown", {})
         if (
@@ -354,6 +520,105 @@ def vectors_valid(vectors: list[list[float]], count: int, dimensions: int) -> bo
     )
 
 
+def sparse_embedding_evidence(
+    vectors: list[list[float]],
+    dimensions: int,
+    coverage: dict,
+    ledger: dict,
+    source_hash: str,
+    keyword_count: int,
+) -> dict:
+    """Validate real vectors separately from honestly unembedded readable passages."""
+    from sage.models.coverage import canonical_configuration_hash
+
+    count = len(vectors)
+    present = [vector for vector in vectors if vector]
+    populated = len(present)
+    expected = {
+        "projection": count,
+        "keyword_indexing": keyword_count,
+        "passage_embeddings": populated,
+    }
+    covered = True
+    for name, represented in expected.items():
+        evidence = coverage.get(name, {})
+        counts = [x for x in evidence.get("counts", []) if x.get("unit") == "passages"]
+        covered &= (
+            len(counts) == 1
+            and counts[0].get("observed") == count
+            and counts[0].get("represented") == represented
+            and counts[0].get("total") == count
+            and evidence.get("generation") == coverage.get("attempt")
+            and (evidence.get("identity") or {}).get("source_hash") == source_hash
+            and evidence.get("scope") == ("complete" if represented == count else "limited")
+        )
+    limits = (
+        (coverage.get("passage_embeddings", {}).get("identity") or {})
+        .get("configuration", {})
+        .get("selection", {})
+    )
+    inputs = ledger.get("inputs", {})
+    max_inputs, max_tokens, tokens = (
+        ledger.get(key) for key in ("max_inputs", "max_tokens", "tokens")
+    )
+    accounting = (
+        isinstance(inputs, dict)
+        and bool(inputs)
+        and all(
+            isinstance(key, str)
+            and len(key) == 64
+            and all(c in "0123456789abcdef" for c in key)
+            and type(value) is int
+            and value >= 0
+            for key, value in inputs.items()
+        )
+        and type(max_inputs) is int
+        and 1 <= max_inputs <= 4096
+        and type(max_tokens) is int
+        and 1 <= max_tokens <= 32768
+        and type(tokens) is int
+        and tokens == sum(inputs.values()) <= max_tokens
+        and len(inputs) <= max_inputs
+        and ledger.get("source") == source_hash
+        and ledger.get("identity")
+        == canonical_configuration_hash(coverage["passage_embeddings"]["identity"])
+        and max_inputs == limits.get("max_excerpts")
+        and max_tokens == limits.get("max_tokens")
+    )
+    return {
+        "vectors_valid": vectors_valid(present, populated, dimensions),
+        "embedding_coverage_valid": bool(count and covered),
+        "embedding_accounting_valid": bool(accounting),
+        "embedded_passages": populated,
+        "unembedded_passages": count - populated,
+        "processing_coverage": coverage,
+        "embedding_accounting": ledger,
+    }
+
+
+async def read_embedding_evidence(store: object, document_id: str, dimensions: int) -> dict:
+    """One database snapshot binds vectors, keyword flags, coverage and debit ledger."""
+    rows = await store._fetchall(
+        "SELECT d.processing_coverage, d.embedding_accounting, d.source_content_hash, "
+        "array_agg(c.embedding::text ORDER BY c.chunk_index) "
+        "FILTER (WHERE c.chunk_index IS NOT NULL), count(*) FILTER (WHERE c.keyword_indexed) "
+        "FROM documents d LEFT JOIN chunks c ON c.document_id=d.id AND c.chunk_index>=0 "
+        "WHERE d.id=%s GROUP BY d.id",
+        (document_id,),
+    )
+    if not rows:
+        return {}
+    coverage, ledger, source_hash, vectors, keyword_count = rows[0]
+    return sparse_embedding_evidence(
+        [json.loads(vector) if vector else [] for vector in vectors or []],
+        dimensions,
+        coverage or {},
+        ledger or {},
+        source_hash,
+        keyword_count,
+    )
+
+
 async def worker(args: argparse.Namespace) -> int:
     from dataclasses import asdict
 
@@ -411,7 +676,7 @@ async def worker(args: argparse.Namespace) -> int:
     path = root / f"{args.phase}.json"
 
     def save() -> None:
-        report["large_bulk_readiness"] = readiness.snapshot()
+        report["large_bulk_readiness"] = report.get("contention_readiness", readiness.snapshot())
         report["memory"] = memory()
         for kind in ("semantic", "lightweight"):
             values = sorted(report[f"{kind}_seconds"])
@@ -431,13 +696,18 @@ async def worker(args: argparse.Namespace) -> int:
     original = None
     completed = 0
     bulk_completed = 0
-    witness_started = threading.Event()
+    submitted_input_counts = {}
+    interruption = None
 
     def observed(texts: list[str]) -> list[list[float]]:
         nonlocal completed, bulk_completed
         is_bulk = any("LARGE_BULK_TRIAL" in text for text in texts)
-        if any("RECOVERY_WITNESS" in text for text in texts):
-            witness_started.set()
+        for text in texts:
+            key = hashlib.sha256(text.encode()).hexdigest()
+            submitted_input_counts[key] = submitted_input_counts.get(key, 0) + 1
+        active_interruption = interruption
+        if active_interruption is not None:
+            active_interruption.observe(texts)
         if is_bulk:
             if len(report["bulk_input_shapes"]) < 16:
                 report["bulk_input_shapes"].extend(
@@ -449,6 +719,8 @@ async def worker(args: argparse.Namespace) -> int:
                     for text in texts
                 )
         result = readiness.run_inference(texts, original)
+        if active_interruption is not None:
+            active_interruption.record_completion(texts)
         completed += len(texts)
         if is_bulk:
             bulk_completed += len(texts)
@@ -482,6 +754,110 @@ async def worker(args: argparse.Namespace) -> int:
             )
             save()
 
+        async def fresh_interrupted_source(name: str, size: int, marker: str) -> tuple[dict, dict]:
+            nonlocal interruption
+            ingestion = svc.ingestion_service
+            require(not ingestion._inflight, "fresh interruption requires settled prior claims")
+            await drain_inference(provider)
+            readiness.retarget(marker)
+            source = root / name
+            entry = fixture(source, size, event=marker)
+            projected = await StructuredDataAdapter().project(source)
+            entry["projection_sha256"] = hashlib.sha256(projected.text.encode()).hexdigest()
+            interruption = InferenceInterruption(ingestion, marker)
+            result = await ingestion.ingest(
+                IngestRequest(
+                    source=str(source),
+                    source_type="structured_data",
+                    # A fresh one-input window guarantees a real interrupted
+                    # increment without consuming the entire selected scope.
+                    config=fresh_witness_config(),
+                    metadata={"title": source.name, "doc_type": "reference_document"},
+                ),
+                wait_for_pipeline=False,
+            )
+            entry["id"] = result.document.id
+
+            async def witness_checkpoint() -> None:
+                report["witness_preparation"] = {
+                    "document_id": entry["id"],
+                    "source_sha256": entry["source_sha256"],
+                    "readiness": readiness.snapshot(),
+                }
+                await checkpoint("preparing fresh witness: " + name)
+
+            try:
+                await wait_for_witness_inference(
+                    readiness, interruption, entry["id"], witness_checkpoint
+                )
+            except TimeoutError:
+                report["witness_preparation_failure"] = {
+                    "document_id": entry["id"],
+                    "readiness": readiness.snapshot(),
+                }
+                report["passed"] = False
+                save()
+                raise
+            # Cancellation does not cancel submitted model threads. Observe their
+            # real completion, while their already-debited result stays uncertain.
+            outcomes = await asyncio.gather(
+                *(asyncio.wrap_future(job) for job in provider._inference_jobs),
+                return_exceptions=True,
+            )
+            require(
+                not any(isinstance(x, BaseException) for x in outcomes), "witness inference failed"
+            )
+            doc = await svc.graph_store.get_document(entry["id"])
+            evidence = await read_embedding_evidence(
+                svc.content_store, entry["id"], provider.dimensions
+            )
+            control = {
+                "document_id": entry["id"],
+                "source_sha256": entry["source_sha256"],
+                "readiness": readiness.snapshot(),
+                "max_in_flight": evidence["processing_coverage"]["passage_embeddings"]["identity"][
+                    "configuration"
+                ]["selection"]["max_in_flight"],
+                "provider_entry_observed": interruption.entry_observed,
+                "owned_claim_observed": interruption.claimed_ids == {entry["id"]},
+                "real_completed_inputs": interruption.completed_inputs,
+                "interrupted": doc.pipeline_status == "abstraction_interrupted",
+                "interrupted_status": doc.pipeline_status,
+                "claim_released_on_stop": entry["id"] not in ingestion._inflight,
+                "interrupted_embedding_accounting": evidence["embedding_accounting"],
+                "interrupted_input_counts": {
+                    key: submitted_input_counts.get(key, 0)
+                    for key in evidence["embedding_accounting"]["inputs"]
+                },
+            }
+            require(
+                control["interrupted"]
+                and control["claim_released_on_stop"]
+                and control["real_completed_inputs"] > 0
+                and control["max_in_flight"] == 1,
+                "fresh witness was not genuinely interrupted",
+            )
+            entry.update(pipeline_status=doc.pipeline_status, pipeline_error=doc.pipeline_error)
+            interruption = None
+            return entry, control
+
+        async def settle(document_id: str) -> object:
+            async def wait() -> object:
+                while True:
+                    doc = await svc.graph_store.get_document(document_id)
+                    require(
+                        not doc.pipeline_error and doc.pipeline_status != "failed",
+                        f"recovery failed: {doc.pipeline_error}",
+                    )
+                    if (
+                        doc.pipeline_status in ("abstraction_complete", "abstraction_skipped")
+                        and document_id not in svc.ingestion_service._inflight
+                    ):
+                        return doc
+                    await asyncio.sleep(0.05)
+
+            return await asyncio.wait_for(wait(), 120)
+
         if args.phase == "fresh":
             manifest = []
             for index, size in enumerate((9216, 65536, 27262976)):
@@ -498,7 +874,7 @@ async def worker(args: argparse.Namespace) -> int:
                 entry["id"] = result.document.id
                 manifest.append(entry)
                 manifest_path.write_text(json.dumps(manifest, indent=2))
-        report["files"] = manifest
+        report["files"] = manifest if args.phase == "recover" else json.loads(json.dumps(manifest))
         if args.phase == "recover":
             report["recovered_ids"] = [
                 entry["id"]
@@ -506,9 +882,16 @@ async def worker(args: argparse.Namespace) -> int:
                 if entry.get("pipeline_status")
                 not in ("abstraction_complete", "abstraction_skipped")
             ]
+            startup = json.loads((root / "fresh.json").read_text())["startup_interruption"]
             require(
-                manifest[-1]["id"] in report["recovered_ids"], "largest job was not interrupted"
+                startup["document_id"] == manifest[-1]["id"]
+                and startup["interrupted"]
+                and startup["owned_claim_observed"]
+                and startup["real_completed_inputs"] > 0
+                and manifest[-1]["id"] in report["recovered_ids"],
+                "fresh startup witness interruption was not established",
             )
+            report["startup_interruption"] = startup
             report[
                 "duplicate_recovery_enqueues"
             ] = await svc.ingestion_service.recover_incomplete_documents()
@@ -580,6 +963,7 @@ async def worker(args: argparse.Namespace) -> int:
                 save()
                 await asyncio.sleep(0.1)
         report["large_bulk_progress_during_queries"] = bulk_completed - bulk_at_start
+        report["contention_readiness"] = readiness.snapshot()
         records = await svc.graph_store.list_all_documents()
         require(
             {record.id for record in records} == {entry["id"] for entry in manifest},
@@ -605,10 +989,8 @@ async def worker(args: argparse.Namespace) -> int:
             require(entry["retained_source_matches"], "retained source bytes changed")
             chunks = await svc.content_store.get_all_chunks(entry["id"])
             entry["stored_chunks"] = len(chunks)
-            entry["vectors_valid"] = vectors_valid(
-                await read_stored_vectors(svc.content_store, entry["id"]),
-                len(chunks),
-                provider.dimensions,
+            entry.update(
+                await read_embedding_evidence(svc.content_store, entry["id"], provider.dimensions)
             )
             if chunks:
                 entry["reconstruction_matches"] = (
@@ -621,36 +1003,44 @@ async def worker(args: argparse.Namespace) -> int:
                 "source changed during trial",
             )
         if args.phase == "recover":
-            # Exercise a bounded, genuinely interrupted inference job separately
-            # from the ongoing largest-file measurement. Use only production
-            # worker/recompute entry points and the original retained source/ID.
-            ingestion = svc.ingestion_service
-            await ingestion.stop_worker()
-            require(not ingestion._inflight, "bulk shutdown stranded claims")
-            witness = manifest[1]
-            witness_id = witness["id"]
-            witness_started.clear()
-            await ingestion.recompute_pipeline(witness_id)
-            await checkpoint("waiting for witness inference before interruption")
-
-            async def wait_for_witness() -> None:
-                while not witness_started.is_set():
-                    await asyncio.sleep(0.01)
-
-            await asyncio.wait_for(wait_for_witness(), 30)
-            await ingestion.stop_worker()
-            interrupted = await svc.graph_store.get_document(witness_id)
-            control = {
-                "document_id": witness_id,
-                "source_sha256": witness["source_sha256"],
-                "interrupted_status": interrupted.pipeline_status,
-                "interrupted": interrupted.pipeline_status == "abstraction_interrupted",
-                "claim_released_on_stop": witness_id not in ingestion._inflight,
+            startup = report["startup_interruption"]
+            resumed = manifest[-1]
+            prior = startup["interrupted_embedding_accounting"]
+            current = resumed["embedding_accounting"]
+            report["startup_recovery"] = {
+                "same_identity": prior["identity"] == current["identity"]
+                and prior["source"] == current["source"],
+                "uncertain_debits_preserved": all(
+                    current["inputs"].get(k) == v for k, v in prior["inputs"].items()
+                )
+                and current["tokens"] >= prior["tokens"],
+                "no_uncertain_replay": not any(
+                    submitted_input_counts.get(k, 0) for k in prior["inputs"]
+                ),
+                "retained_source_matches": resumed["retained_source_matches"],
+                "reconstruction_matches": resumed["reconstruction_matches"],
+                "vectors_valid": resumed["vectors_valid"],
+                "embedding_coverage_valid": resumed["embedding_coverage_valid"],
+                "embedding_accounting_valid": resumed["embedding_accounting_valid"],
             }
             require(
-                control["interrupted"] and control["claim_released_on_stop"],
-                "witness did not interrupt and release its claim",
+                all(report["startup_recovery"].values()),
+                "cold recovery changed source, replayed uncertain debits or lost integrity",
             )
+            # A retry is deliberately not a work generator. Prove the original
+            # medium benchmark stays unchanged, then ingest a distinct source
+            # for a genuine interruption without resetting any allowance.
+            ingestion = svc.ingestion_service
+            bulk_pending = set(ingestion._inflight)
+            await ingestion.stop_worker()
+            require(not ingestion._inflight, "bulk shutdown stranded claims")
+            report["unchanged_medium"] = await verify_unchanged_medium(
+                svc, provider, manifest[1]["id"], settle, lambda: completed
+            )
+            witness, control = await fresh_interrupted_source(
+                "fresh-recovery-witness.csv", 65536, "FRESH_RECOVERY_WITNESS"
+            )
+            witness_id = witness["id"]
             await ingestion.recompute_pipeline(witness_id)
             await checkpoint("waiting for interrupted witness settlement")
 
@@ -690,12 +1080,25 @@ async def worker(args: argparse.Namespace) -> int:
                     hashlib.sha256("".join(chunk.content for chunk in chunks).encode()).hexdigest()
                     == witness["projection_sha256"]
                 ),
-                vectors_valid=vectors_valid(
-                    await read_stored_vectors(svc.content_store, witness_id),
-                    len(chunks),
-                    provider.dimensions,
-                ),
                 stored_chunks=len(chunks),
+            )
+            control.update(
+                await read_embedding_evidence(svc.content_store, witness_id, provider.dimensions)
+            )
+            old_ledger = control["interrupted_embedding_accounting"]
+            new_ledger = control["embedding_accounting"]
+            control["uncertain_debits_preserved"] = (
+                old_ledger["identity"] == new_ledger["identity"]
+                and old_ledger["source"] == new_ledger["source"]
+                and all(
+                    new_ledger["inputs"].get(key) == value
+                    for key, value in old_ledger["inputs"].items()
+                )
+                and new_ledger["tokens"] >= old_ledger["tokens"]
+            )
+            control["no_uncertain_replay"] = all(
+                submitted_input_counts.get(key, 0) == value
+                for key, value in control["interrupted_input_counts"].items()
             )
             delivery = await svc.documents_service.get_document_content(witness_id)
             digest = hashlib.sha256()
@@ -705,21 +1108,21 @@ async def worker(args: argparse.Namespace) -> int:
             report["recovery_control"] = control
             report["remaining_recovery_enqueues"] = await ingestion.recover_incomplete_documents()
             require(
-                report["remaining_recovery_enqueues"] == 1,
-                "expected only the interrupted largest job to resume",
+                report["remaining_recovery_enqueues"] == len(bulk_pending),
+                "unexpected interrupted bulk recovery population",
             )
             report["duplicate_recovery_enqueues"] = await ingestion.recover_incomplete_documents()
             require(report["duplicate_recovery_enqueues"] == 0, "duplicate resumed job")
             require(
                 {doc.id for doc in await svc.graph_store.list_all_documents()}
-                == {entry["id"] for entry in manifest},
+                == {entry["id"] for entry in manifest} | {witness_id},
                 "recovery duplicated document identities",
             )
         if args.phase == "recover":
             intentionally_stopped = set(svc.ingestion_service._inflight)
             require(
-                intentionally_stopped == {manifest[-1]["id"]},
-                "unexpected claims at final largest-job interruption",
+                intentionally_stopped <= bulk_pending,
+                "unexpected claims at final bulk interruption",
             )
             await svc.ingestion_service.stop_worker()
             completed_jobs = await asyncio.gather(
@@ -755,6 +1158,26 @@ async def worker(args: argparse.Namespace) -> int:
                 ],
             }
         if args.phase == "fresh":
+            report["files"] = json.loads(json.dumps(manifest))
+            # The measured bounded benchmark may already be complete. Establish
+            # a distinct authored source for the cold-start recovery boundary.
+            await svc.ingestion_service.stop_worker()
+            for entry in manifest:
+                if entry["id"] in svc.ingestion_service._inflight:
+                    raise RuntimeError("benchmark shutdown stranded claims")
+            # Original incomplete bulk work must settle before the fresh witness.
+            if any(
+                entry["pipeline_status"] not in ("abstraction_complete", "abstraction_skipped")
+                for entry in manifest
+            ):
+                await svc.ingestion_service.recover_incomplete_documents()
+                for entry in manifest:
+                    await settle(entry["id"])
+            entry, control = await fresh_interrupted_source(
+                "fresh-startup-large.csv", 27262976, "LARGE_BULK_TRIAL FRESH_STARTUP_WITNESS"
+            )
+            manifest.append(entry)
+            report["startup_interruption"] = control
             manifest_path.write_text(json.dumps(manifest, indent=2))
         save()
         report["passed"] = trial_passed(report)

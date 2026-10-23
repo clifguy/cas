@@ -17,6 +17,7 @@ import hashlib
 import re
 
 from sage.adapters.interfaces import Chunk
+from sage.adapters.stubs import SeededEmbeddingProvider
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document
 from sage.source_adapters.docx_adapter import DocxAdapter
@@ -56,16 +57,60 @@ def _sha(name: str) -> str:
     return "sha256:" + hashlib.sha256(f"sage-test-hash:{name}".encode()).hexdigest()
 
 
-class _RecordingEmbedder:
+class _RecordingEmbedder(SeededEmbeddingProvider):
     """Captures the texts passed to embed() and returns deterministic vectors."""
 
     def __init__(self) -> None:
+        super().__init__()
         self.calls: list[list[str]] = []
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
         self.calls.append(list(texts))
         # Deterministic per-text vector; first dim encodes hash to detect changes.
         return [[float(hash(t) % 10000) / 10000.0] + [0.0] * 767 for t in texts]
+
+
+async def test_completed_reindex_second_run_is_an_exact_noop(graph_store, stub_content_store):
+    doc = _make_doc(doc_id=_id("repeat"))
+    await graph_store.insert_document(doc)
+    await stub_content_store.index_chunks(
+        doc.id,
+        [
+            Chunk(
+                document_id=doc.id,
+                heading_path="Authored",
+                content="Exact source body.",
+            )
+        ],
+    )
+    embedder = _RecordingEmbedder()
+    assert (
+        await reindex_with_services(
+            graph=graph_store,
+            store=stub_content_store,
+            embedder=embedder,
+            execute=True,
+            batch_size=64,
+        )
+        == 0
+    )
+    before = await graph_store.get_document(doc.id)
+    calls = len(embedder.calls)
+    assert calls == 1
+    assert (
+        await reindex_with_services(
+            graph=graph_store,
+            store=stub_content_store,
+            embedder=embedder,
+            execute=True,
+            batch_size=64,
+        )
+        == 0
+    )
+    after = await graph_store.get_document(doc.id)
+    assert len(embedder.calls) == calls
+    assert after.processing_coverage == before.processing_coverage
+    assert after.indexed_at == before.indexed_at
 
 
 def _make_doc(

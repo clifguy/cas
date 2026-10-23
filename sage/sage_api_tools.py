@@ -1705,18 +1705,23 @@ def register_sage_tools(
             ``created_by``/``last_modified_by`` take a display name and are
             ``facet_fields``.
 
+        Unknown coverage is not full; empty results cannot prove source absence.
+        Passage counts: available_passage_count, keyword_indexed_passage_count,
+        embedded_passage_count, matched_passage_count; unknown is null, document
+        surfaces add zero matches.
+
         Error modes:
         - ``invalid_vault_id`` (400)
         - ``vault_not_found`` (404)
-        - ``misplaced_filters`` (400): a filter key passed top-level
+        - ``misplaced_filters`` (400)
         - ``invalid_mode`` (400)
-        - ``unknown_filter_key`` (400): an undeclared ``filters`` key
-        - ``invalid_filter_value`` (400): a value outside a closed vocabulary
-        - ``invalid_filter_shape`` (400): a ``filters`` value of the wrong type
-        - ``invalid_document_id`` (400): a malformed ``document_ids`` entry
-        - ``mode_parameter_mismatch`` (400): a parameter forbidden by mode/target
+        - ``unknown_filter_key`` (400)
+        - ``invalid_filter_value`` (400)
+        - ``invalid_filter_shape`` (400)
+        - ``invalid_document_id`` (400)
+        - ``mode_parameter_mismatch`` (400)
         - ``missing_query`` / ``missing_document_id`` / ``missing_heading_path`` (400)
-        - ``invalid_parameter`` (422): bound/type violation outside ``filters``
+        - ``invalid_parameter`` (422)
         - ``semantic_query_too_long`` (400)
         - ``storage_query_failed`` (500)
         """

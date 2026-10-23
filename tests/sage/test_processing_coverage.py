@@ -652,16 +652,21 @@ async def test_failed_recompute_preserves_prior_projection_and_abstract(
     original = await ingestion_service._store.get_document(result.document.id)
     old_chunks = await ingestion_service._content_store.get_all_chunks(original.id)
 
-    async def refuse(texts):
-        raise RuntimeError("controlled replacement embedding failure")
+    async def refuse(*args):
+        raise RuntimeError("controlled replacement abstraction failure")
 
-    monkeypatch.setattr(ingestion_service._embedding, "embed", refuse)
+    monkeypatch.setattr(ingestion_service._abstraction, "generate_abstract", refuse)
     ingestion_service._config.abstraction.max_attempts = 1
     await ingestion_service.recompute_pipeline(original.id)
     await drain_abstraction_queue(ingestion_service)
     read = await ingestion_service._store.get_document(original.id)
     assert read.pipeline_status.value == "failed"
-    assert read.processing_coverage.projection == original.processing_coverage.projection
+    assert (
+        read.processing_coverage.projection.identity
+        == original.processing_coverage.projection.identity
+    )
+    assert read.processing_coverage.projection.scope == "complete"
+    assert read.processing_coverage.projection.generation == read.processing_coverage.attempt
     assert read.semantic_abstract == original.semantic_abstract
     assert [
         c.content for c in await ingestion_service._content_store.get_all_chunks(original.id)

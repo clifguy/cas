@@ -211,6 +211,7 @@ async def test_failed_recovery_isolated_with_retained_source_and_bounded_retries
             raise RuntimeError("synthetic sizing failure")
         return 0
 
+    original_count = ingestion_service._embedding.count_tokens
     ingestion_service._embedding.count_tokens = failing_count
     assert await ingestion_service.recover_incomplete_documents() == 1
     terminal = await await_pipeline_idle(graph_store, doc_id, service=ingestion_service)
@@ -220,6 +221,7 @@ async def test_failed_recovery_isolated_with_retained_source_and_bounded_retries
     assert source.read_text() == text
     assert terminal.source_content_hash == result.document.source_content_hash
     assert await ingestion_service.recover_incomplete_documents() == 0
+    ingestion_service._embedding.count_tokens = original_count
     _create_test_file(tmp_vault_dir, "healthy.md", "Healthy short content.")
     healthy = await ingestion_service.ingest(
         IngestRequest(source="healthy.md", source_type=SourceType.MARKDOWN), wait_for_pipeline=True
@@ -271,7 +273,10 @@ async def test_nomic_refuses_unbounded_work_before_tokenizer_or_model(bounded_no
 
 @pytest.mark.parametrize(
     "heading,body",
-    [("h " * 4000, "body data " * 6000), ("h " * CANDIDATE_LIMIT, "Short body.")],
+    [
+        ("h " * 4000, "body data " * 6000),
+        ("h " * CANDIDATE_LIMIT, "Short body."),
+    ],
     ids=["crowded", "oversized"],
 )
 async def test_crowded_exception_fails_safely_without_losing_retained_source(
@@ -285,11 +290,18 @@ async def test_crowded_exception_fails_safely_without_losing_retained_source(
         IngestRequest(source="crowded.md", source_type=SourceType.MARKDOWN), wait_for_pipeline=False
     )
     terminal = await await_pipeline_idle(graph_store, result.document.id, service=ingestion_service)
-    assert terminal.pipeline_status == PipelineStatus.FAILED
-    assert "tokenizer work bound" in terminal.pipeline_error
+    assert terminal.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+    assert terminal.pipeline_error is None
+    assert terminal.processing_coverage.passage_embeddings.scope == "limited"
+    assert terminal.processing_coverage.passage_embeddings.counts[0].represented == 0
+    chunks = await ingestion_service._content_store.get_all_chunks(terminal.id)
+    expected_passage = "# " + heading.rstrip() + "\n\n" + body.rstrip()
+    assert "".join(c.content for c in chunks) == expected_passage
+    assert terminal.processing_coverage.keyword_indexing.scope == "complete"
     assert source.read_text() == text
     assert terminal.source_content_hash == result.document.source_content_hash
-    assert not any(operation == "encode" for operation, _ in calls)
+    # Only the one-character authored document title reaches inference.
+    assert [length for operation, length in calls if operation == "encode"] == [1]
     assert all(length <= CANDIDATE_LIMIT for _, length in calls)
     assert await ingestion_service.recover_incomplete_documents() == 0
     await ingestion_service.stop_worker()

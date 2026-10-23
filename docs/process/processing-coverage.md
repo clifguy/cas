@@ -66,8 +66,9 @@ Recovery selects pending documents solely from existing `pipeline_status`.
 An internal nullable next-stage checkpoint on that same row preserves admitted
 work: `indexing` for a new projection/replacement, `abstraction` for an explicit
 stored-passage request. Admission records status, checkpoint and attempt fence
-atomically with its document writes. Passage publication advances the checkpoint
-to abstraction in the same transaction as passages, coverage and `indexed_at`.
+atomically with its document writes. Initial content publication retains the indexing
+checkpoint. Final indexing publication advances it to abstraction in the same
+transaction as settled embedding evidence and `indexed_at`.
 Failure or a stale fence changes none of that publication group. Interrupted work
 retains its checkpoint; a fresh service recovers the requested stage without
 reconstructing intent from volatile jobs or timestamps. Retry after published
