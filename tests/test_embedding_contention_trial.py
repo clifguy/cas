@@ -25,6 +25,8 @@ def valid_report():
                 "reconstruction_matches": True,
                 "stored_chunks": 3,
                 "vectors_valid": True,
+                "embedding_coverage_valid": True,
+                "embedding_accounting_valid": True,
                 "retained_source_matches": True,
             },
             {
@@ -42,6 +44,8 @@ def valid_report():
             "claim_released_after_settle": True,
             "reconstruction_matches": True,
             "vectors_valid": True,
+            "embedding_coverage_valid": True,
+            "embedding_accounting_valid": True,
             "retained_source_matches": True,
             "same_identity": True,
         },
@@ -60,6 +64,10 @@ def test_trial_accepts_documented_live_large_work_with_settled_recovery_control(
         "failed",
         "corrupted",
         "missing_vectors",
+        "false_coverage",
+        "false_accounting",
+        "recovery_coverage",
+        "recovery_accounting",
         "stranded",
         "unfinished_control",
         "duplicate",
@@ -81,6 +89,12 @@ def test_trial_rejects_false_recovery_acceptance(change):
         )
     elif change == "missing_vectors":
         report["files"][0]["vectors_valid"] = False
+    elif change in {"false_coverage", "false_accounting"}:
+        report["files"][0]["embedding_" + change.removeprefix("false_") + "_valid"] = False
+    elif change.startswith("recovery_"):
+        report["recovery_control"]["embedding_" + change.removeprefix("recovery_") + "_valid"] = (
+            False
+        )
     elif change == "stranded":
         large["claim_active"] = False
     elif change == "unfinished_control":

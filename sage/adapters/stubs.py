@@ -23,7 +23,12 @@ from sage.adapters.interfaces import (
     KeywordQueryParse,
     SearchResult,
 )
-from sage.models.coverage import CoverageDimension, ProcessingCoverage, ProcessingIdentity
+from sage.models.coverage import (
+    CoverageDimension,
+    ProcessingCoverage,
+    ProcessingIdentity,
+    canonical_configuration_hash,
+)
 from sage.models.enums import ResolutionPolicy
 from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
 from sage.models.schemas import Document, Edge, LinkRequest, StagingEdge
@@ -55,6 +60,7 @@ class StubContentStore(ContentStore):
         self._store: dict[str, list[Chunk]] = {}
         self._surfaces: dict[str, DocumentSurface] = {}
         self._embedding_accounting: dict[str, dict] = {}
+        self._embedding_authorizations: dict[str, str] = {}
 
     def bind_processing_store(self, graph_store: GraphStore) -> None:
         self._processing_store = graph_store
@@ -115,11 +121,6 @@ class StubContentStore(ContentStore):
         semantic_abstract: str | None = None,
         indexing_complete: bool = True,
     ) -> bool:
-        if semantic_abstract is not None and surface is not None and surface.embedding is None:
-            previous = self._surfaces.get(document_id)
-            if previous is not None:
-                surface.embedding = previous.embedding
-                surface.authored_embedding = previous.authored_embedding
         if self._processing_delegate is not None:
             published = await self._processing_delegate.publish_processing(
                 document_id,
@@ -139,6 +140,26 @@ class StubContentStore(ContentStore):
         doc = await self._processing_store.get_document(document_id)
         if doc.processing_coverage.attempt != attempt:
             return False
+        if chunks is not None and (ledger := self._embedding_accounting.get(document_id)):
+            identity = dimensions["passage_embeddings"].identity
+            if (
+                identity is not None
+                and ledger.get("source") == doc.source_content_hash
+                and ledger["identity"]
+                != canonical_configuration_hash(identity.model_dump(mode="json"))
+            ):
+                raise ValueError("embedding scope changed; explicit reprocessing decision required")
+        if surface is not None and surface.embedding is None:
+            previous = self._surfaces.get(document_id)
+            if previous is not None and previous.embedding is not None:
+                surface.embedding = previous.embedding
+                surface.authored_embedding = bool(
+                    previous.authored_embedding
+                    and previous.matchable == surface.matchable
+                    and doc.processing_coverage.passage_embeddings.identity is not None
+                    and doc.processing_coverage.passage_embeddings.identity.source_hash
+                    == doc.source_content_hash
+                )
         coverage = ProcessingCoverage.model_validate(
             {
                 **doc.processing_coverage.model_dump(),
@@ -190,10 +211,14 @@ class StubContentStore(ContentStore):
         doc = await self._processing_store.get_document(document_id)
         if doc.processing_coverage.attempt != attempt:
             return "stale"
+        previous = self._embedding_accounting.get(document_id)
+        if previous and previous.get("source") != identity.source_hash:
+            self._embedding_accounting.pop(document_id)
         ledger = self._embedding_accounting.setdefault(
             document_id,
             {
-                "identity": identity.model_dump_json(),
+                "identity": canonical_configuration_hash(identity.model_dump(mode="json")),
+                "source": identity.source_hash,
                 "inputs": {},
                 "tokens": 0,
                 "max_inputs": max_inputs,
@@ -201,7 +226,7 @@ class StubContentStore(ContentStore):
             },
         )
         if (
-            ledger["identity"] != identity.model_dump_json()
+            ledger["identity"] != canonical_configuration_hash(identity.model_dump(mode="json"))
             or ledger["max_inputs"] != max_inputs
             or ledger["max_tokens"] != max_tokens
         ):
@@ -225,6 +250,20 @@ class StubContentStore(ContentStore):
             if c.chunk_index in indices and c.embedding is not None
         }
 
+    async def embedding_scope_is_compatible(
+        self, document_id: str, identity: ProcessingIdentity
+    ) -> bool:
+        if self._processing_delegate is not None:
+            return await self._processing_delegate.embedding_scope_is_compatible(
+                document_id, identity
+            )
+        ledger = self._embedding_accounting.get(document_id)
+        return (
+            not ledger
+            or ledger.get("source") != identity.source_hash
+            or ledger["identity"] == canonical_configuration_hash(identity.model_dump(mode="json"))
+        )
+
     async def authorize_embedding_scope(
         self,
         document_id: str,
@@ -242,7 +281,9 @@ class StubContentStore(ContentStore):
             return False
         if not decision.strip() or len(decision) > 512:
             raise ValueError("reprocessing requires a bounded operator decision")
-        self._embedding_accounting.pop(document_id, None)
+        if self._embedding_authorizations.get(document_id) != decision:
+            self._embedding_accounting.pop(document_id, None)
+            self._embedding_authorizations[document_id] = decision
         return True
 
     async def publish_embedding_increment(

@@ -372,6 +372,12 @@ class ContentStore(ABC):
         """Read at most 4096 selected vectors for conservative retry reconciliation."""
         raise NotImplementedError
 
+    async def embedding_scope_is_compatible(
+        self, document_id: str, identity: ProcessingIdentity
+    ) -> bool:
+        """Read-only preflight before an unapproved maintenance attempt changes state."""
+        raise NotImplementedError
+
     async def authorize_embedding_scope(
         self,
         document_id: str,

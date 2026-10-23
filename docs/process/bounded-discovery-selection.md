@@ -243,6 +243,17 @@ explicit operator decision, supported by the stored-passage reindex script's
 `--reprocessing-decision` argument; the ledger retains its reason, prior consumption
 and attempt. Omitting it is a conservative retry, and a second completed run consumes
 no further inference. Normal ingest/recompute never silently invokes that reset.
+An unchanged decision identifier is idempotent and retains consumed or uncertain
+debits. An unapproved maintenance scope change is refused before changing the
+attempt, checkpoints, coverage or artifacts, with a transactional recheck before
+replacement. The served `migrate_vault` operator action authorizes its named passage
+backfills; each records a decision bound to the source and adapter transition or
+input bound. Helpers and startup do not infer that authorization. Retrying the same
+transition preserves consumption. Migration tests exercise this actual entry point.
+The explicit reprojection script captures the same inspected effective policy as
+ingest and binds its decision to that configuration and inspected source digest.
+Durable identity comparisons use canonical JSON, so a database key-order change
+cannot turn metadata reconciliation into an unapproved policy change.
 
 `available_passage_count`, `keyword_indexed_passage_count`, `embedded_passage_count`
 and `matched_passage_count` describe distinct populations. Unknown optional counts
@@ -259,6 +270,9 @@ reprocessing establishes it. Reabstracting updates derived orientation without
 spending another document-vector inference allowance. Metadata changes to authored
 title/tag inputs retain the old vector but quarantine its independent admission;
 orientation-only changes preserve established authored provenance.
+Unchanged recomputation reuses the established document vector without another
+provider call. Replacement retains old vectors for orientation but requires matching
+authored input and source generation to preserve their admission provenance.
 
 Inspection binds two byte identities. The processing identity's `source_hash` keeps
 established delivered-source provenance and the durable publication fence. Frozen

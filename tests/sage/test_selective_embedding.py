@@ -6,7 +6,9 @@ import pytest
 
 from sage.adapters.content_store_postgres import PostgresContentStore
 from sage.adapters.interfaces import Chunk
+from sage.adapters.stubs import SeededEmbeddingProvider
 from sage.models.coverage import CoverageDimension
+from sage.source_adapters.base import HeadingNode, ProjectionResult
 from tests.sage.test_postgres_graph_store import _doc
 from tests.sage.test_processing_coverage import _identity
 
@@ -51,7 +53,7 @@ async def test_embedding_admission_is_durable_and_fenced(pg_pool, postgres_graph
     await postgres_graph_store.insert_document(doc)
     content = PostgresContentStore(pg_pool)
     attempt = await content.begin_processing_attempt(doc.id)
-    identity = _identity()
+    identity = _identity().model_copy(update={"configuration": {"zz": 1, "a": {"cc": 2, "b": 3}}})
     assert (
         await content.admit_embedding(
             doc.id, attempt, identity, "first", 3, max_inputs=2, max_tokens=5
@@ -61,6 +63,21 @@ async def test_embedding_admission_is_durable_and_fenced(pg_pool, postgres_graph
     assert (
         await content.admit_embedding(
             doc.id, attempt, identity, "first", 3, max_inputs=2, max_tokens=5
+        )
+        == "consumed"
+    )
+    import json
+
+    from sage.models.coverage import ProcessingIdentity
+
+    reordered = ProcessingIdentity.model_validate(
+        json.loads(json.dumps(identity.model_dump(), sort_keys=True))
+    )
+    assert reordered == identity and list(reordered.configuration) != list(identity.configuration)
+    assert await content.embedding_scope_is_compatible(doc.id, reordered)
+    assert (
+        await content.admit_embedding(
+            doc.id, attempt, reordered, "first", 3, max_inputs=2, max_tokens=5
         )
         == "consumed"
     )
@@ -663,3 +680,247 @@ async def test_surface_metadata_changes_quarantine_vectors_but_orientation_prese
             )
         ).fetchone()
     assert list(stored) == vector and authored is False
+
+
+class _RecordedProvider(SeededEmbeddingProvider):
+    def __init__(self):
+        super().__init__()
+        self.calls = []
+        self.fail = False
+
+    async def embed(self, texts):
+        self.calls.append(list(texts))
+        if self.fail:
+            raise RuntimeError("controlled provider failure")
+        return await super().embed(texts)
+
+
+async def test_recompute_preserves_title_vector(
+    pg_pool, ingestion_service_no_abstraction, graph_store
+):
+    doc = _doc(1)
+    await graph_store.insert_document(doc)
+    service = ingestion_service_no_abstraction
+    service._content_store = content = PostgresContentStore(pg_pool)
+    service._embedding = provider = _RecordedProvider()
+    provider._max_input_tokens = 16
+    projection = ProjectionResult(
+        "source",
+        [HeadingNode(1, "H" * 20, "H" * 20, "body")],
+        doc.source_content_hash,
+        "1",
+        doc.title,
+    )
+    await service._stage2_indexing(doc.id, projection)
+    async with pg_pool.connection() as conn:
+        before = await (
+            await conn.execute(
+                "SELECT embedding, authored_embedding FROM document_surface WHERE document_id=%s",
+                (doc.id,),
+            )
+        ).fetchone()
+    assert before[0] is not None and before[1] is True
+    vector = list(before[0])
+    calls = list(provider.calls)
+    assert not await content.read_embedding_vectors(doc.id, [0])
+    assert (await content.search_semantic(vector))[0].is_document_surface
+    await service._stage2_indexing(doc.id, projection)
+    async with pg_pool.connection() as conn:
+        after = await (
+            await conn.execute(
+                "SELECT embedding, authored_embedding FROM document_surface WHERE document_id=%s",
+                (doc.id,),
+            )
+        ).fetchone()
+    assert list(after[0]) == vector and after[1] is True
+    assert provider.calls == calls
+    assert (await content.search_semantic(vector))[0].is_document_surface
+
+
+@pytest.mark.parametrize(
+    "change,fail", [("title", True), ("source", True), ("title", False), ("source", False)]
+)
+async def test_replacement_quarantines_old_surface_before_uncertain_inference(
+    pg_pool, ingestion_service_no_abstraction, graph_store, change, fail
+):
+    doc = _doc(1)
+    await graph_store.insert_document(doc)
+    service = ingestion_service_no_abstraction
+    service._content_store = content = PostgresContentStore(pg_pool)
+    service._embedding = provider = _RecordedProvider()
+    projection = ProjectionResult(
+        "source",
+        [HeadingNode(1, "Body", "Body", "unrelated authored body")],
+        doc.source_content_hash,
+        "1",
+        doc.title,
+    )
+    await service._stage2_indexing(doc.id, projection)
+    async with pg_pool.connection() as conn:
+        before = await (
+            await conn.execute(
+                "SELECT embedding FROM document_surface WHERE document_id=%s",
+                (doc.id,),
+            )
+        ).fetchone()
+    if change == "title":
+        await graph_store.update_document(doc.id, {"title": "Different authored title"})
+    else:
+        await graph_store.update_document(doc.id, {"source_content_hash": "sha256:" + "9" * 64})
+    provider.fail = fail
+    if fail:
+        with pytest.raises(RuntimeError, match="controlled provider failure"):
+            await service._stage2_indexing(doc.id, projection)
+    else:
+        await service._stage2_indexing(doc.id, projection)
+    async with pg_pool.connection() as conn:
+        after = await (
+            await conn.execute(
+                "SELECT embedding, authored_embedding FROM document_surface WHERE document_id=%s",
+                (doc.id,),
+            )
+        ).fetchone()
+    if fail:
+        assert list(after[0]) == list(before[0]) and after[1] is False
+        assert not any(
+            hit.is_document_surface for hit in await content.search_semantic(list(before[0]))
+        )
+    else:
+        assert after[0] is not None and after[1] is True
+
+
+async def test_reindex_keeps_existing_vectors_on_unapproved_scope_change(
+    pg_pool, ingestion_service_no_abstraction, graph_store
+):
+    from sage.services.selective_embedding import reindex_passages
+    from scripts.reindex_chunks_with_heading_context import reindex_with_services
+
+    doc = _doc(1)
+    await graph_store.insert_document(doc)
+    service = ingestion_service_no_abstraction
+    service._content_store = content = PostgresContentStore(pg_pool)
+    service._embedding = provider = _RecordedProvider()
+    projection = _projection_with_limits(
+        doc, [HeadingNode(1, "Body", "Body", "authored saffron")], max_excerpts=2
+    )
+    await service._stage2_indexing(doc.id, projection)
+    before = await content.read_embedding_vectors(doc.id, [0])
+    assert len(before) == 1
+    current = await graph_store.get_document(doc.id)
+    chunks = await content.get_all_chunks(doc.id)
+    calls = list(provider.calls)
+    with pytest.raises(ValueError, match="embedding scope changed"):
+        await reindex_passages(content, provider, current, chunks)
+    after = await graph_store.get_document(doc.id)
+    assert after.processing_coverage == current.processing_coverage
+    assert after.indexed_at == current.indexed_at
+    assert await content.read_embedding_vectors(doc.id, [0]) == before
+    assert await content.get_all_chunks(doc.id) == chunks
+    assert provider.calls == calls
+    # Simulate a stale optimistic preflight; the replacement transaction must
+    # independently reject the incompatible persisted ledger before deleting rows.
+    from unittest.mock import AsyncMock, patch
+
+    with patch.object(content, "embedding_scope_is_compatible", AsyncMock(return_value=True)):
+        with pytest.raises(ValueError, match="embedding scope changed"):
+            await reindex_passages(content, provider, current, chunks)
+    assert await content.read_embedding_vectors(doc.id, [0]) == before
+    assert await content.get_all_chunks(doc.id) == chunks
+    assert (await graph_store.get_document(doc.id)).indexed_at == current.indexed_at
+    for _ in range(2):
+        assert (
+            await reindex_with_services(
+                graph=graph_store,
+                store=content,
+                embedder=provider,
+                execute=True,
+                batch_size=8,
+                reprocessing_decision="Operator approves bounded policy migration",
+            )
+            == 0
+        )
+        async with pg_pool.connection() as conn:
+            ledger = (
+                await (
+                    await conn.execute(
+                        "SELECT embedding_accounting FROM documents WHERE id=%s",
+                        (doc.id,),
+                    )
+                ).fetchone()
+            )[0]
+        assert ledger["authorization"]["decision"] == "Operator approves bounded policy migration"
+        assert len(ledger["inputs"]) == 1
+        if _ == 0:
+            authorized_calls = list(provider.calls)
+        else:
+            assert provider.calls == authorized_calls
+        assert await content.read_embedding_vectors(doc.id, [0]) == before
+
+
+async def test_trial_reads_atomic_sparse_evidence(
+    pg_pool, ingestion_service_no_abstraction, graph_store
+):
+    from scripts.embedding_contention_trial import read_embedding_evidence
+
+    doc = _doc(1)
+    await graph_store.insert_document(doc)
+    service = ingestion_service_no_abstraction
+    service._content_store = content = PostgresContentStore(pg_pool)
+    service._embedding = provider = _RecordedProvider()
+    original_embed = provider.embed
+
+    async def normalized(texts):
+        import math
+
+        return [
+            [value / math.sqrt(sum(x * x for x in vector)) for value in vector]
+            for vector in await original_embed(texts)
+        ]
+
+    provider.embed = normalized
+    projection = _projection_with_limits(
+        doc,
+        [HeadingNode(1, f"H{i}", f"H{i}", f"Authored unique value {i}") for i in range(3)],
+        max_excerpts=2,
+    )
+    await service._stage2_indexing(doc.id, projection)
+    evidence = await read_embedding_evidence(content, doc.id, 768)
+    assert evidence["embedded_passages"] == 2
+    assert evidence["unembedded_passages"] == 1
+    assert all(
+        evidence[name]
+        for name in ("vectors_valid", "embedding_coverage_valid", "embedding_accounting_valid")
+    )
+    async with pg_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chunks SET embedding=%s::vector WHERE document_id=%s AND chunk_index=0",
+            ("[" + ",".join(["0"] * 768) + "]", doc.id),
+        )
+    assert (await read_embedding_evidence(content, doc.id, 768))["vectors_valid"] is False
+    async with pg_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE chunks SET embedding=NULL WHERE document_id=%s AND chunk_index=0", (doc.id,)
+        )
+    assert (await read_embedding_evidence(content, doc.id, 768))[
+        "embedding_coverage_valid"
+    ] is False
+    async with pg_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE documents SET embedding_accounting="
+            "jsonb_set(embedding_accounting, '{tokens}', '0') WHERE id=%s",
+            (doc.id,),
+        )
+    assert (await read_embedding_evidence(content, doc.id, 768))[
+        "embedding_accounting_valid"
+    ] is False
+    async with pg_pool.connection() as conn:
+        from psycopg.types.json import Jsonb
+
+        ledger = evidence["embedding_accounting"].copy()
+        ledger["identity"] = "wrong identity"
+        await conn.execute(
+            "UPDATE documents SET embedding_accounting=%s WHERE id=%s", (Jsonb(ledger), doc.id)
+        )
+    assert (await read_embedding_evidence(content, doc.id, 768))[
+        "embedding_accounting_valid"
+    ] is False

@@ -540,7 +540,9 @@ class MaintenanceService:
         """
         if self._ingestion is None:
             return 0
-        return await self._ingestion.divide_passages_over_input_bound()
+        return await self._ingestion.divide_passages_over_input_bound(
+            reprocessing_decision="migrate_vault: divide_passages_over_input_bound"
+        )
 
     async def _store_text_before_first_heading(self) -> tuple[int, list[tuple[str, str]]]:
         """Store the text each document carries before its first heading.
@@ -570,7 +572,9 @@ class MaintenanceService:
         """
         if self._ingestion is None:
             return 0, []
-        return await self._ingestion.store_text_before_first_heading()
+        return await self._ingestion.store_text_before_first_heading(
+            reprocessing_decision="migrate_vault: store_text_before_first_heading"
+        )
 
     async def _migrate_to_relative_indexed_structure(self) -> int:
         """Derive each passage's structure relative to its document.

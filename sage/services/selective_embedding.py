@@ -266,8 +266,10 @@ async def reindex_passages(
         doc.title or "",
     )
     selection = select_passages(chunks, projection, provider, doc.source_content_hash)
+    await restore_selected_vectors(store, doc.id, selection, chunks)
     if decision is None:
-        await restore_selected_vectors(store, doc.id, selection, chunks)
+        if not await store.embedding_scope_is_compatible(doc.id, selection.identity):
+            raise ValueError("embedding scope changed; explicit reprocessing decision required")
         coverage, previous, _ = await store.read_processing_artifacts(doc.id)
         if (
             coverage.passage_embeddings.identity == selection.identity

@@ -2797,7 +2797,12 @@ class IngestionService:
             raise _SupersededProcessing("stale processing publication")
 
     async def _stage2_indexing(
-        self, document_id: str, projection: ProjectionResult, attempt: int | None = None
+        self,
+        document_id: str,
+        projection: ProjectionResult,
+        attempt: int | None = None,
+        *,
+        reprocessing_decision: str | None = None,
     ) -> None:
         """Stage 2: Chunk projection, embed, store in content store.
         Sets indexed_at on completion (BH-008).
@@ -2839,6 +2844,11 @@ class IngestionService:
         selection = await _run_passage_work(
             lambda: select_passages(chunks, projection, self._embedding, doc.source_content_hash)
         )
+        if reprocessing_decision is not None:
+            if not await self._content_store.authorize_embedding_scope(
+                document_id, attempt, reprocessing_decision
+            ):
+                raise _SupersededProcessing("stale reprocessing decision")
         prior_embedding = doc.processing_coverage.passage_embeddings
         if any(
             reason in prior_embedding.limitations
@@ -2981,6 +2991,7 @@ class IngestionService:
                 )
                 if admission == "admitted":
                     [surface.embedding] = await self._embedding.embed([surface.matchable])
+                    surface.authored_embedding = True
                     if not await self._content_store.publish_processing(
                         document_id,
                         attempt,
@@ -4327,7 +4338,9 @@ class IngestionService:
 
         return fits
 
-    async def divide_passages_over_input_bound(self) -> int:
+    async def divide_passages_over_input_bound(
+        self, *, reprocessing_decision: str | None = None
+    ) -> int:
         """Divide every stored section too long for the embedder, vault-wide.
 
         Stored passages are the durable form of a projection, so a section is
@@ -4347,12 +4360,16 @@ class IngestionService:
         for document_id in await self._content_store.documents_with_passages_longer_than(
             byte_bound
         ):
-            if await self._divide_stored_passages(document_id):
+            if await self._divide_stored_passages(
+                document_id, reprocessing_decision=reprocessing_decision
+            ):
                 rewritten += 1
         return rewritten
 
     @observe_operation("passages.rebuild")
-    async def _divide_stored_passages(self, document_id: str) -> bool:
+    async def _divide_stored_passages(
+        self, document_id: str, *, reprocessing_decision: str | None = None
+    ) -> bool:
         """Re-divide one document's stored sections under the embedder's bound.
 
         The division is ``_passages_for_sections``, the one ingest applies, so
@@ -4390,10 +4407,22 @@ class IngestionService:
                 chunk.lifecycle_status = origin.lifecycle_status
                 chunk.project = origin.project
             doc = await self._store.get_document(document_id)
-            await reindex_passages(self._content_store, self._embedding, doc, divided)
+            await reindex_passages(
+                self._content_store,
+                self._embedding,
+                doc,
+                divided,
+                decision=(
+                    f"{reprocessing_decision}:{doc.source_content_hash}:{self._embedding.max_input_tokens}"
+                    if reprocessing_decision is not None
+                    else None
+                ),
+            )
             return True
 
-    async def store_text_before_first_heading(self) -> tuple[int, list[tuple[str, str]]]:
+    async def store_text_before_first_heading(
+        self, *, reprocessing_decision: str | None = None
+    ) -> tuple[int, list[tuple[str, str]]]:
         """Store the text each document carries before its first heading, vault-wide.
 
         A document indexed before that text had a passage holds none of it, and
@@ -4438,7 +4467,9 @@ class IngestionService:
         rewritten = 0
         not_repaired: list[tuple[str, str]] = []
         for doc in candidates:
-            outcome = await self._bring_passages_current(doc, vault_source_store)
+            outcome = await self._bring_passages_current(
+                doc, vault_source_store, reprocessing_decision=reprocessing_decision
+            )
             if isinstance(outcome, str):
                 not_repaired.append((doc.id, outcome))
                 continue
@@ -4498,7 +4529,11 @@ class IngestionService:
 
     @observe_operation("projection.rebuild")
     async def _bring_passages_current(
-        self, doc: Document, vault_source_store: "VaultSourceStore"
+        self,
+        doc: Document,
+        vault_source_store: "VaultSourceStore",
+        *,
+        reprocessing_decision: str | None = None,
     ) -> bool | str:
         """Make a document's stored passages the ones its adapter now writes.
 
@@ -4587,7 +4622,17 @@ class IngestionService:
                 chunk.doc_type = stored[0].doc_type
                 chunk.lifecycle_status = stored[0].lifecycle_status
                 chunk.project = stored[0].project
-            await reindex_passages(self._content_store, self._embedding, current, fresh)
+            await reindex_passages(
+                self._content_store,
+                self._embedding,
+                current,
+                fresh,
+                decision=(
+                    f"{reprocessing_decision}:{current.source_content_hash}:{current.adapter_version}->{adapter.VERSION}"
+                    if reprocessing_decision is not None
+                    else None
+                ),
+            )
         await self._stamp_examined(document_id, adapter.VERSION)
         return True
 

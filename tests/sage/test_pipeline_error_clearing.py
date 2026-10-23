@@ -457,7 +457,14 @@ async def test_abstraction_skipped_clears_stale_pipeline_error(
     seeded = await graph_store.get_document(document_id)
     assert seeded.pipeline_error == STALE_ERROR
 
-    projection = await adapter.project(source_path, None)
+    from sage.services.ingestion import _run_inspected_projection
+
+    projection = await _run_inspected_projection(
+        adapter,
+        source_path,
+        service._merge_adapter_config(seeded.source_type, seeded.adapter_config),
+        source_hash=seeded.source_content_hash,
+    )
     await service._execute_pipeline_stages(document_id, projection, seeded.doc_type)
 
     repaired = await graph_store.get_document(document_id)

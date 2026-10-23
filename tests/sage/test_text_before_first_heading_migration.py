@@ -287,11 +287,6 @@ async def test_a_document_opening_at_a_heading_is_read_and_left_alone(vault):
     )
     before = _shape(await vault.store.get_all_chunks(plain))
     adapters = vault.ship_adapters()
-    for doc in await vault.graph_store.list_all_documents():
-        attempt = await vault.store.begin_processing_attempt(doc.id)
-        assert await vault.store.authorize_embedding_scope(
-            doc.id, attempt, "Test operator approves adapter scope migration"
-        )
 
     await vault.migrate()
 
@@ -513,11 +508,6 @@ async def test_a_lifecycle_stamp_while_the_text_is_added_is_not_reverted(vault):
         assert not archive.done(), "control: the archive must wait on the rewrite"
 
     vault.ship_adapters()
-    for doc in await vault.graph_store.list_all_documents():
-        attempt = await vault.store.begin_processing_attempt(doc.id)
-        assert await vault.store.authorize_embedding_scope(
-            doc.id, attempt, "Test operator approves adapter scope migration"
-        )
     vault.embedder.during_embed = archive_meanwhile
 
     report = await vault.migrate()
@@ -1321,11 +1311,6 @@ async def test_reprojected_windows_preserve_each_stored_vector(vault):
         "vector-windows.md", (LEAD + "\n\n" + body).encode(), SourceType.MARKDOWN
     )
     vault.ship_adapters()
-    for doc in await vault.graph_store.list_all_documents():
-        attempt = await vault.store.begin_processing_attempt(doc.id)
-        assert await vault.store.authorize_embedding_scope(
-            doc.id, attempt, "Test operator approves adapter scope migration"
-        )
     calls = []
 
     async def encode(texts):

@@ -263,6 +263,8 @@ def trial_passed(report: dict) -> bool:
         if entry.get("stored_chunks", 0) > 0 and (
             entry.get("reconstruction_matches") is not True
             or entry.get("vectors_valid") is not True
+            or entry.get("embedding_coverage_valid") is not True
+            or entry.get("embedding_accounting_valid") is not True
         ):
             return False
         if status in successful:
@@ -287,6 +289,8 @@ def trial_passed(report: dict) -> bool:
             "claim_released_after_settle",
             "reconstruction_matches",
             "vectors_valid",
+            "embedding_coverage_valid",
+            "embedding_accounting_valid",
             "retained_source_matches",
             "same_identity",
         )
@@ -351,6 +355,105 @@ def vectors_valid(vectors: list[list[float]], count: int, dimensions: int) -> bo
             and abs(sum(value * value for value in vector) - 1) < 0.001
             for vector in vectors
         )
+    )
+
+
+def sparse_embedding_evidence(
+    vectors: list[list[float]],
+    dimensions: int,
+    coverage: dict,
+    ledger: dict,
+    source_hash: str,
+    keyword_count: int,
+) -> dict:
+    """Validate real vectors separately from honestly unembedded readable passages."""
+    from sage.models.coverage import canonical_configuration_hash
+
+    count = len(vectors)
+    present = [vector for vector in vectors if vector]
+    populated = len(present)
+    expected = {
+        "projection": count,
+        "keyword_indexing": keyword_count,
+        "passage_embeddings": populated,
+    }
+    covered = True
+    for name, represented in expected.items():
+        evidence = coverage.get(name, {})
+        counts = [x for x in evidence.get("counts", []) if x.get("unit") == "passages"]
+        covered &= (
+            len(counts) == 1
+            and counts[0].get("observed") == count
+            and counts[0].get("represented") == represented
+            and counts[0].get("total") == count
+            and evidence.get("generation") == coverage.get("attempt")
+            and (evidence.get("identity") or {}).get("source_hash") == source_hash
+            and evidence.get("scope") == ("complete" if represented == count else "limited")
+        )
+    limits = (
+        (coverage.get("passage_embeddings", {}).get("identity") or {})
+        .get("configuration", {})
+        .get("selection", {})
+    )
+    inputs = ledger.get("inputs", {})
+    max_inputs, max_tokens, tokens = (
+        ledger.get(key) for key in ("max_inputs", "max_tokens", "tokens")
+    )
+    accounting = (
+        isinstance(inputs, dict)
+        and bool(inputs)
+        and all(
+            isinstance(key, str)
+            and len(key) == 64
+            and all(c in "0123456789abcdef" for c in key)
+            and type(value) is int
+            and value >= 0
+            for key, value in inputs.items()
+        )
+        and type(max_inputs) is int
+        and 1 <= max_inputs <= 4096
+        and type(max_tokens) is int
+        and 1 <= max_tokens <= 32768
+        and type(tokens) is int
+        and tokens == sum(inputs.values()) <= max_tokens
+        and len(inputs) <= max_inputs
+        and ledger.get("source") == source_hash
+        and ledger.get("identity")
+        == canonical_configuration_hash(coverage["passage_embeddings"]["identity"])
+        and max_inputs == limits.get("max_excerpts")
+        and max_tokens == limits.get("max_tokens")
+    )
+    return {
+        "vectors_valid": vectors_valid(present, populated, dimensions),
+        "embedding_coverage_valid": bool(count and covered),
+        "embedding_accounting_valid": bool(accounting),
+        "embedded_passages": populated,
+        "unembedded_passages": count - populated,
+        "processing_coverage": coverage,
+        "embedding_accounting": ledger,
+    }
+
+
+async def read_embedding_evidence(store: object, document_id: str, dimensions: int) -> dict:
+    """One database snapshot binds vectors, keyword flags, coverage and debit ledger."""
+    rows = await store._fetchall(
+        "SELECT d.processing_coverage, d.embedding_accounting, d.source_content_hash, "
+        "array_agg(c.embedding::text ORDER BY c.chunk_index) "
+        "FILTER (WHERE c.chunk_index IS NOT NULL), count(*) FILTER (WHERE c.keyword_indexed) "
+        "FROM documents d LEFT JOIN chunks c ON c.document_id=d.id AND c.chunk_index>=0 "
+        "WHERE d.id=%s GROUP BY d.id",
+        (document_id,),
+    )
+    if not rows:
+        return {}
+    coverage, ledger, source_hash, vectors, keyword_count = rows[0]
+    return sparse_embedding_evidence(
+        [json.loads(vector) if vector else [] for vector in vectors or []],
+        dimensions,
+        coverage or {},
+        ledger or {},
+        source_hash,
+        keyword_count,
     )
 
 
@@ -605,10 +708,8 @@ async def worker(args: argparse.Namespace) -> int:
             require(entry["retained_source_matches"], "retained source bytes changed")
             chunks = await svc.content_store.get_all_chunks(entry["id"])
             entry["stored_chunks"] = len(chunks)
-            entry["vectors_valid"] = vectors_valid(
-                await read_stored_vectors(svc.content_store, entry["id"]),
-                len(chunks),
-                provider.dimensions,
+            entry.update(
+                await read_embedding_evidence(svc.content_store, entry["id"], provider.dimensions)
             )
             if chunks:
                 entry["reconstruction_matches"] = (
@@ -690,12 +791,10 @@ async def worker(args: argparse.Namespace) -> int:
                     hashlib.sha256("".join(chunk.content for chunk in chunks).encode()).hexdigest()
                     == witness["projection_sha256"]
                 ),
-                vectors_valid=vectors_valid(
-                    await read_stored_vectors(svc.content_store, witness_id),
-                    len(chunks),
-                    provider.dimensions,
-                ),
                 stored_chunks=len(chunks),
+            )
+            control.update(
+                await read_embedding_evidence(svc.content_store, witness_id, provider.dimensions)
             )
             delivery = await svc.documents_service.get_document_content(witness_id)
             digest = hashlib.sha256()

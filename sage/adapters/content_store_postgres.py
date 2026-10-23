@@ -54,6 +54,7 @@ from sage.models.coverage import (
     CoverageDimension,
     ProcessingCoverage,
     ProcessingIdentity,
+    canonical_configuration_hash,
 )
 from sage.models.enums import TERMINAL_PIPELINE_STATUSES, PipelineStatus
 from sage.storage.postgres.schema import (
@@ -679,7 +680,7 @@ class PostgresContentStore(ContentStore):
         if not 1 <= max_inputs <= 4096 or not 1 <= max_tokens <= 32768 or tokens < 0:
             raise ValueError("invalid embedding allowance")
         key = hashlib.sha256(input_key.encode()).hexdigest()
-        identity_key = hashlib.sha256(identity.model_dump_json().encode()).hexdigest()
+        identity_key = canonical_configuration_hash(identity.model_dump(mode="json"))
         async with self._pool.connection() as conn, conn.transaction():
             cur = await conn.execute(
                 "SELECT embedding_accounting, source_content_hash FROM documents WHERE id = %s "
@@ -748,6 +749,21 @@ class PostgresContentStore(ContentStore):
             for index, vector in rows
         }
 
+    async def embedding_scope_is_compatible(
+        self, document_id: str, identity: ProcessingIdentity
+    ) -> bool:
+        rows = await self._fetchall(
+            "SELECT embedding_accounting FROM documents WHERE id = %s", (document_id,)
+        )
+        if not rows:
+            return False
+        ledger = rows[0][0] or {}
+        return (
+            not ledger.get("identity")
+            or ledger.get("source") != identity.source_hash
+            or ledger["identity"] == canonical_configuration_hash(identity.model_dump(mode="json"))
+        )
+
     async def authorize_embedding_scope(
         self,
         document_id: str,
@@ -766,6 +782,8 @@ class PostgresContentStore(ContentStore):
             if row is None:
                 return False
             previous = row[0] or {}
+            if (previous.get("authorization") or {}).get("decision") == decision:
+                return True
             authorization = {
                 "decision": decision,
                 "attempt": attempt,
@@ -896,7 +914,8 @@ class PostgresContentStore(ContentStore):
             ),
         ):
             cur = await conn.execute(
-                "SELECT processing_coverage, source_content_hash FROM documents "
+                "SELECT processing_coverage, source_content_hash, embedding_accounting "
+                "FROM documents "
                 "WHERE id = %s AND (processing_coverage->>'attempt')::bigint = %s FOR UPDATE",
                 (document_id, attempt),
             )
@@ -904,6 +923,20 @@ class PostgresContentStore(ContentStore):
             if row is None:
                 return False
             current = ProcessingCoverage.model_validate(row[0] or {})
+            # Check the durable allowance in the same transaction as replacement.
+            # A policy change must not erase established vectors before admission
+            # discovers that an attributable expansion decision is required.
+            if chunks is not None and (ledger := row[2] or {}).get("identity"):
+                identity = dimensions["passage_embeddings"].identity
+                if (
+                    ledger.get("source") == row[1]
+                    and identity is not None
+                    and ledger["identity"]
+                    != canonical_configuration_hash(identity.model_dump(mode="json"))
+                ):
+                    raise ValueError(
+                        "embedding scope changed; explicit reprocessing decision required"
+                    )
             changes = {}
             for name, evidence in dimensions.items():
                 payload = evidence.model_dump()
@@ -951,16 +984,21 @@ class PostgresContentStore(ContentStore):
                                         )
                             merged.keyword_indexing = CoverageDimension.model_validate(keyword)
             if surface is not None:
-                if semantic_abstract is not None and surface.embedding is None:
+                if surface.embedding is None:
                     previous = await conn.execute(
-                        "SELECT embedding, authored_embedding FROM document_surface "
+                        "SELECT embedding, authored_embedding, matchable FROM document_surface "
                         "WHERE document_id = %s",
                         (document_id,),
                     )
                     prior = await previous.fetchone()
-                    if prior:
+                    if prior and prior[0] is not None:
                         surface.embedding = prior[0]
-                        surface.authored_embedding = prior[1]
+                        surface.authored_embedding = bool(
+                            prior[1]
+                            and prior[2] == surface.matchable
+                            and current.passage_embeddings.identity is not None
+                            and current.passage_embeddings.identity.source_hash == row[1]
+                        )
                 await conn.execute(
                     "DELETE FROM document_surface WHERE document_id = %s", (document_id,)
                 )
