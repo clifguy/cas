@@ -1143,6 +1143,15 @@ class PostgresGraphStore(GraphStore):
                         conn, new_doc, processing_stage=processing_stage
                     )
                     await self._exec_insert_edge(conn, edge)
+                    # Return this admission's committed state, including edge
+                    # effects, rather than hydrating a later owner's fence.
+                    async with conn.cursor(row_factory=dict_row) as cur:
+                        await cur.execute("SELECT * FROM documents WHERE id = %s", (new_doc.id,))
+                        inserted = self._row_to_document(await cur.fetchone())
+                        await cur.execute(
+                            "SELECT * FROM documents WHERE id = %s", (predecessor_id,)
+                        )
+                        updated_pred = self._row_to_document(await cur.fetchone())
         except pg_errors.UniqueViolation as exc:
             await self._maybe_raise_tier3_violation(exc, new_doc, supersedes_id=predecessor_id)
             if exc.diag.constraint_name == _EDGES_UNIQ_INDEX:
@@ -1150,8 +1159,6 @@ class PostgresGraphStore(GraphStore):
                     edge.source_id, edge.target_id, edge.edge_type.value
                 ) from exc
             raise
-        inserted = await self.get_document(new_doc.id)
-        updated_pred = await self.get_document(predecessor_id)
         return inserted, updated_pred
 
     async def get_edges_by_source(self, source_id: str, edge_type: str | None = None) -> list[Edge]:

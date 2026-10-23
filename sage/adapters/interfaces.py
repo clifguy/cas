@@ -1147,7 +1147,12 @@ class GraphStore(ABC):
         *,
         processing_stage: str | None = None,
     ) -> tuple[Document, Document]:
-        """Atomically insert a new document and supersede its predecessor."""
+        """Insert and supersede atomically; return both rows from that transaction.
+
+        Snapshots include edge effects and this insertion's own admission fence.
+        Return only after commit succeeds; later hydration must not substitute a
+        newer operation's processing attempt.
+        """
 
     @abstractmethod
     async def get_edges_by_source(self, source_id: str, edge_type: str | None = None) -> list[Edge]:
