@@ -1,7 +1,8 @@
 """Bounded native source facts, separate from the adapter's display projection.
 
 Streams are single use. Limits constrain parser work, not a claim about unseen
-source totals. Structured scalars retain native types; no field name supplies
+source totals. Structured scalars retain native types except JSON numbers, represented by
+distinct JsonNumber lexical tokens rather than binary floating point. No field name supplies
 semantics and strings containing another format are never decoded.
 """
 
@@ -12,6 +13,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sage.adapters.interfaces import HEADING_PATH_SEPARATOR
+from sage.source_adapters.json_lexical import (
+    JsonNumber,
+    JsonObject,
+    loads,
+    string_evidence,
+    string_token,
+)
 
 if TYPE_CHECKING:
     from sage.source_adapters.base import ProjectionResult
@@ -222,7 +230,12 @@ def _narrative(
 
 
 def _walk(
-    value: object, limits: FactLimits, prefix: str = "$", start: int = 0
+    value: object,
+    limits: FactLimits,
+    prefix: str = "$",
+    start: int = 0,
+    *,
+    lexical_json: bool = False,
 ) -> Iterator[SourceFact]:
     order = start
     nodes = 0
@@ -234,23 +247,28 @@ def _walk(
         nodes += 1
         if nodes > limits.max_parse_nodes or depth > limits.max_depth:
             raise _BoundReached("structured traversal limit reached; remainder unknown")
-        if isinstance(item, dict):
-            for key, child in item.items():
-                import json
-
+        if isinstance(item, (dict, JsonObject)):
+            members = item.members if isinstance(item, JsonObject) else list(item.items())
+            counts: dict[str, int] = {}
+            for key, _child in members:
+                counts[key] = counts.get(key, 0) + 1
+            for index, (key, child) in enumerate(members):
                 label = key if isinstance(key, str) else str(key)
                 if len(label) > 500:
                     raise _BoundReached("structured location length limit; remainder unknown")
-                segment = f"[{json.dumps(label, ensure_ascii=False)}]"
-                if max(len(path), len(field)) + len(segment) > 512:
+                segment = f"[{string_token(label)}]"
+                occurrence = f"{{member:{index}}}" if counts[key] > 1 else ""
+                if max(len(path), len(field)) + len(segment) + len(occurrence) > 512:
                     raise _BoundReached("structured location length limit; remainder unknown")
                 yield from visit(
                     child,
-                    path + segment,
+                    path + segment + occurrence,
                     field + segment,
                     depth + 1,
                     record,
-                    labels + (label,) if isinstance(key, str) else labels,
+                    labels + ((string_token(label) if lexical_json else string_evidence(label)),)
+                    if isinstance(key, str)
+                    else labels,
                 )
         elif isinstance(item, list):
             for index, child in enumerate(item):
@@ -266,7 +284,13 @@ def _walk(
                 order,
                 record,
                 item,
-                _render(item),
+                str(item)
+                if isinstance(item, JsonNumber)
+                else string_token(item)
+                if lexical_json and isinstance(item, str)
+                else string_evidence(item)
+                if isinstance(item, str)
+                else _render(item),
                 HEADING_PATH_SEPARATOR.join(labels),
                 labels,
             )
@@ -306,7 +330,6 @@ def _json_guard(text: str, limits: FactLimits) -> int:
 
 def _native(path: Path, limits: FactLimits, limitations: list[str]) -> Iterator[SourceFact]:
     import csv
-    import json
     import tomllib
 
     suffix = path.suffix.lower()
@@ -348,7 +371,9 @@ def _native(path: Path, limits: FactLimits, limitations: list[str]) -> Iterator[
                 if not line.strip():
                     continue
                 _json_guard(line, limits)
-                for fact in _walk(json.loads(line), limits, f"line:{index + 1}", order):
+                for fact in _walk(
+                    loads(line), limits, f"line:{index + 1}", order, lexical_json=True
+                ):
                     if order >= limits.max_parse_nodes:
                         raise _BoundReached("JSONL fact limit reached; remainder unknown")
                     yield fact
@@ -361,7 +386,7 @@ def _native(path: Path, limits: FactLimits, limitations: list[str]) -> Iterator[
         return
     if suffix == ".json":
         _json_guard(text, limits)
-        data = json.loads(text)
+        data = loads(text)
     else:
         import yaml
 
@@ -413,7 +438,7 @@ def _native(path: Path, limits: FactLimits, limitations: list[str]) -> Iterator[
             scalar_spans = _toml_guard(text, limits)
             data = tomllib.loads(text)
     order = 0
-    for fact in _walk(data, limits):
+    for fact in _walk(data, limits, lexical_json=suffix == ".json"):
         yield fact
         order = fact.order + 1
     if suffix in {".yaml", ".yml", ".toml"}:

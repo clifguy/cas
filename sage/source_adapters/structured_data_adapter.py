@@ -14,9 +14,11 @@ A record is a member of a container whose members are all containers: an
 object in an array of objects, a table in a map of tables. A container with any
 scalar member is a record's own body and stays together.
 
-Parsing the projection yields the data parsing the source does. JSON is
-re-emitted, since it carries no comments to lose, which also gives minified
-JSON the line structure a division needs. YAML and TOML keep their text,
+JSON uses ordered member occurrences and lexical number tokens: projection
+never passes through a dict or binary float. String escapes decode to searchable
+Unicode (unpaired surrogates remain escaped); re-emission changes only whitespace
+and equivalent string-escape spelling. This gives minified JSON useful record
+boundaries without dropping duplicates or rounding numbers. YAML and TOML keep their text,
 comments included, and gain only blank lines; the result is re-parsed, and a
 blank line that would change the data is not made, while the others stand.
 
@@ -68,6 +70,7 @@ from sage.source_adapters.base import (
     discovery_configuration,
     extract_adr_id_from_filename,
 )
+from sage.source_adapters.json_lexical import JsonNumber, JsonObject, loads, string_token
 
 _JSON = ".json"
 _JSON_LINES = ".jsonl"
@@ -94,7 +97,7 @@ _INDENT = "  "
 
 class StructuredDataAdapter(SourceAdapter):
     NATIVE_FACTS = True
-    VERSION = "0.3.0"
+    VERSION = "0.4.0"
     EXTENSIONS = [_JSON, _JSON_LINES, *_YAML, _TOML, _XML, *_DELIMITERS]
 
     async def project(self, source_path: Path, config: dict | None = None) -> ProjectionResult:
@@ -153,11 +156,11 @@ class StructuredDataAdapter(SourceAdapter):
 def _project(suffix: str, source: str) -> tuple[object, str]:
     """The parsed data of ``source`` and its projection text."""
     if suffix == _JSON:
-        data = json.loads(source)
+        data = loads(source)
         return data, _emit_json(data, 0) + "\n"
     if suffix == _JSON_LINES:
         lines = [line.strip() for line in source.splitlines() if line.strip()]
-        records = [json.loads(line) for line in lines]
+        records = [loads(line) for line in lines]
         return records, "\n\n".join(lines) + "\n"
     if suffix in _YAML:
         documents = list(yaml.safe_load_all(source))
@@ -173,25 +176,28 @@ def _project(suffix: str, source: str) -> tuple[object, str]:
 
 def _separated(members: list) -> bool:
     """Whether a blank line goes between ``members``: every one is a container."""
-    return bool(members) and all(isinstance(member, (dict, list)) for member in members)
+    return bool(members) and all(isinstance(member, (dict, list, JsonObject)) for member in members)
 
 
 def _emit_json(value: object, depth: int) -> str:
     """``value`` as indented JSON, with a blank line between the members of a
     container whose members are all containers."""
-    if isinstance(value, dict) and value:
+    if isinstance(value, JsonNumber):
+        return str(value)
+    if isinstance(value, str):
+        return string_token(value)
+    if isinstance(value, JsonObject) and value.members:
         opener, closer = "{", "}"
-        members = list(value.values())
+        members = [item for _key, item in value.members]
         rendered = [
-            f"{json.dumps(key, ensure_ascii=False)}: {_emit_json(item, depth + 1)}"
-            for key, item in value.items()
+            f"{string_token(key)}: {_emit_json(item, depth + 1)}" for key, item in value.members
         ]
     elif isinstance(value, list) and value:
         opener, closer = "[", "]"
         members = value
         rendered = [_emit_json(item, depth + 1) for item in value]
     else:
-        return json.dumps(value, ensure_ascii=False)
+        return "{}" if isinstance(value, JsonObject) else json.dumps(value, ensure_ascii=False)
     inner = _INDENT * (depth + 1)
     separator = (",\n\n" if _separated(members) else ",\n") + inner
     return f"{opener}\n{inner}{separator.join(rendered)}\n{_INDENT * depth}{closer}"
@@ -632,6 +638,26 @@ def _title(data: object, stem: str) -> str:
         for candidate in (attribute, " ".join(_all_text(child).split()) if child else ""):
             if candidate.strip():
                 return candidate.strip()
+        return stem
+    if isinstance(data, JsonObject):
+        # Preserve historical last-occurrence metadata precedence without a map.
+        def last_member(container: JsonObject, name: str) -> object:
+            return next((value for key, value in reversed(container.members) if key == name), None)
+
+        info = last_member(data, "info")
+        for candidate in (
+            last_member(data, "title"),
+            last_member(data, "name"),
+            last_member(info, "title") if isinstance(info, JsonObject) else None,
+        ):
+            if (
+                isinstance(candidate, str)
+                and not isinstance(candidate, JsonNumber)
+                and candidate.strip()
+            ):
+                from sage.source_adapters.json_lexical import string_evidence
+
+                return string_evidence(candidate.strip())
         return stem
     if isinstance(data, dict):
         info = data.get("info")
