@@ -706,3 +706,36 @@ async def test_array_and_data_table_formula_attributes_are_readable_not_authored
         "dataTable" not in p.keyword_content and "dt2D" not in p.keyword_content
         for p in result.passages
     )
+
+
+@pytest.mark.parametrize("hidden", ["1", "true", "0", "false", None])
+async def test_hidden_dimension_xml_boolean_spellings(tmp_path, hidden):
+    """Both OOXML true spellings preserve visibility; false/absent stay visible."""
+    path = tmp_path / "visibility.xlsx"
+    wb = Workbook()
+    ws = wb.active
+    ws["B9"] = "visibility-authored-cell"
+    ws.row_dimensions[9].hidden = True
+    ws.column_dimensions["B"].hidden = True
+    wb.save(path)
+    with zipfile.ZipFile(path) as archive:
+        members = {name: archive.read(name) for name in archive.namelist()}
+    attribute = f' hidden="{hidden}"'.encode() if hidden is not None else b""
+    sheet_xml = members["xl/worksheets/sheet1.xml"]
+    assert sheet_xml.count(b' hidden="1"') == 2
+    members["xl/worksheets/sheet1.xml"] = sheet_xml.replace(b' hidden="1"', attribute)
+    rewritten = members["xl/worksheets/sheet1.xml"]
+    assert rewritten.count(attribute) == 2 if attribute else b"hidden=" not in rewritten
+    with zipfile.ZipFile(path, "w") as archive:
+        for name, value in members.items():
+            archive.writestr(name, value)
+    result = await XlsxAdapter().project(path)
+    expected_hidden = hidden in {"1", "true"}
+    rows = ["9"] if expected_hidden else []
+    columns = [("2", "2")] if expected_hidden else []
+    assert result.metadata["hidden_rows"]["Sheet"] == rows
+    assert result.metadata["hidden_columns"]["Sheet"] == columns
+    assert f"hidden rows: {rows}" in result.text
+    assert f"hidden columns: {columns}" in result.text
+    assert "B9 [string]\nvisibility-authored-cell" in result.text
+    assert [p.keyword_content for p in result.passages] == ["visibility-authored-cell"]

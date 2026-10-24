@@ -20,6 +20,11 @@ from sage.source_adapters.base import SourceReadError
 _NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 
 
+def _xml_boolean(value: str | None) -> bool:
+    """Recognize the true lexical values of an OOXML boolean attribute."""
+    return value in {"1", "true"}
+
+
 @dataclass(frozen=True)
 class WorkbookCell:
     sheet: str
@@ -75,11 +80,11 @@ def cells(path: Path, metadata: dict | None = None) -> Iterator[WorkbookCell]:
                     if metadata is not None:
                         if element.tag == _NS + "mergeCell":
                             metadata["merges"][sheet.title].append(element.get("ref"))
-                        elif element.tag == _NS + "col" and element.get("hidden") == "1":
+                        elif element.tag == _NS + "col" and _xml_boolean(element.get("hidden")):
                             metadata["hidden_columns"][sheet.title].append(
                                 (element.get("min"), element.get("max"))
                             )
-                        elif element.tag == _NS + "row" and element.get("hidden") == "1":
+                        elif element.tag == _NS + "row" and _xml_boolean(element.get("hidden")):
                             metadata["hidden_rows"][sheet.title].append(element.get("r"))
                     if element.tag != _NS + "row":
                         continue
