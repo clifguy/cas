@@ -182,10 +182,10 @@ async def test_real_embedding_boundary_records_counts_and_model_tokenization(cap
         assert vectors == [[1.0, 1.0, 1.0], [1.0, 1.0, 1.0]]
         assert row["counts"]["embedding.texts"] == 2
         assert row["counts"]["embedding.tokens"] == 10
-        assert row["stages"]["embedding.admission"]["count"] == 2
-        assert row["stages"]["embedding.executor"]["count"] == 2
-        assert row["stages"]["embedding.tokenize"]["count"] == 2
-        assert row["stages"]["embedding.encode"]["count"] == 2
+        assert row["stages"]["embedding.admission"]["count"] == 1
+        assert row["stages"]["embedding.executor"]["count"] == 1
+        assert row["stages"]["embedding.tokenize"]["count"] == 1
+        assert row["stages"]["embedding.encode"]["count"] == 1
         assert hook_name not in provider._model.__dict__
         assert row["ranges"]["embedding.token_length"] == {"minimum": 5, "maximum": 5}
     finally:

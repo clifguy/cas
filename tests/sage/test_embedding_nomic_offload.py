@@ -211,7 +211,8 @@ async def test_bulk_yields_to_interactive_and_preserves_content(provider):
     assert await bulk == [[float(i)] for i in range(12)]
     flattened = [text for batch in calls for text in batch]
     assert flattened.index("query:99") < flattened.index("bulk:11")
-    assert all(len(batch) <= 1 for batch in calls)
+    assert all(len(batch) <= 2 for batch in calls)
+    assert calls[0] == ["bulk:0", "bulk:1"]
 
 
 async def test_cancelled_bulk_drops_remaining_work_and_recovers(provider):
@@ -238,7 +239,7 @@ async def test_cancelled_bulk_drops_remaining_work_and_recovers(provider):
     query = asyncio.create_task(provider.embed(["query"]))
     release.set()
     assert await asyncio.wait_for(query, 1) == [[0.0]]
-    assert calls.count("bulk") == 1
+    assert calls.count("bulk") == 2
     with pytest.raises(ValueError, match="inference failed"):
         await provider.embed(["fail"])
     assert await provider.embed(["recovered"]) == [[0.0]]
@@ -376,3 +377,136 @@ def test_closed_loop_abandoned_inference_does_not_poison_or_overadmit(provider):
     finally:
         release.set()
     assert calls == ["old-failure"] + ["new"] * 8
+
+
+async def test_eligible_pairs_are_actual_ordered_model_calls(provider):
+    calls = []
+
+    class Model:
+        def encode(self, texts, **kwargs):
+            calls.append(list(texts))
+            return np.array([[float(text.split(":")[-1])] for text in texts])
+
+    provider._model = Model()
+    assert await provider.embed(["text:0", "text:1", "text:2"]) == [[0.0], [1.0], [2.0]]
+    assert calls == [["text:0", "text:1"], ["text:2"]]
+
+
+@pytest.mark.parametrize(
+    "bound,limit,texts",
+    [
+        ("MAX_BATCH_RAW_BYTES", 9, ["a" * 5, "b" * 5]),
+        ("MAX_BATCH_EFFECTIVE_TOKENS", 13, ["a" * 5, "b" * 5]),
+        ("MAX_BATCH_PADDED_TOKENS", 17, ["a", "b" * 7]),
+        ("MAX_BATCH_ATTENTION_WORK", 161, ["a", "b" * 7]),
+    ],
+)
+async def test_each_packing_bound_splits_without_content_changes(
+    provider, monkeypatch, bound, limit, texts
+):
+    import sage.adapters.embedding_nomic as module
+
+    monkeypatch.setattr(module, bound, limit)
+    calls = []
+
+    class Model:
+        def encode(self, values, **kwargs):
+            calls.append(list(values))
+            return np.array([[float(texts.index(text))] for text in values])
+
+    provider._model = Model()
+    assert await provider.embed(texts) == [[0.0], [1.0]]
+    assert calls == [[texts[0]], [texts[1]]]
+
+
+@pytest.mark.parametrize(
+    "texts",
+    [
+        ["x" * 32768, "short"],
+        ["short", "語" * 1000, "end"],
+        ["a" * 1022, "b" * 1022],
+        ["a" * 1023, "b" * 1022],
+    ],
+)
+async def test_default_packing_bounds_and_associations(provider, texts):
+    calls = []
+
+    class Model:
+        def encode(self, values, **kwargs):
+            calls.append(list(values))
+            return np.array([[float(texts.index(text))] for text in values])
+
+    provider._model = Model()
+    assert await provider.embed(texts) == [[float(i)] for i in range(len(texts))]
+    assert sorted(s for batch in calls for s in batch) == sorted(texts)
+    for batch in calls:
+        if len(batch) == 2:
+            raw = sum(len(t.encode("utf-8")) for t in batch)
+            lengths = [min(len(t.encode("utf-8")) + 2, 2048) for t in batch]
+            assert raw <= 4096
+            assert sum(lengths) <= 2048
+            assert 2 * max(lengths) <= 3072
+            assert 2 * max(lengths) ** 2 <= 2048**2
+    if texts == ["a" * 1022, "b" * 1022]:
+        assert len(calls) == 1
+    elif texts[0] == "short":
+        assert calls == [[texts[0], texts[2]], [texts[1]]]
+    else:
+        assert all(len(batch) == 1 for batch in calls)
+
+
+@pytest.mark.parametrize(
+    "texts,expected_indices",
+    [
+        (["short:0", "long:1" + "x" * 4000, "short:2", "long:3" + "x" * 4000], [[0, 2], [1], [3]]),
+        (
+            ["first"] + ["long:" + str(i) + "x" * 4000 for i in range(1, 8)] + ["ninth"],
+            [[i] for i in range(9)],
+        ),
+        (
+            ["first"] + ["long:" + str(i) + "x" * 4000 for i in range(1, 7)] + ["eighth", "ninth"],
+            [[0, 7]] + [[i] for i in range(1, 7)] + [[8]],
+        ),
+        (["tie:a", "tie:b", "tie:a", "語:3", "odd:4"], [[0, 1], [2, 3], [4]]),
+    ],
+)
+async def test_lookahead_preserves_original_indices_and_oldest_progress(
+    provider, texts, expected_indices
+):
+    calls = []
+
+    class Model:
+        def encode(self, values, **kwargs):
+            calls.append(list(values))
+            return np.array([[float(len(text)), float(sum(map(ord, text)))] for text in values])
+
+    provider._model = Model()
+    expected = [[float(len(text)), float(sum(map(ord, text)))] for text in texts]
+    assert await provider.embed(texts) == expected
+    assert calls == [[texts[index] for index in indices] for indices in expected_indices]
+
+
+async def test_lookahead_cancellation_stops_after_started_pair(provider):
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+    texts = ["first", "long" + "x" * 4000, "partner", "later"]
+
+    class Model:
+        def encode(self, values, **kwargs):
+            calls.append(list(values))
+            entered.set()
+            release.wait(2)
+            return np.zeros((len(values), 1))
+
+    provider._model = Model()
+    task = asyncio.create_task(provider.embed(texts))
+    try:
+        await asyncio.wait_for(_wait_until(entered.is_set), 1)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    finally:
+        release.set()
+    assert await provider.embed(["recovered"]) == [[0.0]]
+    assert calls == [["first", "partner"], ["recovered"]]
