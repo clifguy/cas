@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Inventory and version tracking for the CAS Formal Substrate (CAS-ADR-008). Each artifact's version is the release MAJOR.MINOR in which it last changed, or null until a release first publishes it; no counter is assigned when a change is authored. revision_history is assembled per release: a change adds a numberless change record under changes/unreleased/, and the release step folds every unreleased record into one entry for the new release, newest first. Entries written before this scheme, which carry a substrate counter in their version field, follow the release entries and are kept verbatim.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-10-21",
+  "manifest_date": "2026-10-24",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -18,7 +18,7 @@
       "path": "sage/vault_config.schema.json",
       "title": "SAGE Vault Configuration",
       "status": "draft",
-      "version": "3.2",
+      "version": "3.5",
       "role": "Root schema for SAGE vault configuration. A domain instantiation produces a single YAML file that validates against this schema.",
       "instantiation_checklist_items": [
         1
@@ -84,7 +84,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "3.4",
+      "version": "3.5",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -92,7 +92,7 @@
       "path": "cas_app_api.openapi.yaml",
       "title": "CAS Application API",
       "status": "draft",
-      "version": "3.4",
+      "version": "3.5",
       "role": "OpenAPI 3.1.0 specification for the CAS Application backend HTTP surface (mounted at the /app prefix). Defines directory scan and batch-ingest endpoints used by the CAS Application UI. Architecturally distinct from the SAGE Core API; the two specs are validated together by tests/sage/test_openapi_conformance.py and must respect URL-prefix boundaries (sage_core_api owns /sage_vaults/*, cas_app_api owns /app/*).",
       "instantiation_checklist_items": []
     },
@@ -100,7 +100,7 @@
       "path": "sage/sage_mcp_tools.catalog.json",
       "title": "SAGE MCP Tool Catalog",
       "status": "draft",
-      "version": "3.4",
+      "version": "3.5",
       "role": "The tools the SAGE MCP surfaces publish through tools/list: name, input and output schemas, annotations, and description, for the ordinary surface (/mcp) and the maintenance surface (/mcp_maint). Generated from the servers by scripts/dump_mcp_catalog.py and held to them by a test gate; the contract comparison reads it as the MCP half of the published contract.",
       "instantiation_checklist_items": []
     },
@@ -190,13 +190,112 @@
       "path": "sage/abstraction_evidence.schema.json",
       "title": "Bounded abstraction durable evidence",
       "status": "draft",
-      "version": null,
+      "version": "3.5",
       "role": "Internal authored-evidence package and source-scoped generation reservation storage contract.",
       "instantiation_checklist_items": []
     }
   ],
   "deferred": [],
   "revision_history": [
+    {
+      "release": "3.5",
+      "date": "2026-10-24",
+      "changes": [
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation",
+            "operator-adaptation"
+          ],
+          "summary": "Generate descriptions from bounded authored evidence with deterministic selected-text and structural-breadth sizing, durable call/input/output reservations and independent coverage publication. Add explicit served abstract generation identity. The data-integrity exemption withdraws source-wide generation and unverified legacy passage reconstruction: those paths can silently attribute sampled or generated content to the complete retained source. Legacy configuration keys remain accepted with explicit bounded clamps and warnings.",
+          "for_callers": "Generated abstracts describe supplied selected evidence, not a full-source assessment. Inspect abstraction evidence separately from pipeline outcome and compare its generation with served_abstraction_generation when a replacement fails. The data-integrity exemption prevents unverified legacy evidence from becoming a generated description; reprocess retained source to establish evidence. Existing oversized sizing settings remain accepted with bounded clamps and warnings. Operators apply the idempotent vault schema migration to add durable abstraction evidence and reservation state.",
+          "exemption": {
+            "kind": "data-integrity",
+            "reason": "Keeping full-projection generation or unverified legacy passage reconstruction alongside bounded evidence would permit descriptions to claim an unchanged source scope after provider truncation or to attribute stale/generated content to authored evidence. Such wrong-source coverage cannot coexist with trustworthy provenance."
+          }
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation"
+          ],
+          "summary": "Adds shared deterministic bounded source inspection, authored evidence selection, compressed associations and fenced inspection publication. Applies source-byte, depth, node, expansion and table-work guards before projection materializers. The security-exposure exemption permits immediate refusal of inputs beyond these limits: previously accepted tiny YAML merge sources amplify native materialization work exponentially, and nested JSON amplifies projected text.",
+          "for_callers": "New ingest and recompute attempts report established inspection before inference. Configure discovery_selection and discovery_facts through existing request configuration or vault adapter defaults. Source and parser-work ceilings can now refuse previously accepted inputs with source_unreadable; the security-exposure exemption applies immediately to prevent availability/resource-exhaustion attacks. Existing readable output within those limits, keyword indexing and inference inputs remain unchanged. Selection tokens use an identified byte-level tokenizer, independently of production embedding-model token windows.",
+          "exemption": {
+            "kind": "security-exposure",
+            "reason": "Previously unbounded structured materializers permit availability/resource exhaustion from attacker-controlled source syntax. A controlled accepted 387-byte YAML merge source produces 87,381 flattened mapping pairs, versus 341 pairs from a 203-byte shallower source; 18,657 bytes of nested JSON produce 630,114 projected characters. Preallocation source/depth/node/expansion guards close these reachable mechanisms while retaining bounded benign aliases."
+          }
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "Adds opt-in hybrid discovery descriptions, separate abstraction quality metadata, bounded private candidate diagnostics and accepted-calibration configuration guards.",
+          "for_callers": "Document processing metadata can report unknown, recording, class-screened, extractive fallback or unavailable description quality independently of evidence coverage. Hybrid mode defaults off; no additional withholding classes are enabled."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation",
+            "operator-adaptation"
+          ],
+          "summary": "Preserve JSON member occurrences and numeric lexemes in projection and native evidence. Strict JSON refuses nonstandard NaN and Infinity under the data-integrity exemption; existing lossy projections require explicitly authorized reprocessing.",
+          "for_callers": "Newly processed JSON preserves duplicate members and exact numeric spelling in readable and keyword-indexed passages. NaN and Infinity are refused under the data-integrity exemption. Operators must explicitly reprocess selected historical records to repair older projections; deployment does not relabel them.",
+          "exemption": {
+            "kind": "data-integrity",
+            "reason": "Permissive nonstandard constants can produce invalid JSON projections."
+          }
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "Add system-owned processing coverage and fenced transactional publication of served artifacts. Provision an optional coverage column without backfilling historical completeness.",
+          "for_callers": "Document and discovery reads now report independent source, inspection, projection, keyword, embedding and abstraction evidence coverage, including unknown scope. Normal startup provisioning adds the optional storage column automatically without historical completeness backfill."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "Bounded abstraction may describe explicitly supplied deterministic observations with their inspected scope and exactness. Preserve the authored attestation baseline independently of added observations and retain existing repair limits.",
+          "for_callers": "Generated discovery descriptions may include scoped SAGE-computed measurements. Measurements and descriptions remain derived and cannot independently admit a search result; successful generation does not establish factual correctness."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation",
+            "operator-adaptation"
+          ],
+          "summary": "Preserve readable authored passages and complete keyword indexing independently of bounded incremental embedding. Add explicit passage population counts, durable source allowances, opt-in keyword limits and authored-vector provenance. The data-integrity exemption removes derived-only semantic admission: those vectors could otherwise report a source match without authored evidence.",
+          "for_callers": "Reads and keyword discovery remain available after partial embedding failures; inspect processing coverage and the separate available, keyword indexed, embedded and matched passage counts. Keyword indexing remains complete by default. Legacy ambiguous document vectors are retained but cannot independently admit semantic hits under the data-integrity exemption; reprocess to establish authored evidence. Operators run the idempotent vault migration to rebuild the keyword expression and use an explicit recorded decision to expand a consumed source scope.",
+          "exemption": {
+            "kind": "data-integrity",
+            "reason": "Continuing to independently admit documents using vectors composed from generated abstracts or filename prose permits a wrong-source match. Preserving that admission beside authored-only admission would retain the integrity defect; derived orientation still ranks already-qualified results."
+          }
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation",
+            "operator-adaptation"
+          ],
+          "summary": "Full sparse authored-cell XLSX projection and keyword coverage replace preview-only canonical content under the data-integrity exemption. A nullable passage keyword evidence column separates generated orientation and unverified formula caches from authored matches; existing vault keyword vectors require migration.",
+          "for_callers": "XLSX projection includes all supported authored cells by default, including hidden sheets and distant sparse cells; preview_rows remains accepted but no longer truncates canonical reads. This immediate correction uses the data-integrity exemption because preview-only reads silently omitted authored data. max_sheets remains an explicit limited-coverage cap. Operators must run migrate_vault to rebuild existing keyword vectors before processing new XLSX projections; this does not reprocess historical preview records, which require an explicit reprocessing decision.",
+          "exemption": {
+            "kind": "data-integrity",
+            "reason": "Preview-only canonical reads silently omitted authored cells and could substitute formula caches for authored formulas."
+          }
+        }
+      ]
+    },
     {
       "release": "3.4",
       "date": "2026-10-21",
