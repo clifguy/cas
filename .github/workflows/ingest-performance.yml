@@ -70,6 +70,7 @@ jobs:
       - name: Install locked controller dependencies
         run: uv sync --locked --extra test
       - name: Materialize reviewed specification without shell interpretation
+        id: specification
         run: |
           .venv/bin/python - <<'PY'
           import hashlib, json, os
@@ -88,6 +89,8 @@ jobs:
                   escaped = value.replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
                   print('::add-mask::' + escaped)
           mask(json.loads(raw))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as handle:
+              handle.write("expiry_only=" + str(json.loads(raw).get("expiry_only") is True).lower() + "\n")
           bootstrap_raw = os.environ['PERF_BOOTSTRAP_JSON'].encode()
           if hashlib.sha256(bootstrap_raw).hexdigest() != os.environ['PERF_BOOTSTRAP_SHA256']:
               raise SystemExit('bootstrap receipt digest differs')
@@ -153,7 +156,7 @@ jobs:
       - name: Delete only verified trial resources after export
         env:
           PERF_EXPORT_RECEIPT_SHA256: ${{ steps.export.outputs.receipt_sha256 }}
-        if: always() && steps.export.outcome == 'success' && steps.archive.outcome == 'success'
+        if: always() && steps.export.outcome == 'success' && steps.archive.outcome == 'success' && steps.specification.outputs.expiry_only != 'true'
         run: |
           if [ -f "$PERF_OUTPUT/export-receipt.json" ]; then
             .venv/bin/python -m deploy.performance_trial cleanup \

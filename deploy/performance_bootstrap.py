@@ -14,6 +14,7 @@ import json
 import os
 import re
 import uuid
+from datetime import UTC, datetime
 from pathlib import Path
 
 CONTRIBUTOR = "b24988ac-6180-42a0-ab88-20f7382dd24c"
@@ -78,11 +79,31 @@ def role_definitions(plan):
     sub = "/subscriptions/" + plan["subscription_id"]
     reference = group_scope(plan, plan["source"]["resource_group"])
     definitions = []
-    for name, actions, scopes in [
+    role_specs = [
         ("orchestrator", DEPLOY_ACTIONS, [sub]),
         ("reference-reader", REFERENCE_ACTIONS, [reference]),
         ("quota-reader", QUOTA_ACTIONS, [sub]),
-    ]:
+    ]
+    if plan.get("phase") == "embedding_canary":
+        role_specs = [
+            (
+                "embedding-orchestrator",
+                sorted(
+                    set(
+                        DEPLOY_ACTIONS
+                        + [
+                            "Microsoft.App/locations/usages/read",
+                            "Microsoft.Authorization/roleAssignments/read",
+                            "Microsoft.Authorization/roleDefinitions/read",
+                            "Microsoft.Resources/subscriptions/read",
+                            "Microsoft.Resources/subscriptions/resourceGroups/read",
+                        ]
+                    )
+                ),
+                [sub],
+            )
+        ]
+    for name, actions, scopes in role_specs:
         identity = str(uuid.uuid5(uuid.NAMESPACE_URL, sub + "/cas-performance/" + name))
         definitions.append(
             {
@@ -104,33 +125,60 @@ def expected_assignments(plan, principal):
     if not re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", principal):
         raise ValueError("invalid experiment principal")
     sub = "/subscriptions/" + plan["subscription_id"]
-    roles = role_definitions(plan)
-    app = (
-        group_scope(plan, plan["source"]["resource_group"])
-        + "/providers/Microsoft.App/containerApps/"
-        + plan["source"]["app"]
-    )
-    bindings = [
-        (sub, roles[0]["Id"], None),
-        (sub, roles[2]["Id"], None),
-        (group_scope(plan, plan["source"]["resource_group"]), roles[0]["Id"], None),
-        (app, roles[1]["Id"], None),
-        (plan["binding"]["registry_id"], READER, None),
-        (plan["binding"]["registry_id"], ACR, None),
-        (plan["binding"]["registry_id"], RBAC, condition([ACR])),
-        (plan["binding"]["key_vault_id"], READER, None),
-        (
-            plan["binding"]["key_vault_id"] + "/secrets/anthropic-api-key",
-            RBAC,
-            condition([VAULT_USER]),
-        ),
-    ]
-    for group, permitted in [
-        (plan["resource_group"], [CONTRIBUTOR]),
-        (plan["controller_group"], [BLOB]),
-    ]:
-        scope = group_scope(plan, group)
-        bindings.extend([(scope, CONTRIBUTOR, None), (scope, RBAC, condition(permitted))])
+    if plan.get("phase") == "embedding_canary":
+        orchestration = role_definitions(plan)[0]["Id"]
+        bindings = [
+            (sub, orchestration, None),
+            (group_scope(plan, plan["source"]["resource_group"]), orchestration, None),
+            (plan["binding"]["registry_id"], READER, None),
+            (plan["binding"]["registry_id"], ACR, None),
+            (plan["binding"]["registry_id"], RBAC, condition([ACR])),
+        ]
+        proof = plan.get("expiry_proof")
+        if proof:
+            run = proof.get("run_id", "")
+            if not re.fullmatch(r"[a-z][a-z0-9-]{2,19}", run) or run == plan["run_id"]:
+                raise ValueError("invalid distinct expiry rehearsal identity")
+            bindings.append(
+                (
+                    group_scope(plan, "rg-ingest-perf-control-" + run)
+                    + "/providers/Microsoft.Automation/automationAccounts/aa-perf-"
+                    + run,
+                    READER,
+                    None,
+                )
+            )
+        for key, permitted in (("resource_group", [CONTRIBUTOR]), ("controller_group", [BLOB])):
+            scope = group_scope(plan, plan[key])
+            bindings.extend([(scope, CONTRIBUTOR, None), (scope, RBAC, condition(permitted))])
+    else:
+        roles = role_definitions(plan)
+        app = (
+            group_scope(plan, plan["source"]["resource_group"])
+            + "/providers/Microsoft.App/containerApps/"
+            + plan["source"]["app"]
+        )
+        bindings = [
+            (sub, roles[0]["Id"], None),
+            (sub, roles[2]["Id"], None),
+            (group_scope(plan, plan["source"]["resource_group"]), roles[0]["Id"], None),
+            (app, roles[1]["Id"], None),
+            (plan["binding"]["registry_id"], READER, None),
+            (plan["binding"]["registry_id"], ACR, None),
+            (plan["binding"]["registry_id"], RBAC, condition([ACR])),
+            (plan["binding"]["key_vault_id"], READER, None),
+            (
+                plan["binding"]["key_vault_id"] + "/secrets/anthropic-api-key",
+                RBAC,
+                condition([VAULT_USER]),
+            ),
+        ]
+        for group, permitted in [
+            (plan["resource_group"], [CONTRIBUTOR]),
+            (plan["controller_group"], [BLOB]),
+        ]:
+            scope = group_scope(plan, group)
+            bindings.extend([(scope, CONTRIBUTOR, None), (scope, RBAC, condition(permitted))])
     result = []
     for scope, role, constraint in bindings:
         name = str(uuid.uuid5(uuid.NAMESPACE_URL, scope + "/" + principal + "/" + role))
@@ -165,7 +213,9 @@ def assignment_shape(row):
     }
 
 
-def validate_receipt(receipt, spec, spec_sha, environment, principal, *, now=None):
+def validate_receipt(
+    receipt, spec, spec_sha, environment, principal, *, now=None, allow_expired=False
+):
     from deploy.performance_trial import validate_plan
 
     if (
@@ -178,7 +228,7 @@ def validate_receipt(receipt, spec, spec_sha, environment, principal, *, now=Non
         raise ValueError("bootstrap receipt identity or readiness differs")
     expected = json.loads(json.dumps(spec))
     expected.update({k: receipt["plan"][k] for k in ("created_at", "expires_at")})
-    plan = validate_plan(expected, now=now)
+    plan = validate_plan(expected, now=now, allow_expired=allow_expired)
     if receipt["plan"] != plan or receipt["assignments"] != expected_assignments(plan, principal):
         raise ValueError("bootstrap plan or assignment inventory differs")
     return plan
@@ -188,8 +238,8 @@ def verify_groups(plan, az, *, empty):
     from deploy.performance_trial import owned_inventory
 
     for group in (plan["resource_group"], plan["controller_group"]):
-        row = az("group", "show", "-n", group)
-        resources = az("resource", "list", "-g", group)
+        row = az("group", "show", "--subscription", plan["subscription_id"], "-n", group)
+        resources = az("resource", "list", "--subscription", plan["subscription_id"], "-g", group)
         owned_inventory({**plan, "resource_group": group}, row, resources)
         if row.get("location", "").casefold() != plan["location"].casefold() or (
             empty and resources
@@ -253,11 +303,22 @@ def verify_access(plan, principal, az, *, empty_groups):
     expected = expected_assignments(plan, principal)
     sub = "/subscriptions/" + plan["subscription_id"]
     # Exhaustive --all plus ancestor inventory; do not infer scope from names.
-    rows = az("role", "assignment", "list", "--all", "--fill-principal-name", "false")
+    rows = az(
+        "role",
+        "assignment",
+        "list",
+        "--subscription",
+        plan["subscription_id"],
+        "--all",
+        "--fill-principal-name",
+        "false",
+    )
     inherited = az(
         "role",
         "assignment",
         "list",
+        "--subscription",
+        plan["subscription_id"],
         "--scope",
         sub,
         "--include-inherited",
@@ -289,7 +350,15 @@ def verify_access(plan, principal, az, *, empty_groups):
         if direct != wanted_direct:
             raise ValueError("unexpected bootstrap group role assignment")
     for definition in role_definitions(plan):
-        rows = az("role", "definition", "list", "--name", definition["Id"])
+        rows = az(
+            "role",
+            "definition",
+            "list",
+            "--subscription",
+            plan["subscription_id"],
+            "--name",
+            definition["Id"],
+        )
         if len(rows) != 1:
             raise ValueError("bootstrap custom role unresolved")
         r = rows[0]
@@ -342,7 +411,10 @@ def bootstrap(
         or account["tenantId"] != plan["binding"]["tenant_id"]
     ):
         raise ValueError("bootstrap account differs")
-    if any(az("group", "exists", "-n", plan[k]) for k in ("resource_group", "controller_group")):
+    if any(
+        az("group", "exists", "--subscription", plan["subscription_id"], "-n", plan[k])
+        for k in ("resource_group", "controller_group")
+    ):
         raise ValueError("unreceipted existing group")
     principal_row = az("ad", "sp", "show", "--id", principal)
     if (
@@ -376,6 +448,8 @@ def bootstrap(
         az(
             "group",
             "create",
+            "--subscription",
+            plan["subscription_id"],
             "-n",
             group,
             "-l",
@@ -476,11 +550,93 @@ def materialize(
     return plan
 
 
+def cleanup_operator(
+    receipt_path,
+    approved_bootstrap_sha,
+    spec_path,
+    spec_sha,
+    environment,
+    principal,
+    output,
+    az,
+    rest,
+):
+    """Revoke only the approved receipt's exact grants after resource absence."""
+    from deploy.performance_trial import RemoteError, write_json
+
+    raw = receipt_path.read_bytes()
+    spec_raw = spec_path.read_bytes()
+    if (
+        hashlib.sha256(raw).hexdigest() != approved_bootstrap_sha
+        or hashlib.sha256(spec_raw).hexdigest() != spec_sha
+    ):
+        raise ValueError("operator cleanup specification/receipt digest differs")
+    receipt = json.loads(raw)
+    plan = validate_receipt(
+        receipt, json.loads(spec_raw), spec_sha, environment, principal, allow_expired=True
+    )
+    for key in ("resource_group", "controller_group"):
+        if az("group", "exists", "--subscription", plan["subscription_id"], "-n", plan[key]):
+            raise ValueError(
+                "finish retained evidence and resource cleanup before operator grant removal"
+            )
+    expected = expected_assignments(plan, receipt["operator_principal"])
+    if (
+        receipt.get("plan") != plan
+        or receipt.get("assignments") != expected
+        or receipt.get("status") != "ready"
+    ):
+        raise ValueError("bootstrap grants differ; reconcile without broad revocation")
+    output.mkdir(parents=True, exist_ok=True)
+    intent = {
+        "spec_sha256": spec_sha,
+        "bootstrap_sha256": approved_bootstrap_sha,
+        "original_created_at": plan["created_at"],
+        "original_expires_at": plan["expires_at"],
+        "assignment_ids": [row["id"] for row in expected],
+    }
+    intent_path = output / "operator-cleanup-intent.json"
+    if intent_path.exists() and json.loads(intent_path.read_text()) != intent:
+        raise ValueError("operator cleanup intent differs")
+    write_json(intent_path, intent)
+    for assignment in expected:
+        rid = assignment["id"]
+        try:
+            row = rest.arm("GET", rid, api="2022-04-01").json()
+        except RemoteError as error:
+            if error.status == 404:
+                continue
+            raise
+        live = {
+            "id": row["id"],
+            **row["properties"],
+            "scope": rid.rsplit("/providers/Microsoft.Authorization/roleAssignments/", 1)[0],
+        }
+        if assignment_shape(live) != assignment:
+            raise ValueError("operator grant drift; refuse revocation")
+        rest.arm("DELETE", rid, api="2022-04-01")
+        try:
+            rest.arm("GET", rid, api="2022-04-01")
+        except RemoteError as error:
+            if error.status == 404:
+                continue
+            raise
+        raise ValueError("operator grant deletion unconfirmed")
+    write_json(
+        output / "operator-grants-revoked.json",
+        {
+            "assignment_ids": [r["id"] for r in expected],
+            "absent": True,
+            "verified_at": datetime.now(UTC).isoformat(),
+        },
+    )
+
+
 def main():
     from deploy.performance_trial import Azure
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=["bootstrap", "handoff"])
+    parser.add_argument("operation", choices=["bootstrap", "handoff", "cleanup"])
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--approved-bootstrap-sha256")
     parser.add_argument("--spec", type=Path, required=True)
@@ -489,6 +645,31 @@ def main():
     parser.add_argument("--principal", required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.operation == "cleanup":
+        from deploy.performance_trial import Rest
+
+        if (
+            os.environ.get("GITHUB_ACTIONS")
+            or not args.receipt
+            or not args.approved_bootstrap_sha256
+        ):
+            raise ValueError("exact operator receipt cleanup requires the human operator, not CI")
+        cleanup_operator(
+            args.receipt,
+            args.approved_bootstrap_sha256,
+            args.spec,
+            args.approved_sha256,
+            args.environment,
+            args.principal,
+            args.output,
+            Azure(),
+            Rest(),
+        )
+        print(
+            "Exact operator grant absence verified; "
+            "federation/environment cleanup remains separate."
+        )
+        return
     if args.operation == "handoff":
         import base64
 
