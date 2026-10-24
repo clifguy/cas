@@ -512,7 +512,7 @@ async def test_native_adapter_entry_refuses_before_materializer(tmp_path, monkey
     target = structured.json if suffix == "json" else xlsx
     monkeypatch.setattr(
         target,
-        "loads" if suffix == "json" else "load_workbook",
+        "loads" if suffix == "json" else "cells",
         lambda *a, **k: pytest.fail("materializer reached"),
     )
     from sage.source_adapters.base import SourceReadError

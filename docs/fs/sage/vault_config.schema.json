@@ -132,7 +132,7 @@
           "preview_rows": {
             "type": "integer",
             "minimum": 1,
-            "description": "For the xlsx adapter: how many data rows per sheet the projection previews."
+            "description": "For the xlsx adapter: accepted for configuration compatibility; canonical projection includes every stored authored cell within parser limits regardless of this value. UI previews may use it as a presentation preference."
           },
           "max_sheets": {
             "type": [
@@ -140,7 +140,7 @@
               "null"
             ],
             "minimum": 1,
-            "description": "For the xlsx adapter: cap on sheets projected from one workbook. Null projects every sheet."
+            "description": "For the xlsx adapter: explicit cap on sheets projected from one workbook, in workbook order. A cap excluding sheets reports limited projection and keyword coverage. Null includes every sheet, including hidden sheets."
           },
           "max_slides": {
             "type": "integer",
