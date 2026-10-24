@@ -212,6 +212,7 @@ ENROLLED: Final[Enrollment] = {
         "DiscoverResponse": "DiscoverResponse",
         "DocTypeEntry": "VaultDocTypeEntry",
         "ProcessingCoverage": "ProcessingCoverage",
+        "AbstractionQuality": "AbstractionQuality",
         "ProcessingIdentity": "ProcessingIdentity",
         "CoverageDimension": "CoverageDimension",
         "CoverageCount": "CoverageCount",

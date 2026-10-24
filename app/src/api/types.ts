@@ -50,7 +50,22 @@ export interface CoverageDimension {
   selection_summary?: SelectionSummary | null;
 }
 
+export interface AbstractionQuality {
+  mode?: 'unknown' | 'recording_generated' | 'screened_generated' | 'extractive_fallback' | 'unavailable';
+  policy?: string | null;
+  generation?: number | null;
+  identity?: ProcessingIdentity | null;
+  checks?: string[];
+  findings?: string[];
+  calibration_refs?: Record<string, string>;
+  measurements?: string[];
+  measurements_limited?: boolean;
+  candidate_sha256?: string | null;
+}
+
 export interface ProcessingCoverage {
+  /** Omitted means unknown historical quality, never screened. */
+  abstraction_quality?: AbstractionQuality;
   served_abstraction_generation?: number | null;
   attempt: number;
   source_retention: CoverageDimension;

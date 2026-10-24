@@ -400,3 +400,55 @@ outside authored passages and matchable document text, and cannot independently
 admit a result. Retained source, readable projection and completed keyword/vector
 work remain usable after abstraction failure. Operators must apply the ordinary
 idempotent vault schema migration for the nullable durable-state column.
+
+## Hybrid description publication
+
+`abstraction.hybrid_description` defaults to false. Enabling it requires the
+companion architecture and contract alignment; existing vaults retain their
+configured abstraction behavior. In hybrid mode the provider receives only
+selected authored evidence. SAGE appends at most eight whole inspected-value
+measurements with region, field, inspected boundary and completeness labels.
+Candidate distinctness and repetition do not establish native value counts.
+Both components share the evidence source and attempt identity.
+
+The final description reserves its entire configured bound before generation.
+UTF-8 bytes conservatively bound tokens; the final bound is at most 1,500 bytes.
+Complete observations fit after room is reserved for prose. Empty or oversized
+prose falls back to complete contextual source units in stable source order,
+quoted with source labels. At most three units fit within 256 bytes (therefore
+also within 256 tokens and the separate 2,048-byte ceiling), subject to the
+stricter remaining final bound. Units are skipped whole, never clipped. If none
+fits, the description is unavailable and old prose is cleared. Retained source
+and readable passages remain available.
+
+`processing_coverage.abstraction_quality` is a distinct quality subrecord in the
+existing atomic processing envelope; it does not alter any coverage dimension or
+replace pipeline outcome. Its mode distinguishes historical unknown quality,
+recording generation, class-screened generation, extractive fallback and
+unavailable description. Checks, findings, exact accepted calibration references,
+source/attempt identity, scoped measurements and raw-candidate digest accompany
+it. Raw provider output is bounded to 65,536 characters in private attempt
+state, excluded from public serialization and retrieval surfaces. Publication
+atomically replaces description, orientation surface, quality and diagnostics
+under the existing source/attempt fence. Maintenance prose replacement invalidates
+prior quality to unknown.
+
+Three narrow signatures record unsupported machine identifiers, bounded
+count/structure assertions and a limited identifier-range role shape. They are
+proxies, with known false positives and semantic gaps. Recording findings do
+not withhold output. Existing acronym and opener repairs keep their established
+scope. `abstraction.withholding_classes` defaults empty and refuses unaccepted
+classes. The accepted registry is empty; adding a receipt requires a reviewed
+change binding the accepted frozen report and exact implementation digest.
+Changed implementation invalidates the receipt. No extra inference or retry is
+introduced by withholding.
+
+`python -m scripts.evaluate_abstraction_publication --help` describes the separate
+calibration report tool. It checks frozen implementation identity, independent
+blinded labels, source/template split leakage, deduplicated evidence populations,
+per-provider positive and faithful minima, fallback safety/usefulness and exact
+binomial confidence intervals. Unknown labels and shortfalls block eligibility.
+Eligibility never enrolls a class: owner acceptance and reviewed receipt enrollment
+remain separate. Synthetic direct-provider trials and disposable stored/served
+checks provide regression evidence, not independently adjudicated held-out
+calibration or hosted deployment acceptance.

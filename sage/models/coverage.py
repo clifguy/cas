@@ -293,6 +293,86 @@ DIMENSIONS = (
 )
 
 
+class AbstractionQuality(CoverageModel):
+    """Derived from the Core API AbstractionQuality component."""
+
+    mode: Literal[
+        "unknown", "recording_generated", "screened_generated", "extractive_fallback", "unavailable"
+    ] = Field(
+        default="unknown",
+        description=(
+            "Publication disposition; screened means only the declared "
+            "calibrated checks, never universal verification."
+        ),
+    )
+    policy: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Version of the applied publication policy; null for historical unknown state.",
+    )
+    generation: int | None = Field(
+        default=None,
+        ge=1,
+        description=(
+            "Processing attempt that published this quality disposition; null for unknown history."
+        ),
+    )
+    identity: ProcessingIdentity | None = Field(
+        default=None,
+        description=(
+            "Source and selection identity bound to the quality disposition; null when unknown."
+        ),
+    )
+    checks: list[Annotated[str, Field(max_length=64)]] = Field(
+        default_factory=list,
+        max_length=3,
+        description="Versioned policy check classes applied to the generated candidate.",
+    )
+    findings: list[Annotated[str, Field(max_length=64)]] = Field(
+        default_factory=list,
+        max_length=3,
+        description=(
+            "Named class findings, including recording-only findings that do "
+            "not authorize withholding."
+        ),
+    )
+    calibration_refs: dict[str, Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]] = Field(
+        default_factory=dict,
+        max_length=3,
+        description="Accepted calibration report SHA-256 values for the promoted subset of checks.",
+    )
+    measurements: list[Annotated[str, Field(max_length=2048)]] = Field(
+        default_factory=list,
+        max_length=8,
+        description=(
+            "Complete deterministic rendered inspected-scope measurements, "
+            "separate from model prose."
+        ),
+    )
+    measurements_limited: bool = Field(
+        default=False,
+        description="True when deterministic observations were omitted from the final composition.",
+    )
+    candidate_sha256: CoverageHash | None = Field(
+        default=None,
+        description="Hash of raw model output; raw text remains private diagnostic data.",
+    )
+
+    @model_validator(mode="after")
+    def attributable(self) -> "AbstractionQuality":
+        if self.mode != "unknown" and (
+            self.identity is None or self.generation is None or not self.policy
+        ):
+            raise ValueError(
+                "established abstract quality requires identity, policy and generation"
+            )
+        if self.mode == "screened_generated" and not self.calibration_refs:
+            raise ValueError("screened prose requires calibrated check references")
+        if not set(self.calibration_refs) <= set(self.checks):
+            raise ValueError("calibration references must name applied checks")
+        return self
+
+
 class ProcessingCoverage(CoverageModel):
     attempt: int = Field(default=0, ge=0, description="Attempt.")
     source_retention: CoverageDimension = Field(
@@ -312,6 +392,13 @@ class ProcessingCoverage(CoverageModel):
     )
     abstraction_evidence: CoverageDimension = Field(
         default_factory=CoverageDimension, description="Abstraction evidence."
+    )
+
+    abstraction_quality: AbstractionQuality = Field(
+        default_factory=AbstractionQuality,
+        exclude_if=lambda value: value.mode == "unknown",
+        description="Class-bounded abstract publication quality, independent of coverage. "
+        "Omitted means unknown historical quality, never screened.",
     )
 
     served_abstraction_generation: int | None = Field(

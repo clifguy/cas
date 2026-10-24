@@ -235,6 +235,26 @@
           "minimum": 1,
           "maximum": 4500,
           "description": "Cumulative reserved output tokens, including startup probes."
+        },
+        "hybrid_description": {
+          "type": "boolean",
+          "default": false,
+          "description": "Inactive-by-default hybrid description composition and recording-only quality checks. Enable only after companion publication contract alignment; does not promote withholding classes."
+        },
+        "withholding_classes": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "unsupported_identifier",
+              "bounded_structure",
+              "range_role"
+            ]
+          },
+          "maxItems": 3,
+          "uniqueItems": true,
+          "default": [],
+          "description": "Only classes registered against accepted calibration may be selected; unregistered, stale or hybrid-disabled selection fails validation. No classes are initially promoted."
         }
       }
     },

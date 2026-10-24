@@ -16,7 +16,12 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import NamedTuple, TypedDict
 
-from sage.models.coverage import CoverageDimension, ProcessingCoverage, ProcessingIdentity
+from sage.models.coverage import (
+    AbstractionQuality,
+    CoverageDimension,
+    ProcessingCoverage,
+    ProcessingIdentity,
+)
 from sage.models.discovery import EvidencePackage
 from sage.models.enums import ResolutionPolicy
 from sage.models.graph_rows import EdgeQueryRow, LinkReadContext, OnConflict
@@ -328,6 +333,8 @@ class ContentStore(ABC):
         chunks: list[Chunk] | None = None,
         surface: DocumentSurface | None = None,
         semantic_abstract: str | None = None,
+        abstraction_quality: AbstractionQuality | None = None,
+        abstraction_candidate: dict | None = None,
         indexing_complete: bool = True,
         text_repair: bool = False,
         expected_abstract: str | None = None,
@@ -336,6 +343,9 @@ class ContentStore(ABC):
 
         Publishing passages also records indexed_at in that transaction; surface
         or abstraction-only publication preserves the prior indexing time.
+        Quality and its private raw diagnostic publish with the abstract/surface.
+        Quality supplied with a null abstract explicitly clears prior prose.
+        Any replacement without quality invalidates prior quality.
         Text repair requires an expected prior abstract, changes no processing
         evidence or generation, and refuses a stale text/attempt snapshot.
         """

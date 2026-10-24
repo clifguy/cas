@@ -24,11 +24,15 @@ from sage.services.discovery_selection import select_discovery
 from sage.source_adapters.structure import SourceFact
 
 
-def cases():
+def cases(*, include_packages=False):
     """Identical authored cases for both bindings; historic report kept separate."""
     fixture = Path(__file__).resolve().parents[1] / "tests/fixtures/abstraction_faithfulness"
     package = decode_package(json.loads((fixture / "structured-evidence.json").read_text()))
-    yield "recorded_structured_source", abstraction_request(package, VaultAbstractionConfig()).text
+    row = (
+        "recorded_structured_source",
+        abstraction_request(package, VaultAbstractionConfig()).text,
+    )
+    yield (*row, package) if include_packages else row
     texts = {
         "bare_acronym": "CAS coordinates the document work. CAS retains project records.",
         "attested_acronym": "CAS (Computer Aided System) coordinates the document work.",
@@ -49,14 +53,20 @@ def cases():
             tokenizer=lambda s: len(s.encode()),
             tokenizer_identity="utf8-byte-tokens:1",
         )
-        yield name, abstraction_request(package, VaultAbstractionConfig()).text
+        row = (name, abstraction_request(package, VaultAbstractionConfig()).text)
+        yield (*row, package) if include_packages else row
         if name in ("bare_acronym", "clean"):
-            yield name + "_ordinary", text
+            row = (name + "_ordinary", text)
+            yield (*row, None) if include_packages else row
         if name == "three_departments":
             limited = dataclasses.replace(
                 package, inspection_complete=False, limitations=("evaluation_sample",)
             )
-            yield "limited_observation", abstraction_request(limited, VaultAbstractionConfig()).text
+            row = (
+                "limited_observation",
+                abstraction_request(limited, VaultAbstractionConfig()).text,
+            )
+            yield (*row, limited) if include_packages else row
 
 
 async def evaluate(provider, output: Path, repeats: int):

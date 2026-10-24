@@ -11,6 +11,38 @@
     "accounting": {
       "type": "object",
       "description": "Source/selection identity, calls, reserved complete prompt/output tokens and limits. Reservations precede inference and survive retries/recovery."
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "raw": {
+          "type": "string",
+          "maxLength": 65536,
+          "description": "Bounded raw generation text kept off served discovery surfaces."
+        },
+        "truncated": {
+          "type": "boolean",
+          "description": "Whether raw diagnostic retention reached its character ceiling."
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$",
+          "description": "Hash of complete raw generation text, including any unretained tail."
+        },
+        "generation": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Processing attempt owning the private candidate diagnostic."
+        }
+      },
+      "required": [
+        "raw",
+        "truncated",
+        "sha256",
+        "generation"
+      ],
+      "description": "Private bounded raw-generation diagnostic, atomically published with hybrid quality; never a public abstract or retrieval admission surface."
     }
   },
   "description": "Internal documents.abstraction_state JSONB. Replacing evidence preserves accounting for the source; source changes start a new attributable scope."
