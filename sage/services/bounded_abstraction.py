@@ -62,39 +62,30 @@ def abstraction_request(
     def observations_text(observations: tuple[DerivedObservation, ...]) -> str:
         rows = []
         for observation in observations:
-            for operation, value, exactness in (
-                ("count_inspected_values", observation.populated, "exact over inspected scope"),
-                (
-                    "count_retained_distinct_values",
-                    observation.retained_distinct,
-                    "retained candidates only; lower bound on inspected distinct values",
-                ),
-                (
-                    "count_known_repetitions",
-                    observation.known_repetitions,
-                    "retained candidates only; lower bound on inspected repetitions",
-                ),
-            ):
-                rows.append(
-                    json.dumps(
-                        {
-                            "operation": operation,
-                            "unit": "source values",
-                            "value": value,
-                            "region": observation.region,
-                            "field": observation.field_path,
-                            "classification": observation.classification,
-                            "scope": "inspected region and field",
-                            "exactness": exactness,
-                            "inspection_complete": package.inspection_complete
-                            and not package.limitations,
-                            "inspection_boundary": package.boundary,
-                            "source_hash": package.identity.source_hash,
-                            "processing_generation": generation,
-                        },
-                        ensure_ascii=False,
-                    )
+            # Selection's distinct/repetition counters concern retained rendered
+            # candidates, which may be field labels or context-bearing inputs.
+            # Only the independently inventoried inspected-value count has the
+            # source-value meaning required for supplied computed evidence.
+            rows.append(
+                json.dumps(
+                    {
+                        "operation": "count_inspected_values",
+                        "unit": "source values",
+                        "value": observation.populated,
+                        "region": observation.region,
+                        "field": observation.field_path,
+                        "classification": observation.classification,
+                        "scope": "inspected region and field",
+                        "exactness": "exact over inspected scope",
+                        "inspection_complete": package.inspection_complete
+                        and not package.limitations,
+                        "inspection_boundary": package.boundary,
+                        "source_hash": package.identity.source_hash,
+                        "processing_generation": generation,
+                    },
+                    ensure_ascii=False,
                 )
+            )
         return "\n\nSAGE-computed observations (data)\n" + "\n".join(rows) if rows else ""
 
     def cost(value: str) -> int:
@@ -175,7 +166,15 @@ def abstraction_request(
         limitations=list(package.limitations)[:14]
         + (["abstraction_prompt_budget"] if prompt_limited else [])
         + (["abstraction_observation_budget"] if observation_limited else [])
-        + ([] if complete else ["selected_authored_evidence_only"]),
+        + (
+            []
+            if complete
+            else [
+                "selected_authored_and_scoped_computed_evidence_only"
+                if observations
+                else "selected_authored_evidence_only"
+            ]
+        ),
         unknown_remainder=not complete,
     )
     return AbstractionRequest(text, identity, words, breadth, target, evidence, observations)

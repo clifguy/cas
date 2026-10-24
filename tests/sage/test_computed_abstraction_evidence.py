@@ -1,6 +1,7 @@
 """Computed evidence stays scoped data and cannot attest acronym expansions."""
 
 import dataclasses
+import json
 
 import pytest
 
@@ -183,3 +184,49 @@ async def test_ingest_reabstract_recompute_preserve_attestation_and_served_gener
         assert row == (current.semantic_abstract, str(len(submitted)))
     assert len(submitted) == 3
     await service.stop_worker()
+
+
+@pytest.mark.parametrize(
+    "values,candidate_characters",
+    [
+        ([1, 2, 3], 4096),
+        ([1, 1, 1], 4096),
+        ([True, False], 4096),
+        (["Workshop", "Orchard", "Library"], 4096),
+        (["Workshop", "Workshop", "Library"], 4096),
+        (["a" * 100, "b" * 100], 64),
+    ],
+)
+def test_native_values_supply_only_verified_inspection_counts(
+    tmp_path, values, candidate_characters
+):
+    from sage.models.discovery import SelectionConfig
+    from sage.source_adapters.structure import FactLimits, source_facts
+
+    source = tmp_path / "native.json"
+    source.write_text(json.dumps({"values": values}))
+    package = select_discovery(
+        source_facts(source, None, FactLimits()),
+        source_hash="a" * 64,
+        adapter_version="json:1",
+        tokenizer=lambda text: len(text.encode()),
+        tokenizer_identity="utf8-byte-tokens:1",
+        config=SelectionConfig(max_candidate_characters=candidate_characters),
+    )
+    request = abstraction_request(package, VaultAbstractionConfig())
+    assert request.observations
+    rows = [json.loads(line) for line in request.text.splitlines() if line.startswith("{")]
+    assert rows
+    assert {row["operation"] for row in rows} == {"count_inspected_values"}
+    assert sum(row["value"] for row in rows) == len(values)
+    assert all(row["unit"] == "source values" for row in rows)
+    assert all(row["exactness"] == "exact over inspected scope" for row in rows)
+    assert "count_known_repetitions" not in request.text
+    assert "count_retained_distinct_values" not in request.text
+
+
+def test_limited_coverage_describes_supplied_observation_evidence():
+    request = abstraction_request(evidence(limit=2), VaultAbstractionConfig())
+    assert request.observations
+    assert "selected_authored_evidence_only" not in request.evidence.limitations
+    assert "selected_authored_and_scoped_computed_evidence_only" in request.evidence.limitations

@@ -292,9 +292,12 @@ abstracts and other document-surface prose are excluded by construction. Compute
 observations remain separately typed. Request construction may supply them as
 explicitly identified data after the authored excerpts. Each measurement states
 its operation, unit, region/field, inspected boundary, source hash and processing
-generation. Inspected-value counts are exact within that scope. Distinct-value
-and repetition counts describe retained candidates and are lower bounds, not
-full-source totals. Labels receive the same syntax neutralization as source text.
+generation. Only inspected-value counts are supplied, exact within that scope.
+Retained-distinct and repetition counters describe rendered candidate inputs,
+which can be structural labels or include context; they are withheld from model
+evidence because they do not establish native-value distinctness or repetition.
+No full-source totals are inferred. Labels receive the same syntax neutralization
+as source text.
 A protected system instruction permits descriptions of supplied values while
 prohibiting new calculations, extrapolation, importance or comprehensive claims.
 Caller metadata and source assertions are never parsed into this evidence class.
