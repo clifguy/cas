@@ -643,3 +643,63 @@ async def test_hybrid_recovery_keeps_operational_failure_distinct_from_quality(
     assert current.processing_coverage.abstraction_quality.mode == (
         "unknown" if failure == "nonretryable" else "recording_generated"
     )
+
+
+@pytest.mark.parametrize("renderer", ["legacy", "hybrid"])
+@pytest.mark.parametrize(
+    "tokens,values,count,complete",
+    [
+        (128, 100, 2, True),
+        (8192, 100, 2, True),
+        (8192, 1, 1, False),
+    ],
+)
+def test_inspection_completion_is_independent_of_selection_limit(
+    tmp_path, renderer, tokens, values, count, complete
+):
+    import hashlib
+    import json
+
+    from sage.config import VaultAbstractionConfig
+    from sage.models.discovery import SelectionConfig
+    from sage.services.abstraction_publication import prepare_publication
+    from sage.services.bounded_abstraction import abstraction_request
+    from sage.services.discovery_selection import select_discovery
+    from sage.source_adapters.structure import FactLimits, source_facts
+
+    source = tmp_path / "inspection.json"
+    source.write_text(
+        json.dumps({"values": ["short authored prose", "long authored prose " * 100]})
+    )
+    evidence = select_discovery(
+        source_facts(source, None, FactLimits()),
+        source_hash="sha256:" + hashlib.sha256(source.read_bytes()).hexdigest(),
+        adapter_version="json:1",
+        tokenizer=lambda text: len(text.encode()),
+        tokenizer_identity="utf8-byte-tokens:1",
+        config=SelectionConfig(max_tokens=tokens, max_values=values),
+    )
+    assert evidence.inspection_complete is complete
+    assert len(evidence.observations) == 1
+    assert evidence.observations[0].populated == count
+    if tokens == 128:
+        assert "selection_budget" in evidence.limitations
+        assert len(evidence.selected) == 1
+    if values == 1:
+        assert evidence.boundary and not evidence.inspection_complete
+    request = abstraction_request(evidence, VaultAbstractionConfig(), generation=1)
+    if renderer == "legacy":
+        rows = [
+            json.loads(row)
+            for row in request.text.split("SAGE-computed observations (data)\n")[1].splitlines()
+            if row
+        ]
+        assert [row["value"] for row in rows] == [count]
+        assert all(row["inspection_boundary"] == evidence.boundary for row in rows)
+        assert all(row["inspection_complete"] is complete for row in rows)
+    else:
+        rendered = prepare_publication(evidence, request, 1500).measurements
+        assert rendered
+        assert all(value.startswith(f"SAGE counted {count} ") for value in rendered)
+        suffix = "inspection complete." if complete else "inspection incomplete."
+        assert all(value.endswith(suffix) for value in rendered)

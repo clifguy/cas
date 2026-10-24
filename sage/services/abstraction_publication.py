@@ -68,9 +68,7 @@ def prepare_publication(package: EvidencePackage, request, maximum: int) -> Publ
         def quote(value: str) -> str:
             return json.dumps(neutralize_source_text(value), ensure_ascii=False)
 
-        inspection = (
-            "complete" if package.inspection_complete and not package.limitations else "incomplete"
-        )
+        inspection = "complete" if package.inspection_complete else "incomplete"
         text = (
             f"SAGE counted {obs.populated} {quote(obs.classification)} source values "
             f"in region {quote(obs.region)}, field {quote(obs.field_path)}, exactly over "

@@ -77,8 +77,7 @@ def abstraction_request(
                         "classification": observation.classification,
                         "scope": "inspected region and field",
                         "exactness": "exact over inspected scope",
-                        "inspection_complete": package.inspection_complete
-                        and not package.limitations,
+                        "inspection_complete": package.inspection_complete,
                         "inspection_boundary": package.boundary,
                         "source_hash": package.identity.source_hash,
                         "processing_generation": generation,
