@@ -284,14 +284,52 @@ its retained digest for both identities. The bounded published summary retains t
 inspected digest; its full-configuration digest also binds it when settings are
 omitted. This changes no source bytes, stored provenance, or publication comparison.
 
-## Bounded abstraction (T-0759)
+## Bounded abstraction
 
 Generation consumes the immutable authored `EvidencePackage` captured by shared
 inspection. Its complete selected inputs already contain source context. Prior
 abstracts and other document-surface prose are excluded by construction. Computed
-observations remain separately typed and never enter this ticket's model input.
-A protected system instruction identifies the selected scope and prohibits
-full-source counts, absence, importance or comprehensive assessment claims.
+observations remain separately typed. Request construction may supply them as
+explicitly identified data after the authored excerpts. Each measurement states
+its operation, unit, region/field, inspected boundary, source hash and processing
+generation. Only inspected-value counts are supplied, exact within that scope.
+Retained-distinct and repetition counters describe rendered candidate inputs,
+which can be structural labels or include context; they are withheld from model
+evidence because they do not establish native-value distinctness or repetition.
+No full-source totals are inferred. Labels receive the same syntax neutralization
+as source text.
+A protected system instruction permits descriptions of supplied values while
+prohibiting new calculations, extrapolation, importance or comprehensive claims.
+Caller metadata and source assertions are never parsed into this evidence class.
+
+Authored inputs fit first; complete observation groups fit in the remaining
+protected-prompt allowance, at deterministic spread positions. Omitted groups
+add `abstraction_observation_budget` to limited evidence coverage. Observations
+do not increase the sizing target or authorize another generation call.
+Admission fences source/selection identity and processing attempt before inference;
+the generation marker describes the current admitted use of the retained evidence,
+not a claim that reabstract inspected the source again.
+
+The acronym check and calibrated repair retain exactly their prior authored/context
+baseline. Added observations cannot attest expansions, including expansions inside
+their labels. The cardinal and structure instruments retain their recording posture;
+no general numeric, identifier or paraphrase validator is claimed. The behavioral
+evaluation command below retains raw outputs separately from gloss-repaired text:
+
+```sh
+.venv/bin/python -m scripts.evaluate_abstraction_faithfulness \\
+  --provider qwen --repeats 3 --output /absolute/evaluation.json
+# For the configured hosted binding, supply ANTHROPIC_API_KEY through the environment:
+.venv/bin/python -m scripts.evaluate_abstraction_faithfulness \\
+  --provider anthropic --repeats 3 --output /absolute/evaluation.json
+```
+
+Both arms use identical synthetic evidence. These direct-provider trials are not
+end-to-end stored/served verification, and must be adjudicated per case. Repeated
+calls measure behavior; they are not a repair retry policy. Reconstructed acronym
+cases are distinguished from retained observed outputs. Changes to destructive
+repair authority need independent calibration and
+the applicable architectural decision.
 
 The target output allowance in tokens is
 `min(1500, configured_output_cap, floor(base + selected_words * text_scale + min(region_field_pairs, 32) * breadth_scale))`,

@@ -3168,7 +3168,8 @@ class IngestionService:
         # attestation, so every remaining finding is safe to collapse.
         # The record's sizes describe the inspected abstract -- the text
         # the finding is about -- not the repaired one.
-        findings = find_unattested_acronym_glosses(abstract, text)
+        authored_text = text.authored_text if isinstance(text, BoundedEvidenceText) else text
+        findings = find_unattested_acronym_glosses(abstract, authored_text)
         for gloss in findings:
             abstraction_faithfulness_logger.info(
                 json.dumps(
@@ -3187,7 +3188,7 @@ class IngestionService:
                 )
             )
         if findings:
-            abstract = collapse_unattested_acronym_glosses(abstract, text)
+            abstract = collapse_unattested_acronym_glosses(abstract, authored_text)
 
         # Deterministic clause (k) check, still recording-only: its error
         # rate has no adjudicated measurement, so the posture CAS-ADR-020
@@ -3224,7 +3225,7 @@ class IngestionService:
         # claim, so the record describes the abstract actually stored. The
         # absence of an "action" field is the machine-readable trace of
         # the posture. A finding is calibration data, not a verdict.
-        for cardinal in find_fabricated_cardinals(abstract, text):
+        for cardinal in find_fabricated_cardinals(abstract, authored_text):
             abstraction_faithfulness_logger.info(
                 json.dumps(
                     {
@@ -3523,7 +3524,7 @@ class IngestionService:
         if package is None:
             raise AbstractionAllowanceExhausted("bounded authored evidence unavailable")
         config = self._config.abstraction
-        request = abstraction_request(package, config, doc_type)
+        request = abstraction_request(package, config, doc_type, generation=attempt)
         if not await self._content_store.publish_processing(
             document_id, attempt, {"abstraction_evidence": request.evidence}
         ):
@@ -3565,7 +3566,7 @@ class IngestionService:
         if decision != "admitted":
             raise AbstractionAllowanceExhausted("abstraction allowance " + decision)
         abstract = await self._generate_abstract_text(
-            BoundedEvidenceText(request.text),
+            request.text,
             doc_type,
             document_id=document_id,
             target_tokens=request.target_tokens,

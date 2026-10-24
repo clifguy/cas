@@ -57,7 +57,7 @@ async def test_stored_passage_intent_survives_restart(
     real_generate = service._generate_abstract_text
 
     async def hold(text, *args, **kwargs):
-        assert text == "Source region: document\nSource field: body\nLEGACY PASSAGES"
+        assert text.authored_text == "Source region: document\nSource field: body\nLEGACY PASSAGES"
         entered.set()
         await asyncio.Event().wait()
 
@@ -106,7 +106,9 @@ async def test_stored_passage_intent_survives_restart(
                 await drain_abstraction_queue(recovered)
             finally:
                 await recovered.stop_worker()
-            assert generated == ["Source region: document\nSource field: body\nLEGACY PASSAGES"]
+            assert [text.authored_text for text in generated] == [
+                "Source region: document\nSource field: body\nLEGACY PASSAGES"
+            ]
         else:
             await drain_abstraction_queue(service)
         after = await postgres_graph_store.get_document(doc.id)
@@ -304,7 +306,7 @@ async def test_recovery_admission_cannot_steal_a_newer_live_owner(
     generate = newer._generate_abstract_text
 
     async def hold(text, *args, **kwargs):
-        assert text == "Source region: document\nSource field: body\nLEGACY PASSAGES"
+        assert text.authored_text == "Source region: document\nSource field: body\nLEGACY PASSAGES"
         entered.set()
         await release.wait()
         return await generate(text, *args, **kwargs)
@@ -396,9 +398,9 @@ async def test_recovered_abstract_intent_preserves_provider_retry_and_failure_se
         assert await recovered.recover_incomplete_documents() == 1
         await drain_abstraction_queue(recovered)
         after = await postgres_graph_store.get_document(doc.id)
-        assert calls == ["Source region: document\nSource field: body\nLEGACY PASSAGES"] * (
-            2 if failure == "retryable" else 1
-        )
+        assert [text.authored_text for text in calls] == [
+            "Source region: document\nSource field: body\nLEGACY PASSAGES"
+        ] * (2 if failure == "retryable" else 1)
         assert await postgres_graph_store.get_processing_stage(doc.id) == "abstraction"
         assert after.pipeline_status.value == (
             "failed" if failure == "nonretryable" else "abstraction_complete"
