@@ -931,3 +931,89 @@ def test_uncertain_start_retains_intent_and_never_replays_measurement(tmp_path, 
     assert len([x for x in cloud.effects if x == ("start", "measurement")]) == 1
     invoke("export")
     assert not json.loads((out / "export-receipt.json").read_text()).get("foundation_only")
+
+
+def test_started_canary_cannot_reprovision_or_downgrade_export_receipt(tmp_path, monkeypatch):
+    import json
+
+    _, cloud, out, invoke = command_setup(tmp_path, monkeypatch)
+    original = cloud.arm
+
+    def lost_response(method, path, **kwargs):
+        result = original(method, path, **kwargs)
+        if path.endswith("/start") and cloud.effects[-1] == ("start", "measurement"):
+            raise TimeoutError("accepted start response lost")
+        return result
+
+    monkeypatch.setattr(cloud, "arm", lost_response)
+    with pytest.raises(TimeoutError):
+        invoke("run")
+    receipt = (out / "provision-receipt.json").read_bytes()
+    clock = (out / "runtime-plan.json").read_bytes()
+    effects = list(cloud.effects)
+    with pytest.raises(ValueError, match="reconcile"):
+        invoke("run")
+    assert cloud.effects == effects
+    assert (out / "provision-receipt.json").read_bytes() == receipt
+    assert (out / "runtime-plan.json").read_bytes() == clock
+    assert invoke("export") == 0
+    assert not json.loads((out / "export-receipt.json").read_text()).get("foundation_only")
+
+
+@pytest.mark.parametrize(
+    "fault",
+    [
+        "runtime-json",
+        "spec-digest",
+        "provision-json",
+        "provision-binding",
+        "phase",
+        "legacy-downgrade",
+    ],
+)
+def test_failed_export_entry_revokes_stale_cleanup_proof(tmp_path, monkeypatch, fault):
+    import hashlib
+    import json
+
+    _, cloud, out, invoke = command_setup(tmp_path, monkeypatch)
+    invoke("run")
+    old_digest = hashlib.sha256((out / "export-receipt.json").read_bytes()).hexdigest()
+    cloud.blobs["late-measurement.jsonl"] = b'{"partial":"new durable evidence"}\n'
+    target = out / ("runtime-plan.json" if fault == "runtime-json" else "provision-receipt.json")
+    original = target.read_bytes()
+    spec = out.parent / "spec.json"
+    spec_original = spec.read_bytes()
+    if fault.endswith("json"):
+        target.write_text("invalid JSON")
+    elif fault == "spec-digest":
+        spec.write_bytes(spec_original + b"\n")
+    else:
+        receipt = json.loads(original)
+        if fault == "provision-binding":
+            receipt["plan_sha256"] = "f" * 64
+        else:
+            receipt["phase"] = "controller_created" if fault == "legacy-downgrade" else "unknown"
+        target.write_text(json.dumps(receipt))
+    export = (
+        (lambda: trial.export_checkpoint(cloud.plan, cloud, cloud, out))
+        if fault in ("provision-json", "provision-binding", "phase")
+        else (lambda: invoke("export"))
+    )
+    if fault == "legacy-downgrade":
+        assert invoke("export") == 0
+        assert not json.loads((out / "export-receipt.json").read_text()).get("foundation_only")
+    else:
+        with pytest.raises(ValueError):
+            export()
+        assert json.loads((out / "export-state.json").read_text())["status"] != "complete"
+        assert not (out / "export-receipt.json").exists()
+    target.write_bytes(original)
+    spec.write_bytes(spec_original)
+    groups = copy.deepcopy(cloud.base.groups)
+    with pytest.raises(ValueError):
+        invoke("cleanup", "--export-receipt-sha256", old_digest)
+    assert cloud.base.groups == groups
+    assert invoke("export") == 0
+    assert (out / "cloud-evidence" / cloud.plan["run_id"] / "late-measurement.jsonl").is_file()
+    digest = hashlib.sha256((out / "export-receipt.json").read_bytes()).hexdigest()
+    assert invoke("cleanup", "--export-receipt-sha256", digest) == 0

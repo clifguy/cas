@@ -777,6 +777,8 @@ def provision(
     enable=enable_expiry,
 ):
     """The sole stack-creation path; injectable boundaries exercise actual ordering."""
+    if any(output.glob("*-dispatch.json")):
+        raise ValueError("job start already attempted; reconcile through export and cleanup")
     precheck(plan, az, rest)
     existing = az(
         "group", "exists", "--subscription", plan["subscription_id"], "-n", plan["resource_group"]
@@ -969,16 +971,22 @@ def grant_site(plan, outputs, rest, output):
 
 def export_checkpoint(plan, az, rest, output):
     """Authenticate empty pre-measurement inventory; never waive a running export."""
+    begin_export(output, plan)
     path = output / "provision-receipt.json"
     saved = json.loads(path.read_text()) if path.exists() else None
+    if saved and (
+        saved.get("plan_sha256") != plan_digest(plan)
+        or saved.get("phase") not in ("controller_created", "stack_created", "service_active")
+    ):
+        raise ValueError("provision receipt phase/plan binding differs")
     if saved and saved.get("phase") != "controller_created":
         return export_evidence(plan, saved["outputs"], rest, output)
     if plan.get("phase") != "embedding_canary":
         return export_evidence(plan, saved["outputs"], rest, output)
     if any(output.glob("*-dispatch.json")):
-        raise ValueError("dispatch evidence requires durable cloud export")
-    if saved and saved.get("plan_sha256") != plan_digest(plan):
-        raise ValueError("foundation plan binding differs")
+        if saved is None:
+            raise ValueError("dispatch attempt lacks retained controller; reconcile")
+        return export_evidence(plan, saved["outputs"], rest, output)
     bootstrap = json.loads((output / "bootstrap-receipt.json").read_text())
     if bootstrap.get("status") != "ready" or bootstrap.get("plan") != plan:
         raise ValueError("authenticated bootstrap foundation required")
@@ -1396,6 +1404,22 @@ def verify_export(plan, outputs, output, expected_digest):
     return receipt
 
 
+def begin_export(output, plan=None):
+    """Revoke both old proof channels before any export entrypoint validation."""
+    receipt_path = output / "export-receipt.json"
+    state_path = output / "export-state.json"
+    state = {
+        "attempt_id": uuid.uuid4().hex,
+        "plan_sha256": plan_digest(plan) if plan is not None else None,
+        "status": "started",
+    }
+    try:
+        write_json(state_path, state)
+    finally:
+        receipt_path.unlink(missing_ok=True)
+    return state
+
+
 def export_evidence(plan, outputs, rest, output):
     """Replace export authorization only after the latest full attempt succeeds."""
     from urllib.parse import quote
@@ -1404,13 +1428,7 @@ def export_evidence(plan, outputs, rest, output):
 
     receipt_path = output / "export-receipt.json"
     state_path = output / "export-state.json"
-    state = {"attempt_id": uuid.uuid4().hex, "plan_sha256": plan_digest(plan), "status": "started"}
-    # Independently revoke both proof channels before any remote work. A failed
-    # unlink must not suppress state invalidation, or vice versa.
-    try:
-        write_json(state_path, state)
-    finally:
-        receipt_path.unlink(missing_ok=True)
+    state = begin_export(output, plan)
     try:
         url = outputs["exportUrl"]
         container = url.rsplit("/", 1)[0]
@@ -1983,6 +2001,8 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     retained = args.output / "runtime-plan.json"
     if args.operation in ("export", "cleanup"):
+        if args.operation == "export":
+            begin_export(args.output)
         plan = retained_plan(args.spec, args.approved_sha256, retained, allow_expired=True)
         if args.operation == "export":
             export_checkpoint(plan, Azure(), Rest(), args.output)

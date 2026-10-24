@@ -46,7 +46,11 @@ including token accounting and vector count/order/normalization checks.
 
 Every job start persists a plan-bound intent before the remote request. A lost
 response, denied execution read or invalid returned identity retains that intent
-and refuses redispatch. Export and cleanup use the original retained plan and
+and refuses redispatch. A retained dispatch also refuses infrastructure replay,
+so recovery cannot overwrite the evidence-bearing provision receipt. Every export
+entry revokes old cleanup proof before validating retained inputs; historical
+downgraded receipts with dispatch attempts still require cloud evidence.
+Export and cleanup use the original retained plan and
 clock; an intent-only attempt is evidence-bearing, never an empty foundation.
 
 Stop after this case, encrypted evidence export/readback and verified cleanup.

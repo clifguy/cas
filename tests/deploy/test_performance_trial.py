@@ -359,13 +359,16 @@ def test_accepted_job_dispatch_pins_unique_new_execution_without_retry(tmp_path,
         },
     }
     execution = {"id": job_id + "/executions/new", "name": "new"}
-    lists = iter([[], [execution]])
     effects = []
 
     def az(*args):
         if args[:3] == ("containerapp", "job", "show"):
             return job
-        return next(lists)
+        if not effects:
+            return []
+        return [execution] + (
+            [{"id": job_id + "/executions/second", "name": "second"}] if len(effects) > 1 else []
+        )
 
     class Rest:
         def arm(self, method, path, **kwargs):
@@ -387,6 +390,9 @@ def test_accepted_job_dispatch_pins_unique_new_execution_without_retry(tmp_path,
     assert len(effects) == 1
     assert effects[0][0:2] == ("POST", job_id + "/start")
     assert "body" not in effects[0][2]
+    with pytest.raises(ValueError, match="reconcile"):
+        subject.start_template_job(p, az, Rest(), "benchmark", {"containers": []}, tmp_path, "case")
+    assert len(effects) == 1
 
 
 def test_unowned_cleanup_never_revokes_external_access(tmp_path):
