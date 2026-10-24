@@ -66,8 +66,8 @@ def select_passages(
                 f"chunk:{chunk.chunk_index}",
                 chunk.chunk_index,
                 str(chunk.section_key),
-                chunk.content,
-                chunk.content,
+                chunk.authored_content,
+                chunk.authored_content,
                 chunk.heading_path,
             )
 
@@ -135,7 +135,7 @@ async def restore_selected_vectors(
         prior = old.get(excerpt.order)
         if vector is None or prior is None:
             continue
-        if embedding_input(prior.heading_path, prior.content) != excerpt.input_text:
+        if embedding_input(prior.heading_path, prior.authored_content) != excerpt.input_text:
             continue
         for index in associated_indices(excerpt):
             chunks[index].embedding = vector
@@ -277,8 +277,8 @@ async def reindex_passages(
                 chunks[excerpt.order].embedding is not None
                 for excerpt in selection.package.selected
             )
-            and [(c.heading_path, c.content, c.keyword_indexed) for c in chunks]
-            == [(c.heading_path, c.content, c.keyword_indexed) for c in previous]
+            and [(c.heading_path, c.content, c.keyword_indexed, c.keyword_content) for c in chunks]
+            == [(c.heading_path, c.content, c.keyword_indexed, c.keyword_content) for c in previous]
         ):
             return False
     attempt = await store.begin_processing_attempt(doc.id)

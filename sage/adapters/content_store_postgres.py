@@ -146,11 +146,12 @@ _METADATA_COLUMNS: tuple[str, ...] = ("doc_type", "lifecycle_status", "project")
 
 _INSERT_COLUMNS = (
     "document_id, heading_path, indexed_structure, content, chunk_index, "
-    "embedding, doc_type, lifecycle_status, project, section_index, keyword_indexed"
+    "embedding, doc_type, lifecycle_status, project, section_index, "
+    "keyword_indexed, keyword_content"
 )
 _INSERT_SQL = (
     f"INSERT INTO chunks ({_INSERT_COLUMNS}) "  # noqa: S608 -- fixed column constant
-    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
+    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
 )
 
 # ``indexed_structure`` is read back as well as written, because a passage read
@@ -162,7 +163,7 @@ _INSERT_SQL = (
 # the pre-decision behaviour rather than an error.
 _SELECT_CHUNK_COLUMNS = (
     "document_id, heading_path, indexed_structure, content, chunk_index, "
-    "doc_type, lifecycle_status, project, section_index, keyword_indexed"
+    "doc_type, lifecycle_status, project, section_index, keyword_indexed, keyword_content"
 )
 
 # A passage's section, for a read that groups or counts by it. A passage written
@@ -525,6 +526,7 @@ class PostgresContentStore(ContentStore):
             chunk.project,
             chunk.section_index,
             chunk.keyword_indexed,
+            chunk.keyword_content,
         )
 
     @asynccontextmanager
@@ -2419,6 +2421,7 @@ class PostgresContentStore(ContentStore):
             project=row[7],
             section_index=row[8],
             keyword_indexed=row[9],
+            keyword_content=row[10],
         )
 
     _escape_like = staticmethod(escape_like)

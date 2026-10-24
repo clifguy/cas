@@ -2826,6 +2826,18 @@ class IngestionService:
             processing_stage="indexing",
         )
 
+        # A legacy generated vector indexes display labels as authored text.
+        # Fail through the existing durable pipeline-failure protocol before
+        # publishing a new cell generation; REST and MCP share this stage.
+        if (
+            projection.passages is not None
+            and not await self._content_store.passage_vector_is_current()
+        ):
+            raise RuntimeError(
+                "keyword_index_migration_required: run migrate_vault before processing "
+                "a workbook with separate authored keyword evidence"
+            )
+
         # Inspection settles before inference. The exact package was captured
         # while the retained source was open; current mutable defaults cannot
         # reconstruct its provenance. The storage fence rejects delayed work.
@@ -2877,9 +2889,10 @@ class IngestionService:
                 recovery_limitations=("embedding_prior_uncertain_work",),
             )
         tags = projection.metadata.get("adapter_tags", [])
-        projection_limited = doc.source_type.value == "xlsx" or any(
-            str(t).endswith(":truncated") for t in tags
-        )
+        projection_limited = (
+            projection.projection_complete is False
+            or (doc.source_type.value == "xlsx" and projection.projection_complete is None)
+        ) or any(str(t).endswith(":truncated") for t in tags)
         projected = CoverageDimension(
             scope="limited" if projection_limited else "complete",
             identity=selection.identity,
@@ -2891,7 +2904,11 @@ class IngestionService:
                     "total": None if projection_limited else len(chunks),
                 }
             ],
-            limitations=["adapter_projection_limited"] if projection_limited else [],
+            limitations=(
+                ["adapter_projection_limited", *projection.projection_limitations]
+                if projection_limited
+                else []
+            ),
             unknown_remainder=projection_limited,
         )
         # Reconcile the candidate before publishing under the same lock as
@@ -2918,7 +2935,7 @@ class IngestionService:
             await restore_selected_vectors(self._content_store, document_id, selection, chunks)
             keyword_characters = 0
             for chunk in chunks:
-                size = len(chunk.content) + len(chunk.indexed_structure or "")
+                size = len(chunk.authored_content) + len(chunk.indexed_structure or "")
                 chunk.keyword_indexed = (
                     selection.config.max_keyword_characters is None
                     or keyword_characters + size <= selection.config.max_keyword_characters
@@ -3040,7 +3057,7 @@ class IngestionService:
             return
         for start in range(0, len(chunks), 8):
             window = chunks[start : start + 8]
-            texts = [embedding_input(c.heading_path, c.content) for c in window]
+            texts = [embedding_input(c.heading_path, c.authored_content) for c in window]
             embeddings = await self._embedding.embed(texts)
             for chunk, embedding in zip(window, embeddings):
                 chunk.embedding = embedding
@@ -4427,6 +4444,18 @@ class IngestionService:
         (title, source filename, tags, semantic abstract, and their
         expansions) live on the document surface (CAS-ADR-049).
         """
+        if projection.passages is not None:
+            return [
+                Chunk(
+                    document_id=document_id,
+                    heading_path=p.heading_path,
+                    content=p.content,
+                    keyword_content=p.keyword_content,
+                    chunk_index=index,
+                    section_index=p.section_index,
+                )
+                for index, p in enumerate(projection.passages)
+            ]
         sections: list[tuple[str, str]] = []
         if projection.headings and projection.preamble.strip():
             sections.append(("", projection.preamble))
@@ -4557,6 +4586,10 @@ class IngestionService:
             if await self._store.get_document(document_id) is None:
                 return False
             stored = await self._content_store.get_all_chunks(document_id)
+            if any(chunk.keyword_content is not None for chunk in stored):
+                # Explicit cell evidence survives legacy passage-shape repairs.
+                # Oversized cells are readable but refused by inference admission.
+                return False
             sections = group_sections(stored)
             divided = await _run_passage_work(
                 lambda: self._passages_for_sections(

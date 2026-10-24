@@ -136,22 +136,22 @@ async def test_xlsx_declared_dimension_does_not_size_rows(tmp_path):
 
     assert peak < 64 * 1024 * 1024, f"peak {peak / 2**20:.0f} MiB"
     assert result.metadata["dimensions"]["Data"] == {"rows": 1500, "columns": 1}
-    assert "| r0 |" in result.text
+    assert "A1 [string]\nr0" in result.text
+    assert "A1500 [string]\nr1499" in result.text
     # Counted to the last row holding a value, not scanned out to the
     # declared extent and reported as a lower bound.
-    assert "1500 rows x 1 columns" in result.text
+    assert len(result.passages) == 1500
+    assert result.projection_complete is True
 
 
 async def test_xlsx_row_width_is_capped(tmp_path):
     """TEST-SAGE-AD-234: rows holding a value in the sheet's last column are
-    read no wider than the column ceiling; the value past it is not read.
+    read sparsely, preserving far authored cells within a stored-cell limit.
 
-    The row itself reaches column 16,384, so an unbounded read widens each
-    row to it whatever the declared dimension says, and reports that width.
+    The coordinate envelope is not a rectangular allocation. An explicitly
+    smaller stored-cell budget refuses the source instead of dropping data.
     """
     import openpyxl
-
-    from sage.source_adapters import xlsx_adapter
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -166,21 +166,25 @@ async def test_xlsx_row_width_is_capped(tmp_path):
     result = await XlsxAdapter().project(path)
 
     columns = result.metadata["dimensions"]["Wide"]["columns"]
-    assert columns <= xlsx_adapter._MAX_COLUMNS
-    assert columns == 1
+    assert columns == 16384
+    assert len(result.passages) == 100
+    assert "XFD50 [string]\nedge" in result.text
+    with pytest.raises(SourceReadError, match="stored column limit"):
+        await XlsxAdapter().project(path, {"discovery_facts": {"max_columns": 1}})
 
 
-async def test_xlsx_row_scan_is_capped(tmp_path, monkeypatch):
-    """TEST-SAGE-AD-223: past the row-scan ceiling the count is reported as a
-    lower bound rather than scanned to the end.
+async def test_xlsx_row_scan_is_capped(tmp_path):
+    """TEST-SAGE-AD-223: stored-row work is admitted explicitly; an excess
+    refuses projection rather than advertising a truncated preview as content.
     """
-    monkeypatch.setattr("sage.source_adapters.xlsx_adapter._MAX_ROWS_SCANNED", 100)
     path = _dimension_inflated_xlsx(tmp_path, rows=150)
 
     result = await XlsxAdapter().project(path)
 
-    assert result.metadata["dimensions"]["Data"]["rows"] == 100
-    assert "at least 100 rows" in result.text
+    assert result.metadata["dimensions"]["Data"]["rows"] == 150
+    assert "A150 [string]\nr149" in result.text
+    with pytest.raises(SourceReadError, match="row limit"):
+        await XlsxAdapter().project(path, {"discovery_facts": {"max_rows": 100}})
 
 
 # ---------------------------------------------------------------------------

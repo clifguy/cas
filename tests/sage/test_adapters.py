@@ -2131,7 +2131,7 @@ class TestXlsxAdapter:
         assert " > " not in result.headings[1].path
 
     async def test_ad_056_column_headers_in_content(self, tmp_path):
-        """AD-056: First row rendered as pipe-delimited header row."""
+        """AD-056: First row cells retain their values and coordinates."""
         from sage.source_adapters.xlsx_adapter import XlsxAdapter
 
         adapter = XlsxAdapter()
@@ -2143,10 +2143,13 @@ class TestXlsxAdapter:
 
         result = await adapter.project(path)
 
-        assert "| Name | Age | City |" in result.headings[0].content
+        assert all(
+            value in result.headings[0].content
+            for value in ("Name", "Age", "City", "A1", "B1", "C1")
+        )
 
     async def test_ad_057_preview_rows_default(self, tmp_path):
-        """AD-057: Default config includes first 5 data rows, omits row 6+."""
+        """AD-057: Default config includes all authored data rows."""
         from sage.source_adapters.xlsx_adapter import XlsxAdapter
 
         adapter = XlsxAdapter()
@@ -2159,12 +2162,12 @@ class TestXlsxAdapter:
         # Rows 1-5 present
         for i in range(1, 6):
             assert f"val_{i}" in content
-        # Rows 6-8 omitted
+        # The canonical projection includes all authored rows.
         for i in range(6, 9):
-            assert f"val_{i}" not in content
+            assert f"val_{i}" in content
 
     async def test_ad_058_preview_rows_config(self, tmp_path):
-        """AD-058: preview_rows config limits data rows per sheet."""
+        """AD-058: preview_rows remains accepted without truncating canonical data."""
         from sage.source_adapters.xlsx_adapter import XlsxAdapter
 
         adapter = XlsxAdapter()
@@ -2176,10 +2179,10 @@ class TestXlsxAdapter:
 
         assert "val_1" in content
         assert "val_2" in content
-        assert "val_3" not in content
+        assert "val_8" in content
 
     async def test_ad_059_dimensions_in_content(self, tmp_path):
-        """AD-059: Content includes dimensions line for each sheet."""
+        """AD-059: Stored dimensions describe the authored-cell envelope."""
         from sage.source_adapters.xlsx_adapter import XlsxAdapter
 
         adapter = XlsxAdapter()
@@ -2189,8 +2192,8 @@ class TestXlsxAdapter:
         result = await adapter.project(path)
         content = result.headings[0].content
 
-        assert "21 rows" in content
-        assert "3 columns" in content
+        assert "C21" in content
+        assert result.metadata["dimensions"]["Big"] == {"rows": 21, "columns": 3}
 
     async def test_ad_060_title_from_first_sheet(self, tmp_path):
         """AD-060: Title extracted from first sheet name."""
@@ -5522,7 +5525,7 @@ class TestAdapterConfigRefusal:
         xlsx, xlsx_path = _config_source("xlsx", tmp_path)
         one_row = await xlsx.project(xlsx_path, {"preview_rows": 1})
         assert "val_1" in one_row.headings[0].content
-        assert "val_2" not in one_row.headings[0].content
+        assert "val_2" in one_row.headings[0].content
         every_sheet = await xlsx.project(xlsx_path, {"max_sheets": None})
         assert [h.text for h in every_sheet.headings] == ["First", "Second"]
 

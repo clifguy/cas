@@ -159,6 +159,14 @@ class Chunk:
     indexed_structure: str | None = None
     section_index: int | None = None
     keyword_indexed: bool = True
+    # None means legacy display text is authored. Empty is intentionally
+    # unmatchable orientation. Preserve this through every read/write roundtrip.
+    keyword_content: str | None = None
+
+    @property
+    def authored_content(self) -> str:
+        """Exact matchable/inference evidence, distinct from display labels."""
+        return self.content if self.keyword_content is None else self.keyword_content
 
     @property
     def section_key(self) -> int:
