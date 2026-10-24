@@ -16,7 +16,7 @@ import logging
 import os
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from functools import partial
@@ -35,6 +35,13 @@ EXPECTED_DIMENSIONS = 768
 # is truncated. nomic's primary training context; the model's default of 8192
 # produces attention matrices 16x larger.
 MAX_INPUT_TOKENS = 2048
+# Pairing uses byte-based WordPiece upper bounds, never request-wide tokenization.
+MAX_BATCH_TEXTS = 2
+MAX_BATCH_LOOKAHEAD = 8
+MAX_BATCH_RAW_BYTES = 4096
+MAX_BATCH_EFFECTIVE_TOKENS = 2048
+MAX_BATCH_PADDED_TOKENS = 3072
+MAX_BATCH_ATTENTION_WORK = MAX_INPUT_TOKENS**2
 
 # Construction is guarded too: __new__-based test providers and concurrent first
 # users must obtain the same provider-local lock without relying on the GIL.
@@ -325,13 +332,44 @@ class NomicEmbeddingProvider(EmbeddingProvider):
         finally:
             self._tokenizer_work_lock().release()
 
+    def _iter_batches(self, texts: list[str]) -> Iterator[tuple[list[int], list[str]]]:
+        """Pair the oldest pending input within fixed, bounded lookahead windows.
+
+        UTF-8 bytes plus two bounds WordPiece length including special tokens.
+        No input is clipped or tokenized for packing. Each dispatch advances the
+        oldest unscheduled index; deferred inputs never cross a window boundary.
+        Original indices restore caller order after nonconsecutive pairing.
+        """
+        for start in range(0, len(texts), MAX_BATCH_LOOKAHEAD):
+            pending = [
+                (index, texts[index])
+                for index in range(start, min(start + MAX_BATCH_LOOKAHEAD, len(texts)))
+            ]
+            while pending:
+                first = pending.pop(0)
+                batch = [first]
+                for position, other in enumerate(pending):
+                    pair = [first, other]
+                    raw = [len(text.encode("utf-8")) for _, text in pair]
+                    lengths = [min(size + 2, MAX_INPUT_TOKENS) for size in raw]
+                    if (
+                        len(pair) <= MAX_BATCH_TEXTS
+                        and sum(raw) <= MAX_BATCH_RAW_BYTES
+                        and sum(lengths) <= MAX_BATCH_EFFECTIVE_TOKENS
+                        and len(pair) * max(lengths) <= MAX_BATCH_PADDED_TOKENS
+                        and len(pair) * max(lengths) ** 2 <= MAX_BATCH_ATTENTION_WORK
+                    ):
+                        batch.append(pending.pop(position))
+                        break
+                yield [index for index, _ in batch], [text for _, text in batch]
+
     async def embed(self, texts: list[str]) -> list[list[float]]:
         """Embed a batch of texts. Returns L2-normalized vectors.
 
         Empty input returns empty output immediately (AD-006).
         Order is preserved (AD-002).
 
-        Inference is dispatched one bounded input at a time, fairly sharing
+        Inference is dispatched one bounded batch at a time, fairly sharing
         the dedicated single-thread executor without freezing the event loop. Releasing the GIL
         inside the C extension does not unblock the loop on its own: the
         loop runs on the calling thread, so a direct call would stall every
@@ -352,7 +390,7 @@ class NomicEmbeddingProvider(EmbeddingProvider):
         loop = asyncio.get_running_loop()
         # Admit only one quantum per caller, with at most two submitted jobs
         # (one running, one queued). Semaphore waiters are FIFO: both bulk and
-        # interactive callers rejoin the tail after every input. The executor
+        # interactive callers rejoin the tail after every batch. The executor
         # never retains the rest of a bulk list or its accumulated results.
         if not hasattr(self, "_inference_slots"):
             self._inference_slots = asyncio.Semaphore(2)
@@ -370,8 +408,8 @@ class NomicEmbeddingProvider(EmbeddingProvider):
             for submitted in pending:
                 work = asyncio.wrap_future(submitted, loop=loop)
                 work.add_done_callback(partial(self._complete_inference, self._inference_slots))
-        result: list[list[float]] = []
-        for text in texts:
+        result: list[list[float]] = [[] for _ in texts]
+        for indices, batch in self._iter_batches(texts):
             with span("embedding.admission"):
                 await self._inference_slots.acquire()
             try:
@@ -383,7 +421,7 @@ class NomicEmbeddingProvider(EmbeddingProvider):
                     trace.retain()
 
                 def run(
-                    text: str = text,
+                    batch: list[str] = batch,
                     abandoned: threading.Event = abandoned,
                     trace=trace,
                     queued_ns: int = queued_ns,
@@ -391,7 +429,7 @@ class NomicEmbeddingProvider(EmbeddingProvider):
                     if trace is not None:
                         trace.observe("embedding.executor", queued_ns, time.perf_counter_ns())
                     try:
-                        return self._embed_quantum_sync([text], abandoned)
+                        return self._embed_quantum_sync(batch, abandoned)
                     finally:
                         if trace is not None:
                             trace.finish()
@@ -414,7 +452,9 @@ class NomicEmbeddingProvider(EmbeddingProvider):
             # No subsequent quantum is submitted by a cancelled caller.
             work.add_done_callback(partial(self._complete_inference, self._inference_slots))
             try:
-                result.extend(await asyncio.shield(work))
+                vectors = await asyncio.shield(work)
+                for index, vector in zip(indices, vectors, strict=True):
+                    result[index] = vector
             except asyncio.CancelledError:
                 # Leave the executor future alive until its queue item has
                 # actually drained. Cancelling that future would release the
@@ -447,8 +487,8 @@ class NomicEmbeddingProvider(EmbeddingProvider):
     def _embed_sync(self, texts: list[str]) -> list[list[float]]:
         """Blocking embedding inference. Runs on the dedicated executor.
 
-        batch_size=8 bounds per-batch memory for long sequences (attention
-        scales quadratically with sequence length).
+        Public dispatch supplies at most one conservatively bounded pair.
+        The model's internal batch size also bounds direct benchmark calls.
         """
         with span("embedding.tokenizer_lock"):
             self._tokenizer_work_lock().acquire()
