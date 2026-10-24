@@ -878,3 +878,56 @@ def test_rehearsal_absence_is_read_in_plan_subscription(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError, match="rehearsal group remains"):
         trial.verify_expiry_rehearsal(cloud.plan, foreign_default, cloud)
+
+
+@pytest.mark.parametrize("fault", ["lost-response", "invalid-execution", "accepted-read-denied"])
+def test_uncertain_start_retains_intent_and_never_replays_measurement(tmp_path, monkeypatch, fault):
+    import json
+
+    import httpx
+
+    _, cloud, out, invoke = command_setup(tmp_path, monkeypatch)
+    original = cloud.arm
+    original_plan = (out / "runtime-plan.json").read_bytes()
+    failed = False
+
+    def uncertain(method, path, **kwargs):
+        nonlocal failed
+        result = original(method, path, **kwargs)
+        if path.endswith("/start") and cloud.effects[-1] == ("start", "measurement") and not failed:
+            failed = True
+            if fault == "lost-response":
+                raise TimeoutError("accepted start response lost")
+            if fault == "invalid-execution":
+                return httpx.Response(200, json={"id": "foreign", "name": "execution"})
+            return httpx.Response(202)
+        return result
+
+    original_cli = cloud.__call__
+
+    def cli(*args, **kwargs):
+        if (
+            fault == "accepted-read-denied"
+            and failed
+            and args[:4] == ("containerapp", "job", "execution", "list")
+        ):
+            raise PermissionError("accepted execution read denied")
+        return original_cli(*args, **kwargs)
+
+    monkeypatch.setattr(cloud, "arm", uncertain)
+    monkeypatch.setattr(trial, "Azure", lambda: cli)
+    with pytest.raises((TimeoutError, ValueError, PermissionError)):
+        invoke("run")
+    receipt = json.loads((out / "benchmark-000-dispatch.json").read_text())
+    assert receipt["outcome"] == "dispatch_intent"
+    assert receipt["plan_sha256"] == trial.plan_digest(cloud.plan)
+    assert len([x for x in cloud.effects if x == ("start", "measurement")]) == 1
+    assert json.loads((out / "outcome.json").read_text())["outcome"] == "partial_or_not_started"
+    starts = [x for x in cloud.effects if x[0] == "start"]
+    with pytest.raises((ValueError, PermissionError), match="reconcile|denied"):
+        invoke("run")
+    assert [x for x in cloud.effects if x[0] == "start"] == starts
+    assert (out / "runtime-plan.json").read_bytes() == original_plan
+    assert len([x for x in cloud.effects if x == ("start", "measurement")]) == 1
+    invoke("export")
+    assert not json.loads((out / "export-receipt.json").read_text()).get("foundation_only")

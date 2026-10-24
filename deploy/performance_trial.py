@@ -1487,7 +1487,10 @@ def export_evidence(plan, outputs, rest, output):
 
 
 def start_template_job(plan, az, rest, job_name, template, output, label):
-    """Start once, pin the returned execution, and wait through configured retries."""
+    """Persist intent before start; an uncertain attempt is never replayed."""
+    dispatch = output / (label + "-dispatch.json")
+    if dispatch.exists():
+        raise ValueError("job start already attempted; reconcile without redispatch")
     group = plan["resource_group"]
     job = az("containerapp", "job", "show", "-g", group, "-n", job_name)
     if (
@@ -1501,6 +1504,15 @@ def start_template_job(plan, az, rest, job_name, template, output, label):
         )
     before = az("containerapp", "job", "execution", "list", "-g", group, "-n", job_name)
     known = {x["id"].casefold() for x in before}
+    intent = {
+        "outcome": "dispatch_intent",
+        "job": job["id"],
+        "template": template,
+        "plan_sha256": plan_digest(plan),
+        "known_executions": sorted(known),
+        "attempted_at": datetime.now(UTC).isoformat(),
+    }
+    write_json(dispatch, intent)
     row = rest.arm("POST", job["id"] + "/start", api="2025-07-01")
     execution = row.json() if row.status_code == 200 and row.content else None
     if row.status_code == 202:
@@ -1516,8 +1528,8 @@ def start_template_job(plan, az, rest, job_name, template, output, label):
             time.sleep(5)
     if execution is None:
         write_json(
-            output / (label + "-dispatch.json"),
-            {"outcome": "uncertain_dispatch", "job": job["id"], "status": row.status_code},
+            dispatch,
+            {**intent, "outcome": "uncertain_dispatch", "status": row.status_code},
         )
         raise RuntimeError("job dispatch lacks unique execution identity; reconcile, never retry")
     name = execution.get("name")
@@ -1527,8 +1539,8 @@ def start_template_job(plan, az, rest, job_name, template, output, label):
     ):
         raise ValueError("execution identity mismatch")
     write_json(
-        output / (label + "-dispatch.json"),
-        {"job": job["id"], "execution": execution, "template": template},
+        dispatch,
+        {**intent, "outcome": "dispatched", "execution": execution},
     )
     cfg = job["properties"]["configuration"]
     budget = cfg["replicaTimeout"] * (cfg["replicaRetryLimit"] + 1) + 180

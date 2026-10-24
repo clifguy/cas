@@ -44,6 +44,11 @@ then starts one short-input, singleton, two-thread case. The existing benchmark
 performs one warmup and three measured repetitions against the real pinned model,
 including token accounting and vector count/order/normalization checks.
 
+Every job start persists a plan-bound intent before the remote request. A lost
+response, denied execution read or invalid returned identity retains that intent
+and refuses redispatch. Export and cleanup use the original retained plan and
+clock; an intent-only attempt is evidence-bearing, never an empty foundation.
+
 Stop after this case, encrypted evidence export/readback and verified cleanup.
 A singleton-versus-true-batching comparison is a later explicitly approved
 expansion. The full service path, fixed-memory CPU comparison, larger matrix,
