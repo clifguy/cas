@@ -5,6 +5,7 @@ from pathlib import Path
 import pytest
 
 from sage.source_adapters.base import HeadingNode, ProjectionResult
+from sage.source_adapters.json_lexical import JsonNumber
 from sage.source_adapters.structure import FactLimits, source_facts
 
 
@@ -22,16 +23,16 @@ def facts(tmp_path: Path, suffix: str, text: str, **limits):
         (
             ".json",
             '{"value": [true, 2, "{\\"a\\":1}"]}',
-            [True, 2, '{"a":1}'],
-            ["true", "2", '{"a":1}'],
-            ["value", 'value\n\n{"a":1}'],
+            [True, JsonNumber("2"), '{"a":1}'],
+            ["true", "2", '"{\\"a\\":1}"'],
+            ['"value"', '"value"\n\n"{\\"a\\":1}"'],
         ),
         (
             ".jsonl",
             '{"v":1}\n{"v":"late text"}\n',
-            [1, "late text"],
-            ["1", "late text"],
-            ["v", "v\n\nlate text"],
+            [JsonNumber("1"), "late text"],
+            ["1", '"late text"'],
+            ['"v"', '"v"\n\n"late text"'],
         ),
         (
             ".yaml",
@@ -318,8 +319,9 @@ def test_xml_comments_and_processing_instructions_are_authored(tmp_path):
 
 def test_numeric_native_map_preserves_actual_authored_labels(tmp_path):
     actual, _ = facts(tmp_path, ".json", '{"outer": {"useful label": 7}}')
-    assert actual[0].authored_labels == ("outer", "useful label")
-    assert actual[0].value == 7
+    assert actual[0].authored_labels == ('"outer"', '"useful label"')
+    assert actual[0].value == JsonNumber("7")
+    assert type(actual[0].value) is JsonNumber
 
 
 def test_embedded_container_like_text_remains_unresolved(tmp_path):
@@ -510,7 +512,7 @@ async def test_native_adapter_entry_refuses_before_materializer(tmp_path, monkey
     target = structured.json if suffix == "json" else xlsx
     monkeypatch.setattr(
         target,
-        "loads" if suffix == "json" else "load_workbook",
+        "loads" if suffix == "json" else "cells",
         lambda *a, **k: pytest.fail("materializer reached"),
     )
     from sage.source_adapters.base import SourceReadError

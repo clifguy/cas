@@ -26,6 +26,12 @@ from deploy.performance_limits import remaining
 ROOT = Path(__file__).resolve().parents[1]
 AZURE_CLI = shutil.which("az")
 GITHUB_CLI = shutil.which("gh")
+BASELINE_COMMIT = "eb994495b66837cca23cc891487f83ad434c0c4f"
+BASELINE_IMAGE = (
+    "acrwofzhg37aohom.azurecr.io/sage@sha256:"
+    "feaa6269b1244467b7d03d7bfa371209fa7c88e73569f36a2b8ec469291cec2c"
+)
+
 ROLE_IDS = {
     "acr": "7f951dda-4ed3-4680-a7ca-43fe172d538d",
     "secret": "4633458b-17de-408a-b874-0445c86b69e6",  # gitleaks:allow -- public Azure role ID
@@ -99,10 +105,22 @@ def validate_plan(plan, now=None, *, allow_expired=False):
         r"[a-z0-9]+\.azurecr\.io/sage@sha256:[a-f0-9]{64}", image
     ) or not re.fullmatch(r"[a-f0-9]{40}", p["candidate"]["commit"]):
         raise ValueError("immutable candidate identity required")
-    expected = [("Consumption", 2, "4Gi"), ("D8", 2, "8Gi"), ("D8", 4, "8Gi")]
+    phase = p.get("phase", "service_campaign")
+    if phase not in ("embedding_canary", "service_campaign"):
+        raise ValueError("unknown experiment phase")
+    embedding = phase == "embedding_canary"
+    if embedding and (p["candidate"]["commit"] != BASELINE_COMMIT or image != BASELINE_IMAGE):
+        raise ValueError("embedding canary requires the immutable measurement baseline")
+    expected = (
+        [("Consumption", 2, "4Gi")]
+        if embedding
+        else [("Consumption", 2, "4Gi"), ("D8", 2, "8Gi"), ("D8", 4, "8Gi")]
+    )
+    if embedding and (limits["window_seconds"] > 3600 or limits["incremental_usd"] > 5):
+        raise ValueError("embedding canary exceeds initial cost/runtime ceiling")
     if [(a["profile"], a["cpu"], a["memory"]) for a in p["arms"]] != expected:
         raise ValueError("fixed-memory/resource-size comparison changed")
-    for key in ("site_id", "drive_id", "audience", "tenant_id"):
+    for key in ("tenant_id",) if embedding else ("site_id", "drive_id", "audience", "tenant_id"):
         if not isinstance(p["binding"].get(key), str) or not p["binding"][key].strip():
             raise ValueError("missing explicit cloud binding")
     prefix = (
@@ -112,10 +130,14 @@ def validate_plan(plan, now=None, *, allow_expired=False):
         + p["source"]["resource_group"]
         + "/providers/"
     )
-    for key, kind in [
-        ("registry_id", "Microsoft.ContainerRegistry/registries/"),
-        ("key_vault_id", "Microsoft.KeyVault/vaults/"),
-    ]:
+    for key, kind in (
+        [("registry_id", "Microsoft.ContainerRegistry/registries/")]
+        if embedding
+        else [
+            ("registry_id", "Microsoft.ContainerRegistry/registries/"),
+            ("key_vault_id", "Microsoft.KeyVault/vaults/"),
+        ]
+    ):
         rid = p["binding"][key]
         if (
             not rid.casefold().startswith((prefix + kind).casefold())
@@ -206,6 +228,29 @@ def manifest_parameters(
 ):
     """Construct one parameter set. Identity coordinates are runtime data only."""
     arm = arm or plan["arms"][0]
+    if plan.get("phase") == "embedding_canary":
+        values = {
+            "embeddingOnly": True,
+            "runId": plan["run_id"],
+            "location": plan["location"],
+            "expiresAt": plan["expires_at"],
+            "imageDigest": plan["candidate"]["image"],
+            "sourceGroup": plan["source"]["resource_group"],
+            "acrName": plan["binding"]["registry_id"].rsplit("/", 1)[1],
+            "perRunSeconds": plan["limits"]["per_run_seconds"],
+            "operatorPrincipalId": principal,
+            "deployStack": stack,
+            "configureAccess": access or stack,
+            "activateService": False,
+            "profile": "Consumption",
+            "cpu": "2",
+            "memory": "4Gi",
+        }
+        return {
+            "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+            "contentVersion": "1.0.0.0",
+            "parameters": {k: {"value": v} for k, v in values.items()},
+        }
     values = {
         "runId": plan["run_id"],
         "location": plan["location"],
@@ -354,6 +399,27 @@ def preflight(plan, az, rest):
         or account["tenantId"] != plan["binding"]["tenant_id"]
     ):
         raise ValueError("Azure subscription/tenant differs from approved plan")
+    if plan.get("phase") == "embedding_canary":
+        registry = plan["binding"]["registry_id"].rsplit("/", 1)[1]
+        image = plan["candidate"]["image"]
+        if image.split("/")[0] != registry + ".azurecr.io":
+            raise ValueError("candidate registry differs")
+        metadata = az(
+            "acr",
+            "manifest",
+            "show-metadata",
+            "--registry",
+            registry,
+            "--name",
+            image.split("/", 1)[1],
+        )
+        if metadata["digest"] != image.split("@")[1]:
+            raise ValueError("candidate digest unavailable")
+        return {
+            "candidate_ci": baseline_ci(plan),
+            "checked_at": datetime.now(UTC).isoformat(),
+            "phase": "embedding_canary",
+        }
     graph_claims = json.loads(
         base64.urlsafe_b64decode(
             rest.token("https://graph.microsoft.com/.default").split(".")[1] + "==="
@@ -405,6 +471,16 @@ def preflight(plan, az, rest):
     )
     if metadata["digest"] != image.split("@")[1]:
         raise ValueError("candidate digest unavailable")
+    ci = baseline_ci(plan)
+    return {
+        "source_id": source["id"],
+        "candidate_ci": ci,
+        "source_image": containers[0]["image"],
+        "checked_at": datetime.now(UTC).isoformat(),
+    }
+
+
+def baseline_ci(plan):
     runs = json.loads(
         subprocess.check_output(  # noqa: S603 - fixed gh argv and validated commit SHA
             [
@@ -430,12 +506,7 @@ def preflight(plan, az, rest):
         or matching[0]["conclusion"] != "success"
     ):
         raise ValueError("baseline exact-main CI is not green")
-    return {
-        "source_id": source["id"],
-        "candidate_ci": matching[0]["html_url"],
-        "source_image": containers[0]["image"],
-        "checked_at": datetime.now(UTC).isoformat(),
-    }
+    return matching[0]["html_url"]
 
 
 def apply_template(plan, az, parameters, path, *, preview=False, output=None, identities=None):
@@ -445,6 +516,19 @@ def apply_template(plan, az, parameters, path, *, preview=False, output=None, id
 
     if output is None:
         raise ValueError("retained preview output is required")
+    parameters = json.loads(json.dumps(parameters))
+    if parameters["parameters"]["configureAccess"]["value"]:
+        keys = ["servicePrincipalId", "expiryPrincipalId"]
+        if plan.get("phase") != "embedding_canary":
+            keys.append("bootstrapPrincipalId")
+        concrete = {key: (identities or {}).get(key) for key in keys}
+        if any(
+            not isinstance(value, str)
+            or not re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", value)
+            for value in concrete.values()
+        ):
+            raise ValueError("receipt-backed concrete access principal IDs required")
+        parameters["parameters"]["accessPrincipals"] = {"value": concrete}
     values = {key: value["value"] for key, value in parameters["parameters"].items()}
     phase = (
         "service-" + values["profile"] + "-" + values["cpu"]
@@ -624,6 +708,62 @@ def enable_expiry(plan, outputs, rest, *, clock=time.monotonic, sleep=time.sleep
     }
 
 
+def verify_expiry_rehearsal(plan, az, rest):
+    """Read independently scheduled deletion; an Inspect job cannot authorize compute."""
+    proof = plan.get("expiry_proof", {})
+    run = proof.get("run_id", "")
+    if not re.fullmatch(r"[a-z][a-z0-9-]{2,19}", run) or run == plan["run_id"]:
+        raise ValueError("distinct prior expiry rehearsal required before compute")
+    expiry = utc(proof["expires_at"])
+    if not 0 <= (datetime.now(UTC) - expiry).total_seconds() <= 7 * 86400:
+        raise ValueError("expiry rehearsal is future or stale")
+    job = proof.get("job_id", "")
+    root = (
+        "/subscriptions/"
+        + plan["subscription_id"]
+        + "/resourceGroups/rg-ingest-perf-control-"
+        + run
+        + "/providers/Microsoft.Automation/automationAccounts/aa-perf-"
+        + run
+    )
+    if not re.fullmatch(r"[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}", job):
+        raise ValueError("concrete expiry job identity required")
+    row = rest.arm("GET", root + "/jobs/" + job).json()
+    props = row["properties"]
+    expected = {
+        "SubscriptionId": plan["subscription_id"],
+        "TrialGroup": "rg-ingest-perf-" + run,
+        "RunId": run,
+        "ExpiresAt": proof["expires_at"],
+        "Action": "Expire",
+    }
+    if (
+        props.get("status") != "Completed"
+        or props.get("parameters") != expected
+        or props.get("runbook", {}).get("name") != "expire"
+    ):
+        raise ValueError("independent expiry job does not prove exact deletion")
+    source = rest.arm("GET", root + "/runbooks/expire/content").content
+    if source != (ROOT / "deploy/performance_cleanup.ps1").read_bytes():
+        raise ValueError("expiry runbook differs from committed source")
+    raw = rest.arm("GET", root + "/jobs/" + job + "/output").content.decode()
+    if not any(
+        json.loads(line).get("outcome") == "deleted"
+        for line in raw.splitlines()
+        if line.startswith("{")
+    ):
+        raise ValueError("expiry job lacks actual deletion readback")
+    if az(
+        "group", "exists", "--subscription", plan["subscription_id"], "-n", expected["TrialGroup"]
+    ):
+        raise ValueError("expiry rehearsal group remains present")
+    return {
+        "verified_at": datetime.now(UTC).isoformat(),
+        "proof": proof,
+        "job_resource_id": root + "/jobs/" + job,
+    }
+
+
 def provision(
     plan,
     az,
@@ -637,9 +777,15 @@ def provision(
     enable=enable_expiry,
 ):
     """The sole stack-creation path; injectable boundaries exercise actual ordering."""
+    if any(output.glob("*-dispatch.json")):
+        raise ValueError("job start already attempted; reconcile through export and cleanup")
     precheck(plan, az, rest)
-    existing = az("group", "exists", "-n", plan["resource_group"])
-    controller = az("group", "exists", "-n", plan["controller_group"])
+    existing = az(
+        "group", "exists", "--subscription", plan["subscription_id"], "-n", plan["resource_group"]
+    )
+    controller = az(
+        "group", "exists", "--subscription", plan["subscription_id"], "-n", plan["controller_group"]
+    )
     template = ROOT / "infra/performance.bicep"
     parameters = manifest_parameters(plan, principal, ingress_key)
     foundation = {}
@@ -665,8 +811,8 @@ def provision(
         for group in (plan["resource_group"], plan["controller_group"]):
             owned_inventory(
                 {**plan, "resource_group": group},
-                az("group", "show", "-n", group),
-                az("resource", "list", "-g", group),
+                az("group", "show", "--subscription", plan["subscription_id"], "-n", group),
+                az("resource", "list", "--subscription", plan["subscription_id"], "-g", group),
             )
         # Reapply only infrastructure before any service/source mutation.
         foundation = saved["outputs"]
@@ -715,6 +861,10 @@ def provision(
     # a caller-local finally block or a mere schedule name is insufficient.
     expiry = enable(plan, foundation, rest)
     write_json(output / "expiry-receipt.json", expiry)
+    if plan.get("phase") == "embedding_canary":
+        if plan.get("expiry_only") is True:
+            return foundation
+        write_json(output / "expiry-proof-readback.json", verify_expiry_rehearsal(plan, az, rest))
     parameters = manifest_parameters(plan, principal, ingress_key, stack=True)
     apply(
         plan,
@@ -819,17 +969,111 @@ def grant_site(plan, outputs, rest, output):
     return receipt
 
 
+def export_checkpoint(plan, az, rest, output):
+    """Authenticate empty pre-measurement inventory; never waive a running export."""
+    begin_export(output, plan)
+    path = output / "provision-receipt.json"
+    saved = json.loads(path.read_text()) if path.exists() else None
+    if saved and (
+        saved.get("plan_sha256") != plan_digest(plan)
+        or saved.get("phase") not in ("controller_created", "stack_created", "service_active")
+    ):
+        raise ValueError("provision receipt phase/plan binding differs")
+    if saved and saved.get("phase") != "controller_created":
+        return export_evidence(plan, saved["outputs"], rest, output)
+    if plan.get("phase") != "embedding_canary":
+        return export_evidence(plan, saved["outputs"], rest, output)
+    if any(output.glob("*-dispatch.json")):
+        if saved is None:
+            raise ValueError("dispatch attempt lacks retained controller; reconcile")
+        return export_evidence(plan, saved["outputs"], rest, output)
+    bootstrap = json.loads((output / "bootstrap-receipt.json").read_text())
+    if bootstrap.get("status") != "ready" or bootstrap.get("plan") != plan:
+        raise ValueError("authenticated bootstrap foundation required")
+    inventories = []
+    for key in ("resource_group", "controller_group"):
+        group = plan[key]
+        if az("group", "exists", "--subscription", plan["subscription_id"], "-n", group):
+            row = az("group", "show", "--subscription", plan["subscription_id"], "-n", group)
+            resources = az(
+                "resource", "list", "--subscription", plan["subscription_id"], "-g", group
+            )
+            owned_inventory({**plan, "resource_group": group}, row, resources)
+            allowed = (
+                "Microsoft.ManagedIdentity/userAssignedIdentities",
+                "Microsoft.Automation/automationAccounts",
+                "Microsoft.Storage/storageAccounts",
+            )
+            if any(x.get("type") not in allowed for x in resources):
+                raise ValueError("nonempty measurement foundation requires cloud evidence")
+            inventories.append({"group": row, "resources": resources})
+    # Local snapshot has authenticated live reads and explicit premeasurement status.
+    target = output / "cloud-evidence" / plan["run_id"] / "empty-foundation.json"
+    write_json(
+        target,
+        {"plan_sha256": plan_digest(plan), "inventories": inventories, "premeasurement": True},
+    )
+    attempt = uuid.uuid4().hex
+    raw = target.read_bytes()
+    receipt = {
+        "run_id": plan["run_id"],
+        "attempt_id": attempt,
+        "plan_sha256": plan_digest(plan),
+        "export_url_sha256": hashlib.sha256(
+            (saved or {"outputs": {"exportUrl": "empty-foundation"}})["outputs"][
+                "exportUrl"
+            ].encode()
+        ).hexdigest(),
+        "blobs": 1,
+        "exported_at": datetime.now(UTC).isoformat(),
+        "foundation_only": True,
+        "files": [
+            {
+                "path": str(target.relative_to(output)),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "bytes": len(raw),
+            }
+        ],
+    }
+    write_json(output / "export-receipt.json", receipt)
+    write_json(
+        output / "export-state.json",
+        {
+            "attempt_id": attempt,
+            "plan_sha256": plan_digest(plan),
+            "status": "complete",
+            "receipt_sha256": hashlib.sha256(
+                (output / "export-receipt.json").read_bytes()
+            ).hexdigest(),
+        },
+    )
+    return receipt
+
+
 def cleanup(plan, az, rest, output, *, export_receipt_sha256=None):
     """Delete exact owned resources only after durable evidence export.
 
     Unknown/unowned inventory is a halt. Keep the independent controller whenever
     export, access revocation, trial deletion or its readback is incomplete.
     """
-    provision_receipt = json.loads((output / "provision-receipt.json").read_text())
+    receipt_path = output / "provision-receipt.json"
+    provision_receipt = (
+        json.loads(receipt_path.read_text())
+        if receipt_path.exists()
+        else {
+            "outputs": {"exportUrl": "empty-foundation", "sourceRoleIds": []},
+            "plan_sha256": plan_digest(plan),
+        }
+    )
     outputs = provision_receipt["outputs"]
     if provision_receipt.get("plan_sha256") != plan_digest(plan):
         raise ValueError("cleanup provision receipt differs from runtime plan")
     verified = verify_export(plan, outputs, output, export_receipt_sha256)
+    if verified.get("foundation_only"):
+        # Fresh authenticated proof must precede this deletion; stale snapshot is insufficient.
+        current = export_checkpoint(plan, az, rest, output)
+        if current["files"] != verified["files"]:
+            raise ValueError("empty foundation changed after export; archive the current snapshot")
     write_json(
         output / "cleanup-export-authorization.json",
         {
@@ -839,15 +1083,40 @@ def cleanup(plan, az, rest, output, *, export_receipt_sha256=None):
             "verified_at": datetime.now(UTC).isoformat(),
         },
     )
-    if az("group", "exists", "-n", plan["resource_group"]):
-        live = az("group", "show", "-n", plan["resource_group"])
-        owned_inventory(plan, live, az("resource", "list", "-g", plan["resource_group"]))
-        for name, key in [
-            ("id-perf-", "servicePrincipalId"),
-            ("id-perf-pg-", "bootstrapPrincipalId"),
-        ]:
+    if az(
+        "group", "exists", "--subscription", plan["subscription_id"], "-n", plan["resource_group"]
+    ):
+        live = az(
+            "group", "show", "--subscription", plan["subscription_id"], "-n", plan["resource_group"]
+        )
+        owned_inventory(
+            plan,
+            live,
+            az(
+                "resource",
+                "list",
+                "--subscription",
+                plan["subscription_id"],
+                "-g",
+                plan["resource_group"],
+            ),
+        )
+        for name, key in (
+            []
+            if "servicePrincipalId" not in outputs
+            else [("id-perf-", "servicePrincipalId")]
+            if plan.get("phase") == "embedding_canary"
+            else [("id-perf-", "servicePrincipalId"), ("id-perf-pg-", "bootstrapPrincipalId")]
+        ):
             identity = az(
-                "identity", "show", "-g", plan["resource_group"], "-n", name + plan["run_id"]
+                "identity",
+                "show",
+                "--subscription",
+                plan["subscription_id"],
+                "-g",
+                plan["resource_group"],
+                "-n",
+                name + plan["run_id"],
             )
             if identity["principalId"] != outputs[key]:
                 raise ValueError("cleanup identity receipt drift")
@@ -904,11 +1173,11 @@ def cleanup(plan, az, rest, output, *, export_receipt_sha256=None):
                 + "/appRoleAssignments/"
                 + grant["assignment_id"],
             )
-    principals = {outputs["servicePrincipalId"], outputs["bootstrapPrincipalId"]}
-    allowed = {
-        plan["binding"]["registry_id"].casefold(),
-        (plan["binding"]["key_vault_id"] + "/secrets/anthropic-api-key").casefold(),
-    }
+    principals = {outputs["servicePrincipalId"]} if "servicePrincipalId" in outputs else set()
+    allowed = {plan["binding"]["registry_id"].casefold()}
+    if plan.get("phase") != "embedding_canary":
+        principals.add(outputs["bootstrapPrincipalId"])
+        allowed.add((plan["binding"]["key_vault_id"] + "/secrets/anthropic-api-key").casefold())
     for role_id in outputs["sourceRoleIds"]:
         scopes = [
             x
@@ -932,22 +1201,52 @@ def cleanup(plan, az, rest, output, *, export_receipt_sha256=None):
         ):
             raise ValueError("external role identity drift")
         rest.arm("DELETE", role_id, api="2022-04-01")
+        if plan.get("phase") == "embedding_canary":
+            try:
+                rest.arm("GET", role_id, api="2022-04-01")
+            except RemoteError as exc:
+                if exc.status == 404:
+                    continue
+                raise
+            raise ValueError("runtime registry grant deletion unconfirmed")
     groups = [plan["resource_group"], plan["controller_group"]]
     for group in groups:
-        if az("group", "exists", "-n", group):
-            live = az("group", "show", "-n", group)
-            resources = az("resource", "list", "-g", group)
+        if az("group", "exists", "--subscription", plan["subscription_id"], "-n", group):
+            live = az("group", "show", "--subscription", plan["subscription_id"], "-n", group)
+            resources = az(
+                "resource", "list", "--subscription", plan["subscription_id"], "-g", group
+            )
             scoped = {**plan, "resource_group": group}
             owned_inventory(scoped, live, resources)
-            az("group", "delete", "-n", group, "--yes", "--no-wait")
+            az(
+                "group",
+                "delete",
+                "--subscription",
+                plan["subscription_id"],
+                "-n",
+                group,
+                "--yes",
+                "--no-wait",
+            )
             deadline = time.monotonic() + 1800
-            while az("group", "exists", "-n", group):
+            while az("group", "exists", "--subscription", plan["subscription_id"], "-n", group):
                 if time.monotonic() >= deadline:
                     raise TimeoutError("deletion unconfirmed; retain controller")
                 time.sleep(10)
         write_json(
             output / ("deleted-" + group + ".json"),
             {"group": group, "absent": True, "verified_at": datetime.now(UTC).isoformat()},
+        )
+
+    if plan.get("phase") == "embedding_canary":
+        write_json(
+            output / "operator-grants-pending.json",
+            {
+                "status": "operator_cleanup_required",
+                "bootstrap_receipt": "bootstrap-receipt.json",
+                "resource_cleanup_complete": True,
+                "access_cleanup_complete": False,
+            },
         )
 
 
@@ -1105,6 +1404,22 @@ def verify_export(plan, outputs, output, expected_digest):
     return receipt
 
 
+def begin_export(output, plan=None):
+    """Revoke both old proof channels before any export entrypoint validation."""
+    receipt_path = output / "export-receipt.json"
+    state_path = output / "export-state.json"
+    state = {
+        "attempt_id": uuid.uuid4().hex,
+        "plan_sha256": plan_digest(plan) if plan is not None else None,
+        "status": "started",
+    }
+    try:
+        write_json(state_path, state)
+    finally:
+        receipt_path.unlink(missing_ok=True)
+    return state
+
+
 def export_evidence(plan, outputs, rest, output):
     """Replace export authorization only after the latest full attempt succeeds."""
     from urllib.parse import quote
@@ -1113,13 +1428,7 @@ def export_evidence(plan, outputs, rest, output):
 
     receipt_path = output / "export-receipt.json"
     state_path = output / "export-state.json"
-    state = {"attempt_id": uuid.uuid4().hex, "plan_sha256": plan_digest(plan), "status": "started"}
-    # Independently revoke both proof channels before any remote work. A failed
-    # unlink must not suppress state invalidation, or vice versa.
-    try:
-        write_json(state_path, state)
-    finally:
-        receipt_path.unlink(missing_ok=True)
+    state = begin_export(output, plan)
     try:
         url = outputs["exportUrl"]
         container = url.rsplit("/", 1)[0]
@@ -1196,7 +1505,10 @@ def export_evidence(plan, outputs, rest, output):
 
 
 def start_template_job(plan, az, rest, job_name, template, output, label):
-    """Start once, pin the returned execution, and wait through configured retries."""
+    """Persist intent before start; an uncertain attempt is never replayed."""
+    dispatch = output / (label + "-dispatch.json")
+    if dispatch.exists():
+        raise ValueError("job start already attempted; reconcile without redispatch")
     group = plan["resource_group"]
     job = az("containerapp", "job", "show", "-g", group, "-n", job_name)
     if (
@@ -1210,6 +1522,15 @@ def start_template_job(plan, az, rest, job_name, template, output, label):
         )
     before = az("containerapp", "job", "execution", "list", "-g", group, "-n", job_name)
     known = {x["id"].casefold() for x in before}
+    intent = {
+        "outcome": "dispatch_intent",
+        "job": job["id"],
+        "template": template,
+        "plan_sha256": plan_digest(plan),
+        "known_executions": sorted(known),
+        "attempted_at": datetime.now(UTC).isoformat(),
+    }
+    write_json(dispatch, intent)
     row = rest.arm("POST", job["id"] + "/start", api="2025-07-01")
     execution = row.json() if row.status_code == 200 and row.content else None
     if row.status_code == 202:
@@ -1225,8 +1546,8 @@ def start_template_job(plan, az, rest, job_name, template, output, label):
             time.sleep(5)
     if execution is None:
         write_json(
-            output / (label + "-dispatch.json"),
-            {"outcome": "uncertain_dispatch", "job": job["id"], "status": row.status_code},
+            dispatch,
+            {**intent, "outcome": "uncertain_dispatch", "status": row.status_code},
         )
         raise RuntimeError("job dispatch lacks unique execution identity; reconcile, never retry")
     name = execution.get("name")
@@ -1236,8 +1557,8 @@ def start_template_job(plan, az, rest, job_name, template, output, label):
     ):
         raise ValueError("execution identity mismatch")
     write_json(
-        output / (label + "-dispatch.json"),
-        {"job": job["id"], "execution": execution, "template": template},
+        dispatch,
+        {**intent, "outcome": "dispatched", "execution": execution},
     )
     cfg = job["properties"]["configuration"]
     budget = cfg["replicaTimeout"] * (cfg["replicaRetryLimit"] + 1) + 180
@@ -1246,10 +1567,89 @@ def start_template_job(plan, az, rest, job_name, template, output, label):
     return result
 
 
+def update_benchmark_template(plan, az, rest, job, template):
+    rest.arm("PATCH", job["id"], body={"properties": {"template": template}}, api="2025-07-01")
+    deadline = time.monotonic() + 120
+    while time.monotonic() < deadline:
+        stored = az("containerapp", "job", "show", "-g", plan["resource_group"], "-n", job["name"])
+        if (
+            stored["properties"].get("provisioningState") == "Succeeded"
+            and stored["properties"]["template"] == template
+        ):
+            return
+        time.sleep(5)
+    raise TimeoutError("full benchmark template update not observed")
+
+
+def prove_evidence_access(plan, outputs, az, rest, output):
+    """Writer MI creates a nonce; the distinct authenticated recovery reader fetches it."""
+    job = az(
+        "containerapp",
+        "job",
+        "show",
+        "-g",
+        plan["resource_group"],
+        "-n",
+        outputs["stackOutputs"]["benchmarkJobName"],
+    )
+    original = job["properties"]["template"]
+    template = json.loads(json.dumps(original))
+    nonce = uuid.uuid4().hex
+    container = template["containers"][0]
+    container["env"] = [x for x in container["env"] if x["name"] != "PERF_PROBE_NONCE"] + [
+        {"name": "PERF_PROBE_NONCE", "value": nonce}
+    ]
+    write_json(
+        output / "evidence-probe-intent.json",
+        {
+            "run_id": plan["run_id"],
+            "nonce": nonce,
+            "job_id": job["id"],
+            "plan_sha256": plan_digest(plan),
+        },
+    )
+    update_benchmark_template(plan, az, rest, job, template)
+    try:
+        start_template_job(plan, az, rest, job["name"], template, output, "evidence-probe")
+        raw = rest.blob("GET", outputs["exportUrl"] + "/probe-" + nonce + ".json").content
+        if json.loads(raw) != {"kind": "evidence_probe", "run_id": plan["run_id"], "nonce": nonce}:
+            raise ValueError("writer/recovery-reader evidence nonce differs")
+        write_json(
+            output / "evidence-probe-readback.json",
+            {
+                "run_id": plan["run_id"],
+                "nonce": nonce,
+                "blob_sha256": hashlib.sha256(raw).hexdigest(),
+                "verified_at": datetime.now(UTC).isoformat(),
+            },
+        )
+    finally:
+        update_benchmark_template(plan, az, rest, job, original)
+
+
 def run_microbenchmarks(plan, outputs, az, rest, output):
     """No service app exists during this serial fixed-memory comparison."""
     group = plan["resource_group"]
     name = outputs["stackOutputs"]["benchmarkJobName"]
+    if plan.get("phase") == "embedding_canary":
+        job = az("containerapp", "job", "show", "-g", group, "-n", name)
+        template = job["properties"]["template"]
+        container = template["containers"][0]
+        if (output / "benchmark-000-dispatch.json").exists():
+            raise ValueError("canary measurement already dispatched; reconcile without rerun")
+        proof = json.loads((output / "evidence-probe-readback.json").read_text())
+        if (
+            proof["run_id"] != plan["run_id"]
+            or (datetime.now(UTC) - utc(proof["verified_at"])).total_seconds() > 300
+        ):
+            raise ValueError("current evidence access proof required")
+        if container["image"] != BASELINE_IMAGE or container["resources"] != {
+            "cpu": 2,
+            "memory": "4Gi",
+        }:
+            raise ValueError("canary workload allocation/image drift")
+        start_template_job(plan, az, rest, name, template, output, "benchmark-000")
+        return True
     cases = []
     for cpu, threads in [(2, (1, 2)), (4, (1, 2, 4))]:
         for thread in threads:
@@ -1397,6 +1797,58 @@ def capacity_and_cost(plan, az):
     """Read live regional availability and retail meters; never infer spare quota."""
     import httpx
 
+    if plan.get("phase") == "embedding_canary":
+        usages = az(
+            "rest",
+            "--method",
+            "get",
+            "--url",
+            "https://management.azure.com/subscriptions/"
+            + plan["subscription_id"]
+            + "/providers/Microsoft.App/locations/"
+            + plan["location"]
+            + "/usages?api-version=2025-07-01",
+        )["value"]
+        environments = next(x for x in usages if x["name"]["value"] == "ManagedEnvironmentCount")
+        if environments["currentValue"] >= environments["limit"]:
+            raise ValueError("no managed environment quota")
+        # Source/runtime bound, not an Azure budget or permission to spend.
+        response = httpx.get(
+            "https://prices.azure.com/api/retail/prices",
+            params={
+                "$filter": "serviceName eq 'Azure Container Apps' and armRegionName eq '"
+                + plan["location"]
+                + "' and priceType eq 'Consumption'"
+            },
+            timeout=30,
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        page = response.json()
+        if page.get("NextPageLink"):
+            raise ValueError("canary price inventory requires bounded operator reconciliation")
+        rates = {}
+        for meter in ("Standard vCPU Active Usage", "Standard Memory Active Usage"):
+            rows = [x["retailPrice"] for x in page["Items"] if x["meterName"] == meter]
+            if not rows:
+                raise ValueError("required canary retail meter missing")
+            rates[meter] = max(rows)
+        estimate = (
+            plan["limits"]["window_seconds"]
+            * (2 * rates["Standard vCPU Active Usage"] + 4 * rates["Standard Memory Active Usage"])
+            + 2
+        )
+        if estimate > plan["limits"]["incremental_usd"]:
+            raise ValueError("canary estimate exceeds approved source limit")
+        return {
+            "phase": "embedding_canary",
+            "quota": usages,
+            "rates": rates,
+            "estimate_usd": estimate,
+            "allowance_usd": 2,
+            "limit_is_not_azure_budget": True,
+            "checked_at": datetime.now(UTC).isoformat(),
+        }
     profiles = az(
         "containerapp", "env", "workload-profile", "list-supported", "--location", plan["location"]
     )
@@ -1549,12 +2001,11 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     retained = args.output / "runtime-plan.json"
     if args.operation in ("export", "cleanup"):
-        plan = retained_plan(args.spec, args.approved_sha256, retained, allow_expired=True)
-        provision_receipt = json.loads((args.output / "provision-receipt.json").read_text())
-        if provision_receipt.get("plan_sha256") != plan_digest(plan):
-            raise ValueError("provision receipt differs from runtime plan")
         if args.operation == "export":
-            export_evidence(plan, provision_receipt["outputs"], Rest(), args.output)
+            begin_export(args.output)
+        plan = retained_plan(args.spec, args.approved_sha256, retained, allow_expired=True)
+        if args.operation == "export":
+            export_checkpoint(plan, Azure(), Rest(), args.output)
         else:
             cleanup(
                 plan, Azure(), Rest(), args.output, export_receipt_sha256=args.export_receipt_sha256
@@ -1587,6 +2038,33 @@ def main():
         outputs = provision(
             plan, az, rest, principal=principal, ingress_key=key, output=args.output
         )
+        if plan.get("phase") == "embedding_canary":
+            if plan.get("expiry_only") is True:
+                write_json(
+                    args.output / "outcome.json",
+                    {
+                        "outcome": "expiry_rehearsal_armed",
+                        "next": (
+                            "wait for independent scheduled deletion; "
+                            "retain controller for readback"
+                        ),
+                    },
+                )
+                return 0
+            prove_evidence_access(plan, outputs, az, rest, args.output)
+            run_microbenchmarks(plan, outputs, az, rest, args.output)
+            export_evidence(plan, outputs, rest, args.output)
+            write_json(
+                args.output / "outcome.json",
+                {
+                    "outcome": "canary_complete",
+                    "ticket_acceptance": "remaining_service_and_expansion_unresolved",
+                    "controller_commit": os.environ.get("GITHUB_SHA", "unknown"),
+                    "workload_commit": BASELINE_COMMIT,
+                    "workload_image": BASELINE_IMAGE,
+                },
+            )
+            return 0
         grant_site(plan, outputs, rest, args.output)
         create_source_root(plan, rest)
         upload_inputs(plan, outputs, rest)
@@ -1691,8 +2169,7 @@ def main():
         receipt = args.output / "provision-receipt.json"
         if receipt.exists():
             try:
-                outputs = json.loads(receipt.read_text())["outputs"]
-                export_evidence(plan, outputs, rest, args.output)
+                export_checkpoint(plan, az, rest, args.output)
             except BaseException as exc:
                 write_json(
                     args.output / "export-failure.json",

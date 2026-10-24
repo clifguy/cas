@@ -750,7 +750,7 @@ class StubContentStore(ContentStore):
                 if chunk.indexed_structure is not None
                 else chunk.heading_path
             )
-            return f"{structure} {chunk.content}".lower()
+            return f"{structure} {chunk.authored_content}".lower()
 
         results: list[SearchResult] = []
         for document_id, chunks in self._store.items():

@@ -15,6 +15,24 @@ from pathlib import Path
 def main():
     from performance_runtime import Evidence
 
+    if datetime.now(UTC) >= datetime.fromisoformat(os.environ["PERF_EXPIRES_AT"]):
+        raise TimeoutError("benchmark/probe expiry reached before startup")
+    probe = os.environ.get("PERF_PROBE_NONCE")
+    if probe:
+        import re
+
+        if not re.fullmatch(r"[a-f0-9]{32}", probe):
+            raise ValueError("invalid evidence probe nonce")
+        store = Evidence(os.environ["PERF_EXPORT_URL"], os.environ["PERF_RUN_ID"])
+        value = {"kind": "evidence_probe", "run_id": os.environ["PERF_RUN_ID"], "nonce": probe}
+        response = store.request(
+            "PUT",
+            "probe-" + probe + ".json",
+            content=json.dumps(value).encode(),
+            headers={"x-ms-blob-type": "BlockBlob", "If-None-Match": "*"},
+        )
+        response.raise_for_status()
+        return
     started = time.monotonic()
     per_run = int(os.environ["PERF_PER_RUN_SECONDS"])
     if not 1 <= per_run <= 900:

@@ -99,7 +99,9 @@ def test_chunks_table_has_vector_fts_and_indexes():
     assert "to_tsvector('english', coalesce(indexed_structure, heading_path))" in (
         pgschema.CHUNKS_TABLE
     )
-    assert "to_tsvector('english', translate(content, '<>', '  '))" in pgschema.CHUNKS_TABLE
+    assert "to_tsvector('english', translate(coalesce(keyword_content, content), '<>', '  '))" in (
+        pgschema.CHUNKS_TABLE
+    )
     assert "setweight" in pgschema.CHUNKS_TABLE
     content_idx = "\n".join(pgschema.CONTENT_INDEXES)
     assert "USING GIN (tsv)" in content_idx

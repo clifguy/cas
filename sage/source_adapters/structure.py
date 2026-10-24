@@ -1,7 +1,8 @@
 """Bounded native source facts, separate from the adapter's display projection.
 
 Streams are single use. Limits constrain parser work, not a claim about unseen
-source totals. Structured scalars retain native types; no field name supplies
+source totals. Structured scalars retain native types except JSON numbers, represented by
+distinct JsonNumber lexical tokens rather than binary floating point. No field name supplies
 semantics and strings containing another format are never decoded.
 """
 
@@ -12,6 +13,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from sage.adapters.interfaces import HEADING_PATH_SEPARATOR
+from sage.source_adapters.json_lexical import (
+    JsonNumber,
+    JsonObject,
+    loads,
+    string_evidence,
+    string_token,
+)
 
 if TYPE_CHECKING:
     from sage.source_adapters.base import ProjectionResult
@@ -222,7 +230,12 @@ def _narrative(
 
 
 def _walk(
-    value: object, limits: FactLimits, prefix: str = "$", start: int = 0
+    value: object,
+    limits: FactLimits,
+    prefix: str = "$",
+    start: int = 0,
+    *,
+    lexical_json: bool = False,
 ) -> Iterator[SourceFact]:
     order = start
     nodes = 0
@@ -234,23 +247,28 @@ def _walk(
         nodes += 1
         if nodes > limits.max_parse_nodes or depth > limits.max_depth:
             raise _BoundReached("structured traversal limit reached; remainder unknown")
-        if isinstance(item, dict):
-            for key, child in item.items():
-                import json
-
+        if isinstance(item, (dict, JsonObject)):
+            members = item.members if isinstance(item, JsonObject) else list(item.items())
+            counts: dict[str, int] = {}
+            for key, _child in members:
+                counts[key] = counts.get(key, 0) + 1
+            for index, (key, child) in enumerate(members):
                 label = key if isinstance(key, str) else str(key)
                 if len(label) > 500:
                     raise _BoundReached("structured location length limit; remainder unknown")
-                segment = f"[{json.dumps(label, ensure_ascii=False)}]"
-                if max(len(path), len(field)) + len(segment) > 512:
+                segment = f"[{string_token(label)}]"
+                occurrence = f"{{member:{index}}}" if counts[key] > 1 else ""
+                if max(len(path), len(field)) + len(segment) + len(occurrence) > 512:
                     raise _BoundReached("structured location length limit; remainder unknown")
                 yield from visit(
                     child,
-                    path + segment,
+                    path + segment + occurrence,
                     field + segment,
                     depth + 1,
                     record,
-                    labels + (label,) if isinstance(key, str) else labels,
+                    labels + ((string_token(label) if lexical_json else string_evidence(label)),)
+                    if isinstance(key, str)
+                    else labels,
                 )
         elif isinstance(item, list):
             for index, child in enumerate(item):
@@ -266,7 +284,13 @@ def _walk(
                 order,
                 record,
                 item,
-                _render(item),
+                str(item)
+                if isinstance(item, JsonNumber)
+                else string_token(item)
+                if lexical_json and isinstance(item, str)
+                else string_evidence(item)
+                if isinstance(item, str)
+                else _render(item),
                 HEADING_PATH_SEPARATOR.join(labels),
                 labels,
             )
@@ -306,7 +330,6 @@ def _json_guard(text: str, limits: FactLimits) -> int:
 
 def _native(path: Path, limits: FactLimits, limitations: list[str]) -> Iterator[SourceFact]:
     import csv
-    import json
     import tomllib
 
     suffix = path.suffix.lower()
@@ -348,7 +371,9 @@ def _native(path: Path, limits: FactLimits, limitations: list[str]) -> Iterator[
                 if not line.strip():
                     continue
                 _json_guard(line, limits)
-                for fact in _walk(json.loads(line), limits, f"line:{index + 1}", order):
+                for fact in _walk(
+                    loads(line), limits, f"line:{index + 1}", order, lexical_json=True
+                ):
                     if order >= limits.max_parse_nodes:
                         raise _BoundReached("JSONL fact limit reached; remainder unknown")
                     yield fact
@@ -361,7 +386,7 @@ def _native(path: Path, limits: FactLimits, limitations: list[str]) -> Iterator[
         return
     if suffix == ".json":
         _json_guard(text, limits)
-        data = json.loads(text)
+        data = loads(text)
     else:
         import yaml
 
@@ -413,7 +438,7 @@ def _native(path: Path, limits: FactLimits, limitations: list[str]) -> Iterator[
             scalar_spans = _toml_guard(text, limits)
             data = tomllib.loads(text)
     order = 0
-    for fact in _walk(data, limits):
+    for fact in _walk(data, limits, lexical_json=suffix == ".json"):
         yield fact
         order = fact.order + 1
     if suffix in {".yaml", ".yml", ".toml"}:
@@ -477,46 +502,26 @@ def _comments(text: str, spans: list[tuple[int, int]]) -> Iterator[tuple[int, st
 
 
 def _xlsx(path: Path, limits: FactLimits) -> Iterator[SourceFact]:
-    from openpyxl import load_workbook
-    from openpyxl.utils import get_column_letter
-
     from sage.source_adapters.base import check_zip_package
+    from sage.source_adapters.xlsx_cells import cells
 
     check_zip_package(path)
-    columns_clipped = _xlsx_guard(path, limits)
-    workbook = load_workbook(path, read_only=True, data_only=False)
-    order = rows = 0
-    try:
-        for sheet in workbook:
-            for row in sheet.iter_rows(max_row=limits.max_rows, max_col=limits.max_columns):
-                if rows >= limits.max_rows:
-                    raise _BoundReached("workbook row limit reached; remainder unknown")
-                rows += 1
-                for column, cell in enumerate(row, 1):
-                    if cell.value is None:
-                        continue
-                    if order >= limits.max_parse_nodes:
-                        raise _BoundReached("workbook fact limit reached; remainder unknown")
-                    address = f"{sheet.title}!{get_column_letter(column)}{cell.row}"
-                    yield SourceFact(
-                        sheet.title,
-                        f"column:{column}",
-                        address,
-                        order,
-                        f"{sheet.title}!row:{cell.row}",
-                        cell.value,
-                        _render(cell.value),
-                        sheet.title,
-                        (sheet.title,),
-                    )
-                    order += 1
-            if rows >= limits.max_rows:
-                raise _BoundReached("workbook row limit reached; remainder unknown")
-        columns_clipped |= any((s.max_column or 0) > limits.max_columns for s in workbook)
-        if columns_clipped:
-            raise _BoundReached("workbook column limit reached; remainder unknown")
-    finally:
-        workbook.close()
+    _xlsx_guard(path, limits)
+    for order, cell in enumerate(cells(path)):
+        # Blanks contain no authored evidence, but projection still retains them.
+        if not cell.authored:
+            continue
+        yield SourceFact(
+            cell.sheet,
+            f"column:{cell.column}",
+            f"{cell.sheet}!{cell.address}",
+            order,
+            f"{cell.sheet}!row:{cell.row}",
+            cell.value,
+            cell.authored,
+            cell.sheet,
+            (cell.sheet,),
+        )
 
 
 def _xml(text: str, limits: FactLimits) -> Iterator[SourceFact]:
@@ -585,7 +590,7 @@ def _xml(text: str, limits: FactLimits) -> Iterator[SourceFact]:
     yield from queue
 
 
-def _xlsx_guard(path: Path, limits: FactLimits, *, projection: bool = False) -> bool:
+def _xlsx_guard(path: Path, limits: FactLimits) -> None:
     """Bound XML work before openpyxl allocates shared strings/styles/rows."""
     import zipfile
     from xml.sax.handler import ContentHandler
@@ -595,19 +600,20 @@ def _xlsx_guard(path: Path, limits: FactLimits, *, projection: bool = False) -> 
     class Guard(ContentHandler):
         def __init__(self) -> None:
             self.nodes = self.depth = 0
-            self.columns_clipped = False
             self.rows = 0
+            self.row_cells = 0
 
         def startElement(self, name: str, attrs: object) -> None:  # noqa: N802
             self.depth += 1
             self.nodes += 1
             local_name = name.rsplit(":", 1)[-1]
-            if local_name == "row" and projection:
+            if local_name == "row":
                 self.rows += 1
+                self.row_cells = 0
                 reference = attrs.get("r", "0")  # type: ignore[attr-defined]
                 if len(reference) > 9 or not reference.isdigit():
                     raise _BoundReached("workbook row address limit")
-                if self.rows > limits.max_rows or int(reference) > limits.max_rows:
+                if self.rows > limits.max_rows or int(reference) > 1_048_576:
                     raise _BoundReached("workbook row limit")
             if local_name == "c":
                 reference = attrs.get("r", "")  # type: ignore[attr-defined]
@@ -618,7 +624,9 @@ def _xlsx_guard(path: Path, limits: FactLimits, *, projection: bool = False) -> 
                     if not "A" <= char <= "Z":
                         break
                     column = column * 26 + ord(char) - ord("A") + 1
-                self.columns_clipped |= column > limits.max_columns
+                self.row_cells += 1
+                if column > 16_384 or self.row_cells > limits.max_columns:
+                    raise _BoundReached("workbook stored column limit")
             if self.depth > limits.max_depth or self.nodes > limits.max_parse_nodes:
                 raise _BoundReached("workbook XML depth/node limit before native allocation")
 
@@ -636,7 +644,6 @@ def _xlsx_guard(path: Path, limits: FactLimits, *, projection: bool = False) -> 
                 while block := source.read(4096):
                     parser.feed(block)
             parser.close()
-    return handler.columns_clipped
 
 
 def _toml_guard(text: str, limits: FactLimits) -> list[tuple[int, int]]:
@@ -710,10 +717,8 @@ def check_projection_work(path: Path, limits: FactLimits) -> None:
             raise _BoundReached("source byte admission limit")
         if suffix == ".xlsx":
             check_zip_package(path)
-            # Projection already clamps row width independently. Wide sources
-            # remain readable through that existing preview; facts report their
-            # separately configured inspection width as limited.
-            _xlsx_guard(path, limits, projection=True)
+            # One sparse-work admission authority for both display and facts.
+            _xlsx_guard(path, limits)
             return
         # Admission precedes this whole-source allocation. The bounded read
         # also refuses growth between stat and open instead of trusting stat.

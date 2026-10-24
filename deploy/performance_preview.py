@@ -25,8 +25,11 @@ def inventory(plan, result, parameters, identities):
     groups = {prefix + plan["resource_group"], prefix + plan["controller_group"]}
     trial, controller = prefix + plan["resource_group"], prefix + plan["controller_group"]
     run = re.escape(plan["run_id"])
+    embedding = plan.get("phase") == "embedding_canary"
     patterns = {
-        "Microsoft.ManagedIdentity/userAssignedIdentities": (rf"id-perf-(?:pg-)?{run}", 2),
+        "Microsoft.ManagedIdentity/userAssignedIdentities": (rf"id-perf-{run}", 1)
+        if embedding
+        else (rf"id-perf-(?:pg-)?{run}", 2),
         "Microsoft.Automation/automationAccounts": (rf"aa-perf-{run}", 1),
         "Microsoft.Storage/storageAccounts": (r"stperf[a-z0-9]{13}", 1),
         "Microsoft.Storage/storageAccounts/blobServices": (r"stperf[a-z0-9]{13}/default", 1),
@@ -35,7 +38,14 @@ def inventory(plan, result, parameters, identities):
             1,
         ),
     }
-    if p["deployStack"]:
+    if p["deployStack"] and embedding:
+        patterns.update(
+            {
+                "Microsoft.App/managedEnvironments": (rf"cae-perf-{run}", 1),
+                "Microsoft.App/jobs": (rf"bench-{run}", 1),
+            }
+        )
+    if p["deployStack"] and not embedding:
         pg = rf"psql-perf-{run}-[a-z0-9]{{13}}"
         patterns.update(
             {
@@ -87,15 +97,24 @@ def inventory(plan, result, parameters, identities):
             + "/blobServices/default/containers/evidence"
         )
         service = identities["servicePrincipalId"]
-        bootstrap = identities["bootstrapPrincipalId"]
+        bootstrap = identities.get("bootstrapPrincipalId")
         permitted_roles = {
             (trial, CONTRIBUTOR, identities["expiryPrincipalId"]),
             (container, BLOB, service),
             (container, BLOB, p["operatorPrincipalId"]),
             (plan["binding"]["registry_id"], ACR, service),
-            (plan["binding"]["registry_id"], ACR, bootstrap),
-            (plan["binding"]["key_vault_id"] + "/secrets/anthropic-api-key", SECRET_ROLE, service),
         }
+        if not embedding:
+            permitted_roles.update(
+                {
+                    (plan["binding"]["registry_id"], ACR, bootstrap),
+                    (
+                        plan["binding"]["key_vault_id"] + "/secrets/anthropic-api-key",
+                        SECRET_ROLE,
+                        service,
+                    ),
+                }
+            )
     roles = {
         (scope.casefold(), role, principal.casefold()) for scope, role, principal in permitted_roles
     }
@@ -148,15 +167,36 @@ def inventory(plan, result, parameters, identities):
                 props = after.get("properties", {})
                 if kind == "Microsoft.App/managedEnvironments":
                     profiles = props.get("workloadProfiles", [])
-                    if {(x["name"], x["workloadProfileType"]) for x in profiles} != {
-                        ("Consumption", "Consumption"),
-                        ("D8", "D8"),
-                    } or any(
-                        x.get("minimumCount") != 1 or x.get("maximumCount") != 1
-                        for x in profiles
-                        if x["name"] == "D8"
+                    if embedding and profiles != [
+                        {"name": "Consumption", "workloadProfileType": "Consumption"}
+                    ]:
+                        raise ValueError("embedding canary cannot allocate dedicated capacity")
+                    if (
+                        not embedding
+                        and {(x["name"], x["workloadProfileType"]) for x in profiles}
+                        != {
+                            ("Consumption", "Consumption"),
+                            ("D8", "D8"),
+                        }
+                        or any(
+                            x.get("minimumCount") != 1 or x.get("maximumCount") != 1
+                            for x in profiles
+                            if x["name"] == "D8"
+                        )
                     ):
                         raise ValueError("unapproved predicted dedicated-node allocation")
+                if kind == "Microsoft.App/jobs" and embedding:
+                    containers = props.get("template", {}).get("containers", [])
+                    config = props.get("configuration", {})
+                    if (
+                        len(containers) != 1
+                        or containers[0].get("image") != plan["candidate"]["image"]
+                        or containers[0].get("resources") != {"cpu": 2, "memory": "4Gi"}
+                        or props.get("workloadProfileName") != "Consumption"
+                        or config.get("replicaRetryLimit") != 0
+                        or config.get("replicaTimeout") != plan["limits"]["per_run_seconds"]
+                    ):
+                        raise ValueError("unapproved canary job allocation")
                 if kind == "Microsoft.DBforPostgreSQL/flexibleServers":
                     if (
                         after.get("sku", {}).get("name") != "Standard_B2s"

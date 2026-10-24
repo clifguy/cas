@@ -249,7 +249,7 @@ CHUNKS_INDEXED_STRUCTURE_EXPRESSION = "coalesce(indexed_structure, heading_path)
 # angle brackets with spaces before parsing lets the words inside be read as
 # words. The stored content is unchanged; only the vector is built from the
 # substituted text.
-CHUNKS_INDEXED_CONTENT_EXPRESSION = "translate(content, '<>', '  ')"
+CHUNKS_INDEXED_CONTENT_EXPRESSION = "translate(coalesce(keyword_content, content), '<>', '  ')"
 
 CHUNKS_TSV_EXPRESSION = (
     "CASE WHEN keyword_indexed THEN "
@@ -269,6 +269,7 @@ CREATE TABLE IF NOT EXISTS chunks (
     chunk_index integer NOT NULL,
     section_index integer,
     keyword_indexed boolean NOT NULL DEFAULT true,
+    keyword_content text,
     embedding vector({EMBEDDING_DIM}),
     doc_type text,
     lifecycle_status text,
@@ -453,6 +454,7 @@ ADDITIVE_COLUMNS: tuple[str, ...] = (
     # vault needs no backfill. Kept apart from ``adapter_version``, which states
     # whose output the passages are and so cannot record a failed attempt.
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS reprojection_skipped jsonb;",
+    "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS keyword_content text;",
     # Who a write came through and which agent asserted it made it, recorded
     # beside the principal (CAS-ADR-056). Nullable with no default: null is
     # what "not recorded" means, which is every document and edge written
@@ -515,7 +517,8 @@ CHUNKS_TSV_REBUILD: tuple[str, ...] = (
 # is read with its markup brackets replaced.
 CHUNKS_TSV_CURRENT_MARKERS: tuple[str, ...] = (
     "indexed_structure",
-    "translate(content",
+    "keyword_content",
+    "translate(",
     "keyword_indexed",
 )
 

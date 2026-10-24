@@ -180,6 +180,16 @@ class HeadingNode:
     content: str  # Text content under this heading
 
 
+@dataclass(frozen=True)
+class ProjectedPassage:
+    """Display text and authored evidence for one stable source slice."""
+
+    heading_path: str
+    content: str
+    keyword_content: str
+    section_index: int
+
+
 @dataclass
 class ProjectionResult:
     """Output of a source adapter's projection stage.
@@ -218,6 +228,11 @@ class ProjectionResult:
     metadata: dict = field(default_factory=dict)  # Extracted metadata
     preamble: str = ""  # Text before the first heading
     discovery_evidence: "EvidencePackage | None" = None
+    # None preserves the historical adapter contract. Only an adapter which
+    # inspected the complete supported cell surface may assert completeness.
+    projection_complete: bool | None = None
+    projection_limitations: tuple[str, ...] = ()
+    passages: list[ProjectedPassage] | None = None
 
 
 def discovery_configuration(config: dict | None) -> tuple["SelectionConfig", "FactLimits"]:

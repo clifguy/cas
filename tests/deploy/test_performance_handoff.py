@@ -82,6 +82,7 @@ else:
         "AZURE_TENANT_ID": "fixture-tenant",
         "AZURE_SUBSCRIPTION_ID": "fixture-subscription",
         "RUNNER_TEMP": str(runner),
+        "GITHUB_OUTPUT": str(tmp_path / "step-output"),
         "PERF_SPEC_JSON": source.read_text(),
         "PERF_APPROVED_SHA256": spec_sha,
         "PERF_BOOTSTRAP_JSON": receipt_path.read_text(),
@@ -117,6 +118,7 @@ def test_workflow_handoff_keeps_renewal_output_out_of_principal(handoff, signin)
         stamp.write_text(str(int(time.time()) - (300 if signin == "stale" else 0)))
     result = run("Materialize reviewed specification without shell interpretation")
     assert result.returncode == 0, result.stderr
+    assert Path(env["GITHUB_OUTPUT"]).read_text() == "expiry_only=false\n"
     result = run("Verify bootstrap handoff and preserve the original trial clock")
     assert result.returncode == 0, result.stderr
     assert (MASK in result.stdout) == (signin != "recent")
