@@ -1141,6 +1141,36 @@ class VaultAbstractionConfig(BaseModel):
             "quality gate)."
         ),
     )
+    hybrid_description: bool = Field(
+        default=False,
+        description=(
+            "Inactive-by-default hybrid description composition and "
+            "recording-only quality checks. Enable only after companion "
+            "publication contract alignment; does not promote withholding "
+            "classes."
+        ),
+    )
+    withholding_classes: list[
+        Literal["unsupported_identifier", "bounded_structure", "range_role"]
+    ] = Field(
+        default_factory=list,
+        max_length=3,
+        description=(
+            "Only classes registered against accepted calibration may be "
+            "selected; unregistered, stale or hybrid-disabled selection fails "
+            "validation. No classes are initially promoted."
+        ),
+    )
+
+    @model_validator(mode="after")
+    def publication_classes(self) -> "VaultAbstractionConfig":
+        from sage.abstraction_policy import validate_promotions
+
+        if self.withholding_classes and not self.hybrid_description:
+            raise ValueError("withholding requires hybrid description")
+        validate_promotions(self.withholding_classes)
+        return self
+
     max_abstract_tokens: int = Field(
         default=1500,
         ge=50,

@@ -1,0 +1,387 @@
+{
+  "boundary": "line:6888:column:3",
+  "identity": {
+    "policy": "bounded-discovery:1",
+    "source_hash": "sha256:08bd7092f60a46ece6e918e315361db176c33df8e5c0bcac2a33718c333f73e9",
+    "adapter_version": "StructuredDataAdapter:0.3.0",
+    "configuration_json": "{\"adapter\":{},\"facts\":{\"max_columns\":256,\"max_depth\":64,\"max_parse_nodes\":400000,\"max_rows\":100000,\"max_source_bytes\":67108864},\"inspected_source_hash\":\"sha256:08bd7092f60a46ece6e918e315361db176c33df8e5c0bcac2a33718c333f73e9\",\"selection\":{\"max_association_runs\":16384,\"max_candidate_characters\":32768,\"max_candidates\":8192,\"max_characters\":16777216,\"max_excerpts\":12,\"max_fields\":1024,\"max_in_flight\":2,\"max_keyword_characters\":null,\"max_regions\":256,\"max_retained_bytes\":16777216,\"max_tokens\":2048,\"max_values\":100000}}",
+    "tokenizer_identity": "utf8-byte-tokens:1"
+  },
+  "selected": [
+    {
+      "order": 0,
+      "region": "document",
+      "context": "",
+      "location": "line:1:column:1",
+      "rendering": "record",
+      "field_path": "column:1",
+      "input_text": "record",
+      "token_count": 6,
+      "associations": [
+        {
+          "end": 0,
+          "count": 1,
+          "start": 0,
+          "last_location": "line:1:column:1",
+          "first_location": "line:1:column:1"
+        }
+      ],
+      "classification": "text"
+    },
+    {
+      "order": 1,
+      "region": "document",
+      "context": "",
+      "location": "line:1:column:2",
+      "rendering": "department",
+      "field_path": "column:2",
+      "input_text": "department",
+      "token_count": 10,
+      "associations": [
+        {
+          "end": 1,
+          "count": 1,
+          "start": 1,
+          "last_location": "line:1:column:2",
+          "first_location": "line:1:column:2"
+        }
+      ],
+      "classification": "text"
+    },
+    {
+      "order": 5,
+      "region": "document",
+      "context": "",
+      "location": "line:2:column:3",
+      "rendering": "Record 0: staff maintain community resources and document routine work. item00000",
+      "field_path": "column:3",
+      "input_text": "Record 0: staff maintain community resources and document routine work. item00000",
+      "token_count": 81,
+      "associations": [
+        {
+          "end": 5,
+          "count": 1,
+          "start": 5,
+          "last_location": "line:2:column:3",
+          "first_location": "line:2:column:3"
+        }
+      ],
+      "classification": "text"
+    },
+    {
+      "order": 3545,
+      "region": "document",
+      "context": "",
+      "location": "line:1182:column:3",
+      "rendering": "Record 1180: staff maintain community resources and document routine work. item01180",
+      "field_path": "column:3",
+      "input_text": "Record 1180: staff maintain community resources and document routine work. item01180",
+      "token_count": 84,
+      "associations": [
+        {
+          "end": 3545,
+          "count": 1,
+          "start": 3545,
+          "last_location": "line:1182:column:3",
+          "first_location": "line:1182:column:3"
+        }
+      ],
+      "classification": "text"
+    },
+    {
+      "order": 7088,
+      "region": "document",
+      "context": "",
+      "location": "line:2363:column:3",
+      "rendering": "Record 2361: staff maintain community resources and document routine work. item02361",
+      "field_path": "column:3",
+      "input_text": "Record 2361: staff maintain community resources and document routine work. item02361",
+      "token_count": 84,
+      "associations": [
+        {
+          "end": 7088,
+          "count": 1,
+          "start": 7088,
+          "last_location": "line:2363:column:3",
+          "first_location": "line:2363:column:3"
+        }
+      ],
+      "classification": "text"
+    },
+    {
+      "order": 10577,
+      "region": "document",
+      "context": "",
+      "location": "line:3526:column:3",
+      "rendering": "Record 3524: staff maintain community resources and document routine work. item03524",
+      "field_path": "column:3",
+      "input_text": "Record 3524: staff maintain community resources and document routine work. item03524",
+      "token_count": 84,
+      "associations": [
+        {
+          "end": 10577,
+          "count": 1,
+          "start": 10577,
+          "last_location": "line:3526:column:3",
+          "first_location": "line:3526:column:3"
+        }
+      ],
+      "classification": "text"
+    },
+    {
+      "order": 13961,
+      "region": "document",
+      "context": "",
+      "location": "line:4654:column:3",
+      "rendering": "Record 4652: staff maintain community resources and document routine work. item04652",
+      "field_path": "column:3",
+      "input_text": "Record 4652: staff maintain community resources and document routine work. item04652",
+      "token_count": 84,
+      "associations": [],
+      "classification": "text"
+    },
+    {
+      "order": 17528,
+      "region": "document",
+      "context": "",
+      "location": "line:5843:column:3",
+      "rendering": "Record 5841: staff maintain community resources and document routine work. item05841",
+      "field_path": "column:3",
+      "input_text": "Record 5841: staff maintain community resources and document routine work. item05841",
+      "token_count": 84,
+      "associations": [
+        {
+          "end": 17528,
+          "count": 1,
+          "start": 17528,
+          "last_location": "line:5843:column:3",
+          "first_location": "line:5843:column:3"
+        }
+      ],
+      "classification": "text"
+    },
+    {
+      "order": 20404,
+      "region": "document",
+      "context": "",
+      "location": "line:6802:column:2",
+      "rendering": "Workshop",
+      "field_path": "column:2",
+      "input_text": "Workshop",
+      "token_count": 8,
+      "associations": [
+        {
+          "end": 20404,
+          "count": 1,
+          "start": 20404,
+          "last_location": "line:6802:column:2",
+          "first_location": "line:6802:column:2"
+        },
+        {
+          "end": 20413,
+          "count": 1,
+          "start": 20413,
+          "last_location": "line:6805:column:2",
+          "first_location": "line:6805:column:2"
+        },
+        {
+          "end": 20422,
+          "count": 1,
+          "start": 20422,
+          "last_location": "line:6808:column:2",
+          "first_location": "line:6808:column:2"
+        },
+        {
+          "end": 20431,
+          "count": 1,
+          "start": 20431,
+          "last_location": "line:6811:column:2",
+          "first_location": "line:6811:column:2"
+        },
+        {
+          "end": 20440,
+          "count": 1,
+          "start": 20440,
+          "last_location": "line:6814:column:2",
+          "first_location": "line:6814:column:2"
+        },
+        {
+          "end": 20449,
+          "count": 1,
+          "start": 20449,
+          "last_location": "line:6817:column:2",
+          "first_location": "line:6817:column:2"
+        },
+        {
+          "end": 20458,
+          "count": 1,
+          "start": 20458,
+          "last_location": "line:6820:column:2",
+          "first_location": "line:6820:column:2"
+        },
+        {
+          "end": 20467,
+          "count": 1,
+          "start": 20467,
+          "last_location": "line:6823:column:2",
+          "first_location": "line:6823:column:2"
+        }
+      ],
+      "classification": "text"
+    },
+    {
+      "order": 20407,
+      "region": "document",
+      "context": "",
+      "location": "line:6803:column:2",
+      "rendering": "Orchard",
+      "field_path": "column:2",
+      "input_text": "Orchard",
+      "token_count": 7,
+      "associations": [
+        {
+          "end": 20407,
+          "count": 1,
+          "start": 20407,
+          "last_location": "line:6803:column:2",
+          "first_location": "line:6803:column:2"
+        },
+        {
+          "end": 20416,
+          "count": 1,
+          "start": 20416,
+          "last_location": "line:6806:column:2",
+          "first_location": "line:6806:column:2"
+        },
+        {
+          "end": 20425,
+          "count": 1,
+          "start": 20425,
+          "last_location": "line:6809:column:2",
+          "first_location": "line:6809:column:2"
+        },
+        {
+          "end": 20434,
+          "count": 1,
+          "start": 20434,
+          "last_location": "line:6812:column:2",
+          "first_location": "line:6812:column:2"
+        },
+        {
+          "end": 20443,
+          "count": 1,
+          "start": 20443,
+          "last_location": "line:6815:column:2",
+          "first_location": "line:6815:column:2"
+        },
+        {
+          "end": 20452,
+          "count": 1,
+          "start": 20452,
+          "last_location": "line:6818:column:2",
+          "first_location": "line:6818:column:2"
+        },
+        {
+          "end": 20461,
+          "count": 1,
+          "start": 20461,
+          "last_location": "line:6821:column:2",
+          "first_location": "line:6821:column:2"
+        },
+        {
+          "end": 20470,
+          "count": 1,
+          "start": 20470,
+          "last_location": "line:6824:column:2",
+          "first_location": "line:6824:column:2"
+        },
+        {
+          "end": 20506,
+          "count": 1,
+          "start": 20506,
+          "last_location": "line:6836:column:2",
+          "first_location": "line:6836:column:2"
+        }
+      ],
+      "classification": "text"
+    },
+    {
+      "order": 20509,
+      "region": "document",
+      "context": "",
+      "location": "line:6837:column:2",
+      "rendering": "Library",
+      "field_path": "column:2",
+      "input_text": "Library",
+      "token_count": 7,
+      "associations": [
+        {
+          "end": 20509,
+          "count": 1,
+          "start": 20509,
+          "last_location": "line:6837:column:2",
+          "first_location": "line:6837:column:2"
+        }
+      ],
+      "classification": "text"
+    },
+    {
+      "order": 20663,
+      "region": "document",
+      "context": "",
+      "location": "line:6888:column:3",
+      "rendering": "Record 6886: staff maintain community resources and document routine work. Lateorchid",
+      "field_path": "column:3",
+      "input_text": "Record 6886: staff maintain community resources and document routine work. Lateorchid",
+      "token_count": 85,
+      "associations": [],
+      "classification": "text"
+    }
+  ],
+  "interrupted": false,
+  "limitations": [
+    "association_groups",
+    "association_runs",
+    "candidate_retention",
+    "selection_budget"
+  ],
+  "observations": [
+    {
+      "region": "document",
+      "populated": 6887,
+      "field_path": "column:1",
+      "classification": "number",
+      "known_repetitions": 0,
+      "retained_distinct": 0
+    },
+    {
+      "region": "document",
+      "populated": 1,
+      "field_path": "column:1",
+      "classification": "text",
+      "known_repetitions": 0,
+      "retained_distinct": 1
+    },
+    {
+      "region": "document",
+      "populated": 6888,
+      "field_path": "column:2",
+      "classification": "text",
+      "known_repetitions": 73,
+      "retained_distinct": 4
+    },
+    {
+      "region": "document",
+      "populated": 6888,
+      "field_path": "column:3",
+      "classification": "text",
+      "known_repetitions": 0,
+      "retained_distinct": 1968
+    }
+  ],
+  "observed_values": 20664,
+  "selected_tokens": 624,
+  "inspection_complete": true,
+  "observed_characters": 654368,
+  "associations_complete": false
+}

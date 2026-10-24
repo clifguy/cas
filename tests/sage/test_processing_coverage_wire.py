@@ -205,3 +205,72 @@ async def test_metadata_mutation_wire_returns_post_maintenance_coverage(
         document = body["results"][0]["document"]
         assert document["title"] == persisted.title
         assert document["processing_coverage"] == to_wire(persisted)["processing_coverage"]
+
+
+@pytest.mark.parametrize("mode", ["recording_generated", "extractive_fallback", "unavailable"])
+async def test_hybrid_quality_and_private_candidate_use_actual_wire_boundaries(
+    vault_services, mode
+):
+    import hashlib
+
+    from sage.adapters.interfaces import DocumentSurface
+    from sage.models.coverage import AbstractionQuality
+
+    services = vault_services
+    doc = _doc(1)
+    await services.graph_store.insert_document(doc)
+    store = services.content_store
+    attempt = await store.begin_processing_attempt(doc.id)
+    assert await store.publish_processing(doc.id, attempt, _evidence(), chunks=_chunks("old"))
+    raw = "private rejected item09999"
+    digest = "sha256:" + hashlib.sha256(raw.encode()).hexdigest()
+    quality = AbstractionQuality(
+        mode=mode,
+        policy="hybrid-1",
+        generation=attempt,
+        identity=_evidence()["projection"].identity,
+        candidate_sha256=digest,
+    )
+    text = None if mode == "unavailable" else "Selected authored description."
+    assert await store.publish_processing(
+        doc.id,
+        attempt,
+        {},
+        surface=DocumentSurface(document_id=doc.id, matchable="old", orienting=text or ""),
+        semantic_abstract=text,
+        abstraction_quality=quality,
+        abstraction_candidate={
+            "raw": raw,
+            "truncated": False,
+            "sha256": digest,
+            "generation": attempt,
+        },
+    )
+    ordinary = build_partitioned_server("sage")
+    app = create_app(config=services.config)
+    app.state.vault_registry = {"test_vault": services}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        rest = await client.get(f"/sage_vaults/test_vault/documents/{doc.id}")
+        assert rest.status_code == 200
+        bodies = [rest.json()]
+        for tool in ("get_document", "read_projection", "read_section"):
+            args = {"vault_id": "test_vault", "document_id": doc.id}
+            if tool == "read_section":
+                args["heading_path"] = "Section"
+            bodies.append(_decode(await ordinary.call_tool(tool, args)))
+        for response_mode in ("full", "light"):
+            result = _decode(
+                await ordinary.call_tool(
+                    "search",
+                    {
+                        "vault_id": "test_vault",
+                        "mode": "catalog",
+                        "response_mode": response_mode,
+                    },
+                )
+            )
+            bodies.append(result["results"][0]["document"])
+    for body in bodies:
+        assert body["processing_coverage"]["abstraction_quality"] == quality.model_dump(mode="json")
+        assert raw not in json.dumps(body)
+        assert body["processing_coverage"]["projection"]["scope"] == "limited"

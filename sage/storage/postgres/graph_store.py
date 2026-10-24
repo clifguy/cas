@@ -628,11 +628,20 @@ class PostgresGraphStore(GraphStore):
         if processing_stage is not None:
             updates["processing_resume_stage"] = processing_stage
         set_clause = ", ".join(f"{k} = %s" for k in updates)
-        if processing_stage is not None and advance_processing_attempt:
-            set_clause += (
-                ", processing_coverage = jsonb_set(COALESCE(processing_coverage, '{}'::jsonb), "
-                "'{attempt}', to_jsonb(COALESCE((processing_coverage->>'attempt')::bigint, 0) + 1))"
+        coverage_expression = "COALESCE(processing_coverage, '{}'::jsonb)"
+        invalidate_quality = bool({"semantic_abstract", "source_content_hash"} & updates.keys())
+        if invalidate_quality:
+            coverage_expression = (
+                f"({coverage_expression} - 'abstraction_quality' - 'served_abstraction_generation')"
             )
+        advance_attempt = processing_stage is not None and advance_processing_attempt
+        if advance_attempt:
+            coverage_expression = (
+                f"jsonb_set({coverage_expression}, '{{attempt}}', "
+                "to_jsonb(COALESCE((processing_coverage->>'attempt')::bigint, 0) + 1))"
+            )
+        if invalidate_quality or advance_attempt:
+            set_clause += f", processing_coverage = {coverage_expression}"
         if advance_version:
             set_clause += ", version_token = version_token + 1"
         values = list(updates.values())

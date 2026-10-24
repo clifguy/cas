@@ -1,9 +1,10 @@
 """Durable package/accounting shapes derived from abstraction_evidence.schema.json."""
 
+import hashlib
 import json
 from dataclasses import asdict
 
-from sage.models.coverage import ProcessingIdentity
+from sage.models.coverage import AbstractionQuality, ProcessingIdentity
 from sage.models.discovery import (
     AuthoredExcerpt,
     DerivedObservation,
@@ -98,3 +99,42 @@ def reserve_generation(
         output_tokens=ledger["output_tokens"] + output_tokens,
     )
     return "admitted", ledger
+
+
+def validate_quality_publication(
+    quality: AbstractionQuality,
+    source_hash: str,
+    generation: int,
+    abstract: str | None,
+    candidate: dict | None,
+) -> None:
+    """Validate the schema-bound public/private pair before transactional writes."""
+    if (
+        quality.generation != generation
+        or quality.identity is None
+        or quality.identity.source_hash != source_hash
+    ):
+        raise ValueError("abstract quality source/generation mismatch")
+    if quality.mode == "unknown" or (quality.mode == "unavailable") != (abstract is None):
+        raise ValueError("abstract quality disposition disagrees with served prose")
+    if (
+        quality.mode in ("recording_generated", "screened_generated")
+        and set(quality.findings) & quality.calibration_refs.keys()
+    ):
+        raise ValueError("promoted finding cannot publish generated prose")
+    if candidate is None:
+        raise ValueError("hybrid quality requires its private candidate diagnostic")
+    if (
+        set(candidate) != {"raw", "truncated", "sha256", "generation"}
+        or not isinstance(candidate["raw"], str)
+        or len(candidate["raw"]) > 65536
+        or type(candidate["truncated"]) is not bool
+        or type(candidate["generation"]) is not int
+        or candidate["generation"] != generation
+        or candidate["sha256"] != quality.candidate_sha256
+    ):
+        raise ValueError("abstract diagnostic identity or bound mismatch")
+    if not candidate["truncated"] and candidate["sha256"] != (
+        "sha256:" + hashlib.sha256(candidate["raw"].encode()).hexdigest()
+    ):
+        raise ValueError("abstract diagnostic hash mismatch")

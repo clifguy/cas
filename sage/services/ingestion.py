@@ -2789,7 +2789,15 @@ class IngestionService:
             tokenization="unknown",
         )
 
-    async def _publish_abstract(self, document_id: str, abstract: str, attempt: int) -> None:
+    async def _publish_abstract(
+        self,
+        document_id: str,
+        abstract: str | None,
+        attempt: int,
+        *,
+        quality=None,
+        candidate: dict | None = None,
+    ) -> None:
         doc = await self._store.get_document(document_id)
         if doc is None:
             raise DocumentNotFoundError(document_id)
@@ -2802,6 +2810,11 @@ class IngestionService:
             {"abstraction_evidence": doc.processing_coverage.abstraction_evidence},
             surface=surface,
             semantic_abstract=abstract,
+            **(
+                {"abstraction_quality": quality, "abstraction_candidate": candidate}
+                if quality is not None
+                else {}
+            ),
         )
         if not published:
             raise _SupersededProcessing("stale processing publication")
@@ -3185,7 +3198,8 @@ class IngestionService:
         # attestation, so every remaining finding is safe to collapse.
         # The record's sizes describe the inspected abstract -- the text
         # the finding is about -- not the repaired one.
-        findings = find_unattested_acronym_glosses(abstract, text)
+        authored_text = text.authored_text if isinstance(text, BoundedEvidenceText) else text
+        findings = find_unattested_acronym_glosses(abstract, authored_text)
         for gloss in findings:
             abstraction_faithfulness_logger.info(
                 json.dumps(
@@ -3204,7 +3218,7 @@ class IngestionService:
                 )
             )
         if findings:
-            abstract = collapse_unattested_acronym_glosses(abstract, text)
+            abstract = collapse_unattested_acronym_glosses(abstract, authored_text)
 
         # Deterministic clause (k) check, still recording-only: its error
         # rate has no adjudicated measurement, so the posture CAS-ADR-020
@@ -3241,7 +3255,7 @@ class IngestionService:
         # claim, so the record describes the abstract actually stored. The
         # absence of an "action" field is the machine-readable trace of
         # the posture. A finding is calibration data, not a verdict.
-        for cardinal in find_fabricated_cardinals(abstract, text):
+        for cardinal in find_fabricated_cardinals(abstract, authored_text):
             abstraction_faithfulness_logger.info(
                 json.dumps(
                     {
@@ -3309,7 +3323,9 @@ class IngestionService:
             abstraction_faithfulness_logger.info(json.dumps(record))
             if stripped:
                 abstract = repaired
-        return abstract
+        from sage.services.abstraction_publication import GeneratedDescription
+
+        return GeneratedDescription(abstract, raw_abstract)
 
     async def _stage3_abstraction(
         self,
@@ -3540,12 +3556,26 @@ class IngestionService:
         if package is None:
             raise AbstractionAllowanceExhausted("bounded authored evidence unavailable")
         config = self._config.abstraction
-        request = abstraction_request(package, config, doc_type)
+        request = abstraction_request(package, config, doc_type, generation=attempt)
         if not await self._content_store.publish_processing(
             document_id, attempt, {"abstraction_evidence": request.evidence}
         ):
             raise _SupersededProcessing("stale abstraction evidence")
-        if not request.text:
+        provider_text = request.text
+        publication_budget = None
+        calibration_refs = {}
+        if config.hybrid_description:
+            from sage.abstraction_policy import validate_promotions
+            from sage.services.abstraction_publication import (
+                prepare_publication,
+            )
+
+            calibration_refs = validate_promotions(config.withholding_classes)
+            provider_text = BoundedEvidenceText(
+                request.text.authored_text, authored_text=request.text.authored_text
+            )
+            publication_budget = prepare_publication(package, request, config.max_abstract_tokens)
+        if not provider_text:
             await self._stamp_pipeline_status(
                 document_id, PipelineStatus.ABSTRACTION_SKIPPED, expected_attempt=attempt
             )
@@ -3558,7 +3588,7 @@ class IngestionService:
             len(
                 (
                     _format_system_prompt(doc_type, bounded=True)
-                    + wrap_source_document(request.text)
+                    + wrap_source_document(provider_text)
                 ).encode("utf-8")
             )
             + 1024
@@ -3567,12 +3597,15 @@ class IngestionService:
             raise AbstractionAllowanceExhausted(
                 "complete protected abstraction prompt exceeds per-call input allowance"
             )
+        target_tokens = (
+            publication_budget.prose_tokens if publication_budget else request.target_tokens
+        )
         decision = await self._content_store.admit_abstraction(
             document_id,
             attempt,
             request.identity,
             input_tokens,
-            request.target_tokens,
+            target_tokens,
             max_calls=config.max_generation_calls,
             max_input=config.max_total_input_tokens,
             max_output=config.max_total_output_tokens,
@@ -3582,12 +3615,26 @@ class IngestionService:
         if decision != "admitted":
             raise AbstractionAllowanceExhausted("abstraction allowance " + decision)
         abstract = await self._generate_abstract_text(
-            BoundedEvidenceText(request.text),
+            provider_text,
             doc_type,
             document_id=document_id,
-            target_tokens=request.target_tokens,
+            target_tokens=target_tokens,
         )
-        await self._publish_abstract(document_id, abstract, attempt)
+        if publication_budget is not None:
+            from sage.services.abstraction_publication import compose_publication
+
+            publication = compose_publication(
+                package, request, abstract, publication_budget, attempt, calibration_refs
+            )
+            await self._publish_abstract(
+                document_id,
+                publication.text,
+                attempt,
+                quality=publication.quality,
+                candidate=publication.candidate,
+            )
+        else:
+            await self._publish_abstract(document_id, abstract, attempt)
         await self._stamp_pipeline_status(
             document_id, PipelineStatus.ABSTRACTION_COMPLETE, expected_attempt=attempt
         )

@@ -24,6 +24,7 @@ from sage.adapters.interfaces import (
     SearchResult,
 )
 from sage.models.coverage import (
+    AbstractionQuality,
     CoverageDimension,
     ProcessingCoverage,
     ProcessingIdentity,
@@ -121,11 +122,19 @@ class StubContentStore(ContentStore):
         chunks: list[Chunk] | None = None,
         surface: DocumentSurface | None = None,
         semantic_abstract: str | None = None,
+        abstraction_quality: AbstractionQuality | None = None,
+        abstraction_candidate: dict | None = None,
         indexing_complete: bool = True,
         text_repair: bool = False,
         expected_abstract: str | None = None,
     ) -> bool:
-        if text_repair and (dimensions or chunks is not None or semantic_abstract is None):
+        if text_repair and (
+            dimensions
+            or chunks is not None
+            or semantic_abstract is None
+            or abstraction_quality is not None
+            or abstraction_candidate is not None
+        ):
             raise ValueError("text repair cannot publish processing evidence or passages")
         if self._processing_delegate is not None:
             published = await self._processing_delegate.publish_processing(
@@ -135,6 +144,8 @@ class StubContentStore(ContentStore):
                 chunks=chunks,
                 surface=surface,
                 semantic_abstract=semantic_abstract,
+                abstraction_quality=abstraction_quality,
+                abstraction_candidate=abstraction_candidate,
                 indexing_complete=indexing_complete,
                 text_repair=text_repair,
                 expected_abstract=expected_abstract,
@@ -150,6 +161,20 @@ class StubContentStore(ContentStore):
             text_repair and doc.semantic_abstract != expected_abstract
         ):
             return False
+        if abstraction_quality is not None:
+            from sage.models.abstraction_evidence import validate_quality_publication
+
+            if surface is None:
+                raise ValueError("abstract quality requires coherent document surface")
+            validate_quality_publication(
+                abstraction_quality,
+                doc.source_content_hash,
+                attempt,
+                semantic_abstract,
+                abstraction_candidate,
+            )
+        elif abstraction_candidate is not None:
+            raise ValueError("private candidate requires quality publication")
         if chunks is not None and (ledger := self._embedding_accounting.get(document_id)):
             identity = dimensions["passage_embeddings"].identity
             if (
@@ -181,10 +206,14 @@ class StubContentStore(ContentStore):
         )
         if semantic_abstract is not None and not text_repair:
             coverage.served_abstraction_generation = attempt
-        updates = {} if text_repair else {"processing_coverage": coverage}
+        if abstraction_quality is not None or semantic_abstract is not None:
+            coverage.abstraction_quality = abstraction_quality or AbstractionQuality()
+        if abstraction_quality is not None and semantic_abstract is None:
+            coverage.served_abstraction_generation = None
+        updates = {"processing_coverage": coverage}
         if chunks is not None and indexing_complete:
             updates["indexed_at"] = datetime.now(timezone.utc)
-        if semantic_abstract is not None:
+        if semantic_abstract is not None or abstraction_quality is not None:
             updates["semantic_abstract"] = semantic_abstract
         await self._processing_store.update_document(
             document_id,
@@ -193,6 +222,8 @@ class StubContentStore(ContentStore):
             processing_stage="abstraction" if chunks is not None and indexing_complete else None,
             advance_processing_attempt=False,
         )
+        if abstraction_candidate is not None:
+            self._abstraction_state.setdefault(document_id, {})["candidate"] = abstraction_candidate
         if chunks is not None:
             self._store[document_id] = chunks
         if surface is not None:
@@ -1092,6 +1123,10 @@ class StubGraphStore(GraphStore):
             raise ValueError("invalid processing stage")
         if "processing_resume_stage" in updates:
             raise ValueError("processing stage uses the internal admission seam")
+        invalidate_quality = bool(
+            {"semantic_abstract", "source_content_hash"} & updates.keys()
+            and "processing_coverage" not in updates
+        )
         if processing_stage is not None:
             self._processing_stages[doc_id] = processing_stage
             if advance_processing_attempt:
@@ -1101,6 +1136,18 @@ class StubGraphStore(GraphStore):
                         update={"attempt": doc.processing_coverage.attempt + 1}
                     ),
                 }
+        if invalidate_quality:
+            updates = {
+                **updates,
+                "processing_coverage": updates.get(
+                    "processing_coverage", doc.processing_coverage
+                ).model_copy(
+                    update={
+                        "abstraction_quality": AbstractionQuality(),
+                        "served_abstraction_generation": None,
+                    }
+                ),
+            }
         if advance_version:
             updates = {**updates, "version_token": str(int(doc.version_token) + 1)}
         updated = doc.model_copy(update=updates)

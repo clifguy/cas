@@ -1,0 +1,10 @@
+{
+  "local": {
+    "source_artifact_sha256": "f66bab26e10a7e74ba9347555b3b71763b72709455e0e2e5a1199f904d1b1a8e",
+    "raw_observed_abstract": "The selected excerpts list four departments\u2014Workshop, Orchard, Library\u2014and describe a record set where staff maintain community resources and document routine work. One specific record explicitly notes the item Lateorchid."
+  },
+  "cloud": {
+    "source_artifact_sha256": "7facab320b96bbe24ea6f2d388594f05afe9feeb84e476d223b1c1a590b9e54f",
+    "raw_observed_abstract": "The selected excerpts show a column labeled \"record,\" a column of department names (Orchard, Library, Workshop), and a column of entries beginning \"Cloudcohort0756to0759,\" each stating that staff maintain community resources and document routine work, with item identifiers such as item00000, item01155, and item06886 (the last ending in \"Lateorchid\")."
+  }
+}

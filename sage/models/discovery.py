@@ -68,6 +68,18 @@ class DerivedObservation:
     retained_distinct: int
     known_repetitions: int
 
+    def __post_init__(self) -> None:
+        counts = (self.populated, self.retained_distinct, self.known_repetitions)
+        if any(type(value) is not int or value < 0 for value in counts):
+            raise ValueError("observation counts must be nonnegative integers")
+        if self.retained_distinct + self.known_repetitions > self.populated:
+            raise ValueError("retained observation counts exceed inspected values")
+        if any(
+            not isinstance(value, str) or len(value) > 512
+            for value in (self.region, self.field_path, self.classification)
+        ):
+            raise ValueError("observation labels exceed their established bounds")
+
 
 @dataclass(frozen=True)
 class EvidencePackage:

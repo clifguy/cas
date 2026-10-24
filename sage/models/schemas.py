@@ -25,6 +25,7 @@ from pydantic.json_schema import JsonSchemaValue
 from pydantic_core import PydanticCustomError
 
 from sage.build_info import VERSION_WITH_BUILD
+from sage.models.coverage import AbstractionQuality as AbstractionQuality
 from sage.models.coverage import CoverageCount as CoverageCount
 from sage.models.coverage import CoverageDimension as CoverageDimension
 from sage.models.coverage import CoverageManifest as CoverageManifest

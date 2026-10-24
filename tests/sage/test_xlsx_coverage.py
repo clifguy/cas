@@ -277,7 +277,7 @@ async def test_large_numeric_workbook_ingest_recovery_and_wire_parity(
             self.calls = []
 
         async def generate_abstract(self, text, max_tokens, doc_type):
-            self.calls.append((str(text), max_tokens))
+            self.calls.append((text, max_tokens))
             return "Retained authored workbook evidence."
 
     source = tmp_path / "numeric.xlsx"
@@ -317,7 +317,8 @@ async def test_large_numeric_workbook_ingest_recovery_and_wire_parity(
         assert sum(provider.count_tokens(t) for t in provider.inputs) <= 256
         assert len(abstraction.calls) == 1
         selected_text, reserved_output = abstraction.calls[0]
-        assert len(selected_text.encode()) <= 256
+        # Authored selection and the complete protected request have separate budgets.
+        assert len(selected_text.authored_text.encode()) <= 256
         assert reserved_output <= config.abstraction.max_total_output_tokens
         from sage.adapters.abstraction_prompt import _format_system_prompt, wrap_source_document
 

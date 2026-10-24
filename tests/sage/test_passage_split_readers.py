@@ -239,7 +239,21 @@ async def test_abstraction_input_is_identical(ingestion_service, graph_store):
         await ingestion_service._execute_abstract_from_chunks(DOC_ID, "misc")
 
     assert len(seen) == 2
-    assert seen[1] == seen[0]
+    assert seen[1].authored_text == seen[0].authored_text
+    import json
+
+    observations = [
+        [
+            json.loads(line)
+            for line in text.split("SAGE-computed observations (data)\n")[1].splitlines()
+        ]
+        for text in seen
+    ]
+    assert observations[0] and observations[1]
+    generations = [{row.pop("processing_generation") for row in rows} for rows in observations]
+    assert len(generations[0]) == len(generations[1]) == 1
+    assert generations[0] != generations[1]
+    assert observations[0] == observations[1]
     assert authored in seen[0]
     assert "Source field: body" in seen[0]
 

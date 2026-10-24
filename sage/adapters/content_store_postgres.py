@@ -51,6 +51,7 @@ from sage.instrumentation.performance import observed_context, span
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
 from sage.models.coverage import (
     DIMENSIONS,
+    AbstractionQuality,
     CoverageDimension,
     ProcessingCoverage,
     ProcessingIdentity,
@@ -945,17 +946,26 @@ class PostgresContentStore(ContentStore):
         chunks: list[Chunk] | None = None,
         surface: DocumentSurface | None = None,
         semantic_abstract: str | None = None,
+        abstraction_quality: AbstractionQuality | None = None,
+        abstraction_candidate: dict | None = None,
         indexing_complete: bool = True,
         text_repair: bool = False,
         expected_abstract: str | None = None,
     ) -> bool:
         """Commit artifact replacements and their evidence together under a database fence.
 
-        None leaves an artifact unchanged; an empty passage list publishes an empty
-        projection. Stale producers cannot change either artifacts or the summary.
+        None leaves an artifact unchanged unless explicit quality publication marks
+        the abstract unavailable; an empty passage list publishes an empty projection.
+        Stale producers cannot change either artifacts or the summary.
         Pipeline scheduling and outcome remain owned by pipeline_status.
         """
-        if text_repair and (dimensions or chunks is not None or semantic_abstract is None):
+        if text_repair and (
+            dimensions
+            or chunks is not None
+            or semantic_abstract is None
+            or abstraction_quality is not None
+            or abstraction_candidate is not None
+        ):
             raise ValueError("text repair cannot publish processing evidence or passages")
         if (
             attempt < (0 if text_repair else 1)
@@ -1014,6 +1024,16 @@ class PostgresContentStore(ContentStore):
             row = await cur.fetchone()
             if row is None or (text_repair and row[3] != expected_abstract):
                 return False
+            if abstraction_quality is not None:
+                from sage.models.abstraction_evidence import validate_quality_publication
+
+                if surface is None:
+                    raise ValueError("abstract quality requires coherent document surface")
+                validate_quality_publication(
+                    abstraction_quality, row[1], attempt, semantic_abstract, abstraction_candidate
+                )
+            elif abstraction_candidate is not None:
+                raise ValueError("private candidate requires quality publication")
             current = ProcessingCoverage.model_validate(row[0] or {})
             # Check the durable allowance in the same transaction as replacement.
             # A policy change must not erase established vectors before admission
@@ -1039,6 +1059,12 @@ class PostgresContentStore(ContentStore):
                 changes[name] = value.model_dump(mode="json")
             if semantic_abstract is not None and not text_repair:
                 changes["served_abstraction_generation"] = attempt
+            if abstraction_quality is not None or semantic_abstract is not None:
+                changes["abstraction_quality"] = (
+                    abstraction_quality or AbstractionQuality()
+                ).model_dump(mode="json")
+            if abstraction_quality is not None and semantic_abstract is None:
+                changes["served_abstraction_generation"] = None
             merged = ProcessingCoverage.model_validate({**current.model_dump(), **changes})
             if chunks is not None:
                 with span("database.write_chunks"):
@@ -1124,7 +1150,13 @@ class PostgresContentStore(ContentStore):
                     document_id,
                 ),
             )
-            if semantic_abstract is not None:
+            if abstraction_candidate is not None:
+                await conn.execute(
+                    "UPDATE documents SET abstraction_state = "
+                    "COALESCE(abstraction_state, '{}'::jsonb) || %s WHERE id = %s",
+                    (Jsonb({"candidate": abstraction_candidate}), document_id),
+                )
+            if semantic_abstract is not None or abstraction_quality is not None:
                 await conn.execute(
                     "UPDATE documents SET semantic_abstract = %s, updated_at = %s WHERE id = %s",
                     (semantic_abstract, datetime.now(timezone.utc).isoformat(), document_id),
