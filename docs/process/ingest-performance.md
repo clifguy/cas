@@ -5,6 +5,18 @@ Local timings support correctness and preliminary experiments only. Instrumentat
 preserves the production model, singleton scheduling quantum, fair admission,
 projection, passage content and transactional write behavior.
 
+## Start small
+
+Collect existing production summaries and aligned cloud metrics read-only first;
+record the actual build, window, metric resolution and missing fields. Those
+passive observations are not the immutable controlled baseline. Follow the
+[isolated operation procedure](azure-ingest-performance-stack.md) for an independent
+expiry-only rehearsal, one embedding canary, and a reviewable export/cleanup
+checkpoint. The first real-model case uses one warmup and three repetitions on
+Consumption 2 CPU/4 GiB without Postgres, SharePoint or an abstraction provider.
+True batching, fixed-memory CPU comparisons and a complete service campaign are
+later explicit expansions after authentic evidence and cleanup are proven.
+
 ## Stage records
 
 With the vault's existing `timing.enabled` setting enabled, the

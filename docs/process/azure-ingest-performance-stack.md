@@ -1,176 +1,95 @@
-# Isolated Azure ingestion performance stack
+# Isolated Azure ingestion performance
 
-This manual experiment supports T-0761. It measures the immutable PR #736 image
-in a separate resource group, network, Container Apps environment, database,
-managed identities and SharePoint root. It does not modify production capacity.
-The existing [measurement procedure](ingest-performance.md) remains the
-interpretation authority. The workflow is `ingest-performance.yml`.
+The manual `ingest-performance.yml` workflow measures an immutable workload image
+using a separately committed experiment controller. The [measurement procedure](ingest-performance.md)
+is the interpretation authority. Source readiness, merge, operational approval,
+Azure execution and measurement acceptance are separate checkpoints.
 
-## Preconditions and approval
+## Staged operation
 
-Merge this implementation separately before using the workflow on `main`.
-No workflow dispatch or successful local check establishes deployment acceptance.
-Review the exact specification bytes and retain their SHA-256. Never include a
-credential in the specification. The controller checks the current tenant,
-subscription, reference configuration, candidate image availability, successful
-candidate CI, regional profiles, database SKU, quotas and retail rates before
-creating resources. Any unavailable prerequisite stops the run.
+First retain existing production stage summaries and aligned application/database
+metrics read-only. Label them passive observations of their actual builds and
+workload mix. They are not the controlled baseline and authorize no new ingestion.
 
-The production deployment identity's standing grants are intentionally unchanged.
-A tenant operator must separately establish the experiment operator's permission
-to deploy into the two exact trial groups, assign the declared trial roles there,
-and assign AcrPull on the source registry and Secrets User on the exact
-`anthropic-api-key` secret. Register Microsoft.Automation and Microsoft.Storage
-alongside the production template providers. Do not give the expiry identity
-subscription-wide rights: it receives Contributor on the exact disposable trial
-resource group only. The runtime identity receives Sites.Selected and write
-permission on the explicitly selected SharePoint site.
+Next prove independent expiry with an **embedding-only foundation rehearsal**.
+Use `phase: embedding_canary`, `expiry_only: true`, a fresh run identity, a short
+window and the reviewed immutable baseline. Bootstrap creates only empty owned
+groups and scoped grants. The workflow creates identities, private evidence
+storage and Automation; publishes and reads back the committed cleanup script;
+executes its ownership inspection; and enables the exact independent schedule.
+It exits without creating a Container Apps environment or starting a model.
+The workflow retains the controller and does not perform immediate cleanup for
+this rehearsal. Wait for the independent schedule to delete the trial group.
 
-The current automation additionally requires its operator to have Graph
-AppRoleAssignment.ReadWrite.All and Sites.FullControl.All to grant and revoke
-that new runtime identity. These are directory/site administration capabilities,
-not implied by Azure Owner or the existing deployment identity. The controller
-checks for them and refuses to provision when absent. This implementation never
-assigns those operator privileges. Tenant approval and a suitably authorized
-operator remain deployment prerequisites; do not broaden the production identity
-merely to make the experiment pass. Its data-plane token must also be accepted
-by the existing SAGE audience. Read these capabilities back before dispatch.
+Read back the completed Automation job, its exact `Expire` parameters, published
+script bytes, actual `deleted` output and trial-group absence. A successful
+`Inspect` job is insufficient. Retain that private evidence before approving the
+next specification. Keep the rehearsal controller until the embedding run has
+verified this evidence; then finish its separately authorized cleanup.
 
-## Specification
+The first measurement uses another fresh `phase: embedding_canary` run and an
+`expiry_proof` naming that rehearsal's `run_id`, `expires_at` and concrete `job_id`.
+The controller verifies it live, including the committed runbook and actual
+deletion readback, before creating compute. The proof must be from the preceding
+seven days and cannot name the current run. It grants the measurement operator
+read access to that exact prior Automation account for this verification.
 
-The JSON object has `schema_version: 1`, a fresh lowercase `run_id` (3–20
-characters, letters/digits/hyphens), `subscription_id`, and `location`.
-Do not provide runtime `created_at`/`expires_at`; the controller derives them once.
+The measurement stack contains one Consumption environment and one manual job,
+with one container at **2 CPU / 4 GiB**, zero retries and the reviewed per-run
+timeout. A probe runs the mounted wrapper without importing/loading the embedding
+model. The writer managed identity stores a fresh nonce; the separate authenticated
+recovery reader retrieves and compares it. Model startup is refused unless that
+proof is current. The controller restores and reads back the full job template,
+then starts one short-input, singleton, two-thread case. The existing benchmark
+performs one warmup and three measured repetitions against the real pinned model,
+including token accounting and vector count/order/normalization checks.
 
-- `evidence_public_key_pem`: an owner-controlled RSA public key of at least
-  3072 bits. Keep its private key outside the repository and CI.
-- `source`: the serving reference `resource_group` and `app`.
-- `candidate`: exact 40-character merged `commit`, immutable `image` in the
-  existing registry (`registry.azurecr.io/sage@sha256:…`), and
-  `abstraction_model` matching the current serving configuration.
-- `binding`: explicit `site_id`, `drive_id`, `audience`, `tenant_id`, `registry_id`
-  and `key_vault_id`. Both resource IDs must belong to the selected reference
-  group in the exact subscription.
-- `limits`: `window_seconds: 14400`, `per_run_seconds: 900`,
-  `incremental_usd: 50`, `provider_calls: 30` (lower limits are accepted).
-- `arms`, in order:
-  `[{"profile":"Consumption","cpu":2,"memory":"4Gi"},
-  {"profile":"D8","cpu":2,"memory":"8Gi"},
-  {"profile":"D8","cpu":4,"memory":"8Gi"}]`.
+Stop after this case, encrypted evidence export/readback and verified cleanup.
+A singleton-versus-true-batching comparison is a later explicitly approved
+expansion. The full service path, fixed-memory CPU comparison, larger matrix,
+provider-enabled sources and contention/recovery campaign remain later work;
+they are not dependencies of the first embedding canary. Do not start dedicated
+capacity merely to establish this small case.
 
-The controller derives `rg-ingest-perf-<run>`,
-`rg-ingest-perf-control-<run>`, `performance/<run>` and `perf_<run>` (hyphens
-become underscores for PostgreSQL schema identifiers). Each service arm creates
-a fresh vault through SAGE. Run directories and populated vaults are never
-blindly replayed. Repeated infrastructure preparation may resume only with the
-same original clock, matching local receipts and fully owned live inventories,
-before the service or source root has been activated.
+## Specification and limits
 
-## Execution and evidence
+Use JSON with `schema_version: 1`, `phase: embedding_canary`, a fresh lowercase
+3–20 character `run_id`, `subscription_id`, `location`, and:
 
-Store the exact reviewed JSON in the selected environment secret
-`PERF_APPROVED_SPEC_JSON`. Dispatch the committed manual workflow with that
-environment and `approved_sha256`. Binding coordinates are not public dispatch
-inputs. Resource mutation is refused outside that
-repository's manual `main` workflow. The implementation first creates the small
-evidence/cleanup foundation, then separately previews and assigns access using
-its now-known identity IDs. Every create phase requires a retained, matching
-ARM validation and what-if inventory; foreign, destructive or extra mutations
-are refused. It publishes and reads back the exact expiry runbook,
-runs its real cloud ownership inspection, and reads back the schedule. Only
-then may the billable D8/PG17 stack be applied. Database bootstrap uses the
-canonical bootstrap module and immutable baseline image. The trial changes
-backup retention to seven days and omits deletion protection; production callers
-retain 35-day retention and deletion protection by default.
+- `evidence_public_key_pem`: owner-controlled RSA public key, at least 3072 bits.
+  Keep the private key outside the repository and CI.
+- `source.resource_group`: the exact existing registry group.
+- `binding.registry_id` and `binding.tenant_id`: exact immutable image access and
+  tenant coordinates. No source application, Key Vault, SharePoint, database,
+  abstraction provider, SAGE audience or Graph administrative grant is required.
+- `candidate.commit`: `eb994495b66837cca23cc891487f83ad434c0c4f`;
+  `candidate.image`: `acrwofzhg37aohom.azurecr.io/sage@sha256:feaa6269b1244467b7d03d7bfa371209fa7c88e73569f36a2b8ec469291cec2c`.
+  Record the controller commit independently; later production changes do not
+  silently replace this measurement baseline.
+- `arms`: `[{"profile":"Consumption","cpu":2,"memory":"4Gi"}]`.
+- `limits`: at most `window_seconds: 3600`, `per_run_seconds: 900`,
+  `incremental_usd: 5`, `provider_calls: 1`. The legacy field is retained but no
+  abstraction provider is used. Prefer a much shorter expiry-only rehearsal.
+- `expiry_only: true` for the independent deletion rehearsal; otherwise provide
+  the private `expiry_proof` described above.
 
-Microbenchmarks run serially in fresh processes on the dedicated D8 node before
-the service exists. They compare actual batches 1/2/4/8, short/long/mixed inputs,
-Torch thread counts and the existing fair singleton dispatch. The 2/4 CPU D8
-comparison holds memory at 8 GiB. A pilot failure stops the experiment. The
-controller records pruning instead of claiming a completed matrix if the
-remaining window cannot accommodate service trials and export.
+Do not provide runtime timestamps. The bootstrap derives them once, and handoff
+preserves the original clock. The one-hour/$5 values are source/runtime ceilings
+and conservative planning allowances, **not live spending authorization or a hard
+Azure budget**. Read current regional quota and retail rates before dispatch;
+the estimate includes bounded controller/storage/probe allowance. Unknown quota,
+missing meters or estimates above the reviewed limit halt the measurement.
 
-The service wrapper is separately reviewed code mounted beside the unchanged
-image. Its script hashes and runtime controls are pinned in the trial manifest
-and checked against Azure before writes and after restarts. It adds five-second
-process/cgroup samples, durable trace export, one-shot exec-only fault controls,
-and a durable compare-and-swap provider budget. It disables SDK retries and
-limits output to the serving configuration's 1,500-token ceiling. This execution
-difference must accompany all baseline comparisons. Every SDK HTTP attempt
-reserves one of 30 calls before sending, including metadata calls, count-token
-requests and retries; cumulative submitted bodies are bounded to 10 MB.
+Derived groups are `rg-ingest-perf-<run>` and
+`rg-ingest-perf-control-<run>`. Identities, storage paths, ownership tags and
+expiry remain bound to the exact run. No unaudited production resource is reused
+for load; the production registry supplies only the immutable image.
 
-The per-run limit bounds each benchmark container, each service arm including
-its restart, and each fault/recovery control including request and restart time.
-Azure job replica timeouts and the child/caller deadlines receive the same limit.
-Provisioning and readiness are separate setup phases inside the overall expiry.
+## Scoped operator bootstrap and handoff
 
-Each service arm checks health, search and reads during ingestion, retains
-latency samples and Azure metric series, and verifies source bytes through SAGE.
-The timing-overhead service pair disables abstraction in both arms to preserve
-the shared provider budget. Fault controls require actual nonce-correlated
-worker/provider receipts and final recovery states. A separate read-only job
-checks every source identity, passage identity/order/content, normalized vector
-and independently re-encoded passage/document-surface association. Reference
-encoding is outside timed intervals.
-
-Private Blob evidence survives service restarts and CI loss. This repository is
-public, so GitHub artifacts contain only encrypted archives and public ciphertext
-hash receipts. Each archive uses a fresh AES-256-GCM key, wrapped to the approved
-owner RSA public key with OAEP/SHA-256. Raw evidence and binding coordinates are
-never uploaded as public artifacts. Preserve the private key locally; its loss
-prevents artifact recovery. Authenticate and decrypt a downloaded archive into
-a new private directory using:
-
-```sh
-.venv/bin/python -m deploy.performance_archive decrypt --source evidence.enc \
-  --private-key /private/path/recipient.pem --output /private/path/recovered-evidence
-```
-
-The archive must authenticate completely before extraction. Failure to seal or
-upload the pre-cleanup archive blocks controller cleanup, preserving private
-Blob evidence for recovery. Each export retains raw records and a hash manifest. `report.md` and `report.json` distinguish missing
-evidence, overlapping stage totals and hosting/resource differences. Reported
-CPU samples and one-minute Azure metric series must be correlated by their actual
-intervals; an absent series is unknown. No throughput result is present in this
-PR, and local tests cannot establish Azure provisioning or performance success.
-
-## Cleanup and failure recovery
-
-The workflow performs a fresh export and archives complete or partial evidence
-before deletion. Before remote work, export independently attempts to mark the
-state as started and remove the previous receipt; either invalidated channel
-blocks use of old proof. If both channels are unwritable, durable revocation is
-impossible: repair local storage, then run a fresh successful export and archive
-before any recovery cleanup. Never reuse an old digest after such a failure.
-The fresh export step must succeed independently of the measurement outcome. Cleanup
-requires its exact receipt SHA-256, matching attempt/run/plan/export target and
-unchanged exported file hashes. An earlier successful export cannot authorize
-cleanup after a later failed attempt. Export after expiry remains available
-through the original reviewed specification and runtime-plan binding. Cleanup
-checks exact group IDs, all resource ownership/expiry tags, managed identities,
-site grants and external role assignments. It removes only the recorded trial
-access, deletes the disposable group, observes absence, then deletes the evidence
-controller group. Confirmed-absent assignments/groups are safe to repeat. Unknown
-inventory or export status retains the controller and fails the run.
-
-At expiry, the independent Automation identity checks all ownership again and
-deletes only its exact trial group, even if CI has disappeared. It retains the
-controller/evidence group; an operator must export that evidence, revoke recorded
-external access and finish controller cleanup. If initial foundation setup fails
-before a schedule is proven, no billable stack is started; inspect its receipts
-and remove only the owned foundation after exporting the available evidence.
-A subscription budget is not a hard spending stop. The bounded allocation,
-request/input limits, conservative rate estimate and independently scheduled
-expiry are the controls; preserve their readbacks and actual cleanup outcome.
-
-## One-time scoped operator bootstrap
-
-Use a separate experiment application and GitHub environment, with one exact
+Use the separate experiment application/environment with one exact GitHub
 `repo:clifguy/cas:environment:<environment>` federated subject and a main-only
-deployment branch policy. The production deployment application's grants remain
-unchanged. Azure requires a resource group to exist before it accepts group-scoped
-role assignments. From the merged checkout, the human bootstrap operator runs:
+branch policy. From merged reviewed code, a separately authorized operator runs:
 
 ```sh
 .venv/bin/python -m deploy.performance_bootstrap bootstrap \
@@ -179,83 +98,87 @@ role assignments. From the merged checkout, the human bootstrap operator runs:
   --output /private/path/bootstrap
 ```
 
-The operator needs group creation, custom role definition and assignment rights.
-The command creates only the two empty, owned groups and the exact scoped grants.
-The experiment application gets subscription deployment orchestration and specific
-read-only prerequisite inspection, Contributor on the two trial groups, conditioned
-RBAC administration restricted by role and ServicePrincipal type: Contributor in
-the trial group and Blob Data Contributor in the control group, source deployment
-orchestration, registry read/pull and conditioned AcrPull assignment, secret-scope
-conditioned Secrets User assignment, and read-only source configuration access.
-These role/type conditions do not restrict PrincipalId: they permit assignments to
-any service principal at their exact scope. The separate ARM preview binds the
-actual expiry, runtime, bootstrap and export role assignments to their known
-principal IDs before deployment. The same distinction applies to registry, secret
-and blob delegation. It never grants subscription Contributor/Owner or subscription
-RBAC administration.
-The bootstrap checks that the principal is an application with only the exact
-experiment-environment federation. It does not assign Graph administrative roles;
-the separate tenant-administrator prerequisites above still apply, including the
-SAGE audience's required application role.
+The embedding path retains one narrowly defined orchestration role: deployment
+read/write/validate/what-if/delete and read-only Container Apps regional usage,
+subscription and resource-group inspection. It is assigned at the subscription
+and exact source group for nested deployments. This is not subscription
+Contributor/Owner or subscription role administration. Each trial group grants
+Contributor and conditioned RBAC administration: Contributor assignments in the
+trial group, Blob Data Contributor in the controller group. The source registry
+grants Reader/AcrPull and conditioned AcrPull assignment. The conditions restrict
+role and ServicePrincipal type, not arbitrary PrincipalId; the separate fail-closed
+ARM preview binds actual runtime, expiry and recovery-reader principals to exact
+receipt-backed UUIDs. An extra scope, privilege, principal or altered condition
+is refused on live readback. No tenant-wide Graph administration is required.
 
-Retain `bootstrap-receipt.json` privately. Intent is persisted before any mutation;
-ready is written only after live group, role-definition and assignment readbacks.
-A successful repeat verifies the same empty inventory without renewing its clock
-or issuing writes. An interrupted intent is deliberately refused: reconcile its
-recorded groups and assignments before deciding on recovery, rather than pretending
-it is a completed foundation. No billable foundation or stack is created here.
-A partial bootstrap must be reconciled by the human bootstrap operator; do not
-fabricate a ready receipt to resume it.
+Intent is written before every bootstrap mutation. Ready is written only after
+exact group, role-definition and assignment readbacks. A successful repeat verifies
+the same empty inventory without renewing the clock. An interrupted intent is
+refused; reconcile its recorded effects before an explicitly authorized recovery.
+Do not manufacture ready receipts or silently normalize unknown Azure responses
+to absence. Only recognized not-found establishes absence.
 
-Set the exact ready receipt bytes in `PERF_BOOTSTRAP_RECEIPT_JSON` in the selected
-experiment environment. Dispatch with both `approved_sha256` for the specification
-and `approved_bootstrap_sha256` for the receipt. The committed workflow verifies
-both hashes, the actual signed-in principal and environment, and materializes the
-original runtime plan. Time spent bootstrapping counts against the four-hour
-window; a new dispatch cannot extend it. Never refresh timestamps in a receipt.
-Only independently verified empty groups may enter initial foundation creation.
-Normal retained foundation resumes still require their own provision receipt.
+Keep exact specification and ready receipt bytes in the selected environment's
+`PERF_APPROVED_SPEC_JSON` and `PERF_BOOTSTRAP_RECEIPT_JSON` secrets. Dispatch with
+both SHA-256 values. Preserve terminal newlines when uploading secrets: the
+GitHub CLI stdin path and shell substitution can trim them. Use the reviewed
+file bytes as an explicit process argument from a trusted machine without tracing.
+The workflow checks both hashes, environment and authenticated principal, and
+materializes the original runtime plan. Setup time consumes the original window.
 
-Preserve the approved files byte for byte when setting those secrets, including
-any final newline. The GitHub CLI's standard-input path trims terminal CR/LF;
-shell command substitution also removes final newlines. Use its explicit body
-argument with the file bytes decoded directly, for example from the clean checkout:
+Every deployment phase runs actual ARM validation and FullResourcePayloads
+what-if before apply. Access previews use concrete principals from foundation
+outputs; unresolved expressions and Unsupported changes remain refused. Foreign
+scopes, extra resources, dedicated capacity and unexpected deletions are refused.
+No local fixture or template compile establishes live authorization/startup.
+
+## Evidence, failure recovery and cleanup
+
+Private Blob evidence survives job/controller-process failure. Partial records
+are retained. Public GitHub artifacts contain only encrypted archives and their
+ciphertext receipts: fresh AES-256-GCM keys wrapped with owner RSA OAEP/SHA-256.
+After authenticated download, decrypt and read back the expected files privately:
 
 ```sh
-.venv/bin/python - <<'PY'
-import subprocess
-from pathlib import Path
-
-environment = "EXPERIMENT_ENVIRONMENT"
-for name, source in (
-    ("PERF_APPROVED_SPEC_JSON", Path("/private/path/spec.json")),
-    ("PERF_BOOTSTRAP_RECEIPT_JSON", Path("/private/path/bootstrap/bootstrap-receipt.json")),
-):
-    result = subprocess.run(
-        ["gh", "secret", "set", name, "--env", environment,
-         "--body", source.read_bytes().decode("utf-8")],
-        capture_output=True,
-    )
-    if result.returncode:
-        raise SystemExit("Environment secret upload failed; reconcile before dispatch.")
-PY
+.venv/bin/python -m deploy.performance_archive decrypt --source evidence.enc \
+  --private-key /private/path/recipient.pem --output /private/path/recovered-evidence
 ```
 
-The body is briefly present in local process arguments; run this only on the
-trusted operator machine and never enable command/argument tracing. Do not print
-the body or exception arguments. Review and hash the original files before
-uploading; never normalize an approved file or edit receipt timestamps to repair
-a digest mismatch. The workflow checks both digests again. Its expected principal
-comes from the verified receipt; the handoff CLI independently obtains the signed-in
-token identity, leaving renewal masking directives on the runner's log channel.
+Authentication completes before extraction. Retain source/image/model/controller
+identity, warmup/repetitions, submitted token counts, peak process/cgroup memory,
+execution status, probe nonce, export hashes and actual cleanup readbacks. Missing
+results are partial/unknown. Later service/source acceptance remains unresolved.
 
-The existing expiry and export-bound cleanup rules continue to apply. Group
-removal removes group-local bootstrap assignments; it does not remove the separate
-operator's subscription/source grants or Graph grants. After export and verified
-trial cleanup, the human bootstrap operator must revoke the exact assignments in
-the retained bootstrap receipt, remove the temporary Graph/SAGE assignments and
-disable or remove the experiment federation/application and environment when no
-longer needed. Retain their final readbacks. Custom read/orchestration role
-definitions are non-billable; remove them only after verifying no other assignments
-use them. Do not claim this operator-access cleanup ran merely because the CI
-resource cleanup passed.
+For an authenticated premeasurement foundation with no dispatched job and no
+compute resource, export may retain a live ownership/inventory snapshot. It does
+not demand nonexistent model evidence. A partial compute deployment or any
+dispatch requires durable cloud export; denied/interrupted export cannot be
+relabelled empty. Empty-foundation cleanup checks its live inventory again.
+
+Every running experiment requires a fresh complete export, encrypted archive and
+its exact export-receipt SHA-256 before immediate cleanup. Starting a later export
+invalidates old proof; missing/changed files or interrupted export block deletion.
+Cleanup verifies ownership, expiry, identities and scoped grants, deletes trial
+resources and observes absence before removing the controller. The embedding path
+retains an explicit `operator-grants-pending.json` because CI cannot revoke its
+own subscription/source bootstrap grants. The authorized human operator then runs
+the same bootstrap entry point with `cleanup`, the original `--receipt`,
+`--approved-bootstrap-sha256`, specification digest, environment and principal;
+it requires resource-group absence, revokes only exact matching assignments and
+reads their absence back. Resource cleanup success is not access cleanup success;
+custom orchestration role definitions remain only as non-billable shared definitions.
+Remove definitions only after independently proving no other assignment uses them.
+
+Independent expiry deletes only the owned trial group and retains private evidence
+in the controller group. After expiry or failed CI, export retained evidence,
+finish exact recorded grant/controller cleanup and verify actual absence. Rehearsal
+controller cleanup follows its own original receipts. Disabling experiment
+federation/application/environment and removing handoff secrets are separate
+operator cleanup steps; retain their readbacks. Never claim those occurred merely
+because resource-group deletion passed. On structural integration failure, stop
+expansion and reassess the whole path without weakening preview or evidence guards.
+
+The existing `service_campaign` path is retained for later separately approved
+work. It still has source/database/provider prerequisites and the larger matrix;
+its existence does not authorize running it or make it a prerequisite for the
+embedding canary.
