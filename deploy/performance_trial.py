@@ -753,7 +753,9 @@ def verify_expiry_rehearsal(plan, az, rest):
         if line.startswith("{")
     ):
         raise ValueError("expiry job lacks actual deletion readback")
-    if az("group", "exists", "-n", expected["TrialGroup"]):
+    if az(
+        "group", "exists", "--subscription", plan["subscription_id"], "-n", expected["TrialGroup"]
+    ):
         raise ValueError("expiry rehearsal group remains present")
     return {
         "verified_at": datetime.now(UTC).isoformat(),
@@ -776,8 +778,12 @@ def provision(
 ):
     """The sole stack-creation path; injectable boundaries exercise actual ordering."""
     precheck(plan, az, rest)
-    existing = az("group", "exists", "-n", plan["resource_group"])
-    controller = az("group", "exists", "-n", plan["controller_group"])
+    existing = az(
+        "group", "exists", "--subscription", plan["subscription_id"], "-n", plan["resource_group"]
+    )
+    controller = az(
+        "group", "exists", "--subscription", plan["subscription_id"], "-n", plan["controller_group"]
+    )
     template = ROOT / "infra/performance.bicep"
     parameters = manifest_parameters(plan, principal, ingress_key)
     foundation = {}
@@ -803,8 +809,8 @@ def provision(
         for group in (plan["resource_group"], plan["controller_group"]):
             owned_inventory(
                 {**plan, "resource_group": group},
-                az("group", "show", "-n", group),
-                az("resource", "list", "-g", group),
+                az("group", "show", "--subscription", plan["subscription_id"], "-n", group),
+                az("resource", "list", "--subscription", plan["subscription_id"], "-g", group),
             )
         # Reapply only infrastructure before any service/source mutation.
         foundation = saved["outputs"]
@@ -979,9 +985,11 @@ def export_checkpoint(plan, az, rest, output):
     inventories = []
     for key in ("resource_group", "controller_group"):
         group = plan[key]
-        if az("group", "exists", "-n", group):
-            row = az("group", "show", "-n", group)
-            resources = az("resource", "list", "-g", group)
+        if az("group", "exists", "--subscription", plan["subscription_id"], "-n", group):
+            row = az("group", "show", "--subscription", plan["subscription_id"], "-n", group)
+            resources = az(
+                "resource", "list", "--subscription", plan["subscription_id"], "-g", group
+            )
             owned_inventory({**plan, "resource_group": group}, row, resources)
             allowed = (
                 "Microsoft.ManagedIdentity/userAssignedIdentities",
@@ -1067,9 +1075,24 @@ def cleanup(plan, az, rest, output, *, export_receipt_sha256=None):
             "verified_at": datetime.now(UTC).isoformat(),
         },
     )
-    if az("group", "exists", "-n", plan["resource_group"]):
-        live = az("group", "show", "-n", plan["resource_group"])
-        owned_inventory(plan, live, az("resource", "list", "-g", plan["resource_group"]))
+    if az(
+        "group", "exists", "--subscription", plan["subscription_id"], "-n", plan["resource_group"]
+    ):
+        live = az(
+            "group", "show", "--subscription", plan["subscription_id"], "-n", plan["resource_group"]
+        )
+        owned_inventory(
+            plan,
+            live,
+            az(
+                "resource",
+                "list",
+                "--subscription",
+                plan["subscription_id"],
+                "-g",
+                plan["resource_group"],
+            ),
+        )
         for name, key in (
             []
             if "servicePrincipalId" not in outputs
@@ -1078,7 +1101,14 @@ def cleanup(plan, az, rest, output, *, export_receipt_sha256=None):
             else [("id-perf-", "servicePrincipalId"), ("id-perf-pg-", "bootstrapPrincipalId")]
         ):
             identity = az(
-                "identity", "show", "-g", plan["resource_group"], "-n", name + plan["run_id"]
+                "identity",
+                "show",
+                "--subscription",
+                plan["subscription_id"],
+                "-g",
+                plan["resource_group"],
+                "-n",
+                name + plan["run_id"],
             )
             if identity["principalId"] != outputs[key]:
                 raise ValueError("cleanup identity receipt drift")
@@ -1173,14 +1203,25 @@ def cleanup(plan, az, rest, output, *, export_receipt_sha256=None):
             raise ValueError("runtime registry grant deletion unconfirmed")
     groups = [plan["resource_group"], plan["controller_group"]]
     for group in groups:
-        if az("group", "exists", "-n", group):
-            live = az("group", "show", "-n", group)
-            resources = az("resource", "list", "-g", group)
+        if az("group", "exists", "--subscription", plan["subscription_id"], "-n", group):
+            live = az("group", "show", "--subscription", plan["subscription_id"], "-n", group)
+            resources = az(
+                "resource", "list", "--subscription", plan["subscription_id"], "-g", group
+            )
             scoped = {**plan, "resource_group": group}
             owned_inventory(scoped, live, resources)
-            az("group", "delete", "-n", group, "--yes", "--no-wait")
+            az(
+                "group",
+                "delete",
+                "--subscription",
+                plan["subscription_id"],
+                "-n",
+                group,
+                "--yes",
+                "--no-wait",
+            )
             deadline = time.monotonic() + 1800
-            while az("group", "exists", "-n", group):
+            while az("group", "exists", "--subscription", plan["subscription_id"], "-n", group):
                 if time.monotonic() >= deadline:
                     raise TimeoutError("deletion unconfirmed; retain controller")
                 time.sleep(10)

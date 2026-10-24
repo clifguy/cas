@@ -93,6 +93,8 @@ def role_definitions(plan):
                         DEPLOY_ACTIONS
                         + [
                             "Microsoft.App/locations/usages/read",
+                            "Microsoft.Authorization/roleAssignments/read",
+                            "Microsoft.Authorization/roleDefinitions/read",
                             "Microsoft.Resources/subscriptions/read",
                             "Microsoft.Resources/subscriptions/resourceGroups/read",
                         ]
@@ -236,8 +238,8 @@ def verify_groups(plan, az, *, empty):
     from deploy.performance_trial import owned_inventory
 
     for group in (plan["resource_group"], plan["controller_group"]):
-        row = az("group", "show", "-n", group)
-        resources = az("resource", "list", "-g", group)
+        row = az("group", "show", "--subscription", plan["subscription_id"], "-n", group)
+        resources = az("resource", "list", "--subscription", plan["subscription_id"], "-g", group)
         owned_inventory({**plan, "resource_group": group}, row, resources)
         if row.get("location", "").casefold() != plan["location"].casefold() or (
             empty and resources
@@ -301,11 +303,22 @@ def verify_access(plan, principal, az, *, empty_groups):
     expected = expected_assignments(plan, principal)
     sub = "/subscriptions/" + plan["subscription_id"]
     # Exhaustive --all plus ancestor inventory; do not infer scope from names.
-    rows = az("role", "assignment", "list", "--all", "--fill-principal-name", "false")
+    rows = az(
+        "role",
+        "assignment",
+        "list",
+        "--subscription",
+        plan["subscription_id"],
+        "--all",
+        "--fill-principal-name",
+        "false",
+    )
     inherited = az(
         "role",
         "assignment",
         "list",
+        "--subscription",
+        plan["subscription_id"],
         "--scope",
         sub,
         "--include-inherited",
@@ -337,7 +350,15 @@ def verify_access(plan, principal, az, *, empty_groups):
         if direct != wanted_direct:
             raise ValueError("unexpected bootstrap group role assignment")
     for definition in role_definitions(plan):
-        rows = az("role", "definition", "list", "--name", definition["Id"])
+        rows = az(
+            "role",
+            "definition",
+            "list",
+            "--subscription",
+            plan["subscription_id"],
+            "--name",
+            definition["Id"],
+        )
         if len(rows) != 1:
             raise ValueError("bootstrap custom role unresolved")
         r = rows[0]
@@ -390,7 +411,10 @@ def bootstrap(
         or account["tenantId"] != plan["binding"]["tenant_id"]
     ):
         raise ValueError("bootstrap account differs")
-    if any(az("group", "exists", "-n", plan[k]) for k in ("resource_group", "controller_group")):
+    if any(
+        az("group", "exists", "--subscription", plan["subscription_id"], "-n", plan[k])
+        for k in ("resource_group", "controller_group")
+    ):
         raise ValueError("unreceipted existing group")
     principal_row = az("ad", "sp", "show", "--id", principal)
     if (
@@ -424,6 +448,8 @@ def bootstrap(
         az(
             "group",
             "create",
+            "--subscription",
+            plan["subscription_id"],
             "-n",
             group,
             "-l",
@@ -550,7 +576,7 @@ def cleanup_operator(
         receipt, json.loads(spec_raw), spec_sha, environment, principal, allow_expired=True
     )
     for key in ("resource_group", "controller_group"):
-        if az("group", "exists", "-n", plan[key]):
+        if az("group", "exists", "--subscription", plan["subscription_id"], "-n", plan[key]):
             raise ValueError(
                 "finish retained evidence and resource cleanup before operator grant removal"
             )

@@ -46,6 +46,8 @@ def test_canary_needs_only_image_model_evidence_and_expiry():
         bootstrap.DEPLOY_ACTIONS
         + [
             "Microsoft.App/locations/usages/read",
+            "Microsoft.Authorization/roleAssignments/read",
+            "Microsoft.Authorization/roleDefinitions/read",
             "Microsoft.Resources/subscriptions/read",
             "Microsoft.Resources/subscriptions/resourceGroups/read",
         ]
@@ -417,6 +419,8 @@ def command_setup(tmp_path, monkeypatch, *, expiry_only=False):
         monkeypatch.setattr(sys, "argv", ["command", *args])
         return module.main()
 
+    # Human bootstrap is a separate phase even when pytest itself runs in CI.
+    monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     invoke(
         bootstrap,
         [
@@ -433,6 +437,7 @@ def command_setup(tmp_path, monkeypatch, *, expiry_only=False):
             str(operator),
         ],
     )
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
     receipt = operator / "bootstrap-receipt.json"
     cloud.plan = json.loads(receipt.read_text())["plan"]
     rd = hashlib.sha256(receipt.read_bytes()).hexdigest()
@@ -787,3 +792,89 @@ def finish_operator_cleanup(out, monkeypatch):
         ],
     )
     bootstrap.main()
+
+
+def test_operator_cleanup_checks_receipt_subscription_with_foreign_cli_default(
+    tmp_path, monkeypatch
+):
+    import hashlib
+
+    _, cloud, out, invoke = command_setup(tmp_path, monkeypatch)
+    invoke("run")
+    before = copy.deepcopy(cloud.base.assignments)
+    target = cloud.plan["subscription_id"]
+    calls = []
+
+    def foreign_default(*args, **kwargs):
+        calls.append(args)
+        if args[:2] == ("account", "show"):
+            return {"id": "99999999-9999-9999-9999-999999999999", "tenantId": "tenant"}
+        if args[0] in ("group", "resource", "identity"):
+            scoped = "--subscription" in args and args[args.index("--subscription") + 1] == target
+            if not scoped:
+                if args[:2] == ("group", "exists"):
+                    return False  # An authenticated empty foreign subscription.
+                raise AssertionError("unbound group/resource command")
+        return cloud(*args, **kwargs)
+
+    monkeypatch.setattr(trial, "Azure", lambda: foreign_default)
+    with pytest.raises(ValueError, match="resource cleanup"):
+        finish_operator_cleanup(out, monkeypatch)
+    assert cloud.base.assignments == before
+    assert not (out / "operator-grants-revoked.json").exists()
+    invoke("export")
+    digest = hashlib.sha256((out / "export-receipt.json").read_bytes()).hexdigest()
+    invoke("cleanup", "--export-receipt-sha256", digest)
+    assert cloud.base.groups == {}
+    finish_operator_cleanup(out, monkeypatch)
+    assert (out / "operator-grants-revoked.json").exists()
+    assert all("--subscription" in a for a in calls if a[0] in ("group", "resource", "identity"))
+
+
+def test_exact_canary_grants_allow_required_subscription_role_readbacks(tmp_path, monkeypatch):
+    _, cloud, out, invoke = command_setup(tmp_path, monkeypatch)
+    from tests.deploy.test_performance_bootstrap import PRINCIPAL
+
+    actions = {
+        action
+        for binding in bootstrap.expected_assignments(cloud.plan, PRINCIPAL)
+        if binding["scope"] == "/subscriptions/" + cloud.plan["subscription_id"]
+        for definition in bootstrap.role_definitions(cloud.plan)
+        if binding["roleDefinitionId"].endswith("/" + definition["Id"])
+        for action in definition["Actions"]
+    }
+    observed = []
+
+    def permission_checked(*args, **kwargs):
+        if args[:2] == ("role", "assignment") and args[2] == "list":
+            required = "Microsoft.Authorization/roleAssignments/read"
+        elif args[:3] == ("role", "definition", "list"):
+            required = "Microsoft.Authorization/roleDefinitions/read"
+        else:
+            return cloud(*args, **kwargs)
+        if required not in actions:
+            raise PermissionError("exact subscription role lacks " + required)
+        assert args[args.index("--subscription") + 1] == cloud.plan["subscription_id"]
+        observed.append(required)
+        return cloud(*args, **kwargs)
+
+    monkeypatch.setattr(trial, "Azure", lambda: permission_checked)
+    assert invoke("run") == 0
+    assert set(observed) == {
+        "Microsoft.Authorization/roleAssignments/read",
+        "Microsoft.Authorization/roleDefinitions/read",
+    }
+
+
+def test_rehearsal_absence_is_read_in_plan_subscription(tmp_path, monkeypatch):
+    _, cloud, _, _ = command_setup(tmp_path, monkeypatch)
+    target = cloud.plan["subscription_id"]
+
+    def foreign_default(*args, **kwargs):
+        if args[:2] == ("group", "exists"):
+            # The target still contains the rehearsal group; foreign default is empty.
+            return "--subscription" in args and args[args.index("--subscription") + 1] == target
+        return cloud(*args, **kwargs)
+
+    with pytest.raises(ValueError, match="rehearsal group remains"):
+        trial.verify_expiry_rehearsal(cloud.plan, foreign_default, cloud)

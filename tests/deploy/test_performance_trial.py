@@ -238,8 +238,21 @@ def test_no_billable_stack_before_independent_expiry(tmp_path):
             enable=denied,
         )
     assert calls == [
-        ("read", ("group", "exists", "-n", p["resource_group"])),
-        ("read", ("group", "exists", "-n", p["controller_group"])),
+        (
+            "read",
+            ("group", "exists", "--subscription", p["subscription_id"], "-n", p["resource_group"]),
+        ),
+        (
+            "read",
+            (
+                "group",
+                "exists",
+                "--subscription",
+                p["subscription_id"],
+                "-n",
+                p["controller_group"],
+            ),
+        ),
         ("apply", False, True),
         ("apply", False, False),
         ("apply", False, True),

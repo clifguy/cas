@@ -100,7 +100,7 @@ branch policy. From merged reviewed code, a separately authorized operator runs:
 
 The embedding path retains one narrowly defined orchestration role: deployment
 read/write/validate/what-if/delete and read-only Container Apps regional usage,
-subscription and resource-group inspection. It is assigned at the subscription
+subscription, resource-group and role-assignment/definition inspection. It is assigned at the subscription
 and exact source group for nested deployments. This is not subscription
 Contributor/Owner or subscription role administration. Each trial group grants
 Contributor and conditioned RBAC administration: Contributor assignments in the
