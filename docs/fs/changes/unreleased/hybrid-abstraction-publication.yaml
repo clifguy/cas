@@ -1,9 +1,0 @@
-classification: minor
-category: [capability]
-summary: >-
-  Adds opt-in hybrid discovery descriptions, separate abstraction quality metadata,
-  bounded private candidate diagnostics and accepted-calibration configuration guards.
-for_callers: >-
-  Document processing metadata can report unknown, recording, class-screened,
-  extractive fallback or unavailable description quality independently of evidence
-  coverage. Hybrid mode defaults off; no additional withholding classes are enabled.
