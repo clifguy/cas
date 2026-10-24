@@ -822,7 +822,22 @@ class EmbeddingProvider(ABC):
 
 
 class BoundedEvidenceText(str):
-    """Provider input whose established scope must survive fitting unchanged."""
+    """Protected input with a separate authored-only attestation baseline.
+
+    Deterministic observations can orient generation, but cannot license an
+    acronym expansion. Direct legacy callers default to their complete supplied
+    text; the package builder preserves the prior authored/context baseline.
+    """
+
+    def __new__(cls, value: str, *, authored_text: str | None = None) -> "BoundedEvidenceText":
+        result = super().__new__(cls, value)
+        result._authored_text = str(value) if authored_text is None else authored_text
+        return result
+
+    @property
+    def authored_text(self) -> str:
+        """The prior authored/context input, excluding added framing and observations."""
+        return self._authored_text
 
 
 class AbstractionProvider(ABC):

@@ -6,7 +6,7 @@
   "properties": {
     "package": {
       "type": "object",
-      "description": "Immutable EvidencePackage of authored source excerpts, separately typed observations and exact selection identity; validated on read."
+      "description": "Immutable EvidencePackage of authored source excerpts, separately typed deterministic observations and exact selection identity; validated on read. Supplied observations carry operation, units, inspected scope and exactness as protected data, remain derived, and cannot attest acronym expansions."
     },
     "accounting": {
       "type": "object",
