@@ -131,8 +131,11 @@ class ResolutionPolicy(StrEnum):
 class PipelineStatus(StrEnum):
     """Tracks progress of the three-stage ingestion pipeline.
 
-    `abstraction_skipped` indicates the vault has abstraction disabled or
-    the LLM was unavailable (graceful degradation per CAS-ADR-011).
+    `abstraction_skipped` records skipped abstraction, including disabled
+    generation or no admitted input. An enabled provider's runtime failure
+    is reported as `failed`, not successful skipping. Publication-quality
+    unavailability is separate from execution failure and does not imply
+    that source or persistence work succeeded.
 
     `abstraction_interrupted` records abstraction work that was dropped
     before publication: its queue was stopped or an artifact rewrite
