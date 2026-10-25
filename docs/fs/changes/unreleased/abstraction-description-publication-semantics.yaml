@@ -1,0 +1,6 @@
+classification: patch
+summary: >-
+  Clarify nullable discovery descriptions, deterministic measurements, complete
+  quoted fallback and unavailable outcomes in document and summary descriptions.
+  Publication quality remains separate and unknown historical quality is unscreened.
+for_callers: ""

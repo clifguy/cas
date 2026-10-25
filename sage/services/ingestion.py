@@ -3488,7 +3488,7 @@ class IngestionService:
 
         vault_source_store = resolve_stack_vault_source_store(get_stack_config())
         storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
-        effective = self._merge_adapter_config(doc.source_type, doc.adapter_config)
+        effective = self._merge_adapter_config(doc.source_type, doc.adapter_config) or {}
         selection, limits = discovery_configuration(effective)
         with self._project_source(vault_source_store, storage_root, doc.source_path) as source:
 
@@ -3571,9 +3571,7 @@ class IngestionService:
             )
 
             calibration_refs = validate_promotions(config.withholding_classes)
-            provider_text = BoundedEvidenceText(
-                request.text.authored_text, authored_text=request.text.authored_text
-            )
+            provider_text = request.provider_text
             publication_budget = prepare_publication(package, request, config.max_abstract_tokens)
         if not provider_text:
             await self._stamp_pipeline_status(

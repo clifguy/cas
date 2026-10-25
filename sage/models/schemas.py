@@ -699,9 +699,13 @@ class Document(BaseModel):
     semantic_abstract: str | None = Field(
         default=None,
         description=(
-            "LLM-generated abstract with selected-evidence length. "
-            "Generated at ingestion Stage 3, regenerated on re-ingestion. "
-            "Null if abstraction is disabled or pending (CAS-ADR-011)."
+            "Nullable discovery description of selected evidence. Hybrid publication "
+            "combines optional generated prose with identified deterministic measurements, "
+            "or uses complete quoted source excerpts as fallback. Null when disabled, "
+            "pending, skipped or unavailable, including completed abstraction without "
+            "an admissible fallback. Quality is reported separately in processing_coverage; "
+            "unknown historical quality does not mean screened. Published at ingestion "
+            "Stage 3 and regenerated on re-ingestion (CAS-ADR-011, CAS-ADR-020)."
         ),
     )
     pipeline_status: PipelineStatus = Field(
@@ -832,12 +836,13 @@ class DocumentSummary(BaseModel):
     semantic_abstract: str | None = Field(
         default=None,
         description=(
-            "LLM-generated semantic abstract of the document content. Present "
-            "when the ingestion pipeline completed abstraction; null when "
-            "abstraction was skipped or the document predates abstract "
-            "generation. Enables steward agents and vault-steward discovery "
-            "to access document orientation without a separate get_document "
-            "call (CAS-ADR-011)."
+            "Nullable discovery description of selected evidence. Hybrid publication "
+            "combines optional generated prose with identified deterministic measurements, "
+            "or uses complete quoted source excerpts as fallback. Null when disabled, "
+            "pending, skipped or unavailable, including completed abstraction without "
+            "an admissible fallback. Quality is reported separately in processing_coverage; "
+            "unknown historical quality does not mean screened. Published at ingestion "
+            "Stage 3 and regenerated on re-ingestion (CAS-ADR-011, CAS-ADR-020)."
         ),
     )
     tier3_metadata: dict | None = Field(
