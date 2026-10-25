@@ -14,6 +14,9 @@ import uuid
 from pathlib import Path
 from typing import Callable
 
+from sage.config import VaultAbstractionConfig
+from sage.models.abstraction_evidence import decode_package
+from sage.services.bounded_abstraction import abstraction_request
 from scripts.evaluate_abstraction_publication import calibration_report
 
 HARD_CALL_CAP = 120
@@ -41,6 +44,25 @@ def thaw_bytes(value: dict) -> bytes:
     return raw
 
 
+def admitted_input(spec: dict, case: dict, arm: str) -> dict:
+    """Freeze the actual request/check seam, including complete-prompt fitting.
+
+    Source bytes remain a separate identity; they are never a scoring baseline.
+    The arm changes representation while preserving runtime attestation policy.
+    """
+    config = VaultAbstractionConfig.model_validate(
+        {**spec["request_config"], "hybrid_description": arm == "hybrid"}
+    )
+    request = abstraction_request(decode_package(json.loads(thaw_bytes(case["evidence"]))), config)
+    return {
+        "config": config.model_dump(mode="json"),
+        "authored": freeze_bytes(request.text.authored_text.encode()),
+        "provider_text": freeze_bytes(
+            str(request.provider_text if arm == "hybrid" else request.text).encode()
+        ),
+    }
+
+
 def report_input(spec: dict, records: list[dict]) -> dict:
     cases = []
     for record in records:
@@ -60,7 +82,7 @@ def report_input(spec: dict, records: list[dict]) -> dict:
                 "provider": trial["provider"],
                 "split": case["split"],
                 "origin": "reconstructed",
-                "authored": thaw_bytes(case["source"]).decode(),
+                "authored": thaw_bytes(record["admitted_authored"]).decode(),
                 "candidate": thaw_bytes(output).decode(),
                 "expected": None,
                 "faithful": None,
@@ -80,7 +102,7 @@ def report_input(spec: dict, records: list[dict]) -> dict:
                 "provider": "qwen",
                 "split": "development",
                 "origin": "reconstructed",
-                "authored": thaw_bytes(case["source"]).decode(),
+                "authored": thaw_bytes(admitted_input(spec, case, "hybrid")["authored"]).decode(),
                 "candidate": "",
                 "expected": None,
                 "faithful": None,
@@ -107,6 +129,7 @@ def validate_spec(spec: dict) -> None:
         raise ValueError("unfrozen stage allocation")
     if spec.get("arms") != ["legacy", "hybrid"] or spec.get("max_repeats") != 3:
         raise ValueError("unfrozen arms/repeats")
+    VaultAbstractionConfig.model_validate(spec["request_config"])
     providers = spec.get("providers", {})
     if set(providers) != {"qwen", "anthropic"}:
         raise ValueError("invalid provider roster")
@@ -261,6 +284,14 @@ def read_records(db: sqlite3.Connection, manifest: dict) -> list[dict]:
         if record["state"] not in ("reserved", "completed", "failed"):
             raise ValueError("invalid ledger state")
         validate_trial(manifest["spec"], record["trial"])
+        case = next(c for c in manifest["spec"]["cases"] if c["id"] == record["trial"]["case_id"])
+        admitted = admitted_input(manifest["spec"], case, record["trial"]["arm"])
+        if (
+            record["admitted_authored"] != admitted["authored"]
+            or record["request_config"] != admitted["config"]
+            or record["provider_text"] != admitted["provider_text"]
+        ):
+            raise ValueError("trial admitted evidence/config mismatch")
         records.append(record)
     return records
 
@@ -275,6 +306,8 @@ def dispatch_trial(manifest_path: Path, trial: dict, *, dispatcher: Callable[[di
     manifest = load_manifest(manifest_path)
     spec = manifest["spec"]
     validate_trial(spec, trial)
+    case = next(c for c in spec["cases"] if c["id"] == trial["case_id"])
+    admitted = admitted_input(spec, case, trial["arm"])
     with connect(manifest) as db:
         db.execute("BEGIN IMMEDIATE")
         records = read_records(db, manifest)
@@ -288,6 +321,9 @@ def dispatch_trial(manifest_path: Path, trial: dict, *, dispatcher: Callable[[di
         record = {
             "attempt_id": str(uuid.uuid4()),
             "trial": trial,
+            "admitted_authored": admitted["authored"],
+            "request_config": admitted["config"],
+            "provider_text": admitted["provider_text"],
             "state": "reserved",
             "result": None,
             "error": None,
@@ -303,6 +339,9 @@ def dispatch_trial(manifest_path: Path, trial: dict, *, dispatcher: Callable[[di
         "attempt_id": record["attempt_id"],
         "trial": trial,
         "case": case,
+        "admitted_authored": record["admitted_authored"],
+        "request_config": record["request_config"],
+        "provider_text": record["provider_text"],
         "provider": spec["providers"][trial["provider"]],
     }
     try:

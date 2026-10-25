@@ -314,3 +314,139 @@ def test_stage_allocation_refuses_before_dispatch(campaign):
         runner.dispatch_trial(path, trial(spec), dispatcher=dispatch)
     assert len(calls) == 40
     assert runner.status(path)["remaining_calls"] == 80
+
+
+def native_case(case, source, raw):
+    from sage.models.abstraction_evidence import encode_package
+    from tests.sage.test_abstraction_factual_regressions import discovered
+
+    source.write_bytes(raw)
+    package = discovered(source)
+    case.update(
+        source=runner.freeze_bytes(raw),
+        evidence=runner.freeze_bytes(runner.canonical(encode_package(package))),
+    )
+    case["source_generation"] = "sha256:" + case["source"]["sha256"]
+    case["selection_id"] = case["evidence"]["sha256"]
+    return package
+
+
+def test_report_scores_admitted_evidence_not_unselected_source(campaign, tmp_path):
+    from sage.config import VaultAbstractionConfig
+    from sage.services.abstraction_publication import detect_publication_findings
+    from sage.services.bounded_abstraction import abstraction_request
+
+    spec, create, path, _ = campaign
+    raw = json.dumps({"items": [f"item{i:05}" for i in range(3000)]}).encode()
+    package = native_case(spec["cases"][0], tmp_path / "large.json", raw)
+    admitted = abstraction_request(
+        package, VaultAbstractionConfig(hybrid_description=True)
+    ).text.authored_text
+    candidate = "The selected excerpts describe item00001."
+    assert "item00001" not in admitted and "item00001" in raw.decode()
+    assert "unsupported_identifier" in detect_publication_findings(candidate, admitted)
+    create()
+    seen = []
+
+    def dispatch(request):
+        seen.append(request)
+        return {**output(request), "licensed_repaired": runner.freeze_bytes(candidate.encode())}
+
+    runner.dispatch_trial(path, trial(spec), dispatcher=dispatch)
+    report = runner.status(path, report=True)
+    record = report["records"][0]
+    actual = runner.report_input(spec, [record])["cases"][0]["authored"]
+    assert actual == admitted
+    assert runner.thaw_bytes(record["admitted_authored"]).decode() == admitted
+    assert seen[0]["admitted_authored"] == record["admitted_authored"]
+    assert "unsupported_identifier" in detect_publication_findings(candidate, actual)
+
+
+def test_report_deduplicates_admitted_evidence_despite_distinct_source_bytes(campaign, tmp_path):
+    spec, create, path, _ = campaign
+    value = {"note": "Controlmaple"}
+    for index, raw in enumerate((json.dumps(value).encode(), json.dumps(value, indent=2).encode())):
+        native_case(spec["cases"][index], tmp_path / f"source{index}.json", raw)
+    spec["cases"][1]["split"] = "held_out"
+    assert spec["cases"][0]["source"]["sha256"] != spec["cases"][1]["source"]["sha256"]
+    create()
+    for index in range(2):
+        runner.dispatch_trial(path, trial(spec, case=index), dispatcher=output)
+    report = runner.status(path, report=True)["calibration"]
+    assert report["independent_pairs"] == 1
+    for rule in report["rules"].values():
+        assert "evidence_leakage_between_splits" in rule["blockers"]
+        assert "source_leakage_between_splits" not in rule["blockers"]
+
+
+def test_placeholder_report_uses_actual_admitted_evidence(campaign):
+    from sage.config import VaultAbstractionConfig
+    from sage.models.abstraction_evidence import decode_package
+    from sage.services.bounded_abstraction import abstraction_request
+
+    spec, create, path, _ = campaign
+    create()
+    package = decode_package(json.loads(runner.thaw_bytes(spec["cases"][0]["evidence"])))
+    admitted = abstraction_request(
+        package, VaultAbstractionConfig(hybrid_description=True)
+    ).text.authored_text
+    assert runner.report_input(spec, [])["cases"][0]["authored"] == admitted
+    assert runner.status(path, report=True)["calibration_placeholder"]
+
+
+@pytest.mark.parametrize("arm", ["legacy", "hybrid"])
+def test_reserved_input_includes_arm_specific_prompt_fitting(campaign, tmp_path, arm):
+    from sage.config import VaultAbstractionConfig
+    from sage.services.bounded_abstraction import abstraction_request
+
+    spec, create, path, _ = campaign
+    package = native_case(
+        spec["cases"][0],
+        tmp_path / "budget.json",
+        json.dumps({"items": [f"item{i:05}" for i in range(3000)]}).encode(),
+    )
+    spec["request_config"]["max_input_tokens"] = 8000
+    expected = abstraction_request(
+        package,
+        VaultAbstractionConfig(**spec["request_config"], hybrid_description=arm == "hybrid"),
+    )
+    default = abstraction_request(
+        package, VaultAbstractionConfig(hybrid_description=arm == "hybrid")
+    )
+    assert 0 < len(expected.text.authored_text) < len(default.text.authored_text)
+    create()
+    identity = {**trial(spec), "arm": arm}
+    captured = []
+
+    def dispatch(request):
+        captured.append(copy.deepcopy(request))
+        # Callback-local modifications cannot rewrite the reservation's baseline.
+        request["admitted_authored"] = runner.freeze_bytes(b"forged")
+        return output(request)
+
+    runner.dispatch_trial(path, identity, dispatcher=dispatch)
+    record = runner.status(path)["records"][0]
+    assert runner.thaw_bytes(record["admitted_authored"]).decode() == expected.text.authored_text
+    assert record["request_config"]["max_input_tokens"] == 8000
+    assert record["request_config"]["hybrid_description"] == (arm == "hybrid")
+    expected_provider = expected.provider_text if arm == "hybrid" else expected.text
+    assert runner.thaw_bytes(record["provider_text"]).decode() == str(expected_provider)
+    assert captured[0]["provider_text"] == record["provider_text"]
+
+
+@pytest.mark.parametrize("field", ["admitted_authored", "provider_text", "request_config"])
+def test_rechecks_admitted_baseline_even_with_valid_record_checksum(campaign, field):
+    spec, create, path, ledger = campaign
+    create()
+    runner.dispatch_trial(path, trial(spec), dispatcher=output)
+    with sqlite3.connect(ledger) as db:
+        record = json.loads(db.execute("SELECT payload FROM attempts").fetchone()[0])
+        record[field] = (
+            {"max_input_tokens": 1} if field == "request_config" else runner.freeze_bytes(b"forged")
+        )
+        db.execute(
+            "UPDATE attempts SET payload=?, sha256=?",
+            (runner.canonical(record).decode(), runner.digest(record)),
+        )
+    with pytest.raises(ValueError, match="admitted evidence/config"):
+        runner.status(path, report=True)

@@ -55,6 +55,15 @@ unresolved crash reservations, providers, arms and stages share the same hard
 A refused call never invokes the dispatcher. A crash reservation remains spent;
 a retry requires another reservation and unique attempt identity.
 
+Each reservation also freezes the effective request configuration, provider input
+and exact runtime admitted authored baseline after complete-prompt fitting. Both
+arms use the shared production request constructor; hybrid role framing retains
+the established attestation baseline. Reports score and deduplicate the frozen
+admitted baseline, while retained source identity separately governs source
+leakage. Source formatting differences cannot create independent evidence.
+The numeric/context control is paired with a genuinely textual `rows` value
+under matched context, and its actual admitted classification is verified.
+
 Results separate raw, licensed-repaired, composed and actual stored/served
 bytes. An unavailable stage is `null`, never copied from another stage. Usage is
 also separately recorded and may be `null`. The existing publication calibration
