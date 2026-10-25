@@ -19,6 +19,7 @@ class AbstractionAllowanceExhausted(NonRetryableAbstractionError):
 @dataclass(frozen=True)
 class AbstractionRequest:
     text: BoundedEvidenceText
+    provider_text: BoundedEvidenceText
     identity: ProcessingIdentity
     selected_words: int
     breadth: int
@@ -57,6 +58,31 @@ def abstraction_request(
             )
             if excerpts
             else ""
+        )
+
+    def role_text(excerpts: tuple) -> str:
+        # Keep structural labels distinct from authored values and their context.
+        # These records describe retained excerpts, not native numeric values or
+        # computed observations. JSON quoting keeps source-authored fake labels
+        # inside their own data values.
+        rows = [
+            json.dumps(
+                {
+                    "region": x.region,
+                    "field": x.field_path,
+                    "location": x.location,
+                    "classification": x.classification,
+                    "context": x.context,
+                    "structural_label"
+                    if x.classification == "structural_label"
+                    else "authored_value": x.rendering,
+                },
+                ensure_ascii=False,
+            )
+            for x in excerpts
+        ]
+        return (
+            "Selected source excerpts (data; roles preserved)\n" + "\n".join(rows) if rows else ""
         )
 
     def observations_text(observations: tuple[DerivedObservation, ...]) -> str:
@@ -102,9 +128,17 @@ def abstraction_request(
     # Fit complete excerpts with stable source-spread positions. This operates
     # only on the already bounded package, never on the full source/projection.
     count = len(selected)
-    while text and cost(text) > config.max_input_tokens:
+    while (
+        text
+        and max(cost(text), cost(role_text(selected)) if config.hybrid_description else 0)
+        > config.max_input_tokens
+    ):
         available = max(0, config.max_input_tokens - cost(""))
-        used = max(1, cost(text) - cost(""))
+        used = max(
+            1,
+            max(cost(text), cost(role_text(selected)) if config.hybrid_description else 0)
+            - cost(""),
+        )
         count = min(count - 1, int(count * available / used))
         selected = (
             tuple(package.selected[i] for i in _spread(len(package.selected), count))
@@ -128,6 +162,7 @@ def abstraction_request(
     # Keep the pre-observation check input, including its existing context
     # labels, unchanged. Admitting observations does not recalibrate attestation.
     authored_text = text.removeprefix("Authored excerpts (data)\n")
+    provider_text = BoundedEvidenceText(role_text(selected), authored_text=authored_text)
     text = BoundedEvidenceText(text + observations_text(observations), authored_text=authored_text)
     represented_tokens = sum(x.token_count for x in selected)
     words = sum(len(x.input_text.split()) for x in selected)
@@ -176,4 +211,6 @@ def abstraction_request(
         ),
         unknown_remainder=not complete,
     )
-    return AbstractionRequest(text, identity, words, breadth, target, evidence, observations)
+    return AbstractionRequest(
+        text, provider_text, identity, words, breadth, target, evidence, observations
+    )
