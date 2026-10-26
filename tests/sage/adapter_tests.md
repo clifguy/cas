@@ -3610,3 +3610,83 @@ lines.
 
 **Expected:** The adapter reads the caller's value; the adapter's `KeyError` reaches the caller unchanged.
 
+### TEST-SAGE-AD-238: A calculation chain does not count as stored columns
+
+**Artifact:** `check_projection_work` and `XlsxAdapter.project`
+**Category:** resource bound
+**Precondition:** A two-column workbook of 300 formula rows, a 300-entry calculation chain and column formatting declared from column C to XFD.
+
+**Expected:** Admitted at the default limits; the projection holds the last row's cells.
+
+### TEST-SAGE-AD-239: A column-formatting span is not a stored column
+
+**Artifact:** `XlsxAdapter.project`
+**Category:** resource bound
+**Precondition:** Five rows of two cells and column formatting declared from column A to XFD; `max_columns` lowered to 2.
+
+**Expected:** Admitted; the projection holds the last row's cells.
+
+### TEST-SAGE-AD-240: A row at the bound is admitted beside a rowless part
+
+**Artifact:** `XlsxAdapter.project`
+**Category:** resource bound
+**Precondition:** `max_columns` lowered to 2; one workbook whose only row holds two cells followed by a one-entry calculation chain, one whose row holds three.
+
+**Expected:** The first is admitted; the second raises `SourceReadError` for the stored column limit.
+
+### TEST-SAGE-AD-241: A stored-column refusal names its sheet, part, row and limit
+
+**Artifact:** `XlsxAdapter.project`
+**Category:** resource bound
+**Precondition:** Sheet `Wide` with rows 1 and 3 stored and row 3 holding three cells; `max_columns` lowered to 2; the workbook relationship naming the sheet's part absolutely, then relative to the workbook part.
+
+**Expected:** `SourceReadError` whose detail names sheet `Wide`, part `xl/worksheets/sheet1.xml`, row 3, the three stored cells and `max_columns is 2`.
+
+### TEST-SAGE-AD-242: A stored-row refusal names its count and limit
+
+**Artifact:** `XlsxAdapter.project`
+**Category:** resource bound
+**Precondition:** 150 one-cell rows; `max_rows` lowered to 100.
+
+**Expected:** `SourceReadError` whose detail is `workbook row limit: 101 rows across the workbook; max_rows is 100`.
+
+### TEST-SAGE-AD-243: A refusal quotes a hostile sheet name inertly
+
+**Artifact:** `XlsxAdapter.project`
+**Category:** resource bound
+**Precondition:** The sheet renamed in the workbook part to a newline followed by 200 characters; `max_columns` lowered to 1.
+
+**Expected:** The refusal detail is one line under 200 characters, with the name escaped and truncated.
+
+### TEST-SAGE-AD-244: Rows are matched by namespace, not name
+
+**Artifact:** `XlsxAdapter.project`
+**Category:** resource bound
+**Precondition:** One five-row workbook carrying a drawing part whose anchor holds an `<xdr:row>`, with `max_rows` 5; one five-row workbook whose rows are written under a prefix bound to the SpreadsheetML namespace, with `max_rows` 4.
+
+**Expected:** The first is admitted; the second is refused with `workbook row limit: 5 rows across the workbook; max_rows is 4`.
+
+### TEST-SAGE-AD-245: A refusal names the sheet holding the row
+
+**Artifact:** `XlsxAdapter.project`
+**Category:** resource bound
+**Precondition:** Sheets `First` (two cells) and `Second` (three cells in row 1); `max_columns` lowered to 2.
+
+**Expected:** The refusal names sheet `Second` and part `xl/worksheets/sheet2.xml`.
+
+### TEST-SAGE-AD-246: Every other guard refusal names place, measure and limit
+
+**Artifact:** `XlsxAdapter.project`
+**Category:** resource bound
+**Precondition:** One sheet rewritten in turn to carry a 19-character cell reference, row reference `1x`, row 2000000 or cell `ZZZ1`; separately, `max_depth` lowered to 3.
+
+**Expected:** Each refusal's detail names the sheet and part, the measured value and the limit.
+
+### TEST-SAGE-AD-247: Rows and parse work are bounded across the package
+
+**Artifact:** `XlsxAdapter.project`
+**Category:** resource bound
+**Precondition:** Two sheets of 60 rows; `max_rows` 100, then `max_parse_nodes` one above the largest single part's element count.
+
+**Expected:** Both are refused, reporting 101 rows across the workbook and one node over the limit across the package.
+
