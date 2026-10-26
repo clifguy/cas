@@ -188,6 +188,184 @@ async def test_xlsx_row_scan_is_capped(tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# xlsx: only cells inside worksheet rows count toward the stored-column bound
+# ---------------------------------------------------------------------------
+
+
+def _rows_xlsx(tmp_path: Path, rows: list[list[object]], title: str = "Data") -> Path:
+    """A one-sheet workbook whose rows hold exactly the given values."""
+    import openpyxl
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = title
+    for values in rows:
+        ws.append(values)
+    path = tmp_path / f"{title}.xlsx"
+    wb.save(str(path))
+    wb.close()
+    return path
+
+
+def _with_calc_chain(path: Path, entries: int) -> None:
+    """Add a calculation chain of ``entries`` formula-cell references.
+
+    The chain is a flat list of ``<c>`` elements with no rows, as Excel
+    writes it for every workbook holding formulas.
+    """
+    cells = "".join(f'<c r="B{i}" i="1"/>' for i in range(1, entries + 1))
+    _add_member(
+        path,
+        "xl/calcChain.xml",
+        (
+            '<?xml version="1.0" encoding="UTF-8"?>'
+            '<calcChain xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+            f"{cells}</calcChain>"
+        ).encode(),
+    )
+    _rewrite_member(
+        path,
+        "[Content_Types].xml",
+        lambda xml: xml.replace(
+            b"</Types>",
+            b'<Override PartName="/xl/calcChain.xml" ContentType="application/'
+            b'vnd.openxmlformats-officedocument.spreadsheetml.calcChain+xml"/></Types>',
+        ),
+    )
+
+
+def _with_column_span(path: Path, first: int) -> None:
+    """Declare column formatting from column ``first`` out to XFD."""
+    _rewrite_member(
+        path,
+        "xl/worksheets/sheet1.xml",
+        lambda xml: xml.replace(
+            b"<sheetData>",
+            f'<cols><col min="{first}" max="16384" width="9" customWidth="1"/></cols>'
+            "<sheetData>".encode(),
+            1,
+        ),
+    )
+
+
+def _guard_detail(exc: pytest.ExceptionInfo[SourceReadError]) -> str:
+    return str(exc.value).split("exceeds safe projection work: ", 1)[1]
+
+
+async def test_xlsx_calc_chain_does_not_count_as_stored_columns(tmp_path):
+    """TEST-SAGE-AD-238: a narrow workbook with more formula cells than the
+    stored-column bound, and column formatting declared out to XFD, is
+    admitted and projects in full.
+
+    The calculation chain lists one ``<c>`` per formula cell outside any row;
+    counting those as cells of the last worksheet row refuses the workbook.
+    """
+    from sage.source_adapters.structure import FactLimits, check_projection_work
+
+    path = _rows_xlsx(tmp_path, [[i, f"=A{i}*2"] for i in range(1, 301)])
+    _with_calc_chain(path, 300)
+    _with_column_span(path, 3)
+
+    check_projection_work(path, FactLimits())
+    result = await XlsxAdapter().project(path)
+
+    assert "A300 [" in result.text
+    assert "B300 [" in result.text
+
+
+async def test_xlsx_column_formatting_span_is_not_a_stored_column(tmp_path):
+    """TEST-SAGE-AD-239: a column-formatting declaration spanning to XFD
+    costs nothing to project and does not count toward the stored-column
+    bound; two stored cells per row are admitted at a bound of two.
+    """
+    path = _rows_xlsx(tmp_path, [["a", "b"]] * 5)
+    _with_column_span(path, 1)
+
+    result = await XlsxAdapter().project(path, {"discovery_facts": {"max_columns": 2}})
+
+    assert "B5 [string]\nb" in result.text
+
+
+async def test_xlsx_row_count_does_not_leak_into_a_rowless_part(tmp_path):
+    """TEST-SAGE-AD-240: a last worksheet row holding exactly the bound is
+    admitted even when a later rowless part carries a ``<c>`` element, while
+    one more stored cell in that row is refused.
+    """
+    at_bound = _rows_xlsx(tmp_path, [["a", "b"]], title="AtBound")
+    _with_calc_chain(at_bound, 1)
+    over_bound = _rows_xlsx(tmp_path, [["a", "b", "c"]], title="OverBound")
+    limits = {"discovery_facts": {"max_columns": 2}}
+
+    result = await XlsxAdapter().project(at_bound, limits)
+
+    assert "B1 [string]\nb" in result.text
+    with pytest.raises(SourceReadError, match="stored column limit"):
+        await XlsxAdapter().project(over_bound, limits)
+
+
+@pytest.mark.parametrize("target", ["/xl/worksheets/sheet1.xml", "worksheets/sheet1.xml"])
+async def test_xlsx_column_refusal_names_sheet_part_row_and_limit(tmp_path, target):
+    """TEST-SAGE-AD-241: a row genuinely over the stored-column bound is
+    refused with the sheet, the package part, the row, the measured cell
+    count and the limit, so the refusal can be acted on without unpacking
+    the workbook. The sheet resolves whether the workbook relationship
+    names its part absolutely or relative to the workbook part.
+    """
+    # The empty second row is not stored, so the sheet's row number (3)
+    # differs from the count of rows read (2).
+    path = _rows_xlsx(tmp_path, [["a", "b"], [], ["a", "b", "c"]], title="Wide")
+    _rewrite_member(
+        path,
+        "xl/_rels/workbook.xml.rels",
+        lambda xml: xml.replace(
+            b'Target="/xl/worksheets/sheet1.xml"', f'Target="{target}"'.encode()
+        ),
+    )
+
+    with pytest.raises(SourceReadError) as exc:
+        await XlsxAdapter().project(path, {"discovery_facts": {"max_columns": 2}})
+
+    assert _guard_detail(exc) == (
+        "workbook stored column limit: sheet 'Wide' in part "
+        "'xl/worksheets/sheet1.xml' row 3 holds 3 stored cells; max_columns is 2"
+    )
+
+
+async def test_xlsx_row_refusal_names_count_and_limit(tmp_path):
+    """TEST-SAGE-AD-242: a workbook over the stored-row bound is refused
+    with the measured row count and the limit.
+    """
+    path = _dimension_inflated_xlsx(tmp_path, rows=150)
+
+    with pytest.raises(SourceReadError) as exc:
+        await XlsxAdapter().project(path, {"discovery_facts": {"max_rows": 100}})
+
+    assert _guard_detail(exc) == "workbook row limit: 101 rows across the workbook; max_rows is 100"
+
+
+async def test_xlsx_refusal_renders_a_hostile_sheet_name_inertly(tmp_path):
+    """TEST-SAGE-AD-243: a sheet name is document-derived, so a refusal
+    quoting it stays on one line and within a fixed length whatever the
+    workbook declares.
+    """
+    path = _rows_xlsx(tmp_path, [["a", "b"]])
+    _rewrite_member(
+        path,
+        "xl/workbook.xml",
+        lambda xml: xml.replace(b'name="Data"', b'name="&#10;' + b"X" * 200 + b'"'),
+    )
+
+    with pytest.raises(SourceReadError) as exc:
+        await XlsxAdapter().project(path, {"discovery_facts": {"max_columns": 1}})
+
+    detail = _guard_detail(exc)
+    assert "\n" not in detail
+    assert "X" * 64 not in detail
+    assert detail.startswith("workbook stored column limit: sheet '\\nXXX")
+    assert len(detail) < 200
+
+
+# ---------------------------------------------------------------------------
 # Office packages: decompression limits checked before parsing
 # ---------------------------------------------------------------------------
 
