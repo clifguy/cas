@@ -10,6 +10,7 @@ import Settings from './views/Settings';
 import MaintenancePanel from './components/MaintenancePanel';
 import DocumentDetail from './views/DocumentDetail';
 import GraphExplorer from './views/GraphExplorer';
+import NotFound from './views/NotFound';
 import { listVaults } from './api/vaults';
 import type { UserClaims, VaultSummary } from './api/types';
 import { VAULT_STORAGE_KEY, resolveInitialVaultId } from './activeVault';
@@ -100,6 +101,7 @@ function AppShell({ user, onSignOut }: AppShellProps) {
           <Route path="settings" element={<Settings />} />
           <Route path="documents/:id" element={<DocumentDetail />} />
           <Route path="documents/:id/graph" element={<GraphExplorer />} />
+          <Route path="*" element={<NotFound />} />
         </Route>
       </Routes>
     </BrowserRouter>

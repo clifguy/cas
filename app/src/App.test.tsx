@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor, act } from '@testing-library/react';
+import { render, screen, waitFor, act, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { useParams } from 'react-router';
 import App from './App';
 import { resolveInitialVaultId } from './activeVault';
 import * as vaultsApi from './api/vaults';
@@ -23,6 +24,23 @@ vi.mock('./api/auth', () => ({
   getSession: vi.fn(),
   beginLogin: vi.fn(),
   logout: vi.fn(),
+}));
+
+vi.mock('./views/Dashboard', () => ({ default: () => <h1>Dashboard view</h1> }));
+vi.mock('./views/Ingest', () => ({ default: () => <h1>Ingest view</h1> }));
+vi.mock('./views/Review', () => ({ default: () => <h1>Review view</h1> }));
+vi.mock('./views/Search', () => ({ default: () => <h1>Search view</h1> }));
+vi.mock('./views/Settings', () => ({ default: () => <h1>Settings view</h1> }));
+vi.mock('./components/MaintenancePanel', () => ({ default: () => <h1>Maintenance view</h1> }));
+vi.mock('./views/DocumentDetail', () => ({
+  default: function DocumentDetail() {
+    return <h1>Document {useParams().id}</h1>;
+  },
+}));
+vi.mock('./views/GraphExplorer', () => ({
+  default: function GraphExplorer() {
+    return <h1>Graph {useParams().id}</h1>;
+  },
 }));
 
 const listVaultsMock = vi.mocked(vaultsApi.listVaults);
@@ -71,6 +89,7 @@ const localStorageMock = {
 vi.stubGlobal('localStorage', localStorageMock);
 
 beforeEach(() => {
+  window.history.replaceState(null, '', '/');
   listVaultsMock.mockReset();
   getSessionMock.mockReset();
   // Default the gate to an authenticated session so the existing vault-selection
@@ -232,5 +251,78 @@ describe('resolveInitialVaultId (pure)', () => {
 
   it('8: returns the empty string when the vault list is empty', () => {
     expect(resolveInitialVaultId([], 'anything')).toBe('');
+  });
+});
+
+describe('App — routing', () => {
+  it.each(['/missing-page', '/documents/example/removed'])('shows an unmatched path inside the shell: %s', async (path) => {
+    window.history.replaceState(null, '', path);
+    listVaultsMock.mockResolvedValue(TWO_VAULTS);
+
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Page not found' })).toBeInTheDocument();
+    const main = within(screen.getByRole('main'));
+    expect(main.getByText(path, { exact: true })).toBeInTheDocument();
+    expect(main.getByRole('link', { name: 'Go to dashboard' })).toHaveAttribute('href', '/dashboard');
+    expect(screen.getByRole('navigation')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Search' })).toHaveAttribute('href', '/search');
+    expect(screen.getByRole('combobox')).toHaveValue('cas');
+    expect(screen.getByRole('option', { name: 'Other' })).toBeInTheDocument();
+
+    await userEvent.click(main.getByRole('link', { name: 'Go to dashboard' }));
+    expect(await screen.findByRole('heading', { name: 'Dashboard view' })).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/dashboard');
+  });
+
+  it('can change vault from an unmatched path', async () => {
+    window.history.replaceState(null, '', '/missing-page');
+    listVaultsMock.mockResolvedValue(TWO_VAULTS);
+    render(<App />);
+    await screen.findByRole('heading', { name: 'Page not found' });
+
+    await userEvent.selectOptions(screen.getByRole('combobox'), 'other');
+
+    expect(screen.getByRole('combobox')).toHaveValue('other');
+    expect(localStorage.getItem('cas.activeVault')).toBe('other');
+    expect(await screen.findByRole('heading', { name: 'Dashboard view' })).toBeInTheDocument();
+  });
+
+  it.each([
+    ['/dashboard', 'Dashboard view'],
+    ['/ingest', 'Ingest view'],
+    ['/review', 'Review view'],
+    ['/search', 'Search view'],
+    ['/maintenance', 'Maintenance view'],
+    ['/settings', 'Settings view'],
+    ['/documents/example', 'Document example'],
+    ['/documents/example/graph', 'Graph example'],
+  ])('keeps the existing route: %s', async (path, heading) => {
+    window.history.replaceState(null, '', path);
+    listVaultsMock.mockResolvedValue(TWO_VAULTS);
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: heading })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Page not found' })).not.toBeInTheDocument();
+    expect(screen.getByRole('combobox')).toBeInTheDocument();
+    expect(window.location.pathname).toBe(path);
+  });
+
+  it('redirects the index to dashboard', async () => {
+    listVaultsMock.mockResolvedValue(TWO_VAULTS);
+    render(<App />);
+
+    expect(await screen.findByRole('heading', { name: 'Dashboard view' })).toBeInTheDocument();
+    expect(window.location.pathname).toBe('/dashboard');
+  });
+
+  it('requires sign-in even for an unmatched path', async () => {
+    window.history.replaceState(null, '', '/missing-page');
+    getSessionMock.mockResolvedValue({ authenticated: false, user: null });
+    render(<App />);
+
+    expect(await screen.findByRole('button', { name: /sign in with microsoft/i })).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Page not found' })).not.toBeInTheDocument();
+    expect(listVaultsMock).not.toHaveBeenCalled();
   });
 });
