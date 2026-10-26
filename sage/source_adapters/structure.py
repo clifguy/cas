@@ -594,21 +594,30 @@ def _xlsx_guard(path: Path, limits: FactLimits) -> None:
     """Bound XML work before openpyxl allocates shared strings/styles/rows."""
     import posixpath
     import zipfile
-    from xml.sax.handler import ContentHandler
+    from xml.sax.handler import ContentHandler, feature_namespaces
 
     from defusedxml.expatreader import create_parser
 
     workbook_part = "xl/workbook.xml"
     workbook_rels = "xl/_rels/workbook.xml.rels"
+    # Rows and cells are matched by namespace, as the cell reader matches
+    # them, so a same-named element of another vocabulary (a drawing
+    # anchor's row) is not counted and no prefix choice hides a real one.
+    spreadsheet_namespaces = frozenset(
+        {
+            "http://schemas.openxmlformats.org/spreadsheetml/2006/main",
+            "http://purl.oclc.org/ooxml/spreadsheetml/main",
+        }
+    )
 
     def quote(value: str) -> str:
         """Render a document-derived name inertly and within a fixed length."""
         return repr(value[:64])
 
     class Guard(ContentHandler):
-        """Cells count only inside a ``<row>`` element, so a part listing cell
-        references outside rows (the calculation chain) adds none. Parse work
-        and stored rows are bounded across the whole package."""
+        """Cells count only inside a SpreadsheetML ``<row>``, so a part listing
+        cell references outside rows (the calculation chain) adds none. Parse
+        work and stored rows are bounded across the whole package."""
 
         def __init__(self) -> None:
             self.nodes = self.rows = self.row_cells = 0
@@ -631,25 +640,28 @@ def _xlsx_guard(path: Path, limits: FactLimits) -> None:
             """Map worksheet parts to sheet names, for refusal messages only."""
             items = attrs.items()  # type: ignore[attr-defined]
             if self.part == workbook_part and local_name == "sheet":
-                rel_id = next((v for k, v in items if k.endswith(":id")), None)
+                rel_id = next((v for (uri, key), v in items if uri and key == "id"), None)
                 if rel_id is not None:
-                    self.sheet_names[rel_id] = attrs.get("name", "")  # type: ignore[attr-defined]
+                    self.sheet_names[rel_id] = attrs.get((None, "name"), "")  # type: ignore[attr-defined]
             elif self.part == workbook_rels and local_name == "Relationship":
-                target = attrs.get("Target", "")  # type: ignore[attr-defined]
-                self.rel_targets[attrs.get("Id", "")] = (  # type: ignore[attr-defined]
+                target = attrs.get((None, "Target"), "")  # type: ignore[attr-defined]
+                self.rel_targets[attrs.get((None, "Id"), "")] = (  # type: ignore[attr-defined]
                     target[1:] if target.startswith("/") else posixpath.normpath(f"xl/{target}")
                 )
 
-        def startElement(self, name: str, attrs: object) -> None:  # noqa: N802
+        def startElementNS(  # noqa: N802
+            self, name: tuple[str | None, str], qname: str | None, attrs: object
+        ) -> None:
             self.depth += 1
             self.nodes += 1
-            local_name = name.rsplit(":", 1)[-1]
+            namespace, local_name = name
             if self.part in (workbook_part, workbook_rels):
                 self.record_workbook_names(local_name, attrs)
-            if local_name == "row":
+            spreadsheet = namespace in spreadsheet_namespaces
+            if spreadsheet and local_name == "row":
                 self.rows += 1
                 self.row_cells = 0
-                reference = attrs.get("r", "0")  # type: ignore[attr-defined]
+                reference = attrs.get((None, "r"), "0")  # type: ignore[attr-defined]
                 if len(reference) > 9 or not reference.isdigit():
                     raise _BoundReached(
                         f"workbook row address limit: {self.where()} row reference "
@@ -666,8 +678,8 @@ def _xlsx_guard(path: Path, limits: FactLimits) -> None:
                         "exceeds the sheet maximum 1048576"
                     )
                 self.row = reference
-            if local_name == "c" and self.row is not None:
-                reference = attrs.get("r", "")  # type: ignore[attr-defined]
+            if spreadsheet and local_name == "c" and self.row is not None:
+                reference = attrs.get((None, "r"), "")  # type: ignore[attr-defined]
                 if len(reference) > 16:
                     raise _BoundReached(
                         f"workbook cell address length limit: {self.where()} cell "
@@ -702,9 +714,9 @@ def _xlsx_guard(path: Path, limits: FactLimits) -> None:
                     f"max_parse_nodes is {limits.max_parse_nodes}"
                 )
 
-        def endElement(self, name: str) -> None:  # noqa: N802
+        def endElementNS(self, name: tuple[str | None, str], qname: str | None) -> None:  # noqa: N802
             self.depth -= 1
-            if name.rsplit(":", 1)[-1] == "row":
+            if name[0] in spreadsheet_namespaces and name[1] == "row":
                 self.row = None
 
     handler = Guard()
@@ -720,6 +732,7 @@ def _xlsx_guard(path: Path, limits: FactLimits) -> None:
                 continue
             handler.begin_part(member.filename)
             parser = create_parser(forbid_dtd=True, forbid_entities=True, forbid_external=True)
+            parser.setFeature(feature_namespaces, True)
             parser.setContentHandler(handler)
             with archive.open(member) as source:
                 while block := source.read(4096):

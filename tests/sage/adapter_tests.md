@@ -3658,3 +3658,35 @@ lines.
 
 **Expected:** The refusal detail is one line under 200 characters, with the name escaped and truncated.
 
+### TEST-SAGE-AD-244: Rows are matched by namespace, not name
+
+**Artifact:** `XlsxAdapter.project`
+**Category:** resource bound
+**Precondition:** One five-row workbook carrying a drawing part whose anchor holds an `<xdr:row>`, with `max_rows` 5; one five-row workbook whose rows are written under a prefix bound to the SpreadsheetML namespace, with `max_rows` 4.
+
+**Expected:** The first is admitted; the second is refused with `workbook row limit: 5 rows across the workbook; max_rows is 4`.
+
+### TEST-SAGE-AD-245: A refusal names the sheet holding the row
+
+**Artifact:** `XlsxAdapter.project`
+**Category:** resource bound
+**Precondition:** Sheets `First` (two cells) and `Second` (three cells in row 1); `max_columns` lowered to 2.
+
+**Expected:** The refusal names sheet `Second` and part `xl/worksheets/sheet2.xml`.
+
+### TEST-SAGE-AD-246: Every other guard refusal names place, measure and limit
+
+**Artifact:** `XlsxAdapter.project`
+**Category:** resource bound
+**Precondition:** One sheet rewritten in turn to carry a 19-character cell reference, row reference `1x`, row 2000000 or cell `ZZZ1`; separately, `max_depth` lowered to 3.
+
+**Expected:** Each refusal's detail names the sheet and part, the measured value and the limit.
+
+### TEST-SAGE-AD-247: Rows and parse work are bounded across the package
+
+**Artifact:** `XlsxAdapter.project`
+**Category:** resource bound
+**Precondition:** Two sheets of 60 rows; `max_rows` 100, then `max_parse_nodes` one above the largest single part's element count.
+
+**Expected:** Both are refused, reporting 101 rows across the workbook and one node over the limit across the package.
+
