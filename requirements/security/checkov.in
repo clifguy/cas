@@ -2,6 +2,6 @@
 # Regenerate checkov.txt after changing this pin:
 #   uv pip compile requirements/security/checkov.in --generate-hashes --universal \
 #     --python-version <versions.json python> -o requirements/security/checkov.txt
-checkov==3.3.29
+checkov==3.3.30
 # Reject submodule metadata destinations before filesystem mutation.
 gitpython>=3.2.1
