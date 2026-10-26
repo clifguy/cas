@@ -1,0 +1,5 @@
+classification: patch
+summary: >-
+  Strip U+0000 from PDF-extracted body text, outline headings and info titles
+  before constructing projections or discovery evidence for PostgreSQL storage.
+for_callers: ""

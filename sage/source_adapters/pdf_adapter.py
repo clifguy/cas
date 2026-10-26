@@ -146,7 +146,7 @@ def _flatten_outline(
                 continue
             if level > max_depth:
                 continue
-            title = str(getattr(item, "title", None) or "").strip()
+            title = str(getattr(item, "title", None) or "").replace("\x00", "").strip()
             if not title:
                 continue
             try:
@@ -254,7 +254,7 @@ def _extract_info_title(reader: pypdf.PdfReader) -> str | None:
         title = info.get("/Title")
         if title is None:
             return None
-        title_str = str(title).strip()
+        title_str = str(title).replace("\x00", "").strip()
         return title_str or None
     except Exception:
         return None
@@ -305,7 +305,10 @@ def _extract_from_path(
                             pt = pdf.pages[i].extract_text() or ""
                         except Exception:
                             pt = ""
-                        page_texts.append(_decode_safe_cid(pt))
+                        # PostgreSQL text and JSONB cannot represent U+0000. Normalize
+                        # before deriving headings or discovery evidence, on both
+                        # the native and post-OCR extraction paths.
+                        page_texts.append(_decode_safe_cid(pt).replace("\x00", ""))
             except Exception as e:
                 error = ValueError if isinstance(e, OSError) else SourceReadError
                 raise error(f"Failed to extract text from PDF {path}: {e}") from e
@@ -479,7 +482,9 @@ class PdfAdapter(SourceAdapter):
     # projection's preamble rather than dropped.
     # 0.7.0: outline entries with no title are not headings; their pages
     # fall to the entry before them.
-    VERSION = "0.7.0"
+    # 0.8.0: strip NUL from extracted text, outline and info titles before
+    # deriving persisted projections and discovery evidence.
+    VERSION = "0.8.0"
     EXTENSIONS = [".pdf"]
 
     def check_config(self, config: dict | None) -> None:
