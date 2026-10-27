@@ -1,0 +1,53 @@
+name: image-cache
+
+# Refresh the container build's layer cache from the default branch once a day.
+#
+# The layer cache lives in the repository's Actions cache, which has a fixed
+# 10 GB budget and evicts least-recently-used entries silently. Writing it from
+# every default-branch push exported fresh blobs for each changed layer, and
+# again for every layer after the daily apt refresh, until eviction began
+# removing the dependency layers every build relies on. One write a day keeps
+# those layers warm for every pull request and default-branch build, which read
+# the cache without writing it. The deploy arm still writes on its own push.
+#
+# The run is an ordinary non-push build: it also scans both images and runs the
+# container smoke tests, so a day's freshly refreshed apt layer is scanned for
+# vulnerabilities even when nothing merges. The scheduled run skips the
+# embedding trial, which the default-branch CI run already performs; a manual
+# dispatch on `main` can request it, which is the way to run the trial on
+# demand. A dispatch from any other ref is skipped, because its cache write
+# would land in a scope no other run reads.
+on:
+  schedule:
+    - cron: "0 6 * * *"  # Daily 06:00 UTC
+  workflow_dispatch:
+    inputs:
+      embedding_trial:
+        description: Also run the real-model embedding contention trial (dispatch on main; other refs are skipped).
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  cache:
+    # A cache written from any other ref lands in a scope no other run reads.
+    if: github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/build-images.yml
+    with:
+      push: false
+      write_cache: true
+      embedding_trial: ${{ inputs.embedding_trial == true }}
+    # A reusable workflow can only narrow what its caller grants, and the called
+    # `build` job requests id-token for its push arm. This caller never takes that
+    # arm, but must still grant the token or the call fails to start. The token it
+    # could mint names a branch subject, which the deploy identity's
+    # environment-only federated credentials do not accept.
+    permissions:
+      contents: read
+      id-token: write

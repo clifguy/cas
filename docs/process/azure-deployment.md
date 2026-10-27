@@ -372,10 +372,16 @@ to one value.
 ## Container images and the ACR push
 
 The [`CI`](../../.github/workflows/ci.yml) workflow builds the SAGE and CAS BFF
-images and runs the container smoke tests on every pull request, merge-group entry,
-and push to `main` (see [branch protection](branch_protection.md)), via the
+images and runs the container smoke tests on every push to `main` and
+merge-group entry, and on a pull request when the image recipe or the embedding
+trial's surface changes (see [branch protection](branch_protection.md)), via the
 shared reusable [`build-images`](../../.github/workflows/build-images.yml)
 workflow with the push **disabled** — CI is the regression gate, not a publisher.
+A pull request that changes only application source skips that build; the `main`
+push builds and smokes the merged tree before any deploy can take it. The layer
+cache is written by the deploy arm and by the daily
+[`image-cache`](../../.github/workflows/image-cache.yml) build of `main`, not by
+CI runs, which only read it.
 The push to a registry happens in the deploy pipeline, because each tenant has
 its own Azure Container Registry: the `infra` workflow's `build` job calls the
 same reusable workflow with the push **enabled** and the tenant's Environment, so
@@ -406,12 +412,15 @@ float. What the pins guarantee is the stronger half of the recipe; the cache
 supplies the rest, for as long as it survives and the day has not turned.
 
 Which makes it worth knowing who fills that cache. It is written from two places
-only — the push-to-`main` CI run of a commit, and the deploy dispatch itself —
-because those are the refs another run can read. Pull-request runs read that
-scope and never write to it, so a branch cannot warm the cache a deploy will
-use, and a deploy of a commit whose `main` run has since been evicted rebuilds
-the apt layer rather than reusing it. The repository's Actions cache is
-capped at 10 GB and evicts least-recently-used entries without reporting it.
+only — the daily `image-cache` build of `main`, and the deploy dispatch itself —
+because those write the scope every other run reads, and once a day is enough to
+keep it warm. CI runs, on pull requests and on `main` alike, read that scope and
+never write to it, so a branch cannot warm the cache a deploy will use. A deploy
+reuses the apt layer only when that day's `image-cache` build or an earlier
+same-day deploy produced it, and otherwise rebuilds it. The repository's Actions
+cache is capped at 10 GB and evicts least-recently-used entries without
+reporting it; writing from every `main` push filled it and evicted the
+dependency layers every build relies on.
 
 Break either fact — force a deploy past its precheck, or let a base image float
 again — and the deploy is pushing an artifact nothing has tested.

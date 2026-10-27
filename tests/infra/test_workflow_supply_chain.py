@@ -52,12 +52,17 @@ _EXEMPT: Final[dict[tuple[str, str], str]] = {
         "calls build-images.yml with push off; the called job requests the token for its "
         "push arm, which this caller never takes"
     ),
+    ("image-cache.yml", "cache"): (
+        "calls build-images.yml with push off to refresh the layer cache; the called job "
+        "requests the token for its push arm, which this caller never takes"
+    ),
 }
 
 _EXPECTED_WORKFLOWS: Final[tuple[str, ...]] = (
     "build-images.yml",
     "ci.yml",
     "dependabot-triage.yml",
+    "image-cache.yml",
     "infra.yml",
     "maintenance.yml",
     "postgres-migration.yml",
