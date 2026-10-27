@@ -45,8 +45,11 @@ jobs:
   paths-filter:
     # Gate frontend jobs (vitest, playwright-e2e) on app/ changes so runs that
     # touch only sage/, root_harness/, docs/, etc. skip the expensive Node +
-    # Playwright + browser-install setup. The Python jobs below are not gated;
-    # they run on every event this workflow answers.
+    # Playwright + browser-install setup. On a pull request the container job
+    # is gated too: `image` names what the images are built from, apart from the
+    # application source they copy whole, and `embedding` names what the
+    # embedding trial measures. The other Python jobs are not gated; they run
+    # on every event this workflow answers.
     #
     # The filter resolves each event's base itself — the merge group's base_sha,
     # the push event's `before` — and fetches it when the checkout does not
@@ -55,6 +58,8 @@ jobs:
     timeout-minutes: 2
     outputs:
       app: ${{ steps.f.outputs.app }}
+      image: ${{ steps.f.outputs.image }}
+      embedding: ${{ steps.f.outputs.embedding }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -67,6 +72,30 @@ jobs:
               - 'app/**'
               - '.github/workflows/ci.yml'
               - 'tests/fixtures/ci_cas_vault_config.yaml'
+            image:
+              - 'Dockerfile*'
+              - '.dockerignore'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - 'app/package.json'
+              - 'app/package-lock.json'
+              - 'deploy/sage.config.container.yaml'
+              - 'docs/fs/sage/sage_core_config.schema.json'
+              - 'docs/fs/sage/sage_core_api.openapi.yaml'
+              - 'docs/fs/cas_app_api.openapi.yaml'
+              - '.github/workflows/build-images.yml'
+              - '.github/workflows/ci.yml'
+              - 'tests/deploy/test_container_smoke.py'
+              - 'tests/deploy/test_bff_container_smoke.py'
+            embedding:
+              - 'Dockerfile'
+              - 'scripts/embedding_contention_trial.py'
+              - 'sage/adapters/embedding_nomic.py'
+              - 'sage/adapters/content_store_postgres.py'
+              - 'sage/services/ingestion.py'
+              - 'sage/services/retrieval.py'
+              - 'sage/services/selective_embedding.py'
+              - 'sage/storage/postgres/**'
 
   versions:
     # Expose the shared-component version manifest (`versions.json`) as job
@@ -440,20 +469,34 @@ jobs:
             --compare "${RUNNER_TEMP}/base.json" "${RUNNER_TEMP}/head.json"
 
   container:
-    # Container packaging path: build both images and run the smoke tests
-    # (SMK/BSMK) on every event this workflow answers, so a Dockerfile regression
-    # cannot merge silently. Together with the native `test` job above this forms
-    # the native/container profile matrix. Pushing to a registry is the deploy
+    # Container packaging path: build both images, scan them and run the smoke
+    # tests (SMK/BSMK). Together with the native `test` job above this forms the
+    # native/container profile matrix. Pushing to a registry is the deploy
     # pipeline's job — each tenant has its own registry, so the per-tenant push
     # lives in infra.yml; here the shared reusable build runs with push disabled.
     #
+    # It runs on every event except a pull request, and on a pull request only
+    # when the image recipe or the embedding trial's surface changes. A pull
+    # request that changes only application source skips it: the test job
+    # covers that code natively, and the default-branch push still builds and
+    # smokes the merged tree before any deploy can take it. A Dockerfile or
+    # dependency regression still cannot merge without this run.
+    #
     # This job is the only place the container smoke tests run. The deploy arm
-    # skips them and accepts its artifact on the strength of this run having
-    # built from the same bases and locked dependency sets — which holds because
-    # the base images are digest-pinned. Weakening either half weakens the deploy.
+    # skips them and accepts its artifact on the strength of the default-branch
+    # run having built from the same bases and locked dependency sets — which
+    # holds because the base images are digest-pinned. Weakening either half
+    # weakens the deploy. This caller never writes the layer cache; the
+    # scheduled image-cache workflow does.
+    needs: paths-filter
+    if: >-
+      github.event_name != 'pull_request'
+      || needs.paths-filter.outputs.image == 'true'
+      || needs.paths-filter.outputs.embedding == 'true'
     uses: ./.github/workflows/build-images.yml
     with:
       push: false
+      embedding_trial: ${{ github.event_name != 'pull_request' || needs.paths-filter.outputs.embedding == 'true' }}
     # A reusable workflow can only narrow what its caller grants, and the called
     # `build` job requests id-token for its push arm. This caller never takes that
     # arm, but must still grant the token or the call fails to start. The token it

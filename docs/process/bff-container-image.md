@@ -123,7 +123,7 @@ The structural conventions (multi-stage Node + Python build, non-root, version
 arg, health check, the frontend-keeping ignore) are additionally asserted by
 `tests/deploy/test_bff_container_image.py`, which runs in the default suite with
 no Docker daemon. CI builds this image and runs the
-smoke tests against it on every pull request, merge-group entry, and push to
-`main`, via the reusable
+smoke tests against it on every push to `main` and merge-group entry, and on a
+pull request that changes the image recipe, via the reusable
 [`build-images`](../../.github/workflows/build-images.yml) workflow; the push to
 a tenant registry happens on the deploy pipeline's call to that same workflow.

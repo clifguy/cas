@@ -123,8 +123,11 @@ def test_push_is_oidc_and_dormant_until_registry_set() -> None:
 # step list instead, so a conditional step is testable as conditional.
 # ---------------------------------------------------------------------------
 
-_SMOKE_RE: Final[re.Pattern[str]] = re.compile(r"pytest\b.*tests/deploy/")
+# DOTALL so a command continued over several lines still matches.
+_SMOKE_RE: Final[re.Pattern[str]] = re.compile(r"pytest\b.*tests/deploy/", re.DOTALL)
 _NEGATED_PUSH_RE: Final[re.Pattern[str]] = re.compile(r"!\s*inputs\.push|inputs\.push\s*==\s*false")
+_IMAGE_ENV_RE: Final[re.Pattern[str]] = re.compile(r"SAGE_TEST_(?:BFF_)?IMAGE\b")
+_TRIAL_SCRIPT: Final[str] = "scripts/embedding_contention_trial.py"
 
 
 def _steps() -> list[dict]:
@@ -213,6 +216,86 @@ def test_container_smoke_runs_only_on_the_non_push_arm() -> None:
     assert _NEGATED_PUSH_RE.search(condition), (
         f"the smoke step's condition ({condition!r}) does not negate `inputs.push`"
     )
+
+
+def _image_reading_suites() -> set[str]:
+    """The deploy suites that read a built image's tag from the environment."""
+    return {
+        path.relative_to(REPO_ROOT).as_posix()
+        for path in sorted((REPO_ROOT / "tests" / "deploy").glob("test_*.py"))
+        if _IMAGE_ENV_RE.search(path.read_text(encoding="utf-8"))
+    }
+
+
+def test_container_smoke_selects_exactly_the_image_reading_suites() -> None:
+    """The smoke step runs the suites that need the image, and only those.
+
+    Every other deploy suite runs in the ordinary test job, which collects the
+    whole of ``tests/``; running it a second time beside the image adds minutes
+    and proves nothing new. The selection is derived from the suites themselves
+    -- a file that reads the image tag is one the smoke step must run -- so a new
+    image-exercising suite cannot be left out by an explicit list that predates
+    it.
+    """
+    expected = _image_reading_suites()
+    assert expected, "no deploy suite reads a built image; the derivation found nothing"
+
+    smoke = [step for step in _steps() if _SMOKE_RE.search(_run_of(step))]
+    assert len(smoke) == 1, f"expected exactly one container smoke step, found {len(smoke)}"
+    tokens = _run_of(smoke[0]).split()
+    selected = {token for token in tokens if token.startswith("tests/")}
+
+    assert "tests/deploy/" not in selected and "tests/deploy" not in selected, (
+        "the smoke step collects the whole deploy tree, re-running every suite the "
+        "test job already ran"
+    )
+    assert selected == expected, (
+        f"the smoke step selects {sorted(selected)}, but the suites that read a "
+        f"built image are {sorted(expected)}"
+    )
+
+
+def _workflow_call_inputs() -> dict:
+    return (_on_block(_load()).get("workflow_call") or {}).get("inputs") or {}
+
+
+def test_opt_in_inputs_are_declared_off_by_default() -> None:
+    """Cache writes and the embedding trial are opt-in per caller.
+
+    A caller that names neither gets a build that reads the cache, writes
+    nothing to it, and skips the trial. Defaulting either to on would make every
+    new caller pay for it silently.
+    """
+    inputs = _workflow_call_inputs()
+    for name in ("write_cache", "embedding_trial"):
+        assert name in inputs, f"workflow_call must accept a `{name}` input"
+        assert inputs[name].get("type") == "boolean", f"`{name}` must be a boolean input"
+        assert inputs[name].get("default") is False, f"`{name}` must default to false"
+
+
+def test_embedding_trial_runs_only_when_the_caller_asks() -> None:
+    """The trial and its evidence upload run on the non-push arm, on request.
+
+    The trial is a performance measurement taking several minutes, not a
+    correctness gate, so it belongs to the callers that choose it rather than to
+    every build. Its artifact step must follow the same condition: uploading
+    from a trial that never ran fails the job on `if-no-files-found`.
+    """
+    steps = _steps()
+    trial = [step for step in steps if _TRIAL_SCRIPT in _run_of(step)]
+    assert len(trial) == 1, f"expected exactly one embedding trial step, found {len(trial)}"
+    upload = [step for step in steps if step.get("name") == "Retain embedding trial measurements"]
+    assert len(upload) == 1, "expected exactly one trial evidence upload step"
+
+    for label, step in (("trial", trial[0]), ("upload", upload[0])):
+        condition = str(step.get("if") or "")
+        assert _NEGATED_PUSH_RE.search(condition), (
+            f"the {label} step's condition ({condition!r}) does not negate `inputs.push`"
+        )
+        assert "inputs.embedding_trial" in condition, (
+            f"the {label} step's condition ({condition!r}) does not require the "
+            "caller's `embedding_trial` request"
+        )
 
 
 def test_images_are_pushed_from_the_build_step() -> None:
@@ -328,17 +411,21 @@ def test_the_registry_gate_is_expressed_identically_everywhere() -> None:
     )
 
 
-def test_the_layer_cache_is_read_everywhere_and_written_only_where_it_is_read() -> None:
-    """Every arm reads the layer cache; only refs with a second reader write it.
+def test_the_layer_cache_is_read_everywhere_and_written_only_on_request() -> None:
+    """Every arm reads the layer cache; only the deploy and named callers write it.
 
     A pull-request ref's cache scope is readable by nothing else and dies with
     the branch, so writing one spends several GiB of a fixed repository budget
-    to warm a scope no other run will ever open. The eviction that buys comes
-    out of the default branch's entries -- the scope the deploy arm reads -- so
-    an unrestricted write policy degrades exactly the path it was meant to speed
-    up, and does it quietly, because LRU eviction reports nothing.
+    to warm a scope no other run will ever open. Writing from every default-branch
+    push is the same mistake more slowly: each push exports a fresh copy of every
+    layer its changes and the daily apt key touched, and the repository budget
+    fills with superseded blobs. The eviction that buys comes out of the entries
+    every other run reads, and does it quietly, because LRU eviction reports
+    nothing.
 
-    Reading is therefore unconditional and writing is gated. The two halves are
+    Writing is therefore gated on the deploy arm and on a caller's explicit
+    `write_cache` request, which one scheduled caller makes; it is not keyed to
+    any event or ref. Reading is unconditional. The two halves are
     asserted by position rather than by presence: both flags appear in the file
     either way, and what distinguishes the correct arrangement from the
     inverted one is which side of the gate each sits on.
@@ -385,14 +472,10 @@ def test_the_layer_cache_is_read_everywhere_and_written_only_where_it_is_read() 
     # expression writes from exactly the refs nothing reads -- both identical
     # across the pair, both correctly positioned, both defeating the policy.
     condition = write_conditions[0]
-    assert "inputs.push" in condition, (
-        f"the write gate does not admit the deploy dispatch: {condition!r}"
-    )
-    assert "refs/heads/main" in condition, (
-        f"the write gate does not admit the default branch's push: {condition!r}"
-    )
-    assert "pull_request" not in condition, (
-        f"the write gate admits pull-request refs, whose cache nothing reads: {condition!r}"
+    assert re.fullmatch(r"inputs\.push \|\| inputs\.write_cache", condition), (
+        "the write gate must admit exactly the deploy dispatch and an explicit "
+        f"`write_cache` request, got {condition!r}; a term keyed to an event or "
+        "ref writes from every run that matches it"
     )
 
 

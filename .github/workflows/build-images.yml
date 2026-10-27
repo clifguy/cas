@@ -6,13 +6,17 @@ name: build-images
 # Azure Container Registry. Authoring the build once here keeps the two callers
 # from drifting.
 #
-# The two callers differ in one respect beyond the push. The CI workflow calls
-# it with push off and gets the container smoke tests (SMK/BSMK) — it is the
-# regression gate, and its images are discarded. The deploy pipeline calls it
-# with push on and skips them: it is reached only for a commit whose own CI run
-# concluded green, and because every base image is digest-pinned, that run built
-# from the same bases and the same locked dependency sets. The images it builds
-# are the artifact.
+# The callers differ in one respect beyond the push. The CI workflow calls it
+# with push off and gets the container smoke tests (SMK/BSMK) — it is the
+# regression gate, and its images are discarded. It runs on every default-branch
+# push, and on a pull request only when the image recipe or the embedding
+# trial's surface changes. The deploy pipeline calls it with push on and skips
+# them: it is reached only for a commit whose own CI run concluded green, and
+# because every base image is digest-pinned, that run built from the same bases
+# and the same locked dependency sets. The images it builds are the artifact.
+# A third, scheduled caller (image-cache.yml) builds the default branch once a
+# day with push off to refresh the layer cache; it is the only caller that asks
+# for `write_cache`.
 #
 # One gap follows, and is deliberate rather than overlooked. Nothing in this
 # repository enforces the green-commit rule -- it lives in the operator tooling
@@ -30,6 +34,14 @@ on:
         description: GitHub Environment whose registry + deploy identity the push uses.
         type: string
         default: ''
+      write_cache:
+        description: Export the layer cache from this build. The push arm always does.
+        type: boolean
+        default: false
+      embedding_trial:
+        description: Run the real-model embedding contention trial (non-push arm only).
+        type: boolean
+        default: false
     outputs:
       image_tag:
         description: Immutable {version}-{short-sha} tag the deploy pins the containers to.
@@ -99,12 +111,12 @@ jobs:
       image_tag: ${{ steps.ver.outputs.image_tag }}
       sage_build_version: ${{ steps.ver.outputs.sage_build_version }}
     services:
-      # Real Postgres + pgvector for the smoke step's pytest run: tests/deploy/
-      # includes suites (e.g. the sharepoint-validate faithful path) that boot
-      # the real SAGE REST app, whose storage binding externalizes state to
-      # Postgres (CAS-ADR-042). The storage harness creates disposable schemas
-      # in this throwaway container DB; SAGE_TEST_PG_DSN (set on the smoke
-      # step) points at it.
+      # Real Postgres + pgvector for the steps that need a server: the smoke
+      # step's pytest session, whose root harness provisions a disposable
+      # database from SAGE_TEST_PG_DSN at session start, and the embedding
+      # trial, which creates and drops its own test database there. Storage
+      # externalizes state to Postgres (CAS-ADR-042); SAGE_TEST_PG_DSN, set on
+      # both steps, points at this throwaway container.
       #
       # It starts on the push arm too, where nothing consumes it, because
       # `services:` cannot be conditioned on a workflow input. That is a known
@@ -220,16 +232,13 @@ jobs:
             ${{ inputs.push
             && vars.AZURE_CLIENT_ID != ''
             && vars.ACR_LOGIN_SERVER != '' }}
-          # Write the layer cache only from refs another run can read: the
-          # default branch and the deploy dispatch. Every arm still reads it.
-          # A pull-request ref's cache scope is readable by nothing else and is
-          # discarded with the branch, so writing one spends ~4 GiB of a 10 GiB
-          # repository budget to warm a scope with no second reader -- and the
-          # eviction that buys lands on the default branch's entries, which is
-          # the scope the deploy arm reads.
-          WRITE_CACHE: >-
-            ${{ inputs.push
-            || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+          # Write the layer cache only from the deploy arm and from a caller
+          # that asks: the scheduled default-branch build. Every arm still reads
+          # it. A pull-request ref's cache scope is readable by nothing else, and
+          # writing from every default-branch push exports fresh blobs for each
+          # changed layer into a fixed 10 GB repository budget; either way the
+          # eviction that buys lands on the entries every other run reads.
+          WRITE_CACHE: ${{ inputs.push || inputs.write_cache }}
         run: |
           set -euo pipefail
           # APT_REFRESH re-resolves the image's apt layer once per UTC day.
@@ -266,16 +275,13 @@ jobs:
             ${{ inputs.push
             && vars.AZURE_CLIENT_ID != ''
             && vars.ACR_LOGIN_SERVER != '' }}
-          # Write the layer cache only from refs another run can read: the
-          # default branch and the deploy dispatch. Every arm still reads it.
-          # A pull-request ref's cache scope is readable by nothing else and is
-          # discarded with the branch, so writing one spends ~4 GiB of a 10 GiB
-          # repository budget to warm a scope with no second reader -- and the
-          # eviction that buys lands on the default branch's entries, which is
-          # the scope the deploy arm reads.
-          WRITE_CACHE: >-
-            ${{ inputs.push
-            || (github.event_name == 'push' && github.ref == 'refs/heads/main') }}
+          # Write the layer cache only from the deploy arm and from a caller
+          # that asks: the scheduled default-branch build. Every arm still reads
+          # it. A pull-request ref's cache scope is readable by nothing else, and
+          # writing from every default-branch push exports fresh blobs for each
+          # changed layer into a fixed 10 GB repository budget; either way the
+          # eviction that buys lands on the entries every other run reads.
+          WRITE_CACHE: ${{ inputs.push || inputs.write_cache }}
         run: |
           set -euo pipefail
           args=(--platform linux/amd64
@@ -338,11 +344,17 @@ jobs:
           # Points the storage harness at the Postgres service container above,
           # for the deploy suites that boot the real SAGE app in-process.
           SAGE_TEST_PG_DSN: "postgresql://postgres:postgres@localhost:5432/postgres"
+        # Only the suites that exercise the built images. The rest of
+        # tests/deploy/ runs in the CI test job with the whole suite.
         run: |
-          .venv/bin/pytest -v --tb=short tests/deploy/
+          .venv/bin/pytest -v --tb=short \
+            tests/deploy/test_container_smoke.py \
+            tests/deploy/test_bff_container_smoke.py
 
       - name: Real embedding contention and interrupted recovery at production allocation
-        if: ${{ !inputs.push }}
+        # A several-minute performance trial rather than a correctness gate, so
+        # it runs only for a caller that requests it.
+        if: ${{ !inputs.push && inputs.embedding_trial }}
         env:
           SAGE_TEST_PG_DSN: "postgresql://postgres:postgres@localhost:5432/postgres"
         run: |
@@ -350,7 +362,7 @@ jobs:
             --image cas-sage:ci --evidence "${RUNNER_TEMP}/embedding-trial"
 
       - name: Retain embedding trial measurements
-        if: ${{ !inputs.push && always() }}
+        if: ${{ !inputs.push && inputs.embedding_trial && always() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: embedding-contention-trial
