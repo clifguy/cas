@@ -260,6 +260,22 @@ def test_cache_writer_is_scheduled_and_bound_to_the_default_branch() -> None:
         f"the cache writer triggers on {sorted(on)}; it must run only on its schedule or by hand"
     )
 
+    # The budget argument is one write a day: a single cron entry firing at a
+    # fixed minute and hour on every day, never overlapping itself.
+    schedule = on.get("schedule") or []
+    assert len(schedule) == 1, f"the cache writer must have one schedule entry, got {schedule}"
+    fields = str(schedule[0].get("cron") or "").split()
+    assert len(fields) == 5 and all(f.isdigit() for f in fields[:2]), (
+        f"the cache writer's cron {fields} must fire at a literal minute and hour"
+    )
+    assert fields[2:] == ["*", "*", "*"], (
+        f"the cache writer's cron {fields} must fire once on every day"
+    )
+    concurrency = workflow.get("concurrency") or {}
+    assert concurrency.get("group") and concurrency.get("cancel-in-progress") is False, (
+        "the cache writer must serialise its runs without cancelling one mid-write"
+    )
+
     jobs = workflow.get("jobs") or {}
     assert len(jobs) == 1, "the cache writer must hold exactly one job"
     job = next(iter(jobs.values()))

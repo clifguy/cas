@@ -14,14 +14,16 @@ name: image-cache
 # container smoke tests, so a day's freshly refreshed apt layer is scanned for
 # vulnerabilities even when nothing merges. The scheduled run skips the
 # embedding trial, which the default-branch CI run already performs; a manual
-# dispatch can request it, which is the way to run the trial on demand.
+# dispatch on `main` can request it, which is the way to run the trial on
+# demand. A dispatch from any other ref is skipped, because its cache write
+# would land in a scope no other run reads.
 on:
   schedule:
     - cron: "0 6 * * *"  # Daily 06:00 UTC
   workflow_dispatch:
     inputs:
       embedding_trial:
-        description: Also run the real-model embedding contention trial.
+        description: Also run the real-model embedding contention trial (dispatch on main; other refs are skipped).
         type: boolean
         default: false
 
