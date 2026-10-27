@@ -222,7 +222,7 @@ def _image_reading_suites() -> set[str]:
     """The deploy suites that read a built image's tag from the environment."""
     return {
         path.relative_to(REPO_ROOT).as_posix()
-        for path in sorted((REPO_ROOT / "tests" / "deploy").glob("test_*.py"))
+        for path in sorted((REPO_ROOT / "tests" / "deploy").rglob("test_*.py"))
         if _IMAGE_ENV_RE.search(path.read_text(encoding="utf-8"))
     }
 

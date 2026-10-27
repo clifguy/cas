@@ -12,12 +12,18 @@ name: image-cache
 #
 # The run is an ordinary non-push build: it also scans both images and runs the
 # container smoke tests, so a day's freshly refreshed apt layer is scanned for
-# vulnerabilities even when nothing merges. It skips the embedding trial, which
-# the default-branch CI run already performs.
+# vulnerabilities even when nothing merges. The scheduled run skips the
+# embedding trial, which the default-branch CI run already performs; a manual
+# dispatch can request it, which is the way to run the trial on demand.
 on:
   schedule:
     - cron: "0 6 * * *"  # Daily 06:00 UTC
   workflow_dispatch:
+    inputs:
+      embedding_trial:
+        description: Also run the real-model embedding contention trial.
+        type: boolean
+        default: false
 
 concurrency:
   group: ${{ github.workflow }}
@@ -34,7 +40,7 @@ jobs:
     with:
       push: false
       write_cache: true
-      embedding_trial: false
+      embedding_trial: ${{ inputs.embedding_trial == true }}
     # A reusable workflow can only narrow what its caller grants, and the called
     # `build` job requests id-token for its push arm. This caller never takes that
     # arm, but must still grant the token or the call fails to start. The token it

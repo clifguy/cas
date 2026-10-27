@@ -47,6 +47,7 @@ _RECIPE_FILES: Final[tuple[str, ...]] = (
     "Dockerfile",
     "Dockerfile.bff",
     ".dockerignore",
+    "Dockerfile.bff.dockerignore",
     "pyproject.toml",
     "uv.lock",
     ".github/workflows/build-images.yml",
@@ -223,11 +224,12 @@ def test_every_copied_file_and_recipe_input_trips_the_image_filter() -> None:
     )
 
 
-def test_application_source_does_not_trip_the_image_filter() -> None:
-    """The control: an ordinary code change leaves the container job off."""
-    globs = _filters().get("image") or []
-    for path in ("sage/services/retrieval.py", "app/src/main.tsx", "tests/sage/test_x.py"):
-        assert not _covered(path, globs), f"{path} trips the image filter"
+def test_application_source_trips_neither_filter() -> None:
+    """The control: a code change outside the trial's surface leaves the job off."""
+    filters = _filters()
+    for path in ("sage/services/lifecycle.py", "app/src/main.tsx", "tests/sage/test_x.py"):
+        for name in ("image", "embedding"):
+            assert not _covered(path, filters.get(name) or []), f"{path} trips the {name} filter"
 
 
 def test_embedding_filter_covers_the_trial_surface() -> None:
@@ -269,6 +271,17 @@ def test_cache_writer_is_scheduled_and_bound_to_the_default_branch() -> None:
     args = job.get("with") or {}
     assert args.get("write_cache") is True, "the cache writer does not ask to write the cache"
     assert args.get("push") is False, "the cache writer must not push images"
+
+    # The trial runs only on a dispatch that asks for it: a scheduled run
+    # carries no inputs, so the comparison is false there.
+    dispatch_inputs = (on.get("workflow_dispatch") or {}).get("inputs") or {}
+    trial_input = dispatch_inputs.get("embedding_trial") or {}
+    assert trial_input.get("type") == "boolean" and trial_input.get("default") is False, (
+        "the cache writer's dispatch must offer an `embedding_trial` boolean defaulting to false"
+    )
+    assert _normalise(args.get("embedding_trial")) == "inputs.embedding_trial == true", (
+        "the cache writer must request the trial exactly when a dispatch asks for it"
+    )
 
 
 def test_only_the_scheduled_caller_requests_a_cache_write() -> None:

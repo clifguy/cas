@@ -479,8 +479,8 @@ jobs:
     # when the image recipe or the embedding trial's surface changes. A pull
     # request that changes only application source skips it: the test job
     # covers that code natively, and the default-branch push still builds and
-    # smokes the merged tree before any deploy can take it. A Dockerfile or
-    # dependency regression still cannot merge without this run.
+    # smokes the merged tree before any deploy can take it. A Dockerfile,
+    # lockfile or other recipe regression still cannot merge without this run.
     #
     # This job is the only place the container smoke tests run. The deploy arm
     # skips them and accepts its artifact on the strength of the default-branch

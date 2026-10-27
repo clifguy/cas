@@ -731,6 +731,14 @@ KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
         "parametrized over every retired section, so each binding runs under its "
         "<binding>-<section> ids"
     ),
+    (
+        "tests/infra/test_build_images_reusable.py::"
+        "test_the_layer_cache_is_read_everywhere_and_written_only_where_it_is_read"
+    ): (
+        "renamed test_the_layer_cache_is_read_everywhere_and_written_only_on_request: "
+        "the cache is now written by the deploy arm and an explicit write_cache caller "
+        "rather than by every default-branch push"
+    ),
 }
 
 
