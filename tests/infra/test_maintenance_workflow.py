@@ -21,6 +21,8 @@ from typing import Final
 
 import yaml
 
+from tests.infra._job_start import overrides, shell_flags
+
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
 WORKFLOW: Final[Path] = REPO_ROOT / ".github" / "workflows" / "maintenance.yml"
 
@@ -178,11 +180,10 @@ def test_request_applied_via_update_then_plain_start() -> None:
         "the env must be applied before the start"
     )
     start = _invocation(run, "az containerapp job start")
-    for flag in ("--env-vars", "--image", "--command"):
-        assert flag not in start, (
-            f"the start must not carry {flag} — any container-override flag makes the"
-            " execution's container spec rebuild from the flags, dropping the template"
-        )
+    assert overrides(shell_flags(start)) == [], (
+        f"the start must not carry {overrides(shell_flags(start))} — any container-override"
+        " flag makes the execution's container spec rebuild from the flags, dropping the template"
+    )
     assert "SAGE_MAINTENANCE_COMMAND=$COMMAND" in run, "the update must thread the command selector"
     for var in (
         "SAGE_DELETE_VAULT_ID",
