@@ -4,9 +4,10 @@ A start that passes container overrides needs ``Microsoft.App/jobs/write`` as
 well as ``Microsoft.App/jobs/start/action``, and rebuilds the execution's
 container from the overrides rather than the deployed template. Jobs that need
 per-run input set it on the template first (``az containerapp job update``)
-and then start plainly. This gate reads every tracked workflow, script, driver
-and runbook code block outside the test tree, finds each job start — CLI,
-Python argv or direct ARM — and requires the plain form. The discovered
+and then start plainly. This gate reads tracked workflows, scripts, Python
+drivers and runbook code blocks outside the test tree, finds each job start in
+the forms ``tests/infra/_job_start.py`` can read — CLI, ``az rest``, Python argv
+or string, and direct ARM — and requires the plain form. The discovered
 inventory is pinned so a reader that silently finds nothing fails.
 
 These checks read tracked source only; no Azure tooling.
@@ -19,17 +20,22 @@ from pathlib import Path
 from typing import Final
 
 import pytest
+import yaml
 
 from tests.infra._job_start import (
     arm_post_sends_body,
     arm_start_posts,
     fenced_code,
     overrides,
+    python_command_strings,
     python_site_flags,
     python_start_sites,
+    rest_sends_body,
+    rest_start_invocations,
     shell_flags,
     shell_invocations,
     start_path_lines,
+    yaml_strings,
 )
 
 REPO_ROOT: Final[Path] = Path(__file__).resolve().parents[2]
@@ -56,8 +62,22 @@ def _tracked() -> list[str]:
     return [path for path in listed if not path.startswith("tests/")]
 
 
+def _shell_texts(path: str, text: str) -> list[str]:
+    """The shell text a file carries: fenced blocks of Markdown, every string
+    of parsed YAML (so folded scalars arrive joined), or the whole file."""
+    if path.endswith(".md"):
+        return [fenced_code(text)]
+    if path.endswith((".yml", ".yaml")):
+        try:
+            return yaml_strings(yaml.safe_load(text))
+        except yaml.YAMLError:
+            return [text]
+    return [text]
+
+
 def _sites() -> list[tuple[str, str, str, list[str] | None]]:
-    """(path, form, label, flags-or-None-for-arm) for every discovered start."""
+    """(path, form, label, flags) for every discovered start; ``rest`` sites
+    carry ``["--body"]`` when they send a body, ``arm`` sites carry None."""
     found: list[tuple[str, str, str, list[str] | None]] = []
     for path in _tracked():
         file = REPO_ROOT / path
@@ -65,18 +85,24 @@ def _sites() -> list[tuple[str, str, str, list[str] | None]]:
         if suffix not in _SHELL_SUFFIXES | {".md", ".py"} or not file.is_file():
             continue
         text = file.read_text(encoding="utf-8", errors="replace")
-        if suffix in _SHELL_SUFFIXES or suffix == ".md":
-            body = fenced_code(text) if suffix == ".md" else text
-            for number, invocation in enumerate(shell_invocations(body), start=1):
-                found.append((path, "cli", f"start {number}", shell_flags(invocation)))
-        elif suffix == ".py":
+        if suffix == ".py":
             try:
                 for line, elements in python_start_sites(text):
                     found.append((path, "argv", f"line {line}", python_site_flags(elements)))
                 for call in arm_start_posts(text):
                     found.append((path, "arm", f"line {call.lineno}", None))
+                texts = [string for _line, string in python_command_strings(text)]
             except SyntaxError:
                 continue
+        else:
+            texts = _shell_texts(path, text)
+        cli = [i for body in texts for i in shell_invocations(body)]
+        for number, invocation in enumerate(cli, start=1):
+            found.append((path, "cli", f"start {number}", shell_flags(invocation)))
+        rest = [i for body in texts for i in rest_start_invocations(body)]
+        for number, invocation in enumerate(rest, start=1):
+            body_flags = ["--body"] if rest_sends_body(invocation) else []
+            found.append((path, "rest", f"rest {number}", body_flags))
     return found
 
 
@@ -95,7 +121,7 @@ def test_discovered_start_sites_match_inventory() -> None:
 
 @pytest.mark.parametrize(
     ("path", "label", "flags"),
-    [(p, label, f) for p, form, label, f in _SITES if form != "arm"],
+    [(p, label, f) for p, form, label, f in _SITES if form in {"cli", "argv"}],
     ids=lambda value: value if isinstance(value, str) else None,
 )
 def test_cli_and_argv_starts_carry_no_override(path: str, label: str, flags: list[str]) -> None:
@@ -119,6 +145,12 @@ def test_arm_starts_send_no_body() -> None:
         )
 
 
+def test_rest_starts_send_no_body() -> None:
+    for path, form, label, flags in _SITES:
+        if form == "rest":
+            assert flags == [], f"{path} ({label}) sends a body to a job /start through az rest"
+
+
 def test_every_start_path_literal_is_a_recognized_arm_start() -> None:
     """A ``/start`` path posted by any other client (``httpx``, ``requests``,
     ``urllib``) would escape the ARM reader, so every such literal in tracked
@@ -136,8 +168,12 @@ def test_every_start_path_literal_is_a_recognized_arm_start() -> None:
         assert stray == [], f"{path} lines {stray}: a /start path outside a recognized ARM start"
 
 
-# Positive controls: each override form the readers must refuse, and the plain
-# forms they must accept, so a reader that sees no flags cannot pass vacuously.
+# Positive controls: flags outside the plain-start allowlist that the readers
+# must refuse, and the plain forms they must accept, so a reader that sees no
+# flags cannot pass vacuously. The CLI sends an execution template for the
+# image, container-name, env-vars, command, args, cpu and memory flags and for
+# --yaml; --registry-identity and the --env abbreviation are refused because
+# the allowlist admits nothing it does not name.
 
 _OVERRIDE_FLAGS: Final[tuple[str, ...]] = (
     "--image",
@@ -188,6 +224,48 @@ def test_shell_reader_accepts_plain_start() -> None:
     assert overrides(shell_flags(invocation)) == []
 
 
+def test_shell_reader_refuses_word_list_expansion() -> None:
+    script = 'az containerapp job start -n "$J" -g "$G" "${EXTRA_START_ARGS[@]}"\n'
+    [invocation] = shell_invocations(script)
+    assert overrides(shell_flags(invocation)) == ["*"]
+
+
+def test_yaml_folded_scalar_reads_as_one_command() -> None:
+    workflow = (
+        "steps:\n  - run: >-\n      az containerapp job start -n j -g g\n      --env-vars X=1\n"
+    )
+    texts = yaml_strings(yaml.safe_load(workflow))
+    [invocation] = [i for body in texts for i in shell_invocations(body)]
+    assert overrides(shell_flags(invocation)) == ["--env-vars"]
+
+
+@pytest.mark.parametrize(
+    ("script", "sends"),
+    [
+        ('az rest --method post --url "$JOB_ID/start?api-version=2025-07-01"\n', False),
+        ('az rest --method post --url "$JOB_ID/start" --body \'{"containers":[]}\'\n', True),
+        ('az rest -m post -u "$JOB_ID/start" -b @template.json\n', True),
+    ],
+)
+def test_rest_reader_finds_start_and_reads_body(script: str, sends: bool) -> None:
+    [invocation] = rest_start_invocations(script)
+    assert rest_sends_body(invocation) is sends
+
+
+def test_rest_reader_ignores_other_rest_calls() -> None:
+    assert rest_start_invocations('az rest --method get --url "$JOB_ID"\n') == []
+
+
+def test_python_string_command_is_read_as_shell() -> None:
+    source = (
+        'subprocess.run("az containerapp job start -n x -g y --env-vars A=1", shell=True)\n'
+        'subprocess.run(f"az containerapp job start -n {job} -g {group} --cpu 1", shell=True)\n'
+    )
+    texts = [text for _line, text in python_command_strings(source)]
+    flags = [overrides(shell_flags(i)) for body in texts for i in shell_invocations(body)]
+    assert flags == [["--env-vars"], ["--cpu"]]
+
+
 def test_markdown_reader_ignores_prose() -> None:
     doc = (
         "Never run `az containerapp job start --env-vars X=1`.\n\n"
@@ -219,6 +297,20 @@ def test_argv_reader_reads_subprocess_list_form() -> None:
 def test_argv_reader_refuses_starred_arguments() -> None:
     [(_line, elements)] = python_start_sites(
         'az("containerapp", "job", "start", "--name", job, *extra)\n'
+    )
+    assert overrides(python_site_flags(elements)) == ["*"]
+
+
+def test_argv_reader_refuses_name_in_flag_position() -> None:
+    [(_line, elements)] = python_start_sites(
+        'az("containerapp", "job", "start", "--name", job, override_flag, "A=1")\n'
+    )
+    assert overrides(python_site_flags(elements)) == ["*"]
+
+
+def test_argv_reader_reads_value_after_switch_as_flag_position() -> None:
+    [(_line, elements)] = python_start_sites(
+        'az("containerapp", "job", "start", "--no-wait", extra, "--name", job)\n'
     )
     assert overrides(python_site_flags(elements)) == ["*"]
 
@@ -260,3 +352,12 @@ def test_arm_reader_accepts_bodyless_start() -> None:
 
 def test_arm_reader_ignores_other_posts() -> None:
     assert arm_start_posts('rest.arm("POST", job["id"] + "/stop", body={})') == []
+
+
+def test_start_path_literal_reader_reads_query_strings() -> None:
+    source = (
+        'httpx.post("https://management.azure.com/x/jobs/j/start?api-version=1", json={})\n'
+        'httpx.post(f"{base}/jobs/{job}/start", json={})\n'
+        'log("job started")\n'
+    )
+    assert start_path_lines(source) == [1, 2]
