@@ -4094,28 +4094,29 @@ paths:
       operationId: migrate_vault
       summary: Run the schema-migration surface's backfill and tier3-uniqueness scan.
       description: >-
-        The durable store provisions its schema externally, so
-        columns_added is always empty.
+        columns_added is always empty (the schema is provisioned
+        externally).
 
 
         backfills_applied names each data backfill that changed
-        something. They clear the pipeline_error a recovered
-        failure left behind, reduce a stored source_path in a spelling
-        ingest no longer records to its plain form (each rewrite reported in
-        source_paths_normalized; a path that walks out of the source tree is
-        left as recorded), bring stored passages and keyword vectors to
-        the current shape, and drop a retired user table from the vault's
-        schema.
-        Only the heading backfill reads sources: a document whose source
-        changed since it was indexed or cannot be read is listed once in
-        documents_not_repaired and not read again until its source is
-        restored. Nothing is re-abstracted, and only the documents a backfill
-        rewrites are re-embedded.
+        something. They clear a recovered failure's stale
+        pipeline_error, reduce a stored source_path to the plain
+        form ingest records (each rewrite in source_paths_normalized; a
+        path leaving the source tree is left as is), bring passages and keyword
+        vectors to the current shape, and drop a retired user table.
+        Two backfills read sources: the heading backfill, and one marking
+        an abstraction_skipped document with no passages whose source
+        projects no text, so recompute_deferred_vault_abstracts reports
+        it no_readable_text, not failed. A document a backfill cannot repair
+        (source changed, unreadable, or now with text) is listed once in
+        documents_not_repaired and not reread until its source is
+        restored. Nothing is re-abstracted; only rewritten documents are
+        re-embedded.
 
 
-        Idempotent: a re-call with nothing left to repair reports no error
-        and empty lists, except tier3_uniqueness_activations, which re-lists
-        each clean declaration.
+        Idempotent: a re-call with nothing to repair reports no error
+        and empty lists, except tier3_uniqueness_activations, which
+        re-lists each clean declaration.
 
 
         The passage-structure backfill is expensive, exclusive and
@@ -4123,10 +4124,9 @@ paths:
         expect minutes of exclusive access at tens of thousands of passages.
 
 
-        Run with no pipeline work in flight: this call is refused while any
-        ingest, reabstract or recompute is queued or running on the vault,
-        and they are refused while it runs. The exclusion covers this
-        server process only.
+        Refused while any ingest, reabstract or recompute is queued or
+        running on the vault, and they are refused while it runs (this
+        server process only).
       tags: [Maintenance]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -9241,8 +9241,9 @@ components:
             $ref: "#/components/schemas/DocumentNotRepaired"
           description: >-
             Per-document entries for every document the migration
-            examined to bring its stored passages to the current shape
-            and could not, with the reason. Each is listed on the run
+            examined to bring its stored passages to the current shape,
+            or to record that its projection holds no readable text, and
+            could not, with the reason. Each is listed on the run
             that finds it and is not examined again until its retained
             source is restored with `restore_vault_source_file` or a
             different adapter would read it. A read the source store
@@ -9278,22 +9279,25 @@ components:
       type: object
       required: [document_id, reason]
       description: >-
-        One document whose stored passages the migration could not bring
-        current. Bringing a document's passages to the shape the current
-        adapter writes means re-projecting its retained source. Where that
-        source is missing, changed or unreadable, or no adapter reads its
-        format, the passages are left as they are and the document is
-        reported here once rather than read on every call.
+        One document the migration re-projected from its retained source
+        and could not repair: its stored passages could not be brought to
+        the shape the current adapter writes, or the empty-readable-projection
+        mark could not be recorded. Where that source is missing, changed or
+        unreadable, no adapter reads its format, or it now projects text the
+        mark would deny, the document is left as it is and reported here once
+        rather than read on every call.
       properties:
         document_id:
           $ref: "#/components/schemas/DocumentId"
-          description: Identifier of the document whose passages the migration could not bring current.
+          description: Identifier of the document the migration could not repair.
         reason:
           type: string
           description: >-
             Why it could not: its retained source differs from the one
-            its passages were built from, cannot be read or projected,
-            is not recorded, or no adapter is registered for its format.
+            it was indexed from, cannot be read or projected, is not
+            recorded, no adapter is registered for its format, or it now
+            projects text, so the document needs re-indexing rather than
+            the empty-readable-projection mark.
 
     SourcePathNormalization:
       type: object

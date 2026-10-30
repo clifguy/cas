@@ -1451,10 +1451,12 @@ class GraphStore(ABC):
     async def record_reprojection_skip(
         self, document_id: str, adapter_version: str | None, reason: str
     ) -> None:
-        """Record that re-projecting a document could not bring its passages current.
+        """Record that re-projecting a document could not repair it.
 
-        ``adapter_version`` is the version of the adapter that tried, or null
-        when none was registered for the document's format, and ``reason`` says
+        The repair is bringing its stored passages current, or establishing that
+        its projection holds no readable text. ``adapter_version`` is the version
+        of the adapter that tried, or null when none was registered for the
+        document's format, and ``reason`` says
         why it could not. A later record replaces an earlier one. The record is
         kept apart from the document's ``adapter_version``, which states whose
         output the stored passages are: a failed attempt is not that.

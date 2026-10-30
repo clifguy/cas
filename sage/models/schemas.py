@@ -5146,24 +5146,24 @@ class SourcePathNormalization(BaseModel):
 
 
 class DocumentNotRepaired(BaseModel):
-    """One document whose stored passages the migration could not bring current.
+    """One document the migration re-projected from its retained source and could not repair.
 
-    Bringing a document's passages to the shape the current adapter writes means
-    re-projecting its retained source. Where that source is missing, changed or
-    unreadable, or no adapter reads its format, the passages are left as they
-    are and the document is reported here once rather than read on every call.
+    Its stored passages could not be brought to the shape the current adapter
+    writes, or the empty-readable-projection mark could not be recorded. Where
+    that source is missing, changed or unreadable, no adapter reads its format,
+    or it now projects text the mark would deny, the document is left as it is
+    and reported here once rather than read on every call.
     """
 
     document_id: DocumentIdStr = Field(
-        description=(
-            "Identifier of the document whose passages the migration could not bring current."
-        )
+        description="Identifier of the document the migration could not repair."
     )
     reason: str = Field(
         description=(
-            "Why it could not: its retained source differs from the one its passages "
-            "were built from, cannot be read or projected, is not recorded, or no "
-            "adapter is registered for its format."
+            "Why it could not: its retained source differs from the one it was "
+            "indexed from, cannot be read or projected, is not recorded, no adapter is "
+            "registered for its format, or it now projects text, so the document needs "
+            "re-indexing rather than the empty-readable-projection mark."
         )
     )
 
@@ -5196,7 +5196,8 @@ class MigrationReport(BaseModel):
         default_factory=list,
         description=(
             "Per-document entries for every document the migration examined to bring "
-            "its stored passages to the current shape and could not, with the reason. "
+            "its stored passages to the current shape, or to record that its projection "
+            "holds no readable text, and could not, with the reason. "
             "Each is listed on the run that finds it and is not examined again until "
             "its retained source is restored with `restore_vault_source_file` or a "
             "different adapter would read it. A read the source store reported "

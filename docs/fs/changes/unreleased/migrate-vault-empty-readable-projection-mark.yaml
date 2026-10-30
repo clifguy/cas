@@ -1,0 +1,30 @@
+classification: minor
+category: [operator-adaptation]
+summary: >-
+  migrate_vault gains a backfill, mark_empty_readable_projection, which reads
+  sources. An abstraction_skipped document whose projection holds no readable
+  text and that settled before ingestion recorded the empty_readable_projection
+  limitation carries no mark, so recompute_deferred_vault_abstracts dispatched
+  it on every sweep and counted the NoProjectionError refusal in failed_count.
+  For each such document with no passages in a vault that abstracts, the
+  backfill re-projects the retained source, verifies the bytes still match the
+  stored hash, and records exactly the abstraction evidence ingestion records
+  for an empty projection (scope not_applicable, the shared limitation) through
+  the same fenced publication. Nothing else about the document changes. A
+  candidate whose source now projects text, changed, or cannot be read is left
+  as it is, listed once in documents_not_repaired, and recorded so a later run
+  reads no source it already settled; restoring the source clears the record.
+  Descriptions change in sage_core_api.openapi.yaml, the Pydantic models and
+  the MCP tool catalog: migrate_vault names the second source-reading backfill,
+  and documents_not_repaired and DocumentNotRepaired cover a document the mark
+  could not be recorded on. No operation, tool, parameter or response field is
+  added or removed.
+for_callers: >-
+  Documents whose empty projection settled before this mark was recorded keep
+  being reported by recompute_deferred_vault_abstracts as dispatch_failed until
+  an operator runs migrate_vault on each affected vault (any vault whose sweep
+  reports dispatch_failed with NoProjectionError). The call reports
+  mark_empty_readable_projection in backfills_applied, after which the sweep
+  reports those documents as no_readable_text. A document listed in
+  documents_not_repaired because its source now projects text needs
+  recompute_pipeline instead.
