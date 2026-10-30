@@ -2667,7 +2667,7 @@ def register_sage_tools(
         Two backfills read sources: the heading backfill, and one marking
         an ``abstraction_skipped`` document with no passages whose source
         projects no text, so ``recompute_deferred_vault_abstracts`` reports
-        it ``no_readable_text``, not failed. A document either cannot repair
+        it ``no_readable_text``, not failed. A document a backfill cannot repair
         (source changed, unreadable, or now with text) is listed once in
         ``documents_not_repaired`` and not reread until its source is
         restored. Nothing is re-abstracted; only rewritten documents are

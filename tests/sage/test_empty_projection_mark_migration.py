@@ -244,6 +244,20 @@ async def test_a_changed_source_is_not_marked_and_not_read_again(vault):
     assert again.documents_not_repaired == []
 
 
+async def test_a_skip_another_adapter_recorded_is_examined_and_cleared(vault):
+    unmarked = await vault.unmarked("blank.md", blank(13))
+    await vault.graph_store.record_reprojection_skip(unmarked, "0.0.0-older", "unreadable then")
+    adapter = vault.ship_adapters()
+
+    report = await vault.migrate()
+
+    assert adapter.projected == ["blank.md"]
+    assert BACKFILL_EMPTY_READABLE_PROJECTION in report.backfills_applied
+    doc = await vault.graph_store.get_document(unmarked)
+    assert has_empty_readable_projection(doc.processing_coverage)
+    assert unmarked not in await vault.graph_store.reprojection_skips()
+
+
 async def test_a_superseded_mark_is_reported_and_tried_again(vault, monkeypatch):
     unmarked = await vault.unmarked("blank.md", blank(12))
     real_publish = vault.store.publish_processing

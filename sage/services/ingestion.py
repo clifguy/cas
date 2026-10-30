@@ -4796,7 +4796,8 @@ class IngestionService:
         whose source now projects text, or cannot be re-projected as it was
         indexed, is left as it is and recorded as a re-projection skip, so a
         later run reads no source this one settled; restoring its source clears
-        that record.
+        that record, and so does marking it with an adapter other than the one
+        the record names.
 
         Returns:
             The number of documents marked, and each candidate this run could not
@@ -4844,6 +4845,10 @@ class IngestionService:
                         )
                     },
                 ):
+                    if doc.id in skips:
+                        # Marked by an adapter other than the one the record
+                        # names, so the record describes nothing that still holds.
+                        await self._store.clear_reprojection_skip(doc.id)
                     marked += 1
                     continue
                 refused = _ReprojectionRefused(
