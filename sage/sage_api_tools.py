@@ -2655,24 +2655,25 @@ def register_sage_tools(
     async def migrate_vault(vault_id: VaultIdParam) -> dict:
         """Run the schema-migration surface's backfill and tier3-uniqueness scan.
 
-        The durable store provisions its schema externally, so
-        ``columns_added`` is always empty.
+        ``columns_added`` is always empty (the schema is provisioned
+        externally).
 
         ``backfills_applied`` names each data backfill that changed
-        something. They clear the ``pipeline_error`` a recovered
-        failure left behind, reduce a stored ``source_path`` in a spelling
-        ingest no longer records to its plain form (each rewrite reported in
-        ``source_paths_normalized``; a path that walks out of the source tree
-        is left as recorded), bring stored passages and keyword vectors to
-        the current shape, and drop a retired user table from the vault's
-        schema.
-        Only the heading backfill reads sources: a document whose source
-        changed since it was indexed or cannot be read is listed once in
-        ``documents_not_repaired`` and not read again until its source is
-        restored. Nothing is re-abstracted, and only the documents a backfill
-        rewrites are re-embedded.
+        something. They clear a recovered failure's stale
+        ``pipeline_error``, reduce a stored ``source_path`` to the plain
+        form ingest records (each rewrite in ``source_paths_normalized``; a
+        path leaving the source tree is left as is), bring passages and keyword
+        vectors to the current shape, and drop a retired user table.
+        Two backfills read sources: the heading backfill, and one marking
+        an ``abstraction_skipped`` document with no passages whose source
+        projects no text, so ``recompute_deferred_vault_abstracts`` reports
+        it ``no_readable_text``, not failed. A document either cannot repair
+        (source changed, unreadable, or now with text) is listed once in
+        ``documents_not_repaired`` and not reread until its source is
+        restored. Nothing is re-abstracted; only rewritten documents are
+        re-embedded.
 
-        Idempotent: a re-call with nothing left to repair reports no error
+        Idempotent: a re-call with nothing to repair reports no error
         and empty lists, except ``tier3_uniqueness_activations``, which
         re-lists each clean declaration.
 
@@ -2680,17 +2681,15 @@ def register_sage_tools(
         one-time.** It rebuilds every passage index, vector index included:
         expect minutes of exclusive access at tens of thousands of passages.
 
-        Run with no pipeline work in flight: this call is refused while any
-        ingest, reabstract or recompute is queued or running on the vault,
-        and they are refused while it runs. The exclusion covers this
-        server process only.
+        Refused while any ingest, reabstract or recompute is queued or
+        running on the vault, and they are refused while it runs (this
+        server process only).
 
         tier3 uniqueness: each ``unique_keys`` declaration in vault config
         whose data is clean gets a partial UNIQUE index, listed in
-        ``tier3_uniqueness_activations``; one whose data violates it is
-        recorded in ``tier3_uniqueness_collisions`` and not activated, and a
-        previously clean index is preserved. **Inspect both fields** on
-        every call.
+        ``tier3_uniqueness_activations``; a violated one is recorded in
+        ``tier3_uniqueness_collisions`` and not activated, and a previously
+        clean index is preserved. **Inspect both fields** on every call.
 
         Error modes:
         - ``invalid_vault_id`` (400)

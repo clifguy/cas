@@ -215,6 +215,11 @@ BACKFILL_PASSAGE_INPUT_BOUND = "split_passages_over_embedding_input_bound"
 # text a document carries before its first heading, re-projected from its source.
 BACKFILL_TEXT_BEFORE_FIRST_HEADING = "store_text_before_first_heading"
 
+# Name reported in MigrationReport.backfills_applied when the migration recorded the
+# empty-readable-projection mark on a document whose source projects no readable
+# text, which a document that settled before ingestion recorded it lacks.
+BACKFILL_EMPTY_READABLE_PROJECTION = "mark_empty_readable_projection"
+
 # Name reported in MigrationReport.backfills_applied when the migration dropped the
 # table a retired per-vault user registry left behind. Write attribution reads the
 # validated credential (CAS-ADR-056), so nothing reads or writes that table.
@@ -391,6 +396,15 @@ class MaintenanceService:
         current is reported in ``documents_not_repaired`` with the reason, once:
         it is not read again until its source is restored.
 
+        The backfill after it also reads sources. A document whose projection
+        holds no readable text settles at ``abstraction_skipped``, and one that
+        settled there before ingestion recorded the empty-readable-projection
+        mark carries none, so every deferred-abstract sweep dispatches it and
+        counts the refusal as a failure. Each such candidate with no passages is
+        re-projected and given the mark only where its projection is empty (see
+        ``_mark_empty_readable_projections``); one it cannot mark is reported in
+        ``documents_not_repaired`` once, like the heading backfill's.
+
         Four reshape stored passages or the indexes over them, without reading a
         source: moving document-level text onto its own retrieval surface
         (``_migrate_to_document_surface``), rebuilding that surface's keyword
@@ -454,6 +468,11 @@ class MaintenanceService:
         rewritten, not_repaired = await self._store_text_before_first_heading()
         if rewritten:
             backfills_applied.append(BACKFILL_TEXT_BEFORE_FIRST_HEADING)
+
+        marked, not_marked = await self._mark_empty_readable_projections()
+        if marked:
+            backfills_applied.append(BACKFILL_EMPTY_READABLE_PROJECTION)
+        not_repaired.extend(not_marked)
 
         if await self._migrate_to_relative_indexed_structure():
             backfills_applied.append(BACKFILL_PASSAGE_INDEXED_STRUCTURE)
@@ -580,6 +599,27 @@ class MaintenanceService:
         return await self._ingestion.store_text_before_first_heading(
             reprocessing_decision="migrate_vault: store_text_before_first_heading"
         )
+
+    async def _mark_empty_readable_projections(self) -> tuple[int, list[tuple[str, str]]]:
+        """Record the empty-readable-projection mark a document settled without.
+
+        A document whose projection holds no readable text settles at
+        ``abstraction_skipped``; one that settled there before ingestion recorded
+        the mark carries none, so the deferred-abstract sweep dispatches it on
+        every pass and counts the refusal as a failure. Like the heading backfill
+        this one reads sources: a candidate's retained source is re-projected and
+        the mark recorded only when the projection is empty (see
+        ``IngestionService.mark_empty_readable_projections``).
+
+        Returns:
+            The number of documents marked -- zero on a vault with nothing to
+            mark, or where no ingestion service is wired to project with, so the
+            backfill does not name itself in the report -- and each candidate this
+            run could not mark, with the reason.
+        """
+        if self._ingestion is None:
+            return 0, []
+        return await self._ingestion.mark_empty_readable_projections()
 
     async def _migrate_to_relative_indexed_structure(self) -> int:
         """Derive each passage's structure relative to its document.

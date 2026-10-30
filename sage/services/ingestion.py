@@ -102,6 +102,7 @@ from sage.models.coverage import (
     EMPTY_READABLE_PROJECTION,
     CoverageDimension,
     ProcessingIdentity,
+    has_empty_readable_projection,
 )
 from sage.models.discovery import EvidencePackage
 from sage.models.enums import (
@@ -613,6 +614,20 @@ def _is_momentary_read_fault(exc: BaseException) -> bool:
     if isinstance(exc, VaultSourceStoreUnavailableError):
         return True
     return isinstance(exc, OSError) and not isinstance(exc, _PATH_BOUND_READ_FAULTS)
+
+
+@dataclass(frozen=True)
+class _ReprojectionRefused:
+    """Why a document's retained source could not be re-projected as it was indexed.
+
+    ``adapter_version`` is the version of the adapter that tried, or None when
+    none is registered for the format. ``record`` is false for a read that
+    failed for a reason of the moment, which a later run may not meet.
+    """
+
+    adapter_version: str | None
+    reason: str
+    record: bool = True
 
 
 class _SupersededProcessing(RuntimeError):
@@ -4763,6 +4778,89 @@ class IngestionService:
                 rewritten += 1
         return rewritten, not_repaired
 
+    async def mark_empty_readable_projections(self) -> tuple[int, list[tuple[str, str]]]:
+        """Record the empty-readable-projection mark where ingestion would now record it.
+
+        Ingestion records ``EMPTY_READABLE_PROJECTION`` in a document's
+        abstraction evidence when its projection holds no readable text, and
+        settles it at ``abstraction_skipped``. A document that settled there
+        before the mark was recorded carries none. The absence of passages does
+        not establish that its text is empty, so each candidate's retained
+        source is re-projected and the mark is recorded only when that
+        projection is empty, through the same fenced publication ingestion uses.
+        Nothing else about the document changes.
+
+        A candidate sits at ``abstraction_skipped`` in a vault that abstracts,
+        holds no passages, does not carry the mark, and has no re-projection
+        skip recorded by the adapter that would examine it now. A candidate
+        whose source now projects text, or cannot be re-projected as it was
+        indexed, is left as it is and recorded as a re-projection skip, so a
+        later run reads no source this one settled; restoring its source clears
+        that record.
+
+        Returns:
+            The number of documents marked, and each candidate this run could not
+            mark with the reason why.
+        """
+        if not self._config.abstraction.enabled:
+            return 0, []
+        skips = await self._store.reprojection_skips()
+        candidates = []
+        for doc in await self._store.list_all_documents():
+            if doc.pipeline_status != PipelineStatus.ABSTRACTION_SKIPPED.value:
+                continue
+            if has_empty_readable_projection(doc.processing_coverage):
+                continue
+            if doc.id in skips and skips[doc.id] == self._examining_version(doc):
+                continue
+            if await self._content_store.has_chunks(doc.id):
+                continue
+            candidates.append(doc)
+        if not candidates:
+            return 0, []
+
+        from sage.mcp_init import get_stack_config, resolve_stack_vault_source_store
+
+        vault_source_store = resolve_stack_vault_source_store(get_stack_config())
+        marked = 0
+        not_marked: list[tuple[str, str]] = []
+        for doc in candidates:
+            reprojected = await self._reproject_retained_source(doc, vault_source_store)
+            if isinstance(reprojected, _ReprojectionRefused):
+                refused = reprojected
+            elif reprojected[1].text.strip():
+                refused = _ReprojectionRefused(
+                    reprojected[0].VERSION,
+                    "its source now projects text; recompute_pipeline indexes it",
+                )
+            else:
+                attempt = await self._content_store.begin_processing_attempt(doc.id)
+                if await self._content_store.publish_processing(
+                    doc.id,
+                    attempt,
+                    {
+                        "abstraction_evidence": CoverageDimension(
+                            scope="not_applicable", limitations=[EMPTY_READABLE_PROJECTION]
+                        )
+                    },
+                ):
+                    marked += 1
+                    continue
+                refused = _ReprojectionRefused(
+                    None, "another processing attempt superseded the mark", record=False
+                )
+            logger.info(
+                "empty-readable-projection mark not recorded on %s by migrate_vault: %s",
+                doc.id,
+                refused.reason,
+            )
+            if refused.record:
+                await self._store.record_reprojection_skip(
+                    doc.id, refused.adapter_version, refused.reason
+                )
+            not_marked.append((doc.id, refused.reason))
+        return marked, not_marked
+
     def _examining_version(self, doc: Document) -> str | None:
         """The version of the adapter that would examine ``doc``, or None."""
         adapter = self._adapters.get(doc.source_type)
@@ -4855,34 +4953,15 @@ class IngestionService:
             brought current.
         """
         document_id = doc.id
-        adapter = self._adapters.get(doc.source_type)
-        if adapter is None:
-            return await self._preamble_skipped(
-                document_id, None, "no adapter is registered for its format"
-            )
-        if doc.source_path is None:
-            return await self._preamble_skipped(
-                document_id, adapter.VERSION, "it records no source path"
-            )
-        storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
-        try:
-            merged_config = self._merge_adapter_config(doc.source_type, doc.adapter_config)
-            with self._project_source(
-                vault_source_store, storage_root, doc.source_path
-            ) as project_path:
-                projection = await _run_projection(adapter, project_path, merged_config)
-        except Exception as exc:
+        reprojected = await self._reproject_retained_source(doc, vault_source_store)
+        if isinstance(reprojected, _ReprojectionRefused):
             return await self._preamble_skipped(
                 document_id,
-                adapter.VERSION,
-                f"source not projected: {type(exc).__name__}",
-                record=not _is_momentary_read_fault(exc),
+                reprojected.adapter_version,
+                reprojected.reason,
+                record=reprojected.record,
             )
-        expected_hash = doc.stored_content_hash or doc.source_content_hash
-        if canonicalize_sha256(projection.content_hash) != expected_hash:
-            return await self._preamble_skipped(
-                document_id, adapter.VERSION, "source differs from the one its passages hold"
-            )
+        adapter, projection = reprojected
         fresh = await _run_passage_work(lambda: self._chunk_projection(document_id, projection))
 
         async with self._locks.lock(document_id):
@@ -4917,6 +4996,43 @@ class IngestionService:
             )
         await self._stamp_examined(document_id, adapter.VERSION)
         return True
+
+    async def _reproject_retained_source(
+        self, doc: Document, vault_source_store: "VaultSourceStore"
+    ) -> tuple[SourceAdapter, ProjectionResult] | _ReprojectionRefused:
+        """Project a document's retained source as its ingest did, or say why not.
+
+        The adapter registered for the format projects the source with the request
+        config the document's ingest recorded, so a difference that config made is
+        not mistaken for one the adapter makes. The projection counts only if its
+        bytes are still the ones the document was indexed from: anything derived
+        from a source that changed since would describe a document that was never
+        indexed.
+        """
+        adapter = self._adapters.get(doc.source_type)
+        if adapter is None:
+            return _ReprojectionRefused(None, "no adapter is registered for its format")
+        if doc.source_path is None:
+            return _ReprojectionRefused(adapter.VERSION, "it records no source path")
+        storage_root = Path(self._config.vault.storage_root).expanduser().resolve()
+        try:
+            merged_config = self._merge_adapter_config(doc.source_type, doc.adapter_config)
+            with self._project_source(
+                vault_source_store, storage_root, doc.source_path
+            ) as project_path:
+                projection = await _run_projection(adapter, project_path, merged_config)
+        except Exception as exc:
+            return _ReprojectionRefused(
+                adapter.VERSION,
+                f"source not projected: {type(exc).__name__}",
+                record=not _is_momentary_read_fault(exc),
+            )
+        expected_hash = doc.stored_content_hash or doc.source_content_hash
+        if canonicalize_sha256(projection.content_hash) != expected_hash:
+            return _ReprojectionRefused(
+                adapter.VERSION, "source differs from the one it was indexed from"
+            )
+        return adapter, projection
 
     async def _stamp_examined(self, document_id: str, adapter_version: str) -> None:
         """Record that the stored passages are what ``adapter_version`` writes.
