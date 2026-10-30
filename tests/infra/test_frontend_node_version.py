@@ -149,16 +149,19 @@ def test_dependabot_types_node_comment_names_canonical_major() -> None:
 
     The ignore rule's comment is what a contributor reads to learn which Node
     major the type definitions track; if it names an outdated major it is the
-    exact footgun this gate exists to remove. Structural (non-comment) fields of
-    the config are guarded separately by ``tests/test_dependabot_config.py``.
+    exact footgun this gate exists to remove. Every ``Node <major>`` mention is
+    held to the canonical major, not just one of them, so a note updated in one
+    place and left stale in another still fails. Structural (non-comment) fields
+    of the config are guarded separately by ``tests/test_dependabot_config.py``.
     """
     text = DEPENDABOT.read_text(encoding="utf-8")
     assert f"Node {CANONICAL_NODE_MAJOR}" in text, (
         f"dependabot.yml @types/node note must name Node {CANONICAL_NODE_MAJOR}."
     )
-    assert "Node 20" not in text, (
-        "dependabot.yml still references the EOL'd 'Node 20'; update the "
-        f"@types/node note to Node {CANONICAL_NODE_MAJOR}."
+    stale = sorted({int(m) for m in re.findall(r"\bNode (\d+)\b", text)} - {CANONICAL_NODE_MAJOR})
+    assert not stale, (
+        f"dependabot.yml still names Node {stale}; every mention must be the "
+        f"canonical Node {CANONICAL_NODE_MAJOR}."
     )
 
 
