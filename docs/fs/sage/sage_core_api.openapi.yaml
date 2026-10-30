@@ -666,7 +666,7 @@ paths:
 
 
         **Tier3 uniqueness:** a field the doc_type declares unique is
-        unique per vault; force does not override it. Archived chain
+        unique within it; force does not override it. Archived chain
         heads keep their values; only a superseded predecessor's is
         free. A declared field not yet enforced refuses the write with
         `tier3_unique_constraint_inactive`. `dry_run=true` lists unique,
@@ -966,9 +966,10 @@ paths:
 
             `tier3_unique_constraint_inactive`: the resolved doc_type
             declares a tier3 field this document sets `unique`, but the
-            constraint is not enforced because existing chain heads
-            already share a value. Detail carries `doc_type` and `field`;
-            resolve the collisions `migrate_vault` reports, then run it.
+            constraint is not enforced: existing chain heads share a
+            value, or its index build did not complete. Detail carries
+            `doc_type` and `field`; run `migrate_vault`, first resolving
+            any collisions it reports.
 
 
             `vault_migration_in_flight`: `migrate_vault` is running on this

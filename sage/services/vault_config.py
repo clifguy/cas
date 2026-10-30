@@ -44,6 +44,7 @@ from sage.services.maintenance_log import read_last_optimize_summary
 from sage.vault_management import (
     _ALL_SECTIONS,
     _assert_roots_within_bound_root,
+    _assert_unique_index_names_storable,
     _atomic_write_bytes,
     _check_destructive_changes,
     _validate_config,
@@ -264,6 +265,7 @@ class VaultConfigService:
 
         new_config = _validate_config(merged)
         _assert_roots_within_bound_root(new_config, previous=old_config)
+        _assert_unique_index_names_storable(new_config, previous=old_config)
 
         warnings = await _check_destructive_changes(old_config, new_config, self._store)
 

@@ -678,21 +678,58 @@ def _doc_types_with_awkward_names() -> dict:
 
 
 async def test_reload_keeps_indexes_whose_stored_names_are_folded(app, client, base_config_dict):
-    resp = await _put_doc_types(client, _doc_types_with_awkward_names())
-    assert resp.status_code == 200, resp.text
+    """The store lowercases and truncates index names; a declaration whose
+    stored name differs from the one derived from it -- one that predates
+    the write-time length check, say -- keeps its index across loads."""
+    declared = copy.deepcopy(base_config_dict)
+    declared["document_types"] = _doc_types_with_awkward_names()
+    await _reload_with(app, declared)
     store = app.state.vault_registry[VAULT].graph_store
     long_type = "a_doc_type_with_a_name_long_enough_to_be_truncated"
     assert await store.tier3_unique_index_exists("case", "CaseRef")
     assert await store.tier3_unique_index_exists(long_type, "reference_number")
 
-    declared = copy.deepcopy(base_config_dict)
-    declared["document_types"] = _doc_types_with_awkward_names()
     await _reload_with(app, declared)
 
     store = app.state.vault_registry[VAULT].graph_store
     assert await store.tier3_unique_index_exists("case", "CaseRef")
     assert await store.tier3_unique_index_exists(long_type, "reference_number")
     assert await store.tier3_unique_index_exists("ticket", "ticket_id")
+
+
+async def test_config_write_refuses_an_index_name_the_store_cannot_hold(app, client):
+    resp = await _put_doc_types(client, _doc_types_with_awkward_names())
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["code"] == "vault_config_validation_error"
+    assert any("longer than 63 bytes" in e for e in body["detail"]["errors"]), body
+
+
+async def test_config_write_refuses_entries_folding_to_one_index(app, client):
+    doc_types = _doc_types(unique=True)
+    doc_types["doc_types"].append(
+        {
+            "value": "case",
+            "label": "Case",
+            "metadata_schema": {
+                "type": "object",
+                "properties": {"CaseRef": {"type": "string"}, "caseref": {"type": "string"}},
+            },
+            "unique_keys": ["CaseRef", "caseref"],
+        }
+    )
+    resp = await _put_doc_types(client, doc_types)
+    assert resp.status_code == 400, resp.text
+    assert any("shares its index name" in e for e in resp.json()["detail"]["errors"])
+
+
+async def test_config_write_accepts_a_mixed_case_field(app, client):
+    doc_types = _doc_types(unique=True)
+    doc_types["doc_types"].append(_doc_types_with_awkward_names()["doc_types"][-2])
+    resp = await _put_doc_types(client, doc_types)
+    assert resp.status_code == 200, resp.text
+    store = app.state.vault_registry[VAULT].graph_store
+    assert await store.tier3_unique_index_exists("case", "CaseRef")
 
 
 # ---------------------------------------------------------------------------
@@ -715,8 +752,10 @@ async def test_partial_activation_failure_leaves_no_index(app, client, monkeypat
         await real_build(self, doc_type, field)
 
     monkeypatch.setattr(PostgresGraphStore, "ensure_tier3_unique_index", fail_on_case)
+    doc_types = _doc_types(unique=True)
+    doc_types["doc_types"].append(_doc_types_with_awkward_names()["doc_types"][-2])
     with pytest.raises(pg_errors.LockNotAvailable):
-        await _put_doc_types(client, _doc_types_with_awkward_names())
+        await _put_doc_types(client, doc_types)
     assert not await _index_exists(app)
 
 
@@ -745,3 +784,58 @@ async def test_reported_activations_are_observed(app, client, base_config_dict, 
     assert resp.json()["tier3_uniqueness_activations"] == []
     assert resp.json()["tier3_uniqueness_collisions"] == []
     assert not await _index_exists(app)
+
+
+def _new_vault_config(vault_id: str) -> tuple[dict, Path]:
+    config = VaultRegistryService.get_default_config(vault_id, vault_id, "testuser")
+    root = bound_vault_root()
+    config["vault"]["storage_root"] = str(root / vault_id / "sources")
+    config["vault"]["brain_root"] = str(root / vault_id / "brain")
+    config["document_types"]["doc_types"].append(
+        {
+            "value": "ticket",
+            "label": "Ticket",
+            "metadata_schema": TICKET_SCHEMA,
+            "unique_keys": ["ticket_id"],
+        }
+    )
+    return config, root / vault_id
+
+
+async def test_create_vault_retries_a_build_that_failed_at_load(app, client, monkeypatch):
+    """A new vault is registered only with its declarations enforced: a
+    transient build failure during its load is retried before it returns."""
+    from psycopg import errors as pg_errors
+
+    from sage.storage.postgres.graph_store import PostgresGraphStore
+
+    real_build = PostgresGraphStore.ensure_tier3_unique_index
+    calls = {"n": 0}
+
+    async def fail_once(self, doc_type, field):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise pg_errors.LockNotAvailable("lock timeout")
+        await real_build(self, doc_type, field)
+
+    monkeypatch.setattr(PostgresGraphStore, "ensure_tier3_unique_index", fail_once)
+    config, _ = _new_vault_config("retry_vault")
+    resp = await client.post("/sage_vaults", json={"config": config})
+    assert resp.status_code == 201, resp.text
+    assert calls["n"] == 2
+    assert await _index_exists(app, vault="retry_vault")
+
+
+async def test_create_vault_refused_when_a_build_cannot_complete(app, client, monkeypatch):
+    from psycopg import errors as pg_errors
+
+    from sage.storage.postgres.graph_store import PostgresGraphStore
+
+    async def fail(*_args, **_kwargs):
+        raise pg_errors.LockNotAvailable("lock timeout")
+
+    monkeypatch.setattr(PostgresGraphStore, "ensure_tier3_unique_index", fail)
+    config, _ = _new_vault_config("stuck_vault")
+    with pytest.raises(pg_errors.LockNotAvailable):
+        await client.post("/sage_vaults", json={"config": config})
+    assert "stuck_vault" not in app.state.vault_registry

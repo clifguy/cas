@@ -9,6 +9,8 @@ summary: >-
   write adding an entry whose values already collide is refused with the new
   tier3_unique_activation_blocked (409, detail collisions) on a dry run as on
   a real one, and nothing is written. Withdrawing an entry drops its index.
+  Adding an entry whose index name runs past 63 bytes, or folds to the name
+  of another entry's, is refused with vault_config_validation_error.
   An ingest, supersession, force re-ingest or update_metadata that sets a
   declared field whose index is absent is refused with the new
   tier3_unique_constraint_inactive (409, detail doc_type and field). A

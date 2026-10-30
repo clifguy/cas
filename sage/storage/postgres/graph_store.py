@@ -66,6 +66,7 @@ from sage.storage.tier3_uniqueness import (
     TIER3_UNIQUE_INDEX_PREFIX,
     Tier3UniqueIndexBlockedError,
     Tier3UniqueViolation,
+    stored_index_name,
     tier3_unique_index_name,
 )
 from sage.utils.sql_patterns import escape_like
@@ -85,18 +86,11 @@ _STAGING_EDGES_UNIQ_INDEX = "idx_staging_edges_uniq_natural_key"
 _TIER3_KEY_FORMAT = re.compile(r"^[A-Za-z0-9_]+$")
 _DOC_TYPE_FORMAT = re.compile(r"^[a-z][a-z0-9_]*$")
 _TIER3_INDEX_NAME_FORMAT = re.compile(r"^idx_tier3_unique_[A-Za-z0-9_]+$")
-# NAMEDATALEN - 1: the longest identifier Postgres keeps before truncating.
-_PG_MAX_IDENTIFIER_BYTES = 63
 # The name a concurrent duplicate CREATE INDEX trips: pg_class's own unique
 # index on (relname, relnamespace), reported as a UniqueViolation.
 _PG_CATALOG_RELNAME_CONSTRAINT = "pg_class_relname_nsp_index"
 # Upper bound on waiting for the SHARE lock a tier3 unique index build takes.
 TIER3_INDEX_LOCK_TIMEOUT = "15s"
-
-
-def _stored_identifier(name: str) -> str:
-    """``name`` as Postgres stores an unquoted ASCII identifier."""
-    return name.lower().encode()[:_PG_MAX_IDENTIFIER_BYTES].decode()
 
 
 def _pointer_to_jsonb(pointer: RelocationPointer | None) -> Jsonb | None:
@@ -1078,7 +1072,7 @@ class PostgresGraphStore(GraphStore):
         # The DDL names the index unquoted, so the catalog holds it as Postgres
         # folds an identifier: lowercased, then cut to NAMEDATALEN - 1 bytes.
         # Compare in that form, or a declared index would read as undeclared.
-        keep = {_stored_identifier(name) for name in keep}
+        keep = {stored_index_name(name) for name in keep}
         dropped = []
         for row in rows:
             name = row["indexname"]

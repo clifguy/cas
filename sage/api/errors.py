@@ -743,8 +743,9 @@ class Tier3UniqueConstraintInactiveError(SAGEError):
     UNIQUE index does not exist, so the substrate cannot refuse a duplicate.
     The write is refused rather than accepted unguarded. The index is built
     when the declaration's portfolio is clean -- on the config write that
-    declares it, on vault load, or by `migrate_vault` -- and cannot be built
-    while existing chain heads share a value.
+    declares it, on vault load, or by `migrate_vault` -- and is absent while
+    existing chain heads share a value or after a build that did not
+    complete.
     """
 
     def __init__(self, doc_type: str, field: str) -> None:
@@ -752,8 +753,8 @@ class Tier3UniqueConstraintInactiveError(SAGEError):
             "tier3_unique_constraint_inactive",
             (
                 f"tier3_metadata field {field!r} is declared unique for doc_type "
-                f"{doc_type!r}, but the constraint is not active; resolve the "
-                "colliding values migrate_vault reports, then run migrate_vault"
+                f"{doc_type!r}, but the constraint is not active; run migrate_vault, "
+                "first resolving any colliding values it reports"
             ),
             409,
             {"doc_type": doc_type, "field": field},

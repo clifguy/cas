@@ -115,13 +115,15 @@ class _FakeServices:
     (reload_vault_in_registry's close-and-reuse branch), close_timing and
     close_storage (every teardown path calls them), ingestion_service
     (VaultRegistryService.create_vault's _build_vault_summary), and
-    tier3_uniqueness_collisions (create_vault's activation check)."""
+    tier3_uniqueness_collisions / tier3_uniqueness_activations (create_vault's
+    activation check)."""
 
     def __init__(self, config: VaultConfig) -> None:
         self.config = config
         self.graph_store = _FakeGraphStore()
         self.ingestion_service = _FakeIngestionService()
         self.tier3_uniqueness_collisions: list = []
+        self.tier3_uniqueness_activations: list = []
         self.timing_thread = None
         self.config_path: Path | None = None
         self.from_declaration = False

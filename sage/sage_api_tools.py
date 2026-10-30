@@ -582,8 +582,8 @@ _INGEST_TIER3_METADATA = _ingest_param(
     dict | None,
     "tier3_metadata",
     mcp=(
-        "Tier3 uniqueness: a field the doc_type declares unique is unique per "
-        "vault; force does not override it. Archived chain heads keep their "
+        "Tier3 uniqueness: a field the doc_type declares unique is unique within "
+        "it; force does not override it. Archived chain heads keep their "
         "values; only a superseded predecessor's is free. A declared field not "
         "yet enforced refuses the write with tier3_unique_constraint_inactive. "
         "dry_run=true lists unique, enforced and required fields under "
