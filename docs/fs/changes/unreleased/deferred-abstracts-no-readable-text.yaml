@@ -9,8 +9,11 @@ summary: >-
   excluded from failed_count. Previously every sweep dispatched it, the
   dispatch was refused for want of passages, and it was reported as
   dispatch_failed on every pass. The decision reads the same coverage
-  limitation ingestion records, through one shared predicate. Documents
-  without that coverage mark keep the earlier path. The out-of-band bulk sweep
+  limitation ingestion records, through one shared predicate, and honours it
+  only while the document holds no passages, since a re-projection on the
+  abstraction-disabled path does not republish abstraction evidence and can
+  leave a stale mark. Documents without that coverage mark keep the earlier
+  path. The out-of-band bulk sweep
   is unchanged and always reports a zero count. sage_core_api.openapi.yaml,
   the Pydantic models, the MCP tool description and catalog, and the CAS
   Application types and maintenance panel change together. The
@@ -24,3 +27,6 @@ for_callers: >-
   no_readable_text, counted in a new no_readable_text_count, instead of as
   dispatch_failed; they no longer count toward failed_count. A caller that
   switches exhaustively on the reabstract outcome must handle the new value.
+  A document whose empty projection was recorded before ingestion began
+  marking it keeps reporting dispatch_failed until recompute_pipeline is run
+  on it once.
