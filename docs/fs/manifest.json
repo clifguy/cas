@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Inventory and version tracking for the CAS Formal Substrate (CAS-ADR-008). Each artifact's version is the release MAJOR.MINOR in which it last changed, or null until a release first publishes it; no counter is assigned when a change is authored. revision_history is assembled per release: a change adds a numberless change record under changes/unreleased/, and the release step folds every unreleased record into one entry for the new release, newest first. Entries written before this scheme, which carry a substrate counter in their version field, follow the release entries and are kept verbatim.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-10-24",
+  "manifest_date": "2026-10-30",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -36,7 +36,7 @@
       "path": "sage/document_types.schema.json",
       "title": "SAGE Document Types",
       "status": "draft",
-      "version": "1.0",
+      "version": "3.6",
       "role": "Defines the doc_type enum for a vault's domain vocabulary. Tier 2 (the vocabulary itself), optional Tier 3 metadata_schema (per-doc_type structured metadata schema for tier3_metadata payloads), and optional unique_keys declaration (tier3_metadata fields whose values must be unique within the doc_type, enforced atomically by the storage substrate per CAS-ADR-031).",
       "instantiation_checklist_items": [
         2
@@ -84,7 +84,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "3.5",
+      "version": "3.6",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -92,7 +92,7 @@
       "path": "cas_app_api.openapi.yaml",
       "title": "CAS Application API",
       "status": "draft",
-      "version": "3.5",
+      "version": "3.6",
       "role": "OpenAPI 3.1.0 specification for the CAS Application backend HTTP surface (mounted at the /app prefix). Defines directory scan and batch-ingest endpoints used by the CAS Application UI. Architecturally distinct from the SAGE Core API; the two specs are validated together by tests/sage/test_openapi_conformance.py and must respect URL-prefix boundaries (sage_core_api owns /sage_vaults/*, cas_app_api owns /app/*).",
       "instantiation_checklist_items": []
     },
@@ -100,7 +100,7 @@
       "path": "sage/sage_mcp_tools.catalog.json",
       "title": "SAGE MCP Tool Catalog",
       "status": "draft",
-      "version": "3.5",
+      "version": "3.6",
       "role": "The tools the SAGE MCP surfaces publish through tools/list: name, input and output schemas, annotations, and description, for the ordinary surface (/mcp) and the maintenance surface (/mcp_maint). Generated from the servers by scripts/dump_mcp_catalog.py and held to them by a test gate; the contract comparison reads it as the MCP half of the published contract.",
       "instantiation_checklist_items": []
     },
@@ -197,6 +197,46 @@
   ],
   "deferred": [],
   "revision_history": [
+    {
+      "release": "3.6",
+      "date": "2026-10-30",
+      "changes": [
+        {
+          "classification": "patch",
+          "summary": "Clarify nullable discovery descriptions, deterministic measurements, complete quoted fallback and unavailable outcomes in document and summary descriptions. Publication quality remains separate and unknown historical quality is unscreened.",
+          "for_callers": ""
+        },
+        {
+          "classification": "patch",
+          "summary": "Align pipeline-status descriptions with adopted ADR-011 v3: skipped abstraction, provider runtime failure and publication-quality unavailability are distinct outcomes. No status values or runtime behavior change.",
+          "for_callers": ""
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation"
+          ],
+          "summary": "recompute_deferred_vault_abstracts no longer dispatches a document whose recorded coverage marks its projection empty_readable_projection. Such a document is reported with the new ReabstractOutcome member no_readable_text (SSE status skipped, no error or elapsed time), counted in the new no_readable_text_count on ReabstractReport and ReabstractSummaryEvent, and excluded from failed_count. Previously every sweep dispatched it, the dispatch was refused for want of passages, and it was reported as dispatch_failed on every pass. The decision reads the same coverage limitation ingestion records, through one shared predicate, and honours it only while the document holds no passages, since a re-projection on the abstraction-disabled path does not republish abstraction evidence and can leave a stale mark. Documents without that coverage mark keep the earlier path. The out-of-band bulk sweep is unchanged and always reports a zero count. sage_core_api.openapi.yaml, the Pydantic models, the MCP tool description and catalog, and the CAS Application types and maintenance panel change together. The caller-adaptation category is an author judgment the comparison cannot see: failed_count and dispatch_failed stop covering these documents. No deprecation precedes it because the two classifications of one document cannot be served side by side; the new count is optional with a default of zero, so no required response key is added.",
+          "for_callers": "The deferred-abstract sweep reports documents with no readable text as no_readable_text, counted in a new no_readable_text_count, instead of as dispatch_failed; they no longer count toward failed_count. A caller that switches exhaustively on the reabstract outcome must handle the new value. A document whose empty projection was recorded before ingestion began marking it keeps reporting dispatch_failed until recompute_pipeline is run on it once."
+        },
+        {
+          "classification": "patch",
+          "summary": "Strip U+0000 from PDF-extracted body text, outline headings and info titles before constructing projections or discovery evidence for PostgreSQL storage.",
+          "for_callers": ""
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation",
+            "operator-adaptation"
+          ],
+          "summary": "A declared tier3 unique_keys constraint is now either enforced or visibly refused, where before its index was built only by migrate_vault and a declaration made any other way left duplicates accepted silently. Vault load and reload build the index for every clean declaration, as do create_vault and update_vault_config for the entries they add; a config write adding an entry whose values already collide is refused with the new tier3_unique_activation_blocked (409, detail collisions) on a dry run as on a real one, and nothing is written. Withdrawing an entry drops its index. Adding an entry whose index name runs past 63 bytes, or folds to the name of another entry's, is refused with vault_config_validation_error. An ingest, supersession, force re-ingest or update_metadata that sets a declared field whose index is absent is refused with the new tier3_unique_constraint_inactive (409, detail doc_type and field). A colliding update_metadata or force re-ingest now reports tier3_unique_constraint_violation where it raised an untyped storage error. UpdateVaultConfigResponse gains tier3_uniqueness_activations and tier3_uniqueness_collisions; DocTypeRequirements gains active_unique_tier3_fields, filled on an ingest preview. Both OpenAPI specifications declare the two error envelopes and the new fields, the per-file batch vocabulary lists tier3_unique_constraint_inactive, the unique_keys description in document_types.schema.json states activation, refusal and that archived chain heads count, and the MCP tool catalog descriptions follow.",
+          "for_callers": "A unique_keys declaration is enforced from the write that declares it and from vault load; declaring one over colliding values is refused with tier3_unique_activation_blocked, and a write setting a declared field that is not enforced is refused with tier3_unique_constraint_inactive until the collisions migrate_vault reports are resolved and it is re-run."
+        }
+      ]
+    },
     {
       "release": "3.5",
       "date": "2026-10-24",

@@ -1,6 +1,0 @@
-classification: patch
-summary: >-
-  Align pipeline-status descriptions with adopted ADR-011 v3: skipped
-  abstraction, provider runtime failure and publication-quality unavailability
-  are distinct outcomes. No status values or runtime behavior change.
-for_callers: ""
