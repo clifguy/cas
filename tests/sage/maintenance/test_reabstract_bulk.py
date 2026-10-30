@@ -325,8 +325,17 @@ async def test_aggregate_counts_match_the_per_document_entries(corpus):
         poll_interval=0.0,
     )
 
-    total = report.reabstracted_count + report.skipped_pdf_count + report.failed_count
+    total = (
+        report.reabstracted_count
+        + report.skipped_pdf_count
+        + report.no_readable_text_count
+        + report.failed_count
+    )
     assert total == len(report.entries)
+    # The bulk sweep dispatches every selected document, so it never reports
+    # one as unreadable without trying it.
+    assert report.no_readable_text_count == 0
+    assert not any(e.outcome == ReabstractOutcome.NO_READABLE_TEXT for e in report.entries)
     assert report.reabstracted_count == sum(
         1 for e in report.entries if e.outcome == ReabstractOutcome.SUCCESS
     )

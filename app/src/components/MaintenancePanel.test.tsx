@@ -204,6 +204,7 @@ describe('MaintenancePanel — completion', () => {
         vault_id: 'v1',
         reabstracted_count: 2,
         skipped_pdf_count: 1,
+        no_readable_text_count: 0,
         failed_count: 0,
         entries: [],
       } satisfies ReabstractSummaryEvent);
@@ -243,6 +244,7 @@ describe('MaintenancePanel — completion', () => {
         vault_id: 'v1',
         reabstracted_count: 1,
         skipped_pdf_count: 0,
+        no_readable_text_count: 0,
         failed_count: 1,
         entries: [
           {
@@ -281,7 +283,8 @@ describe('MaintenancePanel — completion', () => {
     startReabstractMock.mockImplementation(async (_vaultId, onEvent) => {
       onEvent({
         event_type: 'summary', vault_id: 'v1', reabstracted_count: 0,
-        skipped_pdf_count: 0, failed_count: 1,
+        skipped_pdf_count: 0,
+        no_readable_text_count: 0, failed_count: 1,
         entries: [{ document_id: 'dddddddd_dispatch', outcome: 'dispatch_failed',
           error_message: 'dispatch failed: NoProjectionError', elapsed_seconds: 0.01 }],
       } satisfies ReabstractSummaryEvent);
@@ -297,6 +300,31 @@ describe('MaintenancePanel — completion', () => {
     expect(screen.getByTestId('reabstract-failed-count')).toHaveTextContent('1');
   });
 
+  it('counts no_readable_text apart and keeps it out of the failure list', async () => {
+    getDeferredCountMock.mockResolvedValue(2);
+    startReabstractMock.mockImplementation(async (_vaultId, onEvent) => {
+      onEvent({
+        event_type: 'summary', vault_id: 'v1', reabstracted_count: 0,
+        skipped_pdf_count: 0, no_readable_text_count: 1, failed_count: 1,
+        entries: [
+          { document_id: 'aaaaaaaa_scan', outcome: 'no_readable_text' },
+          { document_id: 'bbbbbbbb_broken', outcome: 'dispatch_failed',
+            error_message: 'dispatch failed: RuntimeError', elapsed_seconds: 0.01 },
+        ],
+      } satisfies ReabstractSummaryEvent);
+    });
+    render(<MaintenancePanel />);
+    await waitFor(() => expect(screen.getByTestId('reabstract-count')).toHaveTextContent('2'));
+    await userEvent.click(screen.getByTestId('reabstract-button'));
+    await userEvent.click(screen.getByTestId('reabstract-confirm-apply'));
+    const list = await screen.findByTestId('reabstract-failure-list');
+    expect(screen.getByTestId('reabstract-no-readable-text-count')).toHaveTextContent('1');
+    expect(screen.getByTestId('reabstract-failed-count')).toHaveTextContent('1');
+    expect(list.querySelectorAll('li')).toHaveLength(1);
+    expect(list).toHaveTextContent('bbbbbbbb_broken');
+    expect(list).not.toHaveTextContent('aaaaaaaa_scan');
+  });
+
   it('B7c: still_skipped and timeout entries appear in the failure list', async () => {
     // failed_count counts every non-success, non-skipped_pdf outcome, and the
     // Failures heading is gated on that count. A list filtered to
@@ -310,6 +338,7 @@ describe('MaintenancePanel — completion', () => {
         vault_id: 'v1',
         reabstracted_count: 0,
         skipped_pdf_count: 0,
+        no_readable_text_count: 0,
         failed_count: 2,
         entries: [
           {

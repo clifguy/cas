@@ -321,6 +321,11 @@ class ReabstractOutcome(StrEnum):
     them into `llm_failure` would attribute a provider failure the status
     does not establish. A dispatch failure records the exception from the dispatch
     call separately; it makes no claim about provider execution.
+
+    `no_readable_text`, like `skipped_pdf`, is not a failure and is never
+    dispatched: the document's recorded coverage says its projection holds no
+    readable text, so there is nothing to abstract and every sweep reports it
+    the same way. It counts toward `no_readable_text_count`.
     """
 
     SUCCESS = "success"
@@ -330,6 +335,7 @@ class ReabstractOutcome(StrEnum):
     TIMEOUT = "timeout"
     INTERRUPTED = "interrupted"
     DISPATCH_FAILED = "dispatch_failed"
+    NO_READABLE_TEXT = "no_readable_text"
 
 
 class StalenessBasis(StrEnum):

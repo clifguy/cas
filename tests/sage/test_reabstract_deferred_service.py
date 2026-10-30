@@ -903,6 +903,7 @@ async def test_reabstract_deferred_aggregator_consumes_event_stream(
                 vault_id=minimal_config.vault.id,
                 reabstracted_count=1,
                 skipped_pdf_count=1,
+                no_readable_text_count=0,
                 failed_count=0,
                 entries=[],
             )
@@ -1221,24 +1222,31 @@ async def test_reabstract_deferred_reports_a_document_deleted_mid_sweep_honestly
     The delete is staged at the store boundary rather than by stubbing the
     waiter's return, so `_wait_for_terminal` still observes the absence and
     produces `missing` itself: the sentinel stays in the assertion's causal
-    path. `IngestionService.reabstract` reads the document once before
-    enqueueing, so answering the first read normally and every later one with
-    None places the disappearance in exactly the window the sentinel exists
-    for.
+    path. Reads are answered normally until the dispatch has returned and with
+    None from then on, which places the disappearance in exactly the window
+    the sentinel exists for, however many reads precede the dispatch.
     """
     doc = _make_skipped_doc(_id("deleted_mid_sweep"))
     await _seed_doc_with_chunks(graph_store, stub_content_store, doc)
 
     real_get = graph_store.get_document
+    real_reabstract = ingestion_service.reabstract
     reads = {"n": 0}
+    dispatched = {"done": False}
+
+    async def dispatch_then_vanish(doc_id: str) -> dict:
+        result = await real_reabstract(doc_id)
+        dispatched["done"] = True
+        return result
 
     async def vanishing_get(doc_id: str):
-        if doc_id != doc.id:
+        if doc_id != doc.id or not dispatched["done"]:
             return await real_get(doc_id)
         reads["n"] += 1
-        return await real_get(doc_id) if reads["n"] == 1 else None
+        return None
 
     graph_store.get_document = vanishing_get
+    ingestion_service.reabstract = dispatch_then_vanish
     maintenance = _build_maintenance(
         graph_store=graph_store,
         config=minimal_config,
@@ -1250,8 +1258,9 @@ async def test_reabstract_deferred_reports_a_document_deleted_mid_sweep_honestly
         report = await asyncio.wait_for(maintenance.reabstract_deferred(), timeout=30)
     finally:
         graph_store.get_document = real_get
+        ingestion_service.reabstract = real_reabstract
 
-    assert reads["n"] >= 2, "the waiter never re-read the document; window not exercised"
+    assert reads["n"] >= 1, "the waiter never re-read the document; window not exercised"
     assert report.failed_count == 1
     entry = report.entries[0]
     assert entry.outcome == ReabstractOutcome.LLM_FAILURE

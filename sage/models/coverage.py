@@ -419,3 +419,14 @@ class ProcessingCoverage(CoverageModel):
         if len(self.model_dump_json().encode()) > 65536:
             raise ValueError("coverage summary exceeds 65536 bytes")
         return self
+
+
+# The abstraction-evidence limitation recorded when a document's projection holds
+# no readable text, so no abstract can be generated from it.
+EMPTY_READABLE_PROJECTION = "empty_readable_projection"
+
+
+def has_empty_readable_projection(coverage: ProcessingCoverage) -> bool:
+    """Whether recorded coverage says the projection holds no readable text."""
+    evidence = coverage.abstraction_evidence
+    return evidence.scope == "not_applicable" and EMPTY_READABLE_PROJECTION in evidence.limitations

@@ -1,5 +1,6 @@
 """Dispatch failures remain distinct from background generation failures."""
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -14,6 +15,7 @@ from sage.api.errors import (
     ReabstractDocumentAlreadyInFlightError,
 )
 from sage.maintenance.reabstract_bulk import run_sweep
+from sage.models.coverage import ProcessingCoverage
 from sage.models.enums import PipelineStatus, ReabstractOutcome
 from sage.models.schemas import ReabstractProgressEvent, ReabstractSummaryEvent
 from scripts import reabstract_deferred as script
@@ -93,10 +95,14 @@ async def test_dispatch_failure_classification_and_continuation(
                 poll_interval=0,
             )
         else:
+            # Coverage with no empty-readable mark: the sweep dispatches both.
+            content = SimpleNamespace(
+                read_processing_snapshot=AsyncMock(return_value=(ProcessingCoverage(), []))
+            )
             maintenance = _build_maintenance(
                 graph_store=graph,
                 config=minimal_config,
-                content_store=None,
+                content_store=content,
                 ingestion_service=ingestion,
             )
             if surface == "report":
@@ -175,3 +181,7 @@ def test_reabstract_outcome_contract_parity() -> None:
     schema = yaml.safe_load(path.read_text())["components"]["schemas"]["ReabstractOutcome"]
     assert set(schema["enum"]) == {outcome.value for outcome in ReabstractOutcome}
     assert "dispatch_failed" in schema["enum"]
+    types_ts = (Path(__file__).resolve().parents[2] / "app/src/api/types.ts").read_text()
+    union = re.search(r"export type ReabstractOutcome =([^;]+);", types_ts)
+    assert union is not None
+    assert set(re.findall(r"'([a-z_]+)'", union.group(1))) == set(schema["enum"])

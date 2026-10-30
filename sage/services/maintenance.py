@@ -31,6 +31,7 @@ from sage.api.errors import (
     VaultSourcePathRefusedError,
 )
 from sage.config import VaultConfig
+from sage.models.coverage import has_empty_readable_projection
 from sage.models.enums import (
     SUCCESSFUL_TERMINAL_PIPELINE_STATUSES,
     TERMINAL_PIPELINE_STATUS_VALUES,
@@ -1518,7 +1519,10 @@ class MaintenanceService:
         each reaches a terminal pipeline_status
         (including skipped or interrupted abstraction). Dispatch
         exceptions are caught and recorded as ``dispatch_failed`` entries;
-        the loop does not abort on a single failure.
+        the loop does not abort on a single failure. A document whose
+        recorded coverage says its projection holds no readable text is
+        recorded as ``no_readable_text`` without dispatch: it has nothing to
+        abstract, so it is neither attempted nor counted as a failure.
 
         Reuses the in-process IngestionService that the running SAGE
         process initialized at startup -- and therefore its already-
@@ -1582,7 +1586,8 @@ class MaintenanceService:
         Returns an async generator that yields a ``ReabstractProgressEvent``
         per per-document state transition (one ``started`` and one
         ``completed``/``failed`` for each non-PDF entry; one ``skipped``
-        for each PDF entry when ``include_pdf=False``), then a final
+        for each PDF entry when ``include_pdf=False`` and for each document
+        with no readable text), then a final
         ``ReabstractSummaryEvent`` carrying the aggregate
         ``ReabstractReport``-shaped payload.
 
@@ -1653,12 +1658,24 @@ class MaintenanceService:
                     if d.pipeline_status == PipelineStatus.ABSTRACTION_SKIPPED.value
                 ]
                 pdf_skipped = [d for d in skipped if not include_pdf and d.source_type == "pdf"]
-                worklist = [d for d in skipped if include_pdf or d.source_type != "pdf"]
+                candidates = [d for d in skipped if include_pdf or d.source_type != "pdf"]
+                # A document whose recorded coverage says its projection holds
+                # no readable text has nothing to abstract, and a dispatch for
+                # it can only be refused. It is reported apart, never
+                # dispatched, so it does not recur as a failure on every pass.
+                unreadable: list[Document] = []
+                worklist: list[Document] = []
+                for doc in candidates:
+                    coverage, _ = await self._content_store.read_processing_snapshot(doc.id)
+                    if has_empty_readable_projection(coverage):
+                        unreadable.append(doc)
+                    else:
+                        worklist.append(doc)
 
-                # Total document count for the progress counter: PDFs to
-                # be skipped plus the dispatchable worklist. Constant
-                # across all events in this stream.
-                total = len(pdf_skipped) + len(worklist)
+                # Total document count for the progress counter: documents
+                # reported without dispatch plus the dispatchable worklist.
+                # Constant across all events in this stream.
+                total = len(pdf_skipped) + len(unreadable) + len(worklist)
                 processed = 0
                 entries: list[ReabstractReportEntry] = []
                 reabstracted = 0
@@ -1683,6 +1700,24 @@ class MaintenanceService:
                         current_title=doc.title,
                         status="skipped",
                         outcome=ReabstractOutcome.SKIPPED_PDF,
+                    )
+
+                for doc in unreadable:
+                    entries.append(
+                        ReabstractReportEntry(
+                            document_id=doc.id,
+                            outcome=ReabstractOutcome.NO_READABLE_TEXT,
+                        )
+                    )
+                    processed += 1
+                    yield ReabstractProgressEvent(
+                        event_type="progress",
+                        processed=processed,
+                        total=total,
+                        current_document_id=doc.id,
+                        current_title=doc.title,
+                        status="skipped",
+                        outcome=ReabstractOutcome.NO_READABLE_TEXT,
                     )
 
                 for doc in worklist:
@@ -1786,6 +1821,7 @@ class MaintenanceService:
                     vault_id=self._vault_id,
                     reabstracted_count=reabstracted,
                     skipped_pdf_count=len(pdf_skipped),
+                    no_readable_text_count=len(unreadable),
                     failed_count=failed,
                     entries=entries,
                 )
