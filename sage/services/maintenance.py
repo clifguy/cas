@@ -59,11 +59,15 @@ from sage.models.schemas import (
     UploadRecipe,
     canonicalize_sha256,
 )
+from sage.services._tier3_uniqueness import (
+    activate_unique_pairs,
+    declared_unique_pairs,
+    scan_unique_collisions,
+)
 from sage.services.document_surface import compose_document_surface
 from sage.services.maintenance_log import MAINTENANCE_LOG_FILENAME
 from sage.services.passage_structure import indexed_structure
 from sage.services.transfer import DeliveryDeclaration, caller_local_delivery
-from sage.storage.tier3_uniqueness import Tier3UniqueIndexBlockedError
 from sage.vault_management import config_path_for_vault
 
 # Union type for events yielded by reabstract_deferred_events.
@@ -1429,57 +1433,20 @@ class MaintenanceService:
         operator can inspect a vault before declaring `unique_keys`. The
         returned list is empty when the portfolio is clean.
         """
-        groups = await self._graph_store.find_chain_heads_with_tier3_value(doc_type, field)
-        return [
-            Tier3UniquenessCollision(
-                doc_type=doc_type,
-                field=field,
-                value=value,
-                document_ids=sorted(doc_ids),
-            )
-            for value, doc_ids in groups
-            if len(doc_ids) > 1
-        ]
+        return await scan_unique_collisions(self._graph_store, doc_type, field)
 
     async def _activate_tier3_uniqueness(
         self,
     ) -> tuple[list[Tier3UniquenessActivation], list[Tier3UniquenessCollision]]:
         """Walk the vault's `unique_keys` declarations.
 
-        For each (doc_type, field) declared, scan for collisions. If clean,
-        create (or confirm) the partial UNIQUE index. If colliding, record
-        the collision and skip index creation so the substrate refuses to
-        activate the constraint (CAS-ADR-031 §5).
+        For each (doc_type, field) declared, create (or confirm) the partial
+        UNIQUE index when the portfolio is clean, and record the collision
+        otherwise, so the substrate refuses to activate the constraint
+        (CAS-ADR-031 §5).
         """
-        activations: list[Tier3UniquenessActivation] = []
-        collisions: list[Tier3UniquenessCollision] = []
-        for dt in self._config.document_types.doc_types:
-            if not dt.unique_keys:
-                continue
-            for field in dt.unique_keys:
-                dt_collisions = await self.scan_tier3_uniqueness_collisions(dt.value, field)
-                if dt_collisions:
-                    collisions.extend(dt_collisions)
-                    continue
-                try:
-                    await self._graph_store.ensure_tier3_unique_index(dt.value, field)
-                except Tier3UniqueIndexBlockedError as exc:
-                    # Defensive: a chain-head SELECT-based scan returned
-                    # clean, but the store's CREATE UNIQUE INDEX still
-                    # rejected. Surface as a synthetic collision entry so
-                    # the operator sees the substrate's view rather than
-                    # losing the diagnostic to a swallowed exception.
-                    collisions.append(
-                        Tier3UniquenessCollision(
-                            doc_type=exc.doc_type,
-                            field=exc.field,
-                            value="<reported by the store, value not recovered>",
-                            document_ids=[],
-                        )
-                    )
-                    continue
-                activations.append(Tier3UniquenessActivation(doc_type=dt.value, field=field))
-        return activations, collisions
+        result = await activate_unique_pairs(self._graph_store, declared_unique_pairs(self._config))
+        return result.activations, result.collisions
 
     def _reject_if_in_flight(self) -> None:
         """Raise ReabstractAlreadyInFlightError synchronously if a reabstract

@@ -142,6 +142,55 @@ def _validate_config(config_dict: dict) -> VaultConfig:
         raise config_refusal(exc) from exc
 
 
+def _assert_unique_index_names_storable(
+    config: VaultConfig, previous: VaultConfig | None = None
+) -> None:
+    """Refuse a ``unique_keys`` entry whose index name the store cannot hold.
+
+    The store lowercases an index name and truncates it at
+    :data:`MAX_STORED_INDEX_NAME_BYTES` bytes, so an entry whose name runs
+    longer, or folds to the same name as another entry's, would share one
+    index with a different declaration (CAS-ADR-031). Only an entry the request
+    adds is held to the rule, so a vault declared before it keeps accepting
+    edits. Raises :class:`VaultConfigValidationError` naming each offending
+    entry, before anything is written.
+    """
+    from sage.storage.tier3_uniqueness import (
+        MAX_STORED_INDEX_NAME_BYTES,
+        stored_index_name,
+        tier3_unique_index_name,
+    )
+
+    def pairs(cfg: VaultConfig) -> list[tuple[str, str]]:
+        return [
+            (dt.value, field)
+            for dt in cfg.document_types.doc_types
+            for field in dt.unique_keys or []
+        ]
+
+    before = set(pairs(previous)) if previous is not None else set()
+    holders: dict[str, tuple[str, str]] = {}
+    errors: list[str] = []
+    for doc_type, field in pairs(config):
+        name = tier3_unique_index_name(doc_type, field)
+        stored = stored_index_name(name)
+        added = (doc_type, field) not in before
+        if added and len(name.encode()) > MAX_STORED_INDEX_NAME_BYTES:
+            errors.append(
+                f"document_types.{doc_type}.unique_keys: {field!r} gives the index name "
+                f"{name!r}, longer than {MAX_STORED_INDEX_NAME_BYTES} bytes; shorten the "
+                "doc_type or field name"
+            )
+        other = holders.setdefault(stored, (doc_type, field))
+        if added and other != (doc_type, field):
+            errors.append(
+                f"document_types.{doc_type}.unique_keys: {field!r} shares its index name "
+                f"with {other[0]}.{other[1]}"
+            )
+    if errors:
+        raise VaultConfigValidationError(errors)
+
+
 def _assert_roots_within_bound_root(
     config: VaultConfig, previous: VaultConfig | None = None
 ) -> None:

@@ -1922,6 +1922,49 @@
                 ],
                 "type": "object"
               },
+              "Tier3UniqueConstraintInactiveError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/Tier3UniqueConstraintInactiveErrorDetail"
+                  },
+                  "error": {
+                    "const": "tier3_unique_constraint_inactive",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "Tier3UniqueConstraintInactiveErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "doc_type": {
+                    "description": "Doc type.",
+                    "type": "string"
+                  },
+                  "field": {
+                    "description": "Field.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "doc_type",
+                  "field"
+                ],
+                "type": "object"
+              },
               "Tier3UniqueConstraintViolationError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -2584,6 +2627,7 @@
                 "synced_from_version_not_in_source_chain": "#/$defs/SyncedFromVersionNotInSourceChainError",
                 "tbd_policy_edge": "#/$defs/TbdPolicyEdgeError",
                 "tier3_schema_violation": "#/$defs/Tier3SchemaViolationError",
+                "tier3_unique_constraint_inactive": "#/$defs/Tier3UniqueConstraintInactiveError",
                 "tier3_unique_constraint_violation": "#/$defs/Tier3UniqueConstraintViolationError",
                 "transfer_endpoint_not_configured": "#/$defs/TransferEndpointNotConfiguredError",
                 "transfer_not_staged": "#/$defs/TransferNotStagedError",
@@ -2731,6 +2775,9 @@
                 "$ref": "#/$defs/Tier3SchemaViolationError"
               },
               {
+                "$ref": "#/$defs/Tier3UniqueConstraintInactiveError"
+              },
+              {
                 "$ref": "#/$defs/Tier3UniqueConstraintViolationError"
               },
               {
@@ -2777,7 +2824,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Ingest multiple files with optional edge inference.\n\nCompanion to ``list_directory``: the caller submits the scanned files\nit chose. Per-file ingest\napplies the same precedence chain as ``ingest_document``. Unlike\n``ingest_document``, the pipeline is awaited inline for each file in\nturn: the documents have reached a terminal ``pipeline_status`` by\nthe time the summary returns, so no caller-side wait is needed. The\ncost is duration -- a large batch can exceed a client's RPC timeout.\n\nThe batch is NOT atomic: a per-file failure lands in\n``summary.errors[]`` carrying its ``code`` and ``detail``, and the\nbatch continues.\n\nWhen the server cannot read the caller's filesystem and an entry\nnames an absolute ``file_path``, the call returns an upload recipe\n(``status: upload_required``): deliver each file to its URL, then\nrepeat the call with ``transfer_token`` in place of ``file_path``.\n\nPer-file precondition surface: every per-file ingest runs the full\n``ingest_document`` precondition pipeline, so a ``summary.errors[]``\nentry can carry ``adapter_config_invalid``, ``adapter_not_found``,\n``duplicate_content``, ``invalid_doc_type``,\n``invalid_document_date``, ``reserved_transition``,\n``source_digest_mismatch``, ``source_file_not_found``,\n``source_type_unresolved``, ``source_unreadable``,\n``tier3_schema_violation``, ``tier3_unique_constraint_violation``,\n``vault_migration_in_flight``, ``vault_source_path_refused``,\n``vault_source_store_refused`` and ``vault_source_store_unavailable``.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``empty_file_list`` (string in response)\n- 400: ``undeclared_key``, ``invalid_sha256``, ``ambiguous_ingest_source``,\n  ``missing_ingest_source``\n- ``invalid_parameter`` (422)\n- ``transfer_token_invalid`` (410) / ``transfer_not_staged`` (409)\n- ``transfer_endpoint_not_configured`` (500)\n",
+        "description": "Ingest multiple files with optional edge inference.\n\nCompanion to ``list_directory``: the caller submits the scanned files\nit chose. Per-file ingest\napplies the same precedence chain as ``ingest_document``. Unlike\n``ingest_document``, the pipeline is awaited inline for each file in\nturn: the documents have reached a terminal ``pipeline_status`` by\nthe time the summary returns, so no caller-side wait is needed. The\ncost is duration -- a large batch can exceed a client's RPC timeout.\n\nThe batch is NOT atomic: a per-file failure lands in\n``summary.errors[]`` carrying its ``code`` and ``detail``, and the\nbatch continues.\n\nWhen the server cannot read the caller's filesystem and an entry\nnames an absolute ``file_path``, the call returns an upload recipe\n(``status: upload_required``): deliver each file to its URL, then\nrepeat the call with ``transfer_token`` in place of ``file_path``.\n\nPer-file precondition surface: every per-file ingest runs the full\n``ingest_document`` precondition pipeline, so a ``summary.errors[]``\nentry can carry ``adapter_config_invalid``, ``adapter_not_found``,\n``duplicate_content``, ``invalid_doc_type``,\n``invalid_document_date``, ``reserved_transition``,\n``source_digest_mismatch``, ``source_file_not_found``,\n``source_type_unresolved``, ``source_unreadable``,\n``tier3_schema_violation``, ``tier3_unique_constraint_inactive``,\n``tier3_unique_constraint_violation``,\n``vault_migration_in_flight``, ``vault_source_path_refused``,\n``vault_source_store_refused`` and ``vault_source_store_unavailable``.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``empty_file_list`` (string in response)\n- 400: ``undeclared_key``, ``invalid_sha256``, ``ambiguous_ingest_source``,\n  ``missing_ingest_source``\n- ``invalid_parameter`` (422)\n- ``transfer_token_invalid`` (410) / ``transfer_not_staged`` (409)\n- ``transfer_endpoint_not_configured`` (500)\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -8507,6 +8554,49 @@
                 ],
                 "type": "object"
               },
+              "Tier3UniqueConstraintInactiveError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/Tier3UniqueConstraintInactiveErrorDetail"
+                  },
+                  "error": {
+                    "const": "tier3_unique_constraint_inactive",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "Tier3UniqueConstraintInactiveErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "doc_type": {
+                    "description": "Doc type.",
+                    "type": "string"
+                  },
+                  "field": {
+                    "description": "Field.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "doc_type",
+                  "field"
+                ],
+                "type": "object"
+              },
               "Tier3UniqueConstraintViolationError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -9170,6 +9260,7 @@
                 "synced_from_version_not_in_source_chain": "#/$defs/SyncedFromVersionNotInSourceChainError",
                 "tbd_policy_edge": "#/$defs/TbdPolicyEdgeError",
                 "tier3_schema_violation": "#/$defs/Tier3SchemaViolationError",
+                "tier3_unique_constraint_inactive": "#/$defs/Tier3UniqueConstraintInactiveError",
                 "tier3_unique_constraint_violation": "#/$defs/Tier3UniqueConstraintViolationError",
                 "transfer_endpoint_not_configured": "#/$defs/TransferEndpointNotConfiguredError",
                 "transfer_not_staged": "#/$defs/TransferNotStagedError",
@@ -9320,6 +9411,9 @@
                 "$ref": "#/$defs/Tier3SchemaViolationError"
               },
               {
+                "$ref": "#/$defs/Tier3UniqueConstraintInactiveError"
+              },
+              {
                 "$ref": "#/$defs/Tier3UniqueConstraintViolationError"
               },
               {
@@ -9366,7 +9460,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Ingest a source file into SAGE, running the projection ->\nindexing -> abstraction pipeline.\n\nStages 2-3 (indexing, abstraction) run in the background; a\nrequested supersede runs synchronously, so the version chain is\ncomplete on return. The document can at once be read, patched,\nlinked and superseded. Only passage search waits on indexing, and\nthe abstract on abstraction, so wait for a terminal\n``pipeline_status`` only when the next step needs one, else once per\nbatch, bounded: ``abstraction_complete``,\n``abstraction_skipped``, ``failed`` (sets ``pipeline_error``) or\n``abstraction_interrupted`` (re-run at the next server start).\n\nMetadata is caller-authoritative. ``dry_run=true`` previews the\ncall and the doc_type's requirements, persisting nothing.\n\nError modes:\n- ``vault_not_found`` (404)\n- 400: ``invalid_vault_id``, ``invalid_document_id``,\n  ``invalid_document_date``, ``invalid_sha256``, ``misplaced_metadata``,\n  ``misplaced_top_level_field``, ``undeclared_key``,\n  ``source_type_unresolved``, ``adapter_not_found``,\n  ``adapter_config_invalid``, ``source_unreadable``,\n  ``source_digest_mismatch``, ``vault_source_path_refused``,\n  ``relocated_from_provenance_mismatch``,\n  ``relocation_source_undelivered``, ``ambiguous_ingest_source``,\n  ``missing_ingest_source``,\n  ``expected_head_version_requires_predecessor``, ``invalid_doc_type``,\n  ``tier3_schema_violation``\n- 404: ``source_file_not_found``, ``document_not_found``\n- 409: ``duplicate_content``, ``force_reingest_path_mismatch``,\n  ``force_reingest_pin_mismatch``, ``lifecycle_state_not_applicable``,\n  ``supersede_target_not_active``, ``identical_content_supersede``,\n  ``stale_chain_head``, ``tier3_unique_constraint_violation``,\n  ``transfer_not_staged``, ``reserved_transition``,\n  ``vault_migration_in_flight``\n- 410: ``transfer_token_invalid``\n- 422: ``invalid_parameter``\n- 500: ``transfer_endpoint_not_configured``\n- 502 / 503: ``vault_source_store_refused`` / ``vault_source_store_unavailable``\n",
+        "description": "Ingest a source file into SAGE, running the projection ->\nindexing -> abstraction pipeline.\n\nStages 2-3 (indexing, abstraction) run in the background; a\nrequested supersede runs synchronously, so the version chain is\ncomplete on return. The document can at once be read, patched,\nlinked and superseded. Only passage search waits on indexing, and\nthe abstract on abstraction, so wait for a terminal\n``pipeline_status`` only when the next step needs one, else once per\nbatch, bounded: ``abstraction_complete``,\n``abstraction_skipped``, ``failed`` (sets ``pipeline_error``) or\n``abstraction_interrupted`` (re-run at the next server start).\n\nMetadata is caller-authoritative. ``dry_run=true`` previews the\ncall and the doc_type's requirements, persisting nothing.\n\nError modes:\n- ``vault_not_found`` (404)\n- 400: ``invalid_vault_id``, ``invalid_document_id``,\n  ``invalid_document_date``, ``invalid_sha256``, ``misplaced_metadata``,\n  ``misplaced_top_level_field``, ``undeclared_key``,\n  ``source_type_unresolved``, ``adapter_not_found``,\n  ``adapter_config_invalid``, ``source_unreadable``,\n  ``source_digest_mismatch``, ``vault_source_path_refused``,\n  ``relocated_from_provenance_mismatch``,\n  ``relocation_source_undelivered``, ``ambiguous_ingest_source``,\n  ``missing_ingest_source``,\n  ``expected_head_version_requires_predecessor``, ``invalid_doc_type``,\n  ``tier3_schema_violation``\n- 404: ``source_file_not_found``, ``document_not_found``\n- 409: ``duplicate_content``, ``force_reingest_path_mismatch``,\n  ``force_reingest_pin_mismatch``, ``lifecycle_state_not_applicable``,\n  ``supersede_target_not_active``, ``identical_content_supersede``,\n  ``stale_chain_head``, ``tier3_unique_constraint_inactive``,\n  ``tier3_unique_constraint_violation``,\n  ``transfer_not_staged``, ``reserved_transition``,\n  ``vault_migration_in_flight``\n- 410: ``transfer_token_invalid``\n- 422: ``invalid_parameter``\n- 500: ``transfer_endpoint_not_configured``\n- 502 / 503: ``vault_source_store_refused`` / ``vault_source_store_unavailable``\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -9407,7 +9501,7 @@
             },
             "dry_run": {
               "default": false,
-              "description": "Dry run reports what this call would do and persists nothing, returning `IngestPreview` rather than a document. Validate without reading the source into the vault: no import retention, projection, indexing, abstraction or record. `IngestPreview` carries dry_run=true, resolved doc_type, delivered content hash, duplicate verdict, would-supersede verdict and full declared requirements. Because nothing is projected, an adapter-extracted `tier3_metadata` cannot be evaluated; `tier3_validated` is false when the caller supplied none, and a real run may refuse. If upload is needed, return `UploadRecipe` after byte-independent validators; its leg names them in `dry_run_validated`. The source is located and hashed where it stands. Every validator that runs raises the error a real run would, except that a duplicate comes back as would_create: false rather than as duplicate_content. Unchecked, because each turns on state only the real write reaches: tier3_unique_constraint_violation, force_reingest_path_mismatch, stale_chain_head, and a force_reingest_pin_mismatch for a store-resident source with no prior document record. A clean preview is not a promise that the real run commits. For an upload, the checks that need the bytes wait for the call repeated with the transfer token.",
+              "description": "Dry run reports what this call would do and persists nothing, returning `IngestPreview` rather than a document. Validate without reading the source into the vault: no import retention, projection, indexing, abstraction or record. `IngestPreview` carries dry_run=true, resolved doc_type, delivered content hash, duplicate verdict, would-supersede verdict and full declared requirements. Because nothing is projected, an adapter-extracted `tier3_metadata` cannot be evaluated; `tier3_validated` is false when the caller supplied none, and a real run may refuse. If upload is needed, return `UploadRecipe` after byte-independent validators; its leg names them in `dry_run_validated`. The source is located and hashed where it stands. Validators raise as a real run would, except that a duplicate comes back as would_create: false, not duplicate_content. Unchecked, because each turns on state only the real write reaches: tier3_unique_constraint_violation, force_reingest_path_mismatch, stale_chain_head, and a force_reingest_pin_mismatch for a store-resident source with no prior document record. A clean preview is not a promise that the real run commits. For an upload, the checks that need the bytes wait for the call repeated with the transfer token.",
               "type": "boolean"
             },
             "expected_head_version": {
@@ -9470,7 +9564,7 @@
             "tier3_metadata": {
               "additionalProperties": true,
               "default": null,
-              "description": "Caller-authoritative tier-3 typed metadata applied at create time. Validated against the doc_type's `metadata_schema` declared in vault config (`document_types.{doc_type}.metadata_schema`); if the doc_type has no schema declared, the ingest fails with 400 `tier3_schema_violation`. Bare-dict form: the entire object is the tier-3 metadata for the new document, whereas `update_metadata` takes a `set`/`unset` ops-object. Tier3 uniqueness: a doc_type declaring a unique constraint on a tier3 field enforces per-vault uniqueness on it at ingest time, checked in the same transaction as the row insert so the existing document is never disturbed; force does not override it. Call with dry_run=true to read which fields a doc_type declares unique, under requirements.unique_tier3_fields, and which it requires. Queryable via ``search`` as filters={\"tier3_metadata\": {...}}.",
+              "description": "Caller-authoritative tier-3 typed metadata applied at create time. Validated against the doc_type's `metadata_schema` declared in vault config (`document_types.{doc_type}.metadata_schema`); if the doc_type has no schema declared, the ingest fails with 400 `tier3_schema_violation`. Bare-dict form: the entire object is the tier-3 metadata for the new document, whereas `update_metadata` takes a `set`/`unset` ops-object. Tier3 uniqueness: a field the doc_type declares unique is unique within it; force does not override it. Archived chain heads keep their values; only a superseded predecessor's is free. A declared field not yet enforced refuses the write with tier3_unique_constraint_inactive. dry_run=true lists unique, enforced and required fields under requirements. Queryable via ``search`` as filters={\"tier3_metadata\": {...}}.",
               "type": "object"
             },
             "title": {
@@ -19361,6 +19455,101 @@
                 ],
                 "type": "object"
               },
+              "Tier3UniqueConstraintInactiveError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/Tier3UniqueConstraintInactiveErrorDetail"
+                  },
+                  "error": {
+                    "const": "tier3_unique_constraint_inactive",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "Tier3UniqueConstraintInactiveErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "doc_type": {
+                    "description": "Doc type.",
+                    "type": "string"
+                  },
+                  "field": {
+                    "description": "Field.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "doc_type",
+                  "field"
+                ],
+                "type": "object"
+              },
+              "Tier3UniqueConstraintViolationError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/Tier3UniqueConstraintViolationErrorDetail"
+                  },
+                  "error": {
+                    "const": "tier3_unique_constraint_violation",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "Tier3UniqueConstraintViolationErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "colliding_value": {
+                    "description": "The conflicting metadata value."
+                  },
+                  "doc_type": {
+                    "description": "Doc type.",
+                    "type": "string"
+                  },
+                  "existing_document_id": {
+                    "description": "Existing document id.",
+                    "type": "string"
+                  },
+                  "field": {
+                    "description": "Field.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "doc_type",
+                  "field",
+                  "colliding_value",
+                  "existing_document_id"
+                ],
+                "type": "object"
+              },
               "Tier3UnsetConflictError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -19649,6 +19838,8 @@
                 "tier3_doc_type_change_stale_keys": "#/$defs/Tier3DocTypeChangeStaleKeysError",
                 "tier3_patch_overlap": "#/$defs/Tier3PatchOverlapError",
                 "tier3_schema_violation": "#/$defs/Tier3SchemaViolationError",
+                "tier3_unique_constraint_inactive": "#/$defs/Tier3UniqueConstraintInactiveError",
+                "tier3_unique_constraint_violation": "#/$defs/Tier3UniqueConstraintViolationError",
                 "tier3_unset_conflict": "#/$defs/Tier3UnsetConflictError",
                 "undeclared_key": "#/$defs/UndeclaredKeyError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
@@ -19718,6 +19909,12 @@
                 "$ref": "#/$defs/Tier3SchemaViolationError"
               },
               {
+                "$ref": "#/$defs/Tier3UniqueConstraintInactiveError"
+              },
+              {
+                "$ref": "#/$defs/Tier3UniqueConstraintViolationError"
+              },
+              {
                 "$ref": "#/$defs/Tier3UnsetConflictError"
               },
               {
@@ -19737,7 +19934,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Patch mutable metadata fields on one or more documents.\n\nAccepts ``items`` as a list of N>=1 per-item patch requests;\n``items=[{...}]`` is the single-document form. This is the sole MCP\nentry point for metadata patching.\n\nScalars use set-or-omit semantics: pass to set, omit to leave\nunchanged.\n\nEach successful per-item patch sets ``metadata_confirmed=true``; an\nitem carrying only ``document_id`` is a pure-confirmation flip, not a\nno-op. The ``doc_type`` value must be one this vault declares. Call\nwith ``dry_run=true`` to learn which without writing: an undeclared\nvalue comes back as ``invalid_doc_type`` carrying ``valid_types``,\nthe whole vocabulary, and a payload that fails a declared doc_type's\ntyped-metadata schema comes back as ``tier3_schema_violation``\ncarrying ``requirements``.\n\n**The batch is NOT atomic.** A per-item error surfaces in that\nitem's error envelope without rolling back other items; inspect each\n``BulkMetadataItemResult.status`` and ``success_count`` /\n``error_count``. Empty ``items`` is valid: empty ``results``, all\ncounts zero.\n\nPer-item error modes (inside the response envelope):\n``document_not_found`` (404), ``invalid_doc_type`` (400),\n``{field}_add_conflict`` / ``{field}_remove_conflict`` (400),\n``tag_patch_overlap``, ``tier3_unset_conflict``,\n``tier3_patch_overlap``, ``patch_empty`` (400),\n``tier3_schema_violation`` (400),\n``tier3_doc_type_change_stale_keys`` (400),\n``lifecycle_state_not_applicable`` (409), ``stale_read`` (409).\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- 400: ``legacy_form``, ``invalid_document_id``, ``invalid_document_date``\n- ``undeclared_key`` (400): ``lifecycle_status`` is set with ``update_lifecycles``\n- ``invalid_parameter`` (422): a malformed item or ``response_mode``\n",
+        "description": "Patch mutable metadata fields on one or more documents.\n\nAccepts ``items`` as a list of N>=1 per-item patch requests;\n``items=[{...}]`` is the single-document form.\n\nScalars use set-or-omit semantics: pass to set, omit to leave\nunchanged.\n\nEach successful per-item patch sets ``metadata_confirmed=true``; an\nitem carrying only ``document_id`` is a pure-confirmation flip, not a\nno-op. The ``doc_type`` value must be one this vault declares. Call\nwith ``dry_run=true`` to learn which without writing: an undeclared\nvalue comes back as ``invalid_doc_type`` carrying ``valid_types``,\nthe whole vocabulary, and a payload that fails a declared doc_type's\ntyped-metadata schema comes back as ``tier3_schema_violation``\ncarrying ``requirements``.\n\n**The batch is NOT atomic.** A per-item error surfaces in that\nitem's error envelope without rolling back other items; inspect each\n``BulkMetadataItemResult.status`` and ``success_count`` /\n``error_count``. Empty ``items`` is valid: empty ``results``, all\ncounts zero.\n\nPer-item error modes (inside the response envelope):\n``document_not_found`` (404); 400: ``invalid_doc_type``,\n``{field}_add_conflict`` / ``{field}_remove_conflict``,\n``tag_patch_overlap``, ``tier3_unset_conflict``,\n``tier3_patch_overlap``, ``patch_empty``, ``tier3_schema_violation``,\n``tier3_doc_type_change_stale_keys``; 409:\n``lifecycle_state_not_applicable``, ``stale_read``,\n``tier3_unique_constraint_violation``,\n``tier3_unique_constraint_inactive``.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- 400: ``legacy_form``, ``invalid_document_id``, ``invalid_document_date``\n- ``undeclared_key`` (400): ``lifecycle_status`` is set with ``update_lifecycles``\n- ``invalid_parameter`` (422): a malformed item or ``response_mode``\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -21363,6 +21560,75 @@
                 ],
                 "type": "object"
               },
+              "Tier3UniqueActivationBlockedError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/Tier3UniqueActivationBlockedErrorDetail"
+                  },
+                  "error": {
+                    "const": "tier3_unique_activation_blocked",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "Tier3UniqueActivationBlockedErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "collisions": {
+                    "description": "Each value already held by more than one chain head.",
+                    "items": {
+                      "additionalProperties": false,
+                      "description": "One value held by more than one chain head.",
+                      "properties": {
+                        "doc_type": {
+                          "description": "Document type declaring the field unique.",
+                          "type": "string"
+                        },
+                        "document_ids": {
+                          "description": "The chain-head document ids holding the value.",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "field": {
+                          "description": "The tier3_metadata field whose values collided.",
+                          "type": "string"
+                        },
+                        "value": {
+                          "description": "The value held by more than one chain head."
+                        }
+                      },
+                      "required": [
+                        "doc_type",
+                        "field",
+                        "value",
+                        "document_ids"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "collisions"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -21503,6 +21769,7 @@
                 "internal_error": "#/$defs/InternalErrorError",
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "statement_timeout": "#/$defs/StatementTimeoutError",
+                "tier3_unique_activation_blocked": "#/$defs/Tier3UniqueActivationBlockedError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_already_exists": "#/$defs/VaultAlreadyExistsError",
                 "vault_config_validation_error": "#/$defs/VaultConfigValidationErrorError"
@@ -21518,6 +21785,9 @@
               },
               {
                 "$ref": "#/$defs/StatementTimeoutError"
+              },
+              {
+                "$ref": "#/$defs/Tier3UniqueActivationBlockedError"
               },
               {
                 "$ref": "#/$defs/UnknownParameterError"
@@ -21536,7 +21806,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Create a new vault and register it with the running SAGE instance.\n\nThe config is validated against the vault config schema, directories\nare created, ``vault_config.yaml`` is written under the vault root\n(default ``~/sage_vaults/<vault_id>/``), services are initialized,\nand the vault is registered immediately (no restart). The full\nwritten config is echoed back so the caller can follow up with\n``update_vault_config`` without a separate read.\n\nThe new vault inherits the running process's abstraction provider;\nthe config's ``abstraction`` section governs only enable/disable and\nper-vault parameters. A different provider requires a stack-config\nedit and process restart.\n\nA doc_type's ``metadata_schema`` is compiled at create time, not\nfirst ingest, so a malformed schema is refused here.\n\nCreation is not atomic: a mid-sequence failure can leave\n``~/sage_vaults/{vault_id}/`` present with a partial yaml while the\nregistry has no entry; recovery is to remove the directory and\nre-call.\n\nError modes:\n- ``vault_already_exists`` (409)\n- ``vault_config_validation_error`` (400): the config, or a doc_type's\n  ``metadata_schema``, fails validation, or the config declares a\n  retired section\n",
+        "description": "Create a new vault and register it with the running SAGE instance.\n\nThe config is validated against the vault config schema, directories\nare created, ``vault_config.yaml`` is written under the vault root\n(default ``~/sage_vaults/<vault_id>/``), services are initialized,\nand the vault is registered immediately (no restart). The full\nwritten config is echoed back so the caller can follow up with\n``update_vault_config`` without a separate read.\n\nThe new vault inherits the running process's abstraction provider;\nthe config's ``abstraction`` section governs only enable/disable and\nper-vault parameters. A different provider requires a stack-config\nedit and process restart.\n\nA doc_type's ``metadata_schema`` is compiled at create time, not\nfirst ingest, so a malformed schema is refused here.\n\nCreation is not atomic: a mid-sequence failure can leave\n``~/sage_vaults/{vault_id}/`` present with a partial yaml while the\nregistry has no entry; recovery is to remove the directory and\nre-call.\n\nError modes:\n- ``vault_already_exists`` (409)\n- ``vault_config_validation_error`` (400): the config, or a doc_type's\n  ``metadata_schema``, fails validation, or the config declares a\n  retired section\n- ``tier3_unique_activation_blocked`` (409)\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -27154,6 +27424,75 @@
                 ],
                 "type": "object"
               },
+              "Tier3UniqueActivationBlockedError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/Tier3UniqueActivationBlockedErrorDetail"
+                  },
+                  "error": {
+                    "const": "tier3_unique_activation_blocked",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "Tier3UniqueActivationBlockedErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "collisions": {
+                    "description": "Each value already held by more than one chain head.",
+                    "items": {
+                      "additionalProperties": false,
+                      "description": "One value held by more than one chain head.",
+                      "properties": {
+                        "doc_type": {
+                          "description": "Document type declaring the field unique.",
+                          "type": "string"
+                        },
+                        "document_ids": {
+                          "description": "The chain-head document ids holding the value.",
+                          "items": {
+                            "type": "string"
+                          },
+                          "type": "array"
+                        },
+                        "field": {
+                          "description": "The tier3_metadata field whose values collided.",
+                          "type": "string"
+                        },
+                        "value": {
+                          "description": "The value held by more than one chain head."
+                        }
+                      },
+                      "required": [
+                        "doc_type",
+                        "field",
+                        "value",
+                        "document_ids"
+                      ],
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "collisions"
+                ],
+                "type": "object"
+              },
               "UnknownParameterError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -27304,6 +27643,7 @@
                 "invalid_parameter": "#/$defs/InvalidParameterError",
                 "invalid_vault_id": "#/$defs/InvalidVaultIdError",
                 "statement_timeout": "#/$defs/StatementTimeoutError",
+                "tier3_unique_activation_blocked": "#/$defs/Tier3UniqueActivationBlockedError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_config_validation_error": "#/$defs/VaultConfigValidationErrorError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
@@ -27327,6 +27667,9 @@
                 "$ref": "#/$defs/StatementTimeoutError"
               },
               {
+                "$ref": "#/$defs/Tier3UniqueActivationBlockedError"
+              },
+              {
                 "$ref": "#/$defs/UnknownParameterError"
               },
               {
@@ -27343,7 +27686,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Update vault configuration at the section level.\n\nEach non-null section argument replaces the corresponding top-level\nconfig section wholesale; sections left None are preserved.\nPartial-section merges are not supported — passing\n``document_types={\"doc_types\": [...]}`` replaces the entire\n``document_types`` section, so include every key you want to keep.\n\nIf the merged config would remove a doc_type or lifecycle state that\nstill has documents attached, the update is rejected with\n``destructive_config_change`` and the affected counts in the detail.\nPass ``force=True`` to proceed anyway; the warnings then appear in\nthe success response. Changing ``vault.id`` is never permitted\nregardless of force — use ``create_vault`` for a new vault.\n\nThe update writes to disk and updates the running config in place;\nsubsequent calls see the new vocabulary immediately. The\nwrite-then-reload sequence is atomic: if any step raises, the yaml is\nrolled back to its pre-call bytes and the previous config keeps\nserving. ``reload_vault`` is needed only when an external process\nedited the yaml.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``destructive_config_change`` (409): see above\n- ``vault_config_validation_error`` (400): the merged config fails\n  validation, changes ``vault.id``, or its ``vault`` section declares\n  a retired field\n",
+        "description": "Update vault configuration at the section level.\n\nEach non-null section argument replaces that top-level section\nwholesale, so include every key you want to keep; sections left None\nare preserved.\n\nIf the merged config would remove a doc_type or lifecycle state that\nstill has documents attached, the update is rejected with\n``destructive_config_change`` and the affected counts in the detail.\nPass ``force=True`` to proceed anyway; the warnings then appear in\nthe success response. Changing ``vault.id`` is never permitted\nregardless of force — use ``create_vault`` for a new vault.\n\nThe update writes to disk and takes effect at once; if any step\nfails, the yaml is rolled back and the previous config keeps\nserving. ``reload_vault`` is needed only when an external process\nedited the yaml.\n\n``unique_keys`` changes take effect before the call returns;\n``tier3_uniqueness_collisions`` names entries still unenforced.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``destructive_config_change`` (409): see above\n- ``vault_config_validation_error`` (400): the merged config fails\n  validation, changes ``vault.id``, or its ``vault`` section declares\n  a retired field\n- ``tier3_unique_activation_blocked`` (409): an added ``unique_keys``\n  entry collides; nothing is written\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {

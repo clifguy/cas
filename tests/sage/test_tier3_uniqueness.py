@@ -887,3 +887,44 @@ def test_index_name_convention():
         tier3_unique_index_name("failure_record", "failure_id")
         == "idx_tier3_unique_failure_record_failure_id"
     )
+
+
+async def test_index_build_lock_wait_is_bounded(graph_store, monkeypatch):
+    """An open write transaction cannot hold an index build -- and the
+    vault load waiting on it -- indefinitely: the lock wait times out."""
+    import asyncio
+
+    from psycopg import errors as pg_errors
+
+    import sage.storage.postgres.graph_store as pg_graph_store
+
+    monkeypatch.setattr(pg_graph_store, "TIER3_INDEX_LOCK_TIMEOUT", "200ms")
+    async with graph_store._pool.connection() as holder:
+        await holder.execute("BEGIN")
+        await holder.execute("LOCK TABLE documents IN ROW EXCLUSIVE MODE")
+        try:
+            with pytest.raises(pg_errors.LockNotAvailable):
+                await asyncio.wait_for(
+                    graph_store.ensure_tier3_unique_index("ticket", "ticket_id"), timeout=10
+                )
+        finally:
+            await holder.execute("ROLLBACK")
+    assert not await graph_store.tier3_unique_index_exists("ticket", "ticket_id")
+
+
+async def test_concurrent_builds_of_one_index_both_succeed(graph_store):
+    """Two builds of the same index race on the catalog's name constraint,
+    not on the data; the loser finds the winner's index and succeeds."""
+    import asyncio
+
+    from sage.storage.postgres.graph_store import tier3_unique_index_ddl_pg
+
+    async with graph_store._pool.connection() as winner:
+        await winner.execute("BEGIN")
+        await winner.execute(tier3_unique_index_ddl_pg("ticket", "ticket_id"))
+        loser = asyncio.create_task(graph_store.ensure_tier3_unique_index("ticket", "ticket_id"))
+        await asyncio.sleep(0.3)
+        assert not loser.done(), "the second build did not wait on the first"
+        await winner.execute("COMMIT")
+    await asyncio.wait_for(loser, timeout=10)
+    assert await graph_store.tier3_unique_index_exists("ticket", "ticket_id")

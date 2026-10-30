@@ -1213,6 +1213,9 @@ class StubGraphStore(GraphStore):
     async def tier3_unique_index_exists(self, doc_type: str, field: str) -> bool:
         raise self._unsupported("tier3_unique_index_exists")
 
+    async def drop_tier3_unique_indexes_except(self, keep: set[str]) -> list[str]:
+        raise self._unsupported("drop_tier3_unique_indexes_except")
+
     async def find_chain_heads_with_tier3_value(
         self, doc_type: str, field: str
     ) -> list[tuple[object, list[str]]]:

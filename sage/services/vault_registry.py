@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from sage.api.errors import (
+    Tier3UniqueActivationBlockedError,
     VaultAlreadyExistsError,
     VaultConfigValidationError,
     VaultNotFoundError,
@@ -34,9 +35,11 @@ from sage.models.schemas import (
     VaultListResponse,
     VaultSummary,
 )
+from sage.services._tier3_uniqueness import activate_unique_pairs, declared_unique_pairs
 from sage.vault_management import (
     CONFIG_FAILURES,
     _assert_roots_within_bound_root,
+    _assert_unique_index_names_storable,
     _atomic_write_bytes,
     _validate_config,
     bound_vault_root,
@@ -283,6 +286,7 @@ class VaultRegistryService:
         vault_id = config.vault.id
         _refuse_reserved_vault_id(vault_id)
         _assert_roots_within_bound_root(config)
+        _assert_unique_index_names_storable(config)
 
         if vault_id in self._registry:
             raise VaultAlreadyExistsError(vault_id)
@@ -336,6 +340,38 @@ class VaultRegistryService:
                 registry_service=self,
                 abstraction_provider=stack_provider,
             )
+            # A schema that survived an eviction can already hold rows that
+            # collide; the declaration is then refused like any config write
+            # that would declare an unenforceable constraint (CAS-ADR-031 §5).
+            # A new vault's declarations are enforced before it is
+            # registered. A load-time build that failed for a reason other
+            # than a collision is retried with its error surfaced; one that
+            # still cannot complete refuses the creation like a collision.
+            active = {(a.doc_type, a.field) for a in services.tier3_uniqueness_activations}
+            unenforced = [pair for pair in declared_unique_pairs(config) if pair not in active]
+            if unenforced:
+                try:
+                    if services.tier3_uniqueness_collisions:
+                        raise Tier3UniqueActivationBlockedError(
+                            [
+                                c.model_dump(mode="json")
+                                for c in services.tier3_uniqueness_collisions
+                            ]
+                        )
+                    await activate_unique_pairs(services.graph_store, unenforced)
+                except BaseException:
+                    try:
+                        for doc_type, field in services.tier3_uniqueness_built:
+                            try:
+                                await services.graph_store.drop_tier3_unique_index(doc_type, field)
+                            except Exception:
+                                logger.exception(
+                                    "could not drop the unique index for %s.%s", doc_type, field
+                                )
+                    finally:
+                        services.close_timing()
+                        await services.close_storage()
+                    raise
             self._registry[vault_id] = services
         except BaseException:
             # Restore the on-disk yaml so the user can retry create_vault

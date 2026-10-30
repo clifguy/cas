@@ -497,7 +497,8 @@ def register_app_tools(
         ``invalid_document_date``, ``reserved_transition``,
         ``source_digest_mismatch``, ``source_file_not_found``,
         ``source_type_unresolved``, ``source_unreadable``,
-        ``tier3_schema_violation``, ``tier3_unique_constraint_violation``,
+        ``tier3_schema_violation``, ``tier3_unique_constraint_inactive``,
+        ``tier3_unique_constraint_violation``,
         ``vault_migration_in_flight``, ``vault_source_path_refused``,
         ``vault_source_store_refused`` and ``vault_source_store_unavailable``.
 

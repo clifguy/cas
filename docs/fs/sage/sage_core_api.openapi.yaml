@@ -500,7 +500,9 @@ paths:
         `tag_patch_overlap`, `tier3_unset_conflict`,
         `tier3_patch_overlap`, `patch_empty`, `tier3_schema_violation`,
         `tier3_doc_type_change_stale_keys`, `legacy_form`,
-        `lifecycle_state_not_applicable`, `stale_read`. Each appears as
+        `lifecycle_state_not_applicable`, `stale_read`,
+        `tier3_unique_constraint_violation`,
+        `tier3_unique_constraint_inactive`. Each appears as
         a per-item error envelope rather than as a batch-level 400/409.
         `lifecycle_state_not_applicable` refuses a `doc_type` change
         while the document holds a lifecycle state the new doc_type
@@ -663,12 +665,12 @@ paths:
         via `POST /sage_vaults/{vault_id}/metadata`.
 
 
-        **Tier3 uniqueness:** a doc_type declaring a `unique` constraint
-        on a tier3 field enforces per-vault uniqueness on it at ingest
-        time, checked in the same transaction as the row insert so the
-        existing document is never disturbed. Send the request with
-        `dry_run=true` to read which fields a doc_type declares unique,
-        under `requirements.unique_tier3_fields`.
+        **Tier3 uniqueness:** a field the doc_type declares unique is
+        unique within it; force does not override it. Archived chain
+        heads keep their values; only a superseded predecessor's is
+        free. A declared field not yet enforced refuses the write with
+        `tier3_unique_constraint_inactive`. `dry_run=true` lists unique,
+        enforced and required fields under `requirements`.
 
 
         **Dry run:** `dry_run=true` reports what this call would do and
@@ -960,6 +962,14 @@ paths:
             the same transaction as the insert, so the existing document
             is never disturbed. Detail carries `doc_type`, `field`,
             `colliding_value` and `existing_document_id`.
+
+
+            `tier3_unique_constraint_inactive`: the resolved doc_type
+            declares a tier3 field this document sets `unique`, but the
+            constraint is not enforced: existing chain heads share a
+            value, or its index build did not complete. Detail carries
+            `doc_type` and `field`; run `migrate_vault`, first resolving
+            any collisions it reports.
 
 
             `vault_migration_in_flight`: `migrate_vault` is running on this
@@ -2126,6 +2136,12 @@ paths:
           description: >-
             `vault_already_exists`: a vault with the requested `id` is
             already registered.
+
+
+            `tier3_unique_activation_blocked`: documents surviving in the
+            vault's storage already share a value a `unique_keys` entry
+            declares unique; the vault is not created. Detail carries
+            `collisions`.
           content:
             application/json:
               schema:
@@ -2423,11 +2439,14 @@ paths:
         must supply the complete section.
 
 
-        After validation, the YAML file is rewritten and the running
-        config is updated in place. Subsequent calls see the new
-        vocabulary immediately; a separate vault reload is only
-        required when external processes edited `vault_config.yaml`
-        outside the running server.
+        The update writes to disk and takes effect at once; if any step
+        fails, the yaml is rolled back and the previous config keeps
+        serving. A separate vault reload is only required when external
+        processes edited `vault_config.yaml` outside the running server.
+
+
+        `unique_keys` changes take effect before the call returns;
+        `tier3_uniqueness_collisions` names entries still unenforced.
 
 
         Destructive changes (removing a `doc_type` or lifecycle state
@@ -2489,6 +2508,12 @@ paths:
             documents (removed `doc_type` or lifecycle state still has
             documents attached). Pass `force=true` to proceed; the
             warnings then appear in the success response.
+
+
+            `tier3_unique_activation_blocked`: existing chain heads already
+            share a value a `unique_keys` entry this update adds declares
+            unique; nothing is written, on a dry run as on a real one.
+            Detail carries `collisions`.
           content:
             application/json:
               schema:
@@ -7787,9 +7812,24 @@ components:
             type: string
           description: >-
             Sorted names the doc_type declares under `unique_keys`,
-            whose values must be unique within the vault across all
-            lifecycle statuses. A collision raises
+            whose values must be unique within the doc_type: every chain
+            head holds its value, archived ones included, and only a
+            superseded predecessor is exempt. A collision raises
             `tier3_unique_constraint_violation`.
+        active_unique_tier3_fields:
+          anyOf:
+            - type: array
+              items:
+                type: string
+            - type: "null"
+          default: null
+          description: >-
+            Sorted subset of `unique_tier3_fields` whose uniqueness is
+            enforced now. A declared field absent from it is not enforced,
+            and a write setting it is refused with
+            `tier3_unique_constraint_inactive`. Reported on an ingest
+            preview; null where it was not evaluated, as in the detail of a
+            `tier3_schema_violation`.
         permitted_source_types:
           type: [array, "null"]
           items:
@@ -8721,6 +8761,26 @@ components:
             Structural diff populated on dry-run; null on a
             real-run. This is the would-be projection of the config
             sections that would change.
+        tier3_uniqueness_activations:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tier3UniquenessActivation"
+          description: >-
+            On a real run, every `unique_keys` declaration in the new
+            configuration whose index is in place, built by this write or
+            already present. Empty on a dry run.
+        tier3_uniqueness_collisions:
+          type: array
+          items:
+            $ref: "#/components/schemas/Tier3UniquenessCollision"
+          description: >-
+            On a real run, the collisions keeping a `unique_keys` declaration
+            made before this write from being enforced; writes that
+            declaration governs are refused with
+            `tier3_unique_constraint_inactive` until they are resolved and
+            `migrate_vault` runs. A declaration this write adds never
+            appears here: one that collides refuses the write with
+            `tier3_unique_activation_blocked`. Empty on a dry run.
 
     VaultConfigPreview:
       type: object
@@ -10409,7 +10469,7 @@ components:
             token or a relocation pointer: `adapter_config_invalid`,
             `adapter_not_found`, `duplicate_content`, `invalid_doc_type`, `invalid_document_date`,
             `reserved_transition`, `source_digest_mismatch`, `source_file_not_found`,
-            `source_type_unresolved`, `source_unreadable`, `tier3_schema_violation`, `tier3_unique_constraint_violation`,
+            `source_type_unresolved`, `source_unreadable`, `tier3_schema_violation`, `tier3_unique_constraint_inactive`, `tier3_unique_constraint_violation`,
             `vault_migration_in_flight`, `vault_source_path_refused`,
             `vault_source_store_refused` and `vault_source_store_unavailable`.
             `source_digest_mismatch` reports a declared digest that does not match
@@ -14384,6 +14444,93 @@ components:
           $ref: '#/components/schemas/Tier3SchemaViolationErrorDetail'
       additionalProperties: false
       description: The refusal envelope for this error code.
+    Tier3UniqueActivationBlockedErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - collisions
+      properties:
+        collisions:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - doc_type
+            - field
+            - value
+            - document_ids
+            properties:
+              doc_type:
+                type: string
+                description: Document type declaring the field unique.
+              field:
+                type: string
+                description: The tier3_metadata field whose values collided.
+              value:
+                description: The value held by more than one chain head.
+              document_ids:
+                type: array
+                items:
+                  type: string
+                description: The chain-head document ids holding the value.
+            description: One value held by more than one chain head.
+          description: Each value already held by more than one chain head.
+      description: Additional context for this refusal.
+    Tier3UniqueActivationBlockedError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: tier3_unique_activation_blocked
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/Tier3UniqueActivationBlockedErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    Tier3UniqueConstraintInactiveErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - doc_type
+      - field
+      properties:
+        doc_type:
+          type: string
+          description: Doc type.
+        field:
+          type: string
+          description: Field.
+      description: Additional context for this refusal.
+    Tier3UniqueConstraintInactiveError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: tier3_unique_constraint_inactive
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/Tier3UniqueConstraintInactiveErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
     Tier3UniqueConstraintViolationErrorDetail:
       type: object
       additionalProperties: false
@@ -15217,6 +15364,8 @@ components:
             - tier3_doc_type_change_stale_keys
             - tier3_patch_overlap
             - tier3_schema_violation
+            - tier3_unique_activation_blocked
+            - tier3_unique_constraint_inactive
             - tier3_unique_constraint_violation
             - tier3_unset_conflict
             - transfer_content_too_large
@@ -15299,6 +15448,7 @@ components:
         - synced_from_version_not_in_source_chain
         - tbd_policy_edge
         - tier3_schema_violation
+        - tier3_unique_constraint_inactive
         - tier3_unique_constraint_violation
         - transfer_endpoint_not_configured
         - transfer_not_staged
@@ -15348,6 +15498,7 @@ components:
         - internal_error
         - invalid_parameter
         - statement_timeout
+        - tier3_unique_activation_blocked
         - unknown_parameter
         - vault_already_exists
         - vault_config_validation_error
@@ -15471,6 +15622,7 @@ components:
         - synced_from_version_not_in_source_chain
         - tbd_policy_edge
         - tier3_schema_violation
+        - tier3_unique_constraint_inactive
         - tier3_unique_constraint_violation
         - transfer_endpoint_not_configured
         - transfer_not_staged
@@ -15764,6 +15916,8 @@ components:
         - tier3_doc_type_change_stale_keys
         - tier3_patch_overlap
         - tier3_schema_violation
+        - tier3_unique_constraint_inactive
+        - tier3_unique_constraint_violation
         - tier3_unset_conflict
         - undeclared_key
         - unknown_parameter
@@ -15784,6 +15938,7 @@ components:
         - invalid_parameter
         - invalid_vault_id
         - statement_timeout
+        - tier3_unique_activation_blocked
         - unknown_parameter
         - vault_config_validation_error
         - vault_not_found
@@ -15943,6 +16098,8 @@ components:
       - $ref: '#/components/schemas/Tier3DocTypeChangeStaleKeysError'
       - $ref: '#/components/schemas/Tier3PatchOverlapError'
       - $ref: '#/components/schemas/Tier3SchemaViolationError'
+      - $ref: '#/components/schemas/Tier3UniqueActivationBlockedError'
+      - $ref: '#/components/schemas/Tier3UniqueConstraintInactiveError'
       - $ref: '#/components/schemas/Tier3UniqueConstraintViolationError'
       - $ref: '#/components/schemas/Tier3UnsetConflictError'
       - $ref: '#/components/schemas/TransferContentTooLargeError'
@@ -16075,6 +16232,8 @@ components:
           tier3_doc_type_change_stale_keys: '#/components/schemas/Tier3DocTypeChangeStaleKeysError'
           tier3_patch_overlap: '#/components/schemas/Tier3PatchOverlapError'
           tier3_schema_violation: '#/components/schemas/Tier3SchemaViolationError'
+          tier3_unique_activation_blocked: '#/components/schemas/Tier3UniqueActivationBlockedError'
+          tier3_unique_constraint_inactive: '#/components/schemas/Tier3UniqueConstraintInactiveError'
           tier3_unique_constraint_violation: '#/components/schemas/Tier3UniqueConstraintViolationError'
           tier3_unset_conflict: '#/components/schemas/Tier3UnsetConflictError'
           transfer_content_too_large: '#/components/schemas/TransferContentTooLargeError'

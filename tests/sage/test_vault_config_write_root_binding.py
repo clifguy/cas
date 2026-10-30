@@ -68,13 +68,16 @@ class _FakeServices:
     def __init__(self) -> None:
         self.graph_store = _FakeCreatedGraphStore()
         self.ingestion_service = _FakeIngestionService()
+        # Load-time unique_keys activation found nothing it could not build.
+        self.tier3_uniqueness_collisions: list = []
+        self.tier3_uniqueness_activations: list = []
 
 
 class _FakeRegistryService:
-    async def reload(self, vault_id: str, new_config: VaultConfig) -> None:
-        # update_config delegates the registry-mutation step here; a no-op keeps
-        # the test off initialize_services (and therefore off Postgres).
-        return None
+    async def reload(self, vault_id: str, new_config: VaultConfig) -> _FakeServices:
+        # update_config delegates the registry-mutation step here; a stand-in
+        # keeps the test off initialize_services (and therefore off Postgres).
+        return _FakeServices()
 
 
 @pytest.fixture

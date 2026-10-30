@@ -70,3 +70,13 @@ def tier3_unique_index_name(doc_type: str, field: str) -> str:
     doc_type prefix from the captured tail.
     """
     return f"{TIER3_UNIQUE_INDEX_PREFIX}{doc_type}_{field}"
+
+
+#: The longest identifier the store keeps before truncating (NAMEDATALEN - 1).
+MAX_STORED_INDEX_NAME_BYTES = 63
+
+
+def stored_index_name(name: str) -> str:
+    """``name`` as the store records an unquoted identifier: lowercased, then
+    cut to :data:`MAX_STORED_INDEX_NAME_BYTES` bytes."""
+    return name.lower().encode()[:MAX_STORED_INDEX_NAME_BYTES].decode()

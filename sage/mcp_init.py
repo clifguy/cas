@@ -7,7 +7,7 @@ import logging.handlers
 import os
 import threading
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -28,6 +28,13 @@ from sage.instrumentation.timing import (
     QueryTimer,
     TimingConfig,
     VaultTimingThread,
+)
+from sage.models.schemas import Tier3UniquenessActivation, Tier3UniquenessCollision
+from sage.services._tier3_uniqueness import (
+    Activation,
+    activate_unique_pairs,
+    declared_unique_pairs,
+    drop_undeclared_unique_indexes,
 )
 from sage.services.documents import DocumentsService
 from sage.services.graph_ops import GraphOpsService
@@ -243,6 +250,15 @@ class SAGEServices:
     # lifespan); the production lifespan always supplies one.
     maintenance_service: MaintenanceService | None = None
     config_path: Path | None = None
+    # Declared ``unique_keys`` values the load found already shared by more
+    # than one chain head, so their indexes were not built (CAS-ADR-031 §5).
+    # Writes those declarations govern are refused until they are resolved.
+    tier3_uniqueness_collisions: list[Tier3UniquenessCollision] = field(default_factory=list)
+    # The declarations whose index this load found or built, observed rather
+    # than inferred from the absence of a collision.
+    tier3_uniqueness_activations: list[Tier3UniquenessActivation] = field(default_factory=list)
+    # The (doc_type, field) pairs whose index this load built rather than found.
+    tier3_uniqueness_built: list[tuple[str, str]] = field(default_factory=list)
     # Whether the configuration was loaded from a declaration in the
     # vault-source store, which a reload re-reads. Recorded rather than read
     # off ``config_path``: a binding with no filesystem path declares vaults
@@ -1116,7 +1132,44 @@ async def initialize_services(
                 ingestion_service=ingestion_service,
             )
 
+        # Activate every clean ``unique_keys`` declaration however the
+        # configuration arrived, so a declared constraint is enforced from the
+        # first write, and drop the index of any declaration since withdrawn
+        # (CAS-ADR-031). Neither fails the load: a declaration left unenforced
+        # has its writes refused instead, and the reason is logged.
+        unique_pairs = declared_unique_pairs(config)
+        activation = Activation()
+        if unique_pairs:
+            activation = await activate_unique_pairs(
+                graph_store, unique_pairs, tolerate_errors=True
+            )
+        try:
+            withdrawn = await drop_undeclared_unique_indexes(graph_store, config)
+        except Exception as exc:
+            _logger.warning(
+                "vault %s: undeclared unique indexes were not reconciled: %s",
+                config.vault.id,
+                exc,
+            )
+        else:
+            for name in withdrawn:
+                _logger.info("vault %s: dropped undeclared index %s", config.vault.id, name)
+        tier3_collisions = activation.collisions
+        if tier3_collisions:
+            for collision in tier3_collisions:
+                _logger.warning(
+                    "vault %s: unique_keys %s.%s is not enforced; value %r is held by %s",
+                    config.vault.id,
+                    collision.doc_type,
+                    collision.field,
+                    collision.value,
+                    ", ".join(collision.document_ids),
+                )
+
         return SAGEServices(
+            tier3_uniqueness_collisions=tier3_collisions,
+            tier3_uniqueness_built=activation.built,
+            tier3_uniqueness_activations=activation.activations,
             config=config,
             graph_store=graph_store,
             content_store=content_store,

@@ -181,7 +181,11 @@ async def get_vault_config(
                 "`destructive_config_change`: the update would orphan "
                 "documents (removed `doc_type` or lifecycle state still has "
                 "documents attached). Pass `force=true` to proceed; the "
-                "warnings then appear in the success response."
+                "warnings then appear in the success response.\n\n"
+                "`tier3_unique_activation_blocked`: existing chain heads already "
+                "share a value a `unique_keys` entry this update adds declares "
+                "unique; nothing is written, on a dry run as on a real one. "
+                "Detail carries `collisions`."
             ),
         },
         422: invalid_parameter_422(),
@@ -224,6 +228,10 @@ async def update_vault_config(
             "model": ErrorResponse,
             "description": (
                 "`vault_already_exists`: a vault with the requested `id` is already registered."
+                "\n\n`tier3_unique_activation_blocked`: documents surviving in the "
+                "vault's storage already share a value a `unique_keys` entry "
+                "declares unique; the vault is not created. Detail carries "
+                "`collisions`."
             ),
         },
         422: invalid_parameter_422(),

@@ -66,6 +66,7 @@ from sage.storage.tier3_uniqueness import (
     TIER3_UNIQUE_INDEX_PREFIX,
     Tier3UniqueIndexBlockedError,
     Tier3UniqueViolation,
+    stored_index_name,
     tier3_unique_index_name,
 )
 from sage.utils.sql_patterns import escape_like
@@ -84,6 +85,12 @@ _STAGING_EDGES_UNIQ_INDEX = "idx_staging_edges_uniq_natural_key"
 # can break out of the path.
 _TIER3_KEY_FORMAT = re.compile(r"^[A-Za-z0-9_]+$")
 _DOC_TYPE_FORMAT = re.compile(r"^[a-z][a-z0-9_]*$")
+_TIER3_INDEX_NAME_FORMAT = re.compile(r"^idx_tier3_unique_[A-Za-z0-9_]+$")
+# The name a concurrent duplicate CREATE INDEX trips: pg_class's own unique
+# index on (relname, relnamespace), reported as a UniqueViolation.
+_PG_CATALOG_RELNAME_CONSTRAINT = "pg_class_relname_nsp_index"
+# Upper bound on waiting for the SHARE lock a tier3 unique index build takes.
+TIER3_INDEX_LOCK_TIMEOUT = "15s"
 
 
 def _pointer_to_jsonb(pointer: RelocationPointer | None) -> Jsonb | None:
@@ -541,6 +548,38 @@ class PostgresGraphStore(GraphStore):
     ) -> Document | None:
         if not updates and processing_stage is None:
             return await self.get_document(doc_id)
+        try:
+            return await self._update_document(
+                doc_id,
+                updates,
+                advance_version=advance_version,
+                processing_stage=processing_stage,
+                advance_processing_attempt=advance_processing_attempt,
+                expected_processing_attempt=expected_processing_attempt,
+            )
+        except pg_errors.UniqueViolation as exc:
+            # The update rolled back, so the stored row still carries its
+            # previous values; the write's own doc_type and tier3 are
+            # overlaid to name the collision it attempted.
+            current = await self.get_document(doc_id)
+            if current is not None:
+                attempted = current.model_copy(
+                    update={k: updates[k] for k in ("doc_type", "tier3_metadata") if k in updates}
+                )
+                await self._maybe_raise_tier3_violation(exc, attempted)
+            raise
+
+    async def _update_document(
+        self,
+        doc_id: str,
+        updates: dict,
+        *,
+        advance_version: bool,
+        processing_stage: str | None,
+        advance_processing_attempt: bool,
+        expected_processing_attempt: int | None,
+    ) -> Document | None:
+        """The body of ``update_document``, run in one transaction."""
         async with observed_context(
             self._pool.connection(), "graph.pool", "graph.return", "graph.return_failed"
         ) as conn:
@@ -983,11 +1022,22 @@ class PostgresGraphStore(GraphStore):
             # Building the index scans the whole documents table, which can
             # outlast the pool's statement timeout; lift it for this
             # transaction only.
+            # The build takes a SHARE lock on documents; the lock wait is
+            # bounded so an open write transaction cannot stall the caller --
+            # vault load among them -- indefinitely.
             self._check_open()
             async with self._pool.connection() as conn, conn.transaction():
                 await conn.execute("SET LOCAL statement_timeout = 0")
+                await conn.execute(f"SET LOCAL lock_timeout = '{TIER3_INDEX_LOCK_TIMEOUT}'")
                 await conn.execute(tier3_unique_index_ddl_pg(doc_type, field))
         except pg_errors.UniqueViolation as exc:
+            # Two processes building the same index at once: the loser fails
+            # on the catalog's own name constraint, not on the data. The index
+            # the winner built is the one asked for.
+            if exc.diag.constraint_name == _PG_CATALOG_RELNAME_CONSTRAINT or (
+                await self.tier3_unique_index_exists(doc_type, field)
+            ):
+                return
             raise Tier3UniqueIndexBlockedError(
                 doc_type=doc_type,
                 field=field,
@@ -1012,6 +1062,25 @@ class PostgresGraphStore(GraphStore):
         # returns NULL when no such relation exists.
         result = await self._fetch_scalar("SELECT to_regclass(%s) IS NOT NULL", (name,))
         return bool(result)
+
+    async def drop_tier3_unique_indexes_except(self, keep: set[str]) -> list[str]:
+        rows = await self._fetch_rows(
+            "SELECT indexname FROM pg_indexes "
+            "WHERE schemaname = current_schema() AND indexname LIKE %s",
+            (TIER3_UNIQUE_INDEX_PREFIX.replace("_", r"\_") + "%",),
+        )
+        # The DDL names the index unquoted, so the catalog holds it as Postgres
+        # folds an identifier: lowercased, then cut to NAMEDATALEN - 1 bytes.
+        # Compare in that form, or a declared index would read as undeclared.
+        keep = {stored_index_name(name) for name in keep}
+        dropped = []
+        for row in rows:
+            name = row["indexname"]
+            if name in keep or not _TIER3_INDEX_NAME_FORMAT.fullmatch(name):
+                continue
+            await self._execute(f"DROP INDEX IF EXISTS {name}")
+            dropped.append(name)
+        return sorted(dropped)
 
     async def find_chain_heads_with_tier3_value(
         self, doc_type: str, field: str

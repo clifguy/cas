@@ -2748,9 +2748,22 @@ class DocTypeRequirements(BaseModel):
     unique_tier3_fields: list[str] = Field(
         description=(
             "Sorted names the doc_type declares under `unique_keys`, whose "
-            "values must be unique within the vault across all lifecycle "
-            "statuses. A collision raises `tier3_unique_constraint_violation`."
+            "values must be unique within the doc_type: every chain head holds "
+            "its value, archived ones included, and only a superseded "
+            "predecessor is exempt. A collision raises "
+            "`tier3_unique_constraint_violation`."
         )
+    )
+    active_unique_tier3_fields: list[str] | None = Field(
+        default=None,
+        description=(
+            "Sorted subset of `unique_tier3_fields` whose uniqueness is "
+            "enforced now. A declared field absent from it is not enforced, "
+            "and a write setting it is refused with "
+            "`tier3_unique_constraint_inactive`. Reported on an ingest "
+            "preview; null where it was not evaluated, as in the detail of a "
+            "`tier3_schema_violation`."
+        ),
     )
     permitted_source_types: list[str] | None = Field(
         description=(
@@ -6206,7 +6219,7 @@ class BatchIngestFileError(BaseModel):
             "`invalid_document_date`, "
             "`reserved_transition`, `source_digest_mismatch`, `source_file_not_found`, "
             "`source_type_unresolved`, `source_unreadable`, `tier3_schema_violation`, "
-            "`tier3_unique_constraint_violation`, "
+            "`tier3_unique_constraint_inactive`, `tier3_unique_constraint_violation`, "
             "`vault_migration_in_flight`, `vault_source_path_refused`, "
             "`vault_source_store_refused` and `vault_source_store_unavailable`. "
             "`source_digest_mismatch` reports a declared digest that does not match "
@@ -6719,6 +6732,26 @@ class UpdateVaultConfigResponse(BaseModel):
             "Structural diff populated on dry-run; null on a "
             "real-run. This is the would-be projection of the config "
             "sections that would change."
+        ),
+    )
+    tier3_uniqueness_activations: list[Tier3UniquenessActivation] = Field(
+        default_factory=list,
+        description=(
+            "On a real run, every `unique_keys` declaration in the new "
+            "configuration whose index is in place, built by this write or "
+            "already present. Empty on a dry run."
+        ),
+    )
+    tier3_uniqueness_collisions: list[Tier3UniquenessCollision] = Field(
+        default_factory=list,
+        description=(
+            "On a real run, the collisions keeping a `unique_keys` declaration "
+            "made before this write from being enforced; writes that "
+            "declaration governs are refused with "
+            "`tier3_unique_constraint_inactive` until they are resolved and "
+            "`migrate_vault` runs. A declaration this write adds never "
+            "appears here: one that collides refuses the write with "
+            "`tier3_unique_activation_blocked`. Empty on a dry run."
         ),
     )
 

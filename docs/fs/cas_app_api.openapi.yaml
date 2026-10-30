@@ -794,7 +794,7 @@ components:
             token or a relocation pointer: `adapter_config_invalid`,
             `adapter_not_found`, `duplicate_content`, `invalid_doc_type`, `invalid_document_date`,
             `reserved_transition`, `source_digest_mismatch`, `source_file_not_found`,
-            `source_type_unresolved`, `source_unreadable`, `tier3_schema_violation`, `tier3_unique_constraint_violation`,
+            `source_type_unresolved`, `source_unreadable`, `tier3_schema_violation`, `tier3_unique_constraint_inactive`, `tier3_unique_constraint_violation`,
             `vault_migration_in_flight`, `vault_source_path_refused`,
             `vault_source_store_refused` and `vault_source_store_unavailable`.
             `source_digest_mismatch` reports a declared digest that does not match
@@ -988,9 +988,24 @@ components:
             type: string
           description: >-
             Sorted names the doc_type declares under `unique_keys`,
-            whose values must be unique within the vault across all
-            lifecycle statuses. A collision raises
+            whose values must be unique within the doc_type: every chain
+            head holds its value, archived ones included, and only a
+            superseded predecessor is exempt. A collision raises
             `tier3_unique_constraint_violation`.
+        active_unique_tier3_fields:
+          anyOf:
+            - type: array
+              items:
+                type: string
+            - type: "null"
+          default: null
+          description: >-
+            Sorted subset of `unique_tier3_fields` whose uniqueness is
+            enforced now. A declared field absent from it is not enforced,
+            and a write setting it is refused with
+            `tier3_unique_constraint_inactive`. Reported on an ingest
+            preview; null where it was not evaluated, as in the detail of a
+            `tier3_schema_violation`.
         permitted_source_types:
           type: [array, "null"]
           items:
@@ -4762,6 +4777,93 @@ components:
           $ref: '#/components/schemas/Tier3SchemaViolationErrorDetail'
       additionalProperties: false
       description: The refusal envelope for this error code.
+    Tier3UniqueActivationBlockedErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - collisions
+      properties:
+        collisions:
+          type: array
+          items:
+            type: object
+            additionalProperties: false
+            required:
+            - doc_type
+            - field
+            - value
+            - document_ids
+            properties:
+              doc_type:
+                type: string
+                description: Document type declaring the field unique.
+              field:
+                type: string
+                description: The tier3_metadata field whose values collided.
+              value:
+                description: The value held by more than one chain head.
+              document_ids:
+                type: array
+                items:
+                  type: string
+                description: The chain-head document ids holding the value.
+            description: One value held by more than one chain head.
+          description: Each value already held by more than one chain head.
+      description: Additional context for this refusal.
+    Tier3UniqueActivationBlockedError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: tier3_unique_activation_blocked
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/Tier3UniqueActivationBlockedErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    Tier3UniqueConstraintInactiveErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - doc_type
+      - field
+      properties:
+        doc_type:
+          type: string
+          description: Doc type.
+        field:
+          type: string
+          description: Field.
+      description: Additional context for this refusal.
+    Tier3UniqueConstraintInactiveError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: tier3_unique_constraint_inactive
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/Tier3UniqueConstraintInactiveErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
     Tier3UniqueConstraintViolationErrorDetail:
       type: object
       additionalProperties: false
@@ -5595,6 +5697,8 @@ components:
             - tier3_doc_type_change_stale_keys
             - tier3_patch_overlap
             - tier3_schema_violation
+            - tier3_unique_activation_blocked
+            - tier3_unique_constraint_inactive
             - tier3_unique_constraint_violation
             - tier3_unset_conflict
             - transfer_content_too_large
@@ -5677,6 +5781,7 @@ components:
         - synced_from_version_not_in_source_chain
         - tbd_policy_edge
         - tier3_schema_violation
+        - tier3_unique_constraint_inactive
         - tier3_unique_constraint_violation
         - transfer_endpoint_not_configured
         - transfer_not_staged
@@ -5726,6 +5831,7 @@ components:
         - internal_error
         - invalid_parameter
         - statement_timeout
+        - tier3_unique_activation_blocked
         - unknown_parameter
         - vault_already_exists
         - vault_config_validation_error
@@ -5849,6 +5955,7 @@ components:
         - synced_from_version_not_in_source_chain
         - tbd_policy_edge
         - tier3_schema_violation
+        - tier3_unique_constraint_inactive
         - tier3_unique_constraint_violation
         - transfer_endpoint_not_configured
         - transfer_not_staged
@@ -6142,6 +6249,8 @@ components:
         - tier3_doc_type_change_stale_keys
         - tier3_patch_overlap
         - tier3_schema_violation
+        - tier3_unique_constraint_inactive
+        - tier3_unique_constraint_violation
         - tier3_unset_conflict
         - undeclared_key
         - unknown_parameter
@@ -6162,6 +6271,7 @@ components:
         - invalid_parameter
         - invalid_vault_id
         - statement_timeout
+        - tier3_unique_activation_blocked
         - unknown_parameter
         - vault_config_validation_error
         - vault_not_found
@@ -6321,6 +6431,8 @@ components:
       - $ref: '#/components/schemas/Tier3DocTypeChangeStaleKeysError'
       - $ref: '#/components/schemas/Tier3PatchOverlapError'
       - $ref: '#/components/schemas/Tier3SchemaViolationError'
+      - $ref: '#/components/schemas/Tier3UniqueActivationBlockedError'
+      - $ref: '#/components/schemas/Tier3UniqueConstraintInactiveError'
       - $ref: '#/components/schemas/Tier3UniqueConstraintViolationError'
       - $ref: '#/components/schemas/Tier3UnsetConflictError'
       - $ref: '#/components/schemas/TransferContentTooLargeError'
@@ -6453,6 +6565,8 @@ components:
           tier3_doc_type_change_stale_keys: '#/components/schemas/Tier3DocTypeChangeStaleKeysError'
           tier3_patch_overlap: '#/components/schemas/Tier3PatchOverlapError'
           tier3_schema_violation: '#/components/schemas/Tier3SchemaViolationError'
+          tier3_unique_activation_blocked: '#/components/schemas/Tier3UniqueActivationBlockedError'
+          tier3_unique_constraint_inactive: '#/components/schemas/Tier3UniqueConstraintInactiveError'
           tier3_unique_constraint_violation: '#/components/schemas/Tier3UniqueConstraintViolationError'
           tier3_unset_conflict: '#/components/schemas/Tier3UnsetConflictError'
           transfer_content_too_large: '#/components/schemas/TransferContentTooLargeError'

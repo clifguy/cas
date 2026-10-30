@@ -721,6 +721,8 @@ export interface DocTypeRequirements {
   declared_tier3_fields: string[];
   required_tier3_fields: string[];
   unique_tier3_fields: string[];
+  // The declared unique fields enforced now; null where not evaluated.
+  active_unique_tier3_fields?: string[] | null;
   permitted_source_types: string[] | null;
 }
 
@@ -862,12 +864,28 @@ export interface VaultConfigPreview {
   changed_sections: string[];
 }
 
+// A declared unique tier3 field whose index is in place.
+export interface Tier3UniquenessActivation {
+  doc_type: string;
+  field: string;
+}
+
+// A value held by more than one chain head, keeping its declaration unenforced.
+export interface Tier3UniquenessCollision {
+  doc_type: string;
+  field: string;
+  value: unknown;
+  document_ids: string[];
+}
+
 export interface UpdateConfigResponse {
   status: string;
   vault_id: string;
   warnings: string[];
   dry_run?: boolean;
   preview?: VaultConfigPreview | null;
+  tier3_uniqueness_activations?: Tier3UniquenessActivation[];
+  tier3_uniqueness_collisions?: Tier3UniquenessCollision[];
 }
 
 // --- Metadata update (CAS-ADR-028 ops-object shape) ---

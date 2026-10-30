@@ -21,6 +21,7 @@ from sage.api.errors import Tier3SchemaViolationError
 from sage.config import VaultConfig
 from sage.models.enums import SourceType
 from sage.models.schemas import IngestRequest
+from sage.services._tier3_uniqueness import activate_unique_pairs, declared_unique_pairs
 from sage.services.ingestion import IngestionService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 
@@ -94,7 +95,7 @@ def adr_tier3_config(tmp_vault_dir):
 
 
 @pytest.fixture
-def adr_tier3_ingestion_service(
+async def adr_tier3_ingestion_service(
     graph_store,
     lock_manager,
     stub_content_store,
@@ -102,6 +103,10 @@ def adr_tier3_ingestion_service(
     stub_abstraction_provider,
     adr_tier3_config,
 ):
+    # Vault load activates every clean unique_keys declaration; a service
+    # built directly over the config does the same before it writes.
+    activation = await activate_unique_pairs(graph_store, declared_unique_pairs(adr_tier3_config))
+    assert activation.collisions == []
     return IngestionService(
         graph_store=graph_store,
         lock_manager=lock_manager,
