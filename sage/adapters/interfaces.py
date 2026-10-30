@@ -1233,6 +1233,14 @@ class GraphStore(ABC):
         """Return True if the tier3 unique index for this pair exists."""
 
     @abstractmethod
+    async def drop_tier3_unique_indexes_except(self, keep: set[str]) -> list[str]:
+        """Drop every tier3 unique index whose name is not in ``keep``.
+
+        Returns the names dropped, so an index whose declaration was
+        withdrawn stops enforcing a constraint no configuration states.
+        """
+
+    @abstractmethod
     async def find_chain_heads_with_tier3_value(
         self, doc_type: str, field: str
     ) -> list[tuple[object, list[str]]]:

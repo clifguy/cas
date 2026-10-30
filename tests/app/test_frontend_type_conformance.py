@@ -242,6 +242,8 @@ ENROLLED: Final[Enrollment] = {
         "StagingEdgeDismissResponse": "StagingEdgeDismissResponse",
         "TraversalNode": "TraversalNode",
         "TraverseResponse": "TraverseResponse",
+        "Tier3UniquenessActivation": "Tier3UniquenessActivation",
+        "Tier3UniquenessCollision": "Tier3UniquenessCollision",
         "UpdateConfigResponse": "UpdateVaultConfigResponse",
         "VaultConfigPreview": "VaultConfigPreview",
         "VaultStats": "VaultStatsResponse",

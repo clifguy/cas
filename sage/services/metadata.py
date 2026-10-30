@@ -18,6 +18,7 @@ from sage.api.errors import (
     StaleReadError,
     Tier3DocTypeChangeStaleKeysError,
     Tier3SchemaViolationError,
+    Tier3UniqueConstraintViolation,
     Tier3UnsetConflictError,
 )
 from sage.config import VaultConfig
@@ -40,9 +41,11 @@ from sage.models.schemas import (
 from sage.request_identity import asserted_agent, current_actor, modifier_fields
 from sage.services._bulk_envelope import resolve_item_document_id, sage_error_to_envelope
 from sage.services._dry_run import doc_type_requirements
+from sage.services._tier3_uniqueness import require_active_unique_keys, set_fields
 from sage.services.deprecations import is_timestamp, warnings_for
 from sage.services.document_surface import refresh_derived_retrieval_text
 from sage.storage.locks import DocumentLockManager
+from sage.storage.tier3_uniqueness import Tier3UniqueViolation
 
 
 def _wire_version(ts: datetime) -> str:
@@ -341,6 +344,14 @@ class MetadataService:
                             merged_tier3_keys=list(merged.keys()),
                         )
                 self._validate_tier3(effective_dt, merged)
+                # A write that sets a declared-unique field, or moves a record
+                # carrying one into a doc_type declaring it, is governed by
+                # that declaration and refused while it is not enforced.
+                governed = set_fields(merged) if is_doc_type_change else []
+                if request.tier3_metadata is not None:
+                    patched = request.tier3_metadata.set or {}
+                    governed = [*governed, *(k for k in set_fields(merged) if k in patched)]
+                await require_active_unique_keys(self._store, self._config, effective_dt, governed)
                 # Write discipline: only persist a new tier3 dict when the
                 # caller actually supplied a patch. A doc_type-only change
                 # that revalidates the stored dict must not rewrite it.
@@ -381,7 +392,15 @@ class MetadataService:
                 modifier_fields(current_actor() or modified_by or self._config.vault.owner)
             )
             updates["updated_at"] = datetime.now(timezone.utc).isoformat()
-            doc = await self._store.update_document(document_id, updates)
+            try:
+                doc = await self._store.update_document(document_id, updates)
+            except Tier3UniqueViolation as exc:
+                raise Tier3UniqueConstraintViolation(
+                    doc_type=exc.doc_type,
+                    field=exc.field,
+                    colliding_value=exc.colliding_value,
+                    existing_document_id=exc.existing_document_id,
+                ) from exc
 
             # Sync chunk-pushdownable scalars to the content store so its
             # pre-filter pushdown (for doc_type, lifecycle_status, and

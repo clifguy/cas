@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 from sage.adapters.interfaces import ContentStore, GraphStore
 from sage.api.errors import (
     DestructiveConfigChangeError,
+    Tier3UniqueActivationBlockedError,
     VaultConfigValidationError,
 )
 from sage.config import VaultConfig, without_null_retired_sections
@@ -33,6 +34,11 @@ from sage.models.schemas import (
     UpdateVaultConfigResponse,
     VaultConfigPreview,
     VaultStatsResponse,
+)
+from sage.services._tier3_uniqueness import (
+    activate_unique_pairs,
+    declared_unique_pairs,
+    scan_unique_collisions,
 )
 from sage.services.maintenance_log import read_last_optimize_summary
 from sage.vault_management import (
@@ -261,6 +267,24 @@ class VaultConfigService:
 
         warnings = await _check_destructive_changes(old_config, new_config, self._store)
 
+        # A newly declared unique_keys entry is refused, on a preview as on
+        # a real run, while chain heads already share a value: declaring it
+        # would leave a constraint the substrate cannot enforce (CAS-ADR-031
+        # §5). Entries declared before this write are not re-litigated here.
+        old_pairs = declared_unique_pairs(old_config)
+        new_pairs = declared_unique_pairs(new_config)
+        added_pairs = [pair for pair in new_pairs if pair not in old_pairs]
+        unbuilt_pairs = [
+            pair for pair in added_pairs if not await self._store.tier3_unique_index_exists(*pair)
+        ]
+        blocking = [
+            collision
+            for pair in unbuilt_pairs
+            for collision in await scan_unique_collisions(self._store, *pair)
+        ]
+        if blocking:
+            raise Tier3UniqueActivationBlockedError([c.model_dump(mode="json") for c in blocking])
+
         # Dry-run path — compute the section-level diff and
         # return the preview without writing yaml or reloading the
         # registry. dry-run never raises DestructiveConfigChangeError;
@@ -305,10 +329,26 @@ class VaultConfigService:
             config_path.read_bytes() if config_path is not None and config_path.exists() else None
         )
 
-        vault_source_store.write_config(vault_id, merged)
+        # Build the new indexes before anything is persisted. The build is
+        # the authority on a duplicate written since the scan: it fails, and
+        # the write is refused with nothing left behind.
+        try:
+            raced = (await activate_unique_pairs(self._store, unbuilt_pairs)).collisions
+        except BaseException:
+            await _drop_unique_indexes(self._store, unbuilt_pairs)
+            raise
+        if raced:
+            await _drop_unique_indexes(self._store, unbuilt_pairs)
+            raise Tier3UniqueActivationBlockedError([c.model_dump(mode="json") for c in raced])
 
         try:
-            await self._registry_service.reload(vault_id, new_config)
+            vault_source_store.write_config(vault_id, merged)
+        except BaseException:
+            await _drop_unique_indexes(self._store, unbuilt_pairs)
+            raise
+
+        try:
+            reloaded = await self._registry_service.reload(vault_id, new_config)
         except BaseException:
             # Roll back the yaml so on-disk state continues to match the
             # in-memory registry, which still holds the old services per
@@ -328,7 +368,11 @@ class VaultConfigService:
                     "from in-memory state",
                     vault_id,
                 )
+            await _drop_unique_indexes(self._store, unbuilt_pairs)
             raise
+
+        # A withdrawn declaration's index went with the reload, which drops
+        # every index the new configuration does not declare.
 
         return UpdateVaultConfigResponse(
             status="updated",
@@ -336,4 +380,20 @@ class VaultConfigService:
             warnings=warnings,
             dry_run=False,
             preview=None,
+            tier3_uniqueness_activations=reloaded.tier3_uniqueness_activations,
+            tier3_uniqueness_collisions=reloaded.tier3_uniqueness_collisions,
         )
+
+
+async def _drop_unique_indexes(store: GraphStore, pairs: list[tuple[str, str]]) -> None:
+    """Drop the unique indexes for ``pairs``; a failure is logged, since it
+    runs on a path that is already reporting another outcome."""
+    for doc_type, field in pairs:
+        try:
+            await store.drop_tier3_unique_index(doc_type, field)
+        except Exception:
+            logger.exception(
+                "could not drop the unique index for %s.%s; it remains enforced",
+                doc_type,
+                field,
+            )

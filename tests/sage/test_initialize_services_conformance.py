@@ -113,13 +113,15 @@ class _FakeServices:
     the six drivers below: graph_store (close + list), config_path /
     from_declaration / content_store_factory / graph_store_factory / timing_thread
     (reload_vault_in_registry's close-and-reuse branch), close_timing and
-    close_storage (every teardown path calls them), and ingestion_service
-    (VaultRegistryService.create_vault's _build_vault_summary)."""
+    close_storage (every teardown path calls them), ingestion_service
+    (VaultRegistryService.create_vault's _build_vault_summary), and
+    tier3_uniqueness_collisions (create_vault's activation check)."""
 
     def __init__(self, config: VaultConfig) -> None:
         self.config = config
         self.graph_store = _FakeGraphStore()
         self.ingestion_service = _FakeIngestionService()
+        self.tier3_uniqueness_collisions: list = []
         self.timing_thread = None
         self.config_path: Path | None = None
         self.from_declaration = False

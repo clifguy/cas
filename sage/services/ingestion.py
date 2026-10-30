@@ -126,6 +126,11 @@ from sage.request_identity import (
     writer_name,
 )
 from sage.services._dry_run import doc_type_requirements
+from sage.services._tier3_uniqueness import (
+    active_unique_fields,
+    require_active_unique_keys,
+    set_fields,
+)
 from sage.services.bounded_abstraction import (
     AbstractionAllowanceExhausted,
     abstraction_request,
@@ -1810,6 +1815,9 @@ class IngestionService:
                 request=request, parsed=parsed, predecessor=predecessor, reused=reused
             )
             self._validate_tier3_payload(resolved_doc_type, request.tier3_metadata)
+            await require_active_unique_keys(
+                self._store, self._config, resolved_doc_type, set_fields(request.tier3_metadata)
+            )
             ran.append(DryRunValidator.TIER3_METADATA)
         return ran
 
@@ -2071,6 +2079,9 @@ class IngestionService:
                 request=request, parsed=parsed, predecessor=predecessor
             )
             self._validate_tier3_payload(resolved_dt, final_tier3)
+            await require_active_unique_keys(
+                self._store, self._config, resolved_dt, set_fields(final_tier3)
+            )
 
         # Resolve title with precedence: caller > filename parse > adapter.
         # The adapter's ProjectionResult.title is a content-extraction
@@ -2178,6 +2189,9 @@ class IngestionService:
                 request=request, parsed=parsed, predecessor=predecessor, reused=existing_doc
             )
             self._validate_tier3_payload(resolved_dt, final_tier3)
+            await require_active_unique_keys(
+                self._store, self._config, resolved_dt, set_fields(final_tier3)
+            )
 
         # Compute the merged metadata in memory before any insert/update
         # touches the store. Closes the partial-metadata window
@@ -2267,9 +2281,17 @@ class IngestionService:
                 existing_doc.model_copy(update={"adapter_version": projection.adapter_version}),
                 merged_config,
             )
-            doc = await self._store.update_document(
-                existing_doc.id, updates, processing_stage="indexing"
-            )
+            try:
+                doc = await self._store.update_document(
+                    existing_doc.id, updates, processing_stage="indexing"
+                )
+            except Tier3UniqueViolation as exc:
+                raise Tier3UniqueConstraintViolation(
+                    doc_type=exc.doc_type,
+                    field=exc.field,
+                    colliding_value=exc.colliding_value,
+                    existing_document_id=exc.existing_document_id,
+                ) from exc
             is_new = False
 
             # Served passages remain available until conditional replacement publication.
@@ -2604,11 +2626,12 @@ class IngestionService:
         # A force re-ingest validates once the record it reuses is known,
         # below, in the position the real run validates it in.
         if request.tier3_metadata is not None and not request.force:
-            self._validate_tier3_payload(
-                self._resolve_ingest_doc_type(
-                    request=request, parsed=parsed, predecessor=predecessor
-                ),
-                request.tier3_metadata,
+            preview_doc_type = self._resolve_ingest_doc_type(
+                request=request, parsed=parsed, predecessor=predecessor
+            )
+            self._validate_tier3_payload(preview_doc_type, request.tier3_metadata)
+            await require_active_unique_keys(
+                self._store, self._config, preview_doc_type, set_fields(request.tier3_metadata)
             )
 
         provenance_hash = canonicalize_sha256(delivered_hash) if delivered_hash else None
@@ -2641,6 +2664,9 @@ class IngestionService:
         )
         if request.tier3_metadata is not None and request.force:
             self._validate_tier3_payload(resolved_doc_type, request.tier3_metadata)
+            await require_active_unique_keys(
+                self._store, self._config, resolved_doc_type, set_fields(request.tier3_metadata)
+            )
         if reused is not None:
             self._refuse_retype_out_of_scope(reused, resolved_doc_type)
 
@@ -2656,7 +2682,13 @@ class IngestionService:
             predecessor_id=request.predecessor_id,
             would_supersede=predecessor is not None,
             tier3_validated=request.tier3_metadata is not None,
-            requirements=doc_type_requirements(self._config, resolved_doc_type),
+            requirements=doc_type_requirements(self._config, resolved_doc_type).model_copy(
+                update={
+                    "active_unique_tier3_fields": await active_unique_fields(
+                        self._store, self._config, resolved_doc_type
+                    )
+                }
+            ),
         )
 
     async def _run_background_pipeline(

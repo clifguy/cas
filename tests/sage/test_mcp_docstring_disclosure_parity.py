@@ -598,8 +598,8 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # Both counts fell again once the per-item and per-argument rules moved
     # into the published parameter descriptions, which the whole-docstring
     # side credits, in the wording the operation already used.
-    ("sage_core", "update_metadata"): Pin(6, 5),
-    ("sage_core", "update_vault_config"): Pin(7, 8),
+    ("sage_core", "update_metadata"): Pin(6, 4),
+    ("sage_core", "update_vault_config"): Pin(6, 5),
     ("sage_core", "verify_hashes"): Pin(2, 4),
     # doc_only fell from 7 as the operation's 400 gained the boundary-refusal
     # sentence every vault-scoped operation now declares. The claim that came

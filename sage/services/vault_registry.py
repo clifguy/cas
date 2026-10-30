@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 from sage.api.errors import (
+    Tier3UniqueActivationBlockedError,
     VaultAlreadyExistsError,
     VaultConfigValidationError,
     VaultNotFoundError,
@@ -336,6 +337,24 @@ class VaultRegistryService:
                 registry_service=self,
                 abstraction_provider=stack_provider,
             )
+            # A schema that survived an eviction can already hold rows that
+            # collide; the declaration is then refused like any config write
+            # that would declare an unenforceable constraint (CAS-ADR-031 §5).
+            if services.tier3_uniqueness_collisions:
+                try:
+                    for doc_type, field in services.tier3_uniqueness_built:
+                        try:
+                            await services.graph_store.drop_tier3_unique_index(doc_type, field)
+                        except Exception:
+                            logger.exception(
+                                "could not drop the unique index for %s.%s", doc_type, field
+                            )
+                finally:
+                    services.close_timing()
+                    await services.close_storage()
+                raise Tier3UniqueActivationBlockedError(
+                    [c.model_dump(mode="json") for c in services.tier3_uniqueness_collisions]
+                )
             self._registry[vault_id] = services
         except BaseException:
             # Restore the on-disk yaml so the user can retry create_vault

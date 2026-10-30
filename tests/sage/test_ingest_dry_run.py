@@ -43,6 +43,7 @@ from sage.models.schemas import (
     Tier3Patch,
     UpdateMetadataRequest,
 )
+from sage.services._tier3_uniqueness import activate_unique_pairs, declared_unique_pairs
 from sage.services.batch_ingest import (
     BatchIngestService,
     FileDescriptor,
@@ -187,7 +188,7 @@ def dry_lifecycle_service(graph_store, lock_manager, dry_config):
 
 
 @pytest.fixture
-def dry_ingestion_service(
+async def dry_ingestion_service(
     graph_store,
     lock_manager,
     stub_content_store,
@@ -196,6 +197,10 @@ def dry_ingestion_service(
     dry_config,
     dry_lifecycle_service,
 ):
+    # Vault load activates every clean unique_keys declaration; a service
+    # built directly over the config does the same before it writes.
+    activation = await activate_unique_pairs(graph_store, declared_unique_pairs(dry_config))
+    assert activation.collisions == []
     return IngestionService(
         graph_store=graph_store,
         lock_manager=lock_manager,

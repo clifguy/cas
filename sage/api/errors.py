@@ -735,6 +735,52 @@ class Tier3UniqueConstraintViolation(SAGEError):
         )
 
 
+class Tier3UniqueConstraintInactiveError(SAGEError):
+    """409: a write sets a tier3 field whose declared uniqueness is not
+    enforced (CAS-ADR-031).
+
+    The doc_type declares the field under `unique_keys`, but its partial
+    UNIQUE index does not exist, so the substrate cannot refuse a duplicate.
+    The write is refused rather than accepted unguarded. The index is built
+    when the declaration's portfolio is clean -- on the config write that
+    declares it, on vault load, or by `migrate_vault` -- and cannot be built
+    while existing chain heads share a value.
+    """
+
+    def __init__(self, doc_type: str, field: str) -> None:
+        super().__init__(
+            "tier3_unique_constraint_inactive",
+            (
+                f"tier3_metadata field {field!r} is declared unique for doc_type "
+                f"{doc_type!r}, but the constraint is not active; resolve the "
+                "colliding values migrate_vault reports, then run migrate_vault"
+            ),
+            409,
+            {"doc_type": doc_type, "field": field},
+        )
+
+
+class Tier3UniqueActivationBlockedError(SAGEError):
+    """409: a vault-config write would declare a `unique_keys` entry the
+    existing portfolio already violates (CAS-ADR-031 §5).
+
+    Nothing is persisted. Each entry in `collisions` (a serialized
+    `Tier3UniquenessCollision`) names a value held by more than one chain
+    head; the operator resolves them before declaring the constraint.
+    """
+
+    def __init__(self, collisions: list[dict]) -> None:
+        super().__init__(
+            "tier3_unique_activation_blocked",
+            (
+                f"{len(collisions)} value(s) are already held by more than one chain "
+                "head, so the declared unique_keys cannot be enforced; nothing was written"
+            ),
+            409,
+            {"collisions": collisions},
+        )
+
+
 class ListFieldAddConflictError(SAGEError):
     """400: a ListFieldPatch.add carries one or more values already present
     on the named list-valued field (CAS-ADR-038 Primitive A).

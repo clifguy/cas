@@ -1834,20 +1834,19 @@ class DocTypeEntry(BaseModel):
     unique_keys: list[str] | None = Field(
         default=None,
         description=(
-            "Optional list of tier3_metadata field names whose values must "
-            "be unique within this doc_type across all lifecycle statuses "
-            "(CAS-ADR-031). Each entry must name a top-level property "
-            "declared in `metadata_schema.properties`. Uniqueness is "
-            "enforced atomically by the SAGE storage substrate on insert "
-            "and supersession-insert; a write that would violate the "
-            "constraint raises `tier3_unique_constraint_violation` (409). "
-            "The supersession chain is the explicit exception: a successor "
-            "inherits its predecessor's identifier without collision. A "
-            "doc_type with no `unique_keys` (or an empty list) has no "
-            "uniqueness constraint on any tier3 field. Activating a "
-            "`unique_keys` declaration requires a clean portfolio per "
-            "CAS-ADR-031 §5; SAGE refuses to create the underlying "
-            "index while collisions exist."
+            "Optional list of tier3_metadata field names whose values must be "
+            "unique within this doc_type (CAS-ADR-031); each must name a "
+            "property in `metadata_schema.properties`. Enforced atomically by "
+            "the storage substrate on every write; a duplicate raises "
+            "`tier3_unique_constraint_violation` (409). Every chain head holds "
+            "its value, archived ones included; only a superseded predecessor "
+            "is exempt. A declaration is enforced only over a clean portfolio "
+            "(CAS-ADR-031 §5): adding one whose values already collide is "
+            "refused with `tier3_unique_activation_blocked`, and while one is "
+            "unenforced a write setting its field is refused with "
+            "`tier3_unique_constraint_inactive`. Clean declarations are "
+            "enforced from the config write, on vault load and by "
+            "`migrate_vault`."
         ),
     )
 

@@ -1,0 +1,30 @@
+classification: minor
+category: [capability, caller-adaptation, operator-adaptation]
+summary: >-
+  A declared tier3 unique_keys constraint is now either enforced or visibly
+  refused, where before its index was built only by migrate_vault and a
+  declaration made any other way left duplicates accepted silently. Vault
+  load and reload build the index for every clean declaration, as do
+  create_vault and update_vault_config for the entries they add; a config
+  write adding an entry whose values already collide is refused with the new
+  tier3_unique_activation_blocked (409, detail collisions) on a dry run as on
+  a real one, and nothing is written. Withdrawing an entry drops its index.
+  An ingest, supersession, force re-ingest or update_metadata that sets a
+  declared field whose index is absent is refused with the new
+  tier3_unique_constraint_inactive (409, detail doc_type and field). A
+  colliding update_metadata or force re-ingest now reports
+  tier3_unique_constraint_violation where it raised an untyped storage error.
+  UpdateVaultConfigResponse gains tier3_uniqueness_activations and
+  tier3_uniqueness_collisions; DocTypeRequirements gains
+  active_unique_tier3_fields, filled on an ingest preview. Both OpenAPI
+  specifications declare the two error envelopes and the new fields, the
+  per-file batch vocabulary lists tier3_unique_constraint_inactive, the
+  unique_keys description in document_types.schema.json states activation,
+  refusal and that archived chain heads count, and the MCP tool catalog
+  descriptions follow.
+for_callers: >-
+  A unique_keys declaration is enforced from the write that declares it and
+  from vault load; declaring one over colliding values is refused with
+  tier3_unique_activation_blocked, and a write setting a declared field that
+  is not enforced is refused with tier3_unique_constraint_inactive until the
+  collisions migrate_vault reports are resolved and it is re-run.

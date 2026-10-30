@@ -154,6 +154,15 @@ def emitted_errors() -> Iterator[Any]:
                 args.update(code="invalid_vault_id", argument="vault_id")
             if name == "MissingFieldError":
                 args["field"] = "query"
+            if name == "Tier3UniqueActivationBlockedError":
+                args["collisions"] = [
+                    {
+                        "doc_type": "ticket",
+                        "field": "ticket_id",
+                        "value": "T-0001",
+                        "document_ids": ["0123abcd_first", "0123abcd_second"],
+                    }
+                ]
             if name == "UnexpectedFieldError":
                 args["field"] = "successor_id"
             if name == "RelocationProvenanceMismatchError":

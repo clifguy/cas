@@ -582,12 +582,12 @@ _INGEST_TIER3_METADATA = _ingest_param(
     dict | None,
     "tier3_metadata",
     mcp=(
-        "Tier3 uniqueness: a doc_type declaring a unique constraint on a tier3 "
-        "field enforces per-vault uniqueness on it at ingest time, checked in "
-        "the same transaction as the row insert so the existing document is "
-        "never disturbed; force does not override it. Call with dry_run=true "
-        "to read which fields a doc_type declares unique, under "
-        "requirements.unique_tier3_fields, and which it requires. Queryable "
+        "Tier3 uniqueness: a field the doc_type declares unique is unique per "
+        "vault; force does not override it. Archived chain heads keep their "
+        "values; only a superseded predecessor's is free. A declared field not "
+        "yet enforced refuses the write with tier3_unique_constraint_inactive. "
+        "dry_run=true lists unique, enforced and required fields under "
+        "requirements. Queryable "
         'via ``search`` as filters={"tier3_metadata": {...}}.'
     ),
 )
@@ -617,11 +617,11 @@ _INGEST_DRY_RUN = _ingest_param(
     bool,
     "dry_run",
     mcp=(
-        "The source is located and hashed where it stands. Every validator "
-        "that runs raises the error a real run would, except "
-        "that a duplicate comes back as would_create: false rather than as "
-        "duplicate_content. Unchecked, because each turns on state only the "
-        "real write reaches: tier3_unique_constraint_violation, "
+        "The source is located and hashed where it stands. Validators raise "
+        "as a real run would, except that a duplicate comes back as "
+        "would_create: false, not duplicate_content. Unchecked, because each "
+        "turns on state only the real write reaches: "
+        "tier3_unique_constraint_violation, "
         "force_reingest_path_mismatch, stale_chain_head, and a "
         "force_reingest_pin_mismatch for a store-resident source with no "
         "prior document record. A clean preview is not a promise that the "
@@ -877,7 +877,8 @@ def register_sage_tools(
         - 409: ``duplicate_content``, ``force_reingest_path_mismatch``,
           ``force_reingest_pin_mismatch``, ``lifecycle_state_not_applicable``,
           ``supersede_target_not_active``, ``identical_content_supersede``,
-          ``stale_chain_head``, ``tier3_unique_constraint_violation``,
+          ``stale_chain_head``, ``tier3_unique_constraint_inactive``,
+          ``tier3_unique_constraint_violation``,
           ``transfer_not_staged``, ``reserved_transition``,
           ``vault_migration_in_flight``
         - 410: ``transfer_token_invalid``
@@ -1260,8 +1261,7 @@ def register_sage_tools(
         """Patch mutable metadata fields on one or more documents.
 
         Accepts ``items`` as a list of N>=1 per-item patch requests;
-        ``items=[{...}]`` is the single-document form. This is the sole MCP
-        entry point for metadata patching.
+        ``items=[{...}]`` is the single-document form.
 
         Scalars use set-or-omit semantics: pass to set, omit to leave
         unchanged.
@@ -1282,13 +1282,14 @@ def register_sage_tools(
         counts zero.
 
         Per-item error modes (inside the response envelope):
-        ``document_not_found`` (404), ``invalid_doc_type`` (400),
-        ``{field}_add_conflict`` / ``{field}_remove_conflict`` (400),
+        ``document_not_found`` (404); 400: ``invalid_doc_type``,
+        ``{field}_add_conflict`` / ``{field}_remove_conflict``,
         ``tag_patch_overlap``, ``tier3_unset_conflict``,
-        ``tier3_patch_overlap``, ``patch_empty`` (400),
-        ``tier3_schema_violation`` (400),
-        ``tier3_doc_type_change_stale_keys`` (400),
-        ``lifecycle_state_not_applicable`` (409), ``stale_read`` (409).
+        ``tier3_patch_overlap``, ``patch_empty``, ``tier3_schema_violation``,
+        ``tier3_doc_type_change_stale_keys``; 409:
+        ``lifecycle_state_not_applicable``, ``stale_read``,
+        ``tier3_unique_constraint_violation``,
+        ``tier3_unique_constraint_inactive``.
 
         Error modes:
         - ``invalid_vault_id`` (400)
@@ -2111,6 +2112,7 @@ def register_sage_tools(
         - ``vault_config_validation_error`` (400): the config, or a doc_type's
           ``metadata_schema``, fails validation, or the config declares a
           retired section
+        - ``tier3_unique_activation_blocked`` (409)
         """
         try:
             request = CreateVaultRequest(config=config)
@@ -2185,11 +2187,9 @@ def register_sage_tools(
     ) -> dict:
         """Update vault configuration at the section level.
 
-        Each non-null section argument replaces the corresponding top-level
-        config section wholesale; sections left None are preserved.
-        Partial-section merges are not supported — passing
-        ``document_types={"doc_types": [...]}`` replaces the entire
-        ``document_types`` section, so include every key you want to keep.
+        Each non-null section argument replaces that top-level section
+        wholesale, so include every key you want to keep; sections left None
+        are preserved.
 
         If the merged config would remove a doc_type or lifecycle state that
         still has documents attached, the update is rejected with
@@ -2198,12 +2198,13 @@ def register_sage_tools(
         the success response. Changing ``vault.id`` is never permitted
         regardless of force — use ``create_vault`` for a new vault.
 
-        The update writes to disk and updates the running config in place;
-        subsequent calls see the new vocabulary immediately. The
-        write-then-reload sequence is atomic: if any step raises, the yaml is
-        rolled back to its pre-call bytes and the previous config keeps
+        The update writes to disk and takes effect at once; if any step
+        fails, the yaml is rolled back and the previous config keeps
         serving. ``reload_vault`` is needed only when an external process
         edited the yaml.
+
+        ``unique_keys`` changes take effect before the call returns;
+        ``tier3_uniqueness_collisions`` names entries still unenforced.
 
         Error modes:
         - ``invalid_vault_id`` (400)
@@ -2212,6 +2213,8 @@ def register_sage_tools(
         - ``vault_config_validation_error`` (400): the merged config fails
           validation, changes ``vault.id``, or its ``vault`` section declares
           a retired field
+        - ``tier3_unique_activation_blocked`` (409): an added ``unique_keys``
+          entry collides; nothing is written
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)

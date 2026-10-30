@@ -1139,6 +1139,8 @@ SCHEMAS = json.loads(
         "tier3_doc_type_change_stale_keys": "#/components/schemas/Tier3DocTypeChangeStaleKeysError",
         "tier3_patch_overlap": "#/components/schemas/Tier3PatchOverlapError",
         "tier3_schema_violation": "#/components/schemas/Tier3SchemaViolationError",
+        "tier3_unique_activation_blocked": "#/components/schemas/Tier3UniqueActivationBlockedError",
+        "tier3_unique_constraint_inactive": "#/components/schemas/Tier3UniqueConstraintInactiveError",
         "tier3_unique_constraint_violation": "#/components/schemas/Tier3UniqueConstraintViolationError",
         "tier3_unset_conflict": "#/components/schemas/Tier3UnsetConflictError",
         "transfer_content_too_large": "#/components/schemas/TransferContentTooLargeError",
@@ -1484,6 +1486,12 @@ SCHEMAS = json.loads(
         "$ref": "#/components/schemas/Tier3SchemaViolationError"
       },
       {
+        "$ref": "#/components/schemas/Tier3UniqueActivationBlockedError"
+      },
+      {
+        "$ref": "#/components/schemas/Tier3UniqueConstraintInactiveError"
+      },
+      {
         "$ref": "#/components/schemas/Tier3UniqueConstraintViolationError"
       },
       {
@@ -1624,6 +1632,7 @@ SCHEMAS = json.loads(
         "synced_from_version_not_in_source_chain",
         "tbd_policy_edge",
         "tier3_schema_violation",
+        "tier3_unique_constraint_inactive",
         "tier3_unique_constraint_violation",
         "transfer_endpoint_not_configured",
         "transfer_not_staged",
@@ -1676,6 +1685,7 @@ SCHEMAS = json.loads(
         "internal_error",
         "invalid_parameter",
         "statement_timeout",
+        "tier3_unique_activation_blocked",
         "unknown_parameter",
         "vault_already_exists",
         "vault_config_validation_error"
@@ -1808,6 +1818,7 @@ SCHEMAS = json.loads(
         "synced_from_version_not_in_source_chain",
         "tbd_policy_edge",
         "tier3_schema_violation",
+        "tier3_unique_constraint_inactive",
         "tier3_unique_constraint_violation",
         "transfer_endpoint_not_configured",
         "transfer_not_staged",
@@ -2120,6 +2131,8 @@ SCHEMAS = json.loads(
         "tier3_doc_type_change_stale_keys",
         "tier3_patch_overlap",
         "tier3_schema_violation",
+        "tier3_unique_constraint_inactive",
+        "tier3_unique_constraint_violation",
         "tier3_unset_conflict",
         "undeclared_key",
         "unknown_parameter",
@@ -2142,6 +2155,7 @@ SCHEMAS = json.loads(
         "invalid_parameter",
         "invalid_vault_id",
         "statement_timeout",
+        "tier3_unique_activation_blocked",
         "unknown_parameter",
         "vault_config_validation_error",
         "vault_not_found"
@@ -2346,6 +2360,8 @@ SCHEMAS = json.loads(
             "tier3_doc_type_change_stale_keys",
             "tier3_patch_overlap",
             "tier3_schema_violation",
+            "tier3_unique_activation_blocked",
+            "tier3_unique_constraint_inactive",
             "tier3_unique_constraint_violation",
             "tier3_unset_conflict",
             "transfer_content_too_large",
@@ -6203,6 +6219,124 @@ SCHEMAS = json.loads(
       "doc_type",
       "path",
       "message"
+    ],
+    "type": "object"
+  },
+  "Tier3UniqueActivationBlockedError": {
+    "additionalProperties": false,
+    "description": "The refusal envelope for this error code.",
+    "properties": {
+      "code": {
+        "const": "tier3_unique_activation_blocked",
+        "description": "Machine-readable error code selecting this envelope.",
+        "type": "string"
+      },
+      "detail": {
+        "$ref": "#/components/schemas/Tier3UniqueActivationBlockedErrorDetail"
+      },
+      "message": {
+        "description": "Human-readable error description.",
+        "type": "string"
+      },
+      "read_meta": {
+        "$ref": "#/components/schemas/ReadMeta"
+      }
+    },
+    "required": [
+      "code",
+      "message",
+      "detail"
+    ],
+    "type": "object"
+  },
+  "Tier3UniqueActivationBlockedErrorDetail": {
+    "additionalProperties": false,
+    "description": "Additional context for this refusal.",
+    "properties": {
+      "collisions": {
+        "description": "Each value already held by more than one chain head.",
+        "items": {
+          "additionalProperties": false,
+          "description": "One value held by more than one chain head.",
+          "properties": {
+            "doc_type": {
+              "description": "Document type declaring the field unique.",
+              "type": "string"
+            },
+            "document_ids": {
+              "description": "The chain-head document ids holding the value.",
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "field": {
+              "description": "The tier3_metadata field whose values collided.",
+              "type": "string"
+            },
+            "value": {
+              "description": "The value held by more than one chain head."
+            }
+          },
+          "required": [
+            "doc_type",
+            "field",
+            "value",
+            "document_ids"
+          ],
+          "type": "object"
+        },
+        "type": "array"
+      }
+    },
+    "required": [
+      "collisions"
+    ],
+    "type": "object"
+  },
+  "Tier3UniqueConstraintInactiveError": {
+    "additionalProperties": false,
+    "description": "The refusal envelope for this error code.",
+    "properties": {
+      "code": {
+        "const": "tier3_unique_constraint_inactive",
+        "description": "Machine-readable error code selecting this envelope.",
+        "type": "string"
+      },
+      "detail": {
+        "$ref": "#/components/schemas/Tier3UniqueConstraintInactiveErrorDetail"
+      },
+      "message": {
+        "description": "Human-readable error description.",
+        "type": "string"
+      },
+      "read_meta": {
+        "$ref": "#/components/schemas/ReadMeta"
+      }
+    },
+    "required": [
+      "code",
+      "message",
+      "detail"
+    ],
+    "type": "object"
+  },
+  "Tier3UniqueConstraintInactiveErrorDetail": {
+    "additionalProperties": false,
+    "description": "Additional context for this refusal.",
+    "properties": {
+      "doc_type": {
+        "description": "Doc type.",
+        "type": "string"
+      },
+      "field": {
+        "description": "Field.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "doc_type",
+      "field"
     ],
     "type": "object"
   },
