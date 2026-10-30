@@ -15,7 +15,6 @@ from sage.api.errors import (
     ReabstractDocumentAlreadyInFlightError,
 )
 from sage.maintenance.reabstract_bulk import run_sweep
-from sage.models.coverage import ProcessingCoverage
 from sage.models.enums import PipelineStatus, ReabstractOutcome
 from sage.models.schemas import ReabstractProgressEvent, ReabstractSummaryEvent
 from scripts import reabstract_deferred as script
@@ -95,14 +94,10 @@ async def test_dispatch_failure_classification_and_continuation(
                 poll_interval=0,
             )
         else:
-            # Coverage with no empty-readable mark: the sweep dispatches both.
-            content = SimpleNamespace(
-                read_processing_snapshot=AsyncMock(return_value=(ProcessingCoverage(), []))
-            )
             maintenance = _build_maintenance(
                 graph_store=graph,
                 config=minimal_config,
-                content_store=content,
+                content_store=None,
                 ingestion_service=ingestion,
             )
             if surface == "report":

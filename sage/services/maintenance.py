@@ -1663,11 +1663,16 @@ class MaintenanceService:
                 # no readable text has nothing to abstract, and a dispatch for
                 # it can only be refused. It is reported apart, never
                 # dispatched, so it does not recur as a failure on every pass.
+                # The mark is honoured only while the document holds no
+                # passages: a re-projection that settles here without
+                # republishing abstraction evidence can leave an earlier mark
+                # on a document that has since gained text.
                 unreadable: list[Document] = []
                 worklist: list[Document] = []
                 for doc in candidates:
-                    coverage, _ = await self._content_store.read_processing_snapshot(doc.id)
-                    if has_empty_readable_projection(coverage):
+                    if has_empty_readable_projection(
+                        doc.processing_coverage
+                    ) and not await self._content_store.has_chunks(doc.id):
                         unreadable.append(doc)
                     else:
                         worklist.append(doc)

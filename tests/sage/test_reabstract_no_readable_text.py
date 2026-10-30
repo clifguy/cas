@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from sage.adapters.interfaces import Chunk
 from sage.models.coverage import EMPTY_READABLE_PROJECTION, CoverageDimension
 from sage.models.enums import PipelineStatus, ReabstractOutcome, SourceType
 from sage.models.schemas import IngestRequest, ReabstractProgressEvent, ReabstractSummaryEvent
@@ -353,3 +354,40 @@ async def test_ingestion_records_the_signal_the_sweep_reads(
 
     assert has_empty_readable_projection(unreadable_coverage)
     assert not has_empty_readable_projection(readable_coverage)
+
+
+async def test_a_stale_mark_on_a_document_with_passages_is_still_dispatched(
+    graph_store,
+    stub_content_store,
+    ingestion_service,
+    minimal_config,
+):
+    """The mark is honoured only while the document still holds no passages.
+
+    A re-projection that settles at abstraction_skipped without republishing
+    abstraction evidence can leave an earlier empty-projection mark in place
+    on a document that now has text. The sweep dispatches such a document
+    rather than reporting it unreadable forever.
+    """
+    regained = _make_skipped_doc(_id("regained_text"))
+    await mark_unreadable(graph_store, stub_content_store, regained)
+    await stub_content_store.index_chunks(
+        regained.id,
+        [Chunk(document_id=regained.id, heading_path="Body", content="Text.", chunk_index=0)],
+    )
+    from tests.helpers.abstraction_evidence import seed_authored_evidence
+
+    await seed_authored_evidence(stub_content_store, regained, "Text.")
+    maintenance = _build_maintenance(
+        graph_store=graph_store,
+        config=minimal_config,
+        content_store=stub_content_store,
+        ingestion_service=ingestion_service,
+    )
+
+    report = await maintenance.reabstract_deferred()
+
+    assert [(e.document_id, e.outcome) for e in report.entries] == [
+        (regained.id, ReabstractOutcome.SUCCESS)
+    ]
+    assert report.no_readable_text_count == 0
