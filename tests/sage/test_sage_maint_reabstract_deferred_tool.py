@@ -26,6 +26,7 @@ from tests.sage.test_reabstract_deferred_service import (
     _make_skipped_doc,
     _SelectivelyFailingProvider,
 )
+from tests.sage.test_reabstract_no_readable_text import mark_unreadable
 
 
 @contextlib.asynccontextmanager
@@ -225,3 +226,15 @@ async def test_dispatch_failure_survives_mcp_boundary(minimal_vault_config_dict)
         assert entry["document_id"] == doc.id
         assert entry["outcome"] == "dispatch_failed"
         assert "NoProjectionError" in entry["error_message"]
+
+
+async def test_no_readable_text_survives_mcp_boundary(minimal_vault_config_dict):
+    async with _publish_vault(minimal_vault_config_dict) as (vault_id, services):
+        doc = _make_skipped_doc(_id("tool_unreadable"))
+        await mark_unreadable(services.graph_store, services.content_store, doc)
+        result = await mcp_server.recompute_deferred_vault_abstracts(vault_id=vault_id)
+        assert result["no_readable_text_count"] == 1
+        assert result["failed_count"] == 0
+        assert [(e["document_id"], e["outcome"]) for e in result["entries"]] == [
+            (doc.id, "no_readable_text")
+        ]

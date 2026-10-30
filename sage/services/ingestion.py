@@ -98,7 +98,11 @@ from sage.instrumentation.performance import (
     offload,
     span,
 )
-from sage.models.coverage import CoverageDimension, ProcessingIdentity
+from sage.models.coverage import (
+    EMPTY_READABLE_PROJECTION,
+    CoverageDimension,
+    ProcessingIdentity,
+)
 from sage.models.discovery import EvidencePackage
 from sage.models.enums import (
     SUCCESSFUL_TERMINAL_PIPELINE_STATUSES,
@@ -2764,7 +2768,7 @@ class IngestionService:
                 attempt,
                 {
                     "abstraction_evidence": CoverageDimension(
-                        scope="not_applicable", limitations=["empty_readable_projection"]
+                        scope="not_applicable", limitations=[EMPTY_READABLE_PROJECTION]
                     )
                 },
             ):

@@ -209,7 +209,9 @@ async def run_sweep(
     ``skipped_pdf_count`` is always zero: a failed PDF is exactly as worth
     recovering as any other document, so this sweep applies no source-type
     filter. The field is carried to keep the report shape uniform with the
-    deferred-abstract report.
+    deferred-abstract report. ``no_readable_text_count`` is always zero for
+    the same reason: this sweep dispatches every document in the worklist the
+    operator selected and reports a refusal as what it is.
     """
     entries: list[ReabstractReportEntry] = []
     reabstracted = 0
@@ -282,6 +284,7 @@ async def run_sweep(
         vault_id=vault_id,
         reabstracted_count=reabstracted,
         skipped_pdf_count=0,
+        no_readable_text_count=0,
         failed_count=failed,
         entries=entries,
     )

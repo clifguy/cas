@@ -280,6 +280,9 @@ function ReabstractOperation({ vaultId }: { vaultId: string }) {
             <li data-testid="reabstract-skipped-count">
               Skipped (PDF): <strong>{summary.skipped_pdf_count}</strong>
             </li>
+            <li data-testid="reabstract-no-readable-text-count">
+              Skipped (no readable text): <strong>{summary.no_readable_text_count ?? 0}</strong>
+            </li>
             <li data-testid="reabstract-failed-count">
               Failed: <strong>{summary.failed_count}</strong>
             </li>

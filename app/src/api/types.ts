@@ -1086,12 +1086,14 @@ export type ReabstractOutcome =
   | 'still_skipped'
   | 'timeout'
   | 'interrupted'
-  | 'dispatch_failed';
+  | 'dispatch_failed'
+  | 'no_readable_text';
 
 // The five failure outcomes that count toward failed_count. Anything
 // rendered as a failure keys on this rather than on 'llm_failure' alone:
 // failed_count counts all five, so filtering to one of them shows a
-// non-zero count above an empty list.
+// non-zero count above an empty list. 'no_readable_text' is not one: like
+// 'skipped_pdf', it is reported without dispatch and counted apart.
 export const REABSTRACT_FAILURE_OUTCOMES: readonly ReabstractOutcome[] = [
   'llm_failure',
   'still_skipped',
@@ -1115,24 +1117,30 @@ export interface ReabstractReportEntry {
   // absent or null otherwise (the summary event omits null keys).
   error_message?: string | null;
   // Seconds from the dispatch attempt until rejection or the end of the wait;
-  // absent or null for skipped_pdf.
+  // absent or null for skipped_pdf and no_readable_text.
   elapsed_seconds?: number | null;
 }
 
 // Aggregate report returned at the end of a reabstract run (also the
 // payload of ReabstractSummaryEvent, sans the event_type discriminator).
-// Length(entries) === reabstracted_count + skipped_pdf_count + failed_count.
+// Length(entries) === reabstracted_count + skipped_pdf_count +
+// no_readable_text_count + failed_count.
 export interface ReabstractReport {
   vault_id: string;
   reabstracted_count: number;
   skipped_pdf_count: number;
+  // Documents whose recorded coverage says their projection holds no
+  // readable text; reported without dispatch and not failures. Optional in
+  // the contract (default 0).
+  no_readable_text_count?: number;
   failed_count: number;
   entries: ReabstractReportEntry[];
 }
 
 // SSE progress for reabstract-deferred. Each attempted document emits 'started'
 // before dispatch, then its outcome after dispatch rejection or the wait ends.
-// An excluded PDF emits only 'skipped'. `processed` counts outcome events.
+// An excluded PDF and a document with no readable text emit only 'skipped'.
+// `processed` counts outcome events.
 export interface ReabstractProgressEvent {
   event_type: 'progress';
   processed: number;
@@ -1143,11 +1151,12 @@ export interface ReabstractProgressEvent {
   // Set on 'completed' / 'failed' / 'skipped'; omitted on 'started'.
   outcome?: ReabstractOutcome | null;
   // Set on every 'failed' event and on a 'skipped' event whose outcome is
-  // 'still_skipped'; omitted on 'started', 'completed', and skipped_pdf.
+  // 'still_skipped'; omitted on 'started', 'completed', skipped_pdf and
+  // no_readable_text.
   error?: string | null;
   // Set on 'completed', 'failed', and the 'still_skipped' form of 'skipped';
   // measures only the dispatch attempt for dispatch_failed.
-  // Omitted on 'started' and on skipped_pdf (never dispatched).
+  // Omitted on 'started', skipped_pdf and no_readable_text (never dispatched).
   elapsed_seconds?: number | null;
 }
 
@@ -1158,6 +1167,7 @@ export interface ReabstractSummaryEvent {
   vault_id: string;
   reabstracted_count: number;
   skipped_pdf_count: number;
+  no_readable_text_count?: number;
   failed_count: number;
   entries: ReabstractReportEntry[];
 }

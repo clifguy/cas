@@ -1,5 +1,6 @@
 """Dispatch failures remain distinct from background generation failures."""
 
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -175,3 +176,7 @@ def test_reabstract_outcome_contract_parity() -> None:
     schema = yaml.safe_load(path.read_text())["components"]["schemas"]["ReabstractOutcome"]
     assert set(schema["enum"]) == {outcome.value for outcome in ReabstractOutcome}
     assert "dispatch_failed" in schema["enum"]
+    types_ts = (Path(__file__).resolve().parents[2] / "app/src/api/types.ts").read_text()
+    union = re.search(r"export type ReabstractOutcome =([^;]+);", types_ts)
+    assert union is not None
+    assert set(re.findall(r"'([a-z_]+)'", union.group(1))) == set(schema["enum"])

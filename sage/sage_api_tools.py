@@ -2906,10 +2906,10 @@ def register_sage_tools(
         ``abstraction_interrupted``, or ``failed``).
 
         Returns a ReabstractReport with per-document outcomes and aggregate
-        counts. Each entry's outcome is one of ``success``, ``skipped_pdf``,
-        ``llm_failure``, ``still_skipped``, ``timeout``, ``interrupted`` or
-        ``dispatch_failed``. Every outcome beyond ``success`` and
-        ``skipped_pdf`` counts toward ``failed_count``.
+        counts. Outcomes: ``success``, ``skipped_pdf``, ``no_readable_text``
+        (not dispatched), ``llm_failure``, ``still_skipped``, ``timeout``,
+        ``interrupted``, ``dispatch_failed``; the last five count toward
+        ``failed_count``.
 
         The per-document poll is bounded: a document that has not settled
         within the server's wait ceiling is recorded with outcome ``timeout``,

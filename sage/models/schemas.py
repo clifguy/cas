@@ -5330,7 +5330,7 @@ class ReabstractReportEntry(BaseModel):
     outcome: ReabstractOutcome = Field(
         description=(
             "Per-document classification (success / skipped_pdf / llm_failure / still_skipped / "
-            "timeout / interrupted / dispatch_failed)."
+            "timeout / interrupted / dispatch_failed / no_readable_text)."
         )
     )
     error_message: str | None = Field(
@@ -5344,7 +5344,8 @@ class ReabstractReportEntry(BaseModel):
         default=None,
         description=(
             "Wall-clock seconds from the dispatch attempt until its rejection or the end of the "
-            "subsequent wait; null for skipped_pdf entries (no work was done)."
+            "subsequent wait; null for skipped_pdf and no_readable_text entries (no work was "
+            "done)."
         ),
     )
 
@@ -5365,6 +5366,13 @@ class ReabstractReport(BaseModel):
             "was False. Always 0 when include_pdf is True."
         )
     )
+    no_readable_text_count: int = Field(
+        default=0,
+        description=(
+            "Number of documents not dispatched because their recorded coverage says their "
+            "projection holds no readable text. Not failures."
+        ),
+    )
     failed_count: int = Field(
         description=(
             "Number of documents whose reabstract attempt did not reach abstraction_complete."
@@ -5372,8 +5380,8 @@ class ReabstractReport(BaseModel):
     )
     entries: list[ReabstractReportEntry] = Field(
         description=(
-            "Per-document outcome records. Length equals "
-            "reabstracted_count + skipped_pdf_count + failed_count."
+            "Per-document outcome records. Length equals reabstracted_count + "
+            "skipped_pdf_count + no_readable_text_count + failed_count."
         )
     )
 
@@ -5812,7 +5820,7 @@ class ReabstractProgressEvent(BaseModel):
     Emitted twice per non-PDF document (a `started` event before
     dispatch, then a `completed` or `failed` event after the polling
     loop reaches a terminal pipeline_status) and once per skipped PDF
-    (a `skipped` event). Shape mirrors the ingest pipeline's
+    or document with no readable text (a `skipped` event). Shape mirrors the ingest pipeline's
     `ProgressEvent` precedent (docs/fs/cas_app_api.openapi.yaml).
     """
 
@@ -5831,7 +5839,8 @@ class ReabstractProgressEvent(BaseModel):
         description=(
             "Total document count in the reabstract-deferred worklist for "
             "this run, including PDFs that will be skipped when "
-            "`include_pdf=False`. Constant across all events in the stream."
+            "`include_pdf=False` and documents with no readable text. "
+            "Constant across all events in the stream."
         )
     )
     current_document_id: DocumentIdStr = Field(description="Document id this event refers to.")
@@ -5849,7 +5858,8 @@ class ReabstractProgressEvent(BaseModel):
             "(outcome=`dispatch_failed`), a post-dispatch failure was reported "
             "(outcome=`llm_failure`), the wait ceiling elapsed (outcome=`timeout`), or the "
             "document settled at `abstraction_interrupted` (outcome=`interrupted`). `skipped`: "
-            "PDF excluded by `include_pdf=False` (outcome=`skipped_pdf`), or the document "
+            "PDF excluded by `include_pdf=False` (outcome=`skipped_pdf`), a document whose "
+            "projection holds no readable text (outcome=`no_readable_text`), or the document "
             "settled back at `abstraction_skipped` (outcome=`still_skipped`). Clients switching "
             "on `status` retain the same vocabulary; clients needing the distinction read "
             "`outcome`."
@@ -5861,7 +5871,7 @@ class ReabstractProgressEvent(BaseModel):
             "Per-document terminal classification. Set on `completed`, `failed`, and `skipped` "
             "events; omitted on the leading `started` event. Discriminates within a status: "
             "`failed` carries `dispatch_failed`, `llm_failure`, `timeout` or `interrupted`, and "
-            "`skipped` carries `skipped_pdf` or `still_skipped`."
+            "`skipped` carries `skipped_pdf`, `no_readable_text` or `still_skipped`."
         ),
     )
     error: str | None = Field(
@@ -5870,7 +5880,7 @@ class ReabstractProgressEvent(BaseModel):
             "Failure description. Set on every `failed` event and on a `skipped` event "
             "whose outcome is `still_skipped`, which carries one because a document "
             "that declined abstraction has something to report; omitted on `started`, "
-            "on `completed`, and on the `skipped_pdf` form of `skipped`."
+            "on `completed`, and on the `skipped_pdf` and `no_readable_text` forms of `skipped`."
         ),
     )
     elapsed_seconds: float | None = Field(
@@ -5879,7 +5889,7 @@ class ReabstractProgressEvent(BaseModel):
             "Wall-clock seconds from the dispatch attempt until its rejection or the end of the "
             "subsequent wait. Set on `completed`, on `failed`, and on the `still_skipped` form "
             "of `skipped`. A `dispatch_failed` event measures the dispatch attempt only. Omitted "
-            "on `started` and on the `skipped_pdf` form of `skipped`."
+            "on `started` and on the `skipped_pdf` and `no_readable_text` forms of `skipped`."
         ),
     )
 
@@ -5909,6 +5919,13 @@ class ReabstractSummaryEvent(BaseModel):
     skipped_pdf_count: int = Field(
         description=("Number of source_type=pdf documents excluded because include_pdf was False.")
     )
+    no_readable_text_count: int = Field(
+        default=0,
+        description=(
+            "Number of documents not dispatched because their recorded coverage says their "
+            "projection holds no readable text. Not failures."
+        ),
+    )
     failed_count: int = Field(
         description=(
             "Number of documents whose reabstract attempt did not reach abstraction_complete."
@@ -5916,8 +5933,8 @@ class ReabstractSummaryEvent(BaseModel):
     )
     entries: list[ReabstractReportEntry] = Field(
         description=(
-            "Per-document outcome records. Length equals "
-            "reabstracted_count + skipped_pdf_count + failed_count."
+            "Per-document outcome records. Length equals reabstracted_count + "
+            "skipped_pdf_count + no_readable_text_count + failed_count."
         )
     )
 

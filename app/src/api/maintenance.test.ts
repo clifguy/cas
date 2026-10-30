@@ -77,6 +77,7 @@ describe('startReabstract', () => {
         vault_id: 'v1',
         reabstracted_count: 1,
         skipped_pdf_count: 0,
+        no_readable_text_count: 0,
         failed_count: 0,
         entries: [
           {
@@ -113,7 +114,8 @@ describe('startReabstract', () => {
         status: 'failed', outcome: 'dispatch_failed', error: 'dispatch failed: NoProjectionError',
         elapsed_seconds: 0.01 },
       { event_type: 'summary', vault_id: 'v1', reabstracted_count: 0,
-        skipped_pdf_count: 0, failed_count: 1,
+        skipped_pdf_count: 0,
+        no_readable_text_count: 0, failed_count: 1,
         entries: [{ document_id: 'dddddddd_dispatch', outcome: 'dispatch_failed',
           error_message: 'dispatch failed: NoProjectionError', elapsed_seconds: 0.01 }] },
     ];

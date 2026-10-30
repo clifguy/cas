@@ -33,6 +33,7 @@ from tests.sage.test_reabstract_deferred_service import (
     _make_skipped_doc,
     _SelectivelyFailingProvider,
 )
+from tests.sage.test_reabstract_no_readable_text import mark_unreadable
 
 
 def _parse_sse_events(text: str) -> list[dict]:
@@ -376,3 +377,23 @@ def test_maintenance_sse_line_carries_non_ascii_characters_literally():
 
     assert title in line, f"the maintenance SSE line escaped its non-ASCII characters: {line!r}"
     assert "\\u" not in line
+
+
+async def test_no_readable_text_survives_sse_boundary(maintenance_app):
+    app, vault_id, _config = maintenance_app
+    services = app.state.vault_registry[vault_id]
+    doc = _make_skipped_doc(_id("router_unreadable"))
+    await mark_unreadable(services.graph_store, services.content_store, doc)
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(
+            f"/sage_vaults/{vault_id}/maintenance/reabstract-deferred", json={}
+        )
+    assert response.status_code == 200
+    events = _parse_sse_events(response.text)
+    assert [event["event_type"] for event in events] == ["progress", "summary"]
+    assert events[0]["status"] == "skipped"
+    assert events[0]["outcome"] == "no_readable_text"
+    assert "error" not in events[0] or events[0]["error"] is None
+    assert events[-1]["no_readable_text_count"] == 1
+    assert events[-1]["failed_count"] == 0
+    assert events[-1]["entries"] == [{"document_id": doc.id, "outcome": "no_readable_text"}]
