@@ -764,17 +764,39 @@ jobs:
         working-directory: app
         run: npm ci
 
-      - name: Cache Playwright browsers
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # The browsers Playwright downloads depend on the playwright-core version
+      # alone, so the cache is keyed on that rather than on the whole lockfile:
+      # an unrelated dependency bump would otherwise write another copy of the
+      # same browsers. Pull requests only restore. A copy saved in a pull
+      # request's ref scope is readable only by that pull request's later runs,
+      # and the Actions cache budget it spends is the one the image layer cache
+      # relies on.
+      - name: Resolve Playwright version
+        id: playwright-version
+        run: |
+          version="$(jq -er '.packages["node_modules/playwright-core"].version' app/package-lock.json)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+
+      - name: Restore Playwright browsers
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         id: playwright-cache
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('app/package-lock.json') }}
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
 
       - name: Install Playwright Chromium (and system deps)
         if: steps.playwright-cache.outputs.cache-hit != 'true'
         working-directory: app
         run: npx playwright install --with-deps chromium
+
+      - name: Save Playwright browsers
+        if: >-
+          github.ref == 'refs/heads/main'
+          && steps.playwright-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
 
       - name: Install Playwright system deps (cache hit)
         # Browser binaries restored from cache, but apt system libs
