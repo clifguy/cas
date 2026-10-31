@@ -63,7 +63,7 @@ SECURITY_FLOORS: Final[dict[str, tuple[str, str]]] = {
     "mcp": ("1.30.0", "GHSA-84m7-p3x7-pcfv"),
     "pillow": ("13.0.0", "GHSA-4rr5-89j8-mwwm"),
     "pyjwt": ("2.15.0", "GHSA-42vr-xj54-vc7v"),
-    "pypdf": ("6.21.1", "GHSA-5hx5-vpf9-5wcv"),
+    "pypdf": ("6.21.4", "GHSA-5849-834g-hvw5 / GHSA-cggf-277g-3q54 / GHSA-mfr5-77xh-9j7h"),
     "sentence-transformers": ("5.6.0", "GHSA-jhr6-gm9c-rqjv"),
     "setuptools": ("84.1.0", "GHSA-xmj3-9gf7-h52w"),
     "torch": ("2.13.0", "GHSA-rrmf-rvhw-rf47"),
