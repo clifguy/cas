@@ -59,9 +59,10 @@ def _run_version_step(cwd: Path, tmp_path: Path) -> subprocess.CompletedProcess[
     output = tmp_path / "github_output"
     output.write_text("")
     env = dict(os.environ, GITHUB_OUTPUT=str(output))
-    # The runner's default for a `run:` step: bash -e with pipefail, no -u.
+    # The runner's default for a `run:` step that declares no `shell:` is
+    # `bash -e {0}`: -e without pipefail or -u.
     return subprocess.run(
-        ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", command],
+        ["bash", "-e", "-c", command],
         cwd=cwd,
         env=env,
         capture_output=True,
