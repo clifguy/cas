@@ -266,7 +266,7 @@ jobs:
           BASE_SHA: ${{ steps.substrate-base.outputs.sha }}
         run: .venv/bin/python -m scripts.substrate_changes check --base "$BASE_SHA"
 
-      - name: Check security-tool lockfile regeneration
+      - name: Check security-tool lockfiles are current
         run: .venv/bin/python -m scripts.check_security_lockfiles
 
       - name: Pre-cache nomic-embed-text model (via runtime path)

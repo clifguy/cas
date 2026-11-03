@@ -9,12 +9,16 @@ enough to guard against silent regression:
      get ongoing version updates and CVE-fixed releases surface as PRs
      rather than accumulating unnoticed.
 
-  2. The uv ecosystem stays *disabled* (``open-pull-requests-limit: 0``).
-     The uv ecosystem rewrites ``pyproject.toml`` floors/pins rather than
-     doing lockfile-only updates (dependabot-core#12162), so its
-     version-update PRs are deliberately off; uv currency is a manual
-     ``uv lock --upgrade`` (see ``CLAUDE.md``). That defect is uv-specific
-     and does not apply to npm, which is why npm coverage is safe to enable.
+  2. The uv ecosystem stays *disabled* (``open-pull-requests-limit: 0``)
+     for the root project. The uv ecosystem rewrites ``pyproject.toml``
+     floors/pins rather than doing lockfile-only updates
+     (dependabot-core#12162), so its version-update PRs are deliberately off
+     there; uv currency is a manual ``uv lock --upgrade`` (see
+     ``CLAUDE.md``). That defect is uv-specific and does not apply to npm,
+     which is why npm coverage is safe to enable. The security-tool projects
+     under ``requirements/security/`` hold an exact tool pin, where the
+     rewrite is the intended update, so their block is live and is guarded
+     in ``tests/infra/test_security_tool_pins.py``.
 
   3. Within the npm block, the narrow ``react`` group is declared *before*
      the broad ``dev-dependencies`` group. Dependabot assigns a dependency
@@ -94,15 +98,18 @@ def test_dependabot_covers_npm_for_app() -> None:
 
 
 def test_uv_ecosystem_stays_disabled() -> None:
-    """The uv ecosystem keeps ``open-pull-requests-limit: 0``.
+    """The root project's uv block keeps ``open-pull-requests-limit: 0``.
 
-    Scope fence: enabling npm coverage must not accidentally re-enable uv
-    version-update PRs, which hit the floor-rewrite defect (see module
-    docstring). Guards the uv block's disabled state explicitly.
+    Scope fence: enabling npm coverage, or the security-tool uv block, must not
+    accidentally re-enable root uv version-update PRs, which hit the
+    floor-rewrite defect (see module docstring). Guards the root uv block's
+    disabled state explicitly, and that no other uv block reaches the root.
     """
-    uv_blocks = _blocks_for("uv")
+    uv_blocks = [
+        b for b in _blocks_for("uv") if b.get("directory") == "/" or "/" in b.get("directories", [])
+    ]
     assert len(uv_blocks) == 1, (
-        f"expected exactly one uv package-ecosystem block, found {len(uv_blocks)}."
+        f"expected exactly one uv package-ecosystem block for `/`, found {len(uv_blocks)}."
     )
     limit = uv_blocks[0].get("open-pull-requests-limit")
     assert limit == 0, (

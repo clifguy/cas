@@ -59,6 +59,7 @@ MAIN_BICEP: Final[Path] = REPO_ROOT / "infra" / "main.bicep"
 DOCKERFILE: Final[Path] = REPO_ROOT / "Dockerfile"
 DOCKERFILE_BFF: Final[Path] = REPO_ROOT / "Dockerfile.bff"
 PYPROJECT: Final[Path] = REPO_ROOT / "pyproject.toml"
+SECURITY_TOOLS_DIR: Final[Path] = REPO_ROOT / "requirements" / "security"
 BRANCH_PROTECTION: Final[Path] = REPO_ROOT / "docs" / "process" / "branch_protection.md"
 PARITY_DOC: Final[Path] = REPO_ROOT / "docs" / "process" / "shared-version-parity.md"
 POSTGRES_RUNBOOKS: Final[tuple[Path, ...]] = (
@@ -710,6 +711,27 @@ def test_pyproject_python_floor_matches_the_manifest() -> None:
     assert requires.removeprefix(">=").strip() == python_version(), (
         f"requires-python is {requires!r}; versions.json declares {python_version()}"
     )
+
+
+def test_security_tool_python_matches_the_manifest() -> None:
+    """Each security-tool project locks for exactly the declared Python.
+
+    The workflows install these tools on the declared interpreter, so a lock
+    resolved for another one could need wheels it does not hash. An exact
+    ``==X.Y.*`` rather than a floor keeps the lock from carrying forks for
+    interpreters nothing runs.
+    """
+    projects = sorted(SECURITY_TOOLS_DIR.glob("*/pyproject.toml"))
+    assert projects, f"no security-tool projects found under {SECURITY_TOOLS_DIR}"
+    expected = f"=={python_version()}.*"
+    declared = {
+        str(path.relative_to(REPO_ROOT)): tomllib.loads(path.read_text(encoding="utf-8"))[
+            "project"
+        ].get("requires-python")
+        for path in projects
+    }
+    mismatched = {path: value for path, value in declared.items() if value != expected}
+    assert not mismatched, f"expected requires-python {expected!r}; got {mismatched}"
 
 
 def test_ruff_target_version_matches_the_manifest() -> None:

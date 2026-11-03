@@ -17,7 +17,6 @@ are the fast local signal that the active environment matches the lock.
 
 from __future__ import annotations
 
-import re
 import tomllib
 from importlib.metadata import version
 from pathlib import Path
@@ -230,30 +229,35 @@ def test_security_floor_holds(
     )
 
 
+def _security_tool_locked_versions(tool: str, name: str) -> list[str]:
+    path = REPO_ROOT / "requirements" / "security" / tool / "uv.lock"
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    return [pkg["version"] for pkg in data["package"] if pkg["name"].lower() == name]
+
+
 @pytest.mark.parametrize("tool", ("pip-audit", "checkov"))
 def test_security_tool_certifi_floor(tool: str) -> None:
     """The separately hash-locked scanners must not retain the revoked CA bundle.
 
-    These installs do not consume uv.lock. Require an exact certifi pin and
-    check every occurrence so a missing or duplicate vulnerable pin cannot
-    make the production-lock guard pass on behalf of the scanner environment.
+    These installs do not consume the root uv.lock. Require certifi in each
+    tool's own lock and check every occurrence so a missing or duplicate
+    vulnerable pin cannot make the production-lock guard pass on behalf of the
+    scanner environment.
     """
-    text = (REPO_ROOT / "requirements" / "security" / f"{tool}.txt").read_text(encoding="utf-8")
-    versions = re.findall(r"^certifi==(\S+)", text, re.MULTILINE)
-    assert versions, f"{tool}.txt must pin certifi explicitly"
+    versions = _security_tool_locked_versions(tool, "certifi")
+    assert versions, f"{tool}/uv.lock must lock certifi"
     floor, advisory = SECURITY_FLOORS["certifi"]
     below = [v for v in versions if Version(v) < Version(floor)]
-    assert not below, f"{tool}.txt resolves certifi {below}, below {floor} ({advisory})"
+    assert not below, f"{tool}/uv.lock resolves certifi {below}, below {floor} ({advisory})"
 
 
 def test_audit_tool_filelock_floor() -> None:
     """The scanner's separate install must also contain the fixed locking library."""
-    text = (REPO_ROOT / "requirements/security/pip-audit.txt").read_text(encoding="utf-8")
-    versions = re.findall(r"^filelock==(\S+)", text, re.MULTILINE)
-    assert versions, "pip-audit.txt must pin filelock explicitly"
+    versions = _security_tool_locked_versions("pip-audit", "filelock")
+    assert versions, "pip-audit/uv.lock must lock filelock"
     floor, advisory = SECURITY_FLOORS["filelock"]
     below = [v for v in versions if Version(v) < Version(floor)]
-    assert not below, f"pip-audit.txt resolves filelock {below}, below {floor} ({advisory})"
+    assert not below, f"pip-audit/uv.lock resolves filelock {below}, below {floor} ({advisory})"
 
 
 def test_torch_is_direct_dependency() -> None:

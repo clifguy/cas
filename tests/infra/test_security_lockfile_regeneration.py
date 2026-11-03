@@ -1,8 +1,7 @@
-"""Exercise lock regeneration with real uv and a small offline wheel index."""
+"""Exercise the security-tool lock check with real uv and a small offline wheel index."""
 
 from __future__ import annotations
 
-import json
 import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -27,28 +26,25 @@ def _wheel(directory: Path, name: str, version: str, dependencies: tuple[str, ..
         archive.writestr(f"{dist}/RECORD", "")
 
 
-def _compile(
-    root: Path, tool: str, *, universal: bool = True, upgrade: bool = False
-) -> subprocess.CompletedProcess[str]:
-    version = json.loads((root / "versions.json").read_text())["python"]["version"]
-    return subprocess.run(
-        [
-            "uv",
-            "pip",
-            "compile",
-            f"requirements/security/{tool}.in",
-            "--generate-hashes",
-            *(["--universal"] if universal else []),
-            *(["--upgrade"] if upgrade else []),
-            "--python-version",
-            version,
-            "-o",
-            f"requirements/security/{tool}.txt",
-        ],
-        cwd=root,
-        capture_output=True,
-        text=True,
-        check=True,
+def _project(root: Path, tool: str, dependencies: tuple[str, ...]) -> Path:
+    directory = root / "requirements/security" / tool
+    directory.mkdir(parents=True)
+    listed = "".join(f'    "{dependency}",\n' for dependency in dependencies)
+    (directory / "pyproject.toml").write_text(
+        "[project]\n"
+        f'name = "security-{tool}"\n'
+        'version = "0"\n'
+        'requires-python = "==3.14.*"\n'
+        f"dependencies = [\n{listed}]\n"
+        "\n[tool.uv]\n"
+        "package = false\n"
+    )
+    return directory
+
+
+def _lock(directory: Path) -> None:
+    subprocess.run(
+        ["uv", "lock", "--project", str(directory)], capture_output=True, text=True, check=True
     )
 
 
@@ -57,19 +53,22 @@ def locked_repo(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     wheels = tmp_path / "wheels"
     wheels.mkdir()
     _wheel(wheels, "platform_support", "1.0")
+    _wheel(wheels, "helper", "1.0")
     for version in ("1.0", "2.0"):
-        _wheel(wheels, "scanner", version, ("platform-support; sys_platform == 'win32'",))
+        _wheel(
+            wheels,
+            "scanner",
+            version,
+            ("helper>=1.0", "platform-support; sys_platform == 'win32'"),
+        )
     monkeypatch.setenv("UV_OFFLINE", "1")
     monkeypatch.setenv("UV_FIND_LINKS", str(wheels))
     monkeypatch.setenv("UV_CACHE_DIR", str(tmp_path / "uv-cache"))
     root = tmp_path / "repo"
-    requirements = root / "requirements/security"
-    requirements.mkdir(parents=True)
-    (root / "versions.json").write_text(json.dumps({"python": {"version": "3.14"}}))
-    (requirements / "scanner.in").write_text("scanner>=1.0\n")
-    # A newer version is available, but regeneration must retain this existing pin.
-    (requirements / "scanner.txt").write_text("scanner==1.0\n")
-    _compile(root, "scanner")
+    _lock(_project(root, "scanner", ("scanner==1.0",)))
+    # A newer transitive release appears after locking; the check must keep the
+    # locked version rather than resolving it forward.
+    _wheel(wheels, "helper", "2.0")
     return root
 
 
@@ -81,81 +80,105 @@ def _check(root: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _snapshot(root: Path) -> dict[Path, bytes]:
+    return {path: path.read_bytes() for path in root.rglob("*") if path.is_file()}
+
+
 def test_current_locks_pass_without_upgrades_or_source_changes(locked_repo: Path) -> None:
-    lock = locked_repo / "requirements/security/scanner.txt"
-    pinned = lock.read_bytes()
-    _compile(locked_repo, "scanner", upgrade=True)
-    assert "scanner==2.0" in lock.read_text()
-    lock.write_bytes(pinned)
-    files = {path: path.read_bytes() for path in locked_repo.rglob("*") if path.is_file()}
+    project = locked_repo / "requirements/security/scanner"
+    upgrade = subprocess.run(
+        ["uv", "lock", "--project", str(project), "--upgrade", "--dry-run"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "helper v1.0 -> v2.0" in upgrade.stderr, upgrade.stderr
+    assert 'name = "helper"\nversion = "1.0"' in (project / "uv.lock").read_text()
+    files = _snapshot(locked_repo)
     result = _check(locked_repo)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert "scanner.txt" in result.stdout
-    assert "scanner==1.0" in (locked_repo / "requirements/security/scanner.txt").read_text()
-    assert {path: path.read_bytes() for path in files} == files
+    assert "requirements/security/scanner/uv.lock" in result.stdout
+    assert _snapshot(locked_repo) == files
 
 
-def test_nonuniversal_lock_fails_with_file_and_regeneration_command(locked_repo: Path) -> None:
-    _compile(locked_repo, "scanner", universal=False)
-    path = locked_repo / "requirements/security/scanner.txt"
-    before = path.read_bytes()
-    assert "platform-support==" not in before.decode()
+def test_lock_keeps_marker_dependencies(locked_repo: Path) -> None:
+    lock = (locked_repo / "requirements/security/scanner/uv.lock").read_text()
+    assert 'name = "platform-support"' in lock
+    assert "sys_platform == 'win32'" in lock
+
+
+def test_pin_edited_without_relock_fails_with_project_and_command(locked_repo: Path) -> None:
+    project = locked_repo / "requirements/security/scanner/pyproject.toml"
+    project.write_text(project.read_text().replace("scanner==1.0", "scanner==2.0"))
+    files = _snapshot(locked_repo)
     result = _check(locked_repo)
     assert result.returncode == 1
-    assert "requirements/security/scanner.txt" in result.stderr
-    assert (
-        "uv pip compile requirements/security/scanner.in --generate-hashes --universal "
-        "--python-version 3.14 -o requirements/security/scanner.txt"
-    ) in result.stderr
-    assert "platform-support==1.0" in result.stderr
-    assert path.read_bytes() == before
+    assert "requirements/security/scanner/uv.lock" in result.stderr
+    assert "uv lock --project requirements/security/scanner" in result.stderr
+    assert _snapshot(locked_repo) == files
 
 
 def test_new_tool_is_enumerated(locked_repo: Path) -> None:
-    directory = locked_repo / "requirements/security"
-    (directory / "other.in").write_text("scanner==1.0\n")
-    _compile(locked_repo, "other")
+    other = _project(locked_repo, "other", ("helper==1.0",))
+    _lock(other)
     clean = _check(locked_repo)
     assert clean.returncode == 0, clean.stderr
-    assert "other.txt" in clean.stdout
-    (directory / "other.txt").write_text("scanner==1.0\n")
+    assert "requirements/security/other/uv.lock" in clean.stdout
+    project = other / "pyproject.toml"
+    project.write_text(project.read_text().replace("helper==1.0", "helper==2.0"))
     assert _check(locked_repo).returncode == 1
 
 
-@pytest.mark.parametrize("missing", ["scanner.in", "scanner.txt"])
-def test_unpaired_file_is_refused(locked_repo: Path, missing: str) -> None:
-    (locked_repo / "requirements/security" / missing).unlink()
+def test_project_without_lock_is_refused(locked_repo: Path) -> None:
+    (locked_repo / "requirements/security/scanner/uv.lock").unlink()
     result = _check(locked_repo)
     assert result.returncode == 1
-    assert missing in result.stderr
+    assert "Missing security lockfile: requirements/security/scanner/uv.lock" in result.stderr
+    assert "uv lock --project requirements/security/scanner" in result.stderr
+    assert not (locked_repo / "requirements/security/scanner/uv.lock").exists()
+
+
+@pytest.mark.parametrize("stray", ["scanner.txt", "scanner.in", "notes/README.md"])
+def test_entry_outside_a_tool_project_is_refused(locked_repo: Path, stray: str) -> None:
+    path = locked_repo / "requirements/security" / stray
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("scanner==1.0\n")
+    result = _check(locked_repo)
+    assert result.returncode == 1
+    assert stray.split("/")[0] in result.stderr
+
+
+@pytest.mark.parametrize("hidden", [".DS_Store", ".venv/pyvenv.cfg"])
+def test_hidden_local_entries_are_ignored(locked_repo: Path, hidden: str) -> None:
+    path = locked_repo / "requirements/security" / hidden
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("")
+    result = _check(locked_repo)
+    assert result.returncode == 0, result.stderr
+    assert "requirements/security/scanner/uv.lock" in result.stdout
 
 
 def test_empty_directory_is_refused(locked_repo: Path) -> None:
-    for path in (locked_repo / "requirements/security").iterdir():
-        path.unlink()
+    for path in sorted((locked_repo / "requirements/security").rglob("*"), reverse=True):
+        path.rmdir() if path.is_dir() else path.unlink()
     result = _check(locked_repo)
     assert result.returncode == 1
-    assert "no security lockfile pairs" in result.stderr.lower()
+    assert "no security tool projects" in result.stderr.lower()
 
 
-def test_compile_failure_is_not_a_pass(locked_repo: Path) -> None:
-    (locked_repo / "requirements/security/scanner.in").write_text("missing-distribution==1.0\n")
+def test_missing_directory_is_refused(locked_repo: Path) -> None:
+    result = _check(locked_repo / "requirements")
+    assert result.returncode == 1
+    assert "no security tool projects" in result.stderr.lower()
+
+
+def test_resolve_failure_is_not_a_pass(locked_repo: Path) -> None:
+    project = locked_repo / "requirements/security/scanner/pyproject.toml"
+    project.write_text(project.read_text().replace("scanner==1.0", "missing-distribution==1.0"))
     result = _check(locked_repo)
     assert result.returncode == 1
-    assert "scanner.in" in result.stderr
-    assert "No solution" in result.stderr
-
-
-def test_python_version_is_read_from_manifest(locked_repo: Path) -> None:
-    manifest = locked_repo / "versions.json"
-    manifest.write_text(json.dumps({"python": {"version": "3.13"}}))
-    _compile(locked_repo, "scanner")
-    result = _check(locked_repo)
-    assert result.returncode == 0, result.stderr
-    manifest.write_text(json.dumps({"python": {"version": "3.14"}}))
-    result = _check(locked_repo)
-    assert result.returncode == 1
-    assert "--python-version 3.14" in result.stderr
+    assert "requirements/security/scanner" in result.stderr
+    assert "missing-distribution" in result.stderr
 
 
 def test_missing_uv_is_reported(locked_repo: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -189,8 +212,11 @@ def test_fixture_disables_index_requests(
             assert offline.returncode == 0, offline.stderr
             assert requests == []
             monkeypatch.delenv("UV_OFFLINE")
+            # A changed pin forces a resolve, which is what reaches the index.
+            project = locked_repo / "requirements/security/scanner/pyproject.toml"
+            project.write_text(project.read_text().replace("scanner==1.0", "scanner==2.0"))
             online = _check(locked_repo)
-            assert online.returncode == 0, online.stderr
+            assert online.returncode == 1
             assert "/simple/scanner/" in requests
         finally:
             server.shutdown()
@@ -213,4 +239,4 @@ def test_required_ci_job_runs_the_verifier() -> None:
 def test_dependabot_comment_points_to_the_verifier() -> None:
     text = (ROOT / ".github/dependabot.yml").read_text()
     assert "scripts.check_security_lockfiles" in text
-    assert "check that on the first such" not in text
+    assert "--universal" not in text
