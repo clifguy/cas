@@ -327,15 +327,16 @@ def test_allowlist_entry_validator_rejects_malformed(entry: Any, expect_valid: b
 ASTEVAL_ADVISORIES: Final[frozenset[str]] = frozenset(
     {"GHSA-89v8-rhwq-hf77", "GHSA-9w56-46f6-3qhx"}
 )
-CHECKOV_REQUIREMENTS: Final[Path] = REPO_ROOT / "requirements" / "security" / "checkov.txt"
+CHECKOV_REQUIREMENTS: Final[Path] = REPO_ROOT / "requirements" / "security" / "checkov" / "uv.lock"
 
 
 def _python_dependency_manifests() -> list[Path]:
     """Every tracked Python dependency declaration: the project lock and
-    metadata, and each requirements input or compiled hashfile."""
+    metadata, each security-tool project and its lock, and any requirements
+    input or compiled hashfile."""
     manifests = [REPO_ROOT / "uv.lock", REPO_ROOT / "pyproject.toml"]
-    manifests += sorted((REPO_ROOT / "requirements").rglob("*.txt"))
-    manifests += sorted((REPO_ROOT / "requirements").rglob("*.in"))
+    for pattern in ("uv.lock", "pyproject.toml", "*.txt", "*.in"):
+        manifests += sorted((REPO_ROOT / "requirements").rglob(pattern))
     return manifests
 
 
@@ -345,11 +346,11 @@ def _names_asteval(path: Path) -> bool:
 
 def test_asteval_acceptance_premise_holds() -> None:
     """W7: while the asteval advisories are accepted, asteval is declared by
-    the checkov hashfile and by no other Python dependency manifest.
+    the checkov lock and by no other Python dependency manifest.
 
     Both halves matter. A runtime manifest naming asteval means the accepted
     entries now hide an alert they were never justified for. The checkov
-    hashfile no longer naming it means the entries are stale and should be
+    lock no longer naming it means the entries are stale and should be
     removed rather than left to suppress a future, unrelated alert.
     """
     if not ASTEVAL_ADVISORIES & load_allowlist(ALLOWLIST):

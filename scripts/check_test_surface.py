@@ -158,6 +158,68 @@ _CONFORMANCE_STREAMS: Final[str] = (
 )
 
 KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
+    ("tests/infra/test_security_lockfile_regeneration.py::test_compile_failure_is_not_a_pass"): (
+        "renamed test_resolve_failure_is_not_a_pass: the security-tool locks are uv "
+        "projects checked by `uv lock --check`, so the failure is a resolve, not a "
+        "compile"
+    ),
+    (
+        "tests/infra/test_security_lockfile_regeneration.py::"
+        "test_nonuniversal_lock_fails_with_file_and_regeneration_command"
+    ): (
+        "replaced by test_pin_edited_without_relock_fails_with_project_and_command and "
+        "test_lock_keeps_marker_dependencies: a uv.lock is universal by construction, so "
+        "the remaining drift is a pin moved without a relock"
+    ),
+    (
+        "tests/infra/test_security_lockfile_regeneration.py::"
+        "test_python_version_is_read_from_manifest"
+    ): (
+        "replaced by tests/infra/test_shared_version_parity.py::test_security_tool_python"
+        "_matches_the_manifest: each tool project's requires-python now carries the "
+        "Python version"
+    ),
+    (
+        "tests/infra/test_security_lockfile_regeneration.py::"
+        "test_unpaired_file_is_refused[scanner.in]"
+    ): (
+        "replaced by test_project_without_lock_is_refused and "
+        "test_entry_outside_a_tool_project_is_refused: there are no .in/.txt pairs, only "
+        "projects that must carry a lock"
+    ),
+    (
+        "tests/infra/test_security_lockfile_regeneration.py::"
+        "test_unpaired_file_is_refused[scanner.txt]"
+    ): (
+        "replaced by test_project_without_lock_is_refused and "
+        "test_entry_outside_a_tool_project_is_refused: there are no .in/.txt pairs, only "
+        "projects that must carry a lock"
+    ),
+    ("tests/infra/test_security_tool_pins.py::test_control_unhashed_requirement_is_found"): (
+        "renamed test_control_unhashed_distribution_is_found: the hash check reads "
+        "uv.lock artifacts instead of requirements continuation lines"
+    ),
+    ("tests/infra/test_security_tool_pins.py::test_dependabot_tracks_the_tool_requirements"): (
+        "renamed test_dependabot_tracks_the_tool_projects: the update source is a uv "
+        "block over the tool project directories"
+    ),
+    (
+        "tests/infra/test_security_tool_pins.py::"
+        "test_each_tool_has_a_fully_hashed_requirements_file"
+    ): (
+        "replaced by test_each_tool_is_an_exactly_pinned_non_package_project, "
+        "test_each_tool_lock_hashes_every_distribution and "
+        "test_each_lock_resolves_the_pinned_version"
+    ),
+    ("tests/infra/test_security_tool_pins.py::test_lock_python_matches_the_declared_version"): (
+        "replaced by tests/infra/test_shared_version_parity.py::test_security_tool_python"
+        "_matches_the_manifest, which holds each tool project's requires-python to "
+        "versions.json"
+    ),
+    ("tests/infra/test_security_tool_pins.py::test_workflow_installs_tools_with_required_hashes"): (
+        "renamed test_workflow_installs_tools_from_their_locks_with_required_hashes: "
+        "installs export each tool's lock and keep --require-hashes"
+    ),
     (
         "tests/sage/test_processing_recovery.py::"
         "test_explicit_reabstract_uses_legacy_passages_without_reprojecting_source"

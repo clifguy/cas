@@ -44,6 +44,7 @@ outputs, so there is one mechanism rather than two.
 |---|---|
 | `Dockerfile`, `Dockerfile.bff` `FROM` lines | A `FROM` line takes no file input, and the readable tag must stay on it ahead of the digest for Dependabot's `docker` ecosystem to parse it. |
 | `pyproject.toml` — `requires-python`, `[tool.ruff] target-version` | Static TOML; no interpolation. |
+| `requirements/security/*/pyproject.toml` — `requires-python` | Static TOML; no interpolation. An exact `==X.Y.*` rather than a floor, so each tool lock resolves only for the interpreter the workflows install it on. |
 | the Postgres runbooks, `README.md`, `CLAUDE.md`, the Dependabot `@types/node` note | Prose. |
 
 `tests/infra/test_shared_version_parity.py` and `tests/infra/test_frontend_node_version.py`

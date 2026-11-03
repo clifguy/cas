@@ -90,11 +90,17 @@ jobs:
             | sort -u > "${RUNNER_TEMP}/requirements.txt"
           test -s "${RUNNER_TEMP}/requirements.txt"
           wc -l < "${RUNNER_TEMP}/requirements.txt"
-      - name: Install pip-audit from its hash-locked requirements
+      - name: Install pip-audit from its hash-locked uv project
+        # --locked refuses a lock that has drifted from its pyproject.toml; the
+        # export carries every hash, and --require-hashes enforces them. The
+        # zizmor and Checkov installs below follow the same pattern.
         run: |
           set -euo pipefail
+          uv export --locked --no-emit-project --project requirements/security/pip-audit \
+            -o "${RUNNER_TEMP}/pip-audit-requirements.txt"
           uv venv "${RUNNER_TEMP}/pip-audit"
-          uv pip install --python "${RUNNER_TEMP}/pip-audit/bin/python" --require-hashes -r requirements/security/pip-audit.txt
+          uv pip install --python "${RUNNER_TEMP}/pip-audit/bin/python" --require-hashes \
+            -r "${RUNNER_TEMP}/pip-audit-requirements.txt"
       - name: Run pip-audit
         run: |
           set -euo pipefail
@@ -135,11 +141,14 @@ jobs:
       - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
         with:
           python-version: ${{ needs.versions.outputs.python }}
-      - name: Install zizmor from its hash-locked requirements
+      - name: Install zizmor from its hash-locked uv project
         run: |
           set -euo pipefail
+          uv export --locked --no-emit-project --project requirements/security/zizmor \
+            -o "${RUNNER_TEMP}/zizmor-requirements.txt"
           uv venv "${RUNNER_TEMP}/zizmor"
-          uv pip install --python "${RUNNER_TEMP}/zizmor/bin/python" --require-hashes -r requirements/security/zizmor.txt
+          uv pip install --python "${RUNNER_TEMP}/zizmor/bin/python" --require-hashes \
+            -r "${RUNNER_TEMP}/zizmor-requirements.txt"
       - name: Run zizmor
         run: |
           set -euo pipefail
@@ -170,11 +179,14 @@ jobs:
           set -euo pipefail
           mkdir -p "${RUNNER_TEMP}/arm"
           az bicep build --file infra/main.bicep --outfile "${RUNNER_TEMP}/arm/main.json"
-      - name: Install checkov from its hash-locked requirements
+      - name: Install checkov from its hash-locked uv project
         run: |
           set -euo pipefail
+          uv export --locked --no-emit-project --project requirements/security/checkov \
+            -o "${RUNNER_TEMP}/checkov-requirements.txt"
           uv venv "${RUNNER_TEMP}/checkov"
-          uv pip install --python "${RUNNER_TEMP}/checkov/bin/python" --require-hashes -r requirements/security/checkov.txt
+          uv pip install --python "${RUNNER_TEMP}/checkov/bin/python" --require-hashes \
+            -r "${RUNNER_TEMP}/checkov-requirements.txt"
       - name: Run Checkov
         run: |
           set -euo pipefail
