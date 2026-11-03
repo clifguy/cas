@@ -16,7 +16,7 @@ enough to guard against silent regression:
      there; uv currency is a manual ``uv lock --upgrade`` (see
      ``CLAUDE.md``). That defect is uv-specific and does not apply to npm,
      which is why npm coverage is safe to enable. The security-tool projects
-     under ``requirements/security/`` hold only an exact pin, where the
+     under ``requirements/security/`` hold an exact tool pin, where the
      rewrite is the intended update, so their block is live and is guarded
      in ``tests/infra/test_security_tool_pins.py``.
 

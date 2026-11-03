@@ -21,12 +21,13 @@ updates:
       interval: "weekly"
     open-pull-requests-limit: 5
 
-  # Each security-workflow tool is its own non-package uv project, holding only
-  # an exact pin for the tool, with a committed uv.lock beside it. An update
-  # here runs `uv lock --upgrade-package <tool>==<version>`: it moves the pin
-  # and that package in the lock, and leaves a universal, hashed lock. The
-  # floor/pin rewrite that keeps the root block above at limit 0 is the wanted
-  # behavior for a project whose only job is to hold a pin. The required CI
+  # Each security-workflow tool is its own non-package uv project, holding an
+  # exact pin for the tool (and any floor it needs on a dependency), with a
+  # committed uv.lock beside it. An update here runs
+  # `uv lock --upgrade-package <tool>==<version>`: it moves the pin and that
+  # package in the lock, and leaves a universal, hashed lock. The floor/pin
+  # rewrite that keeps the root block above at limit 0 is the wanted behavior
+  # for a project whose only job is to hold a pin. The required CI
   # test job runs scripts.check_security_lockfiles, which runs
   # `uv lock --check` on each project.
   - package-ecosystem: "uv"

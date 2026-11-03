@@ -148,6 +148,16 @@ def test_entry_outside_a_tool_project_is_refused(locked_repo: Path, stray: str) 
     assert stray.split("/")[0] in result.stderr
 
 
+@pytest.mark.parametrize("hidden", [".DS_Store", ".venv/pyvenv.cfg"])
+def test_hidden_local_entries_are_ignored(locked_repo: Path, hidden: str) -> None:
+    path = locked_repo / "requirements/security" / hidden
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("")
+    result = _check(locked_repo)
+    assert result.returncode == 0, result.stderr
+    assert "requirements/security/scanner/uv.lock" in result.stdout
+
+
 def test_empty_directory_is_refused(locked_repo: Path) -> None:
     for path in sorted((locked_repo / "requirements/security").rglob("*"), reverse=True):
         path.rmdir() if path.is_dir() else path.unlink()

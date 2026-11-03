@@ -72,6 +72,9 @@ def test_each_tool_is_an_exactly_pinned_non_package_project() -> None:
         project = _project(tool)
         assert project["project"]["name"] == f"security-{tool}"
         assert project["tool"]["uv"]["package"] is False, f"{tool} must not build a package"
+        # Any other uv setting (environments, required-environments) could narrow
+        # the lock to some platforms while uv lock --check still passes.
+        assert set(project["tool"]["uv"]) == {"package"}, f"{tool}: lock must stay universal"
         pins = [d for d in project["project"]["dependencies"] if re.match(rf"{tool}==\S+$", d)]
         assert len(pins) == 1, f"{tool}/pyproject.toml must pin {tool} exactly"
 
@@ -139,6 +142,12 @@ def test_control_unhashed_distribution_is_found() -> None:
             },
             {"name": "b", "version": "2.0", "wheels": [{"hash": "sha256:22"}, {"url": "x"}]},
             {"name": "c", "version": "3.0", "source": {"registry": "https://pypi.org/simple"}},
+            {
+                "name": "d",
+                "version": "4.0",
+                "sdist": {"url": "y"},
+                "wheels": [{"hash": "sha256:44"}],
+            },
         ]
     }
-    assert _unhashed_distributions(lock) == ["b==2.0", "c==3.0"]
+    assert _unhashed_distributions(lock) == ["b==2.0", "c==3.0", "d==4.0"]

@@ -12,7 +12,13 @@ DIRECTORY = Path("requirements/security")
 
 
 def check(root: Path) -> int:
-    entries = sorted((root / DIRECTORY).iterdir()) if (root / DIRECTORY).is_dir() else []
+    directory = root / DIRECTORY
+    # Hidden entries are local artifacts (.DS_Store, a venv) that git never ships.
+    entries = (
+        sorted(e for e in directory.iterdir() if not e.name.startswith("."))
+        if directory.is_dir()
+        else []
+    )
     projects = [entry for entry in entries if (entry / "pyproject.toml").is_file()]
     if not projects:
         print(f"No security tool projects found in {DIRECTORY}", file=sys.stderr)
