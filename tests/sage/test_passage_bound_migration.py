@@ -408,3 +408,145 @@ async def test_redivided_windows_preserve_each_stored_vector(
     from scripts.embedding_contention_trial import read_stored_vectors
 
     assert await read_stored_vectors(store, OVERSIZE) == expected
+
+
+# A document the division has examined -- whether it rewrote the passages, found
+# them already bounded, or declined them -- is not examined again until its
+# content or the embedder's bound changes. Without that, every run re-divides
+# and re-counts every passage the byte pre-check admits.
+
+CROWDED = "00000003_crowded"
+CELLS = "00000004_cells"
+
+
+def _spy_division(ingestion, monkeypatch) -> list[str]:
+    examined: list[str] = []
+    divide = ingestion._divide_stored_passages
+
+    async def spy(document_id, **kwargs):
+        examined.append(document_id)
+        return await divide(document_id, **kwargs)
+
+    monkeypatch.setattr(ingestion, "_divide_stored_passages", spy)
+    return examined
+
+
+async def _add_crowded(graph_store, store) -> None:
+    """A section whose heading path leaves under a quarter of the bound, kept whole."""
+    heading = "Doc > " + "very long heading words " * 14
+    await graph_store.insert_document(_doc(CROWDED))
+    await store.index_chunks(
+        CROWDED,
+        [
+            Chunk(
+                document_id=CROWDED,
+                heading_path=heading,
+                content="crowded section text " * 30,
+                chunk_index=0,
+                section_index=0,
+                embedding=[0.25] * EMBEDDING_DIM,
+                doc_type="ticket",
+                lifecycle_status="active",
+                project="CAS",
+            )
+        ],
+    )
+
+
+async def _add_cells(graph_store, store) -> None:
+    """A passage carrying explicit keyword content, which the division declines."""
+    await graph_store.insert_document(_doc(CELLS))
+    await store.index_chunks(
+        CELLS,
+        [
+            Chunk(
+                document_id=CELLS,
+                heading_path="Doc > Table",
+                content="cell value " * 60,
+                keyword_content="cell value",
+                chunk_index=0,
+                section_index=0,
+                embedding=[0.25] * EMBEDDING_DIM,
+                doc_type="ticket",
+                lifecycle_status="active",
+                project="CAS",
+            )
+        ],
+    )
+
+
+async def test_a_second_run_examines_no_document_again(
+    graph_store, store, ingestion, minimal_config, tmp_vault_dir, legacy_vault, monkeypatch
+):
+    await _add_crowded(graph_store, store)
+    await _add_cells(graph_store, store)
+    examined = _spy_division(ingestion, monkeypatch)
+    maintenance = _maintenance(graph_store, store, ingestion, minimal_config, tmp_vault_dir)
+
+    await maintenance.migrate_vault()
+    assert set(examined) == {OVERSIZE, FITTING, CROWDED, CELLS}, (
+        "control: the first run must examine every byte-length candidate"
+    )
+    examined.clear()
+
+    await maintenance.migrate_vault()
+
+    assert examined == []
+
+
+async def test_a_changed_bound_re_admits_every_examined_document(
+    graph_store,
+    store,
+    ingestion,
+    embedder,
+    minimal_config,
+    tmp_vault_dir,
+    legacy_vault,
+    monkeypatch,
+):
+    examined = _spy_division(ingestion, monkeypatch)
+    maintenance = _maintenance(graph_store, store, ingestion, minimal_config, tmp_vault_dir)
+    await maintenance.migrate_vault()
+    examined.clear()
+
+    embedder._max_input_tokens = BOUND - 10
+    await maintenance.migrate_vault()
+
+    assert set(examined) == {OVERSIZE, FITTING}
+
+
+async def test_changed_content_re_admits_only_that_document(
+    graph_store, store, ingestion, minimal_config, tmp_vault_dir, legacy_vault, monkeypatch
+):
+    examined = _spy_division(ingestion, monkeypatch)
+    maintenance = _maintenance(graph_store, store, ingestion, minimal_config, tmp_vault_dir)
+    await maintenance.migrate_vault()
+    examined.clear()
+
+    await graph_store.update_document(
+        FITTING, {"source_content_hash": f"sha256:{1:064x}"}, advance_version=False
+    )
+    await maintenance.migrate_vault()
+
+    assert examined == [FITTING]
+
+
+@pytest.mark.parametrize("backend", ["postgres", "stub"])
+async def test_a_division_mark_is_recorded_replaced_and_removed(graph_store, backend):
+    """The graph store's record of an examined document, on both store bindings."""
+    from sage.adapters.stubs import StubGraphStore
+
+    graphs = graph_store if backend == "postgres" else StubGraphStore()
+    await graphs.insert_document(_doc(OVERSIZE))
+    await graphs.insert_document(_doc(FITTING))
+    assert await graphs.passage_division_examined() == {}
+
+    await graphs.record_passage_division_examined(OVERSIZE, "a")
+    await graphs.record_passage_division_examined(OVERSIZE, "b")
+    await graphs.record_passage_division_examined(FITTING, "c")
+    assert await graphs.passage_division_examined() == {OVERSIZE: "b", FITTING: "c"}, (
+        "a later record replaces an earlier one"
+    )
+
+    await graphs.remove_document(FITTING)
+    assert await graphs.passage_division_examined() == {OVERSIZE: "b"}

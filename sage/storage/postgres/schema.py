@@ -151,6 +151,7 @@ CREATE TABLE IF NOT EXISTS documents (
     tier3_metadata jsonb,
     adapter_config jsonb,
     reprojection_skipped jsonb,
+    passage_division_examined text,
     metadata_confirmed boolean NOT NULL DEFAULT false,
     is_chain_head boolean NOT NULL DEFAULT true,
     relocated_from jsonb,
@@ -455,6 +456,12 @@ ADDITIVE_COLUMNS: tuple[str, ...] = (
     # vault needs no backfill. Kept apart from ``adapter_version``, which states
     # whose output the passages are and so cannot record a failed attempt.
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS reprojection_skipped jsonb;",
+    # The embedder identity and content hash under which a document's stored
+    # passages were last examined for division under the embedder's input bound.
+    # Nullable with no default: null is what "never examined" means, so an
+    # existing vault needs no backfill -- the next division pass examines each
+    # candidate once and records it.
+    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS passage_division_examined text;",
     "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS keyword_content text;",
     # Who a write came through and which agent asserted it made it, recorded
     # beside the principal (CAS-ADR-056). Nullable with no default: null is

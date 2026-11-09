@@ -2310,6 +2310,9 @@ paths:
         interrupted abstracts.
 
 
+        migration_started_at is set while migrate_vault runs.
+
+
         The doc-scoped health indicators are an operator worklist, so
         they exclude documents in a terminal lifecycle state -- the
         states the vault's own config marks `is_terminal`, so a vault
@@ -4114,19 +4117,19 @@ paths:
         re-embedded.
 
 
-        Idempotent: a re-call with nothing to repair reports no error
-        and empty lists, except tier3_uniqueness_activations, which
+        Idempotent: a re-call with nothing to repair reports empty
+        lists, except tier3_uniqueness_activations, which
         re-lists each clean declaration.
 
 
         The passage-structure backfill is expensive, exclusive and
-        one-time. It rebuilds every passage index, vector index included:
-        expect minutes of exclusive access at tens of thousands of passages.
+        one-time: minutes at tens of thousands of passages.
 
 
-        Refused while any ingest, reabstract or recompute is queued or
-        running on the vault, and they are refused while it runs (this
-        server process only).
+        Refused while ingest, reabstract or recompute is queued or
+        running, and refuses them meanwhile (this process only). A run
+        outlives its caller: poll get_vault_stats for
+        migration_started_at; a re-call starts a new run.
       tags: [Maintenance]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -8628,6 +8631,10 @@ components:
             - $ref: "#/components/schemas/LastOptimizeSummary"
             - type: "null"
           description: Summary of the most recent content-store optimize, or null if the vault has never been optimized.
+        migration_started_at:
+          type: [string, "null"]
+          format: date-time
+          description: When the migration currently running on this vault began, or null when none is. A running migration outlives a caller that stops waiting for it, so poll this rather than calling migrate_vault again. Held in the serving process, so it reports a migration this process is running.
 
     # -------------------------------------------------------------------------
     # Vault Configuration

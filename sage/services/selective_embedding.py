@@ -42,6 +42,25 @@ class PassageWork(list[Chunk]):
         self.selection = selection
 
 
+def tokenizer_identity(provider: EmbeddingProvider) -> str:
+    """Name the tokenizer and input bound passages are sized against.
+
+    Two runs under the same identity count the same tokens against the same
+    bound, so a passage division or selection made under one still holds.
+    """
+    return f"{type(provider).__name__}:exact:{provider.max_input_tokens}"
+
+
+def passage_division_mark(provider: EmbeddingProvider, content_hash: str) -> str:
+    """The mark a document's passages are examined for division under.
+
+    It changes when the tokenizer, the input bound or the document's content
+    does -- each a reason its stored passages might no longer be what the
+    division writes -- and under nothing else.
+    """
+    return f"{tokenizer_identity(provider)}@{content_hash}"
+
+
 def select_passages(
     chunks: list[Chunk],
     projection: ProjectionResult,
@@ -81,7 +100,7 @@ def select_passages(
         source_hash=source_hash,
         adapter_version=projection.adapter_version,
         tokenizer=tokens,
-        tokenizer_identity=f"{type(provider).__name__}:exact:{provider.max_input_tokens}",
+        tokenizer_identity=tokenizer_identity(provider),
         config=config,
         adapter_configuration=captured.get("adapter", {}),
     )

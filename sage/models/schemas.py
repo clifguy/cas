@@ -6539,6 +6539,15 @@ class VaultStatsResponse(BaseModel):
             "vault has never been optimized."
         ),
     )
+    migration_started_at: datetime | None = Field(
+        default=None,
+        description=(
+            "When the migration currently running on this vault began, or null when "
+            "none is. A running migration outlives a caller that stops waiting for "
+            "it, so poll this rather than calling migrate_vault again. Held in the "
+            "serving process, so it reports a migration this process is running."
+        ),
+    )
 
 
 # ---------------------------------------------------------------------------

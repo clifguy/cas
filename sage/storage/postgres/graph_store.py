@@ -1652,6 +1652,21 @@ class PostgresGraphStore(GraphStore):
             )
             return {row["id"]: row["adapter_version"] for row in rows}
 
+    async def record_passage_division_examined(self, document_id: str, mark: str) -> None:
+        with self._query_timer.measure("record_passage_division_examined"):
+            await self._execute(
+                "UPDATE documents SET passage_division_examined = %s WHERE id = %s",
+                (mark, document_id),
+            )
+
+    async def passage_division_examined(self) -> dict[str, str]:
+        with self._query_timer.measure("passage_division_examined"):
+            rows = await self._fetch_rows(
+                "SELECT id, passage_division_examined FROM documents "
+                "WHERE passage_division_examined IS NOT NULL"
+            )
+            return {row["id"]: row["passage_division_examined"] for row in rows}
+
     async def clear_reprojection_skip(self, document_id: str) -> None:
         with self._query_timer.measure("clear_reprojection_skip"):
             await self._execute(

@@ -16,6 +16,8 @@ registry state stays encapsulated in the registry service.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from sage.adapters.interfaces import ContentStore, GraphStore
@@ -64,11 +66,15 @@ class VaultConfigService:
         content_store: ContentStore,
         config: VaultConfig,
         registry_service: "VaultRegistryService | None",
+        migration_started_at: Callable[[], datetime | None] | None = None,
     ) -> None:
         self._store = graph_store
         self._content_store = content_store
         self._config = config
         self._registry_service = registry_service
+        # Reads when the vault's running migration began. Absent where the
+        # process runs no pipeline work, so no migration can be running.
+        self._migration_started_at = migration_started_at
 
     async def get_stats(self) -> VaultStatsResponse:
         """Return Dashboard statistics for the vault."""
@@ -140,6 +146,9 @@ class VaultConfigService:
             content_store_small_fragment_count=content_store_small_fragment_count,
             last_ingestion_at=last_ingestion,
             last_optimize=last_optimize,
+            migration_started_at=(
+                self._migration_started_at() if self._migration_started_at else None
+            ),
             health=HealthIndicators(
                 pending_metadata_count=pending_metadata_count,
                 pending_edge_count=staging_count,

@@ -1472,6 +1472,23 @@ class GraphStore(ABC):
         """
 
     @abstractmethod
+    async def record_passage_division_examined(self, document_id: str, mark: str) -> None:
+        """Record the mark under which a document's passages were examined for division.
+
+        The mark names the embedder identity and content hash the examination
+        ran under (see ``passage_division_mark``). A later record replaces an
+        earlier one. It states only that an examination ran under that mark,
+        whatever it found; it is not a pipeline outcome.
+        """
+
+    @abstractmethod
+    async def passage_division_examined(self) -> dict[str, str]:
+        """Map each document whose passages were examined for division to its mark.
+
+        No lifecycle filtering is applied.
+        """
+
+    @abstractmethod
     async def clear_reprojection_skip(self, document_id: str) -> None:
         """Remove a document's recorded re-projection skip, if it has one.
 

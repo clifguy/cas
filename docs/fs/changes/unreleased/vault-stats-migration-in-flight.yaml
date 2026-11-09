@@ -1,0 +1,16 @@
+classification: minor
+category: [capability]
+summary: >-
+  VaultStatsResponse gains migration_started_at, set while a migrate_vault run
+  holds the vault in the serving process, so get_vault_stats (REST and MCP)
+  reports a migration in flight without starting one. The migrate_vault and
+  get_vault_stats descriptions direct callers to poll it instead of re-calling.
+  The passage-division backfill now records the embedder identity and content
+  hash each document was examined under and skips documents it has examined,
+  so a repeat migrate_vault no longer re-divides and re-counts every long
+  passage.
+for_callers: >-
+  get_vault_stats now reports migration_started_at while a migrate_vault run is
+  in progress; poll it rather than calling migrate_vault again, which starts
+  another full run. A repeat migrate_vault no longer re-examines every long
+  passage it already examined.
