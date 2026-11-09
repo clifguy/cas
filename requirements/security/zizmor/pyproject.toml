@@ -3,7 +3,7 @@ name = "security-zizmor"
 version = "0"
 requires-python = "==3.14.*"
 dependencies = [
-    "zizmor==1.31.1",
+    "zizmor==1.32.0",
 ]
 
 [tool.uv]
