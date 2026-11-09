@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Inventory and version tracking for the CAS Formal Substrate (CAS-ADR-008). Each artifact's version is the release MAJOR.MINOR in which it last changed, or null until a release first publishes it; no counter is assigned when a change is authored. revision_history is assembled per release: a change adds a numberless change record under changes/unreleased/, and the release step folds every unreleased record into one entry for the new release, newest first. Entries written before this scheme, which carry a substrate counter in their version field, follow the release entries and are kept verbatim.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-10-30",
+  "manifest_date": "2026-11-09",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -84,7 +84,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "3.6",
+      "version": "3.7",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -92,7 +92,7 @@
       "path": "cas_app_api.openapi.yaml",
       "title": "CAS Application API",
       "status": "draft",
-      "version": "3.6",
+      "version": "3.7",
       "role": "OpenAPI 3.1.0 specification for the CAS Application backend HTTP surface (mounted at the /app prefix). Defines directory scan and batch-ingest endpoints used by the CAS Application UI. Architecturally distinct from the SAGE Core API; the two specs are validated together by tests/sage/test_openapi_conformance.py and must respect URL-prefix boundaries (sage_core_api owns /sage_vaults/*, cas_app_api owns /app/*).",
       "instantiation_checklist_items": []
     },
@@ -100,7 +100,7 @@
       "path": "sage/sage_mcp_tools.catalog.json",
       "title": "SAGE MCP Tool Catalog",
       "status": "draft",
-      "version": "3.6",
+      "version": "3.7",
       "role": "The tools the SAGE MCP surfaces publish through tools/list: name, input and output schemas, annotations, and description, for the ordinary surface (/mcp) and the maintenance surface (/mcp_maint). Generated from the servers by scripts/dump_mcp_catalog.py and held to them by a test gate; the contract comparison reads it as the MCP half of the published contract.",
       "instantiation_checklist_items": []
     },
@@ -197,6 +197,20 @@
   ],
   "deferred": [],
   "revision_history": [
+    {
+      "release": "3.7",
+      "date": "2026-11-09",
+      "changes": [
+        {
+          "classification": "minor",
+          "category": [
+            "operator-adaptation"
+          ],
+          "summary": "migrate_vault gains a backfill, mark_empty_readable_projection, which reads sources. An abstraction_skipped document whose projection holds no readable text and that settled before ingestion recorded the empty_readable_projection limitation carries no mark, so recompute_deferred_vault_abstracts dispatched it on every sweep and counted the NoProjectionError refusal in failed_count. For each such document with no passages in a vault that abstracts, the backfill re-projects the retained source, verifies the bytes still match the stored hash, and records exactly the abstraction evidence ingestion records for an empty projection (scope not_applicable, the shared limitation) through the same fenced publication. Nothing else about the document changes. A candidate whose source now projects text, changed, or cannot be read is left as it is, listed once in documents_not_repaired, and recorded so a later run reads no source it already settled; restoring the source clears the record. Descriptions change in sage_core_api.openapi.yaml, the Pydantic models and the MCP tool catalog: migrate_vault names the second source-reading backfill, and documents_not_repaired and DocumentNotRepaired cover a document the mark could not be recorded on. No operation, tool, parameter or response field is added or removed.",
+          "for_callers": "Documents whose empty projection settled before this mark was recorded keep being reported by recompute_deferred_vault_abstracts as dispatch_failed until an operator runs migrate_vault on each affected vault (any vault whose sweep reports dispatch_failed with NoProjectionError). The call reports mark_empty_readable_projection in backfills_applied, after which the sweep reports those documents as no_readable_text. A document listed in documents_not_repaired because its source now projects text needs recompute_pipeline instead."
+        }
+      ]
+    },
     {
       "release": "3.6",
       "date": "2026-10-30",
