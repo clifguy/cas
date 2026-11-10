@@ -64,7 +64,10 @@ The standalone CLI runs in its own process and cannot see a running server's
 in-memory registry; stop or restart the server after a delete so no stale pool
 outlives the dropped schema (the deleted vault vanishes on the server's next
 discovery). The in-process eviction path (``registry``) is for callers that run in
-the same process as the server that loaded the vault.
+the same process as the server that loaded the vault. On that path a vault on which
+``migrate_vault`` is running is refused (exit code 5) before anything is snapshotted,
+recorded or destroyed, and checked again at the eviction; retry once the migration
+has returned.
 """
 
 from __future__ import annotations
@@ -94,6 +97,7 @@ if TYPE_CHECKING:
     from sage.vault_source_binding import VaultSourceStore
 
 _TIMESTAMP_FORMAT = "%Y%m%dT%H%M%SZ"
+_REFUSED_MID_MIGRATION = 5
 _VAULT_ID_RE = re.compile(VAULT_ID_PATTERN)
 
 
@@ -161,7 +165,7 @@ def _source_manifest(storage_root: Path) -> list[dict]:
     return entries
 
 
-async def _evict_from_registry(registry: dict[str, Any], vault_id: str) -> None:
+async def _evict_from_registry(registry: dict[str, Any], vault_id: str) -> bool:
     """Evict a loaded vault from a live in-process registry (the reload teardown sequence).
 
     Runs the same teardown order the registry reload uses -- stop the ingestion
@@ -175,14 +179,44 @@ async def _evict_from_registry(registry: dict[str, Any], vault_id: str) -> None:
     normally writes for the work it drops. It is skipped here, and only here:
     the schema holding those documents is dropped moments later, so the stamp
     would be written to a store about to cease to exist and read by nobody.
+
+    A vault on which ``migrate_vault`` is running is not evicted, and the call
+    returns False. The check and the removal of the registry entry happen with
+    no await between them, before any teardown, so no migration can start on
+    the services once they are being torn down.
     """
     services = registry.get(vault_id)
     if services is None:
-        return
+        return True
+    if _refused_mid_migration(services):
+        return False
+    registry.pop(vault_id, None)
     await services.ingestion_service.stop_worker(restamp=False)
     services.close_timing()
     await services.close_storage()
-    registry.pop(vault_id, None)
+    return True
+
+
+def _refused_mid_migration(services: Any) -> bool:
+    """Report the refusal and return True while ``migrate_vault`` runs on ``services``.
+
+    The import is local: only the in-process path reaches this, and the
+    standalone and cloud teardown entrypoints keep the API layer out of their
+    import closure.
+    """
+    from sage.api.errors import VaultMigrationInFlightError
+
+    try:
+        services.ingestion_service.refuse_during_migration()
+    except VaultMigrationInFlightError as exc:
+        print(
+            f"refuse: migrate_vault is running on vault {exc.detail['vault_id']} "
+            f"(started {exc.detail['start_time']}); nothing was destroyed. "
+            "Retry once it has returned.",
+            file=sys.stderr,
+        )
+        return True
+    return False
 
 
 async def delete_vault(
@@ -240,6 +274,12 @@ async def delete_vault(
     if not apply:
         print("(dry-run; pass --apply to execute)")
         return 0
+
+    # A running migration writes through the storage the eviction closes and the
+    # schema the drop removes. Refuse before anything is snapshotted, recorded or
+    # destroyed; the eviction checks again, since the steps between here and it await.
+    if registry is not None and vault_id in registry and _refused_mid_migration(registry[vault_id]):
+        return _REFUSED_MID_MIGRATION
 
     # Per-target root-escape guard, before any change. A target that resolves
     # outside the bound vault root is refused for that target only -- left in
@@ -355,7 +395,8 @@ async def delete_vault(
     try:
         # In-process eviction (only when a live registry holds the vault).
         if registry is not None and vault_id in registry:
-            await _evict_from_registry(registry, vault_id)
+            if not await _evict_from_registry(registry, vault_id):
+                return _REFUSED_MID_MIGRATION
 
         # Drop the Postgres schema (idempotent).
         await provisioner.drop_vault_schema(vault_id)

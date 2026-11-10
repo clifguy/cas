@@ -330,6 +330,9 @@ class _FakeIngestionService:
         self.registered_adapters: dict[SourceType, Any] = {SourceType.MARKDOWN: _SentinelAdapter()}
         self.stop_worker_called = False
 
+    def refuse_during_migration(self) -> None:
+        return None
+
     async def stop_worker(self) -> None:
         self.stop_worker_called = True
 

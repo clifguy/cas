@@ -807,6 +807,10 @@ def create_app(
             # Unwind the MCP session managers FIRST: an in-flight MCP task is
             # cancelled while the vault services it holds are still open.
             await mcp_session_stack.aclose()
+            # A migrate_vault still running here ends with the process rather
+            # than being refused or awaited: shutdown must not wait on a
+            # backfill that can run for minutes, and migrate_vault is idempotent,
+            # so a re-call after restart finishes what this run left.
             for services in app.state.vault_registry.values():
                 await services.ingestion_service.stop_worker()
                 services.close_timing()

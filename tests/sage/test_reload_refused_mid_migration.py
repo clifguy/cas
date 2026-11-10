@@ -10,7 +10,6 @@ while a migration holds the vault, and proceed once it returns. The decision
 is taken below both surfaces, so REST and MCP refuse identically.
 """
 
-import asyncio
 from datetime import datetime, timezone
 
 import pytest
@@ -26,40 +25,14 @@ from sage.mcp_init import initialize_services
 from sage.mcp_server import reload_vault as mcp_reload_vault
 from sage.mcp_server import update_vault_config as mcp_update_vault_config
 from sage.services.vault_registry import VaultRegistryService
+from tests.helpers.held_migration import hold_migration as _hold_migration
+from tests.helpers.held_migration import release_migration as _release
 from tests.helpers.pipeline_wait import drain_abstraction_queue, drain_vaults
 from tests.sage.conftest import initialize_services_for_test
 
 pytestmark = pytest.mark.asyncio
 
 RENAMED = "Renamed While Migrating"
-
-
-class _HeldBackfill:
-    """Stands in for one migration backfill and holds the migration open."""
-
-    def __init__(self) -> None:
-        self.entered = asyncio.Event()
-        self.gate = asyncio.Event()
-
-    async def __call__(self) -> int:
-        self.entered.set()
-        await self.gate.wait()
-        return 0
-
-
-async def _hold_migration(services) -> tuple[asyncio.Task, _HeldBackfill, datetime]:
-    """Run a real ``migrate_vault`` on ``services`` and hold it mid-run."""
-    backfill = _HeldBackfill()
-    services.maintenance_service._divide_passages_over_input_bound = backfill
-    started = datetime.now(timezone.utc)
-    task = asyncio.create_task(services.maintenance_service.migrate_vault())
-    await asyncio.wait_for(backfill.entered.wait(), timeout=5.0)
-    return task, backfill, started
-
-
-async def _release(task: asyncio.Task, backfill: _HeldBackfill) -> None:
-    backfill.gate.set()
-    await asyncio.wait_for(task, timeout=5.0)
 
 
 def _assert_refusal(code: str, detail: dict, vault_id: str, started: datetime) -> None:

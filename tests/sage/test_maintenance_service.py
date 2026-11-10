@@ -26,6 +26,7 @@ import json
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -105,6 +106,10 @@ class _RecordingRegistryService:
 
     async def reload(self, vault_id: str, config: VaultConfig) -> None:
         self.reload_calls.append(vault_id)
+
+    def installed_services(self, vault_id: str) -> SimpleNamespace:
+        # No installed services to defer to: the service under test runs itself.
+        return SimpleNamespace(maintenance_service=None)
 
 
 async def test_migrate_vault_is_schema_noop_that_still_runs_tier3_scan(
