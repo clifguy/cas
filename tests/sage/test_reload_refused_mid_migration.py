@@ -168,6 +168,28 @@ async def test_service_reload_refused_mid_migration_then_admitted(registry, monk
     assert vaults["test_vault"] is not old
 
 
+async def test_a_reload_installs_the_new_services_before_tearing_down_the_old(registry):
+    """Rival: tearing the old services down first, which leaves the registry
+    serving them while their worker stops and their storage closes, after the
+    last point at which a starting migration could be refused."""
+    registry_service, vaults = registry
+    old = vaults["test_vault"]
+    installed_at_teardown: list = []
+    stop_worker = old.ingestion_service.stop_worker
+
+    async def recording_stop_worker(*args, **kwargs):
+        installed_at_teardown.append(vaults["test_vault"])
+        return await stop_worker(*args, **kwargs)
+
+    old.ingestion_service.stop_worker = recording_stop_worker
+
+    await registry_service.reload_vault("test_vault")
+
+    assert len(installed_at_teardown) == 1
+    assert installed_at_teardown[0] is not old
+    assert installed_at_teardown[0] is vaults["test_vault"]
+
+
 async def test_a_migration_that_starts_during_the_rebuild_is_not_torn_down(registry, monkeypatch):
     """Rival: checking only before the new services are built.
 
