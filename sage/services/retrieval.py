@@ -1627,6 +1627,7 @@ class RetrievalService:
             created_by_name=edge.created_by_name,
             created_client=edge.created_client,
             created_agent=edge.created_agent,
+            created_at=edge.created_at,
         )
 
     # ------------------------------------------------------------------
