@@ -116,6 +116,15 @@ async def migrate_vault(
                 "`detail.available_vaults` lists the registered vaults."
             ),
         },
+        409: {
+            "model": ErrorResponse,
+            "description": (
+                "`vault_migration_in_flight`: `migrate_vault` is running on this "
+                "vault; the vault keeps serving from its current services. "
+                "Detail carries `vault_id` and the migration's ISO 8601 "
+                "`start_time`; retry once it has returned."
+            ),
+        },
     },
 )
 async def reload_vault(

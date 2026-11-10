@@ -6143,6 +6143,7 @@ components:
         - statement_timeout
         - unknown_parameter
         - vault_config_validation_error
+        - vault_migration_in_flight
         - vault_not_found
         restore_vault_source_file:
         - ambiguous_ingest_source
@@ -6274,6 +6275,7 @@ components:
         - tier3_unique_activation_blocked
         - unknown_parameter
         - vault_config_validation_error
+        - vault_migration_in_flight
         - vault_not_found
         verify_hashes:
         - internal_error

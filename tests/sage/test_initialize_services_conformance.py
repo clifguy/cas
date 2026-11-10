@@ -107,6 +107,9 @@ class _FakeIngestionService:
     async def stop_worker(self) -> None:
         pass
 
+    def refuse_during_migration(self) -> None:
+        """No migration runs on a fake vault."""
+
 
 class _FakeServices:
     """Minimal SAGEServices stand-in covering every attribute touched by

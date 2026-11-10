@@ -2020,6 +2020,7 @@ SCHEMAS = json.loads(
         "statement_timeout",
         "unknown_parameter",
         "vault_config_validation_error",
+        "vault_migration_in_flight",
         "vault_not_found"
       ],
       "restore_vault_source_file": [
@@ -2158,6 +2159,7 @@ SCHEMAS = json.loads(
         "tier3_unique_activation_blocked",
         "unknown_parameter",
         "vault_config_validation_error",
+        "vault_migration_in_flight",
         "vault_not_found"
       ],
       "verify_hashes": [

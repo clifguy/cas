@@ -1,0 +1,17 @@
+classification: minor
+category: [caller-adaptation]
+summary: >-
+  reload_vault and update_vault_config refuse with 409 vault_migration_in_flight
+  while migrate_vault runs on the vault. A reload replaced the ingestion service
+  that holds the migration's exclusion of pipeline work and closed the storage the
+  migration was using; update_vault_config reloads after writing, so it now refuses
+  before writing anything (a dry run is still answered). The decision is taken in
+  the shared reload path, below both surfaces. Core OpenAPI 409 responses and the
+  per-tool error-code lists (Core and application specifications), the packaged
+  error contract and the MCP catalog are updated to match.
+for_callers: >-
+  reload_vault and update_vault_config now return 409 vault_migration_in_flight,
+  with the migration's vault_id and start_time, while migrate_vault is running on
+  the vault. Nothing is reloaded or written; retry once the migration has returned,
+  which get_vault_stats reports through migration_started_at. An update_vault_config
+  dry run is still answered during a migration.

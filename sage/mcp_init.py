@@ -1247,7 +1247,7 @@ async def reload_vault_in_registry(
     """Atomically swap a vault's services in the registry.
 
     Build-new-first ordering: constructs the new services completely, then
-    closes the old services and installs the new ones in the registry. If
+    installs them in the registry and closes the old ones. If
     new-service construction raises, the registry is left unchanged — the
     old services remain installed and functional (graph store still open,
     timing thread still running). The caller can retry the reload after
@@ -1261,6 +1261,14 @@ async def reload_vault_in_registry(
     and (when the caller does not supply them) ``config_path`` and
     ``from_declaration`` forward so hermetic-lifespan-test setups survive
     reload and a declared vault stays declared, re-read by the next reload.
+
+    A vault on which ``migrate_vault`` is running is not reloaded: the call
+    raises ``VaultMigrationInFlightError`` and the old services keep serving.
+    The migration's exclusion of pipeline work lives on the ingestion service
+    a reload replaces, and its backfills hold the storage a reload closes.
+    The check runs before the build and again after it, since a migration
+    may begin while the new services are being built; services built for a
+    refused reload are closed.
     """
     old = registry.get(vault_id)
     content_store_factory = None
@@ -1270,6 +1278,7 @@ async def reload_vault_in_registry(
             config_path = old.config_path
         if from_declaration is None:
             from_declaration = old.from_declaration
+        old.ingestion_service.refuse_during_migration()
         content_store_factory = old.content_store_factory
         graph_store_factory = old.graph_store_factory
 
@@ -1295,10 +1304,20 @@ async def reload_vault_in_registry(
         abstraction_provider=stack_provider,
     )
 
-    # New services built successfully — safe to tear down old and install new.
+    # New services built successfully. A migration may have begun on the old
+    # services during the build; check again, then install the new services
+    # with no await in between, and only then tear the old ones down.
+    if old is not None:
+        try:
+            old.ingestion_service.refuse_during_migration()
+        except BaseException:
+            await new_services.ingestion_service.stop_worker()
+            new_services.close_timing()
+            await new_services.close_storage()
+            raise
+    registry[vault_id] = new_services
     if old is not None:
         await old.ingestion_service.stop_worker()
         old.close_timing()
         await old.close_storage()
-    registry[vault_id] = new_services
     return new_services
