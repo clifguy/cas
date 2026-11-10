@@ -24,6 +24,7 @@ from sage.adapters.interfaces import Chunk
 from sage.adapters.stubs import StubAbstractionProvider, StubEmbeddingProvider
 from sage.models.enums import PipelineStatus, SourceType
 from sage.models.schemas import Document, SetLifecycleRequest
+from sage.services import selective_embedding
 from sage.services.ingestion import IngestionService
 from sage.services.lifecycle import LifecycleService
 from sage.services.maintenance import BACKFILL_PASSAGE_INPUT_BOUND, MaintenanceService
@@ -510,6 +511,24 @@ async def test_a_changed_bound_re_admits_every_examined_document(
     examined.clear()
 
     embedder._max_input_tokens = BOUND - 10
+    await maintenance.migrate_vault()
+
+    assert set(examined) == {OVERSIZE, FITTING}
+
+
+async def test_a_changed_division_rule_re_admits_every_examined_document(
+    graph_store, store, ingestion, minimal_config, tmp_vault_dir, legacy_vault, monkeypatch
+):
+    examined = _spy_division(ingestion, monkeypatch)
+    maintenance = _maintenance(graph_store, store, ingestion, minimal_config, tmp_vault_dir)
+    await maintenance.migrate_vault()
+    examined.clear()
+
+    monkeypatch.setattr(
+        selective_embedding,
+        "PASSAGE_DIVISION_RULE",
+        selective_embedding.PASSAGE_DIVISION_RULE + 1,
+    )
     await maintenance.migrate_vault()
 
     assert set(examined) == {OVERSIZE, FITTING}

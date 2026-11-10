@@ -456,8 +456,9 @@ ADDITIVE_COLUMNS: tuple[str, ...] = (
     # vault needs no backfill. Kept apart from ``adapter_version``, which states
     # whose output the passages are and so cannot record a failed attempt.
     "ALTER TABLE documents ADD COLUMN IF NOT EXISTS reprojection_skipped jsonb;",
-    # The embedder identity and content hash under which a document's stored
-    # passages were last examined for division under the embedder's input bound.
+    # The embedder identity, division rule and content hash under which a
+    # document's stored passages were last examined for division under the
+    # embedder's input bound.
     # Nullable with no default: null is what "never examined" means, so an
     # existing vault needs no backfill -- the next division pass examines each
     # candidate once and records it.

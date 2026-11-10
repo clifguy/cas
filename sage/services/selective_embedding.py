@@ -42,6 +42,12 @@ class PassageWork(list[Chunk]):
         self.selection = selection
 
 
+# The version of the rule that divides sections into passages
+# (``IngestionService._passages_for_sections``). Raise it when that rule changes
+# what it writes, so passages examined under the earlier rule are examined again.
+PASSAGE_DIVISION_RULE = 1
+
+
 def tokenizer_identity(provider: EmbeddingProvider) -> str:
     """Name the tokenizer and input bound passages are sized against.
 
@@ -54,11 +60,12 @@ def tokenizer_identity(provider: EmbeddingProvider) -> str:
 def passage_division_mark(provider: EmbeddingProvider, content_hash: str) -> str:
     """The mark a document's passages are examined for division under.
 
-    It changes when the tokenizer, the input bound or the document's content
-    does -- each a reason its stored passages might no longer be what the
-    division writes -- and under nothing else.
+    It changes when the tokenizer, the input bound, the division rule
+    (``PASSAGE_DIVISION_RULE``) or the document's content does -- each a reason
+    its stored passages might no longer be what the division writes -- and
+    under nothing else.
     """
-    return f"{tokenizer_identity(provider)}@{content_hash}"
+    return f"{tokenizer_identity(provider)}/division:{PASSAGE_DIVISION_RULE}@{content_hash}"
 
 
 def select_passages(

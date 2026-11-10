@@ -4583,6 +4583,7 @@ class IngestionService:
 
         The one division both ingest and the stored-passage migration apply, so
         a migrated document and a freshly ingested one hold identical passages.
+        A change to what it writes raises ``PASSAGE_DIVISION_RULE``.
         """
         chunks: list[Chunk] = []
         for section_index, (heading_path, content) in enumerate(sections):
@@ -4648,12 +4649,12 @@ class IngestionService:
         tokens a passage can occupy, and each is then measured exactly, so a
         document whose passages all fit is left untouched however long they are.
 
-        Each candidate examined is marked with the embedder identity and content
-        hash it was examined under (``passage_division_mark``), whether its
-        passages were rewritten, already fit, or are not divided here, and a
-        candidate already carrying the current mark is not examined again. Only a
-        change of tokenizer, input bound or content re-admits it, so a run after
-        a completed one measures nothing.
+        Each candidate examined is marked with the embedder identity, division
+        rule and content hash it was examined under (``passage_division_mark``),
+        whether its passages were rewritten, already fit, or are not divided
+        here, and a candidate already carrying the current mark is not examined
+        again. Only a change of tokenizer, input bound, division rule or content
+        re-admits it, so a run after a completed one measures nothing.
 
         Returns:
             The number of documents whose passages were rewritten.

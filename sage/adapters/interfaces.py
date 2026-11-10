@@ -1475,9 +1475,9 @@ class GraphStore(ABC):
     async def record_passage_division_examined(self, document_id: str, mark: str) -> None:
         """Record the mark under which a document's passages were examined for division.
 
-        The mark names the embedder identity and content hash the examination
-        ran under (see ``passage_division_mark``). A later record replaces an
-        earlier one. It states only that an examination ran under that mark,
+        The mark names the embedder identity, division rule and content hash the
+        examination ran under (see ``passage_division_mark``). A later record
+        replaces an earlier one. It states only that an examination ran under that mark,
         whatever it found; it is not a pipeline outcome.
         """
 
