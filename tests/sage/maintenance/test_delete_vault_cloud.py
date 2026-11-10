@@ -8,6 +8,8 @@ in-cloud run is the out-of-band post-deploy smoke (CAS-ADR-043).
 """
 
 import json
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -624,3 +626,20 @@ def test_cloud_shutdown_snapshot_off_closes_source_and_credential(monkeypatch):
     assert rc == 0
     assert store.closed is True
     assert cred.calls == 1
+
+
+def test_teardown_job_import_closure_excludes_the_api_layer():
+    """The cloud teardown job loads no part of the request API.
+
+    The in-process delete path reaches an API error type and imports it only
+    there; a module-level import would pull the web framework into every
+    teardown job's start.
+    """
+    probe = (
+        "import sys, sage.maintenance.delete_vault_cloud; "
+        "print(sorted(m for m in sys.modules if m == 'fastapi' or m.startswith('sage.api')))"
+    )
+    out = subprocess.run(
+        [sys.executable, "-c", probe], capture_output=True, text=True, check=True
+    ).stdout.strip()
+    assert out == "[]"

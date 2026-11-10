@@ -23,6 +23,7 @@ from sage.api.errors import (
     Tier3UniqueActivationBlockedError,
     VaultAlreadyExistsError,
     VaultConfigValidationError,
+    VaultMigrationInFlightError,
     VaultNotFoundError,
 )
 from sage.config import VaultConfig, without_null_retired_sections
@@ -227,6 +228,12 @@ class VaultRegistryService:
                         "vault-source discovery",
                         vault_id,
                     )
+            except VaultMigrationInFlightError:
+                logger.warning(
+                    "Vault %s is no longer present in vault-source discovery but "
+                    "migrate_vault is running on it; eviction deferred to a later listing",
+                    vault_id,
+                )
             except Exception:
                 logger.exception("Registry reconcile for vault %s failed; left in place", vault_id)
         return results
@@ -258,6 +265,17 @@ class VaultRegistryService:
         store = resolve_stack_vault_source_store(get_stack_config(), vault_root=get_vault_root())
         return {d.vault_id for d in store.discover() if d.vault_id}
 
+    def installed_services(self, vault_id: str) -> "SAGEServices":
+        """Return the services currently installed for ``vault_id``.
+
+        Raises:
+            VaultNotFoundError: No vault with this id is registered.
+        """
+        services = self._registry.get(vault_id)
+        if services is None:
+            raise VaultNotFoundError(vault_id, available_vaults=self._registry)
+        return services
+
     async def _evict(self, vault_id: str) -> None:
         """Drop a vault from the live registry and release its resources.
 
@@ -265,10 +283,17 @@ class VaultRegistryService:
         close the timing flusher, release the per-vault storage pool. Pops
         first so a concurrent lister that also hit the error path gets ``None``
         and does not double-close.
+
+        A vault on which ``migrate_vault`` is running is left in place: the
+        call raises ``VaultMigrationInFlightError`` before the pop, with no
+        await between the check and the pop, so the migration keeps the
+        storage it writes through and a later listing completes the eviction.
         """
-        services = self._registry.pop(vault_id, None)
+        services = self._registry.get(vault_id)
         if services is None:
             return
+        services.ingestion_service.refuse_during_migration()
+        self._registry.pop(vault_id, None)
         await services.ingestion_service.stop_worker()
         services.close_timing()
         await services.close_storage()

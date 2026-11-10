@@ -101,6 +101,9 @@ class _SpyIngestion:
         self._log = log
         self.restamp_arg = None
 
+    def refuse_during_migration(self):
+        return None
+
     async def stop_worker(self, *, restamp: bool = True):
         self._log.append("stop_worker")
         self.restamp_arg = restamp

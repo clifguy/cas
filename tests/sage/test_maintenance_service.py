@@ -26,6 +26,7 @@ import json
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -102,9 +103,14 @@ class _RecordingRegistryService:
 
     def __init__(self) -> None:
         self.reload_calls: list[str] = []
+        # The services the registry holds; a test installs the ones under test.
+        self.installed: SimpleNamespace | None = None
 
     async def reload(self, vault_id: str, config: VaultConfig) -> None:
         self.reload_calls.append(vault_id)
+
+    def installed_services(self, vault_id: str) -> SimpleNamespace | None:
+        return self.installed
 
 
 async def test_migrate_vault_is_schema_noop_that_still_runs_tier3_scan(
@@ -171,6 +177,7 @@ async def test_migrate_vault_noop_is_idempotent_and_never_reloads_registry(
         content_store=stub_content_store,
         registry_service=registry_service,
     )
+    registry_service.installed = SimpleNamespace(maintenance_service=maintenance)
 
     first = await maintenance.migrate_vault()
     second = await maintenance.migrate_vault()
