@@ -484,6 +484,7 @@ async def test_bootstrap_is_idempotent(pg_dsn):
         ("stored_content_hash", "text"),
         ("adapter_config", "jsonb"),
         ("reprojection_skipped", "jsonb"),
+        ("passage_division_examined", "text"),
         ("created_by_name", "text"),
         ("last_modified_by_name", "text"),
         ("created_client", "text"),

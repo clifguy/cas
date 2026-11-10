@@ -2245,6 +2245,8 @@ def register_sage_tools(
         counts per doc_type, and counts per pipeline_status. Inexpensive;
         safe to poll.
 
+        ``migration_started_at`` is set while ``migrate_vault`` runs.
+
         The doc-scoped health indicators are an operator worklist, so
         they exclude documents in a terminal lifecycle state -- the
         states the vault's own config marks ``is_terminal``, so a vault
@@ -2673,17 +2675,17 @@ def register_sage_tools(
         restored. Nothing is re-abstracted; only rewritten documents are
         re-embedded.
 
-        Idempotent: a re-call with nothing to repair reports no error
-        and empty lists, except ``tier3_uniqueness_activations``, which
+        Idempotent: a re-call with nothing to repair reports empty
+        lists, except ``tier3_uniqueness_activations``, which
         re-lists each clean declaration.
 
         **The passage-structure backfill is expensive, exclusive and
-        one-time.** It rebuilds every passage index, vector index included:
-        expect minutes of exclusive access at tens of thousands of passages.
+        one-time:** minutes at tens of thousands of passages.
 
-        Refused while any ingest, reabstract or recompute is queued or
-        running on the vault, and they are refused while it runs (this
-        server process only).
+        Refused while ingest, reabstract or recompute is queued or
+        running, and refuses them meanwhile (this process only). A run
+        outlives its caller: poll ``get_vault_stats`` for
+        ``migration_started_at``; a re-call starts a new run.
 
         tier3 uniqueness: each ``unique_keys`` declaration in vault config
         whose data is clean gets a partial UNIQUE index, listed in

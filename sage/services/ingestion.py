@@ -166,6 +166,7 @@ from sage.services.selective_embedding import (
     PassageWork,
     embed_selected,
     embedding_coverage,
+    passage_division_mark,
     reindex_passages,
     restore_selected_vectors,
     select_passages,
@@ -744,6 +745,11 @@ class IngestionService:
             kind=kind, start_time=datetime.now(timezone.utc)
         )
         return None
+
+    @property
+    def migration_started_at(self) -> datetime | None:
+        """When the migration holding ``exclude_pipeline_work`` began, or None."""
+        return self._migration_started_at
 
     def refuse_during_migration(self) -> None:
         """Raise ``VaultMigrationInFlightError`` while ``migrate_vault`` runs; never awaits."""
@@ -4577,6 +4583,7 @@ class IngestionService:
 
         The one division both ingest and the stored-passage migration apply, so
         a migrated document and a freshly ingested one hold identical passages.
+        A change to what it writes raises ``PASSAGE_DIVISION_RULE``.
         """
         chunks: list[Chunk] = []
         for section_index, (heading_path, content) in enumerate(sections):
@@ -4642,6 +4649,13 @@ class IngestionService:
         tokens a passage can occupy, and each is then measured exactly, so a
         document whose passages all fit is left untouched however long they are.
 
+        Each candidate examined is marked with the embedder identity, division
+        rule and content hash it was examined under (``passage_division_mark``),
+        whether its passages were rewritten, already fit, or are not divided
+        here, and a candidate already carrying the current mark is not examined
+        again. Only a change of tokenizer, input bound, division rule or content
+        re-admits it, so a run after a completed one measures nothing.
+
         Returns:
             The number of documents whose passages were rewritten.
         """
@@ -4649,14 +4663,22 @@ class IngestionService:
         # (see ``_fits_embedding_input``). That input is the heading path, a
         # two-byte separator and the content, and the byte test allows two more.
         byte_bound = self._embedding.max_input_tokens - 4
+        examined = await self._store.passage_division_examined()
         rewritten = 0
         for document_id in await self._content_store.documents_with_passages_longer_than(
             byte_bound
         ):
+            doc = await self._store.get_document(document_id)
+            if doc is None:
+                continue
+            mark = passage_division_mark(self._embedding, doc.source_content_hash)
+            if examined.get(document_id) == mark:
+                continue
             if await self._divide_stored_passages(
                 document_id, reprocessing_decision=reprocessing_decision
             ):
                 rewritten += 1
+            await self._store.record_passage_division_examined(document_id, mark)
         return rewritten
 
     @observe_operation("passages.rebuild")

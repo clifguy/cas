@@ -1065,6 +1065,7 @@ class StubGraphStore(GraphStore):
         # Held beside the documents, as the durable store holds it in a column
         # the Document model does not carry.
         self._reprojection_skips: dict[str, tuple[str | None, str]] = {}
+        self._passage_division_examined: dict[str, str] = {}
         self._edges: dict[str, Edge] = {}
         self._staging: dict[str, StagingEdge] = {}
         self.close_calls: int = 0
@@ -1381,6 +1382,17 @@ class StubGraphStore(GraphStore):
         return {
             doc_id: version
             for doc_id, (version, _reason) in self._reprojection_skips.items()
+            if doc_id in self._docs
+        }
+
+    async def record_passage_division_examined(self, document_id: str, mark: str) -> None:
+        if document_id in self._docs:
+            self._passage_division_examined[document_id] = mark
+
+    async def passage_division_examined(self) -> dict[str, str]:
+        return {
+            doc_id: mark
+            for doc_id, mark in self._passage_division_examined.items()
             if doc_id in self._docs
         }
 

@@ -485,3 +485,50 @@ async def test_a_migration_on_one_vault_does_not_refuse_another(
     assert isinstance(result, IngestPreview)
     backfill.gate.set()
     await migration
+
+
+# ---------------------------------------------------------------------------
+# A caller can see a migration in flight without starting one
+# ---------------------------------------------------------------------------
+
+
+async def test_vault_stats_report_a_migration_while_it_runs(
+    graph_store, ingestion_service, maintenance, backfill, minimal_config
+):
+    """Rival: polling ``migrate_vault`` itself, which starts another full run
+    whenever it arrives after one ends. The stats read reports the start time
+    the refusal carries, and reports nothing once the run returns."""
+    from sage.services.vault_config import VaultConfigService
+
+    stats = VaultConfigService(
+        graph_store=graph_store,
+        content_store=StubContentStore(),
+        config=minimal_config,
+        registry_service=None,
+        migration_started_at=lambda: ingestion_service.migration_started_at,
+    )
+    assert (await stats.get_stats()).migration_started_at is None
+
+    migration, started = await _start_held_migration(maintenance, backfill)
+    reported = (await stats.get_stats()).migration_started_at
+    with pytest.raises(VaultMigrationInFlightError) as excinfo:
+        await _within(maintenance.migrate_vault())
+
+    assert reported is not None
+    assert started <= reported <= datetime.now(timezone.utc)
+    assert reported == datetime.fromisoformat(excinfo.value.detail["start_time"])
+    backfill.gate.set()
+    await migration
+    assert (await stats.get_stats()).migration_started_at is None
+
+
+async def test_vault_stats_without_a_migration_source_report_none(graph_store, minimal_config):
+    from sage.services.vault_config import VaultConfigService
+
+    stats = VaultConfigService(
+        graph_store=graph_store,
+        content_store=StubContentStore(),
+        config=minimal_config,
+        registry_service=None,
+    )
+    assert (await stats.get_stats()).migration_started_at is None

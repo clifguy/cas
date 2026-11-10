@@ -133,6 +133,7 @@ export interface VaultStats {
   last_ingestion_at: string | null;
   health: HealthIndicators;
   last_optimize?: LastOptimizeSummary | null;
+  migration_started_at?: string | null;
 }
 
 export interface HealthIndicators {

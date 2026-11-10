@@ -1113,7 +1113,11 @@ async def initialize_services(
         )
         staging_edges_service = StagingEdgesService(graph_store, config)
         vault_config_service = VaultConfigService(
-            graph_store, content_store, config, registry_service
+            graph_store,
+            content_store,
+            config,
+            registry_service,
+            migration_started_at=lambda: ingestion_service.migration_started_at,
         )
         # CAS-ADR-029: only construct the maintenance service when a registry
         # service is available, since migrate_vault closes-and-reopens via

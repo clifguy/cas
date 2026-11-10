@@ -3855,3 +3855,19 @@ async def test_traverse_statement_timeout_reaches_the_caller_typed(
         await _mcp.mcp.call_tool("traverse", {"vault_id": "test_vault", "start_id": doc_id})
     )
     assert result["error"] == "statement_timeout", result
+
+
+async def test_get_vault_stats_reports_a_migration_in_flight(vault_services):
+    """The stats tool reads the start time from the vault's own ingestion service,
+    so a caller can wait out a migration without calling migrate_vault again."""
+    from datetime import datetime
+
+    assert _parse(await get_vault_stats("test_vault")).get("migration_started_at") is None
+
+    with vault_services.ingestion_service.exclude_pipeline_work():
+        held = _parse(await get_vault_stats("test_vault")).get("migration_started_at")
+        expected = vault_services.ingestion_service.migration_started_at
+
+    assert held is not None
+    assert datetime.fromisoformat(held) == expected
+    assert _parse(await get_vault_stats("test_vault")).get("migration_started_at") is None
