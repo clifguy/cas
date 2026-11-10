@@ -443,11 +443,11 @@ class MaintenanceService:
         ``VaultNotFoundError`` when none are installed. The check and the hold
         on pipeline work happen with no await between them, as do a reload's
         swap and an eviction's removal, so a migration never holds services
-        that are being torn down.
+        that a reload or an eviction is tearing down.
         """
         if self._registry_service is not None:
             installed = self._registry_service.installed_services(self._vault_id)
-            if installed.maintenance_service not in (self, None):
+            if installed.maintenance_service is not self:
                 return await installed.maintenance_service.migrate_vault()
         if self._reabstract_lock.locked():
             raise PipelineWorkInFlightError(self._vault_id)

@@ -21,6 +21,7 @@ resumes it, so it is not refused or awaited, and has no test here.
 
 import asyncio
 import copy
+import logging
 
 import pytest
 
@@ -191,6 +192,38 @@ async def test_delete_evicts_before_its_first_teardown_await(registry, declared)
     assert installed_at_stop == [False]
 
 
+async def test_delete_finishes_the_teardown_when_a_step_fails(registry, declared):
+    """Rival: stopping at the first failed teardown step after the entry is
+    gone, so the storage stays open on services a re-run cannot reach."""
+    _, vaults = registry
+    services = vaults[VAULT]
+    stop_worker = services.ingestion_service.stop_worker
+    close_storage = services.close_storage
+    closed: list[bool] = []
+
+    async def failing_stop_worker(*args, **kwargs):
+        await stop_worker(*args, **kwargs)
+        raise RuntimeError("worker stop failed")
+
+    async def recording_close_storage():
+        closed.append(True)
+        await close_storage()
+
+    services.ingestion_service.stop_worker = failing_stop_worker
+    services.close_storage = recording_close_storage
+    provisioner = _Provisioner()
+
+    rc = await delete_vault(**_delete_kwargs(declared, vaults, provisioner))
+
+    assert rc == 4
+    assert VAULT not in vaults
+    assert closed == [True]
+    assert provisioner.dropped == []
+    # Control: the documented re-run completes the delete.
+    assert await delete_vault(**_delete_kwargs(declared, vaults, provisioner)) == 0
+    assert provisioner.dropped == [VAULT]
+
+
 # ---------------------------------------------------------------------------
 # The listing's self-healing eviction
 # ---------------------------------------------------------------------------
@@ -206,17 +239,22 @@ def _vanish(registry_service, services, monkeypatch) -> None:
     monkeypatch.setattr(registry_service, "_discovered_vault_ids", lambda: set())
 
 
-async def test_listing_defers_eviction_mid_migration(registry, monkeypatch):
-    """Rival: evicting a vanished vault whatever is running on it."""
+async def test_listing_defers_eviction_mid_migration(registry, monkeypatch, caplog):
+    """Rivals: evicting a vanished vault whatever is running on it; leaving
+    it in place only as a failed reconcile, logged as an error."""
     registry_service, vaults = registry
     services = vaults[VAULT]
     _vanish(registry_service, services, monkeypatch)
     task, backfill, _ = await hold_migration(services)
 
-    listed = await registry_service.list_vaults()
+    with caplog.at_level(logging.WARNING, logger="sage.services.vault_registry"):
+        listed = await registry_service.list_vaults()
 
     assert [v.id for v in listed] == []
     await _assert_serving_the_migration(services, vaults)
+    messages = [r.getMessage() for r in caplog.records]
+    assert any("eviction deferred" in m for m in messages)
+    assert not any(m.startswith("Registry reconcile") for m in messages)
 
     await release_migration(task, backfill)
     await registry_service.list_vaults()

@@ -184,6 +184,10 @@ async def _evict_from_registry(registry: dict[str, Any], vault_id: str) -> bool:
     returns False. The check and the removal of the registry entry happen with
     no await between them, before any teardown, so no migration can start on
     the services once they are being torn down.
+
+    Once the entry is gone a re-run can no longer reach these services, so each
+    teardown step runs even when an earlier one raised; the first error still
+    propagates and the delete reports it.
     """
     services = registry.get(vault_id)
     if services is None:
@@ -191,18 +195,21 @@ async def _evict_from_registry(registry: dict[str, Any], vault_id: str) -> bool:
     if _refused_mid_migration(services):
         return False
     registry.pop(vault_id, None)
-    await services.ingestion_service.stop_worker(restamp=False)
-    services.close_timing()
-    await services.close_storage()
+    try:
+        await services.ingestion_service.stop_worker(restamp=False)
+    finally:
+        try:
+            services.close_timing()
+        finally:
+            await services.close_storage()
     return True
 
 
 def _refused_mid_migration(services: Any) -> bool:
     """Report the refusal and return True while ``migrate_vault`` runs on ``services``.
 
-    The import is local: only the in-process path reaches this, and the
-    standalone and cloud teardown entrypoints keep the API layer out of their
-    import closure.
+    The import is local: only the in-process path reaches this, and the cloud
+    teardown job keeps the API layer out of its import closure.
     """
     from sage.api.errors import VaultMigrationInFlightError
 
@@ -246,7 +253,9 @@ async def delete_vault(
     filesystem removal tolerates an already-absent target and a concurrent writer
     repopulating a directory mid-removal, and the snapshot skips its dump when the
     schema is already gone, so a re-run after a partial failure completes cleanly --
-    even with the default snapshot ON.
+    even with the default snapshot ON. With a ``registry`` holding the vault, a
+    running ``migrate_vault`` refuses the delete with exit code 5, both before the
+    confirmation and again at the eviction; nothing is destroyed.
     """
     # The id names a filesystem segment and the schema to drop, so it is held to
     # the vault-id shape and refused if it names a reserved schema before any
