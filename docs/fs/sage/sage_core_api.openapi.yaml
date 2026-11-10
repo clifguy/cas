@@ -2517,6 +2517,12 @@ paths:
             share a value a `unique_keys` entry this update adds declares
             unique; nothing is written, on a dry run as on a real one.
             Detail carries `collisions`.
+
+
+            `vault_migration_in_flight`: `migrate_vault` is running on this
+            vault, so nothing is written; a dry run is still answered.
+            Detail carries `vault_id` and the migration's ISO 8601
+            `start_time`; retry once it has returned.
           content:
             application/json:
               schema:
@@ -3773,6 +3779,16 @@ paths:
           description: >-
             `vault_not_found`: no vault registered with that id;
             `detail.available_vaults` lists the registered vaults.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "409":
+          description: >-
+            `vault_migration_in_flight`: `migrate_vault` is running on this
+            vault; the vault keeps serving from its current services.
+            Detail carries `vault_id` and the migration's ISO 8601
+            `start_time`; retry once it has returned.
           content:
             application/json:
               schema:
@@ -15843,6 +15859,7 @@ components:
         - statement_timeout
         - unknown_parameter
         - vault_config_validation_error
+        - vault_migration_in_flight
         - vault_not_found
         restore_vault_source_file:
         - ambiguous_ingest_source
@@ -15974,6 +15991,7 @@ components:
         - tier3_unique_activation_blocked
         - unknown_parameter
         - vault_config_validation_error
+        - vault_migration_in_flight
         - vault_not_found
         verify_hashes:
         - internal_error

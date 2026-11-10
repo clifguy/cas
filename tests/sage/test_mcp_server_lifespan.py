@@ -56,6 +56,9 @@ class _FakeIngestionService:
     async def stop_worker(self) -> None:
         pass
 
+    def refuse_during_migration(self) -> None:
+        """No migration runs on a fake vault."""
+
 
 class _FakeServices:
     def __init__(self, config: VaultConfig) -> None:

@@ -2200,8 +2200,7 @@ def register_sage_tools(
 
         The update writes to disk and takes effect at once; if any step
         fails, the yaml is rolled back and the previous config keeps
-        serving. ``reload_vault`` is needed only when an external process
-        edited the yaml.
+        serving.
 
         ``unique_keys`` changes take effect before the call returns;
         ``tier3_uniqueness_collisions`` names entries still unenforced.
@@ -2215,6 +2214,8 @@ def register_sage_tools(
           a retired field
         - ``tier3_unique_activation_blocked`` (409): an added ``unique_keys``
           entry collides; nothing is written
+        - ``vault_migration_in_flight`` (409): ``migrate_vault`` is running;
+          ``dry_run`` still answers
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)
@@ -3035,6 +3036,7 @@ def register_sage_tools(
         - ``vault_config_validation_error`` (400): the declaration is not valid
           YAML or not a valid vault configuration; ``detail.errors`` names each
           problem
+        - ``vault_migration_in_flight`` (409): ``migrate_vault`` is running
         """
         try:
             vault_id = _VAULT_ID_ADAPTER.validate_python(vault_id)

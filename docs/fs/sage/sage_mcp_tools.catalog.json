@@ -26036,6 +26036,49 @@
                 ],
                 "type": "object"
               },
+              "VaultMigrationInFlightError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/VaultMigrationInFlightErrorDetail"
+                  },
+                  "error": {
+                    "const": "vault_migration_in_flight",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "VaultMigrationInFlightErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "start_time": {
+                    "description": "Start time.",
+                    "type": "string"
+                  },
+                  "vault_id": {
+                    "description": "Vault id.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "vault_id",
+                  "start_time"
+                ],
+                "type": "object"
+              },
               "VaultNotFoundError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -26092,6 +26135,7 @@
                 "statement_timeout": "#/$defs/StatementTimeoutError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_config_validation_error": "#/$defs/VaultConfigValidationErrorError",
+                "vault_migration_in_flight": "#/$defs/VaultMigrationInFlightError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
               "propertyName": "error"
@@ -26116,6 +26160,9 @@
                 "$ref": "#/$defs/VaultConfigValidationErrorError"
               },
               {
+                "$ref": "#/$defs/VaultMigrationInFlightError"
+              },
+              {
                 "$ref": "#/$defs/VaultNotFoundError"
               }
             ]
@@ -26126,7 +26173,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Reload a vault by closing its current services and reinitializing.\n\nWhen the vault was loaded from its ``vault_config.yaml`` declaration,\nthe declaration is re-read through the vault-source store, so edits\nmade outside SAGE take effect; a vault built from an in-memory\nconfiguration reuses it. Use this after editing the declaration, or\nwhen changes SAGE did not make -- another process, direct database\nwrites -- have left the running services with stale data.\n\nScope is per-vault, not stack-wide: only the target vault's\ndeclaration is re-read. The stack-wide configuration is captured at\nprocess start and changes only with a restart; read it with\n``get_stack_config`` if you suspect drift.\n\nThe reload builds the new services before tearing down the old ones.\nIf construction fails, the error is returned and the vault keeps\nserving from its existing services, so the call can be retried once\nthe cause is addressed. Abstraction work in flight does not survive a\nsuccessful reload: a document being abstracted or waiting to be\nsettles at ``abstraction_interrupted``, and nothing re-runs it until\nthe next server start.\n\n``document_count`` spans every lifecycle state, including archived\npredecessors -- it says how much a vault holds, not how much of it is\ncurrent; ``get_vault_stats`` gives the per-state breakdown. It is\nnull, never zero, when the count could not be read after the reload\nsucceeded: the reload is still reported, and the null says the count\nis unknown rather than the vault empty.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``vault_config_validation_error`` (400): the declaration is not valid\n  YAML or not a valid vault configuration; ``detail.errors`` names each\n  problem\n",
+        "description": "Reload a vault by closing its current services and reinitializing.\n\nWhen the vault was loaded from its ``vault_config.yaml`` declaration,\nthe declaration is re-read through the vault-source store, so edits\nmade outside SAGE take effect; a vault built from an in-memory\nconfiguration reuses it. Use this after editing the declaration, or\nwhen changes SAGE did not make -- another process, direct database\nwrites -- have left the running services with stale data.\n\nScope is per-vault, not stack-wide: only the target vault's\ndeclaration is re-read. The stack-wide configuration is captured at\nprocess start and changes only with a restart; read it with\n``get_stack_config`` if you suspect drift.\n\nThe reload builds the new services before tearing down the old ones.\nIf construction fails, the error is returned and the vault keeps\nserving from its existing services, so the call can be retried once\nthe cause is addressed. Abstraction work in flight does not survive a\nsuccessful reload: a document being abstracted or waiting to be\nsettles at ``abstraction_interrupted``, and nothing re-runs it until\nthe next server start.\n\n``document_count`` spans every lifecycle state, including archived\npredecessors -- it says how much a vault holds, not how much of it is\ncurrent; ``get_vault_stats`` gives the per-state breakdown. It is\nnull, never zero, when the count could not be read after the reload\nsucceeded: the reload is still reported, and the null says the count\nis unknown rather than the vault empty.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``vault_config_validation_error`` (400): the declaration is not valid\n  YAML or not a valid vault configuration; ``detail.errors`` names each\n  problem\n- ``vault_migration_in_flight`` (409): ``migrate_vault`` is running\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -27588,6 +27635,49 @@
                 ],
                 "type": "object"
               },
+              "VaultMigrationInFlightError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/VaultMigrationInFlightErrorDetail"
+                  },
+                  "error": {
+                    "const": "vault_migration_in_flight",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "VaultMigrationInFlightErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "start_time": {
+                    "description": "Start time.",
+                    "type": "string"
+                  },
+                  "vault_id": {
+                    "description": "Vault id.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "vault_id",
+                  "start_time"
+                ],
+                "type": "object"
+              },
               "VaultNotFoundError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -27646,6 +27736,7 @@
                 "tier3_unique_activation_blocked": "#/$defs/Tier3UniqueActivationBlockedError",
                 "unknown_parameter": "#/$defs/UnknownParameterError",
                 "vault_config_validation_error": "#/$defs/VaultConfigValidationErrorError",
+                "vault_migration_in_flight": "#/$defs/VaultMigrationInFlightError",
                 "vault_not_found": "#/$defs/VaultNotFoundError"
               },
               "propertyName": "error"
@@ -27676,6 +27767,9 @@
                 "$ref": "#/$defs/VaultConfigValidationErrorError"
               },
               {
+                "$ref": "#/$defs/VaultMigrationInFlightError"
+              },
+              {
                 "$ref": "#/$defs/VaultNotFoundError"
               }
             ]
@@ -27686,7 +27780,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Update vault configuration at the section level.\n\nEach non-null section argument replaces that top-level section\nwholesale, so include every key you want to keep; sections left None\nare preserved.\n\nIf the merged config would remove a doc_type or lifecycle state that\nstill has documents attached, the update is rejected with\n``destructive_config_change`` and the affected counts in the detail.\nPass ``force=True`` to proceed anyway; the warnings then appear in\nthe success response. Changing ``vault.id`` is never permitted\nregardless of force — use ``create_vault`` for a new vault.\n\nThe update writes to disk and takes effect at once; if any step\nfails, the yaml is rolled back and the previous config keeps\nserving. ``reload_vault`` is needed only when an external process\nedited the yaml.\n\n``unique_keys`` changes take effect before the call returns;\n``tier3_uniqueness_collisions`` names entries still unenforced.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``destructive_config_change`` (409): see above\n- ``vault_config_validation_error`` (400): the merged config fails\n  validation, changes ``vault.id``, or its ``vault`` section declares\n  a retired field\n- ``tier3_unique_activation_blocked`` (409): an added ``unique_keys``\n  entry collides; nothing is written\n",
+        "description": "Update vault configuration at the section level.\n\nEach non-null section argument replaces that top-level section\nwholesale, so include every key you want to keep; sections left None\nare preserved.\n\nIf the merged config would remove a doc_type or lifecycle state that\nstill has documents attached, the update is rejected with\n``destructive_config_change`` and the affected counts in the detail.\nPass ``force=True`` to proceed anyway; the warnings then appear in\nthe success response. Changing ``vault.id`` is never permitted\nregardless of force — use ``create_vault`` for a new vault.\n\nThe update writes to disk and takes effect at once; if any step\nfails, the yaml is rolled back and the previous config keeps\nserving.\n\n``unique_keys`` changes take effect before the call returns;\n``tier3_uniqueness_collisions`` names entries still unenforced.\n\nError modes:\n- ``invalid_vault_id`` (400)\n- ``vault_not_found`` (404)\n- ``destructive_config_change`` (409): see above\n- ``vault_config_validation_error`` (400): the merged config fails\n  validation, changes ``vault.id``, or its ``vault`` section declares\n  a retired field\n- ``tier3_unique_activation_blocked`` (409): an added ``unique_keys``\n  entry collides; nothing is written\n- ``vault_migration_in_flight`` (409): ``migrate_vault`` is running;\n  ``dry_run`` still answers\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {

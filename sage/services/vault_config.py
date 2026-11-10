@@ -25,6 +25,7 @@ from sage.api.errors import (
     DestructiveConfigChangeError,
     Tier3UniqueActivationBlockedError,
     VaultConfigValidationError,
+    VaultMigrationInFlightError,
 )
 from sage.config import VaultConfig, without_null_retired_sections
 from sage.models.schemas import (
@@ -246,6 +247,10 @@ class VaultConfigService:
         ``DestructiveConfigChangeError``; warnings are always returned
         in the response body so the caller can decide whether to
         retry with ``force=True``. ``force`` is a no-op on dry-run.
+
+        A real run raises ``VaultMigrationInFlightError`` while
+        ``migrate_vault`` runs on the vault, before writing anything; a dry
+        run is still answered.
         """
         if self._registry_service is None:
             raise RuntimeError(
@@ -318,6 +323,13 @@ class VaultConfigService:
 
         if warnings and not force:
             raise DestructiveConfigChangeError(warnings)
+
+        # The write ends in a reload, which a running migration refuses.
+        # Refuse here, before anything is written, so the stored declaration
+        # never runs ahead of the services that serve the vault.
+        started = self._migration_started_at() if self._migration_started_at else None
+        if started is not None:
+            raise VaultMigrationInFlightError(vault_id, started)
 
         # CAS-ADR-043: persist the merged configuration through the active
         # profile's vault-source store so the write is binding-agnostic.

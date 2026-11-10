@@ -406,6 +406,10 @@ class VaultRegistryService:
         Delegates to mcp_init.reload_vault_in_registry; the registry-service
         wrapper threads the registry dict and the back-reference to self so
         the new VaultConfigService is wired correctly after the reload.
+
+        Raises:
+            VaultMigrationInFlightError: ``migrate_vault`` is running on the
+                vault; its services are left installed and serving.
         """
         from sage.mcp_init import reload_vault_in_registry
 
@@ -435,6 +439,8 @@ class VaultRegistryService:
             VaultNotFoundError: No vault with this id is registered.
             VaultConfigValidationError: The declaration on the store is not
                 valid YAML, or does not validate as a vault configuration.
+            VaultMigrationInFlightError: ``migrate_vault`` is running on the
+                vault; its services are left installed and serving.
         """
         from sage.mcp_init import (
             get_stack_config,

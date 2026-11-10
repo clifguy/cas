@@ -52,7 +52,7 @@ TOOL_CEILINGS: Final[dict[str, int]] = {
 #: Ceiling on the summed presented size of every tool a surface registers.
 SURFACE_CEILINGS: Final[dict[str, int]] = {
     "sage": 106_250,
-    "sage_maint": 34_500,
+    "sage_maint": 34_600,
 }
 
 #: A named or surface ceiling further than this above its measurement is slack.

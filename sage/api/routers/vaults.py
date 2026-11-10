@@ -185,7 +185,11 @@ async def get_vault_config(
                 "`tier3_unique_activation_blocked`: existing chain heads already "
                 "share a value a `unique_keys` entry this update adds declares "
                 "unique; nothing is written, on a dry run as on a real one. "
-                "Detail carries `collisions`."
+                "Detail carries `collisions`.\n\n"
+                "`vault_migration_in_flight`: `migrate_vault` is running on this "
+                "vault, so nothing is written; a dry run is still answered. "
+                "Detail carries `vault_id` and the migration's ISO 8601 "
+                "`start_time`; retry once it has returned."
             ),
         },
         422: invalid_parameter_422(),
