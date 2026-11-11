@@ -539,6 +539,74 @@ async def test_a8_create_edges_records_the_writer_on_every_edge(auth_app, tmp_va
     assert all("created_by_name" not in hit for hit in light["results"])
 
 
+async def test_a8b_full_edge_rows_carry_their_creation_time(auth_app, tmp_vault_dir) -> None:
+    """A full edge row reports when the edge was written; a light row omits it."""
+    from datetime import datetime, timezone
+
+    async with mcp_running(auth_app):
+        a = await _mcp_ingest(auth_app, "svc", None, seed(tmp_vault_dir, "a8ba.md"))
+        b = await _mcp_ingest(auth_app, "svc", None, seed(tmp_vault_dir, "a8bb.md"))
+        before = datetime.now(timezone.utc)
+        await mcp_call(
+            auth_app,
+            "alice-mcp",
+            "create_edges",
+            {
+                "vault_id": VAULT,
+                "items": [
+                    {
+                        "source_id": a["id"],
+                        "target_id": b["id"],
+                        "edge_type": "depends_on",
+                        "source_valid_from_version": a["id"],
+                        "target_valid_from_version": b["id"],
+                    }
+                ],
+            },
+        )
+        after = datetime.now(timezone.utc)
+        rows = {}
+        for mode in ("full", "light"):
+            rows[mode] = await mcp_call(
+                auth_app,
+                "svc",
+                "search",
+                {
+                    "vault_id": VAULT,
+                    "target": "edges",
+                    "filters": {"source_id": a["id"]},
+                    "response_mode": mode,
+                },
+            )
+    rest = {}
+    for mode in ("full", "light"):
+        resp = await _rest(
+            auth_app,
+            "svc",
+            None,
+            "POST",
+            "/discover",
+            {
+                "mode": "catalog",
+                "target": "edges",
+                "filters": {"source_id": a["id"]},
+                "response_mode": mode,
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        rest[mode] = resp.json()["results"]
+    (full,) = rows["full"]["results"]
+    created = datetime.fromisoformat(full["created_at"])
+    assert created.tzinfo is not None
+    assert before <= created <= after
+    # Both surfaces report the same instant for the same edge.
+    (rest_full,) = rest["full"]
+    assert datetime.fromisoformat(rest_full["created_at"]) == created
+    for light in (rows["light"]["results"], rest["light"]):
+        assert len(light) == 1
+        assert "created_at" not in light[0]
+
+
 async def test_a9_staging_confirm_records_the_confirming_writer(auth_app, tmp_vault_dir) -> None:
     from datetime import datetime, timezone
 

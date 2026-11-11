@@ -4090,8 +4090,8 @@ class DiscoverRequest(BaseModel):
             "Payload depth by target and "
             "mode: (edges) `light` returns identity columns only "
             "(edge_id, endpoints, edge_type); `full` carries the "
-            "complete envelope; default obeys a >5-results threshold "
-            "rule. (documents+catalog) `light` returns a stripped "
+            "complete envelope, including created_at; default obeys a "
+            ">5-results threshold rule. (documents+catalog) `light` returns a stripped "
             "DocumentSummaryLight; `full` returns the full "
             "DocumentSummary; the threshold rule does NOT apply -- "
             "default is full-equivalent. (documents+semantic/keyword) "
@@ -4695,6 +4695,13 @@ class EdgeHit(BaseModel):
             "The agent that created this edge, asserted as a document's "
             "created_agent is. Never verified. Null where no agent was named. "
             "Omitted in light mode."
+        ),
+    )
+    created_at: datetime | None = Field(
+        default=None,
+        description=(
+            "When this edge was created, as recorded at the write. Every edge "
+            "carries one. Omitted in light mode."
         ),
     )
 

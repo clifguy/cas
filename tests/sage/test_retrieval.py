@@ -6015,6 +6015,39 @@ async def test_catalog_edges_full_carries_complete_envelope(graph_store, retriev
     )
 
 
+async def test_catalog_edges_full_carries_the_stored_creation_time(graph_store, retrieval_service):
+    """13a. A full edge row reports the time the edge was created, as stored.
+
+    Anti-coincidental: the timestamp is fixed, in the past, and carries
+    microseconds, so a serializer that leaves the field null, stamps the
+    read time, or reuses another timestamp field cannot match it.
+    """
+    created = datetime(2026, 1, 2, 3, 4, 5, 678901, tzinfo=timezone.utc)
+    src = _id("created_at_src")
+    tgt = _id("created_at_tgt")
+    await graph_store.insert_document(_make_doc(src))
+    await graph_store.insert_document(_make_doc(tgt))
+    await graph_store.insert_edge(
+        Edge(
+            id=str(_uuid.uuid4()),
+            source_id=src,
+            target_id=tgt,
+            edge_type=EdgeType.REFERENCES,
+            rationale="seeded edge",
+            created_at=created,
+        )
+    )
+    req = DiscoverRequest(
+        mode=RetrievalMode.CATALOG,
+        target=RetrievalTarget.EDGES,
+        filters=RetrievalFilters(source_id=src),
+        response_mode=ResponseMode.FULL,
+    )
+    resp = await retrieval_service.discover(req)
+    assert len(resp.results) == 1
+    assert resp.results[0].created_at == created
+
+
 async def test_catalog_edges_default_threshold_at_or_below_five_is_full(
     graph_store, retrieval_service
 ):
