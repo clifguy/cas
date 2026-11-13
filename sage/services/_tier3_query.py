@@ -32,9 +32,12 @@ from sage.api.errors import (
 )
 from sage.config import VaultConfig
 
-FieldKind = Literal["scalar", "array", "object"]
+FieldKind = Literal["scalar", "array", "object", "object_array"]
 
 _SCALAR_TYPES = (str, int, float, bool)
+
+#: Bound on ``$ref`` hops followed while resolving one property schema.
+_MAX_REF_HOPS = 16
 
 
 def _declared_types(schema: dict) -> set[str]:
@@ -49,17 +52,63 @@ def _declared_types(schema: dict) -> set[str]:
     return types - {"null"}
 
 
-def field_kind(schema: dict) -> FieldKind:
-    """Classify a property: an array of scalars, an object-like value, or a scalar.
+def _is_null_only(schema: dict) -> bool:
+    declared = schema.get("type")
+    return declared == "null" or declared == ["null"]
 
-    An array whose items are objects or arrays is object-like: membership
-    over composite elements is not a supported query. A property declaring
-    no type, or only scalar types, is a scalar.
+
+def _resolve(schema: object, root: dict, hops: int = 0) -> dict:
+    """Follow local ``$ref`` pointers and unwrap a nullable composition.
+
+    A ``$ref`` into the doc_type's own schema is followed. An ``anyOf`` or
+    ``oneOf`` whose branches are one schema and ``null`` resolves to that
+    schema, so ``anyOf: [{type: array, ...}, {type: null}]`` declares an
+    array. Any other composition is returned as written; ``field_kind``
+    classifies it.
     """
+    if not isinstance(schema, dict):
+        return {}
+    while "$ref" in schema and hops < _MAX_REF_HOPS:
+        ref = schema["$ref"]
+        if not isinstance(ref, str) or not ref.startswith("#/"):
+            return schema
+        target: object = root
+        for part in ref[2:].split("/"):
+            part = part.replace("~1", "/").replace("~0", "~")
+            target = target.get(part) if isinstance(target, dict) else None
+        if not isinstance(target, dict):
+            return schema
+        schema, hops = target, hops + 1
+    for key in ("anyOf", "oneOf"):
+        branches = schema.get(key)
+        if isinstance(branches, list):
+            resolved = [_resolve(branch, root, hops + 1) for branch in branches]
+            non_null = [branch for branch in resolved if not _is_null_only(branch)]
+            if len(non_null) == 1:
+                return non_null[0]
+            return {**schema, key: non_null}
+    return schema
+
+
+def field_kind(schema: dict) -> FieldKind:
+    """Classify a resolved property schema.
+
+    ``array`` is a list of scalars, the only list the operators and list
+    facets read; ``object_array`` is a list of objects or lists;
+    ``object`` is an object, or a composition admitting a list or an
+    object; anything else -- including a property declaring no type -- is
+    a ``scalar``.
+    """
+    for key in ("anyOf", "oneOf"):
+        branches = schema.get(key)
+        if isinstance(branches, list):
+            if any(field_kind(branch) != "scalar" for branch in branches):
+                return "object"
+            return "scalar"
     types = _declared_types(schema)
     if types == {"array"}:
         item_types = _declared_types(schema.get("items") or {})
-        return "object" if item_types & {"object", "array"} else "array"
+        return "object_array" if item_types & {"object", "array"} else "array"
     if types & {"object", "array"}:
         return "object"
     return "scalar"
@@ -82,30 +131,55 @@ def _json_type(value: object) -> str:
 
 
 class Tier3Declarations:
-    """The ``metadata_schema`` properties declared by the doc_types in scope."""
+    """The ``metadata_schema`` properties declared by the doc_types in scope.
+
+    Each property is held resolved (see ``_resolve``), its ``items`` too.
+    """
 
     def __init__(self, config: VaultConfig, doc_type: str | None) -> None:
-        self._config = config
         names = (
             [doc_type] if doc_type else [entry.value for entry in config.document_types.doc_types]
         )
         self._properties: dict[str, dict[str, dict]] = {}
+        self._validators: dict[str, object] = {}
+        self._roots: dict[str, dict] = {}
         for name in names:
             validator = config.tier3_validator(name)
-            if validator is not None:
-                self._properties[name] = validator.schema.get("properties", {}) or {}
+            if validator is None:
+                continue
+            root = validator.schema
+            properties = root.get("properties", {}) or {}
+            resolved: dict[str, dict] = {}
+            for field, schema in properties.items():
+                prop = _resolve(schema, root)
+                if "items" in prop:
+                    prop = {**prop, "items": _resolve(prop["items"], root)}
+                resolved[field] = prop
+            self._properties[name] = resolved
+            self._validators[name] = validator
+            self._roots[name] = root
 
     def declaring(self, field: str) -> dict[str, dict]:
-        """``{doc_type: property schema}`` for each in-scope doc_type declaring ``field``."""
+        """``{doc_type: resolved property}`` for each in-scope doc_type declaring ``field``."""
         return {
             doc_type: props[field] for doc_type, props in self._properties.items() if field in props
         }
 
     def item_validators(self, doc_types: dict[str, dict]) -> list:
-        return [
-            type(self._config.tier3_validator(doc_type))(schema.get("items") or {})
-            for doc_type, schema in doc_types.items()
-        ]
+        """A validator per doc_type for one element of its declared list.
+
+        The items schema keeps the doc_type's definitions beside it, so a
+        reference inside the items resolves as it does on write.
+        """
+        validators = []
+        for doc_type, schema in doc_types.items():
+            root = self._roots[doc_type]
+            items = dict(schema.get("items") or {})
+            for key in ("$defs", "definitions"):
+                if key in root and key not in items:
+                    items[key] = root[key]
+            validators.append(type(self._validators[doc_type])(items))
+        return validators
 
 
 def normalize_tier3_filter(
@@ -113,45 +187,50 @@ def normalize_tier3_filter(
 ) -> dict[str, object]:
     """Replace each operator object with resolved ``Tier3ListPredicate`` terms.
 
-    A literal value passes through untouched, keeping exact equality. A
-    value is an operator object only where an in-scope doc_type declares the
-    field as an array of scalars; there, any dict must be one. A dict made
-    of operator keys on a field declared nowhere as such an array is
-    refused, because it would otherwise compare as a literal and match
-    nothing -- the silent empty result the refusal exists to replace.
+    A literal value passes through untouched, keeping exact equality. A dict
+    is an operator object where its keys are operators and an in-scope
+    doc_type declares the field as a list of scalars. Where none declares
+    it as an object, any other dict on such a field is refused, and so is
+    an operator object on a field declared nowhere as a list of scalars:
+    either would otherwise compare as a literal and match nothing -- the
+    silent empty result the refusal exists to replace. Where a doc_type
+    declares the field as an object, a dict that is not an operator object
+    stays a literal.
     """
     declarations = Tier3Declarations(config, doc_type)
     out: dict[str, object] = {}
     for key, value in tier3.items():
-        declaring = declarations.declaring(key)
-        arrays = {dt: s for dt, s in declaring.items() if field_kind(s) == "array"}
-        objects = {dt: s for dt, s in declaring.items() if field_kind(s) == "object"}
         if not isinstance(value, dict):
             out[key] = value
             continue
+        declaring = declarations.declaring(key)
+        arrays = {dt: s for dt, s in declaring.items() if field_kind(s) == "array"}
+        has_objects = any(field_kind(s) == "object" for s in declaring.values())
         operator_shaped = bool(value) and set(value) <= set(TIER3_LIST_OPERATORS)
-        if arrays:
-            if not operator_shaped:
-                raise InvalidFilterShapeError(
-                    field=f"tier3_metadata.{key}",
-                    expected_type="operator object with contains, any, all or none",
-                    received_type=f"object with keys {sorted(value)}",
-                )
+        if arrays and operator_shaped:
             out[key] = tuple(
                 _predicate(declarations, key, op, value[op], arrays)
                 for op in TIER3_LIST_OPERATORS
                 if op in value
             )
-            continue
-        if operator_shaped and not objects:
+        elif has_objects:
+            out[key] = value
+        elif arrays:
+            raise InvalidFilterShapeError(
+                field=f"tier3_metadata.{key}",
+                expected_type="operator object with contains, any, all or none",
+                received_type=f"object with keys {sorted(value)}",
+            )
+        elif operator_shaped:
             raise InvalidFilterShapeError(
                 field=f"tier3_metadata.{key}",
                 expected_type=(
-                    "a literal value: no doc_type in scope declares this field as an array"
+                    "a literal value: no doc_type in scope declares this field as a list of scalars"
                 ),
                 received_type=f"operator object with keys {sorted(value)}",
             )
-        out[key] = value
+        else:
+            out[key] = value
     return out
 
 
@@ -202,10 +281,16 @@ def _predicate(
             raise InvalidFilterShapeError(
                 field=field, expected_type=" or ".join(sorted(item_types)), received_type=received
             )
-        raise InvalidFilterValueError(
+        if enums and value not in enums:
+            raise InvalidFilterValueError(
+                field=field,
+                value=value,
+                valid_values=sorted({str(item) for item in enums}),
+            )
+        raise InvalidFilterShapeError(
             field=field,
-            value=value,
-            valid_values=sorted({str(item) for item in enums}),
+            expected_type="a value satisfying the field's declared items schema",
+            received_type=f"{received} {value!r}",
         )
     return Tier3ListPredicate(
         operator=operator, values=tuple(values), doc_types=tuple(sorted(arrays))
@@ -225,7 +310,7 @@ def resolve_tier3_facets(
     for name in dict.fromkeys(names):
         field = _tier3_field_name(name)
         declaring = declarations.declaring(field)
-        usable = {dt: s for dt, s in declaring.items() if field_kind(s) != "object"}
+        usable = {dt: s for dt, s in declaring.items() if field_kind(s) in ("scalar", "array")}
         if not usable:
             raise InvalidParameterError(
                 parameter="facet_fields",
@@ -239,7 +324,6 @@ def resolve_tier3_facets(
             Tier3FacetSpec(
                 name=name,
                 field=field,
-                is_array=any(field_kind(s) == "array" for s in usable.values()),
                 doc_types=tuple(sorted(usable)),
             )
         )

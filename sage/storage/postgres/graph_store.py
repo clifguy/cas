@@ -1976,35 +1976,35 @@ class PostgresGraphStore(GraphStore):
     ) -> FacetFieldCounts:
         """Aggregate one tier3 field over the slice narrowed to its doc_types.
 
-        A scalar groups by its text rendering. An array contributes each
-        distinct element once per document -- ``COUNT(DISTINCT documents.id)``
-        over the expanded elements, so a list repeating a value still counts
-        its document once -- which is how tags count. ``absent_count`` covers
-        the same population: documents whose field is missing or JSON null.
+        Every stored value is read as a list of elements: an array as its
+        elements, a scalar as a list of one, and a missing or JSON-null field
+        as none. Each distinct element counts its document once --
+        ``COUNT(DISTINCT documents.id)``, so a list repeating a value still
+        counts its document once, which is how tags count -- and a doc_type
+        declaring the field as a scalar contributes its values beside one
+        declaring it as a list. Elements group by JSON value, so ``1`` and
+        ``1.0`` are one value; a JSON-null element is not a value. The value
+        reported is the element's text. ``absent_count`` covers the same
+        population: documents whose field is missing or JSON null.
         """
         if not _TIER3_KEY_FORMAT.fullmatch(spec.field):
             raise ValueError(f"tier3 facet field {spec.field!r} is not safe for SQL interpolation")
         accessor = f"tier3_metadata->'{spec.field}'"
         population = f"({where_sql}) AND doc_type = ANY(%s)"
         population_params = [*params, list(spec.doc_types)]
-        if spec.is_array:
-            inner_sql = (
-                "SELECT element.value AS value, "  # noqa: S608 -- builder-trusted; values are %s
-                "COUNT(DISTINCT documents.id) AS doc_count "
-                f"FROM documents CROSS JOIN LATERAL jsonb_array_elements_text("
-                f"CASE WHEN jsonb_typeof({accessor}) = 'array' THEN {accessor} "
-                "ELSE '[]'::jsonb END) AS element(value) "
-                f"WHERE {population} "
-                "GROUP BY element.value"
-            )
-        else:
-            text = f"tier3_metadata->>'{spec.field}'"
-            inner_sql = (
-                f"SELECT {text} AS value, COUNT(*) AS doc_count "  # noqa: S608 -- key fenced above
-                "FROM documents "
-                f"WHERE {population} AND {text} IS NOT NULL "
-                f"GROUP BY {text}"
-            )
+        elements = (
+            f"CASE WHEN jsonb_typeof({accessor}) = 'array' THEN {accessor} "
+            f"WHEN {accessor} IS NULL OR {accessor} = 'null'::jsonb THEN '[]'::jsonb "
+            f"ELSE jsonb_build_array({accessor}) END"
+        )
+        inner_sql = (
+            "SELECT MIN(element.value #>> '{}') AS value, "  # noqa: S608 -- key fenced above
+            "COUNT(DISTINCT documents.id) AS doc_count "
+            f"FROM documents CROSS JOIN LATERAL jsonb_array_elements({elements}) "
+            "AS element(value) "
+            f"WHERE {population} AND jsonb_typeof(element.value) <> 'null' "
+            "GROUP BY element.value"
+        )
         rows = await self._fetch_tuples(
             f"SELECT value, doc_count, COUNT(*) OVER () FROM ({inner_sql}) AS facet_rows "  # noqa: S608 -- composed from builder-trusted parts
             "ORDER BY doc_count DESC, value ASC "

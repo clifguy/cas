@@ -1052,13 +1052,12 @@ class Tier3FacetSpec:
 
     ``name`` is the response field name (``tier3:<field>``). The population
     is the filter slice narrowed to ``doc_types``, the doc_types in scope
-    declaring the field; ``is_array`` selects per-element counting, each
-    value once per document, as tags are counted.
+    declaring the field as a scalar or a list of scalars. Each value counts
+    its document once, as tags are counted.
     """
 
     name: str
     field: str
-    is_array: bool
     doc_types: tuple[str, ...]
 
 

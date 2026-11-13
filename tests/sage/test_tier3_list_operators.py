@@ -10,13 +10,14 @@ declared scalar.
 
 The fixture is built so each assertion discriminates:
 
-* ``a`` holds ``[mosyle, abm]`` and ``b`` holds ``[mosyle]``: equality and
+* ``a`` holds ``[alpha, beta]`` and ``b`` holds ``[alpha]``: equality and
   containment disagree on both, and ``all`` in either order separates them.
 * ``c`` is a ``probe`` without the field: ``none`` must keep it, every other
   operator must drop it, and a facet counts it as absent.
 * ``d`` is an ``other`` document whose doc_type declares ``systems`` as a
-  *string* holding ``"mosyle"``: an un-narrowed operator must not reach it,
-  and a facet over the un-narrowed slice must not count it.
+  *string* holding ``"alpha"``: an un-narrowed operator must not reach it,
+  while a facet over the un-narrowed slice counts its value, since its
+  doc_type declares the field.
 """
 
 from __future__ import annotations
@@ -39,7 +40,7 @@ from sage.services.lifecycle import LifecycleService
 from sage.services.retrieval import RetrievalService
 from sage.source_adapters.markdown_adapter import MarkdownAdapter
 
-_SYSTEMS = ["mosyle", "abm", "m365_admin"]
+_SYSTEMS = ["alpha", "beta", "gamma"]
 
 
 def _config_dict(tmp_vault_dir: Path) -> dict:
@@ -150,17 +151,26 @@ def list_retrieval(graph_store, stub_content_store, stub_embedding_provider, lis
     )
 
 
-async def _seed(tmp_vault_dir: Path, ingestion: IngestionService, extra: dict | None = None):
-    rows = {
-        "a": (
-            "probe",
-            {"probe_id": "A", "systems": ["mosyle", "abm"], "last_reviewed": "2026-03-01"},
-        ),
-        "b": ("probe", {"probe_id": "B", "systems": ["mosyle"], "last_reviewed": "2026-01-15"}),
-        "c": ("probe", {"probe_id": "C"}),
-        "d": ("other", {"systems": "mosyle"}),
-        **(extra or {}),
-    }
+async def _seed(
+    tmp_vault_dir: Path,
+    ingestion: IngestionService,
+    extra: dict | None = None,
+    base: dict | None = None,
+):
+    rows = (
+        base
+        if base is not None
+        else {
+            "a": (
+                "probe",
+                {"probe_id": "A", "systems": ["alpha", "beta"], "last_reviewed": "2026-03-01"},
+            ),
+            "b": ("probe", {"probe_id": "B", "systems": ["alpha"], "last_reviewed": "2026-01-15"}),
+            "c": ("probe", {"probe_id": "C"}),
+            "d": ("other", {"systems": "alpha"}),
+        }
+    )
+    rows = {**rows, **(extra or {})}
     docs = {}
     for name, (doc_type, tier3) in rows.items():
         path = tmp_vault_dir / "sources" / f"{name}.md"
@@ -202,17 +212,17 @@ def _names(docs: dict, ids: set[str]) -> set[str]:
 async def test_contains_matches_every_list_holding_the_value(
     tmp_vault_dir, list_ingestion, list_retrieval
 ):
-    """``contains`` is membership, not equality: both lists hold mosyle."""
+    """``contains`` is membership, not equality: both lists hold alpha."""
     docs = await _seed(tmp_vault_dir, list_ingestion)
-    matched = await _ids(list_retrieval, {"systems": {"contains": "mosyle"}})
+    matched = await _ids(list_retrieval, {"systems": {"contains": "alpha"}})
     assert _names(docs, matched) == {"a", "b"}
 
 
 async def test_all_is_order_insensitive_containment(tmp_vault_dir, list_ingestion, list_retrieval):
-    """Both spellings of the pair select a; neither selects b, which lacks abm."""
+    """Both spellings of the pair select a; neither selects b, which lacks beta."""
     docs = await _seed(tmp_vault_dir, list_ingestion)
-    forward = await _ids(list_retrieval, {"systems": {"all": ["mosyle", "abm"]}})
-    reverse = await _ids(list_retrieval, {"systems": {"all": ["abm", "mosyle"]}})
+    forward = await _ids(list_retrieval, {"systems": {"all": ["alpha", "beta"]}})
+    reverse = await _ids(list_retrieval, {"systems": {"all": ["beta", "alpha"]}})
     assert _names(docs, forward) == {"a"}
     assert _names(docs, reverse) == {"a"}
 
@@ -220,12 +230,12 @@ async def test_all_is_order_insensitive_containment(tmp_vault_dir, list_ingestio
 async def test_any_matches_a_list_holding_at_least_one(
     tmp_vault_dir, list_ingestion, list_retrieval
 ):
-    """m365_admin is held by nobody, so ``any`` reduces to abm: only a.
+    """gamma is held by nobody, so ``any`` reduces to beta: only a.
 
     Under ``all`` semantics this would be empty, which is what separates the two.
     """
     docs = await _seed(tmp_vault_dir, list_ingestion)
-    matched = await _ids(list_retrieval, {"systems": {"any": ["abm", "m365_admin"]}})
+    matched = await _ids(list_retrieval, {"systems": {"any": ["beta", "gamma"]}})
     assert _names(docs, matched) == {"a"}
 
 
@@ -233,14 +243,14 @@ async def test_none_keeps_lists_without_the_values_and_documents_without_the_fie
     tmp_vault_dir, list_ingestion, list_retrieval
 ):
     docs = await _seed(tmp_vault_dir, list_ingestion)
-    matched = await _ids(list_retrieval, {"systems": {"none": ["abm"]}})
+    matched = await _ids(list_retrieval, {"systems": {"none": ["beta"]}})
     assert _names(docs, matched) == {"b", "c"}
 
 
 async def test_operators_compose_and(tmp_vault_dir, list_ingestion, list_retrieval):
     """Two operators on one field must both hold."""
     docs = await _seed(tmp_vault_dir, list_ingestion)
-    matched = await _ids(list_retrieval, {"systems": {"contains": "mosyle", "none": ["abm"]}})
+    matched = await _ids(list_retrieval, {"systems": {"contains": "alpha", "none": ["beta"]}})
     assert _names(docs, matched) == {"b"}
 
 
@@ -248,10 +258,10 @@ async def test_unnarrowed_operator_reaches_only_doc_types_declaring_an_array(
     tmp_vault_dir, list_ingestion, list_retrieval
 ):
     """With no doc_type, d -- whose doc_type declares ``systems`` as a string
-    holding "mosyle" -- must not match ``contains`` nor ``none``."""
+    holding "alpha" -- must not match ``contains`` nor ``none``."""
     docs = await _seed(tmp_vault_dir, list_ingestion)
-    contains = await _ids(list_retrieval, {"systems": {"contains": "mosyle"}}, doc_type=None)
-    none = await _ids(list_retrieval, {"systems": {"none": ["abm"]}}, doc_type=None)
+    contains = await _ids(list_retrieval, {"systems": {"contains": "alpha"}}, doc_type=None)
+    none = await _ids(list_retrieval, {"systems": {"none": ["beta"]}}, doc_type=None)
     assert _names(docs, contains) == {"a", "b"}
     assert _names(docs, none) == {"b", "c"}
 
@@ -261,8 +271,8 @@ async def test_bare_list_literal_keeps_exact_equality(
 ):
     """The literal form is unchanged: a one-element list matches only b."""
     docs = await _seed(tmp_vault_dir, list_ingestion)
-    matched = await _ids(list_retrieval, {"systems": ["mosyle"]})
-    reversed_pair = await _ids(list_retrieval, {"systems": ["abm", "mosyle"]})
+    matched = await _ids(list_retrieval, {"systems": ["alpha"]})
+    reversed_pair = await _ids(list_retrieval, {"systems": ["beta", "alpha"]})
     assert _names(docs, matched) == {"b"}
     assert reversed_pair == set()
 
@@ -271,13 +281,13 @@ async def test_object_field_dict_literal_keeps_exact_equality(
     tmp_vault_dir, list_ingestion, list_retrieval
 ):
     """A dict on an object-typed field is a literal even when its keys look
-    like operators, because only an array declaration admits the operator form."""
+    like operators, because only a list declaration admits the operator form."""
     docs = await _seed(
         tmp_vault_dir,
         list_ingestion,
-        extra={"e": ("probe", {"probe_id": "E", "owner_ref": {"name": "ops"}})},
+        extra={"e": ("probe", {"probe_id": "E", "owner_ref": {"contains": "ops"}})},
     )
-    matched = await _ids(list_retrieval, {"owner_ref": {"name": "ops"}})
+    matched = await _ids(list_retrieval, {"owner_ref": {"contains": "ops"}})
     assert _names(docs, matched) == {"e"}
 
 
@@ -287,7 +297,7 @@ async def test_keyword_listing_and_content_prefilter_agree_with_catalog(
     """The keyword ``*`` listing and the semantic/keyword pre-filter resolve
     the operator to the same documents as catalog mode."""
     docs = await _seed(tmp_vault_dir, list_ingestion)
-    tier3 = {"systems": {"all": ["abm", "mosyle"]}}
+    tier3 = {"systems": {"all": ["beta", "alpha"]}}
     catalog = await _ids(list_retrieval, tier3)
 
     listing = await list_retrieval.discover(
@@ -321,10 +331,10 @@ async def test_undeclared_enum_operand_is_refused_with_the_vocabulary(
 ):
     await _seed(tmp_vault_dir, list_ingestion)
     with pytest.raises(InvalidFilterValueError) as excinfo:
-        await _ids(list_retrieval, {"systems": {"contains": "mosyle_mdm"}})
+        await _ids(list_retrieval, {"systems": {"contains": "alpha_x"}})
     detail = excinfo.value.detail
     assert detail["field"] == "tier3_metadata.systems"
-    assert detail["value"] == "mosyle_mdm"
+    assert detail["value"] == "alpha_x"
     assert detail["valid_values"] == sorted(_SYSTEMS)
 
 
@@ -346,10 +356,10 @@ async def test_operator_on_a_field_no_doc_type_declares_as_array_is_refused_unna
 @pytest.mark.parametrize(
     "operator_value",
     [
-        {"contains": ["mosyle"]},
+        {"contains": ["alpha"]},
         {"any": []},
-        {"all": "mosyle"},
-        {"contains": "mosyle", "near": "abm"},
+        {"all": "alpha"},
+        {"contains": "alpha", "near": "beta"},
         {"none": [3]},
     ],
     ids=["contains-list", "any-empty", "all-scalar", "unknown-key", "wrong-item-type"],
@@ -383,22 +393,24 @@ async def _facets(retrieval, fields: list[str], doc_type: str | None = "probe", 
 async def test_list_facet_counts_each_value_once_per_document(
     tmp_vault_dir, list_ingestion, list_retrieval
 ):
-    """A list field counts like tags; c is absent; d's string is not counted.
+    """A list field counts like tags; c is absent; d's string counts once.
 
-    f repeats mosyle, which must still count once for f. m's doc_type does
-    not declare the field, so m is outside the population, not absent.
+    f repeats alpha, which must still count once for f. d's doc_type
+    declares the field as a string, so its value counts beside the lists.
+    m's doc_type does not declare the field, so m is outside the population,
+    not absent.
     """
     await _seed(
         tmp_vault_dir,
         list_ingestion,
         extra={
-            "f": ("probe", {"probe_id": "F", "systems": ["mosyle", "mosyle"]}),
+            "f": ("probe", {"probe_id": "F", "systems": ["alpha", "alpha"]}),
             "m": ("misc", None),
         },
     )
     rows = await _facets(list_retrieval, ["tier3:systems"], doc_type=None)
     row = rows["tier3:systems"]
-    assert row.values == {"mosyle": 3, "abm": 1}
+    assert row.values == {"alpha": 4, "beta": 1}
     assert row.total_distinct == 2
     assert row.absent_count == 1
 
@@ -406,7 +418,7 @@ async def test_list_facet_counts_each_value_once_per_document(
 async def test_list_facet_honors_the_value_cap(tmp_vault_dir, list_ingestion, list_retrieval):
     await _seed(tmp_vault_dir, list_ingestion)
     row = (await _facets(list_retrieval, ["tier3:systems"], limit=1))["tier3:systems"]
-    assert row.values == {"mosyle": 2}
+    assert row.values == {"alpha": 2}
     assert row.total_distinct == 2
 
 
@@ -441,6 +453,18 @@ async def test_facet_on_undeclared_or_object_field_is_refused(
 # ---------------------------------------------------------------------------
 # Sort
 # ---------------------------------------------------------------------------
+
+
+async def _sorted(retrieval, sort_by: str, doc_type: str | None) -> list[str]:
+    response = await retrieval.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            filters=RetrievalFilters(doc_type=doc_type) if doc_type else None,
+            sort_by=sort_by,
+            limit=50,
+        )
+    )
+    return [hit.document.id for hit in response.results]
 
 
 async def _sorted_names(retrieval, docs, order: str) -> list[str]:
@@ -543,7 +567,7 @@ async def both_surfaces(list_config):
 @pytest.mark.parametrize(
     ("code", "tier3"),
     [
-        ("invalid_filter_value", {"systems": {"contains": "mosyle_mdm"}}),
+        ("invalid_filter_value", {"systems": {"contains": "alpha_x"}}),
         ("invalid_filter_shape", {"probe_id": {"contains": "A"}}),
     ],
 )
@@ -567,3 +591,223 @@ async def test_tier3_facet_and_sort_are_accepted_on_both_surfaces(both_surfaces)
         assert body["results"][0]["absent_count"] == 0
     for body in (sort_mcp, sort_http):
         assert body["mode"] == "catalog", body
+
+
+# ---------------------------------------------------------------------------
+# Declaration idioms and stored shapes
+# ---------------------------------------------------------------------------
+#
+# ``refd`` declares its fields through the idioms a vault may use: items by
+# ``$ref``, a list made nullable by ``anyOf``, a list of objects, number and
+# pattern-constrained items, a nullable scalar and an object. ``dual``
+# declares three of the same names differently -- ``systems`` with another
+# enum, ``owner_ref`` as a list, ``rank`` as a list -- so un-narrowed terms
+# meet both declarations.
+
+_REFD_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "$defs": {"system": {"type": "string", "enum": ["alpha", "beta"]}},
+    "properties": {
+        "systems": {"type": "array", "items": {"$ref": "#/$defs/system"}},
+        "labels": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]},
+        "contacts": {
+            "type": "array",
+            "items": {"type": "object", "properties": {"name": {"type": "string"}}},
+        },
+        "scores": {"type": "array", "items": {"type": "number"}},
+        "mixed": {"type": "array", "items": {"type": ["string", "null"]}},
+        "codes": {"type": "array", "items": {"type": "string", "pattern": "^[a-z]+$"}},
+        "rank": {"type": ["number", "null"]},
+        "owner_ref": {"type": "object"},
+    },
+}
+
+_DUAL_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "systems": {"type": "array", "items": {"type": "string", "enum": ["delta"]}},
+        "owner_ref": {"type": "array", "items": {"type": "string"}},
+        "rank": {"type": "array", "items": {"type": "number"}},
+    },
+}
+
+
+@pytest.fixture
+def idiom_config(tmp_vault_dir):
+    raw = _config_dict(tmp_vault_dir)
+    raw["document_types"]["doc_types"] = [
+        {"value": "refd", "label": "Refd", "metadata_schema": _REFD_SCHEMA},
+        {"value": "dual", "label": "Dual", "metadata_schema": _DUAL_SCHEMA},
+    ]
+    return VaultConfig.model_validate(raw)
+
+
+@pytest.fixture
+def idiom_ingestion(
+    graph_store,
+    lock_manager,
+    stub_content_store,
+    stub_embedding_provider,
+    stub_abstraction_provider,
+    idiom_config,
+):
+    return IngestionService(
+        graph_store=graph_store,
+        lock_manager=lock_manager,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        abstraction_provider=stub_abstraction_provider,
+        config=idiom_config,
+        source_adapters={SourceType.MARKDOWN: MarkdownAdapter()},
+        lifecycle_service=LifecycleService(graph_store, lock_manager, idiom_config),
+    )
+
+
+@pytest.fixture
+def idiom_retrieval(graph_store, stub_content_store, stub_embedding_provider, idiom_config):
+    return RetrievalService(
+        graph_store=graph_store,
+        content_store=stub_content_store,
+        embedding_provider=stub_embedding_provider,
+        config=idiom_config,
+    )
+
+
+async def _seed_idioms(tmp_vault_dir: Path, ingestion: IngestionService) -> dict:
+    rows = {
+        "r1": (
+            "refd",
+            {
+                "systems": ["alpha"],
+                "labels": ["x"],
+                "scores": [3.0],
+                "mixed": ["x", None],
+                "rank": 1,
+                "owner_ref": {"name": "ops"},
+            },
+        ),
+        "r2": ("refd", {"systems": ["beta"], "labels": None, "scores": [1], "rank": 1.0}),
+        "r3": ("refd", {"scores": [1.0], "rank": None}),
+        "r4": ("refd", {}),
+        "u1": ("dual", {"systems": ["delta"], "owner_ref": ["ops"], "rank": [2]}),
+    }
+    return await _seed(tmp_vault_dir, ingestion, base=rows)
+
+
+async def test_ref_declared_items_resolve_for_operators_and_refusals(
+    tmp_vault_dir, idiom_ingestion, idiom_retrieval
+):
+    docs = await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    matched = await _ids(idiom_retrieval, {"systems": {"contains": "alpha"}}, doc_type="refd")
+    assert _names(docs, matched) == {"r1"}
+    with pytest.raises(InvalidFilterValueError) as excinfo:
+        await _ids(idiom_retrieval, {"systems": {"contains": "zeta"}}, doc_type="refd")
+    assert excinfo.value.detail["valid_values"] == ["alpha", "beta"]
+
+
+async def test_nullable_list_is_a_list_for_operators_facets_and_sort(
+    tmp_vault_dir, idiom_ingestion, idiom_retrieval
+):
+    docs = await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    matched = await _ids(idiom_retrieval, {"labels": {"contains": "x"}}, doc_type="refd")
+    assert _names(docs, matched) == {"r1"}
+    row = (await _facets(idiom_retrieval, ["tier3:labels"], doc_type="refd"))["tier3:labels"]
+    assert row.values == {"x": 1}
+    assert row.absent_count == 3
+    with pytest.raises(InvalidParameterError):
+        await _sorted(idiom_retrieval, "tier3:labels", doc_type="refd")
+
+
+async def test_list_of_objects_is_refused_for_operators_and_facets(
+    tmp_vault_dir, idiom_ingestion, idiom_retrieval
+):
+    await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    with pytest.raises(InvalidFilterShapeError):
+        await _ids(idiom_retrieval, {"contacts": {"contains": {"name": "x"}}}, doc_type="refd")
+    with pytest.raises(InvalidFilterShapeError):
+        await _ids(idiom_retrieval, {"contacts": {"any": ["x"]}}, doc_type="refd")
+    with pytest.raises(InvalidParameterError):
+        await _facets(idiom_retrieval, ["tier3:contacts"], doc_type="refd")
+
+
+async def test_integer_operand_matches_number_items(
+    tmp_vault_dir, idiom_ingestion, idiom_retrieval
+):
+    """3 is a valid number and contains 3.0 under JSON numeric equality."""
+    docs = await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    matched = await _ids(idiom_retrieval, {"scores": {"contains": 3}}, doc_type="refd")
+    assert _names(docs, matched) == {"r1"}
+
+
+async def test_non_enum_items_constraint_is_refused_as_shape(
+    tmp_vault_dir, idiom_ingestion, idiom_retrieval
+):
+    """A pattern violation has no vocabulary to list, so it is not
+    ``invalid_filter_value`` with an empty one."""
+    await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    with pytest.raises(InvalidFilterShapeError) as excinfo:
+        await _ids(idiom_retrieval, {"codes": {"contains": "ABC"}}, doc_type="refd")
+    assert excinfo.value.detail["field"] == "tier3_metadata.codes"
+
+
+async def test_operand_valid_under_any_declaring_doc_type_is_accepted(
+    tmp_vault_dir, idiom_ingestion, idiom_retrieval
+):
+    """Un-narrowed, delta is valid only under dual's enum and selects u1;
+    narrowed to refd, the same operand is refused against refd's enum."""
+    docs = await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    matched = await _ids(idiom_retrieval, {"systems": {"contains": "delta"}}, doc_type=None)
+    assert _names(docs, matched) == {"u1"}
+    with pytest.raises(InvalidFilterValueError):
+        await _ids(idiom_retrieval, {"systems": {"contains": "delta"}}, doc_type="refd")
+
+
+async def test_object_dict_literal_survives_a_list_declaration_elsewhere(
+    tmp_vault_dir, idiom_ingestion, idiom_retrieval
+):
+    """refd declares owner_ref as an object, dual as a list: un-narrowed, a
+    non-operator dict is refd's literal, not a refused operator object."""
+    docs = await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    matched = await _ids(idiom_retrieval, {"owner_ref": {"name": "ops"}}, doc_type=None)
+    assert _names(docs, matched) == {"r1"}
+
+
+async def test_sort_refused_when_any_in_scope_declaration_is_not_scalar(
+    tmp_vault_dir, idiom_ingestion, idiom_retrieval
+):
+    """rank is a scalar in refd and a list in dual: un-narrowed it is refused,
+    narrowed to refd it sorts."""
+    await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    with pytest.raises(InvalidParameterError):
+        await _sorted(idiom_retrieval, "tier3:rank", doc_type=None)
+    assert await _sorted(idiom_retrieval, "tier3:rank", doc_type="refd")
+
+
+async def test_facet_groups_numbers_by_value_and_skips_null_elements(
+    tmp_vault_dir, idiom_ingestion, idiom_retrieval
+):
+    """1 and 1.0 are one value; a null list element and a JSON-null scalar
+    are not values, and the null scalar is absent."""
+    await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    rows = await _facets(
+        idiom_retrieval, ["tier3:scores", "tier3:mixed", "tier3:rank"], doc_type="refd"
+    )
+    assert rows["tier3:scores"].values == {"1": 2, "3.0": 1}
+    assert rows["tier3:mixed"].values == {"x": 1}
+    assert rows["tier3:rank"].values == {"1": 2}
+    assert rows["tier3:rank"].absent_count == 2
+
+
+async def test_repeated_facet_name_yields_one_row(tmp_vault_dir, idiom_ingestion, idiom_retrieval):
+    await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    response = await idiom_retrieval.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            target=RetrievalTarget.FACETS,
+            filters=RetrievalFilters(doc_type="refd"),
+            facet_fields=["tier3:scores", "tier3:scores"],
+        )
+    )
+    assert [row.field for row in response.results] == ["tier3:scores"]
