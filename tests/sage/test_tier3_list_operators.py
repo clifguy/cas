@@ -607,8 +607,26 @@ async def test_tier3_facet_and_sort_are_accepted_on_both_surfaces(both_surfaces)
 _REFD_SCHEMA = {
     "type": "object",
     "additionalProperties": False,
-    "$defs": {"system": {"type": "string", "enum": ["alpha", "beta"]}},
+    "$defs": {
+        "system": {"type": "string", "enum": ["alpha", "beta"]},
+        "banned": {"enum": ["root"]},
+    },
     "properties": {
+        "primary": {"type": "string", "enum": ["p", "q"]},
+        "nested": {"type": "array", "items": {"allOf": [{"$ref": "#/properties/primary"}]}},
+        "handles": {
+            "type": "array",
+            "items": {"type": "string", "not": {"$ref": "#/$defs/banned"}},
+        },
+        "fenced": {
+            "type": "array",
+            "items": {"type": "string", "not": {"$ref": "#/properties/primary"}},
+        },
+        "pick": {"oneOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]},
+        "wrapped": {"allOf": [{"type": "array", "items": {"type": "string"}}]},
+        "either": {"anyOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
+        "halves": {"type": "array", "items": {"type": "number", "enum": [1.5, 2.5]}},
+        "code": {"type": "string"},
         "systems": {"type": "array", "items": {"$ref": "#/$defs/system"}},
         "labels": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}]},
         "contacts": {
@@ -630,6 +648,7 @@ _DUAL_SCHEMA = {
         "systems": {"type": "array", "items": {"type": "string", "enum": ["delta"]}},
         "owner_ref": {"type": "array", "items": {"type": "string"}},
         "rank": {"type": "array", "items": {"type": "number"}},
+        "code": {"type": "integer"},
     },
 }
 
@@ -686,12 +705,20 @@ async def _seed_idioms(tmp_vault_dir: Path, ingestion: IngestionService) -> dict
                 "mixed": ["x", None],
                 "rank": 1,
                 "owner_ref": {"name": "ops"},
+                "nested": ["p"],
+                "handles": ["x"],
+                "fenced": ["z"],
+                "pick": ["x"],
+                "wrapped": ["w"],
+                "either": ["x"],
+                "halves": [1.5],
+                "code": "1",
             },
         ),
         "r2": ("refd", {"systems": ["beta"], "labels": None, "scores": [1], "rank": 1.0}),
         "r3": ("refd", {"scores": [1.0], "rank": None}),
         "r4": ("refd", {}),
-        "u1": ("dual", {"systems": ["delta"], "owner_ref": ["ops"], "rank": [2]}),
+        "u1": ("dual", {"systems": ["delta"], "owner_ref": ["ops"], "rank": [2], "code": 1}),
     }
     return await _seed(tmp_vault_dir, ingestion, base=rows)
 
@@ -794,7 +821,7 @@ async def test_facet_groups_numbers_by_value_and_skips_null_elements(
     rows = await _facets(
         idiom_retrieval, ["tier3:scores", "tier3:mixed", "tier3:rank"], doc_type="refd"
     )
-    assert rows["tier3:scores"].values == {"1": 2, "3.0": 1}
+    assert rows["tier3:scores"].values == {"1": 2, "3": 1}
     assert rows["tier3:mixed"].values == {"x": 1}
     assert rows["tier3:rank"].values == {"1": 2}
     assert rows["tier3:rank"].absent_count == 2
@@ -811,3 +838,106 @@ async def test_repeated_facet_name_yields_one_row(tmp_vault_dir, idiom_ingestion
         )
     )
     assert [row.field for row in response.results] == ["tier3:scores"]
+
+
+async def test_references_inside_items_resolve_against_the_doc_type_schema(
+    tmp_vault_dir, idiom_ingestion, idiom_retrieval
+):
+    """``nested`` reaches its enum through ``allOf`` and a ``$ref`` into
+    ``properties``; ``handles`` refers to ``$defs`` and ``fenced`` to
+    ``properties`` from inside ``not``, which classification leaves alone."""
+    docs = await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    matched = await _ids(idiom_retrieval, {"nested": {"contains": "p"}}, doc_type="refd")
+    assert _names(docs, matched) == {"r1"}
+    with pytest.raises(InvalidFilterValueError) as excinfo:
+        await _ids(idiom_retrieval, {"nested": {"contains": "z"}}, doc_type="refd")
+    assert excinfo.value.detail["valid_values"] == ["p", "q"]
+    matched = await _ids(idiom_retrieval, {"handles": {"contains": "x"}}, doc_type="refd")
+    assert _names(docs, matched) == {"r1"}
+    with pytest.raises(InvalidFilterShapeError):
+        await _ids(idiom_retrieval, {"handles": {"contains": "root"}}, doc_type="refd")
+    matched = await _ids(idiom_retrieval, {"fenced": {"contains": "z"}}, doc_type="refd")
+    assert _names(docs, matched) == {"r1"}
+    with pytest.raises(InvalidFilterShapeError):
+        await _ids(idiom_retrieval, {"fenced": {"contains": "p"}}, doc_type="refd")
+
+
+async def test_unresolvable_items_reference_is_refused_not_raised(tmp_vault_dir):
+    """An items reference the doc_type schema cannot resolve refuses every
+    operand rather than escaping as an internal error."""
+    from sage.services._tier3_query import normalize_tier3_filter
+
+    raw = _config_dict(tmp_vault_dir)
+    raw["document_types"]["doc_types"] = [
+        {
+            "value": "broken",
+            "label": "Broken",
+            "metadata_schema": {
+                "type": "object",
+                "properties": {
+                    "tags2": {
+                        "type": "array",
+                        "items": {"type": "string", "not": {"$ref": "#/$defs/missing"}},
+                    }
+                },
+            },
+        }
+    ]
+    config = VaultConfig.model_validate(raw)
+    with pytest.raises(InvalidFilterShapeError):
+        normalize_tier3_filter(config, {"tags2": {"contains": "x"}}, "broken")
+
+
+async def test_oneof_nullable_and_allof_wrapped_lists_are_lists(
+    tmp_vault_dir, idiom_ingestion, idiom_retrieval
+):
+    docs = await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    pick = await _ids(idiom_retrieval, {"pick": {"contains": "x"}}, doc_type="refd")
+    wrapped = await _ids(idiom_retrieval, {"wrapped": {"contains": "w"}}, doc_type="refd")
+    assert _names(docs, pick) == {"r1"}
+    assert _names(docs, wrapped) == {"r1"}
+    with pytest.raises(InvalidParameterError):
+        await _sorted(idiom_retrieval, "tier3:wrapped", doc_type="refd")
+
+
+async def test_operator_on_a_string_or_list_union_is_refused(
+    tmp_vault_dir, idiom_ingestion, idiom_retrieval
+):
+    await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    with pytest.raises(InvalidFilterShapeError):
+        await _ids(idiom_retrieval, {"either": {"contains": "x"}}, doc_type="refd")
+    with pytest.raises(InvalidParameterError):
+        await _facets(idiom_retrieval, ["tier3:either"], doc_type="refd")
+
+
+async def test_integer_outside_a_number_enum_is_a_value_refusal(
+    tmp_vault_dir, idiom_ingestion, idiom_retrieval
+):
+    """3 is a number of the right type outside the enum: a vocabulary
+    refusal, not a type mismatch."""
+    await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    with pytest.raises(InvalidFilterValueError) as excinfo:
+        await _ids(idiom_retrieval, {"halves": {"contains": 3}}, doc_type="refd")
+    assert excinfo.value.detail["valid_values"] == ["1.5", "2.5"]
+
+
+async def test_facet_keys_merge_values_with_the_same_text(
+    tmp_vault_dir, idiom_ingestion, idiom_retrieval
+):
+    """refd stores the string "1", dual the number 1: one key, two documents,
+    and total_distinct agrees with the keys returned."""
+    await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    row = (await _facets(idiom_retrieval, ["tier3:code"], doc_type=None))["tier3:code"]
+    assert row.values == {"1": 2}
+    assert row.total_distinct == 1
+
+
+async def test_facet_population_excludes_doc_types_declaring_an_object(
+    tmp_vault_dir, idiom_ingestion, idiom_retrieval
+):
+    """owner_ref is an object in refd and a list in dual: un-narrowed, only
+    dual's documents are counted, and refd's are neither values nor absent."""
+    await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    row = (await _facets(idiom_retrieval, ["tier3:owner_ref"], doc_type=None))["tier3:owner_ref"]
+    assert row.values == {"ops": 1}
+    assert row.absent_count == 0

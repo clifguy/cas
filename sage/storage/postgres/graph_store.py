@@ -1982,10 +1982,13 @@ class PostgresGraphStore(GraphStore):
         ``COUNT(DISTINCT documents.id)``, so a list repeating a value still
         counts its document once, which is how tags count -- and a doc_type
         declaring the field as a scalar contributes its values beside one
-        declaring it as a list. Elements group by JSON value, so ``1`` and
-        ``1.0`` are one value; a JSON-null element is not a value. The value
-        reported is the element's text. ``absent_count`` covers the same
-        population: documents whose field is missing or JSON null.
+        declaring it as a list. Elements group by the text the response
+        keys them by -- a number in its shortest decimal form, so ``1`` and
+        ``1.0`` are one value ``"1"``, as are the string ``"1"`` and the
+        number ``1`` -- and so ``total_distinct`` counts exactly the keys a
+        caller can receive. A JSON-null element is not a value.
+        ``absent_count`` covers the same population: documents whose field
+        is missing or JSON null.
         """
         if not _TIER3_KEY_FORMAT.fullmatch(spec.field):
             raise ValueError(f"tier3 facet field {spec.field!r} is not safe for SQL interpolation")
@@ -1997,13 +2000,18 @@ class PostgresGraphStore(GraphStore):
             f"WHEN {accessor} IS NULL OR {accessor} = 'null'::jsonb THEN '[]'::jsonb "
             f"ELSE jsonb_build_array({accessor}) END"
         )
+        key = (
+            "CASE WHEN jsonb_typeof(element.value) = 'number' "
+            "THEN trim_scale((element.value #>> '{}')::numeric)::text "
+            "ELSE element.value #>> '{}' END"
+        )
         inner_sql = (
-            "SELECT MIN(element.value #>> '{}') AS value, "  # noqa: S608 -- key fenced above
+            f"SELECT {key} AS value, "  # noqa: S608 -- key fenced above
             "COUNT(DISTINCT documents.id) AS doc_count "
             f"FROM documents CROSS JOIN LATERAL jsonb_array_elements({elements}) "
             "AS element(value) "
             f"WHERE {population} AND jsonb_typeof(element.value) <> 'null' "
-            "GROUP BY element.value"
+            f"GROUP BY {key}"
         )
         rows = await self._fetch_tuples(
             f"SELECT value, doc_count, COUNT(*) OVER () FROM ({inner_sql}) AS facet_rows "  # noqa: S608 -- composed from builder-trusted parts

@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from typing import Literal
 
+from referencing.exceptions import Unresolvable
+
 from sage.adapters.interfaces import (
     TIER3_FIELD_PREFIX,
     TIER3_LIST_OPERATORS,
@@ -32,7 +34,7 @@ from sage.api.errors import (
 )
 from sage.config import VaultConfig
 
-FieldKind = Literal["scalar", "array", "object", "object_array"]
+FieldKind = Literal["scalar", "array", "object", "composite"]
 
 _SCALAR_TYPES = (str, int, float, bool)
 
@@ -58,17 +60,18 @@ def _is_null_only(schema: dict) -> bool:
 
 
 def _resolve(schema: object, root: dict, hops: int = 0) -> dict:
-    """Follow local ``$ref`` pointers and unwrap a nullable composition.
+    """Follow local ``$ref`` pointers and flatten compositions for classification.
 
-    A ``$ref`` into the doc_type's own schema is followed. An ``anyOf`` or
-    ``oneOf`` whose branches are one schema and ``null`` resolves to that
-    schema, so ``anyOf: [{type: array, ...}, {type: null}]`` declares an
-    array. Any other composition is returned as written; ``field_kind``
-    classifies it.
+    A ``$ref`` into the doc_type's own schema is followed. An ``allOf`` is
+    merged into the schema carrying it. An ``anyOf`` or ``oneOf`` whose
+    branches are one schema and ``null`` resolves to that schema, so
+    ``anyOf: [{type: array, ...}, {type: null}]`` declares an array; any
+    other ``anyOf`` or ``oneOf`` keeps its resolved branches for
+    ``field_kind`` to classify.
     """
-    if not isinstance(schema, dict):
-        return {}
-    while "$ref" in schema and hops < _MAX_REF_HOPS:
+    if not isinstance(schema, dict) or hops >= _MAX_REF_HOPS:
+        return schema if isinstance(schema, dict) else {}
+    if "$ref" in schema:
         ref = schema["$ref"]
         if not isinstance(ref, str) or not ref.startswith("#/"):
             return schema
@@ -78,7 +81,15 @@ def _resolve(schema: object, root: dict, hops: int = 0) -> dict:
             target = target.get(part) if isinstance(target, dict) else None
         if not isinstance(target, dict):
             return schema
-        schema, hops = target, hops + 1
+        siblings = {key: value for key, value in schema.items() if key != "$ref"}
+        return _resolve({**target, **siblings}, root, hops + 1)
+    branches = schema.get("allOf")
+    if isinstance(branches, list):
+        merged = {key: value for key, value in schema.items() if key != "allOf"}
+        for branch in branches:
+            for key, value in _resolve(branch, root, hops + 1).items():
+                merged.setdefault(key, value)
+        return _resolve(merged, root, hops + 1)
     for key in ("anyOf", "oneOf"):
         branches = schema.get(key)
         if isinstance(branches, list):
@@ -94,23 +105,28 @@ def field_kind(schema: dict) -> FieldKind:
     """Classify a resolved property schema.
 
     ``array`` is a list of scalars, the only list the operators and list
-    facets read; ``object_array`` is a list of objects or lists;
-    ``object`` is an object, or a composition admitting a list or an
-    object; anything else -- including a property declaring no type -- is
-    a ``scalar``.
+    facets read. ``object`` is an object, or a composition admitting one.
+    ``composite`` is a list of objects or lists, or a composition admitting
+    a list but no object: neither an operator nor a facet reads it. Anything
+    else -- including a property declaring no type -- is a ``scalar``.
     """
     for key in ("anyOf", "oneOf"):
         branches = schema.get(key)
         if isinstance(branches, list):
-            if any(field_kind(branch) != "scalar" for branch in branches):
+            kinds = {field_kind(branch) for branch in branches}
+            if "object" in kinds:
                 return "object"
+            if kinds - {"scalar"}:
+                return "composite"
             return "scalar"
     types = _declared_types(schema)
     if types == {"array"}:
         item_types = _declared_types(schema.get("items") or {})
-        return "object_array" if item_types & {"object", "array"} else "array"
-    if types & {"object", "array"}:
+        return "composite" if item_types & {"object", "array"} else "array"
+    if "object" in types:
         return "object"
+    if "array" in types:
+        return "composite"
     return "scalar"
 
 
@@ -168,14 +184,16 @@ class Tier3Declarations:
     def item_validators(self, doc_types: dict[str, dict]) -> list:
         """A validator per doc_type for one element of its declared list.
 
-        The items schema keeps the doc_type's definitions beside it, so a
-        reference inside the items resolves as it does on write.
+        The items schema keeps the doc_type's reference containers beside
+        it -- ``$defs``, ``definitions`` and ``properties`` -- so a reference
+        inside the items resolves as it does on write. ``properties`` does
+        not constrain the scalar operands validated here.
         """
         validators = []
         for doc_type, schema in doc_types.items():
             root = self._roots[doc_type]
             items = dict(schema.get("items") or {})
-            for key in ("$defs", "definitions"):
+            for key in ("$defs", "definitions", "properties"):
                 if key in root and key not in items:
                     items[key] = root[key]
             validators.append(type(self._validators[doc_type])(items))
@@ -234,6 +252,18 @@ def normalize_tier3_filter(
     return out
 
 
+def _admits(validator: object, value: object) -> bool:
+    """Whether ``value`` is valid under ``validator``.
+
+    A reference the items schema cannot resolve admits nothing, so the
+    operand is refused rather than raising.
+    """
+    try:
+        return bool(validator.is_valid(value))  # type: ignore[attr-defined]
+    except Unresolvable:
+        return False
+
+
 def _predicate(
     declarations: Tier3Declarations,
     key: str,
@@ -269,7 +299,7 @@ def _predicate(
         item_types |= _declared_types(items)
         enums.extend(items.get("enum") or [])
     for value in values:
-        if any(validator.is_valid(value) for validator in validators):
+        if any(_admits(validator, value) for validator in validators):
             continue
         received = _json_type(value)
         type_ok = (
