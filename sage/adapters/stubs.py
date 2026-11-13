@@ -22,6 +22,7 @@ from sage.adapters.interfaces import (
     GraphStore,
     KeywordQueryParse,
     SearchResult,
+    Tier3FacetSpec,
 )
 from sage.models.coverage import (
     AbstractionQuality,
@@ -1179,6 +1180,7 @@ class StubGraphStore(GraphStore):
         *,
         fields: Sequence[str] | None = None,
         value_limit: int | None = None,
+        tier3_fields: Sequence[Tier3FacetSpec] = (),
     ) -> tuple[dict[str, FacetFieldCounts], int]:
         raise self._unsupported("query_document_facets")
 

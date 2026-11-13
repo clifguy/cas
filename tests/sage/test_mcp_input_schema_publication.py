@@ -202,10 +202,12 @@ def test_flattened_forms(tool: str, param: str, expected_type: str) -> None:
 
 def test_flattened_array_keeps_its_items_inlined() -> None:
     prop = published_tool("search").parameters["properties"]["facet_fields"]
-    assert prop["items"]["enum"] == [f.value for f in FacetField]
-    assert "$ref" not in prop["items"]
+    fixed, tier3 = prop["items"]["anyOf"]
+    assert fixed["enum"] == [f.value for f in FacetField]
+    assert tier3 == {"type": "string", "pattern": "^tier3:[A-Za-z0-9_]+$"}
+    assert "$ref" not in json.dumps(prop["items"])
     # The inlined definition's description describes the type, not this parameter.
-    assert "description" not in prop["items"]
+    assert "description" not in fixed
 
 
 def test_enum_parameter_publishes_its_values() -> None:

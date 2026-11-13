@@ -414,6 +414,7 @@ export interface DiscoverRequest {
         | 'last_modified_client'
         | 'created_agent'
         | 'last_modified_agent'
+        | `tier3:${string}`
       )[]
     | null;
   facet_value_limit?: number | null;
@@ -424,7 +425,7 @@ export interface DiscoverRequest {
   use_abstract_prefilter?: boolean;
   include_abstracts?: boolean;
   min_relevance?: number | null;
-  sort_by?: 'title' | 'doc_type' | 'document_date' | 'lifecycle_status';
+  sort_by?: 'title' | 'doc_type' | 'document_date' | 'lifecycle_status' | `tier3:${string}`;
   sort_order?: 'asc' | 'desc';
   // Payload depth. Left unset, a catalog page large enough to overrun the
   // server's inline-response budget comes back in the stripped shape, which

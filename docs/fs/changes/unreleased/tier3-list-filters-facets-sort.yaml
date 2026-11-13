@@ -1,0 +1,23 @@
+classification: minor
+category: [capability]
+summary: >-
+  Typed metadata (tier3) becomes queryable beyond exact equality. A
+  tier3_metadata filter on a field declared as an array accepts an operator
+  object -- contains, any, all or none -- testing list membership, with
+  operands validated against the field's items schema. search with
+  target="facets" accepts tier3:<field> entries in facet_fields, counting a
+  list field's values once per document and reporting absent_count, a new
+  FacetHit property. Catalog sort_by accepts tier3:<field> for a scalar field,
+  with documents lacking it sorted last. The Core OpenAPI DiscoverRequest,
+  RetrievalFilters and FacetHit schemas, the MCP catalog and the application's
+  request types are updated to match.
+for_callers: >-
+  To find documents whose list field holds a value, filter with
+  tier3_metadata={"<field>": {"contains": "<value>"}}, or any/all/none with a
+  list of values; all is order-insensitive. A bare literal still means exact
+  equality, so existing filters return what they did. An operand outside the
+  declared enum is refused with invalid_filter_value listing the valid values,
+  and an operator on a field not declared as an array with invalid_filter_shape,
+  where it previously matched nothing. Facet counts per tier3 value come from
+  facet_fields=["tier3:<field>"], and sort_by="tier3:<field>" orders a catalog
+  page by a scalar tier3 field.

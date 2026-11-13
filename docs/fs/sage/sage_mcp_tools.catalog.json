@@ -16356,22 +16356,30 @@
             },
             "facet_fields": {
               "default": null,
-              "description": "Facet fields to aggregate for the facets target. Any subset of the enumerated fields. Null (default) aggregates doc_type, lifecycle_status, source_type, pipeline_status and tags. Rows return in that fixed field order regardless of the order given here. Not valid for other targets.",
+              "description": "Facet fields to aggregate for the facets target. Any subset of the enumerated fields. Null (default) aggregates doc_type, lifecycle_status, source_type, pipeline_status and tags. Rows return in that fixed field order regardless of the order given here. tier3:<field> counts a typed-metadata field over the doc_types declaring it, a list once per value as tags are, its rows following the fixed ones; absent_count reports documents lacking it. Not valid for other targets.",
               "items": {
-                "enum": [
-                  "doc_type",
-                  "lifecycle_status",
-                  "source_type",
-                  "pipeline_status",
-                  "tags",
-                  "created_by",
-                  "last_modified_by",
-                  "created_client",
-                  "last_modified_client",
-                  "created_agent",
-                  "last_modified_agent"
-                ],
-                "type": "string"
+                "anyOf": [
+                  {
+                    "enum": [
+                      "doc_type",
+                      "lifecycle_status",
+                      "source_type",
+                      "pipeline_status",
+                      "tags",
+                      "created_by",
+                      "last_modified_by",
+                      "created_client",
+                      "last_modified_client",
+                      "created_agent",
+                      "last_modified_agent"
+                    ],
+                    "type": "string"
+                  },
+                  {
+                    "pattern": "^tier3:[A-Za-z0-9_]+$",
+                    "type": "string"
+                  }
+                ]
               },
               "type": "array"
             },
@@ -16383,7 +16391,7 @@
             "filters": {
               "additionalProperties": true,
               "default": null,
-              "description": "Metadata filters applied before retrieval. Document-target keys: ``doc_type``, ``project``, ``lifecycle_status``, ``exclude_terminal_lifecycle``, ``tags``, ``document_ids``, ``pipeline_status``, ``source_type``, ``tier3_metadata``, ``provenance`` (these also narrow the faceted slice). Edge-target keys (target=\"edges\"): ``source_id``, ``target_id``, ``edge_type``; mixing the two sets is refused. Every key belongs nested here, e.g. filters={\"doc_type\": \"adr\", \"lifecycle_status\": \"active\"}; a key passed at the top level is refused with misplaced_filters rather than dropped. ``source_type`` takes one of markdown, docx, pdf, email, onenote, teams_chat, xlsx, pptx, structured_data, and ``edge_type`` is closed the same way; anything else is refused with invalid_filter_value. ``exclude_terminal_lifecycle`` drops documents in a state the vault declares terminal. ``tier3_metadata`` takes field-to-value pairs that must all match exactly; null matches a null or absent field. ``provenance`` matches created_/last_modified_ by, client or agent likewise; agents by name.",
+              "description": "Metadata filters applied before retrieval. Document-target keys: ``doc_type``, ``project``, ``lifecycle_status``, ``exclude_terminal_lifecycle``, ``tags``, ``document_ids``, ``pipeline_status``, ``source_type``, ``tier3_metadata``, ``provenance`` (these also narrow the faceted slice). Edge-target keys (target=\"edges\"): ``source_id``, ``target_id``, ``edge_type``; mixing the two sets is refused. Every key belongs nested here, e.g. filters={\"doc_type\": \"adr\", \"lifecycle_status\": \"active\"}; a key passed at the top level is refused with misplaced_filters rather than dropped. ``source_type`` takes one of markdown, docx, pdf, email, onenote, teams_chat, xlsx, pptx, structured_data, and ``edge_type`` is closed the same way; anything else is refused with invalid_filter_value. ``exclude_terminal_lifecycle`` drops documents in a state the vault declares terminal. ``tier3_metadata`` takes field-to-value pairs that must all match exactly; null matches a null or absent field. A field declared as an array also takes {\"contains\": v} or {\"any\"|\"all\"|\"none\": [...]}, operands checked against its schema. ``provenance`` matches created_/last_modified_ by, client or agent likewise; agents by name.",
               "type": "object"
             },
             "heading_path": {
@@ -16455,7 +16463,7 @@
             },
             "sort_by": {
               "default": null,
-              "description": "Sort key for catalog mode results. Optional. Default when omitted: active lifecycle first, then document_date descending. Ignored by other retrieval modes. Ties are broken by document id, so the order is total and paging a filtered set returns each document exactly once. One of: title, doc_type, document_date, lifecycle_status.",
+              "description": "Sort key for catalog mode results. Optional. Default when omitted: active lifecycle first, then document_date descending. Ignored by other retrieval modes. Ties are broken by document id, so the order is total and paging a filtered set returns each document exactly once. tier3:<field> sorts on a scalar typed-metadata field, documents lacking it last. One of: title, doc_type, document_date, lifecycle_status, or tier3:<field>.",
               "type": "string"
             },
             "sort_order": {

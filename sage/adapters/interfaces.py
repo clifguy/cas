@@ -1007,10 +1007,59 @@ class FacetFieldCounts(NamedTuple):
 
     ``total_distinct`` is computed before any value cap is applied, so
     truncation is always detectable as ``len(values) < total_distinct``.
+    ``absent_count`` is populated for typed-metadata fields only: the
+    documents in the aggregated population whose field is absent or null.
     """
 
     values: dict[str, int]
     total_distinct: int
+    absent_count: int | None = None
+
+
+# Prefix naming a typed-metadata (tier3) field where a fixed field name is
+# otherwise expected: in ``facet_fields`` and in catalog ``sort_by``.
+TIER3_FIELD_PREFIX = "tier3:"
+
+# The operators a list-valued tier3 field accepts in place of a literal.
+TIER3_LIST_OPERATORS: tuple[str, ...] = ("contains", "any", "all", "none")
+
+
+@dataclass(frozen=True)
+class Tier3ListPredicate:
+    """One membership test on an array-typed tier3 field (CAS-ADR-028).
+
+    Built by the retrieval service from a caller's operator object after the
+    field's declarations and the operands were validated, so the graph store
+    receives only a resolved test: ``values`` are already checked against
+    the field's ``items`` schema and ``doc_types`` names every doc_type in
+    the request's scope that declares the field as an array. A document of
+    any other doc_type never matches, whatever it stores under the key.
+
+    * ``contains`` / ``all``: the list holds every value.
+    * ``any``: the list holds at least one value.
+    * ``none``: the list holds none of them; a declaring document without
+      the field matches.
+    """
+
+    operator: str
+    values: tuple[object, ...]
+    doc_types: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Tier3FacetSpec:
+    """A tier3 field to aggregate as a facet, resolved by the service.
+
+    ``name`` is the response field name (``tier3:<field>``). The population
+    is the filter slice narrowed to ``doc_types``, the doc_types in scope
+    declaring the field; ``is_array`` selects per-element counting, each
+    value once per document, as tags are counted.
+    """
+
+    name: str
+    field: str
+    is_array: bool
+    doc_types: tuple[str, ...]
 
 
 class GraphStore(ABC):
@@ -1110,6 +1159,14 @@ class GraphStore(ABC):
         matching document exactly once -- no skips, no duplicates across a page
         boundary. And two calls with the same filters agree on row order, which
         is what lets a caller reason about a prefix of a larger page.
+
+        ``sort_by`` may name a scalar tier3 field as ``tier3:<field>``; the
+        caller has resolved it against the vault's declarations. Its values
+        order by their JSON type -- numbers numerically, strings lexically --
+        and documents lacking it sort last in either direction.
+
+        A ``tier3_metadata`` filter value may be a ``Tier3ListPredicate`` in
+        place of a literal, or a tuple of them, all of which must hold.
         """
 
     @abstractmethod
@@ -1119,6 +1176,7 @@ class GraphStore(ABC):
         *,
         fields: Sequence[str] | None = None,
         value_limit: int | None = None,
+        tier3_fields: Sequence[Tier3FacetSpec] = (),
     ) -> tuple[dict[str, FacetFieldCounts], int]:
         """Distinct-value counts per facet field within a filter slice.
 
@@ -1136,7 +1194,9 @@ class GraphStore(ABC):
         exclusion, matching catalog enumeration.
 
         ``fields`` may name any ``ALL_FACET_FIELDS`` entry; an agent field
-        aggregates the agent's name.
+        aggregates the agent's name. Each ``tier3_fields`` entry adds a row
+        keyed by its ``name``, aggregated over the slice narrowed to the
+        entry's doc_types and carrying an ``absent_count``.
         """
 
     @abstractmethod

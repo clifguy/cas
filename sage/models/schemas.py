@@ -4,6 +4,7 @@ lifecycle_status is str (not enum) because vaults define domain-specific
 extensions like 'filed' that aren't in the base enum.
 """
 
+import enum
 import re
 import uuid
 from dataclasses import dataclass
@@ -16,6 +17,7 @@ from pydantic import (
     ConfigDict,
     Field,
     GetJsonSchemaHandler,
+    PlainValidator,
     PrivateAttr,
     SerializeAsAny,
     TypeAdapter,
@@ -463,6 +465,44 @@ AGENT_NAME_PATTERN = r"^[a-z0-9][a-z0-9._-]{0,63}$"
 # The name an agent is recorded under (CAS-ADR-056): lowercase letters,
 # digits, '.', '_' and '-', 1 to 64 characters, starting alphanumeric.
 AgentNameStr = Annotated[str, Field(pattern=AGENT_NAME_PATTERN)]
+
+TIER3_FIELD_REF_PATTERN = r"^tier3:[A-Za-z0-9_]+$"
+
+# A typed-metadata (tier3) field named where a fixed field name is otherwise
+# expected -- a facet field or a catalog sort key (CAS-ADR-028).
+Tier3FieldRefStr = Annotated[str, Field(pattern=TIER3_FIELD_REF_PATTERN)]
+
+
+def _vocabulary_or_tier3_field(vocabulary: type[enum.Enum]) -> Any:
+    """A closed name vocabulary that also admits a ``tier3:<field>`` reference.
+
+    Published as the union of the two, but validated as one type: a smart
+    union would report a refusal once per arm, located on an arm's internal
+    tag rather than on the caller's value, and its message would name the
+    closed vocabulary alone. This refusal is located on the value and names
+    both forms, so it reads as the repair it asks for.
+    """
+    names = [member.value for member in vocabulary]
+    accepted = ", ".join(repr(name) for name in names) + " or 'tier3:<field>'"
+
+    def validate(value: object) -> object:
+        if isinstance(value, vocabulary):
+            return value
+        if isinstance(value, str):
+            if value in names:
+                return vocabulary(value)
+            if re.fullmatch(TIER3_FIELD_REF_PATTERN, value):
+                return value
+        raise PydanticCustomError("enum", f"Input should be {accepted}")
+
+    return Annotated[
+        vocabulary | str,
+        PlainValidator(validate, json_schema_input_type=vocabulary | Tier3FieldRefStr),
+    ]
+
+
+FacetFieldRef = _vocabulary_or_tier3_field(FacetField)
+CatalogSortKey = _vocabulary_or_tier3_field(CatalogSortBy)
 
 # The published description of a write's optional ``agent`` argument.
 AGENT_ARGUMENT_DESCRIPTION = (
@@ -3815,7 +3855,18 @@ class RetrievalFilters(BaseModel):
             "so a stored 1.0 matches a filter of 1. A value of null matches "
             "documents whose stored field is either null or absent from the "
             "tier3_metadata dict. All pairs AND together; an empty dict is "
-            "treated as no filter."
+            "treated as no filter. For a field declared as an array, the "
+            'value may instead be an operator object: {"contains": v} '
+            '(the list holds v), {"any": [...]} (at least one), '
+            '{"all": [...]} (every one, in any order) or {"none": '
+            "[...]} (none of them; a document lacking the field matches). "
+            "Several operators on one field AND together. An operator "
+            "applies only to documents whose doc_type declares the field "
+            "as an array. An operand outside the declared enum is refused "
+            "with invalid_filter_value listing the valid values; an "
+            "operator on a field no doc_type in scope declares as an array, "
+            "or a malformed operand, with invalid_filter_shape. A bare "
+            "list keeps exact equality."
         ),
     )
     provenance: ProvenanceFilter | None = Field(
@@ -4053,14 +4104,15 @@ class DiscoverRequest(BaseModel):
             "returned result count below the requested limit."
         ),
     )
-    sort_by: CatalogSortBy | None = Field(
+    sort_by: CatalogSortKey | None = Field(
         default=None,
         description=(
             "Sort key for catalog mode results. Optional. Default when "
             "omitted: active lifecycle first, then document_date descending. "
             "Ignored by other retrieval modes. Ties are broken by document "
             "id, so the order is total and paging a filtered set returns each "
-            "document exactly once."
+            "document exactly once. tier3:<field> sorts on a scalar "
+            "typed-metadata field, documents lacking it last."
         ),
     )
     sort_order: SortOrder | None = Field(
@@ -4100,7 +4152,7 @@ class DiscoverRequest(BaseModel):
             "returns chunk content."
         ),
     )
-    facet_fields: list[FacetField] | None = Field(
+    facet_fields: list[FacetFieldRef] | None = Field(
         default=None,
         min_length=1,
         description=(
@@ -4108,7 +4160,10 @@ class DiscoverRequest(BaseModel):
             "subset of the enumerated fields. Null (default) aggregates "
             "doc_type, lifecycle_status, source_type, pipeline_status "
             "and tags. Rows return in that fixed field order regardless of "
-            "the order given here. Not valid for other targets."
+            "the order given here. tier3:<field> counts a typed-metadata "
+            "field over the doc_types declaring it, a list once per value as "
+            "tags are, its rows following the fixed ones; absent_count "
+            "reports documents lacking it. Not valid for other targets."
         ),
     )
     facet_value_limit: int | None = Field(
@@ -4725,7 +4780,8 @@ class FacetHit(BaseModel):
             "The faceted document metadata field. One of the fixed facet "
             "field set: doc_type, lifecycle_status, source_type, "
             "pipeline_status, tags, or a write-provenance field. An agent "
-            "field counts agents by name."
+            "field counts agents by name. A typed-metadata field reads "
+            "tier3:<field>, as requested."
         )
     )
     values: dict[str, int] = Field(
@@ -4757,6 +4813,14 @@ class FacetHit(BaseModel):
             "On a created_by or last_modified_by row, each key in values "
             "mapped to its latest display name in the vault, or to itself "
             "when it has none. Null on every other row."
+        ),
+    )
+    absent_count: int | None = Field(
+        default=None,
+        description=(
+            "On a tier3:<field> row, the documents of the doc_types "
+            "declaring the field, within the filter slice, whose field is "
+            "absent or null. Null on every other row."
         ),
     )
 
