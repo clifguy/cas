@@ -1029,6 +1029,94 @@ _KIND_CASES = [
         "array",
     ),
     (
+        "pointer through an array index",
+        {"$ref": "#/$defs/u/anyOf/0"},
+        {"$defs": {"u": {"anyOf": [{"type": "array", "items": {"type": "string"}}, {}]}}},
+        "array",
+    ),
+    (
+        "percent-encoded pointer",
+        {"$ref": "#/$defs/my%20list"},
+        {"$defs": {"my list": {"type": "array", "items": {"type": "string"}}}},
+        "array",
+    ),
+    (
+        "escaped pointer segment",
+        {"$ref": "#/$defs/a~1b"},
+        {"$defs": {"a/b": {"type": "array", "items": {"type": "string"}}}},
+        "array",
+    ),
+    (
+        "reference to a bundled $id",
+        {"$ref": "urn:example:list"},
+        {"$defs": {"l": {"$id": "urn:example:list", "type": "array", "items": {"type": "string"}}}},
+        "array",
+    ),
+    (
+        "anchor inside a branch list",
+        {"$ref": "#lst"},
+        {
+            "$defs": {
+                "u": {
+                    "anyOf": [
+                        {"$anchor": "lst", "type": "array", "items": {"type": "string"}},
+                        {"type": "string"},
+                    ]
+                }
+            }
+        },
+        "array",
+    ),
+    (
+        "anyOf beside a nullable oneOf",
+        {
+            "anyOf": [{"minItems": 1}, {"maxItems": 0}],
+            "oneOf": [{"type": "array", "items": {"type": "string"}}, {"type": "null"}],
+        },
+        {},
+        "array",
+    ),
+    (
+        "union of two references",
+        {"anyOf": [{"$ref": "#/$defs/s"}, {"$ref": "#/$defs/l"}]},
+        {"$defs": {"s": {"type": "string"}, "l": {"type": "array", "items": {"type": "string"}}}},
+        "composite",
+    ),
+    (
+        "outer keywords win over a nullable branch",
+        {
+            "items": {"type": "string"},
+            "anyOf": [{"type": "array", "items": {"type": "object"}}, {"type": "null"}],
+        },
+        {},
+        "array",
+    ),
+    (
+        "null branch spelled as a type list",
+        {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": ["null"]}]},
+        {},
+        "array",
+    ),
+    ("object named in a type list", {"type": ["object", "string"]}, {}, "object"),
+    ("boolean false items", {"type": "array", "items": False}, {}, "array"),
+    (
+        "allOf branch that is a reference",
+        {"allOf": [{"$ref": "#/$defs/l"}]},
+        {"$defs": {"l": {"type": "array", "items": {"type": "string"}}}},
+        "array",
+    ),
+    (
+        "allOf of two references",
+        {"allOf": [{"$ref": "#/$defs/t"}, {"$ref": "#/$defs/l"}]},
+        {
+            "$defs": {
+                "t": {"title": "listed"},
+                "l": {"type": "array", "items": {"type": "string"}},
+            }
+        },
+        "array",
+    ),
+    (
         "reference cycle stops",
         {"$ref": "#/$defs/a"},
         {"$defs": {"a": {"$ref": "#/$defs/a"}}},
@@ -1043,10 +1131,10 @@ _KIND_CASES = [
     ids=[case[0] for case in _KIND_CASES],
 )
 def test_field_kind_reads_declared_type_before_composition(schema, extra, kind):
-    from sage.services._tier3_query import _resolve, field_kind
+    from sage.services._tier3_query import _resolve, field_kind, resolver_for
 
     root = {"type": "object", "properties": {"f": schema}, **extra}
-    assert field_kind(_resolve(schema, root)) == kind
+    assert field_kind(_resolve(schema, resolver_for(root))) == kind
 
 
 async def test_object_with_a_oneof_keeps_its_literal_filter(
@@ -1127,3 +1215,173 @@ async def test_tier3_facet_rows_follow_request_order(
         )
     )
     assert [row.field for row in response.results] == ["doc_type", *requested]
+
+
+# Operands are judged by the doc_type's own validator against the
+# declaration as written, not against the schema flattened for
+# classification, and a value refusal lists only values that validator
+# admits, and only for a closed enumeration.
+
+_OPERAND_DEFS = {
+    "narrow": {"enum": ["a"]},
+    "outer": {"$defs": {"inner": {"type": "string"}}, "$ref": "#/$defs/outer/$defs/inner"},
+}
+
+_OPERAND_PROPERTIES = {
+    "both": {
+        "type": "array",
+        "items": {"allOf": [{"enum": ["a", "b", "c"]}, {"enum": ["b", "c", "d"]}]},
+    },
+    "narrowed": {"type": "array", "items": {"$ref": "#/$defs/narrow", "enum": ["a", "b", "c"]}},
+    "nested_defs": {"type": "array", "items": {"$ref": "#/$defs/outer"}},
+    "labelled": {
+        "type": "array",
+        "items": {"oneOf": [{"const": "a", "title": "A"}, {"const": "b", "title": "B"}]},
+    },
+    "mixed_forms": {"type": "array", "items": {"anyOf": [{"enum": ["a"]}, {"const": "b"}]}},
+    "deep": {
+        "type": "array",
+        "items": {"anyOf": [{"anyOf": [{"enum": ["a"]}]}, {"enum": ["b"]}]},
+    },
+    "number_or_null": {
+        "type": "array",
+        "items": {"anyOf": [{"type": "number"}, {"enum": [None]}]},
+    },
+    "open": {
+        "type": "array",
+        "items": {"anyOf": [{"enum": ["a", "b"]}, {"type": "string", "pattern": "^x"}]},
+    },
+    "typed_members": {"type": "array", "items": {"enum": [True, 1.5, "s"]}},
+    "anything": {"type": "array", "items": True},
+    "nullable_enum": {"anyOf": [{"type": "array", "items": {"enum": ["a"]}}, {"type": "null"}]},
+    "with_null": {"type": "array", "items": {"enum": ["a", None]}},
+    "either_size": {
+        "type": "array",
+        "anyOf": [{"minItems": 2, "items": {"type": "string"}}, {"items": {"enum": ["a"]}}],
+    },
+    "rooted": {"type": "array"},
+    "unresolved": {"$ref": "#/$defs/missing"},
+    "sized": {"type": "array", "minItems": 3, "items": {"type": "string"}},
+}
+
+
+@pytest.fixture
+def operand_config(tmp_vault_dir):
+    raw = _config_dict(tmp_vault_dir)
+    raw["document_types"]["doc_types"] = [
+        {
+            "value": "ops",
+            "label": "Ops",
+            "metadata_schema": {
+                "type": "object",
+                "required": ["sized"],
+                "anyOf": [
+                    {"properties": {"rooted": {"items": {"enum": ["a"]}}}},
+                    {"properties": {"rooted": {"items": {"enum": ["b"]}}}},
+                ],
+                "$defs": _OPERAND_DEFS,
+                "properties": _OPERAND_PROPERTIES,
+            },
+        }
+    ]
+    return VaultConfig.model_validate(raw)
+
+
+def _refusal(config, field, operand):
+    from sage.services._tier3_query import normalize_tier3_filter
+
+    with pytest.raises(SAGEError) as excinfo:
+        normalize_tier3_filter(config, {field: {"contains": operand}}, "ops")
+    return excinfo.value
+
+
+def _accepts(config, field, operand):
+    from sage.services._tier3_query import normalize_tier3_filter
+
+    return bool(normalize_tier3_filter(config, {field: {"contains": operand}}, "ops"))
+
+
+def test_operand_satisfying_one_allof_branch_only_is_refused(operand_config):
+    """a is in the first branch's enum but not the second's: unstorable, so
+    refused, and the vocabulary is the intersection the validator admits."""
+    assert _accepts(operand_config, "both", "b")
+    refusal = _refusal(operand_config, "both", "a")
+    assert isinstance(refusal, InvalidFilterValueError)
+    assert refusal.detail["valid_values"] == ["b", "c"]
+
+
+def test_operand_narrowed_by_a_referenced_enum_is_refused(operand_config):
+    assert _accepts(operand_config, "narrowed", "a")
+    refusal = _refusal(operand_config, "narrowed", "b")
+    assert isinstance(refusal, InvalidFilterValueError)
+    assert refusal.detail["valid_values"] == ["a"]
+
+
+def test_reference_target_carrying_its_own_defs_admits_a_stored_value(operand_config):
+    assert _accepts(operand_config, "nested_defs", "x")
+
+
+@pytest.mark.parametrize(
+    ("field", "vocabulary"),
+    [("labelled", ["a", "b"]), ("mixed_forms", ["a", "b"]), ("deep", ["a", "b"])],
+)
+def test_enumerations_through_const_and_nested_branches_list_every_value(
+    operand_config, field, vocabulary
+):
+    refusal = _refusal(operand_config, field, "z")
+    assert isinstance(refusal, InvalidFilterValueError)
+    assert refusal.detail["valid_values"] == vocabulary
+
+
+@pytest.mark.parametrize("field", ["number_or_null", "open"])
+def test_open_items_refuse_as_shape_without_a_vocabulary(operand_config, field):
+    """Neither items schema is a closed enumeration: a refused operand has
+    no list of valid values to report."""
+    refusal = _refusal(operand_config, field, "zz")
+    assert isinstance(refusal, InvalidFilterShapeError)
+
+
+def test_vocabulary_renders_non_string_members_as_json(operand_config):
+    refusal = _refusal(operand_config, "typed_members", "z")
+    assert isinstance(refusal, InvalidFilterValueError)
+    assert refusal.detail["valid_values"] == ["1.5", "s", "true"]
+
+
+def test_unconstrained_items_admit_any_scalar(operand_config):
+    assert _accepts(operand_config, "anything", "x")
+    assert _accepts(operand_config, "anything", 3)
+
+
+def test_list_level_constraints_do_not_judge_one_operand(operand_config):
+    """minItems and the document's required fields bear on a whole stored
+    document, not on one element."""
+    assert _accepts(operand_config, "sized", "x")
+
+
+def test_nullable_list_refuses_an_operand_its_list_branch_refuses(operand_config):
+    """The null branch cannot hold a list, so it does not rescue the operand."""
+    refusal = _refusal(operand_config, "nullable_enum", "z")
+    assert isinstance(refusal, InvalidFilterValueError)
+    assert refusal.detail["valid_values"] == ["a"]
+
+
+def test_null_is_not_offered_as_a_valid_value(operand_config):
+    refusal = _refusal(operand_config, "with_null", "z")
+    assert isinstance(refusal, InvalidFilterValueError)
+    assert refusal.detail["valid_values"] == ["a"]
+
+
+def test_union_branch_failing_only_on_list_size_admits_the_operand(operand_config):
+    """x fails the enum branch, but the minItems branch holds it in a longer list."""
+    assert _accepts(operand_config, "either_size", "x")
+
+
+def test_root_level_union_judges_the_element(operand_config):
+    assert _accepts(operand_config, "rooted", "a")
+    assert _accepts(operand_config, "rooted", "b")
+    assert isinstance(_refusal(operand_config, "rooted", "c"), InvalidFilterShapeError)
+
+
+def test_unresolvable_property_reference_reads_as_untyped(operand_config):
+    refusal = _refusal(operand_config, "unresolved", "a")
+    assert isinstance(refusal, InvalidFilterShapeError)

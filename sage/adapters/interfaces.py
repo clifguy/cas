@@ -1026,14 +1026,15 @@ TIER3_LIST_OPERATORS: tuple[str, ...] = ("contains", "any", "all", "none")
 
 @dataclass(frozen=True)
 class Tier3ListPredicate:
-    """One membership test on an array-typed tier3 field (CAS-ADR-028).
+    """One membership test on a tier3 field declared as a list of scalars (CAS-ADR-028).
 
     Built by the retrieval service from a caller's operator object after the
     field's declarations and the operands were validated, so the graph store
     receives only a resolved test: ``values`` are already checked against
     the field's ``items`` schema and ``doc_types`` names every doc_type in
-    the request's scope that declares the field as an array. A document of
-    any other doc_type never matches, whatever it stores under the key.
+    the request's scope that declares the field as a list of scalars. A
+    document of any other doc_type never matches, whatever it stores under
+    the key.
 
     * ``contains`` / ``all``: the list holds every value.
     * ``any``: the list holds at least one value.

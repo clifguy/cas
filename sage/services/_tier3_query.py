@@ -17,9 +17,12 @@ keeps exact equality over every document, as it always has.
 
 from __future__ import annotations
 
-from typing import Literal
+import json
+from typing import TYPE_CHECKING, Literal
 
+from referencing import Registry, Resource
 from referencing.exceptions import Unresolvable
+from referencing.jsonschema import DRAFT202012
 
 from sage.adapters.interfaces import (
     TIER3_FIELD_PREFIX,
@@ -33,6 +36,9 @@ from sage.api.errors import (
     InvalidParameterError,
 )
 from sage.config import VaultConfig
+
+if TYPE_CHECKING:
+    from referencing._core import Resolver
 
 FieldKind = Literal["scalar", "array", "object", "composite"]
 
@@ -59,36 +65,6 @@ def _is_null_only(schema: dict) -> bool:
     return declared == "null" or declared == ["null"]
 
 
-def _find_anchor(node: object, name: str) -> dict | None:
-    """The subschema of ``node`` declaring ``$anchor: name``, if any."""
-    if isinstance(node, dict):
-        if node.get("$anchor") == name:
-            return node
-        children: list[object] = list(node.values())
-    elif isinstance(node, list):
-        children = list(node)
-    else:
-        return None
-    for child in children:
-        found = _find_anchor(child, name)
-        if found is not None:
-            return found
-    return None
-
-
-def _target(ref: str, root: dict) -> dict | None:
-    """The subschema a local reference -- a JSON pointer or an anchor -- names."""
-    if ref.startswith("#/"):
-        target: object = root
-        for part in ref[2:].split("/"):
-            part = part.replace("~1", "/").replace("~0", "~")
-            target = target.get(part) if isinstance(target, dict) else None
-        return target if isinstance(target, dict) else None
-    if ref.startswith("#") and len(ref) > 1:
-        return _find_anchor(root, ref[1:])
-    return None
-
-
 def _merge(outer: dict, inner: dict) -> dict:
     """``outer`` with ``inner``'s keywords added where ``outer`` has none."""
     merged = dict(outer)
@@ -97,48 +73,65 @@ def _merge(outer: dict, inner: dict) -> dict:
     return merged
 
 
-def _resolve(schema: object, root: dict, hops: int = 0) -> dict:
-    """Follow local references and flatten compositions for classification.
+def _as_schema(schema: object) -> dict:
+    """A schema as a dict for classification; a boolean schema reads as untyped."""
+    return schema if isinstance(schema, dict) else {}
+
+
+def resolver_for(root: dict) -> Resolver:
+    """A reference resolver rooted at a doc_type's ``metadata_schema``."""
+    resource = Resource.from_contents(root, default_specification=DRAFT202012)
+    base = resource.id() or ""
+    return Registry().with_resource(uri=base, resource=resource).resolver(base_uri=base)
+
+
+def _resolve(schema: object, resolver: Resolver, hops: int = 0) -> dict:
+    """Follow references and flatten compositions for classification.
 
     Applied alike to a property, its ``items`` and every composition
-    branch. A local ``$ref`` (a JSON pointer or an anchor) is followed,
-    its sibling keywords kept. An ``allOf`` is merged into the schema
-    carrying it. An ``anyOf`` or ``oneOf`` whose branches are one schema and
-    ``null`` is merged likewise, so ``anyOf: [{type: array, ...}, {type:
-    null}]`` declares an array; any other ``anyOf`` or ``oneOf`` keeps its
-    resolved branches for ``field_kind``. Keywords the carrying schema
-    declares itself win over a merged branch's. A boolean ``items`` becomes
-    the schema it means. Resolution stops after a bounded number of steps,
-    so a reference cycle cannot recurse without end.
+    branch. A ``$ref`` is followed as the validator follows it -- JSON
+    pointers, anchors and bundled ``$id`` resources -- its sibling keywords
+    kept. An ``allOf`` is merged into the schema carrying it. An ``anyOf``
+    or ``oneOf`` whose branches are one schema and ``null`` is merged
+    likewise, so ``anyOf: [{type: array, ...}, {type: null}]`` declares an
+    array; any other ``anyOf`` or ``oneOf`` keeps its resolved branches for
+    ``field_kind``. Keywords the carrying schema declares itself win over a
+    merged branch's. A boolean schema reads as untyped. A reference
+    that cannot be followed is left in place, so the schema reads as
+    untyped. Resolution stops after a bounded number of steps, so a
+    reference cycle cannot recurse without end. The result serves
+    classification only; operands are validated against the declaration
+    itself (see ``Tier3Declarations.admits``).
     """
-    if not isinstance(schema, dict):
-        return {} if schema is not False else {"not": {}}
+    schema = _as_schema(schema)
     if hops >= _MAX_REF_HOPS:
         return schema
     if isinstance(schema.get("$ref"), str):
-        target = _target(schema["$ref"], root)
-        if target is None:
+        try:
+            resolved = resolver.lookup(schema["$ref"])
+        except Unresolvable:
             return schema
         siblings = {key: value for key, value in schema.items() if key != "$ref"}
-        return _resolve(_merge(siblings, target), root, hops + 1)
+        return _resolve(
+            _merge(siblings, _as_schema(resolved.contents)), resolved.resolver, hops + 1
+        )
     branches = schema.get("allOf")
     if isinstance(branches, list):
         merged = {key: value for key, value in schema.items() if key != "allOf"}
         for branch in branches:
-            merged = _merge(merged, _resolve(branch, root, hops + 1))
-        return _resolve(merged, root, hops + 1)
+            merged = _merge(merged, _resolve(branch, resolver, hops + 1))
+        return _resolve(merged, resolver, hops + 1)
     for key in ("anyOf", "oneOf"):
         branches = schema.get(key)
         if isinstance(branches, list):
             outer = {name: value for name, value in schema.items() if name != key}
-            resolved = [_resolve(branch, root, hops + 1) for branch in branches]
-            non_null = [branch for branch in resolved if not _is_null_only(branch)]
+            resolved_branches = [_resolve(branch, resolver, hops + 1) for branch in branches]
+            non_null = [branch for branch in resolved_branches if not _is_null_only(branch)]
             if len(non_null) == 1:
-                return _resolve(_merge(outer, non_null[0]), root, hops + 1)
+                return _resolve(_merge(outer, non_null[0]), resolver, hops + 1)
             schema = {**outer, key: non_null}
-            break
     if "items" in schema:
-        schema = {**schema, "items": _resolve(schema["items"], root, hops + 1)}
+        schema = {**schema, "items": _resolve(schema["items"], resolver, hops + 1)}
     return schema
 
 
@@ -151,7 +144,10 @@ def field_kind(schema: object) -> FieldKind:
     objects or lists, or declared beside another type. A schema declaring
     no type is classified by its ``anyOf``/``oneOf`` branches: an object
     branch makes it ``object``, any other non-scalar branch ``composite``.
-    Anything else is a ``scalar``.
+    Anything else is a ``scalar``. Keywords outside these -- conditionals
+    (``if``/``then``/``else``) and ``$dynamicRef`` among them -- are not
+    read, so a list declared only through them reads as a scalar and takes
+    no operators.
     """
     if not isinstance(schema, dict):
         return "scalar"
@@ -176,14 +172,33 @@ def field_kind(schema: object) -> FieldKind:
     return "scalar"
 
 
-def _item_enums(items: dict) -> list[object]:
-    """Every enum value an items schema declares, through its branches too."""
+def _item_candidates(items: dict) -> list[object]:
+    """Every value an items schema enumerates, through its branches too."""
     values = list(items.get("enum") or [])
+    if "const" in items:
+        values.append(items["const"])
     for key in ("anyOf", "oneOf"):
         for branch in items.get(key) or []:
             if isinstance(branch, dict):
-                values.extend(_item_enums(branch))
+                values.extend(_item_candidates(branch))
     return values
+
+
+def _is_closed(items: dict) -> bool:
+    """Whether an items schema admits only enumerated values."""
+    if "enum" in items or "const" in items:
+        return True
+    branches = [
+        branch
+        for key in ("anyOf", "oneOf")
+        for branch in items.get(key) or []
+        if isinstance(branch, dict) and not _is_null_only(branch)
+    ]
+    return bool(branches) and all(_is_closed(branch) for branch in branches)
+
+
+def _render(value: object) -> str:
+    return value if isinstance(value, str) else json.dumps(value)
 
 
 def _json_type(value: object) -> str:
@@ -221,9 +236,10 @@ class Tier3Declarations:
                 continue
             root = validator.schema
             properties = root.get("properties", {}) or {}
+            resolver = resolver_for(root)
             resolved: dict[str, dict] = {}
             for field, schema in properties.items():
-                resolved[field] = _resolve(schema, root)
+                resolved[field] = _resolve(schema, resolver)
             self._properties[name] = resolved
             self._validators[name] = validator
             self._roots[name] = root
@@ -234,23 +250,43 @@ class Tier3Declarations:
             doc_type: props[field] for doc_type, props in self._properties.items() if field in props
         }
 
-    def item_validators(self, doc_types: dict[str, dict]) -> list:
-        """A validator per doc_type for one element of its declared list.
+    def admits(self, doc_type: str, field: str, value: object) -> bool:
+        """Whether a list holding ``value`` satisfies the doc_type's declaration.
 
-        The items schema keeps the doc_type's reference containers beside
-        it -- ``$defs``, ``definitions`` and ``properties`` -- so a reference
-        inside the items resolves as it does on write. ``properties`` does
-        not constrain the scalar operands validated here.
+        The doc_type's own validator checks ``{field: [value]}``, so the
+        element is judged exactly as on write, through every reference and
+        composition. Only errors bearing on the element count: list-level
+        constraints such as ``minItems`` and other fields' requirements say
+        nothing about one operand. A union branch that cannot hold a list,
+        or whose element fails, rules the branch out; the element is refused
+        only when every branch is ruled out. A reference the schema cannot
+        resolve admits nothing, so the operand is refused rather than raising.
         """
-        validators = []
-        for doc_type, schema in doc_types.items():
-            root = self._roots[doc_type]
-            items = dict(schema.get("items") or {})
-            for key in ("$defs", "definitions", "properties"):
-                if key in root and key not in items:
-                    items[key] = root[key]
-            validators.append(type(self._validators[doc_type])(items))
-        return validators
+        validator = self._validators[doc_type]
+        target = (field, 0)
+
+        def rules_out(error: object) -> bool:
+            path = tuple(error.absolute_path)  # type: ignore[attr-defined]
+            if path[:2] == target:
+                return True
+            if path == (field,) and error.validator == "type":  # type: ignore[attr-defined]
+                return True
+            if path in ((), (field,)) and error.validator in ("anyOf", "oneOf"):  # type: ignore[attr-defined]
+                context = error.context or []  # type: ignore[attr-defined]
+                groups: dict[object, list] = {}
+                for sub in context:
+                    groups.setdefault(sub.schema_path[0], []).append(sub)
+                branches = error.validator_value  # type: ignore[attr-defined]
+                if not context or len(groups) < len(branches):
+                    return False
+                return all(any(rules_out(sub) for sub in group) for group in groups.values())
+            return False
+
+        try:
+            errors = list(validator.iter_errors({field: [value]}))  # type: ignore[attr-defined]
+        except Unresolvable:
+            return False
+        return not any(rules_out(error) for error in errors)
 
 
 def normalize_tier3_filter(
@@ -305,18 +341,6 @@ def normalize_tier3_filter(
     return out
 
 
-def _admits(validator: object, value: object) -> bool:
-    """Whether ``value`` is valid under ``validator``.
-
-    A reference the items schema cannot resolve admits nothing, so the
-    operand is refused rather than raising.
-    """
-    try:
-        return bool(validator.is_valid(value))  # type: ignore[attr-defined]
-    except Unresolvable:
-        return False
-
-
 def _predicate(
     declarations: Tier3Declarations,
     key: str,
@@ -344,15 +368,20 @@ def _predicate(
             )
         values = list(operand)
 
-    validators = declarations.item_validators(arrays)
     item_types: set[str] = set()
-    enums: list[object] = []
+    closed = True
+    candidates: list[object] = []
     for schema in arrays.values():
         items = schema.get("items") or {}
         item_types |= _declared_types(items)
-        enums.extend(_item_enums(items))
+        closed = closed and _is_closed(items)
+        candidates.extend(_item_candidates(items))
+
+    def admitted(value: object) -> bool:
+        return any(declarations.admits(doc_type, key, value) for doc_type in arrays)
+
     for value in values:
-        if any(_admits(validator, value) for validator in validators):
+        if admitted(value):
             continue
         received = _json_type(value)
         type_ok = (
@@ -364,12 +393,11 @@ def _predicate(
             raise InvalidFilterShapeError(
                 field=field, expected_type=" or ".join(sorted(item_types)), received_type=received
             )
-        if enums and value not in enums:
-            raise InvalidFilterValueError(
-                field=field,
-                value=value,
-                valid_values=sorted({str(item) for item in enums}),
-            )
+        vocabulary = sorted(
+            {_render(item) for item in candidates if item is not None and admitted(item)}
+        )
+        if closed and vocabulary:
+            raise InvalidFilterValueError(field=field, value=value, valid_values=vocabulary)
         raise InvalidFilterShapeError(
             field=field,
             expected_type="a value satisfying the field's declared items schema",

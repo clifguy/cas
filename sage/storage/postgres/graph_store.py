@@ -253,7 +253,7 @@ def _tier3_equality_predicate(key: str, value: object) -> tuple[str, list[object
 
 
 def _tier3_list_predicate(key: str, predicate: Tier3ListPredicate) -> tuple[str, list[object]]:
-    """Build a membership predicate on an array-typed tier3 field.
+    """Build a membership predicate on a tier3 list-of-scalars field.
 
     Each value is tested by jsonb containment of a one-element array,
     ``tier3_metadata->'<key>' @> '[v]'``, which is order-insensitive and
@@ -262,7 +262,7 @@ def _tier3_list_predicate(key: str, predicate: Tier3ListPredicate) -> tuple[str,
     ``any`` ORs the per-value tests; ``none`` negates ``any``, with a
     document lacking the field (or holding a non-array) counting as
     holding none of them. Every arm first requires the document's doc_type
-    to be one that declares the field as an array, so a doc_type that
+    to be one that declares the field as a list of scalars, so a doc_type that
     stores a scalar under the same key never matches.
 
     ``key`` must already have passed ``_TIER3_KEY_FORMAT``.
