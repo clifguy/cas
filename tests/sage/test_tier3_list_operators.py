@@ -1117,6 +1117,64 @@ _KIND_CASES = [
         "array",
     ),
     (
+        "items in an embedded $id resource",
+        {
+            "type": "array",
+            "items": {
+                "$id": "urn:example:tag",
+                "$ref": "#/$defs/t",
+                "$defs": {"t": {"enum": ["a", "b"]}},
+            },
+        },
+        {"$defs": {"t": {"type": "object"}}},
+        "array",
+    ),
+    (
+        "reference into a resource whose own reference is relative to it",
+        {"$ref": "urn:example:b"},
+        {
+            "$defs": {
+                "t": {"type": "object"},
+                "b": {
+                    "$id": "urn:example:b",
+                    "$ref": "#/$defs/t",
+                    "$defs": {"t": {"type": "array", "items": {"type": "string"}}},
+                },
+            }
+        },
+        "array",
+    ),
+    ("reference to a boolean schema", {"$ref": "#/$defs/t"}, {"$defs": {"t": True}}, "scalar"),
+    (
+        "reference through the root $id",
+        {"$ref": "urn:example:root#/$defs/l"},
+        {"$id": "urn:example:root", "$defs": {"l": {"type": "array", "items": {"type": "string"}}}},
+        "array",
+    ),
+    (
+        "allOf of two different unions",
+        {
+            "allOf": [
+                {"anyOf": [{"title": "x"}, {"description": "y"}]},
+                {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "object"}]},
+            ]
+        },
+        {},
+        "composite",
+    ),
+    (
+        "nullable oneOf wrapping a union beside another union",
+        {
+            "oneOf": [
+                {"type": "null"},
+                {"anyOf": [{"type": "array", "items": {"type": "string"}}, {"type": "boolean"}]},
+            ],
+            "anyOf": [{"title": "x"}, {"description": "y"}],
+        },
+        {},
+        "composite",
+    ),
+    (
         "reference cycle stops",
         {"$ref": "#/$defs/a"},
         {"$defs": {"a": {"$ref": "#/$defs/a"}}},
@@ -1225,6 +1283,12 @@ async def test_tier3_facet_rows_follow_request_order(
 _OPERAND_DEFS = {
     "narrow": {"enum": ["a"]},
     "outer": {"$defs": {"inner": {"type": "string"}}, "$ref": "#/$defs/outer/$defs/inner"},
+    "guarded_outer": {
+        "type": "string",
+        "$defs": {"banned": {"enum": ["root"]}},
+        "not": {"$ref": "#/$defs/guarded_outer/$defs/banned"},
+    },
+    "nothing": {"enum": ["a"], "not": {"enum": ["a"]}},
 }
 
 _OPERAND_PROPERTIES = {
@@ -1241,7 +1305,7 @@ _OPERAND_PROPERTIES = {
     "mixed_forms": {"type": "array", "items": {"anyOf": [{"enum": ["a"]}, {"const": "b"}]}},
     "deep": {
         "type": "array",
-        "items": {"anyOf": [{"anyOf": [{"enum": ["a"]}]}, {"enum": ["b"]}]},
+        "items": {"anyOf": [{"anyOf": [{"enum": ["a"]}, {"enum": ["b"]}]}, {"enum": ["c"]}]},
     },
     "number_or_null": {
         "type": "array",
@@ -1253,6 +1317,25 @@ _OPERAND_PROPERTIES = {
     },
     "typed_members": {"type": "array", "items": {"enum": [True, 1.5, "s"]}},
     "anything": {"type": "array", "items": True},
+    "guarded_target": {"type": "array", "items": {"$ref": "#/$defs/guarded_outer"}},
+    "empty_vocabulary": {"type": "array", "items": {"$ref": "#/$defs/nothing"}},
+    "sized_or": {
+        "type": "array",
+        "anyOf": [{"minItems": 2, "items": {"enum": ["a"]}}, {"items": {"enum": ["b"]}}],
+    },
+    "twice": {
+        "type": "array",
+        "items": {"type": "string"},
+        "oneOf": [{"minItems": 0}, {"maxItems": 5}],
+    },
+    "size_conditional": {
+        "type": "array",
+        "items": {"type": "string"},
+        "if": {"maxItems": 1},
+        "then": {"items": {"enum": ["a"]}},
+    },
+    "then": {"type": "array", "items": {"enum": ["a"]}},
+    "positional": {"type": "array", "prefixItems": [{"const": "v1"}], "items": {"type": "string"}},
     "nullable_enum": {"anyOf": [{"type": "array", "items": {"enum": ["a"]}}, {"type": "null"}]},
     "with_null": {"type": "array", "items": {"enum": ["a", None]}},
     "either_size": {
@@ -1262,6 +1345,28 @@ _OPERAND_PROPERTIES = {
     "rooted": {"type": "array"},
     "unresolved": {"$ref": "#/$defs/missing"},
     "sized": {"type": "array", "minItems": 3, "items": {"type": "string"}},
+}
+
+
+# ``cond`` constrains its lists from the root: a vocabulary chosen by a
+# sibling field (``f``), a union with a ``false`` branch (``g``), and a
+# ``oneOf`` admitting one of two vocabularies (``h``).
+_CONDITIONAL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "kind": {"type": "string"},
+        "f": {"type": "array", "items": {"type": "string"}},
+        "g": {"type": "array", "items": {"type": "string"}},
+        "h": {"type": "array", "items": {"type": "string"}},
+    },
+    "if": {"properties": {"kind": {"const": "a"}}, "required": ["kind"]},
+    "then": {"properties": {"f": {"items": {"enum": ["x", "y"]}}}},
+    "else": {"properties": {"f": {"items": {"enum": ["p", "q"]}}}},
+    "anyOf": [False, {"properties": {"g": {"items": {"enum": ["a", "b"]}}}}],
+    "oneOf": [
+        {"properties": {"h": {"items": {"enum": ["a"]}}}},
+        {"properties": {"h": {"items": {"enum": ["b", "c"]}}}},
+    ],
 }
 
 
@@ -1282,23 +1387,24 @@ def operand_config(tmp_vault_dir):
                 "$defs": _OPERAND_DEFS,
                 "properties": _OPERAND_PROPERTIES,
             },
-        }
+        },
+        {"value": "cond", "label": "Cond", "metadata_schema": _CONDITIONAL_SCHEMA},
     ]
     return VaultConfig.model_validate(raw)
 
 
-def _refusal(config, field, operand):
+def _refusal(config, field, operand, doc_type="ops"):
     from sage.services._tier3_query import normalize_tier3_filter
 
     with pytest.raises(SAGEError) as excinfo:
-        normalize_tier3_filter(config, {field: {"contains": operand}}, "ops")
+        normalize_tier3_filter(config, {field: {"contains": operand}}, doc_type)
     return excinfo.value
 
 
-def _accepts(config, field, operand):
+def _accepts(config, field, operand, doc_type="ops"):
     from sage.services._tier3_query import normalize_tier3_filter
 
-    return bool(normalize_tier3_filter(config, {field: {"contains": operand}}, "ops"))
+    return bool(normalize_tier3_filter(config, {field: {"contains": operand}}, doc_type))
 
 
 def test_operand_satisfying_one_allof_branch_only_is_refused(operand_config):
@@ -1319,11 +1425,13 @@ def test_operand_narrowed_by_a_referenced_enum_is_refused(operand_config):
 
 def test_reference_target_carrying_its_own_defs_admits_a_stored_value(operand_config):
     assert _accepts(operand_config, "nested_defs", "x")
+    assert _accepts(operand_config, "guarded_target", "x")
+    assert isinstance(_refusal(operand_config, "guarded_target", "root"), InvalidFilterShapeError)
 
 
 @pytest.mark.parametrize(
     ("field", "vocabulary"),
-    [("labelled", ["a", "b"]), ("mixed_forms", ["a", "b"]), ("deep", ["a", "b"])],
+    [("labelled", ["a", "b"]), ("mixed_forms", ["a", "b"]), ("deep", ["a", "b", "c"])],
 )
 def test_enumerations_through_const_and_nested_branches_list_every_value(
     operand_config, field, vocabulary
@@ -1385,3 +1493,48 @@ def test_root_level_union_judges_the_element(operand_config):
 def test_unresolvable_property_reference_reads_as_untyped(operand_config):
     refusal = _refusal(operand_config, "unresolved", "a")
     assert isinstance(refusal, InvalidFilterShapeError)
+
+
+@pytest.mark.parametrize("operand", ["x", "p"])
+def test_vocabulary_chosen_by_a_sibling_field_admits_every_branch(operand_config, operand):
+    """Which enum applies depends on ``kind``, which an operand cannot know:
+    both vocabularies' values are admitted."""
+    assert _accepts(operand_config, "f", operand, doc_type="cond")
+
+
+@pytest.mark.parametrize(("field", "operand"), [("positional", "x"), ("size_conditional", "x")])
+def test_positional_and_size_conditional_constraints_do_not_refuse(operand_config, field, operand):
+    assert _accepts(operand_config, field, operand)
+
+
+def test_union_with_a_false_branch_refuses_without_raising(operand_config):
+    """``a`` passes the second branch; ``z`` fails every branch, the
+    ``false`` one included."""
+    assert _accepts(operand_config, "g", "a", doc_type="cond")
+    assert isinstance(_refusal(operand_config, "g", "z", doc_type="cond"), InvalidFilterShapeError)
+
+
+def test_root_oneof_refuses_an_operand_no_branch_admits(operand_config):
+    """b passes only the second branch; d fails every branch."""
+    assert _accepts(operand_config, "h", "b", doc_type="cond")
+    assert isinstance(_refusal(operand_config, "h", "d", doc_type="cond"), InvalidFilterShapeError)
+
+
+def test_branch_failing_on_size_and_element_is_ruled_out(operand_config):
+    assert _accepts(operand_config, "sized_or", "a")
+    assert isinstance(_refusal(operand_config, "sized_or", "c"), InvalidFilterShapeError)
+
+
+def test_oneof_matched_by_two_branches_does_not_refuse(operand_config):
+    assert _accepts(operand_config, "twice", "x")
+
+
+def test_closed_enumeration_admitting_nothing_refuses_as_shape(operand_config):
+    refusal = _refusal(operand_config, "empty_vocabulary", "a")
+    assert isinstance(refusal, InvalidFilterShapeError)
+
+
+def test_field_named_like_a_conditional_keyword_is_still_judged(operand_config):
+    refusal = _refusal(operand_config, "then", "z")
+    assert isinstance(refusal, InvalidFilterValueError)
+    assert refusal.detail["valid_values"] == ["a"]

@@ -65,10 +65,65 @@ def _is_null_only(schema: dict) -> bool:
     return declared == "null" or declared == ["null"]
 
 
+#: Marks a schema whose merge met two different unions under one keyword;
+#: classification cannot read both, so such a schema is not treated as a
+#: list of scalars or a scalar.
+_UNREAD = "$tier3:unread"
+
+#: Keywords whose subschemas apply by condition or by position. An element
+#: error reached through one describes the one-element probe list, not every
+#: list that can hold the value, so it does not refuse the operand.
+_CONDITIONAL_KEYWORDS = frozenset(
+    {
+        "if",
+        "then",
+        "else",
+        "dependentSchemas",
+        "dependencies",
+        "prefixItems",
+        "additionalItems",
+        "unevaluatedItems",
+        "contains",
+    }
+)
+
+#: Keywords whose next schema-path segment is a name or index, not a keyword.
+_NAMED_CHILDREN = frozenset(
+    {
+        "properties",
+        "patternProperties",
+        "dependentSchemas",
+        "dependencies",
+        "$defs",
+        "definitions",
+        "allOf",
+        "anyOf",
+        "oneOf",
+        "prefixItems",
+        "items",
+    }
+)
+
+
+def _through_conditional(schema_path: object) -> bool:
+    """Whether a schema path passes through a conditional or positional keyword."""
+    skip = False
+    for segment in schema_path:  # type: ignore[attr-defined]
+        if skip:
+            skip = False
+            continue
+        if segment in _CONDITIONAL_KEYWORDS:
+            return True
+        skip = segment in _NAMED_CHILDREN and segment != "items"
+    return False
+
+
 def _merge(outer: dict, inner: dict) -> dict:
     """``outer`` with ``inner``'s keywords added where ``outer`` has none."""
     merged = dict(outer)
     for key, value in inner.items():
+        if key in ("anyOf", "oneOf") and key in merged and merged[key] != value:
+            merged[_UNREAD] = True
         merged.setdefault(key, value)
     return merged
 
@@ -81,8 +136,7 @@ def _as_schema(schema: object) -> dict:
 def resolver_for(root: dict) -> Resolver:
     """A reference resolver rooted at a doc_type's ``metadata_schema``."""
     resource = Resource.from_contents(root, default_specification=DRAFT202012)
-    base = resource.id() or ""
-    return Registry().with_resource(uri=base, resource=resource).resolver(base_uri=base)
+    return Registry().resolver_with_root(resource)
 
 
 def _resolve(schema: object, resolver: Resolver, hops: int = 0) -> dict:
@@ -96,7 +150,9 @@ def _resolve(schema: object, resolver: Resolver, hops: int = 0) -> dict:
     likewise, so ``anyOf: [{type: array, ...}, {type: null}]`` declares an
     array; any other ``anyOf`` or ``oneOf`` keeps its resolved branches for
     ``field_kind``. Keywords the carrying schema declares itself win over a
-    merged branch's. A boolean schema reads as untyped. A reference
+    merged branch's; two different unions met under one keyword mark the
+    schema unread. A schema carrying an ``$id`` resolves its references
+    against that base, as the validator does. A boolean schema reads as untyped. A reference
     that cannot be followed is left in place, so the schema reads as
     untyped. Resolution stops after a bounded number of steps, so a
     reference cycle cannot recurse without end. The result serves
@@ -106,6 +162,8 @@ def _resolve(schema: object, resolver: Resolver, hops: int = 0) -> dict:
     schema = _as_schema(schema)
     if hops >= _MAX_REF_HOPS:
         return schema
+    if isinstance(schema.get("$id"), str):
+        resolver = resolver.in_subresource(DRAFT202012.create_resource(schema))
     if isinstance(schema.get("$ref"), str):
         try:
             resolved = resolver.lookup(schema["$ref"])
@@ -160,6 +218,8 @@ def field_kind(schema: object) -> FieldKind:
         return "composite"
     if types:
         return "scalar"
+    if schema.get(_UNREAD):
+        return "composite"
     kinds: set[str] = set()
     for key in ("anyOf", "oneOf"):
         branches = schema.get(key)
@@ -229,7 +289,6 @@ class Tier3Declarations:
         )
         self._properties: dict[str, dict[str, dict]] = {}
         self._validators: dict[str, object] = {}
-        self._roots: dict[str, dict] = {}
         for name in names:
             validator = config.tier3_validator(name)
             if validator is None:
@@ -242,7 +301,6 @@ class Tier3Declarations:
                 resolved[field] = _resolve(schema, resolver)
             self._properties[name] = resolved
             self._validators[name] = validator
-            self._roots[name] = root
 
     def declaring(self, field: str) -> dict[str, dict]:
         """``{doc_type: resolved property}`` for each in-scope doc_type declaring ``field``."""
@@ -251,35 +309,40 @@ class Tier3Declarations:
         }
 
     def admits(self, doc_type: str, field: str, value: object) -> bool:
-        """Whether a list holding ``value`` satisfies the doc_type's declaration.
+        """Whether a list holding ``value`` can satisfy the doc_type's declaration.
 
-        The doc_type's own validator checks ``{field: [value]}``, so the
-        element is judged exactly as on write, through every reference and
-        composition. Only errors bearing on the element count: list-level
-        constraints such as ``minItems`` and other fields' requirements say
-        nothing about one operand. A union branch that cannot hold a list,
-        or whose element fails, rules the branch out; the element is refused
-        only when every branch is ruled out. A reference the schema cannot
-        resolve admits nothing, so the operand is refused rather than raising.
+        The doc_type's own validator checks the probe ``{field: [value]}``,
+        through every reference and composition, and only errors that rule
+        out the element in every list count. List-level constraints such as
+        ``minItems`` and other fields' requirements say nothing about one
+        operand. Nor does an error reached through a conditional or
+        positional keyword (``if``/``then``/``else``, ``prefixItems``,
+        ``dependentSchemas`` and the like): it describes the probe, not every
+        document that can hold the value, so such constraints are not
+        enforced on operands. A union branch that cannot hold a list, or
+        whose element fails, is ruled out, and so is a ``false`` branch; the
+        element is refused only when every branch is ruled out. A reference
+        the schema cannot resolve admits nothing, so the operand is refused
+        rather than raising.
         """
         validator = self._validators[doc_type]
         target = (field, 0)
 
         def rules_out(error: object) -> bool:
+            if _through_conditional(error.absolute_schema_path):  # type: ignore[attr-defined]
+                return False
             path = tuple(error.absolute_path)  # type: ignore[attr-defined]
             if path[:2] == target:
                 return True
             if path == (field,) and error.validator == "type":  # type: ignore[attr-defined]
                 return True
             if path in ((), (field,)) and error.validator in ("anyOf", "oneOf"):  # type: ignore[attr-defined]
-                context = error.context or []  # type: ignore[attr-defined]
-                groups: dict[object, list] = {}
-                for sub in context:
-                    groups.setdefault(sub.schema_path[0], []).append(sub)
                 branches = error.validator_value  # type: ignore[attr-defined]
-                if not context or len(groups) < len(branches):
-                    return False
-                return all(any(rules_out(sub) for sub in group) for group in groups.values())
+                ruled = {index for index, branch in enumerate(branches) if branch is False}
+                for sub in error.context or ():  # type: ignore[attr-defined]
+                    if rules_out(sub):
+                        ruled.add(sub.schema_path[0])
+                return len(ruled) == len(branches)
             return False
 
         try:
