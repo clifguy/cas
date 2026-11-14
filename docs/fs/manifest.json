@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Inventory and version tracking for the CAS Formal Substrate (CAS-ADR-008). Each artifact's version is the release MAJOR.MINOR in which it last changed, or null until a release first publishes it; no counter is assigned when a change is authored. revision_history is assembled per release: a change adds a numberless change record under changes/unreleased/, and the release step folds every unreleased record into one entry for the new release, newest first. Entries written before this scheme, which carry a substrate counter in their version field, follow the release entries and are kept verbatim.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-11-09",
+  "manifest_date": "2026-11-13",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -84,7 +84,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "3.7",
+      "version": "3.8",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -92,7 +92,7 @@
       "path": "cas_app_api.openapi.yaml",
       "title": "CAS Application API",
       "status": "draft",
-      "version": "3.7",
+      "version": "3.8",
       "role": "OpenAPI 3.1.0 specification for the CAS Application backend HTTP surface (mounted at the /app prefix). Defines directory scan and batch-ingest endpoints used by the CAS Application UI. Architecturally distinct from the SAGE Core API; the two specs are validated together by tests/sage/test_openapi_conformance.py and must respect URL-prefix boundaries (sage_core_api owns /sage_vaults/*, cas_app_api owns /app/*).",
       "instantiation_checklist_items": []
     },
@@ -100,7 +100,7 @@
       "path": "sage/sage_mcp_tools.catalog.json",
       "title": "SAGE MCP Tool Catalog",
       "status": "draft",
-      "version": "3.7",
+      "version": "3.8",
       "role": "The tools the SAGE MCP surfaces publish through tools/list: name, input and output schemas, annotations, and description, for the ordinary surface (/mcp) and the maintenance surface (/mcp_maint). Generated from the servers by scripts/dump_mcp_catalog.py and held to them by a test gate; the contract comparison reads it as the MCP half of the published contract.",
       "instantiation_checklist_items": []
     },
@@ -197,6 +197,44 @@
   ],
   "deferred": [],
   "revision_history": [
+    {
+      "release": "3.8",
+      "date": "2026-11-13",
+      "changes": [
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "Full edge rows from search with target=\"edges\" carry created_at, the time the edge was written, beside the existing created_by, created_client and created_agent provenance. The store already recorded it; the EdgeHit projection now passes it through. Light rows are unchanged. The Core OpenAPI EdgeHit schema, the search response_mode description and the MCP catalog are updated to match.",
+          "for_callers": "search with target=\"edges\" and a full response now returns created_at on every edge row, so a caller can select the edges drawn since a given time. Light rows still carry only the identity columns."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "caller-adaptation"
+          ],
+          "summary": "reload_vault and update_vault_config refuse with 409 vault_migration_in_flight while migrate_vault runs on the vault. A reload replaced the ingestion service that holds the migration's exclusion of pipeline work and closed the storage the migration was using; update_vault_config reloads after writing, so it now refuses before writing anything (a dry run is still answered). The decision is taken in the shared reload path, below both surfaces. Core OpenAPI 409 responses and the per-tool error-code lists (Core and application specifications), the packaged error contract and the MCP catalog are updated to match.",
+          "for_callers": "reload_vault and update_vault_config now return 409 vault_migration_in_flight, with the migration's vault_id and start_time, while migrate_vault is running on the vault. Nothing is reloaded or written; retry once the migration has returned, which get_vault_stats reports through migration_started_at. An update_vault_config dry run is still answered during a migration."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "Typed metadata (tier3) becomes queryable beyond exact equality. A tier3_metadata filter on a field declared as a list of scalars accepts an operator object -- contains, any, all or none -- testing list membership, with operands validated against the field's items schema. search with target=\"facets\" accepts tier3:<field> entries in facet_fields, counting a list field's values once per document and reporting absent_count, a new FacetHit property. Catalog sort_by accepts tier3:<field> for a scalar field, with documents lacking it sorted last. The Core OpenAPI DiscoverRequest, RetrievalFilters and FacetHit schemas, the MCP catalog and the application's request types are updated to match.",
+          "for_callers": "To find documents whose list field holds a value, filter with tier3_metadata={\"<field>\": {\"contains\": \"<value>\"}}, or any/all/none with a list of values; all is order-insensitive. A bare literal still means exact equality, so existing filters return what they did. An operand outside the declared enum is refused with invalid_filter_value listing the valid values, and an operator on a field not declared as a list of scalars with invalid_filter_shape, where it previously matched nothing. Facet counts per tier3 value come from facet_fields=[\"tier3:<field>\"], and sort_by=\"tier3:<field>\" orders a catalog page by a scalar tier3 field."
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability"
+          ],
+          "summary": "VaultStatsResponse gains migration_started_at, set while a migrate_vault run holds the vault in the serving process, so get_vault_stats (REST and MCP) reports a migration in flight without starting one. The migrate_vault and get_vault_stats descriptions direct callers to poll it instead of re-calling. The passage-division backfill now records the embedder identity, division rule and content hash each document was examined under and skips documents it has examined, so a repeat migrate_vault no longer re-divides and re-counts every long passage.",
+          "for_callers": "get_vault_stats now reports migration_started_at while a migrate_vault run is in progress; poll it rather than calling migrate_vault again, which starts another full run. A repeat migrate_vault no longer re-examines every long passage it already examined."
+        }
+      ]
+    },
     {
       "release": "3.7",
       "date": "2026-11-09",
