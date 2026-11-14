@@ -59,75 +59,131 @@ def _is_null_only(schema: dict) -> bool:
     return declared == "null" or declared == ["null"]
 
 
-def _resolve(schema: object, root: dict, hops: int = 0) -> dict:
-    """Follow local ``$ref`` pointers and flatten compositions for classification.
+def _find_anchor(node: object, name: str) -> dict | None:
+    """The subschema of ``node`` declaring ``$anchor: name``, if any."""
+    if isinstance(node, dict):
+        if node.get("$anchor") == name:
+            return node
+        children: list[object] = list(node.values())
+    elif isinstance(node, list):
+        children = list(node)
+    else:
+        return None
+    for child in children:
+        found = _find_anchor(child, name)
+        if found is not None:
+            return found
+    return None
 
-    A ``$ref`` into the doc_type's own schema is followed. An ``allOf`` is
-    merged into the schema carrying it. An ``anyOf`` or ``oneOf`` whose
-    branches are one schema and ``null`` resolves to that schema, so
-    ``anyOf: [{type: array, ...}, {type: null}]`` declares an array; any
-    other ``anyOf`` or ``oneOf`` keeps its resolved branches for
-    ``field_kind`` to classify.
-    """
-    if not isinstance(schema, dict) or hops >= _MAX_REF_HOPS:
-        return schema if isinstance(schema, dict) else {}
-    if "$ref" in schema:
-        ref = schema["$ref"]
-        if not isinstance(ref, str) or not ref.startswith("#/"):
-            return schema
+
+def _target(ref: str, root: dict) -> dict | None:
+    """The subschema a local reference -- a JSON pointer or an anchor -- names."""
+    if ref.startswith("#/"):
         target: object = root
         for part in ref[2:].split("/"):
             part = part.replace("~1", "/").replace("~0", "~")
             target = target.get(part) if isinstance(target, dict) else None
-        if not isinstance(target, dict):
+        return target if isinstance(target, dict) else None
+    if ref.startswith("#") and len(ref) > 1:
+        return _find_anchor(root, ref[1:])
+    return None
+
+
+def _merge(outer: dict, inner: dict) -> dict:
+    """``outer`` with ``inner``'s keywords added where ``outer`` has none."""
+    merged = dict(outer)
+    for key, value in inner.items():
+        merged.setdefault(key, value)
+    return merged
+
+
+def _resolve(schema: object, root: dict, hops: int = 0) -> dict:
+    """Follow local references and flatten compositions for classification.
+
+    Applied alike to a property, its ``items`` and every composition
+    branch. A local ``$ref`` (a JSON pointer or an anchor) is followed,
+    its sibling keywords kept. An ``allOf`` is merged into the schema
+    carrying it. An ``anyOf`` or ``oneOf`` whose branches are one schema and
+    ``null`` is merged likewise, so ``anyOf: [{type: array, ...}, {type:
+    null}]`` declares an array; any other ``anyOf`` or ``oneOf`` keeps its
+    resolved branches for ``field_kind``. Keywords the carrying schema
+    declares itself win over a merged branch's. A boolean ``items`` becomes
+    the schema it means. Resolution stops after a bounded number of steps,
+    so a reference cycle cannot recurse without end.
+    """
+    if not isinstance(schema, dict):
+        return {} if schema is not False else {"not": {}}
+    if hops >= _MAX_REF_HOPS:
+        return schema
+    if isinstance(schema.get("$ref"), str):
+        target = _target(schema["$ref"], root)
+        if target is None:
             return schema
         siblings = {key: value for key, value in schema.items() if key != "$ref"}
-        return _resolve({**target, **siblings}, root, hops + 1)
+        return _resolve(_merge(siblings, target), root, hops + 1)
     branches = schema.get("allOf")
     if isinstance(branches, list):
         merged = {key: value for key, value in schema.items() if key != "allOf"}
         for branch in branches:
-            for key, value in _resolve(branch, root, hops + 1).items():
-                merged.setdefault(key, value)
+            merged = _merge(merged, _resolve(branch, root, hops + 1))
         return _resolve(merged, root, hops + 1)
     for key in ("anyOf", "oneOf"):
         branches = schema.get(key)
         if isinstance(branches, list):
+            outer = {name: value for name, value in schema.items() if name != key}
             resolved = [_resolve(branch, root, hops + 1) for branch in branches]
             non_null = [branch for branch in resolved if not _is_null_only(branch)]
             if len(non_null) == 1:
-                return non_null[0]
-            return {**schema, key: non_null}
+                return _resolve(_merge(outer, non_null[0]), root, hops + 1)
+            schema = {**outer, key: non_null}
+            break
+    if "items" in schema:
+        schema = {**schema, "items": _resolve(schema["items"], root, hops + 1)}
     return schema
 
 
-def field_kind(schema: dict) -> FieldKind:
-    """Classify a resolved property schema.
+def field_kind(schema: object) -> FieldKind:
+    """Classify a resolved schema -- a property, its items, or a branch.
 
-    ``array`` is a list of scalars, the only list the operators and list
-    facets read. ``object`` is an object, or a composition admitting one.
-    ``composite`` is a list of objects or lists, or a composition admitting
-    a list but no object: neither an operator nor a facet reads it. Anything
-    else -- including a property declaring no type -- is a ``scalar``.
+    The declared ``type`` decides first. ``object`` is an object.
+    ``array`` is a list whose items are scalars, the only list the
+    operators and list facets read. ``composite`` is any other list -- of
+    objects or lists, or declared beside another type. A schema declaring
+    no type is classified by its ``anyOf``/``oneOf`` branches: an object
+    branch makes it ``object``, any other non-scalar branch ``composite``.
+    Anything else is a ``scalar``.
     """
-    for key in ("anyOf", "oneOf"):
-        branches = schema.get(key)
-        if isinstance(branches, list):
-            kinds = {field_kind(branch) for branch in branches}
-            if "object" in kinds:
-                return "object"
-            if kinds - {"scalar"}:
-                return "composite"
-            return "scalar"
+    if not isinstance(schema, dict):
+        return "scalar"
     types = _declared_types(schema)
-    if types == {"array"}:
-        item_types = _declared_types(schema.get("items") or {})
-        return "composite" if item_types & {"object", "array"} else "array"
     if "object" in types:
         return "object"
     if "array" in types:
+        if types == {"array"} and field_kind(schema.get("items") or {}) == "scalar":
+            return "array"
+        return "composite"
+    if types:
+        return "scalar"
+    kinds: set[str] = set()
+    for key in ("anyOf", "oneOf"):
+        branches = schema.get(key)
+        if isinstance(branches, list):
+            kinds |= {field_kind(branch) for branch in branches}
+    if "object" in kinds:
+        return "object"
+    if kinds - {"scalar"}:
         return "composite"
     return "scalar"
+
+
+def _item_enums(items: dict) -> list[object]:
+    """Every enum value an items schema declares, through its branches too."""
+    values = list(items.get("enum") or [])
+    for key in ("anyOf", "oneOf"):
+        for branch in items.get(key) or []:
+            if isinstance(branch, dict):
+                values.extend(_item_enums(branch))
+    return values
 
 
 def _json_type(value: object) -> str:
@@ -149,7 +205,7 @@ def _json_type(value: object) -> str:
 class Tier3Declarations:
     """The ``metadata_schema`` properties declared by the doc_types in scope.
 
-    Each property is held resolved (see ``_resolve``), its ``items`` too.
+    Each property is held resolved (see ``_resolve``).
     """
 
     def __init__(self, config: VaultConfig, doc_type: str | None) -> None:
@@ -167,10 +223,7 @@ class Tier3Declarations:
             properties = root.get("properties", {}) or {}
             resolved: dict[str, dict] = {}
             for field, schema in properties.items():
-                prop = _resolve(schema, root)
-                if "items" in prop:
-                    prop = {**prop, "items": _resolve(prop["items"], root)}
-                resolved[field] = prop
+                resolved[field] = _resolve(schema, root)
             self._properties[name] = resolved
             self._validators[name] = validator
             self._roots[name] = root
@@ -297,7 +350,7 @@ def _predicate(
     for schema in arrays.values():
         items = schema.get("items") or {}
         item_types |= _declared_types(items)
-        enums.extend(items.get("enum") or [])
+        enums.extend(_item_enums(items))
     for value in values:
         if any(_admits(validator, value) for validator in validators):
             continue

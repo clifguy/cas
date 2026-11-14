@@ -3855,16 +3855,17 @@ class RetrievalFilters(BaseModel):
             "so a stored 1.0 matches a filter of 1. A value of null matches "
             "documents whose stored field is either null or absent from the "
             "tier3_metadata dict. All pairs AND together; an empty dict is "
-            "treated as no filter. For a field declared as an array, the "
-            'value may instead be an operator object: {"contains": v} '
+            "treated as no filter. For a field declared as a list of "
+            'scalars, the value may instead be an operator object: {"contains": v} '
             '(the list holds v), {"any": [...]} (at least one), '
             '{"all": [...]} (every one, in any order) or {"none": '
             "[...]} (none of them; a document lacking the field matches). "
             "Several operators on one field AND together. An operator "
             "applies only to documents whose doc_type declares the field "
-            "as an array. An operand outside the declared enum is refused "
+            "as a list of scalars. An operand outside the declared enum is refused "
             "with invalid_filter_value listing the valid values; an "
-            "operator on a field no doc_type in scope declares as an array, "
+            "operator on a field no doc_type in scope declares as a list of "
+            "scalars, "
             "or a malformed operand, with invalid_filter_shape. A bare "
             "list keeps exact equality."
         ),
@@ -4161,8 +4162,9 @@ class DiscoverRequest(BaseModel):
             "doc_type, lifecycle_status, source_type, pipeline_status "
             "and tags. Rows return in that fixed field order regardless of "
             "the order given here. tier3:<field> counts a typed-metadata "
-            "field over the doc_types declaring it, a list once per value as "
-            "tags are, its rows following the fixed ones; absent_count "
+            "field over the doc_types declaring it as a scalar or a list of "
+            "scalars, a list once per value as tags are, its rows following "
+            "the fixed ones; absent_count "
             "reports documents lacking it. Not valid for other targets."
         ),
     )
@@ -4819,7 +4821,8 @@ class FacetHit(BaseModel):
         default=None,
         description=(
             "On a tier3:<field> row, the documents of the doc_types "
-            "declaring the field, within the filter slice, whose field is "
+            "declaring the field as a scalar or a list of scalars, within "
+            "the filter slice, whose field is "
             "absent or null. Null on every other row."
         ),
     )

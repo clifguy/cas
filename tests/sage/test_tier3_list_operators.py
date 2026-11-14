@@ -611,7 +611,15 @@ _REFD_SCHEMA = {
         "system": {"type": "string", "enum": ["alpha", "beta"]},
         "banned": {"enum": ["root"]},
     },
+    "definitions": {"reserved": {"enum": ["admin"]}},
     "properties": {
+        "rule": {"type": "object", "oneOf": [{"required": ["contains"]}, {"required": ["any"]}]},
+        "pair_or_text": {"anyOf": [{"type": "array", "items": True}, {"type": "string"}]},
+        "guarded": {
+            "type": "array",
+            "items": {"type": "string", "not": {"$ref": "#/definitions/reserved"}},
+        },
+        "split": {"type": "array", "items": {"anyOf": [{"enum": ["s1"]}, {"enum": ["s2"]}]}},
         "primary": {"type": "string", "enum": ["p", "q"]},
         "nested": {"type": "array", "items": {"allOf": [{"$ref": "#/properties/primary"}]}},
         "handles": {
@@ -713,6 +721,7 @@ async def _seed_idioms(tmp_vault_dir: Path, ingestion: IngestionService) -> dict
                 "either": ["x"],
                 "halves": [1.5],
                 "code": "1",
+                "rule": {"contains": "x"},
             },
         ),
         "r2": ("refd", {"systems": ["beta"], "labels": None, "scores": [1], "rank": 1.0}),
@@ -941,3 +950,180 @@ async def test_facet_population_excludes_doc_types_declaring_an_object(
     row = (await _facets(idiom_retrieval, ["tier3:owner_ref"], doc_type=None))["tier3:owner_ref"]
     assert row.values == {"ops": 1}
     assert row.absent_count == 0
+
+
+# Classification is one rule applied to a property, its items and every
+# composition branch: the declared ``type`` decides first, composition only
+# where no type is declared. Each row varies one idiom.
+
+_KIND_CASES = [
+    ("plain list", {"type": "array", "items": {"type": "string"}}, {}, "array"),
+    (
+        "object beside a oneOf of required keys",
+        {"type": "object", "oneOf": [{"required": ["a"]}, {"required": ["b"]}]},
+        {},
+        "object",
+    ),
+    (
+        "list beside an anyOf of size constraints",
+        {"type": "array", "items": {"type": "string"}, "anyOf": [{"minItems": 1}, {"maxItems": 0}]},
+        {},
+        "array",
+    ),
+    (
+        "union branch with a boolean items",
+        {"anyOf": [{"type": "array", "items": True}, {"type": "string"}]},
+        {},
+        "composite",
+    ),
+    (
+        "list whose items are a oneOf of objects",
+        {
+            "type": "array",
+            "items": {"oneOf": [{"type": "object", "required": ["n"]}, {"type": "object"}]},
+        },
+        {},
+        "composite",
+    ),
+    (
+        "list reached through an anchor",
+        {"$ref": "#anch"},
+        {"$defs": {"l": {"$anchor": "anch", "type": "array", "items": {"type": "string"}}}},
+        "array",
+    ),
+    (
+        "scalar type beside a branch naming another type",
+        {"type": "string", "anyOf": [{"minLength": 1}, {"type": "object"}]},
+        {},
+        "scalar",
+    ),
+    ("list declared beside another type", {"type": ["array", "string"]}, {}, "composite"),
+    (
+        "nullable list by type",
+        {"type": ["array", "null"], "items": {"type": "string"}},
+        {},
+        "array",
+    ),
+    (
+        "union with an object branch",
+        {"anyOf": [{"type": "object"}, {"type": "string"}]},
+        {},
+        "object",
+    ),
+    (
+        "oneOf of a scalar and a list",
+        {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}}]},
+        {},
+        "composite",
+    ),
+    (
+        "keywords beside a followed reference win",
+        {"$ref": "#/$defs/s", "type": "array", "items": {"type": "string"}},
+        {"$defs": {"s": {"type": "string"}}},
+        "array",
+    ),
+    (
+        "keywords beside an allOf are kept",
+        {"type": "array", "items": {"type": "string"}, "allOf": [{"minItems": 1}]},
+        {},
+        "array",
+    ),
+    (
+        "reference cycle stops",
+        {"$ref": "#/$defs/a"},
+        {"$defs": {"a": {"$ref": "#/$defs/a"}}},
+        "scalar",
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("schema", "extra", "kind"),
+    [case[1:] for case in _KIND_CASES],
+    ids=[case[0] for case in _KIND_CASES],
+)
+def test_field_kind_reads_declared_type_before_composition(schema, extra, kind):
+    from sage.services._tier3_query import _resolve, field_kind
+
+    root = {"type": "object", "properties": {"f": schema}, **extra}
+    assert field_kind(_resolve(schema, root)) == kind
+
+
+async def test_object_with_a_oneof_keeps_its_literal_filter(
+    tmp_vault_dir, idiom_ingestion, idiom_retrieval
+):
+    """An operator-looking dict on an object declared with a sibling oneOf is
+    a literal and matches the document storing it."""
+    docs = await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    matched = await _ids(idiom_retrieval, {"rule": {"contains": "x"}}, doc_type="refd")
+    assert _names(docs, matched) == {"r1"}
+
+
+def test_boolean_items_in_a_union_branch_is_refused_not_raised(idiom_config):
+    from sage.services._tier3_query import (
+        normalize_tier3_filter,
+        resolve_tier3_facets,
+        validate_tier3_sort,
+    )
+
+    with pytest.raises(InvalidFilterShapeError):
+        normalize_tier3_filter(idiom_config, {"pair_or_text": {"contains": "x"}}, "refd")
+    assert normalize_tier3_filter(idiom_config, {"pair_or_text": {"a": 1}}, "refd")
+    with pytest.raises(InvalidParameterError):
+        resolve_tier3_facets(idiom_config, ["tier3:pair_or_text"], "refd")
+    with pytest.raises(InvalidParameterError):
+        validate_tier3_sort(idiom_config, "tier3:pair_or_text", "refd")
+
+
+def test_definitions_references_inside_items_resolve(idiom_config):
+    from sage.services._tier3_query import normalize_tier3_filter
+
+    assert normalize_tier3_filter(idiom_config, {"guarded": {"contains": "x"}}, "refd")
+    with pytest.raises(InvalidFilterShapeError):
+        normalize_tier3_filter(idiom_config, {"guarded": {"contains": "admin"}}, "refd")
+
+
+def test_enum_split_across_items_branches_is_a_value_refusal(idiom_config):
+    from sage.services._tier3_query import normalize_tier3_filter
+
+    assert normalize_tier3_filter(idiom_config, {"split": {"any": ["s1", "s2"]}}, "refd")
+    with pytest.raises(InvalidFilterValueError) as excinfo:
+        normalize_tier3_filter(idiom_config, {"split": {"contains": "s3"}}, "refd")
+    assert excinfo.value.detail["valid_values"] == ["s1", "s2"]
+
+
+async def test_unnarrowed_value_refusal_lists_every_declaring_vocabulary(
+    tmp_vault_dir, idiom_ingestion, idiom_retrieval
+):
+    await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    with pytest.raises(InvalidFilterValueError) as excinfo:
+        await _ids(idiom_retrieval, {"systems": {"contains": "zeta"}}, doc_type=None)
+    assert excinfo.value.detail["valid_values"] == ["alpha", "beta", "delta"]
+
+
+async def test_narrowed_facet_reads_only_the_named_doc_type_declaration(
+    tmp_vault_dir, idiom_ingestion, idiom_retrieval
+):
+    """owner_ref is a list in dual and an object in refd: narrowed to dual it
+    is counted, narrowed to refd it is refused."""
+    await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    row = (await _facets(idiom_retrieval, ["tier3:owner_ref"], doc_type="dual"))["tier3:owner_ref"]
+    assert row.values == {"ops": 1}
+    with pytest.raises(InvalidParameterError):
+        await _facets(idiom_retrieval, ["tier3:owner_ref"], doc_type="refd")
+
+
+async def test_tier3_facet_rows_follow_request_order(
+    tmp_vault_dir, idiom_ingestion, idiom_retrieval
+):
+    await _seed_idioms(tmp_vault_dir, idiom_ingestion)
+    requested = ["tier3:scores", "tier3:mixed", "tier3:code"]
+    response = await idiom_retrieval.discover(
+        DiscoverRequest(
+            mode=RetrievalMode.CATALOG,
+            target=RetrievalTarget.FACETS,
+            filters=RetrievalFilters(doc_type="refd"),
+            facet_fields=["doc_type", *requested],
+        )
+    )
+    assert [row.field for row in response.results] == ["doc_type", *requested]

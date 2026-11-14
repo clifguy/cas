@@ -430,7 +430,7 @@ _SEARCH_FILTERS = _discover_param(
         "``exclude_terminal_lifecycle`` drops documents in a state the vault "
         "declares terminal. ``tier3_metadata`` takes field-to-value pairs that "
         "must all match exactly; null matches a null or absent field. A field "
-        'declared as an array also takes {"contains": v} or {"any"|"all"|"none": '
+        'declared as a list of scalars also takes {"contains": v} or {"any"|"all"|"none": '
         "[...]}, operands checked against its schema. "
         "``provenance`` matches created_/last_modified_ by, client or agent "
         "likewise; agents by name."
