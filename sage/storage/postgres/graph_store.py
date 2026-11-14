@@ -37,10 +37,13 @@ from sage.adapters.interfaces import (
     ALL_FACET_FIELDS,
     DOCUMENT_FACET_FIELDS,
     NON_CANONICAL_SOURCE_PATH_PATTERN,
+    TIER3_FIELD_PREFIX,
     FacetFieldCounts,
     GraphStore,
     NaturalKeyConflict,
     StorageQueryError,
+    Tier3FacetSpec,
+    Tier3ListPredicate,
 )
 from sage.instrumentation.performance import observed_context
 from sage.instrumentation.timing import NULL_QUERY_TIMER, NullQueryTimer, QueryTimer
@@ -247,6 +250,50 @@ def _tier3_equality_predicate(key: str, value: object) -> tuple[str, list[object
     if isinstance(value, str):
         return f"tier3_metadata->>'{key}' = %s", [value]
     return f"tier3_metadata->'{key}' = %s::jsonb", [Jsonb(value)]
+
+
+def _tier3_list_predicate(key: str, predicate: Tier3ListPredicate) -> tuple[str, list[object]]:
+    """Build a membership predicate on a tier3 list-of-scalars field.
+
+    Each value is tested by jsonb containment of a one-element array,
+    ``tier3_metadata->'<key>' @> '[v]'``, which is order-insensitive and
+    typed for every scalar -- unlike ``?|``, which tests string elements
+    only. ``all`` and ``contains`` contain the whole value list at once;
+    ``any`` ORs the per-value tests; ``none`` negates ``any``, with a
+    document lacking the field (or holding a non-array) counting as
+    holding none of them. Every arm first requires the document's doc_type
+    to be one that declares the field as a list of scalars, so a doc_type that
+    stores a scalar under the same key never matches.
+
+    ``key`` must already have passed ``_TIER3_KEY_FORMAT``.
+    """
+    accessor = f"tier3_metadata->'{key}'"
+    is_array = f"jsonb_typeof({accessor}) = 'array'"
+    scope = "doc_type = ANY(%s)"
+    params: list[object] = [list(predicate.doc_types)]
+    if predicate.operator in ("contains", "all"):
+        params.append(Jsonb(list(predicate.values)))
+        return f"({scope} AND {is_array} AND {accessor} @> %s::jsonb)", params
+    any_sql = " OR ".join(f"{accessor} @> %s::jsonb" for _ in predicate.values)
+    any_params = [Jsonb([value]) for value in predicate.values]
+    if predicate.operator == "any":
+        return f"({scope} AND {is_array} AND ({any_sql}))", [*params, *any_params]
+    if predicate.operator == "none":
+        return (
+            f"({scope} AND NOT COALESCE({is_array} AND ({any_sql}), FALSE))",
+            [*params, *any_params],
+        )
+    raise ValueError(f"Unknown tier3 list operator: {predicate.operator!r}")
+
+
+def _tier3_sort_key(sort_by: str) -> str | None:
+    """The tier3 field a ``tier3:<field>`` sort key names, or None."""
+    if not sort_by.startswith(TIER3_FIELD_PREFIX):
+        return None
+    key = sort_by[len(TIER3_FIELD_PREFIX) :]
+    if not _TIER3_KEY_FORMAT.fullmatch(key):
+        raise ValueError(f"tier3 sort key {key!r} is not safe for SQL interpolation")
+    return key
 
 
 def _validate_tier3_identifier(doc_type: str, field: str) -> None:
@@ -827,6 +874,16 @@ class PostgresGraphStore(GraphStore):
                             f"tier3_metadata filter key {key!r} is not safe for "
                             "SQL interpolation; keys must match [A-Za-z0-9_]+"
                         )
+                    if isinstance(value, Tier3ListPredicate):
+                        value = (value,)
+                    if isinstance(value, tuple) and all(
+                        isinstance(item, Tier3ListPredicate) for item in value
+                    ):
+                        for predicate in value:
+                            clause, clause_params = _tier3_list_predicate(key, predicate)
+                            where_clauses.append(clause)
+                            params.extend(clause_params)
+                        continue
                     clause, clause_params = _tier3_equality_predicate(key, value)
                     where_clauses.append(clause)
                     params.extend(clause_params)
@@ -865,8 +922,22 @@ class PostgresGraphStore(GraphStore):
         be total-by-oversight -- which is how all three of these came to admit
         ties in the first place.
         """
+        tier3_key = _tier3_sort_key(sort_by) if sort_by is not None else None
         if sort_by is None:
             primary = _SALIENCE_ORDER
+        elif tier3_key is not None:
+            # Absent and JSON-null values sort last in both directions; the
+            # rest order as jsonb, which is numeric for numbers and lexical
+            # for strings (so ISO dates order chronologically).
+            # A JSON null is folded into SQL NULL in the value term, so an
+            # absent field and a null one tie there and fall through to the
+            # id tiebreak in the same order whichever direction is asked.
+            accessor = f"tier3_metadata->'{tier3_key}'"
+            direction = "DESC" if sort_order == "desc" else "ASC"
+            primary = (
+                f"CASE WHEN {accessor} IS NULL OR {accessor} = 'null'::jsonb "
+                f"THEN 1 ELSE 0 END, NULLIF({accessor}, 'null'::jsonb) {direction}"
+            )
         elif sort_by not in _SORTABLE_COLUMNS:
             primary = "title"
         else:
@@ -1807,6 +1878,7 @@ class PostgresGraphStore(GraphStore):
         *,
         fields: Sequence[str] | None = None,
         value_limit: int | None = None,
+        tier3_fields: Sequence[Tier3FacetSpec] = (),
     ) -> tuple[dict[str, FacetFieldCounts], int]:
         with self._query_timer.measure("query_document_facets"):
             # Facets are an enumeration surface: no default failed-pipeline
@@ -1817,7 +1889,14 @@ class PostgresGraphStore(GraphStore):
             # predicates are what can make the backend refuse, and the
             # driver's wording is not the caller's to receive.
             try:
-                return await self._collect_document_facets(where_sql, params, fields, value_limit)
+                facets, total = await self._collect_document_facets(
+                    where_sql, params, fields, value_limit
+                )
+                for spec in tier3_fields:
+                    facets[spec.name] = await self._collect_tier3_facet(
+                        where_sql, params, spec, value_limit
+                    )
+                return facets, total
             except pg_errors.QueryCanceled:
                 raise  # a timeout, not a refused query; the surfaces type it
             except pg_errors.Error as exc:
@@ -1887,6 +1966,69 @@ class PostgresGraphStore(GraphStore):
             params,
         )
         return facets, total
+
+    async def _collect_tier3_facet(
+        self,
+        where_sql: str,
+        params: list[object],
+        spec: Tier3FacetSpec,
+        value_limit: int | None,
+    ) -> FacetFieldCounts:
+        """Aggregate one tier3 field over the slice narrowed to its doc_types.
+
+        Every stored value is read as a list of elements: an array as its
+        elements, a scalar as a list of one, and a missing or JSON-null field
+        as none. Each distinct element counts its document once --
+        ``COUNT(DISTINCT documents.id)``, so a list repeating a value still
+        counts its document once, which is how tags count -- and a doc_type
+        declaring the field as a scalar contributes its values beside one
+        declaring it as a list. Elements group by the text the response
+        keys them by -- a number in its shortest decimal form, so ``1`` and
+        ``1.0`` are one value ``"1"``, as are the string ``"1"`` and the
+        number ``1`` -- and so ``total_distinct`` counts exactly the keys a
+        caller can receive. A JSON-null element is not a value.
+        ``absent_count`` covers the same population: documents whose field
+        is missing or JSON null.
+        """
+        if not _TIER3_KEY_FORMAT.fullmatch(spec.field):
+            raise ValueError(f"tier3 facet field {spec.field!r} is not safe for SQL interpolation")
+        accessor = f"tier3_metadata->'{spec.field}'"
+        population = f"({where_sql}) AND doc_type = ANY(%s)"
+        population_params = [*params, list(spec.doc_types)]
+        elements = (
+            f"CASE WHEN jsonb_typeof({accessor}) = 'array' THEN {accessor} "
+            f"WHEN {accessor} IS NULL OR {accessor} = 'null'::jsonb THEN '[]'::jsonb "
+            f"ELSE jsonb_build_array({accessor}) END"
+        )
+        key = (
+            "CASE WHEN jsonb_typeof(element.value) = 'number' "
+            "THEN trim_scale((element.value #>> '{}')::numeric)::text "
+            "ELSE element.value #>> '{}' END"
+        )
+        inner_sql = (
+            f"SELECT {key} AS value, "  # noqa: S608 -- key fenced above
+            "COUNT(DISTINCT documents.id) AS doc_count "
+            f"FROM documents CROSS JOIN LATERAL jsonb_array_elements({elements}) "
+            "AS element(value) "
+            f"WHERE {population} AND jsonb_typeof(element.value) <> 'null' "
+            f"GROUP BY {key}"
+        )
+        rows = await self._fetch_tuples(
+            f"SELECT value, doc_count, COUNT(*) OVER () FROM ({inner_sql}) AS facet_rows "  # noqa: S608 -- composed from builder-trusted parts
+            "ORDER BY doc_count DESC, value ASC "
+            "LIMIT %s",
+            [*population_params, value_limit],
+        )
+        absent = await self._fetch_scalar(
+            f"SELECT COUNT(*) FROM documents WHERE {population} "  # noqa: S608 -- key fenced above
+            f"AND ({accessor} IS NULL OR {accessor} = 'null'::jsonb)",
+            population_params,
+        )
+        return FacetFieldCounts(
+            values={row[0]: row[1] for row in rows},
+            total_distinct=rows[0][2] if rows else 0,
+            absent_count=absent,
+        )
 
     async def latest_principal_names(self) -> dict[str, str | None]:
         with self._query_timer.measure("latest_principal_names"):

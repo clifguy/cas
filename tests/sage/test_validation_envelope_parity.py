@@ -199,7 +199,25 @@ async def test_mcp_search_facet_field_refusal_names_the_vocabulary(vault_service
 
     assert envelope["error"] == "invalid_parameter", envelope
     assert envelope["detail"]["parameter"] == "facet_fields.0", envelope
-    for name in ("doc_type", "lifecycle_status", "source_type", "pipeline_status", "tags"):
+    for name in (
+        "doc_type",
+        "lifecycle_status",
+        "source_type",
+        "pipeline_status",
+        "tags",
+        "tier3:<field>",
+    ):
+        assert name in envelope["detail"]["constraint"], envelope
+
+
+@pytest.mark.parametrize("value", ["bogus", "tier3:", "tier3:a-b"])
+async def test_mcp_search_sort_by_refusal_names_the_vocabulary(vault_services, value):
+    """A sort key outside both forms is refused at sort_by, naming both forms."""
+    envelope = await _call_search(mode="catalog", sort_by=value)
+
+    assert envelope["error"] == "invalid_parameter", envelope
+    assert envelope["detail"]["parameter"] == "sort_by", envelope
+    for name in ("title", "document_date", "tier3:<field>"):
         assert name in envelope["detail"]["constraint"], envelope
 
 
@@ -1096,3 +1114,28 @@ async def test_every_family_table_entry_publishes_a_schema_its_refusal_satisfies
         envelope = _decode_envelope(await mcp.call_tool(tool, {"vault_id": VAULT_ID, **payload}))
         assert envelope["error"] == code, (tool, code, envelope)
         jsonschema.validate(envelope, tool_error_schema("", tool))
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"mode": "catalog", "target": "facets", "facet_fields": ["bogus"]},
+        {"mode": "catalog", "target": "facets", "facet_fields": ["tier3:"]},
+        {"mode": "catalog", "sort_by": "bogus"},
+        {"mode": "catalog", "sort_by": "tier3:a-b"},
+    ],
+)
+async def test_fixed_or_tier3_name_refusal_parity_between_surfaces(
+    vault_services, http_client, arguments
+):
+    """A name outside both accepted forms is refused alike on both surfaces.
+
+    Located on the caller's value, not on an internal union arm, and naming
+    the tier3:<field> form beside the fixed vocabulary.
+    """
+    mcp_envelope, http_body = await _both_surfaces(http_client, arguments)
+
+    assert mcp_envelope["error"] == http_body["code"] == "invalid_parameter", http_body
+    assert mcp_envelope["detail"] == http_body["detail"]
+    assert http_body["detail"]["parameter"] in ("facet_fields.0", "sort_by"), http_body
+    assert "tier3:<field>" in http_body["detail"]["constraint"], http_body

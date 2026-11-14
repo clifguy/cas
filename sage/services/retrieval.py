@@ -34,6 +34,7 @@ from sage.adapters.interfaces import (
     DOCUMENT_FACET_FIELDS,
     HEADING_PATH_SEPARATOR,
     PRINCIPAL_FIELDS,
+    TIER3_FIELD_PREFIX,
     ContentStore,
     EmbeddingProvider,
     FacetFieldCounts,
@@ -62,6 +63,7 @@ from sage.instrumentation.timing import (
 )
 from sage.models.enums import (
     LIGHT_DEFAULT_THRESHOLD,
+    FacetField,
     PipelineStatus,
     ResponseMode,
     RetrievalMode,
@@ -81,6 +83,11 @@ from sage.models.schemas import (
     RetrievalFilters,
 )
 from sage.models.wire import to_wire
+from sage.services._tier3_query import (
+    normalize_tier3_filter,
+    resolve_tier3_facets,
+    validate_tier3_sort,
+)
 from sage.services.deprecations import warnings_for
 from sage.services.passage_split import group_sections, section_text
 from sage.services.read_diagnostics import build_not_found_detail
@@ -813,7 +820,9 @@ class RetrievalService:
         if filters.source_type:
             out["source_type"] = filters.source_type.value
         if filters.tier3_metadata:
-            out["tier3_metadata"] = filters.tier3_metadata
+            out["tier3_metadata"] = normalize_tier3_filter(
+                self._config, filters.tier3_metadata, filters.doc_type
+            )
         if _provenance_constraints(filters):
             out["provenance"] = _provenance_constraints(filters)
         return out or None
@@ -1406,6 +1415,12 @@ class RetrievalService:
         matching zero rows.
         """
         sql_filters = self._build_catalog_sql_filters(request)
+        if isinstance(request.sort_by, str) and request.sort_by.startswith(TIER3_FIELD_PREFIX):
+            validate_tier3_sort(
+                self._config,
+                request.sort_by,
+                request.filters.doc_type if request.filters else None,
+            )
 
         with phases.phase("query_documents"):
             # Catalog is filter-only enumeration; failed-pipeline
@@ -1486,11 +1501,23 @@ class RetrievalService:
             if request.facet_fields is None
             else tuple(f for f in ALL_FACET_FIELDS if f in set(request.facet_fields))
         )
+        tier3_specs = resolve_tier3_facets(
+            self._config,
+            [
+                f
+                for f in request.facet_fields or ()
+                if not isinstance(f, FacetField) and f.startswith(TIER3_FIELD_PREFIX)
+            ],
+            request.filters.doc_type if request.filters else None,
+        )
         value_limit = request.facet_value_limit or DEFAULT_FACET_VALUE_LIMIT
 
         with phases.phase("query_document_facets"):
             facets, total_count = await self._graph.query_document_facets(
-                sql_filters, fields=requested, value_limit=value_limit
+                sql_filters,
+                fields=requested,
+                value_limit=value_limit,
+                tier3_fields=tier3_specs,
             )
 
         if principal_names is None and any(f in PRINCIPAL_FIELDS for f in requested):
@@ -1510,6 +1537,16 @@ class RetrievalService:
                     values=counts.values,
                     total_distinct=counts.total_distinct,
                     labels=labels,
+                )
+            )
+        for spec in tier3_specs:
+            counts = facets.get(spec.name, FacetFieldCounts({}, 0, 0))
+            hits.append(
+                FacetHit(
+                    field=spec.name,
+                    values=counts.values,
+                    total_distinct=counts.total_distinct,
+                    absent_count=counts.absent_count,
                 )
             )
 

@@ -46,7 +46,6 @@ from sage.mcp_init import SAGEServices
 from sage.models.enums import (
     CatalogSortBy,
     EdgeType,
-    FacetField,
     ResponseMode,
     RetrievalMode,
     SortOrder,
@@ -69,6 +68,7 @@ from sage.models.schemas import (
     DocumentIdStr,
     EdgeIdStr,
     ExportProjectionRequest,
+    FacetFieldRef,
     HashCheckRequest,
     IngestPreview,
     IngestRequest,
@@ -429,7 +429,9 @@ _SEARCH_FILTERS = _discover_param(
         "way; anything else is refused with invalid_filter_value. "
         "``exclude_terminal_lifecycle`` drops documents in a state the vault "
         "declares terminal. ``tier3_metadata`` takes field-to-value pairs that "
-        "must all match exactly; null matches a null or absent field. "
+        "must all match exactly; null matches a null or absent field. A field "
+        'declared as a list of scalars also takes {"contains": v} or {"any"|"all"|"none": '
+        "[...]}, operands checked against its schema. "
         "``provenance`` matches created_/last_modified_ by, client or agent "
         "likewise; agents by name."
     ),
@@ -457,7 +459,7 @@ _SEARCH_SCOPE = _discover_param(
 _SEARCH_SORT_BY = _discover_param(
     str | None,
     "sort_by",
-    mcp=f"One of: {', '.join(m.value for m in CatalogSortBy)}.",
+    mcp=f"One of: {', '.join(m.value for m in CatalogSortBy)}, or tier3:<field>.",
 )
 
 _SEARCH_SORT_ORDER = _discover_param(
@@ -1656,7 +1658,7 @@ def register_sage_tools(
         response_mode: _SEARCH_RESPONSE_MODE = None,
         sort_by: _SEARCH_SORT_BY = None,
         sort_order: _SEARCH_SORT_ORDER = None,
-        facet_fields: _discover_param(list[FacetField] | None, "facet_fields") = None,
+        facet_fields: _discover_param(list[FacetFieldRef] | None, "facet_fields") = None,
         facet_value_limit: _SEARCH_FACET_VALUE_LIMIT = None,
         # Tripwires, not functional arguments. These are the ``filters``
         # keys; they are published here only so a wrong-level spelling

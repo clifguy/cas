@@ -1253,13 +1253,15 @@ async def test_query_document_facets_includes_failed_pipeline_documents(graph_st
 async def test_query_document_facets_empty_vault(graph_store):
     """Empty vault: every field present with empty values, zero totals.
 
-    Tuple equality pins the per-field shape (values, total_distinct)
-    without importing the implementation's named type: a total_distinct
-    that goes missing or nonzero on the empty vault fails here.
+    Tuple equality pins the per-field shape (values, total_distinct,
+    absent_count) without importing the implementation's named type: a
+    total_distinct that goes missing or nonzero on the empty vault fails
+    here, and so does an absent_count on a fixed field, which only a
+    typed-metadata row carries.
     """
     facets, total = await graph_store.query_document_facets()
 
-    assert facets == {f: ({}, 0) for f in _FACET_FIELDS}
+    assert facets == {f: ({}, 0, None) for f in _FACET_FIELDS}
     assert total == 0
 
 
