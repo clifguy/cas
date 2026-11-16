@@ -17,8 +17,8 @@ Anti-coincidental-pass discipline:
   its control is the service-level arm over carried coverage alone.
 * The expected warning is a literal string, found under a ``warnings`` key of the
   response, on both surfaces.
-* The service-level arms (download URL, download recipes) build the response the
-  wire would carry and assert on it directly, with the same paired control.
+* The download URL and download recipe arms each pair a carrying document with
+  one whose coverage holds no identity.
 """
 
 from __future__ import annotations
@@ -388,17 +388,27 @@ async def test_download_recipes_warn_for_the_coverage_they_carry(vault_services)
         )
     )
     reset_transfer_store()
+    # Control for the source recipe: a stored document whose coverage carries
+    # no identity, with its source present under the storage root.
+    (root / "control.md").write_text("# Control\n\nBody text.\n")
+    control = _doc(4).model_copy(update={"source_path": "control.md"})
+    await vault_services.graph_store.insert_document(control)
     try:
         target = "/caller/elsewhere/out.md"
-        for tool, doc_id in (("get_document", ingested["id"]), ("read_projection", COVERED)):
+        for tool, doc_id, expected in (
+            ("get_document", ingested["id"], [WARNING]),
+            ("get_document", control.id, []),
+            ("read_projection", COVERED, [WARNING]),
+            ("read_projection", UNCONFIGURED, []),
+        ):
             body = _decode(
                 await server.call_tool(
                     tool,
                     {"vault_id": VAULT, "document_id": doc_id, "write_to_path": target},
                 )
             )
-            assert body.get("status") == "download_required", (tool, body)
-            assert _identity_warnings(body) == [WARNING], tool
+            assert body.get("status") == "download_required", (tool, doc_id, body)
+            assert _identity_warnings(body) == expected, (tool, doc_id)
     finally:
         sage.mcp_init.set_stack_config(saved)
         reset_transfer_store()
