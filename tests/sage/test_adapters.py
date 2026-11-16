@@ -1418,7 +1418,7 @@ def _add_hyperlink(paragraph, text: str, url: str = "https://example.com/") -> N
 
 @requires_docx
 class TestDocxWrappedRunText:
-    """AD-248 through AD-252: text in runs nested inside run-wrapping elements."""
+    """AD-248 through AD-255: text in runs nested inside run-wrapping elements."""
 
     @staticmethod
     async def _project(doc, tmp_path: Path):
@@ -1462,6 +1462,13 @@ class TestDocxWrappedRunText:
         p = doc.add_paragraph()
         p.add_run("Payment is due ")
         _append_wrapped_xml(p, _DELETION_XML.format(text="immediately "))
+        # A deleted run that carries w:t rather than w:delText: excluded because
+        # the deletion is not entered, not because of the text element it uses.
+        _append_wrapped_xml(
+            p,
+            '<w:del w:id="7" w:author="Reviewer" w:date="2026-01-01T00:00:00Z">'
+            '<w:r><w:t xml:space="preserve">on demand </w:t></w:r></w:del>',
+        )
         _append_wrapped_xml(p, _INSERTION_XML.format(text="within thirty days "))
         p.add_run("of invoice.")
 
@@ -1469,6 +1476,7 @@ class TestDocxWrappedRunText:
 
         assert "Payment is due within thirty days of invoice." in result.text
         assert "immediately" not in result.text
+        assert "on demand" not in result.text
 
     async def test_ad_251_content_control_text_is_kept(self, tmp_path):
         """AD-251: An inline content control's text is kept in reading order."""
@@ -1567,6 +1575,89 @@ class TestDocxWrappedRunText:
 
         assert "Body text." in result.text
         assert result.text.count("Boxed note") <= 1
+
+    @pytest.mark.parametrize(
+        ("showing", "kept"),
+        [("<w:showingPlcHdr/>", False), ('<w:showingPlcHdr w:val="0"/>', True), ("", True)],
+        ids=["placeholder", "placeholder-off", "filled"],
+    )
+    async def test_ad_256_content_control_placeholder_is_excluded(self, tmp_path, showing, kept):
+        """AD-256: A content control showing its placeholder prompt contributes no text."""
+        doc = docx.Document()
+        p = doc.add_paragraph()
+        p.add_run("Name: ")
+        _append_wrapped_xml(
+            p,
+            f"<w:sdt><w:sdtPr>{showing}</w:sdtPr><w:sdtContent>"
+            "<w:r><w:t>Click or tap here to enter text.</w:t></w:r>"
+            "</w:sdtContent></w:sdt>",
+        )
+
+        result = await self._project(doc, tmp_path)
+
+        assert "Name:" in result.text
+        assert ("Click or tap here to enter text." in result.text) is kept
+
+    async def test_ad_257_table_of_contents_paragraphs_are_excluded(self, tmp_path):
+        """AD-257: Paragraphs in a table-of-contents style contribute no text."""
+        from docx.enum.style import WD_STYLE_TYPE
+
+        doc = docx.Document()
+        for level in (1, 2):
+            # Word's own spelling: style id TOC<n>, style name "toc <n>".
+            style = doc.styles.add_style(f"toc {level}", WD_STYLE_TYPE.PARAGRAPH)
+            style.element.styleId = f"TOC{level}"
+        for title, page, level in (("Introduction", "3", 1), ("Scope of work", "4", 2)):
+            entry = doc.add_paragraph(style=f"toc {level}")
+            _add_hyperlink(entry, title)
+            entry.add_run(page)
+        doc.add_paragraph("Introduction", style="Heading 1")
+        doc.add_paragraph("Body of the introduction.")
+
+        result = await self._project(doc, tmp_path)
+
+        assert [hd.text for hd in result.headings] == ["Introduction"]
+        assert "Scope of work" not in result.text
+        assert "Introduction3" not in result.text
+        assert result.text.count("Introduction") == 1
+        assert "Body of the introduction." in result.text
+
+    async def test_ad_258_tabs_and_breaks_inside_runs(self, tmp_path):
+        """AD-258: Tabs and line breaks inside runs separate the words they divide."""
+        doc = docx.Document()
+        t = doc.add_paragraph(style="Title")
+        _append_wrapped_xml(t, "<w:r><w:t>Plan</w:t><w:br/><w:t>2027</w:t></w:r>")
+        h = doc.add_paragraph(style="Heading 1")
+        _append_wrapped_xml(h, "<w:r><w:t>Annual</w:t><w:br/><w:t>Report</w:t></w:r>")
+        p = doc.add_paragraph()
+        _append_wrapped_xml(
+            p,
+            "<w:r><w:t>Name:</w:t><w:tab/><w:t>Value</w:t><w:br/><w:t>next</w:t>"
+            '<w:cr/><w:t>line</w:t><w:ptab w:relativeTo="margin" w:alignment="right"'
+            ' w:leader="none"/><w:t>end</w:t></w:r>',
+        )
+        q = doc.add_paragraph()
+        _append_wrapped_xml(
+            q,
+            '<w:r><w:t>co</w:t><w:noBreakHyphen/><w:t>op</w:t><w:br w:type="page"/>'
+            "<w:t>after</w:t></w:r>",
+        )
+        cell_p = doc.add_table(rows=1, cols=1).cell(0, 0).paragraphs[0]
+        _append_wrapped_xml(cell_p, "<w:r><w:t>first</w:t><w:br/><w:t>second</w:t></w:r>")
+
+        result = await self._project(doc, tmp_path)
+
+        # The title and a heading are one line: a line break reads as a space.
+        assert result.title == "Plan 2027"
+        assert [hd.text for hd in result.headings] == ["Annual Report"]
+        assert "Name:\tValue\nnext\nline\tend" in result.text
+        # Matches python-docx: a page break has no text equivalent.
+        assert "co-opafter" in result.text
+        assert docx.Document(str(tmp_path / "wrapped.docx")).paragraphs[2].text == (
+            "Name:\tValue\nnext\nline\tend"
+        )
+        # A table row stays on one line.
+        assert "| first second |" in result.text
 
 
 @requires_docx

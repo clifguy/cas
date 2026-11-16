@@ -18,6 +18,7 @@ Computes SHA-256 of raw file bytes for content_hash.
 """
 
 import hashlib
+import re
 import shutil
 import tempfile
 import zipfile
@@ -255,19 +256,47 @@ _TRANSPARENT_RUN_WRAPPERS = frozenset(
 )
 
 
+# Run children that stand for text, read as python-docx's run text reads
+# them: a line break or carriage return as a newline, a tab as a tab. A page or
+# column break has no text equivalent.
+_RUN_CHARACTER_ELEMENTS = {"tab": "\t", "ptab": "\t", "cr": "\n", "noBreakHyphen": "-"}
+_FALSE_ON_OFF_VALUES = frozenset({"0", "false", "off"})
+# Word names its table-of-contents paragraph styles "toc 1" to "toc 9".
+_TABLE_OF_CONTENTS_STYLE = re.compile(r"toc [1-9]", re.IGNORECASE)
+
+
+_LINE_BREAK_OR_TAB = re.compile(r" *[\t\n][\t\n ]*")
+
+
+def _single_line(text: str) -> str:
+    """Read a paragraph's tabs and line breaks as single spaces.
+
+    Used where one line is expected: a heading, the title, a table cell.
+    Other spacing is left as the document has it.
+    """
+    return _LINE_BREAK_OR_TAB.sub(" ", text)
+
+
 def _extract_paragraph_text(p_elem) -> str:
     """Extract visible text from a paragraph element.
 
     Collects the w:t text of the paragraph's runs, including runs nested in
     the elements that wrap runs without hiding them: hyperlinks, tracked
     insertions and move destinations, content controls, smart tags, custom
-    XML, simple fields and bidirectional overrides, at any depth. The text
-    reads as the document does with every tracked change accepted, so a
-    tracked deletion or a move's origin contributes nothing.
+    XML, simple fields and bidirectional overrides, at any depth. Within the
+    paragraph the text reads as if its tracked insertions, deletions and moves
+    were accepted: a tracked deletion or a move's origin contributes nothing.
+    Revisions beyond the paragraph's runs, such as a deleted paragraph mark or
+    table row, are not applied here.
 
-    Within a run only direct w:t children count. That skips w:instrText, so
-    a field's instruction is excluded while its cached display value (in w:t
-    runs between the separate and end markers) is included; it also skips
+    A content control showing its placeholder prompt contributes nothing:
+    the prompt is not text the document holds.
+
+    Within a run, w:t text counts, and so do the elements that stand for
+    characters: tabs, line breaks and carriage returns, and non-breaking
+    hyphens. Everything else is skipped. That excludes w:instrText, so a
+    field's instruction is excluded while its cached display value (in w:t
+    runs between the separate and end markers) is included; it also excludes
     drawings, whose text boxes are not paragraph text.
     """
     parts: list[str] = []
@@ -284,10 +313,26 @@ def _collect_run_text(container, parts: list[str]) -> None:
                 rc_tag = (
                     etree.QName(run_child.tag).localname if isinstance(run_child.tag, str) else ""
                 )
-                if rc_tag == "t" and run_child.text:
-                    parts.append(run_child.text)
+                if rc_tag == "t":
+                    if run_child.text:
+                        parts.append(run_child.text)
+                elif rc_tag == "br":
+                    if run_child.get(qn("w:type"), "textWrapping") == "textWrapping":
+                        parts.append("\n")
+                elif rc_tag in _RUN_CHARACTER_ELEMENTS:
+                    parts.append(_RUN_CHARACTER_ELEMENTS[rc_tag])
+        elif tag == "sdt" and _shows_placeholder(child):
+            continue
         elif tag in _TRANSPARENT_RUN_WRAPPERS:
             _collect_run_text(child, parts)
+
+
+def _shows_placeholder(sdt) -> bool:
+    """Whether a content control is showing its placeholder prompt."""
+    flag = sdt.find(f"{qn('w:sdtPr')}/{qn('w:showingPlcHdr')}")
+    if flag is None:
+        return False
+    return flag.get(qn("w:val"), "true").lower() not in _FALSE_ON_OFF_VALUES
 
 
 class DocxAdapter(SourceAdapter):
@@ -305,7 +350,9 @@ class DocxAdapter(SourceAdapter):
     # heading; the paragraphs under it join the section before it.
     # 0.7.0: text in runs nested in hyperlinks, tracked insertions and move
     # destinations, content controls and other run wrappers is read; tracked
-    # deletions still are not.
+    # deletions still are not. A content control showing its placeholder and a
+    # table-of-contents paragraph contribute nothing; tabs and line breaks
+    # inside runs are read, and headings and table cells stay on one line.
     VERSION = "0.7.0"
     EXTENSIONS = [".docx", ".dotx"]
 
@@ -351,23 +398,27 @@ class DocxAdapter(SourceAdapter):
             tag = etree.QName(element.tag).localname if isinstance(element.tag, str) else ""
 
             if tag == "p":
-                para_text = _extract_paragraph_text(element)
-
-                # Determine style name
                 style_name = self._get_style_name(element, style_id_to_name)
+                # A table-of-contents entry repeats a heading the document
+                # carries anyway, joined to its page number.
+                if style_name and _TABLE_OF_CONTENTS_STYLE.fullmatch(style_name):
+                    continue
+
+                para_text = _extract_paragraph_text(element)
                 level = style_map.get(style_name) if style_name else None
 
                 # Capture first paragraph with Title style
                 if title_style_text is None and style_name == "Title" and para_text.strip():
-                    title_style_text = para_text.strip()
+                    title_style_text = _single_line(para_text).strip()
 
                 heading_text = None
                 if level is not None:
                     prefix = self._get_numbering_prefix(element, engine)
+                    heading_line = _single_line(para_text)
                     numbered_text = (
-                        f"{prefix} {para_text}"
-                        if prefix and para_text.strip()
-                        else prefix or para_text
+                        f"{prefix} {heading_line}"
+                        if prefix and heading_line.strip()
+                        else prefix or heading_line
                     )
                     # A heading with no text addresses nothing: its path would
                     # be the empty path that addresses text under no heading,
@@ -909,7 +960,7 @@ class DocxAdapter(SourceAdapter):
                 cell_parts: list[str] = []
                 for p in tc.findall(qn("w:p")):
                     cell_parts.append(_extract_paragraph_text(p))
-                cells.append(" ".join(cell_parts).strip())
+                cells.append(_single_line(" ".join(cell_parts)).strip())
             rows.append("| " + " | ".join(cells) + " |")
         return "\n".join(rows)
 

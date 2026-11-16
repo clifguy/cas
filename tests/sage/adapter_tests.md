@@ -3715,9 +3715,9 @@ lines.
 
 **Artifact:** `DocxAdapter.project`
 **Category:** projection, revisions
-**Precondition:** As AD-249, with a `w:del` reading "immediately " before the insertion.
+**Precondition:** As AD-249, with two tracked deletions before the insertion: one whose run carries `w:delText` "immediately " (Word's form) and one whose run carries `w:t` "on demand ".
 
-**Expected:** The accepted sentence appears and "immediately" does not.
+**Expected:** The accepted sentence appears, and neither "immediately" nor "on demand" does. The second deletion shows the exclusion comes from not entering `w:del`, not from the run's text element.
 
 **Rationale:** Deleted text is not part of the accepted document. Including it would put both the old and new wording in one sentence.
 
@@ -3764,3 +3764,41 @@ lines.
 **Expected:** "Body text." appears, and "Boxed note" appears at most once.
 
 **Rationale:** Word stores a text box twice, once for current readers and once as a fallback. A reader that collects every `w:t` beneath the paragraph would repeat it.
+
+### TEST-SAGE-AD-256: A content control showing its placeholder contributes no text
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, run wrappers
+**Precondition:** "Name: " followed by an inline `w:sdt` whose content reads "Click or tap here to enter text.", in three forms: with `w:showingPlcHdr` set, with `w:showingPlcHdr w:val="0"`, and with no flag.
+
+**Expected:** "Name:" appears in every form. The prompt is absent when the placeholder is showing and present in the other two forms.
+
+**Rationale:** Word fills an unfilled control with its placeholder prompt. The prompt is not text the author wrote.
+
+### TEST-SAGE-AD-257: Table-of-contents paragraphs contribute no text
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, paragraph styles
+**Precondition:** Two entries in Word's table-of-contents styles (style id `TOC1`/`TOC2`, name "toc 1"/"toc 2"). Each holds a hyperlink to a heading's title followed by its page number. They are followed by the Heading 1 "Introduction" and a body paragraph.
+
+**Expected:** The only heading is "Introduction"; "Introduction" appears once in `result.text`; "Scope of work" and "Introduction3" do not appear; the body paragraph does.
+
+**Rationale:** A table-of-contents entry repeats a heading the document already carries, fused to its page number.
+
+### TEST-SAGE-AD-258: Tabs and line breaks inside runs separate the words they divide
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, run content
+**Precondition:**
+- A Title paragraph "Plan", line break, "2027".
+- A Heading 1 "Annual", line break, "Report".
+- A body paragraph built from runs "Name:", tab, "Value", line break, "next", carriage return, "line", positional tab, "end".
+- A paragraph "co", non-breaking hyphen, "op", page break, "after".
+- A one-cell table reading "first", line break, "second".
+
+**Expected:**
+- The title is "Plan 2027" and the only heading is "Annual Report".
+- `result.text` contains "Name:\tValue\nnext\nline\tend", identical to python-docx's `paragraph.text` for that paragraph, and "co-opafter".
+- The table row reads "| first second |".
+
+**Rationale:** Body text keeps the characters python-docx's run text gives them. The title, headings and table cells are one line, so a tab or line break there reads as a single space.
