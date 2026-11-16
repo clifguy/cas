@@ -28,19 +28,28 @@ _SPEC = Path(__file__).resolve().parents[2] / "docs" / "fs" / "sage" / "sage_cor
 
 @pytest.fixture(scope="module")
 def descriptions() -> dict[str, str]:
-    """Each ``sage``-surface tool's published description, by tool name."""
+    """Each ``sage``-surface tool's published description, whitespace-collapsed, by tool name."""
     catalog: dict[str, Any] = build_catalog()
-    return {tool["name"]: tool["description"] for tool in catalog["surfaces"]["sage"]}
+    return {
+        tool["name"]: " ".join(tool["description"].split()) for tool in catalog["surfaces"]["sage"]
+    }
 
 
 def test_read_projection_discloses_that_the_projection_is_lossy(descriptions: dict[str, str]):
     """The description names the loss and the lossless read, not a "full text" read."""
     text = descriptions["read_projection"]
     assert "lossy" in text
-    assert "link targets" in text
-    assert "``get_document``" in text
-    assert "``write_to_path``" in text
+    assert "binary formats (docx, pdf, pptx, xlsx) can lose" in text
+    assert "Absence from the projection is not absence from the document." in text
+    assert "Read the original with ``get_document``, using ``write_to_path``" in text
     assert "full text" not in text
+
+
+def test_no_projection_routes_to_the_repair_that_accepts_it(descriptions: dict[str, str]):
+    """``recompute_abstract`` refuses a document with no projection; the pipeline rerun does not."""
+    text = descriptions["read_projection"]
+    assert "``recompute_pipeline`` may restore it" in text
+    assert "recompute_abstract" not in text
 
 
 def test_read_projection_does_not_equate_its_delivery_with_get_document(
@@ -66,9 +75,14 @@ def test_binary_refusal_names_the_route_to_the_original_bytes():
     assert "write_to_path" in err.message
 
 
-def test_rest_projection_summary_does_not_claim_the_full_document():
-    """The HTTP operation summary describes a lossy projection, not the full document."""
+def test_rest_projection_operation_does_not_claim_the_full_document():
+    """The HTTP operation describes a lossy projection and names the read for the original."""
     spec = yaml.safe_load(_SPEC.read_text(encoding="utf-8"))
     operation = spec["paths"]["/sage_vaults/{vault_id}/documents/{document_id}/projection"]["get"]
+    description = " ".join(operation["description"].split())
     assert "full" not in operation["summary"]
     assert "lossy" in operation["summary"]
+    assert "full document" not in description
+    assert "binary formats (docx, pdf, pptx, xlsx) can lose" in description
+    assert "Absence from the projection is not absence from the document." in description
+    assert "Read the original with `get_document`, using `write_to_path`" in description

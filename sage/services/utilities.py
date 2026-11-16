@@ -294,8 +294,9 @@ class UtilitiesService:
         - ``spill``: force write-to-disk delivery; it requires
           ``write_to_path`` and is refused without one.
 
-        The write-to-disk mode mirrors ``DocumentsService.get_document_with_content``
-        delivery: it writes to a path the caller names in its own environment.
+        The write-to-disk mode is delivered like
+        ``DocumentsService.get_document_with_content``, but it writes projection
+        text, not source bytes, to a path the caller names in its own environment.
         Writing into the vault's storage root is a separate operation,
         ``export_projection``.
 
