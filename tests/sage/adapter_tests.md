@@ -3690,3 +3690,77 @@ lines.
 
 **Expected:** Both are refused, reporting 101 rows across the workbook and one node over the limit across the package.
 
+
+### TEST-SAGE-AD-248: A hyperlink's visible text is kept
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** projection, run wrappers
+**Precondition:** A paragraph of "Read the ", a `w:hyperlink` whose run reads "release notes", and " first.".
+
+**Expected:** "Read the release notes first." appears in `result.text`, matching python-docx's `paragraph.text` for the same file.
+
+**Rationale:** The link's words are what a reader sees; the target URL is not paragraph text and stays out.
+
+### TEST-SAGE-AD-249: Text in a tracked insertion is kept
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, revisions
+**Precondition:** "Payment is due ", a `w:ins` whose run reads "within thirty days ", then "of invoice.".
+
+**Expected:** "Payment is due within thirty days of invoice." appears in `result.text`.
+
+**Rationale:** The projection reads the document as if every pending revision were accepted, the view Word shows by default.
+
+### TEST-SAGE-AD-250: Text in a tracked deletion is excluded
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, revisions
+**Precondition:** As AD-249, with a `w:del` reading "immediately " before the insertion.
+
+**Expected:** The accepted sentence appears and "immediately" does not.
+
+**Rationale:** Deleted text is not part of the accepted document. Including it would put both the old and new wording in one sentence.
+
+### TEST-SAGE-AD-251: An inline content control's text is kept
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, run wrappers
+**Precondition:** "Prepared for ", a run-level `w:sdt` aliased "Client" whose content reads "Northwind Traders", then ".".
+
+**Expected:** "Prepared for Northwind Traders." appears in `result.text`.
+
+### TEST-SAGE-AD-252: Nested wrappers are kept in headings and table cells
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, run wrappers
+**Precondition:** A Heading 1 paragraph "Terms for " followed by a content control reading "Northwind" inside a tracked insertion; a one-cell table whose paragraph is "See " and a hyperlink reading "schedule B".
+
+**Expected:** The only heading's text is "Terms for Northwind"; `result.text` contains "| See schedule B |".
+
+### TEST-SAGE-AD-253: Runs in every other transparent wrapper are kept
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, run wrappers
+**Precondition:** For each of `w:moveTo`, `w:smartTag`, `w:customXml`, `w:fldSimple`, `w:dir` and `w:bdo` in turn, a paragraph "Ship to ", that wrapper around a run reading "Leeds", then " today.".
+
+**Expected:** "Ship to Leeds today." appears in `result.text` for every wrapper.
+
+### TEST-SAGE-AD-254: Text at a move's origin is excluded
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, revisions
+**Precondition:** A `w:moveFrom` whose run carries `w:t` "Urgent. ", then "Review the draft. ", then a `w:moveTo` whose run reads "Urgent.".
+
+**Expected:** "Review the draft. Urgent." appears and "Urgent." appears exactly once.
+
+**Rationale:** Moved text is read where it was moved to, as Word shows it with revisions accepted. The origin carries `w:t`, so a reader that collects every `w:t` in the paragraph would read it twice.
+
+### TEST-SAGE-AD-255: A text box with a fallback copy does not repeat its text
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, run wrappers
+**Precondition:** A paragraph "Body text." followed by a run holding `mc:AlternateContent` whose `mc:Choice` and `mc:Fallback` each carry the same text box reading "Boxed note".
+
+**Expected:** "Body text." appears, and "Boxed note" appears at most once.
+
+**Rationale:** Word stores a text box twice, once for current readers and once as a fallback. A reader that collects every `w:t` beneath the paragraph would repeat it.

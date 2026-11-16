@@ -234,34 +234,60 @@ def _extract_key_terms(text: str) -> str:
     return " ".join(terms[:_MAX_KEY_TERMS]) if terms else "Untitled"
 
 
+# Elements that wrap runs without changing what the reader sees: their runs
+# read as if they stood in the paragraph directly. A tracked insertion and a
+# move's destination are read as accepted. A tracked deletion, a move's origin
+# and a content control's properties are absent from this set, so their text is
+# not read. A content control's runs sit in its w:sdtContent child.
+_TRANSPARENT_RUN_WRAPPERS = frozenset(
+    {
+        "hyperlink",
+        "ins",
+        "moveTo",
+        "sdt",
+        "sdtContent",
+        "smartTag",
+        "customXml",
+        "fldSimple",
+        "dir",
+        "bdo",
+    }
+)
+
+
 def _extract_paragraph_text(p_elem) -> str:
     """Extract visible text from a paragraph element.
 
-    Walks w:r/w:t elements and collects text. Skips w:instrText elements
-    so that cross-reference field instructions are excluded while their
-    cached display values (in w:t runs between separate/end markers) are
-    included.
+    Collects the w:t text of the paragraph's runs, including runs nested in
+    the elements that wrap runs without hiding them: hyperlinks, tracked
+    insertions and move destinations, content controls, smart tags, custom
+    XML, simple fields and bidirectional overrides, at any depth. The text
+    reads as the document does with every tracked change accepted, so a
+    tracked deletion or a move's origin contributes nothing.
 
-    Also handles w:fldSimple elements whose child runs contain display text.
+    Within a run only direct w:t children count. That skips w:instrText, so
+    a field's instruction is excluded while its cached display value (in w:t
+    runs between the separate and end markers) is included; it also skips
+    drawings, whose text boxes are not paragraph text.
     """
     parts: list[str] = []
-    for child in p_elem:
+    _collect_run_text(p_elem, parts)
+    return "".join(parts)
+
+
+def _collect_run_text(container, parts: list[str]) -> None:
+    """Append the w:t text of runs in ``container``, entering run wrappers."""
+    for child in container:
         tag = etree.QName(child.tag).localname if isinstance(child.tag, str) else ""
         if tag == "r":
-            # Regular run: collect w:t, skip w:instrText
             for run_child in child:
                 rc_tag = (
                     etree.QName(run_child.tag).localname if isinstance(run_child.tag, str) else ""
                 )
                 if rc_tag == "t" and run_child.text:
                     parts.append(run_child.text)
-        elif tag == "fldSimple":
-            # Simple field: collect text from child runs
-            for r in child.findall(qn("w:r")):
-                for t in r.findall(qn("w:t")):
-                    if t.text:
-                        parts.append(t.text)
-    return "".join(parts)
+        elif tag in _TRANSPARENT_RUN_WRAPPERS:
+            _collect_run_text(child, parts)
 
 
 class DocxAdapter(SourceAdapter):
@@ -277,7 +303,10 @@ class DocxAdapter(SourceAdapter):
     # style-surface description opens that preamble.
     # 0.6.0: a heading-styled paragraph with no text, and no number, is not a
     # heading; the paragraphs under it join the section before it.
-    VERSION = "0.6.0"
+    # 0.7.0: text in runs nested in hyperlinks, tracked insertions and move
+    # destinations, content controls and other run wrappers is read; tracked
+    # deletions still are not.
+    VERSION = "0.7.0"
     EXTENSIONS = [".docx", ".dotx"]
 
     def check_config(self, config: dict | None) -> None:

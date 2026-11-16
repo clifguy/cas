@@ -1385,6 +1385,190 @@ class TestDocxAdapter:
         assert result.headings[5].text == "II.1 Sub Beta"
 
 
+_W_NS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+_R_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
+
+
+def _append_wrapped_xml(paragraph, xml: str) -> None:
+    """Append a run-wrapping element, written with a bare ``w:`` prefix."""
+    wrapped = f'<root xmlns:w="{_W_NS}" xmlns:r="{_R_NS}">{xml}</root>'
+    for child in etree.fromstring(wrapped):
+        paragraph._p.append(child)
+
+
+_HYPERLINK_XML = '<w:hyperlink r:id="{rid}"><w:r><w:t>{text}</w:t></w:r></w:hyperlink>'
+_INSERTION_XML = (
+    '<w:ins w:id="1" w:author="Reviewer" w:date="2026-01-01T00:00:00Z">'
+    '<w:r><w:t xml:space="preserve">{text}</w:t></w:r></w:ins>'
+)
+_DELETION_XML = (
+    '<w:del w:id="2" w:author="Reviewer" w:date="2026-01-01T00:00:00Z">'
+    '<w:r><w:delText xml:space="preserve">{text}</w:delText></w:r></w:del>'
+)
+_CONTENT_CONTROL_XML = (
+    '<w:sdt><w:sdtPr><w:alias w:val="Client"/></w:sdtPr>'
+    "<w:sdtContent><w:r><w:t>{text}</w:t></w:r></w:sdtContent></w:sdt>"
+)
+
+
+def _add_hyperlink(paragraph, text: str, url: str = "https://example.com/") -> None:
+    rid = paragraph.part.relate_to(url, docx.opc.constants.RELATIONSHIP_TYPE.HYPERLINK, True)
+    _append_wrapped_xml(paragraph, _HYPERLINK_XML.format(rid=rid, text=text))
+
+
+@requires_docx
+class TestDocxWrappedRunText:
+    """AD-248 through AD-252: text in runs nested inside run-wrapping elements."""
+
+    @staticmethod
+    async def _project(doc, tmp_path: Path):
+        from sage.source_adapters.docx_adapter import DocxAdapter
+
+        path = tmp_path / "wrapped.docx"
+        doc.save(str(path))
+        return await DocxAdapter().project(path)
+
+    async def test_ad_248_hyperlink_text_is_kept(self, tmp_path):
+        """AD-248: A hyperlink's visible text is kept in reading order."""
+        doc = docx.Document()
+        p = doc.add_paragraph()
+        p.add_run("Read the ")
+        _add_hyperlink(p, "release notes")
+        p.add_run(" first.")
+
+        result = await self._project(doc, tmp_path)
+
+        assert "Read the release notes first." in result.text
+        # python-docx's own paragraph text keeps the same words.
+        assert docx.Document(str(tmp_path / "wrapped.docx")).paragraphs[0].text == (
+            "Read the release notes first."
+        )
+
+    async def test_ad_249_tracked_insertion_text_is_kept(self, tmp_path):
+        """AD-249: Text in a tracked insertion is kept in reading order."""
+        doc = docx.Document()
+        p = doc.add_paragraph()
+        p.add_run("Payment is due ")
+        _append_wrapped_xml(p, _INSERTION_XML.format(text="within thirty days "))
+        p.add_run("of invoice.")
+
+        result = await self._project(doc, tmp_path)
+
+        assert "Payment is due within thirty days of invoice." in result.text
+
+    async def test_ad_250_tracked_deletion_text_is_excluded(self, tmp_path):
+        """AD-250: Text in a tracked deletion is not part of the visible text."""
+        doc = docx.Document()
+        p = doc.add_paragraph()
+        p.add_run("Payment is due ")
+        _append_wrapped_xml(p, _DELETION_XML.format(text="immediately "))
+        _append_wrapped_xml(p, _INSERTION_XML.format(text="within thirty days "))
+        p.add_run("of invoice.")
+
+        result = await self._project(doc, tmp_path)
+
+        assert "Payment is due within thirty days of invoice." in result.text
+        assert "immediately" not in result.text
+
+    async def test_ad_251_content_control_text_is_kept(self, tmp_path):
+        """AD-251: An inline content control's text is kept in reading order."""
+        doc = docx.Document()
+        p = doc.add_paragraph()
+        p.add_run("Prepared for ")
+        _append_wrapped_xml(p, _CONTENT_CONTROL_XML.format(text="Northwind Traders"))
+        p.add_run(".")
+
+        result = await self._project(doc, tmp_path)
+
+        assert "Prepared for Northwind Traders." in result.text
+
+    async def test_ad_252_nested_wrappers_in_headings_and_cells(self, tmp_path):
+        """AD-252: Nested wrappers are kept in headings and table cells."""
+        doc = docx.Document()
+        h = doc.add_paragraph(style="Heading 1")
+        h.add_run("Terms for ")
+        _append_wrapped_xml(
+            h,
+            '<w:ins w:id="3" w:author="R" w:date="2026-01-01T00:00:00Z">'
+            + _CONTENT_CONTROL_XML.format(text="Northwind")
+            + "</w:ins>",
+        )
+        table = doc.add_table(rows=1, cols=1)
+        cell_p = table.cell(0, 0).paragraphs[0]
+        cell_p.add_run("See ")
+        _add_hyperlink(cell_p, "schedule B")
+
+        result = await self._project(doc, tmp_path)
+
+        assert [hd.text for hd in result.headings] == ["Terms for Northwind"]
+        assert "| See schedule B |" in result.text
+
+    @pytest.mark.parametrize(
+        ("open_tag", "close_tag"),
+        [
+            ('<w:moveTo w:id="4" w:author="R" w:date="2026-01-01T00:00:00Z">', "</w:moveTo>"),
+            ('<w:smartTag w:uri="urn:example" w:element="place">', "</w:smartTag>"),
+            ('<w:customXml w:element="party">', "</w:customXml>"),
+            ('<w:fldSimple w:instr=" DOCPROPERTY Company ">', "</w:fldSimple>"),
+            ('<w:dir w:val="ltr">', "</w:dir>"),
+            ('<w:bdo w:val="ltr">', "</w:bdo>"),
+        ],
+        ids=["moveTo", "smartTag", "customXml", "fldSimple", "dir", "bdo"],
+    )
+    async def test_ad_253_other_run_wrappers_are_read(self, tmp_path, open_tag, close_tag):
+        """AD-253: Runs in every other transparent wrapper are kept in reading order."""
+        doc = docx.Document()
+        p = doc.add_paragraph()
+        p.add_run("Ship to ")
+        _append_wrapped_xml(p, f"{open_tag}<w:r><w:t>Leeds</w:t></w:r>{close_tag}")
+        p.add_run(" today.")
+
+        result = await self._project(doc, tmp_path)
+
+        assert "Ship to Leeds today." in result.text
+
+    async def test_ad_254_move_origin_text_is_excluded(self, tmp_path):
+        """AD-254: Text at a move's origin is excluded; at its destination it is kept."""
+        doc = docx.Document()
+        p = doc.add_paragraph()
+        _append_wrapped_xml(
+            p,
+            '<w:moveFrom w:id="5" w:author="R" w:date="2026-01-01T00:00:00Z">'
+            "<w:r><w:t>Urgent. </w:t></w:r></w:moveFrom>",
+        )
+        p.add_run("Review the draft. ")
+        _append_wrapped_xml(
+            p,
+            '<w:moveTo w:id="6" w:author="R" w:date="2026-01-01T00:00:00Z">'
+            "<w:r><w:t>Urgent.</w:t></w:r></w:moveTo>",
+        )
+
+        result = await self._project(doc, tmp_path)
+
+        assert "Review the draft. Urgent." in result.text
+        assert result.text.count("Urgent.") == 1
+
+    async def test_ad_255_text_box_text_is_not_doubled(self, tmp_path):
+        """AD-255: A text box stored with a fallback copy does not repeat its text."""
+        box = "<w:txbxContent><w:p><w:r><w:t>Boxed note</w:t></w:r></w:p></w:txbxContent>"
+        doc = docx.Document()
+        p = doc.add_paragraph()
+        p.add_run("Body text.")
+        _append_wrapped_xml(
+            p,
+            '<w:r xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006">'
+            '<mc:AlternateContent><mc:Choice Requires="wps">'
+            f"<w:drawing>{box}</w:drawing></mc:Choice>"
+            f"<mc:Fallback><w:pict>{box}</w:pict></mc:Fallback>"
+            "</mc:AlternateContent></w:r>",
+        )
+
+        result = await self._project(doc, tmp_path)
+
+        assert "Body text." in result.text
+        assert result.text.count("Boxed note") <= 1
+
+
 @requires_docx
 class TestDocxAdapterADRTier3Extraction:
     """Docx adapter extracts ``adr_id`` from ``cas-adr-NNN_*`` filenames.
