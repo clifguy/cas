@@ -42,7 +42,7 @@ from sage.request_identity import asserted_agent, current_actor, modifier_fields
 from sage.services._bulk_envelope import resolve_item_document_id, sage_error_to_envelope
 from sage.services._dry_run import doc_type_requirements
 from sage.services._tier3_uniqueness import require_active_unique_keys, set_fields
-from sage.services.deprecations import is_timestamp, warnings_for
+from sage.services.deprecations import is_timestamp, response_field_warnings, warnings_for
 from sage.services.document_surface import refresh_derived_retrieval_text
 from sage.storage.locks import DocumentLockManager
 from sage.storage.tier3_uniqueness import Tier3UniqueViolation
@@ -707,12 +707,14 @@ class MetadataService:
             )
             for doc in docs
         ]
+        carried = {type(item).__name__ for item in items}
         response = PendingMetadataPage(
             items=items,
             total_available=total,
             limit=paging.limit,
             offset=paging.offset,
             response_mode=mode,
+            warnings=response_field_warnings("list_pending_metadata", carried) or None,
         )
         response.read_meta = response.read_meta.stamped(self._config.fingerprint())
         return response

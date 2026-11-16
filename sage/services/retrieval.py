@@ -88,7 +88,7 @@ from sage.services._tier3_query import (
     resolve_tier3_facets,
     validate_tier3_sort,
 )
-from sage.services.deprecations import warnings_for
+from sage.services.deprecations import response_field_warnings, warnings_for
 from sage.services.passage_split import group_sections, section_text
 from sage.services.read_diagnostics import build_not_found_detail
 from sage.utils.date_parsing import parse_document_date
@@ -390,7 +390,24 @@ def _degraded_catalog_candidate(
         "carried_shape": DocumentSummaryLight.__name__,
     }
     merged = degrade_hint if response.hints is None else {**response.hints, **degrade_hint}
+    # The light rows' deprecation warning is part of what the degrade delivers,
+    # so it is measured with the candidate rather than added after the decision.
+    merged = _with_light_row_warnings({**merged}, rows)
     return response.model_copy(update={"results": rows, "hints": merged})
+
+
+def _with_light_row_warnings(hints: dict[str, object] | None, rows: list) -> dict | None:
+    """``hints`` with the warnings owed by the light rows among ``rows``, each once."""
+    carried = {type(hit.document).__name__ for hit in rows if isinstance(hit, DiscoverHit)}
+    owed = response_field_warnings("search", carried)
+    if not owed:
+        return hints
+    hints = {} if hints is None else hints
+    existing = list(hints.get("warnings") or [])
+    missing = [warning for warning in owed if warning not in existing]
+    if missing:
+        hints["warnings"] = [*existing, *missing]
+    return hints
 
 
 def _apply_catalog_budget_policy(response: DiscoverResponse, request: DiscoverRequest) -> None:
@@ -1222,6 +1239,8 @@ class RetrievalService:
         deprecated = warnings_for("search", request)
         if deprecated:
             self._merge_hints(response, {"warnings": deprecated})
+        hints = response.hints if response.hints is None else {**response.hints}
+        response.hints = _with_light_row_warnings(hints, response.results)
         return response
 
     async def _dispatch(self, request: DiscoverRequest) -> DiscoverResponse:

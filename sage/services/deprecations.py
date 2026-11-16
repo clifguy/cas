@@ -5,7 +5,14 @@ something callers use follow a deprecation. The published contract marks a
 deprecation for whoever reads the specification; this module reaches the caller
 who never does. A call that uses a deprecated operation, parameter, value,
 value format or default gets a warning in its response naming the form, its replacement and the
-earliest date the adaptation may ship.
+earliest date the adaptation may ship. So does a call whose response carries a
+deprecated response field.
+
+A response field is judged by the response, not the request: whether a row
+shape appears can turn on the server's own choice (an inline-budget degrade),
+so the service passes the component names its final response carries to
+``response_field_warnings``. ``warnings_for`` judges the request alone and never
+returns a response-field warning.
 
 The warning is decided here, beneath both request surfaces (CAS-ADR-052), from
 the request model each surface builds, so REST and MCP give the same input the
@@ -30,7 +37,12 @@ from typing import Any, Final
 
 from pydantic import BaseModel
 
-from sage.models.schemas import BulkMetadataItem, DiscoverRequest, IngestRequest
+from sage.models.schemas import (
+    LIGHT_ROW_COVERAGE_ADAPTATION,
+    BulkMetadataItem,
+    DiscoverRequest,
+    IngestRequest,
+)
 
 
 class DeprecatedForm(StrEnum):
@@ -41,6 +53,7 @@ class DeprecatedForm(StrEnum):
     VALUE = "value"
     FORMAT = "format"
     DEFAULT = "default"
+    RESPONSE_FIELD = "response_field"
 
 
 _TIMESTAMP_PREFIX: Final[re.Pattern[str]] = re.compile(r"^\d{4}-\d{2}-\d{2}T")
@@ -78,6 +91,7 @@ class Deprecation:
     earliest_adaptation: dt.date
     parameter: str | None = None
     value: Any = None
+    field: str | None = None
 
     def subject(self) -> str:
         if self.form is DeprecatedForm.OPERATION:
@@ -88,7 +102,16 @@ class Deprecation:
             return f"the value {self.value!r} of {self.parameter}"
         if self.form is DeprecatedForm.FORMAT:
             return f"a {self.value} value of {self.parameter}"
+        if self.form is DeprecatedForm.RESPONSE_FIELD:
+            return f"the {self.field} response field"
         return f"the default of {self.parameter}"
+
+    def carried_by(self, components: set[str]) -> bool:
+        """Whether a response carrying ``components`` carries this response field."""
+        # validate_registry has a response-field entry name "Component.field".
+        return self.form is DeprecatedForm.RESPONSE_FIELD and (
+            (self.field or "").partition(".")[0] in components
+        )
 
     def warning(self) -> str:
         return (
@@ -97,6 +120,8 @@ class Deprecation:
         )
 
     def used_by(self, request: BaseModel) -> bool:
+        if self.form is DeprecatedForm.RESPONSE_FIELD:
+            return False
         if self.form is DeprecatedForm.OPERATION:
             return True
         # validate_registry has every other form name its parameter.
@@ -114,13 +139,16 @@ class Deprecation:
 #: The operations whose response carries a caller-facing warnings list and whose
 #: service consults ``warnings_for``: ``search`` in its hints, ``ingest_document``
 #: in the ingest result's warnings, ``update_metadata`` in each item result's
-#: warnings. Each names the request model its service judges, which holds every
-#: parameter a deprecation of it can name; ``update_metadata`` is judged item by
-#: item, so a warning lands on the item that used the deprecated form.
-WARNING_CARRIERS: Final[Mapping[str, type[BaseModel]]] = {
+#: warnings, ``list_pending_metadata`` in its page's warnings. Each names the
+#: request model its service judges, which holds every parameter a deprecation
+#: of it can name; ``update_metadata`` is judged item by item, so a warning lands
+#: on the item that used the deprecated form. An operation that carries only
+#: response-field warnings judges no request and names none.
+WARNING_CARRIERS: Final[Mapping[str, type[BaseModel] | None]] = {
     "search": DiscoverRequest,
     "ingest_document": IngestRequest,
     "update_metadata": BulkMetadataItem,
+    "list_pending_metadata": None,
 }
 
 #: The date from which an ``updated_at`` concurrency token may stop being
@@ -146,6 +174,16 @@ DEPRECATIONS: tuple[Deprecation, ...] = (
         replacement="the document's version_token",
         earliest_adaptation=TIMESTAMP_TOKEN_ADAPTATION,
     ),
+    *(
+        Deprecation(
+            operation=operation,
+            form=DeprecatedForm.RESPONSE_FIELD,
+            field="DocumentSummaryLight.processing_coverage",
+            replacement='response_mode="full" or get_document for the full object',
+            earliest_adaptation=LIGHT_ROW_COVERAGE_ADAPTATION,
+        )
+        for operation in ("search", "list_pending_metadata")
+    ),
 )
 
 
@@ -157,11 +195,23 @@ def validate_registry(entries: Iterable[Deprecation]) -> None:
                 f"{entry.operation!r} has no warnings field to carry a deprecation; "
                 "give its response one and consult warnings_for in its service first"
             )
+        if entry.form is DeprecatedForm.RESPONSE_FIELD:
+            component, _, name = (entry.field or "").partition(".")
+            if not component or not name:
+                raise DeprecationRegistryError(
+                    f"a response-field deprecation of {entry.operation!r} names no response "
+                    "field as Component.field"
+                )
+            continue
         if entry.form is not DeprecatedForm.OPERATION and not entry.parameter:
             raise DeprecationRegistryError(
                 f"a {entry.form} deprecation of {entry.operation!r} names no parameter"
             )
         request_model = WARNING_CARRIERS[entry.operation]
+        if request_model is None:
+            raise DeprecationRegistryError(
+                f"{entry.operation!r} judges no request and carries only response-field warnings"
+            )
         if entry.parameter and entry.parameter not in request_model.model_fields:
             raise DeprecationRegistryError(
                 f"{entry.operation!r} takes no parameter {entry.parameter!r}"
@@ -183,6 +233,19 @@ def warnings_for(operation: str, request: BaseModel) -> list[str]:
         entry.warning()
         for entry in DEPRECATIONS
         if entry.operation == operation and entry.used_by(request)
+    ]
+
+
+def response_field_warnings(operation: str, carried: set[str]) -> list[str]:
+    """The deprecation warnings a response of ``operation`` carrying ``carried`` receives.
+
+    ``carried`` names the components the final response holds, such as
+    ``DocumentSummaryLight`` for a page of light rows.
+    """
+    return [
+        entry.warning()
+        for entry in DEPRECATIONS
+        if entry.operation == operation and entry.carried_by(carried)
     ]
 
 

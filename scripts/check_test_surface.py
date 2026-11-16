@@ -232,6 +232,13 @@ KNOWN_TEST_REMOVALS: Final[dict[str, str]] = {
         "renamed test_the_shipped_registry_is_valid_and_holds_the_timestamp_token_forms: "
         "the registry now ships the deprecated timestamp form of both concurrency tokens"
     ),
+    (
+        "tests/sage/test_deprecation_warnings.py::"
+        "test_the_shipped_registry_is_valid_and_holds_the_timestamp_token_forms"
+    ): (
+        "renamed test_the_shipped_registry_is_valid_and_holds_its_declared_forms: "
+        "the registry now also ships a deprecated response field"
+    ),
     ("tests/infra/test_environment_drift.py::test_missing_reviewer_rule_is_a_violation"): (
         "replaced by test_reviewer_rule_is_optional: deployment environments no longer "
         "require a reviewer, only the main-only branch policy and no admin bypass"
