@@ -222,6 +222,47 @@ def test_a_format_deprecation_warns_only_on_a_value_of_that_format(registry) -> 
             ),
             "no warnings field",
         ),
+        (
+            Deprecation(
+                "search",
+                DeprecatedForm.RESPONSE_FIELD,
+                "x",
+                EARLIEST,
+                field="DocumentSumaryLight.processing_coverage",
+            ),
+            "reports no DocumentSumaryLight component",
+        ),
+        (
+            Deprecation(
+                "search",
+                DeprecatedForm.RESPONSE_FIELD,
+                "x",
+                EARLIEST,
+                field="DocumentSummaryLight.coverage_sumary",
+            ),
+            "has no field 'coverage_sumary'",
+        ),
+        (
+            Deprecation(
+                "ingest_document",
+                DeprecatedForm.RESPONSE_FIELD,
+                "x",
+                EARLIEST,
+                field="DocumentSummaryLight.processing_coverage",
+            ),
+            "'ingest_document' reports no DocumentSummaryLight component",
+        ),
+        (
+            Deprecation(
+                "list_pending_metadata",
+                DeprecatedForm.FORMAT,
+                "x",
+                EARLIEST,
+                parameter="offset",
+                value="timestamp",
+            ),
+            "judges no request",
+        ),
     ],
     ids=[
         "carrier-less-operation",
@@ -234,6 +275,10 @@ def test_a_format_deprecation_warns_only_on_a_value_of_that_format(registry) -> 
         "response-field-unnamed",
         "response-field-without-component",
         "response-field-on-carrier-less-operation",
+        "response-field-component-misspelled",
+        "response-field-name-misspelled",
+        "response-field-on-an-operation-reporting-no-component",
+        "request-form-on-an-operation-judging-no-request",
     ],
 )
 def test_the_registry_refuses_a_declaration_it_cannot_honour(

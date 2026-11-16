@@ -1355,6 +1355,10 @@ class RetrievalService:
             # Deterministic mode is an explicit single-section fetch and is
             # left alone.
             if request.mode == RetrievalMode.CATALOG:
+                # A light page's deprecation warning is part of what it
+                # delivers, so it is attached before the measurement.
+                hints = None if response.hints is None else {**response.hints}
+                response.hints = _with_light_row_warnings(hints, response.results)
                 _apply_catalog_budget_policy(response, request)
             elif request.mode in (RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD):
                 _apply_scored_budget_policy(response, request)

@@ -12,12 +12,12 @@ for_callers: >-
   The processing_coverage object on light document rows (search in catalog mode
   with response_mode light, or an unset mode degraded to light, and light
   list_pending_metadata pages) is deprecated. From 2027-01-04 light rows may carry
-  a bounded coverage summary in its place. Use response_mode full or get_document
-  for the full object. Responses carrying light rows now warn so, in
+  a bounded coverage summary in its place. Read the full object with get_document,
+  or with response_mode full on a smaller page. Responses carrying light rows now warn so, in
   hints.warnings for search and in the new warnings field for
   list_pending_metadata.
 deprecates:
   - surface: sage_core_api
     pointer: components/schemas/DocumentSummaryLight/properties/processing_coverage
-    replacement: response_mode full or get_document for the full object
+    replacement: get_document, or response_mode full on a smaller page, for the full object
     earliest_adaptation: "2027-01-04"

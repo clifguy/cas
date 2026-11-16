@@ -38,8 +38,8 @@ vault_services = _shared_services
 VAULT = "test_vault"
 WARNING = (
     "Deprecated: the DocumentSummaryLight.processing_coverage response field is deprecated; "
-    'use response_mode="full" or get_document for the full object instead. '
-    "The change may ship from 2027-01-04."
+    'use get_document (or response_mode="full" on a smaller page) for the full object '
+    "instead. The change may ship from 2027-01-04."
 )
 
 
@@ -135,15 +135,55 @@ async def test_an_unset_mode_degraded_to_light_warns(vault_services, monkeypatch
     budget = (_serialized_response_bytes(full) + _serialized_response_bytes(light)) // 2
     monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", str(budget))
 
-    response = _decode(
-        await build_partitioned_server("sage").call_tool(
-            "search", {"vault_id": VAULT, "mode": "catalog"}
-        )
-    )
+    for response in await _search(vault_services, {"mode": "catalog"}):
+        assert response["hints"]["reason"] == "catalog_response_degraded_to_light"
+        assert _deprecations(response) == [WARNING]
+        assert all("source_path" not in hit["document"] for hit in response["results"])
 
-    assert response["hints"]["reason"] == "catalog_response_degraded_to_light"
-    assert _deprecations(response) == [WARNING]
-    assert all("source_path" not in hit["document"] for hit in response["results"])
+
+async def test_an_explicit_light_page_is_fitted_to_the_budget_with_its_warning(
+    vault_services, monkeypatch
+):
+    """The budget hint judges the explicit light page as delivered, warning included.
+
+    The pair: at the delivered size no hint applies; one byte under it, the page
+    must carry the budget hint, which a measurement taken before the warning was
+    attached would withhold.
+    """
+    from sage.models.schemas import DiscoverRequest
+    from sage.services.retrieval import _serialized_response_bytes
+
+    await _seed(vault_services, 6)
+    service = vault_services.retrieval_service
+    request = DiscoverRequest(mode="catalog", response_mode="light")
+    delivered = _serialized_response_bytes(await service.discover(request))
+
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", str(delivered))
+    at_size = await service.discover(request)
+    assert at_size.hints.get("reason") is None
+    assert WARNING in at_size.hints["warnings"]
+
+    monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", str(delivered - 1))
+    under = await service.discover(request)
+    assert under.hints["reason"] == "response_exceeds_inline_budget"
+    assert WARNING in under.hints["warnings"]
+
+
+def test_the_deprecated_mark_is_on_the_model_and_the_published_contract():
+    """The served schema and the published specification both mark the field."""
+    from pathlib import Path
+
+    import yaml
+
+    from sage.models.schemas import DocumentSummaryLight
+
+    served = DocumentSummaryLight.model_json_schema()["properties"]["processing_coverage"]
+    spec = yaml.safe_load(
+        (Path(__file__).parents[2] / "docs/fs/sage/sage_core_api.openapi.yaml").read_text()
+    )
+    published = spec["components"]["schemas"]["DocumentSummaryLight"]["properties"]
+    assert served.get("deprecated") is True
+    assert published["processing_coverage"].get("deprecated") is True
 
 
 async def test_the_degrade_decision_counts_the_warning_it_will_deliver(vault_services, monkeypatch):

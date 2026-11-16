@@ -12,7 +12,9 @@ A response field is judged by the response, not the request: whether a row
 shape appears can turn on the server's own choice (an inline-budget degrade),
 so the service passes the component names its final response carries to
 ``response_field_warnings``. ``warnings_for`` judges the request alone and never
-returns a response-field warning.
+returns a response-field warning. ``RESPONSE_FIELD_COMPONENTS`` names the
+components each service reports, and so the only ones such a deprecation can
+name.
 
 The warning is decided here, beneath both request surfaces (CAS-ADR-052), from
 the request model each surface builds, so REST and MCP give the same input the
@@ -41,6 +43,7 @@ from sage.models.schemas import (
     LIGHT_ROW_COVERAGE_ADAPTATION,
     BulkMetadataItem,
     DiscoverRequest,
+    DocumentSummaryLight,
     IngestRequest,
 )
 
@@ -151,6 +154,14 @@ WARNING_CARRIERS: Final[Mapping[str, type[BaseModel] | None]] = {
     "list_pending_metadata": None,
 }
 
+#: The response components each operation's service reports to
+#: ``response_field_warnings``, and so the only components a response-field
+#: deprecation of that operation can name.
+RESPONSE_FIELD_COMPONENTS: Final[Mapping[str, tuple[type[BaseModel], ...]]] = {
+    "search": (DocumentSummaryLight,),
+    "list_pending_metadata": (DocumentSummaryLight,),
+}
+
 #: The date from which an ``updated_at`` concurrency token may stop being
 #: accepted (CAS-ADR-038, CAS-ADR-008 clause 8).
 TIMESTAMP_TOKEN_ADAPTATION: Final[dt.date] = dt.date(2026, 12, 1)
@@ -179,7 +190,9 @@ DEPRECATIONS: tuple[Deprecation, ...] = (
             operation=operation,
             form=DeprecatedForm.RESPONSE_FIELD,
             field="DocumentSummaryLight.processing_coverage",
-            replacement='response_mode="full" or get_document for the full object',
+            replacement=(
+                'get_document (or response_mode="full" on a smaller page) for the full object'
+            ),
             earliest_adaptation=LIGHT_ROW_COVERAGE_ADAPTATION,
         )
         for operation in ("search", "list_pending_metadata")
@@ -193,7 +206,8 @@ def validate_registry(entries: Iterable[Deprecation]) -> None:
         if entry.operation not in WARNING_CARRIERS:
             raise DeprecationRegistryError(
                 f"{entry.operation!r} has no warnings field to carry a deprecation; "
-                "give its response one and consult warnings_for in its service first"
+                "give its response one and consult warnings_for (request forms) or "
+                "response_field_warnings (response fields) in its service first"
             )
         if entry.form is DeprecatedForm.RESPONSE_FIELD:
             component, _, name = (entry.field or "").partition(".")
@@ -202,6 +216,15 @@ def validate_registry(entries: Iterable[Deprecation]) -> None:
                     f"a response-field deprecation of {entry.operation!r} names no response "
                     "field as Component.field"
                 )
+            reported = {m.__name__: m for m in RESPONSE_FIELD_COMPONENTS.get(entry.operation, ())}
+            model = reported.get(component)
+            if model is None:
+                raise DeprecationRegistryError(
+                    f"{entry.operation!r} reports no {component} component to "
+                    "response_field_warnings"
+                )
+            if name not in model.model_fields:
+                raise DeprecationRegistryError(f"{component} has no field {name!r}")
             continue
         if entry.form is not DeprecatedForm.OPERATION and not entry.parameter:
             raise DeprecationRegistryError(
