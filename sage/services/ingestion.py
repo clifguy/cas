@@ -141,7 +141,7 @@ from sage.services.bounded_abstraction import (
     abstraction_request,
 )
 from sage.services.caller_paths import caller_basename
-from sage.services.deprecations import warnings_for
+from sage.services.deprecations import coverage_warnings, warnings_for
 from sage.services.discovery_inspection import InspectionAttempt, publish_inspection
 from sage.services.discovery_selection import select_discovery, selection_identity
 from sage.services.document_surface import (
@@ -1695,6 +1695,11 @@ class IngestionService:
             )
             if isinstance(result, IngestResult):
                 result.warnings.extend(warnings_for("ingest_document", request))
+                result.warnings.extend(
+                    warning
+                    for warning in coverage_warnings("ingest_document", result.document)
+                    if warning not in result.warnings
+                )
             return result
 
     async def _validate_without_bytes(

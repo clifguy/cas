@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import datetime as dt
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
+import yaml
 
 from sage._tool_naming import SERVER_ASSIGNMENT
 from sage.config import VaultConfig
@@ -68,6 +70,8 @@ CREATED_BY_WARNING = (
     "instead. The change may ship from 2027-01-15."
 )
 
+CORE_SPEC = Path(__file__).parents[2] / "docs/fs/sage/sage_core_api.openapi.yaml"
+
 
 # ---------------------------------------------------------------------------
 # The registry
@@ -95,11 +99,28 @@ def test_the_shipped_registry_is_valid_and_holds_its_declared_forms() -> None:
             None,
             "DocumentSummaryLight.processing_coverage",
         ),
+        *(
+            (
+                operation,
+                DeprecatedForm.RESPONSE_FIELD,
+                None,
+                None,
+                "ProcessingIdentity.configuration",
+            )
+            for operation in deprecations.COVERAGE_OPERATIONS
+        ),
     }
 
 
 def test_every_warning_carrier_is_a_published_operation() -> None:
-    assert set(WARNING_CARRIERS) <= set(SERVER_ASSIGNMENT)
+    spec = yaml.safe_load(CORE_SPEC.read_text())
+    rest_operations = {
+        operation["operationId"]
+        for path in spec["paths"].values()
+        for operation in path.values()
+        if isinstance(operation, dict) and "operationId" in operation
+    }
+    assert set(WARNING_CARRIERS) <= set(SERVER_ASSIGNMENT) | rest_operations
     assert {"search", "ingest_document", "update_metadata", "list_pending_metadata"} <= set(
         WARNING_CARRIERS
     )
@@ -163,7 +184,7 @@ def test_a_format_deprecation_warns_only_on_a_value_of_that_format(registry) -> 
     ("entry", "reason"),
     [
         (
-            Deprecation("get_document", DeprecatedForm.OPERATION, "read_section", EARLIEST),
+            Deprecation("chain", DeprecatedForm.OPERATION, "traverse", EARLIEST),
             "no warnings field",
         ),
         (Deprecation("no_such_tool", DeprecatedForm.OPERATION, "x", EARLIEST), "no warnings field"),
@@ -214,7 +235,7 @@ def test_a_format_deprecation_warns_only_on_a_value_of_that_format(registry) -> 
         ),
         (
             Deprecation(
-                "get_document",
+                "chain",
                 DeprecatedForm.RESPONSE_FIELD,
                 "x",
                 EARLIEST,

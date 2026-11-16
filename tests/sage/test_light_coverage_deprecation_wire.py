@@ -50,7 +50,20 @@ def _decode(result) -> dict:
 def _deprecations(body: dict, *, field: str = "hints") -> list[str]:
     carrier = body.get(field) or {}
     warnings = carrier.get("warnings") if isinstance(carrier, dict) else carrier
-    return [w for w in warnings or [] if w.startswith("Deprecated:")]
+    # Only the light-row deprecation: rows whose coverage holds a configured
+    # identity also carry that field's own deprecation warning.
+    return [
+        w
+        for w in warnings or []
+        if w.startswith("Deprecated: the DocumentSummaryLight.processing_coverage")
+    ]
+
+
+def _carries_shared_block(response) -> bool:
+    rows = response.model_dump(mode="json")["results"]
+    return bool(rows) and all(
+        row["document"]["processing_coverage"].get("configurations") for row in rows
+    )
 
 
 async def _seed(services, count: int) -> None:
@@ -156,7 +169,9 @@ async def test_an_explicit_light_page_is_fitted_to_the_budget_with_its_warning(
     await _seed(vault_services, 6)
     service = vault_services.retrieval_service
     request = DiscoverRequest(mode="catalog", response_mode="light")
-    delivered = _serialized_response_bytes(await service.discover(request))
+    page = await service.discover(request)
+    assert _carries_shared_block(page)
+    delivered = _serialized_response_bytes(page)
 
     monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", str(delivered))
     at_size = await service.discover(request)
@@ -208,6 +223,7 @@ async def test_the_degrade_decision_counts_the_warning_it_will_deliver(vault_ser
     degraded = await service.discover(DiscoverRequest(mode="catalog"))
     assert degraded.hints["reason"] == "catalog_response_degraded_to_light"
     assert WARNING in degraded.hints["warnings"]
+    assert _carries_shared_block(degraded)
     delivered = _serialized_response_bytes(degraded)
 
     monkeypatch.setenv("SAGE_MCP_INLINE_BUDGET_BYTES", str(delivered))
@@ -230,7 +246,11 @@ async def test_a_light_pending_page_warns_and_a_full_one_does_not(vault_services
     for args in ({"response_mode": "full"}, {}):
         for body in await _pending(vault_services, args):
             assert _deprecations(body, field="warnings") == [], args
-            assert "warnings" not in body or body["warnings"] is None, args
+            # Full rows still carry the configured identity's own deprecation.
+            assert all(
+                w.startswith("Deprecated: the ProcessingIdentity.configuration")
+                for w in body.get("warnings") or []
+            ), args
 
 
 async def test_an_automatically_light_pending_page_warns(vault_services):

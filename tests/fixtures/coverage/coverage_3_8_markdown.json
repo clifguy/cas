@@ -1,0 +1,270 @@
+{
+  "abstraction_evidence": {
+    "counts": [
+      {
+        "observed": 2198,
+        "represented": 2198,
+        "total": 2198,
+        "unit": "tokens"
+      }
+    ],
+    "generation": 1,
+    "identity": {
+      "adapter": "MarkdownAdapter:0.8.0",
+      "configuration": {
+        "adapter": {
+          "dialect": null
+        },
+        "facts": {
+          "max_columns": 256,
+          "max_depth": 64,
+          "max_parse_nodes": 400000,
+          "max_rows": 100000,
+          "max_source_bytes": 67108864,
+          "narrative_input_bytes": 8192
+        },
+        "inspected_source_hash": "sha256:a2302547dd5165f04657a68c4e248d73c7dd306d8fd99a9c7d94cf08548dd63e",
+        "selection": {
+          "max_association_runs": 16384,
+          "max_candidate_characters": 32768,
+          "max_candidates": 8192,
+          "max_characters": 16777216,
+          "max_excerpts": 1024,
+          "max_fields": 1024,
+          "max_in_flight": 8,
+          "max_keyword_characters": null,
+          "max_regions": 256,
+          "max_retained_bytes": 16777216,
+          "max_tokens": 8192,
+          "max_values": 100000
+        }
+      },
+      "policy": "bounded-discovery:1",
+      "source_hash": "sha256:a2302547dd5165f04657a68c4e248d73c7dd306d8fd99a9c7d94cf08548dd63e",
+      "tokenization": "utf8-byte-tokens:1"
+    },
+    "scope": "complete",
+    "unknown_remainder": false
+  },
+  "attempt": 1,
+  "inspection": {
+    "counts": [
+      {
+        "observed": 4,
+        "represented": 4,
+        "total": 4,
+        "unit": "occurrences"
+      },
+      {
+        "observed": 1856,
+        "represented": 1856,
+        "total": 1856,
+        "unit": "characters"
+      }
+    ],
+    "generation": 1,
+    "identity": {
+      "adapter": "MarkdownAdapter:0.8.0",
+      "configuration": {
+        "adapter": {
+          "dialect": null
+        },
+        "facts": {
+          "max_columns": 256,
+          "max_depth": 64,
+          "max_parse_nodes": 400000,
+          "max_rows": 100000,
+          "max_source_bytes": 67108864,
+          "narrative_input_bytes": 8192
+        },
+        "inspected_source_hash": "sha256:a2302547dd5165f04657a68c4e248d73c7dd306d8fd99a9c7d94cf08548dd63e",
+        "selection": {
+          "max_association_runs": 16384,
+          "max_candidate_characters": 32768,
+          "max_candidates": 8192,
+          "max_characters": 16777216,
+          "max_excerpts": 1024,
+          "max_fields": 1024,
+          "max_in_flight": 8,
+          "max_keyword_characters": null,
+          "max_regions": 256,
+          "max_retained_bytes": 16777216,
+          "max_tokens": 8192,
+          "max_values": 100000
+        }
+      },
+      "policy": "bounded-discovery:1",
+      "source_hash": "sha256:a2302547dd5165f04657a68c4e248d73c7dd306d8fd99a9c7d94cf08548dd63e",
+      "tokenization": "utf8-byte-tokens:1"
+    },
+    "scope": "complete",
+    "selection_summary": {
+      "associations_complete": true,
+      "boundary": "Stop repeating the effective configuration in every coverage dimension > Acceptance criteria:char:0",
+      "established_occurrences": 4,
+      "outcome": "complete",
+      "selected_inputs": 4,
+      "selected_tokens": 2198
+    },
+    "unknown_remainder": false
+  },
+  "keyword_indexing": {
+    "counts": [
+      {
+        "observed": 2,
+        "represented": 2,
+        "total": 2,
+        "unit": "passages"
+      }
+    ],
+    "generation": 1,
+    "identity": {
+      "adapter": "0.8.0",
+      "configuration": {
+        "adapter": {
+          "dialect": null
+        },
+        "facts": {
+          "max_columns": 256,
+          "max_depth": 64,
+          "max_parse_nodes": 400000,
+          "max_rows": 100000,
+          "max_source_bytes": 67108864
+        },
+        "inspected_source_hash": "sha256:a2302547dd5165f04657a68c4e248d73c7dd306d8fd99a9c7d94cf08548dd63e",
+        "selection": {
+          "max_association_runs": 16384,
+          "max_candidate_characters": 32768,
+          "max_candidates": 8192,
+          "max_characters": 16777216,
+          "max_excerpts": 1024,
+          "max_fields": 1024,
+          "max_in_flight": 8,
+          "max_keyword_characters": null,
+          "max_regions": 256,
+          "max_retained_bytes": 16777216,
+          "max_tokens": 8192,
+          "max_values": 100000
+        }
+      },
+      "policy": "bounded-discovery:1",
+      "source_hash": "sha256:a2302547dd5165f04657a68c4e248d73c7dd306d8fd99a9c7d94cf08548dd63e",
+      "tokenization": "NomicEmbeddingProvider:exact:2048"
+    },
+    "scope": "complete",
+    "unknown_remainder": false
+  },
+  "passage_embeddings": {
+    "counts": [
+      {
+        "observed": 2,
+        "represented": 2,
+        "total": 2,
+        "unit": "passages"
+      }
+    ],
+    "generation": 1,
+    "identity": {
+      "adapter": "0.8.0",
+      "configuration": {
+        "adapter": {
+          "dialect": null
+        },
+        "facts": {
+          "max_columns": 256,
+          "max_depth": 64,
+          "max_parse_nodes": 400000,
+          "max_rows": 100000,
+          "max_source_bytes": 67108864
+        },
+        "inspected_source_hash": "sha256:a2302547dd5165f04657a68c4e248d73c7dd306d8fd99a9c7d94cf08548dd63e",
+        "selection": {
+          "max_association_runs": 16384,
+          "max_candidate_characters": 32768,
+          "max_candidates": 8192,
+          "max_characters": 16777216,
+          "max_excerpts": 1024,
+          "max_fields": 1024,
+          "max_in_flight": 8,
+          "max_keyword_characters": null,
+          "max_regions": 256,
+          "max_retained_bytes": 16777216,
+          "max_tokens": 8192,
+          "max_values": 100000
+        }
+      },
+      "policy": "bounded-discovery:1",
+      "source_hash": "sha256:a2302547dd5165f04657a68c4e248d73c7dd306d8fd99a9c7d94cf08548dd63e",
+      "tokenization": "NomicEmbeddingProvider:exact:2048"
+    },
+    "scope": "complete",
+    "unknown_remainder": false
+  },
+  "projection": {
+    "counts": [
+      {
+        "observed": 2,
+        "represented": 2,
+        "total": 2,
+        "unit": "passages"
+      }
+    ],
+    "generation": 1,
+    "identity": {
+      "adapter": "0.8.0",
+      "configuration": {
+        "adapter": {
+          "dialect": null
+        },
+        "facts": {
+          "max_columns": 256,
+          "max_depth": 64,
+          "max_parse_nodes": 400000,
+          "max_rows": 100000,
+          "max_source_bytes": 67108864
+        },
+        "inspected_source_hash": "sha256:a2302547dd5165f04657a68c4e248d73c7dd306d8fd99a9c7d94cf08548dd63e",
+        "selection": {
+          "max_association_runs": 16384,
+          "max_candidate_characters": 32768,
+          "max_candidates": 8192,
+          "max_characters": 16777216,
+          "max_excerpts": 1024,
+          "max_fields": 1024,
+          "max_in_flight": 8,
+          "max_keyword_characters": null,
+          "max_regions": 256,
+          "max_retained_bytes": 16777216,
+          "max_tokens": 8192,
+          "max_values": 100000
+        }
+      },
+      "policy": "bounded-discovery:1",
+      "source_hash": "sha256:a2302547dd5165f04657a68c4e248d73c7dd306d8fd99a9c7d94cf08548dd63e",
+      "tokenization": "NomicEmbeddingProvider:exact:2048"
+    },
+    "scope": "complete",
+    "unknown_remainder": false
+  },
+  "served_abstraction_generation": 1,
+  "source_retention": {
+    "counts": [
+      {
+        "observed": 1969,
+        "represented": 1969,
+        "total": 1969,
+        "unit": "bytes"
+      }
+    ],
+    "generation": 1,
+    "identity": {
+      "adapter": "markdown:0.8.0",
+      "configuration": {},
+      "policy": "coverage-v1",
+      "source_hash": "sha256:a2302547dd5165f04657a68c4e248d73c7dd306d8fd99a9c7d94cf08548dd63e",
+      "tokenization": "unknown"
+    },
+    "scope": "complete",
+    "unknown_remainder": false
+  }
+}

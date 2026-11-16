@@ -88,7 +88,11 @@ from sage.services._tier3_query import (
     resolve_tier3_facets,
     validate_tier3_sort,
 )
-from sage.services.deprecations import response_field_warnings, warnings_for
+from sage.services.deprecations import (
+    carried_components,
+    response_field_warnings,
+    warnings_for,
+)
 from sage.services.passage_split import group_sections, section_text
 from sage.services.read_diagnostics import build_not_found_detail
 from sage.utils.date_parsing import parse_document_date
@@ -397,8 +401,10 @@ def _degraded_catalog_candidate(
 
 
 def _with_light_row_warnings(hints: dict[str, object] | None, rows: list) -> dict | None:
-    """``hints`` with the warnings owed by the light rows among ``rows``, each once."""
-    carried = {type(hit.document).__name__ for hit in rows if isinstance(hit, DiscoverHit)}
+    """``hints`` with the warnings owed by the rows' shapes and coverage, each once."""
+    carried = {
+        type(hit.document).__name__ for hit in rows if isinstance(hit, DiscoverHit)
+    } | carried_components(rows)
     owed = response_field_warnings("search", carried)
     if not owed:
         return hints
@@ -1354,11 +1360,18 @@ class RetrievalService:
             # the excerpt can be decided back in the mode handler.
             # Deterministic mode is an explicit single-section fetch and is
             # left alone.
-            if request.mode == RetrievalMode.CATALOG:
-                # A light page's deprecation warning is part of what it
-                # delivers, so it is attached before the measurement.
+            if request.mode in (
+                RetrievalMode.CATALOG,
+                RetrievalMode.SEMANTIC,
+                RetrievalMode.KEYWORD,
+            ):
+                # The deprecation warnings the rows owe are part of what the
+                # response delivers, so they are attached before the
+                # measurement. A scored fit cuts passages but keeps every row,
+                # so what the rows owe does not change with the fit.
                 hints = None if response.hints is None else {**response.hints}
                 response.hints = _with_light_row_warnings(hints, response.results)
+            if request.mode == RetrievalMode.CATALOG:
                 _apply_catalog_budget_policy(response, request)
             elif request.mode in (RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD):
                 _apply_scored_budget_policy(response, request)

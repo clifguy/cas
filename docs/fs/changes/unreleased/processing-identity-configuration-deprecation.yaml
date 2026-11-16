@@ -1,0 +1,27 @@
+classification: minor
+category: [capability, caller-adaptation]
+summary: >-
+  Serves each distinct effective configuration once per processing_coverage
+  object, in a configurations block keyed by its canonical configuration hash,
+  and gives each coverage dimension and abstraction_quality a configuration_ref
+  into it. The block and references are derived on every read and never stored,
+  so stored coverage and the hashes keyed on a whole identity are unchanged.
+  Deprecates the per-dimension ProcessingIdentity.configuration, which is still
+  served unchanged. Every operation whose response carries a configured identity
+  now warns; get_document (including its download recipe),
+  get_document_download_url, traverse, export_projection, read_projection,
+  read_section and list_headings gain a warnings field to carry it, and
+  update_lifecycles carries it in each result's existing warnings.
+for_callers: >-
+  The configuration on each processing_coverage identity is deprecated. Read it
+  from the coverage object's configurations block through the holder's
+  configuration_ref instead; the block holds each distinct configuration once.
+  From 2027-01-04 identities may stop carrying configuration. Responses carrying
+  a configured identity now warn so, in hints.warnings for search and in the
+  response's warnings field elsewhere; bulk update_metadata and
+  update_lifecycles warn on each result.
+deprecates:
+  - surface: sage_core_api
+    pointer: components/schemas/ProcessingIdentity/properties/configuration
+    replacement: the processing_coverage configurations block, through each identity holder's configuration_ref
+    earliest_adaptation: "2027-01-04"

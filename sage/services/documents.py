@@ -44,6 +44,7 @@ from sage.services.caller_paths import (
     validate_caller_write_path_shape,
     validate_write_to_path,
 )
+from sage.services.deprecations import with_coverage_warnings
 from sage.services.read_diagnostics import build_not_found_detail
 from sage.source_adapters.registry import registered_source_extensions
 from sage.vault_source_binding import SupportsSourceDownloadUrl, VaultSourceStore
@@ -263,7 +264,7 @@ class DocumentsService:
                 # the typed refusal rather than a bare internal error.
                 if not store.source_exists(vault_id, storage_root, doc.source_path):
                     raise ContentFileMissingError(doc.id, doc.source_path)
-                return mint_download_recipe_for_source(
+                built = mint_download_recipe_for_source(
                     vault_id,
                     document_id=doc.id,
                     source_path=doc.source_path,
@@ -272,6 +273,7 @@ class DocumentsService:
                     write_to_path=write_to_path,
                     processing_coverage=doc.processing_coverage,
                 )
+                return with_coverage_warnings("get_document", built)
 
             validate_write_to_path(write_to_path)
 
@@ -319,7 +321,7 @@ class DocumentsService:
         # write-to-path read of a binary source still declares its form.
         response.body_form = "binary" if is_binary else "text"
 
-        return response
+        return with_coverage_warnings("get_document", response)
 
     async def get_document_content(self, document_id: str) -> SourceContentDelivery:
         """Stream a document's retained source bytes for raw delivery.
@@ -398,6 +400,7 @@ class DocumentsService:
         if url is None:
             raise DownloadUrlNotAvailableError(document_id)
 
-        return DocumentDownloadUrlResponse(
+        built = DocumentDownloadUrlResponse(
             download_url=url, processing_coverage=doc.processing_coverage
         )
+        return with_coverage_warnings("get_document_download_url", built)

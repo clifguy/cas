@@ -46,7 +46,16 @@ and carries a source hash, generation and content hash matching its summary. Its
 SHA-256 covers compact sorted-key JSON containing `entries` and `unknown_remainder`.
 Effective configuration has at most 32 keys and 4096 serialized bytes. These limits
 bound the record itself; aggregate counts and unknown remainder avoid an exhaustive
-omission ledger.
+omission ledger. The whole-object bound is measured on the stored form.
+
+A served coverage object carries each distinct effective configuration once, in a
+`configurations` block keyed by its canonical configuration hash, and each dimension
+and `abstraction_quality` with a configured identity names its entry in a sibling
+`configuration_ref`. Both are derived from the identities on every read, recomputed
+rather than trusted when supplied, and never stored, so stored coverage keeps its
+shape and the hashes keyed on a whole identity (embedding accounting and the
+abstraction allowance ledger) do not move. The per-identity `configuration` copy is
+deprecated (CAS-ADR-008 clause 8) and still served; responses carrying it warn.
 
 Normal startup provisioning adds a nullable coverage column to every attached vault
 idempotently; null is legacy unknown evidence. No manual operator migration is added. No data backfill or live reprocessing is required. Reopening a

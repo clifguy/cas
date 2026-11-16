@@ -9822,6 +9822,56 @@ async def test_excerpted_scored_response_fits_the_budget(
 
 
 @pytest.mark.parametrize("mode", [RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD])
+async def test_excerpted_scored_response_fits_the_budget_with_its_coverage_warning(
+    graph_store,
+    stub_content_store,
+    seeded_embedding_provider,
+    retrieval_service,
+    monkeypatch,
+    pg_pool,
+    mode,
+):
+    """Rows whose coverage owes a deprecation warning still fit, warning included.
+
+    The rows carry stored 3.8-era coverage with configured identities, so the
+    response owes the identity-configuration warning. The fit is judged on the
+    response as delivered: a warning attached after the cap was chosen would
+    push the delivered response over the budget by the warning's length.
+    """
+    import json
+    from pathlib import Path
+
+    from psycopg.types.json import Jsonb
+
+    await _seed_scored(
+        graph_store, stub_content_store, seeded_embedding_provider, count=6, long_index=2
+    )
+    stored = (
+        Path(__file__).parents[1] / "fixtures/coverage/coverage_3_8_markdown.json"
+    ).read_text()
+    async with pg_pool.connection() as conn:
+        await conn.execute(
+            "UPDATE documents SET processing_coverage = %s", (Jsonb(json.loads(stored)),)
+        )
+    baseline = await _scored_at_budget(retrieval_service, monkeypatch, mode, 10**9)
+    assert any(
+        w.startswith("Deprecated: the ProcessingIdentity.configuration")
+        for w in (baseline.hints or {}).get("warnings") or []
+    )
+    full_size = _serialized_response_bytes(baseline)
+    floor_size = _serialized_response_bytes(_cut_every_passage_at(baseline, _EXCERPT_FLOOR))
+    budget = (floor_size + full_size) // 2
+    assert floor_size + 1000 < budget < full_size
+
+    response = await _scored_at_budget(retrieval_service, monkeypatch, mode, budget)
+
+    assert response.hints["reason"] == "scored_response_excerpted"
+    assert response.hints["warnings"] == baseline.hints["warnings"]
+    assert _serialized_response_bytes(response) <= budget
+    assert _serialized_response_bytes(_one_character_longer(response)) > budget
+
+
+@pytest.mark.parametrize("mode", [RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD])
 async def test_scored_falls_back_to_limit_hint_when_no_passage_can_be_cut(
     graph_store, stub_content_store, seeded_embedding_provider, retrieval_service, monkeypatch, mode
 ):

@@ -8082,6 +8082,14 @@ components:
         - $ref: "#/components/schemas/Document"
         - type: object
           properties:
+            warnings:
+              type:
+              - array
+              - 'null'
+              items:
+                type: string
+              default: null
+              description: Caller-facing warnings about this response, such as a deprecated field it carries; absent when there are none.
             content:
               type: [string, "null"]
               description: >-
@@ -8138,6 +8146,14 @@ components:
       required: [start_id, nodes]
       description: Response body for the traverse endpoint; carries the discovered nodes with their incoming edges and edge-type counts.
       properties:
+        warnings:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+          default: null
+          description: Caller-facing warnings about this response, such as a deprecated field it carries; absent when there are none.
         start_id:
           type: string
           pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
@@ -9111,6 +9127,14 @@ components:
       required: [document_id, title, lifecycle_status, source_path]
       description: Response body for the read-projection endpoint; returns the canonical text projection for a document along with identifying metadata.
       properties:
+        warnings:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+          default: null
+          description: Caller-facing warnings about this response, such as a deprecated field it carries; absent when there are none.
         processing_coverage:
           $ref: '#/components/schemas/ProcessingCoverage'
           description: System-owned achieved processing coverage; unknown evidence does not imply completeness.
@@ -9153,6 +9177,14 @@ components:
       required: [document_id, title, heading_path, chunk_count, section_text]
       description: Response body for the read-section endpoint; returns the text spanned by a heading-path prefix within a document.
       properties:
+        warnings:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+          default: null
+          description: Caller-facing warnings about this response, such as a deprecated field it carries; absent when there are none.
         processing_coverage:
           $ref: '#/components/schemas/ProcessingCoverage'
           description: System-owned achieved processing coverage; unknown evidence does not imply completeness.
@@ -9187,6 +9219,14 @@ components:
         heading's path, or the empty path, listed first where present, which
         addresses the text under no heading.
       properties:
+        warnings:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+          default: null
+          description: Caller-facing warnings about this response, such as a deprecated field it carries; absent when there are none.
         processing_coverage:
           $ref: '#/components/schemas/ProcessingCoverage'
           description: System-owned achieved processing coverage; unknown evidence does not imply completeness.
@@ -9225,6 +9265,14 @@ components:
       required: [download_url]
       description: Response body for the download-url endpoint; carries a short-lived pre-authenticated URL for direct browser delivery of a document's source.
       properties:
+        warnings:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+          default: null
+          description: Caller-facing warnings about this response, such as a deprecated field it carries; absent when there are none.
         processing_coverage:
           $ref: '#/components/schemas/ProcessingCoverage'
           description: System-owned achieved processing coverage; unknown evidence does not imply completeness.
@@ -9244,6 +9292,14 @@ components:
       required: [document_id, output_path]
       description: Response body for the export-projection endpoint; confirms the projection write and reports the resolved output path.
       properties:
+        warnings:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+          default: null
+          description: Caller-facing warnings about this response, such as a deprecated field it carries; absent when there are none.
         processing_coverage:
           $ref: '#/components/schemas/ProcessingCoverage'
           description: System-owned achieved processing coverage; unknown evidence does not imply completeness.
@@ -10853,6 +10909,14 @@ components:
         - filename
         - write_to_path
       properties:
+        warnings:
+          type:
+          - array
+          - 'null'
+          items:
+            type: string
+          default: null
+          description: Caller-facing warnings about this response, such as a deprecated field it carries; absent when there are none.
         processing_coverage:
           $ref: '#/components/schemas/ProcessingCoverage'
           description: System-owned achieved processing coverage; unknown evidence does not imply completeness.
@@ -16401,7 +16465,8 @@ components:
         configuration:
           type: object
           maxProperties: 32
-          description: Configuration.
+          deprecated: true
+          description: 'Deprecated: read the configuration from the coverage object''s configurations block through the holder''s configuration_ref. Removal may ship from 2027-01-04.'
         tokenization:
           type: string
           maxLength: 512
@@ -16567,6 +16632,13 @@ components:
           - $ref: '#/components/schemas/ProcessingIdentity'
           - type: 'null'
           description: Identity.
+        configuration_ref:
+          type:
+          - string
+          - 'null'
+          pattern: ^sha256:[0-9a-f]{64}$
+          default: null
+          description: Key of this dimension's effective configuration in the coverage object's configurations block; absent without an identity.
         counts:
           type: array
           maxItems: 8
@@ -16637,6 +16709,13 @@ components:
           - type: 'null'
           default: null
           description: Source and selection identity bound to the quality disposition; null when unknown.
+        configuration_ref:
+          type:
+          - string
+          - 'null'
+          pattern: ^sha256:[0-9a-f]{64}$
+          default: null
+          description: Key of the identity's effective configuration in the coverage object's configurations block; absent without an identity.
         checks:
           type: array
           items:
@@ -16713,6 +16792,16 @@ components:
           minimum: 1
           default: null
           description: Generation of the served abstract; null means historical identity unknown. Evidence may describe a newer failed replacement attempt.
+        configurations:
+          type:
+          - object
+          - 'null'
+          propertyNames:
+            pattern: ^sha256:[0-9a-f]{64}$
+          additionalProperties:
+            type: object
+          default: null
+          description: Each distinct effective configuration once, keyed by its canonical hash; each identity holder names its entry in configuration_ref. Derived from the identities, absent when none is established.
         attempt:
           type: integer
           minimum: 0

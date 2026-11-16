@@ -56,6 +56,7 @@ from sage.models.schemas import (
 from sage.request_identity import asserted_agent, edge_attribution
 from sage.services._bulk_envelope import sage_error_to_envelope
 from sage.services._dry_run import DRY_RUN_SENTINEL_EDGE_ID as _DRY_RUN_SENTINEL_EDGE_ID
+from sage.services.deprecations import with_coverage_warnings
 from sage.storage.edge_provenance import derive_rationale_kind
 
 logger = logging.getLogger(__name__)
@@ -1151,7 +1152,7 @@ class GraphOpsService:
             truncated=truncated,
         )
         response.read_meta = response.read_meta.stamped(self._config.fingerprint())
-        return response
+        return with_coverage_warnings("traverse", response)
 
     async def _resolve_edge_rows(
         self,

@@ -7,6 +7,7 @@ from httpx import ASGITransport, AsyncClient
 
 from sage.app import create_app
 from sage.mcp_server import build_partitioned_server
+from sage.models.coverage import canonical_configuration_hash
 from tests.sage.test_processing_coverage import _chunks, _doc, _evidence
 from tests.sage.test_validation_envelope_parity import vault_services as _shared_services
 
@@ -271,6 +272,9 @@ async def test_hybrid_quality_and_private_candidate_use_actual_wire_boundaries(
             )
             bodies.append(result["results"][0]["document"])
     for body in bodies:
-        assert body["processing_coverage"]["abstraction_quality"] == quality.model_dump(mode="json")
+        assert body["processing_coverage"]["abstraction_quality"] == {
+            **quality.model_dump(mode="json"),
+            "configuration_ref": canonical_configuration_hash(quality.identity.configuration),
+        }
         assert raw not in json.dumps(body)
         assert body["processing_coverage"]["projection"]["scope"] == "limited"

@@ -1804,6 +1804,12 @@ class ParseFilenameResponse(BaseModel):
     )
 
 
+_RESPONSE_WARNINGS_DESCRIPTION = (
+    "Caller-facing warnings about this response, such as a deprecated field it "
+    "carries; absent when there are none."
+)
+
+
 class DocumentWithContent(Document):
     """Document record optionally accompanied by file-delivery information.
 
@@ -1849,6 +1855,11 @@ class DocumentWithContent(Document):
             "Populated only when the request specified `write_to_path`. "
             "Equals the caller-supplied value."
         ),
+    )
+    warnings: list[str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=_RESPONSE_WARNINGS_DESCRIPTION,
     )
     read_meta: ReadMeta = Field(
         default_factory=ReadMeta.bodiless,
@@ -2936,6 +2947,11 @@ class DocumentDownloadUrlResponse(BaseModel):
     URL; a binding that cannot refuses the request with a structured 501.
     """
 
+    warnings: list[str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=_RESPONSE_WARNINGS_DESCRIPTION,
+    )
     processing_coverage: ProcessingCoverage = Field(
         default_factory=ProcessingCoverage,
         description=(
@@ -3525,6 +3541,11 @@ class TraverseResponse(BaseModel):
             "narrow the walk with `edge_type`, `direction`, or a smaller "
             "`depth`."
         ),
+    )
+    warnings: list[str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=_RESPONSE_WARNINGS_DESCRIPTION,
     )
     read_meta: ReadMeta = Field(
         default_factory=ReadMeta.bodiless,
@@ -4951,6 +4972,11 @@ class ExportProjectionRequest(BaseModel):
 
 
 class ExportProjectionResponse(BaseModel):
+    warnings: list[str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=_RESPONSE_WARNINGS_DESCRIPTION,
+    )
     processing_coverage: ProcessingCoverage = Field(
         default_factory=ProcessingCoverage,
         description=(
@@ -5007,6 +5033,11 @@ class ReadProjectionResponse(BaseModel):
             "Byte count of the projection text written to disk. Populated "
             "only when the request specified write_to_path."
         ),
+    )
+    warnings: list[str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=_RESPONSE_WARNINGS_DESCRIPTION,
     )
     read_meta: ReadMeta = Field(
         default_factory=ReadMeta.bodiless,
@@ -5065,6 +5096,11 @@ class ReadSectionResponse(BaseModel):
         )
     )
     section_text: str = Field(description="Concatenated text of all chunks under the heading path.")
+    warnings: list[str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=_RESPONSE_WARNINGS_DESCRIPTION,
+    )
     read_meta: ReadMeta = Field(
         default_factory=ReadMeta.bodiless,
         description="Self-describing read markers (CAS-ADR-039).",
@@ -5119,6 +5155,11 @@ class ListHeadingsResponse(BaseModel):
         description=(
             "Distinct heading paths in document order, suitable for passing to read_section."
         )
+    )
+    warnings: list[str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=_RESPONSE_WARNINGS_DESCRIPTION,
     )
     read_meta: ReadMeta = Field(
         default_factory=ReadMeta.bodiless,
@@ -7193,6 +7234,11 @@ class DownloadRecipe(BaseModel):
     and verify them locally against the promised size and digest. Every URL
     and token is used verbatim; nothing is composed caller-side."""
 
+    warnings: list[str] | None = Field(
+        default=None,
+        exclude_if=lambda value: value is None,
+        description=_RESPONSE_WARNINGS_DESCRIPTION,
+    )
     processing_coverage: ProcessingCoverage = Field(
         default_factory=ProcessingCoverage,
         description=(

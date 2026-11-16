@@ -39,6 +39,7 @@ from typing import Any, Final
 
 from pydantic import BaseModel
 
+from sage.models.coverage import DIMENSIONS, ProcessingCoverage, ProcessingIdentity
 from sage.models.schemas import (
     LIGHT_ROW_COVERAGE_ADAPTATION,
     BulkMetadataItem,
@@ -142,7 +143,9 @@ class Deprecation:
 #: The operations whose response carries a caller-facing warnings list and whose
 #: service consults ``warnings_for``: ``search`` in its hints, ``ingest_document``
 #: in the ingest result's warnings, ``update_metadata`` in each item result's
-#: warnings, ``list_pending_metadata`` in its page's warnings. Each names the
+#: warnings, ``list_pending_metadata`` in its page's warnings, ``update_lifecycles``
+#: in each item result's warnings, and every other operation that returns
+#: processing coverage in its response's warnings. Each names the
 #: request model its service judges, which holds every parameter a deprecation
 #: of it can name; ``update_metadata`` is judged item by item, so a warning lands
 #: on the item that used the deprecated form. An operation that carries only
@@ -152,19 +155,52 @@ WARNING_CARRIERS: Final[Mapping[str, type[BaseModel] | None]] = {
     "ingest_document": IngestRequest,
     "update_metadata": BulkMetadataItem,
     "list_pending_metadata": None,
+    "update_lifecycles": None,
+    "get_document": None,
+    "get_document_download_url": None,
+    "traverse": None,
+    "export_projection": None,
+    "read_projection": None,
+    "read_section": None,
+    "list_headings": None,
 }
+
+#: Every operation whose response can carry processing coverage, and so a
+#: ``ProcessingIdentity`` (CAS-ADR-059).
+COVERAGE_OPERATIONS: Final[tuple[str, ...]] = (
+    "search",
+    "list_pending_metadata",
+    "ingest_document",
+    "update_metadata",
+    "update_lifecycles",
+    "get_document",
+    "get_document_download_url",
+    "traverse",
+    "export_projection",
+    "read_projection",
+    "read_section",
+    "list_headings",
+)
 
 #: The response components each operation's service reports to
 #: ``response_field_warnings``, and so the only components a response-field
 #: deprecation of that operation can name.
 RESPONSE_FIELD_COMPONENTS: Final[Mapping[str, tuple[type[BaseModel], ...]]] = {
-    "search": (DocumentSummaryLight,),
-    "list_pending_metadata": (DocumentSummaryLight,),
+    operation: (
+        (DocumentSummaryLight, ProcessingIdentity)
+        if operation in ("search", "list_pending_metadata")
+        else (ProcessingIdentity,)
+    )
+    for operation in COVERAGE_OPERATIONS
 }
 
 #: The date from which an ``updated_at`` concurrency token may stop being
 #: accepted (CAS-ADR-038, CAS-ADR-008 clause 8).
 TIMESTAMP_TOKEN_ADAPTATION: Final[dt.date] = dt.date(2026, 12, 1)
+
+#: The date from which a served processing identity may stop carrying its own
+#: configuration (CAS-ADR-008 clause 8, CAS-ADR-059).
+IDENTITY_CONFIGURATION_ADAPTATION: Final[dt.date] = dt.date(2027, 1, 4)
 
 #: Every deprecated form currently served. An entry names the operation id the
 #: REST operation and the MCP tool share, and stays until the adaptation ships.
@@ -196,6 +232,19 @@ DEPRECATIONS: tuple[Deprecation, ...] = (
             earliest_adaptation=LIGHT_ROW_COVERAGE_ADAPTATION,
         )
         for operation in ("search", "list_pending_metadata")
+    ),
+    *(
+        Deprecation(
+            operation=operation,
+            form=DeprecatedForm.RESPONSE_FIELD,
+            field="ProcessingIdentity.configuration",
+            replacement=(
+                "the processing_coverage configurations block, through each "
+                "identity holder's configuration_ref"
+            ),
+            earliest_adaptation=IDENTITY_CONFIGURATION_ADAPTATION,
+        )
+        for operation in COVERAGE_OPERATIONS
     ),
 )
 
@@ -272,4 +321,56 @@ def response_field_warnings(operation: str, carried: set[str]) -> list[str]:
     ]
 
 
+def carries_processing_identity(value: object) -> bool:
+    """Whether ``value`` holds processing coverage with an established identity."""
+    if isinstance(value, ProcessingCoverage):
+        return any(
+            getattr(value, name).identity is not None
+            for name in (*DIMENSIONS, "abstraction_quality")
+        )
+    if isinstance(value, BaseModel):
+        return any(
+            carries_processing_identity(getattr(value, name)) for name in type(value).model_fields
+        )
+    if isinstance(value, Mapping):
+        return any(carries_processing_identity(item) for item in value.values())
+    if isinstance(value, list | tuple):
+        return any(carries_processing_identity(item) for item in value)
+    return False
+
+
+def carried_components(*responses: object) -> set[str]:
+    """The response-field components the ``responses`` carry."""
+    if any(carries_processing_identity(response) for response in responses):
+        return {ProcessingIdentity.__name__}
+    return set()
+
+
+def merge_warnings(existing: Iterable[str] | None, owed: Iterable[str]) -> list[str] | None:
+    """``existing`` with each ``owed`` warning appended once; null when empty."""
+    merged = list(existing or [])
+    merged.extend(warning for warning in owed if warning not in merged)
+    return merged or None
+
+
+def coverage_warnings(operation: str, *responses: object) -> list[str]:
+    """The deprecation warnings owed by the coverage the ``responses`` carry."""
+    return response_field_warnings(operation, carried_components(*responses))
+
+
 validate_registry(DEPRECATIONS)
+
+
+def with_coverage_warnings[T: BaseModel](operation: str, response: T) -> T:
+    """``response`` with the coverage deprecation warnings it owes in its ``warnings``."""
+    owed = coverage_warnings(operation, response)
+    if owed:
+        response.warnings = merge_warnings(getattr(response, "warnings", None), owed)  # type: ignore[attr-defined]
+    return response
+
+
+def with_item_coverage_warnings[T: BaseModel](operation: str, response: T) -> T:
+    """``response`` with each result item warned for the coverage that item carries."""
+    for item in getattr(response, "results", []):
+        with_coverage_warnings(operation, item)
+    return response

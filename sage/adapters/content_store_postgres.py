@@ -595,7 +595,7 @@ class PostgresContentStore(ContentStore):
             "updated_at = CASE WHEN pipeline_status = ANY(%s) THEN %s ELSE updated_at END "
             "WHERE id = %s",
             (
-                Jsonb(coverage.model_dump(mode="json")),
+                Jsonb(coverage.storage_dump()),
                 _NON_TERMINAL_PROCESSING,
                 _NON_TERMINAL_PROCESSING,
                 _NON_TERMINAL_PROCESSING,
@@ -928,7 +928,7 @@ class PostgresContentStore(ContentStore):
                 "ELSE processing_resume_stage END, "
                 "indexed_at = CASE WHEN %s THEN %s ELSE indexed_at END WHERE id = %s",
                 (
-                    Jsonb(coverage.model_dump(mode="json")),
+                    Jsonb(coverage.storage_dump()),
                     indexing_complete,
                     indexing_complete,
                     datetime.now(timezone.utc).isoformat(),
@@ -1143,7 +1143,7 @@ class PostgresContentStore(ContentStore):
                 "processing_resume_stage = CASE WHEN %s THEN 'abstraction' "
                 "ELSE processing_resume_stage END WHERE id = %s",
                 (
-                    Jsonb(merged.model_dump(mode="json")),
+                    Jsonb(merged.storage_dump()),
                     chunks is not None and indexing_complete,
                     datetime.now(timezone.utc).isoformat(),
                     chunks is not None and indexing_complete,

@@ -110,6 +110,15 @@ _ENABLED = SageCoreConfig(
 )
 
 
+def _attribution(body: dict) -> list[str]:
+    """The response's warnings other than the coverage identity deprecation.
+
+    Returned coverage with a configured identity carries that deprecation
+    regardless of who wrote the document.
+    """
+    return [w for w in body.get("warnings") or [] if "ProcessingIdentity.configuration" not in w]
+
+
 def _StubValidator() -> StubValidator:  # noqa: N802 -- stands in for the former class
     return StubValidator(_PRINCIPALS)
 
@@ -287,7 +296,7 @@ async def test_r1_ingest_records_the_principal(auth_app, tmp_vault_dir) -> None:
     assert doc["last_modified_by"] == _ALICE
     assert doc["created_by_name"] == _ALICE_NAME
     assert doc["last_modified_by_name"] == _ALICE_NAME
-    assert body["warnings"] == []
+    assert _attribution(body) == []
 
 
 async def test_r2_differing_caller_created_by_is_ignored_with_a_warning(
@@ -297,7 +306,7 @@ async def test_r2_differing_caller_created_by_is_ignored_with_a_warning(
         auth_app, "alice-tok", _seed(tmp_vault_dir, "r2.md"), created_by="mallory"
     )
     assert body["document"]["created_by"] == _ALICE
-    (warning,) = body["warnings"]
+    (warning,) = _attribution(body)
     assert "mallory" in warning
     assert _ALICE in warning
 
@@ -490,7 +499,7 @@ async def test_p1_mcp_ingest_records_the_principal_and_warns_on_a_differing_call
         )
         assert plain["created_by"] == _ALICE
         assert plain["created_by_name"] == _ALICE_NAME
-        assert "warnings" not in plain
+        assert _attribution(plain) == []
 
         claimed = await _mcp_call(
             auth_app,
@@ -504,7 +513,7 @@ async def test_p1_mcp_ingest_records_the_principal_and_warns_on_a_differing_call
             },
         )
         assert claimed["created_by"] == _ALICE
-        (warning,) = claimed["warnings"]
+        (warning,) = _attribution(claimed)
         assert "mallory" in warning
         assert _ALICE in warning
 
@@ -585,7 +594,7 @@ async def test_n1_no_auth_uses_the_caller_value_or_the_owner(noauth_app, tmp_vau
         noauth_app, None, _seed(tmp_vault_dir, "n1a.md"), created_by="carol"
     )
     assert claimed["document"]["created_by"] == "carol"
-    assert claimed["warnings"] == []
+    assert _attribution(claimed) == []
     unclaimed = await _rest_ingest(noauth_app, None, _seed(tmp_vault_dir, "n1b.md"))
     assert unclaimed["document"]["created_by"] == _OWNER
     assert unclaimed["document"]["last_modified_by"] == _OWNER

@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from sage.models.coverage import canonical_configuration_hash
 from tests.sage.test_rest_operation_mcp_counterparts import (
     _EXPORT_BODY,
     _ingest,
@@ -34,7 +35,12 @@ async def established_selection(yaml_app, tmp_vault_dir):
 
 
 def _assert_inspection(document, expected):
-    assert document["processing_coverage"]["inspection"] == expected
+    served = dict(document["processing_coverage"]["inspection"])
+    # The served dimension also names its entry in the shared configuration block.
+    ref = served.pop("configuration_ref", None)
+    assert served == {k: v for k, v in expected.items() if k != "configuration_ref"}
+    if served.get("identity"):
+        assert ref == canonical_configuration_hash(served["identity"]["configuration"])
     assert expected["selection_summary"]["boundary"]
     assert expected["selection_summary"]["selected_inputs"] > 0
     assert expected["selection_summary"]["selected_tokens"] > 0
@@ -117,7 +123,10 @@ async def test_mutation_response_variants_preserve_or_deliberately_omit_selectio
     assert row["status"] == "success"
     assert row["document_id"] == doc_id
     persisted = await app.state.vault_registry[vault_id].graph_store.get_document(doc_id)
-    assert persisted.processing_coverage.inspection.model_dump(mode="json") == expected
+    # A bare dimension dump has no coverage object to name a shared entry in.
+    assert persisted.processing_coverage.inspection.model_dump(mode="json") == {
+        k: v for k, v in expected.items() if k != "configuration_ref"
+    }
     if response_mode == "light":
         assert row.get("document") is None
         assert "processing_coverage" not in row
@@ -176,4 +185,9 @@ async def test_actual_mcp_ingest_reports_its_established_selection(
     assert 0 < summary["selected_tokens"] <= 64
     assert summary["boundary"]
     persisted = await app.state.vault_registry[vault_id].graph_store.get_document(body["id"])
+    ref = inspection.pop("configuration_ref")
+    assert (
+        settled["processing_coverage"]["configurations"][ref]
+        == (inspection["identity"]["configuration"])
+    )
     assert persisted.processing_coverage.inspection.model_dump(mode="json") == inspection
