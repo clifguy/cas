@@ -44,6 +44,16 @@ binary file. Retrieve retained source bytes to edit and supersede. Use the serve
 source-delivery contract; inspect body form, size and hash, and execute any returned
 recipe with [transfer guidance](transfer.md).
 
+The projection is derived text, lossy by design. What survives depends on the source
+format: binary formats can lose text, link targets, styles, images, comments and
+layout, while other formats keep more. Something absent from a projection is not
+absent from the document. Read the retained source before you audit a document's
+formatting, links or images, report that it is missing content, or report an
+extraction defect. A binary document's projection without formatting or link targets
+is working as designed. Source text missing from a projection is at most a suspected
+extraction defect: report the document ID, its source hash and the missing text, and
+say whether the served description documents that loss for the format.
+
 REST inline content can refuse binary formats with `binary_content_refused`; use
 that deployment's raw content route (currently `/documents/{id}/content` under its
 vault route) or its supported download recipe. Do not decode a projection as DOCX,

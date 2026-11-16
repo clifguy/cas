@@ -6,6 +6,11 @@ its returned ID and inspect pipeline status/error, then make a bounded read-only
 wait appropriate to the served contract. One final status read is better than a
 poll after every unit of work. Search absence is not document absence.
 
+Before calling a result a defect, rule out designed behavior, such as a binary
+document's projection missing formatting or link targets, or a light response missing
+fields. Read the served description of the tool that produced the result, then
+compare against the retained source or a full-shape read before reporting anything.
+
 Pipeline recomputation is a mutation, not a harmless diagnostic probe. Only after
 read diagnosis establishes a recoverable condition and repair is authorized use
 the supported repair operation. Its `already_in_flight` refusal means processing

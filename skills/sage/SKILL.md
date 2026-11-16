@@ -31,7 +31,10 @@ description can state.
    supersession with the head's version token; see `reference/writing.md`.
 4. **Read a tool's description before supplying a parameter you have not
    used.** They are long because they are complete.
-5. **Read a document with the projection call.** Never reconstruct one by
+5. **Read a document's text with the projection call, and anything more from
+   the retained source.** The projection is derived text, lossy by design;
+   when the question goes beyond text, or ends in a claim that something is
+   missing or broken, read the source. Never reconstruct a document by
    stitching search results together.
 
 ## Orienting
@@ -95,7 +98,10 @@ for against the descriptions from `list_vaults`.
 Read [retrieval guidance](reference/retrieval.md) for enumeration, version identity,
 literal edge anchors, large results, or retained binary source retrieval.
 
-- Whole document: the projection call.
+- Whole document, text only: the projection call.
+- Links, formatting, styles, images, or any judgment about how a document is
+  built or what it lacks: the retained source through `get_document`, not the
+  projection.
 - One section of a long document: list the headings first, then read the
   section by an exact heading path.
 - Anything large: spill it to a file path rather than pulling it inline.
