@@ -67,6 +67,7 @@ from sage.services.caller_paths import (
     validate_caller_write_path_shape,
     validate_write_to_path,
 )
+from sage.services.deprecations import with_coverage_warnings
 from sage.services.passage_split import group_sections, join_passages
 from sage.services.read_diagnostics import build_not_found_detail
 
@@ -261,11 +262,12 @@ class UtilitiesService:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(projection_text, encoding="utf-8")
 
-        return ExportProjectionResponse(
+        built = ExportProjectionResponse(
             processing_coverage=doc.processing_coverage,
             document_id=document_id,
             output_path=str(target),
         )
+        return with_coverage_warnings("export_projection", built)
 
     # ------------------------------------------------------------------
     # read_projection
@@ -356,13 +358,14 @@ class UtilitiesService:
 
                 validate_caller_write_path_shape(write_to_path)
                 doc, projection_text = await self._get_projection_text(document_id)
-                return mint_download_recipe_for_projection(
+                built = mint_download_recipe_for_projection(
                     self._config.vault.id,
                     document_id=doc.id,
                     text=projection_text,
                     write_to_path=write_to_path,
                     processing_coverage=doc.processing_coverage,
                 )
+                return with_coverage_warnings("read_projection", built)
 
             validate_write_to_path(write_to_path)
 
@@ -371,7 +374,7 @@ class UtilitiesService:
         if not spill_to_disk:
             response = ReadProjectionResponse.from_document(doc, projection_text=projection_text)
             response.read_meta = response.read_meta.stamped(self._config.fingerprint())
-            return response
+            return with_coverage_warnings("read_projection", response)
 
         # write-to-disk delivery: the path was validated above, before the read.
         # The exclusive-create mode is what actually enforces the
@@ -410,7 +413,7 @@ class UtilitiesService:
             projection_status=response.read_meta.projection_status,
             projection_recovery=response.read_meta.projection_recovery,
         ).stamped(self._config.fingerprint())
-        return response
+        return with_coverage_warnings("read_projection", response)
 
     # ------------------------------------------------------------------
     # read_section
@@ -470,7 +473,7 @@ class UtilitiesService:
             section_text=section_text,
         )
         response.read_meta = response.read_meta.stamped(self._config.fingerprint())
-        return response
+        return with_coverage_warnings("read_section", response)
 
     # ------------------------------------------------------------------
     # list_headings
@@ -514,7 +517,7 @@ class UtilitiesService:
 
         response = ListHeadingsResponse.from_document(doc, headings=headings)
         response.read_meta = response.read_meta.stamped(self._config.fingerprint())
-        return response
+        return with_coverage_warnings("list_headings", response)
 
     # ------------------------------------------------------------------
     # eval_retrieval (BH-041, BH-042)

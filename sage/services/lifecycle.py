@@ -50,6 +50,7 @@ from sage.models.schemas import (
 from sage.request_identity import asserted_agent, current_actor, edge_attribution, modifier_fields
 from sage.services._bulk_envelope import resolve_item_document_id, sage_error_to_envelope
 from sage.services._dry_run import DRY_RUN_SENTINEL_EDGE_ID as _DRY_RUN_SENTINEL_EDGE_ID
+from sage.services.deprecations import with_item_coverage_warnings
 from sage.storage.locks import DocumentLockManager
 
 
@@ -496,7 +497,7 @@ class LifecycleService:
                     )
                 )
         success_count = sum(1 for r in results if r.status == "success")
-        return BulkLifecycleResponse(
+        built = BulkLifecycleResponse(
             results=results,
             success_count=success_count,
             error_count=len(results) - success_count,
@@ -506,6 +507,7 @@ class LifecycleService:
             # dropped under light response_mode.
             dry_run=request.dry_run,
         )
+        return with_item_coverage_warnings("update_lifecycles", built)
 
     def prepare_supersede(
         self,

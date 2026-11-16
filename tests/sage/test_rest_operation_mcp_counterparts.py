@@ -413,6 +413,8 @@ async def test_export_projection_tool_writes_under_the_storage_root(
         )
     )
 
+    (deprecation,) = via_tool.pop("warnings")
+    assert deprecation.startswith("Deprecated: the ProcessingIdentity.configuration")
     assert via_tool == {
         "processing_coverage": coverage,
         "document_id": doc_id,
@@ -475,6 +477,8 @@ async def test_export_projection_tool_overwrites_an_existing_file(
         )
     )
 
+    (deprecation,) = via_tool.pop("warnings")
+    assert deprecation.startswith("Deprecated: the ProcessingIdentity.configuration")
     assert via_tool == {
         "processing_coverage": coverage,
         "document_id": doc_id,

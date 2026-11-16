@@ -2,6 +2,7 @@ export interface ProcessingIdentity {
   source_hash: string;
   adapter: string;
   policy: string;
+  /** @deprecated Read it from ProcessingCoverage.configurations through configuration_ref. */
   configuration: Record<string, unknown>;
   tokenization: string;
 }
@@ -42,6 +43,7 @@ export interface CoverageDimension {
   scope: 'unknown' | 'pending' | 'not_applicable' | 'limited' | 'complete';
   generation?: number | null;
   identity?: ProcessingIdentity | null;
+  configuration_ref?: string | null;
   limitations?: string[];
   counts?: CoverageCount[];
   ranges?: CoverageRange[];
@@ -55,6 +57,7 @@ export interface AbstractionQuality {
   policy?: string | null;
   generation?: number | null;
   identity?: ProcessingIdentity | null;
+  configuration_ref?: string | null;
   checks?: string[];
   findings?: string[];
   calibration_refs?: Record<string, string>;
@@ -67,6 +70,7 @@ export interface ProcessingCoverage {
   /** Omitted means unknown historical quality, never screened. */
   abstraction_quality?: AbstractionQuality;
   served_abstraction_generation?: number | null;
+  configurations?: Record<string, Record<string, unknown>> | null;
   attempt: number;
   source_retention: CoverageDimension;
   inspection: CoverageDimension;
@@ -491,6 +495,7 @@ export interface TraverseResponse {
   resolution_path?: ResolutionPathEntry[] | null;
   // True when the walk hit the server's row limit and stopped early.
   truncated?: boolean;
+  warnings?: string[] | null;
   read_meta?: ReadMeta;
 }
 
@@ -929,6 +934,7 @@ export interface OpenDocumentResponse {
 export interface DocumentDownloadUrlResponse {
   processing_coverage?: ProcessingCoverage;
   download_url: string;
+  warnings?: string[] | null;
 }
 
 export interface StagingEdgeConfirmResponse {

@@ -93,7 +93,13 @@ async def _patch(doc_id: str, **fields) -> dict:
 
 
 def _deprecation_warnings(warnings) -> list[str]:
-    return [w for w in (warnings or []) if w.startswith("Deprecated:")]
+    # Only the token-format deprecations; a configured identity in the returned
+    # coverage carries a deprecation of its own.
+    return [
+        w
+        for w in (warnings or [])
+        if w.startswith("Deprecated:") and "ProcessingIdentity.configuration" not in w
+    ]
 
 
 # ---------------------------------------------------------------------------

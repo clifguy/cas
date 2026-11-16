@@ -959,6 +959,9 @@ _READ_PROJECTION_DELIVERY_FIELDS = {"written_to", "content_size"}
 # the Document-sourced exhaustive-fields closure does not apply to it. The
 # dedicated marker regression tests below assert its population directly.
 _READ_META_FIELD = {"read_meta"}
+# Deprecation warnings are attached by the service from the assembled response,
+# not sourced from a Document field, so the closure does not apply to them.
+_RESPONSE_WARNINGS_FIELD = {"warnings"}
 
 
 # T1: ReadProjectionResponse exhaustive fields — the keystone F4 closure.
@@ -968,7 +971,10 @@ def test_from_document_populates_every_read_projection_response_field():
     # Three-branch closure-test idiom. ReadProjectionResponse has
     # no non-None-default scalar fields today; the elif is forward defense.
     for field_name, field_info in ReadProjectionResponse.model_fields.items():
-        if field_name in _READ_PROJECTION_DELIVERY_FIELDS | _READ_META_FIELD:
+        if (
+            field_name
+            in _READ_PROJECTION_DELIVERY_FIELDS | _READ_META_FIELD | _RESPONSE_WARNINGS_FIELD
+        ):
             continue
         value = getattr(response, field_name)
         annotation = field_info.annotation
@@ -1001,7 +1007,7 @@ def test_from_document_populates_every_read_section_response_field():
     # Three-branch closure-test idiom. ReadSectionResponse has
     # no non-None-default scalar fields today; the elif is forward defense.
     for field_name, field_info in ReadSectionResponse.model_fields.items():
-        if field_name in _READ_META_FIELD:
+        if field_name in _READ_META_FIELD | _RESPONSE_WARNINGS_FIELD:
             continue
         value = getattr(response, field_name)
         annotation = field_info.annotation
@@ -1029,6 +1035,8 @@ def test_from_document_populates_every_list_headings_response_field():
     # Three-branch closure-test idiom. ListHeadingsResponse has
     # no non-None-default scalar fields today; the elif is forward defense.
     for field_name, field_info in ListHeadingsResponse.model_fields.items():
+        if field_name in _RESPONSE_WARNINGS_FIELD:
+            continue
         value = getattr(response, field_name)
         annotation = field_info.annotation
         default = field_info.default

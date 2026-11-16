@@ -5,7 +5,15 @@ import json
 from copy import deepcopy
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 BoundedText = Annotated[str, Field(min_length=1, max_length=512)]
 CoverageHash = Annotated[str, Field(pattern=r"^sha256:[0-9a-f]{64}$")]
@@ -66,12 +74,41 @@ class CoverageModel(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
 
+#: Serialization context that renders coverage in its stored form, without the
+#: shared configuration block and references derived for callers.
+STORAGE_CONTEXT: dict = {"coverage_storage": True}
+
+_DERIVED_REF = "configuration_ref"
+_DERIVED_BLOCK = "configurations"
+
+
+def _discard_derived(data: object, key: str) -> object:
+    """Null a derived field on input; it is recomputed on serialization.
+
+    The key is kept rather than removed: assignment validation passes the
+    model's own field values through this validator, and a removed key would
+    leave the validated model without the attribute.
+    """
+    if isinstance(data, dict) and data.get(key) is not None:
+        return {**data, key: None}
+    return data
+
+
+def _for_storage(info: SerializationInfo) -> bool:
+    context = info.context
+    return isinstance(context, dict) and bool(context.get("coverage_storage"))
+
+
 class ProcessingIdentity(CoverageModel):
     source_hash: CoverageHash = Field(description="Source hash.")
     adapter: BoundedText = Field(description="Adapter.")
     policy: BoundedText = Field(description="Policy.")
     configuration: dict = Field(
-        max_length=PROCESSING_CONFIGURATION_MAX_KEYS, description="Configuration."
+        max_length=PROCESSING_CONFIGURATION_MAX_KEYS,
+        description=(
+            "Deprecated: read the configuration from the coverage object's configurations "
+            "block through the holder's configuration_ref. Removal may ship from 2027-01-04."
+        ),
     )
     tokenization: BoundedText = Field(description="Tokenization.")
 
@@ -222,6 +259,14 @@ class CoverageDimension(CoverageModel):
     identity: ProcessingIdentity | None = Field(
         default=None, description="Identity.", exclude_if=lambda value: value is None
     )
+    configuration_ref: CoverageHash | None = Field(
+        default=None,
+        description=(
+            "Key of this dimension's effective configuration in the coverage object's "
+            "configurations block; absent without an identity."
+        ),
+        exclude_if=lambda value: value is None,
+    )
     counts: list[CoverageCount] = Field(
         default_factory=list,
         max_length=8,
@@ -255,6 +300,11 @@ class CoverageDimension(CoverageModel):
         ),
         exclude_if=lambda value: value is None,
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def derived_reference(cls, data: object) -> object:
+        return _discard_derived(data, _DERIVED_REF)
 
     @model_validator(mode="after")
     def established(self) -> "CoverageDimension":
@@ -323,6 +373,14 @@ class AbstractionQuality(CoverageModel):
             "Source and selection identity bound to the quality disposition; null when unknown."
         ),
     )
+    configuration_ref: CoverageHash | None = Field(
+        default=None,
+        description=(
+            "Key of the identity's effective configuration in the coverage object's "
+            "configurations block; absent without an identity."
+        ),
+        exclude_if=lambda value: value is None,
+    )
     checks: list[Annotated[str, Field(max_length=64)]] = Field(
         default_factory=list,
         max_length=3,
@@ -357,6 +415,11 @@ class AbstractionQuality(CoverageModel):
         default=None,
         description="Hash of raw model output; raw text remains private diagnostic data.",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def derived_reference(cls, data: object) -> object:
+        return _discard_derived(data, _DERIVED_REF)
 
     @model_validator(mode="after")
     def attributable(self) -> "AbstractionQuality":
@@ -408,6 +471,21 @@ class ProcessingCoverage(CoverageModel):
         "unknown. Evidence may describe a newer failed replacement attempt.",
     )
 
+    configurations: dict[CoverageHash, dict] | None = Field(
+        default=None,
+        description=(
+            "Each distinct effective configuration once, keyed by its canonical hash; "
+            "each identity holder names its entry in configuration_ref. Derived from the "
+            "identities, absent when none is established."
+        ),
+        exclude_if=lambda value: value is None,
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def derived_block(cls, data: object) -> object:
+        return _discard_derived(data, _DERIVED_BLOCK)
+
     @model_validator(mode="after")
     def bounded_summary(self) -> "ProcessingCoverage":
         if any(
@@ -416,9 +494,40 @@ class ProcessingCoverage(CoverageModel):
             if dimension != "inspection"
         ):
             raise ValueError("selection summary belongs only to inspection")
-        if len(self.model_dump_json().encode()) > 65536:
+        if len(self.model_dump_json(context=STORAGE_CONTEXT).encode()) > 65536:
             raise ValueError("coverage summary exceeds 65536 bytes")
         return self
+
+    @model_serializer(mode="wrap")
+    def serve_shared_configurations(
+        self, handler: SerializerFunctionWrapHandler, info: SerializationInfo
+    ) -> dict:
+        """Serve each effective configuration once, referenced from its holders.
+
+        The block and references are computed here, from the identities as they
+        stand, so they cannot drift from them; the stored form omits both.
+        """
+        data = handler(self)
+        if _for_storage(info) or not isinstance(data, dict):
+            return data
+        block: dict[str, dict] = {}
+        holders = [*DIMENSIONS, "abstraction_quality"]
+        for name in holders:
+            identity = getattr(self, name).identity
+            rendered = data.get(name)
+            if identity is None or not isinstance(rendered, dict):
+                continue
+            ref = canonical_configuration_hash(identity.configuration)
+            rendered[_DERIVED_REF] = ref
+            served = rendered.get("identity", {}).get("configuration", identity.configuration)
+            block.setdefault(ref, served)
+        if block:
+            data[_DERIVED_BLOCK] = block
+        return data
+
+    def storage_dump(self) -> dict:
+        """The stored JSON form, without the derived configuration block and references."""
+        return self.model_dump(mode="json", context=STORAGE_CONTEXT)
 
 
 # The abstraction-evidence limitation recorded when a document's projection holds

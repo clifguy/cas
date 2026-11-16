@@ -88,7 +88,11 @@ from sage.services._tier3_query import (
     resolve_tier3_facets,
     validate_tier3_sort,
 )
-from sage.services.deprecations import response_field_warnings, warnings_for
+from sage.services.deprecations import (
+    carried_components,
+    response_field_warnings,
+    warnings_for,
+)
 from sage.services.passage_split import group_sections, section_text
 from sage.services.read_diagnostics import build_not_found_detail
 from sage.utils.date_parsing import parse_document_date
@@ -397,8 +401,10 @@ def _degraded_catalog_candidate(
 
 
 def _with_light_row_warnings(hints: dict[str, object] | None, rows: list) -> dict | None:
-    """``hints`` with the warnings owed by the light rows among ``rows``, each once."""
-    carried = {type(hit.document).__name__ for hit in rows if isinstance(hit, DiscoverHit)}
+    """``hints`` with the warnings owed by the rows' shapes and coverage, each once."""
+    carried = {
+        type(hit.document).__name__ for hit in rows if isinstance(hit, DiscoverHit)
+    } | carried_components(rows)
     owed = response_field_warnings("search", carried)
     if not owed:
         return hints
