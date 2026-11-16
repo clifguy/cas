@@ -3690,3 +3690,163 @@ lines.
 
 **Expected:** Both are refused, reporting 101 rows across the workbook and one node over the limit across the package.
 
+
+### TEST-SAGE-AD-248: A hyperlink's visible text is kept
+
+**Artifact:** `sage/source_adapters/docx_adapter.py` (DocxAdapter.project)
+**Category:** projection, run wrappers
+**Precondition:** A paragraph of "Read the ", a `w:hyperlink` whose run reads "release notes", and " first.".
+
+**Expected:** "Read the release notes first." appears in `result.text`, matching python-docx's `paragraph.text` for the same file.
+
+**Rationale:** The link's words are what a reader sees; the target URL is not paragraph text and stays out.
+
+### TEST-SAGE-AD-249: Text in a tracked insertion is kept
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, revisions
+**Precondition:** "Payment is due ", a `w:ins` whose run reads "within thirty days ", then "of invoice.".
+
+**Expected:** "Payment is due within thirty days of invoice." appears in `result.text`.
+
+**Rationale:** Within a paragraph's runs, the projection reads a tracked insertion as accepted, the view Word shows by default.
+
+### TEST-SAGE-AD-250: Text in a tracked deletion is excluded
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, revisions
+**Precondition:** As AD-249, with two tracked deletions before the insertion: one whose run carries `w:delText` "immediately " (Word's form) and one whose run carries `w:t` "on demand ".
+
+**Expected:** The accepted sentence appears, and neither "immediately" nor "on demand" does. The second deletion shows the exclusion comes from not entering `w:del`, not from the run's text element.
+
+**Rationale:** Deleted text is not part of the accepted document. Including it would put both the old and new wording in one sentence.
+
+### TEST-SAGE-AD-251: An inline content control's text is kept
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, run wrappers
+**Precondition:** "Prepared for ", a run-level `w:sdt` aliased "Client" whose content reads "Northwind Traders", then ".".
+
+**Expected:** "Prepared for Northwind Traders." appears in `result.text`.
+
+### TEST-SAGE-AD-252: Nested wrappers are kept in headings and table cells
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, run wrappers
+**Precondition:** A Heading 1 paragraph "Terms for " followed by a content control reading "Northwind" inside a tracked insertion; a one-cell table whose paragraph is "See " and a hyperlink reading "schedule B".
+
+**Expected:** The only heading's text is "Terms for Northwind"; `result.text` contains "| See schedule B |".
+
+### TEST-SAGE-AD-253: Runs in every other transparent wrapper are kept
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, run wrappers
+**Precondition:** For each of `w:moveTo`, `w:smartTag`, `w:customXml`, `w:fldSimple`, `w:dir` and `w:bdo` in turn, a paragraph "Ship to ", that wrapper around a run reading "Leeds", then " today.".
+
+**Expected:** "Ship to Leeds today." appears in `result.text` for every wrapper.
+
+### TEST-SAGE-AD-254: Text at a move's origin is excluded
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, revisions
+**Precondition:** A `w:moveFrom` whose run carries `w:t` "Urgent. ", then "Review the draft. ", then a `w:moveTo` whose run reads "Urgent.".
+
+**Expected:** "Review the draft. Urgent." appears and "Urgent." appears exactly once.
+
+**Rationale:** Moved text is read where it was moved to, as Word shows it with revisions accepted. The origin carries `w:t`, so a reader that collects every `w:t` in the paragraph would read it twice.
+
+### TEST-SAGE-AD-255: A text box with a fallback copy does not repeat its text
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, run wrappers
+**Precondition:** A paragraph "Body text." followed by a run holding `mc:AlternateContent` whose `mc:Choice` and `mc:Fallback` each carry the same text box reading "Boxed note".
+
+**Expected:** "Body text." appears, and "Boxed note" appears at most once.
+
+**Rationale:** Word stores a text box twice, once for current readers and once as a fallback. A reader that collects every `w:t` beneath the paragraph would repeat it.
+
+### TEST-SAGE-AD-256: A content control showing its placeholder contributes no text
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, run wrappers
+**Precondition:** "Name: " followed by an inline `w:sdt` whose content reads "Click or tap here to enter text.", in eight forms: `w:showingPlcHdr` with no value and with `w:val` "1", "true" and "On"; with `w:val` "0", "false" and "OFF"; and with no flag.
+
+**Expected:** "Name:" appears in every form. The prompt is absent in the first four forms, where the placeholder is showing, and present in the other four. The on/off value is read without regard to case.
+
+**Rationale:** Word fills an unfilled control with its placeholder prompt. The prompt is not text the author wrote.
+
+### TEST-SAGE-AD-257: Contents and figure-list paragraphs contribute no text
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, paragraph styles
+**Precondition:** Two entries in Word's table-of-contents styles (style id `TOC1`/`TOC2`, names "toc 1" and "TOC 2", so the second differs from Word's spelling only in case). Each holds a hyperlink to a heading's title followed by its page number. Then a "table of figures" entry (style id `TableofFigures`): a hyperlink "Figure 1 Site layout" followed by "7". Then a "table of authorities" paragraph "Smith v. Jones, 4". They are followed by the Heading 1 "Introduction" and a body paragraph.
+
+**Expected:** The only heading is "Introduction"; "Introduction" appears once in `result.text`; "Scope of work", "Introduction3" and "Site layout" do not appear; the body paragraph and "Smith v. Jones" do.
+
+**Rationale:** A contents entry repeats a heading, and a figure-list entry a caption, that the document already carries, fused to its page number. The style name is matched without regard to case.
+
+### TEST-SAGE-AD-258: Tabs and line breaks inside runs separate the words they divide
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, run content
+**Precondition:**
+- A Title paragraph "Plan", line break, "2027".
+- A Heading 1 "Annual", line break, "Report".
+- A body paragraph built from runs "Name:", tab, "Value", line break, "next", carriage return, "line", positional tab, "end".
+- A paragraph "co", non-breaking hyphen, "op", page break, "after".
+- A one-cell table reading "first", line break, "second".
+
+**Expected:**
+- The title is "Plan 2027" and the only heading is "Annual Report".
+- `result.text` contains "Name:\tValue\nnext\nline\tend", identical to python-docx's `paragraph.text` for that paragraph, and "co-opafter".
+- The table row reads "| first second |".
+
+**Rationale:** Body text keeps the characters python-docx's run text gives them. The title, headings and table cells are one line, so a tab or line break there reads as a single space.
+
+### TEST-SAGE-AD-259: A placeholder content control inside another wrapper contributes no text
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, run wrappers
+**Precondition:** "Owner: " followed by a `w:ins` holding two inline content controls: the first shows its placeholder "Choose an item.", the second has no flag and reads "Finance". A second paragraph holds a control with no flag whose content is a run "Dept " and a nested control showing its placeholder "Enter a code.".
+
+**Expected:** `result.text` contains "Owner: Finance" and "Dept", and neither "Choose an item." nor "Enter a code.".
+
+**Rationale:** The placeholder rule applies wherever the control sits, not only directly in the paragraph. A control's flag is read from its own properties, so a placeholder nested inside a filled control hides only itself.
+
+### TEST-SAGE-AD-260: Table-of-contents paragraphs in a table cell contribute no text
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, paragraph styles, tables
+**Precondition:** A one-cell table whose cell holds a paragraph "Before", a "toc 9" paragraph (a hyperlink "Introduction" followed by "3"), a "table of figures" paragraph (a hyperlink "Figure 1 Plan" followed by "3"), and a paragraph "After".
+
+**Expected:** The row reads "| Before After |", with no gap where the entries were; neither "Introduction" nor "Figure 1" appears in `result.text`.
+
+**Rationale:** Contents entries are left out wherever they appear, as in TEST-SAGE-AD-257.
+
+### TEST-SAGE-AD-261: Where one line is expected, tabs and breaks read as one space and none at the edges
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, run content
+**Precondition:**
+- A one-cell table reading "  first ", tab, "second  third ".
+- A Title " Plan", tab, "2027 ".
+- A Heading 1 built from a line break, "Annual ", tab, " Report", tab.
+- A decimal-numbered Heading 1 "Scope", two line breaks, "of work".
+- A body paragraph "left", column break, "right".
+
+**Expected:**
+- The title is "Plan 2027".
+- The heading texts and paths are "Annual Report" and "1 Scope of work".
+- `result.text` contains "leftright" and the row "| first second  third |".
+
+**Rationale:** In the title, headings and cells, a run of tabs and line breaks, with the spaces beside it, reads as one space, and one at either end reads as nothing, so a heading path carries no edge spaces. Other spacing is kept, and the title and a cell are trimmed at their edges. A column break, like a page break, has no text equivalent in python-docx.
+
+### TEST-SAGE-AD-262: Rewriting text as one line is linear
+
+**Artifact:** `docx_adapter._single_line`
+**Category:** projection, resource bounds
+**Precondition:** "a", 40,000 spaces, "b"; and the same text after "a" and a tab.
+
+**Expected:** The first comes back unchanged and the second as "a a", 40,000 spaces, "b", both within half a second.
+
+**Rationale:** A pattern that scans a run of spaces from every start does quadratic work. A document small enough to pass the package limits can hold a run of spaces long enough to stall the process.
