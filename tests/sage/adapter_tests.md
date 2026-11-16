@@ -3779,9 +3779,9 @@ lines.
 
 **Artifact:** `DocxAdapter.project`
 **Category:** projection, paragraph styles
-**Precondition:** Two entries in Word's table-of-contents styles (style id `TOC1`/`TOC2`, names "toc 1" and "TOC 2", so the second differs from Word's spelling only in case). Each holds a hyperlink to a heading's title followed by its page number. Then a "table of figures" entry (style id `TableofFigures`): a hyperlink "Figure 1 Site layout" followed by "7". They are followed by the Heading 1 "Introduction" and a body paragraph.
+**Precondition:** Two entries in Word's table-of-contents styles (style id `TOC1`/`TOC2`, names "toc 1" and "TOC 2", so the second differs from Word's spelling only in case). Each holds a hyperlink to a heading's title followed by its page number. Then a "table of figures" entry (style id `TableofFigures`): a hyperlink "Figure 1 Site layout" followed by "7". Then a "table of authorities" paragraph "Smith v. Jones, 4". They are followed by the Heading 1 "Introduction" and a body paragraph.
 
-**Expected:** The only heading is "Introduction"; "Introduction" appears once in `result.text`; "Scope of work", "Introduction3" and "Site layout" do not appear; the body paragraph does.
+**Expected:** The only heading is "Introduction"; "Introduction" appears once in `result.text`; "Scope of work", "Introduction3" and "Site layout" do not appear; the body paragraph and "Smith v. Jones" do.
 
 **Rationale:** A contents entry repeats a heading, and a figure-list entry a caption, that the document already carries, fused to its page number. The style name is matched without regard to case.
 
@@ -3807,19 +3807,19 @@ lines.
 
 **Artifact:** `DocxAdapter.project`
 **Category:** projection, run wrappers
-**Precondition:** "Owner: " followed by a `w:ins` holding two inline content controls: the first shows its placeholder "Choose an item.", the second has no flag and reads "Finance".
+**Precondition:** "Owner: " followed by a `w:ins` holding two inline content controls: the first shows its placeholder "Choose an item.", the second has no flag and reads "Finance". A second paragraph holds a control with no flag whose content is a run "Dept " and a nested control showing its placeholder "Enter a code.".
 
-**Expected:** `result.text` contains "Owner: Finance" and not "Choose an item.".
+**Expected:** `result.text` contains "Owner: Finance" and "Dept", and neither "Choose an item." nor "Enter a code.".
 
-**Rationale:** The placeholder rule applies wherever the control sits, not only directly in the paragraph.
+**Rationale:** The placeholder rule applies wherever the control sits, not only directly in the paragraph. A control's flag is read from its own properties, so a placeholder nested inside a filled control hides only itself.
 
 ### TEST-SAGE-AD-260: Table-of-contents paragraphs in a table cell contribute no text
 
 **Artifact:** `DocxAdapter.project`
 **Category:** projection, paragraph styles, tables
-**Precondition:** A one-cell table whose cell holds a "toc 1" paragraph (a hyperlink "Introduction" followed by "3") and a body paragraph "Cell body".
+**Precondition:** A one-cell table whose cell holds a paragraph "Before", a "toc 9" paragraph (a hyperlink "Introduction" followed by "3"), a "table of figures" paragraph (a hyperlink "Figure 1 Plan" followed by "3"), and a paragraph "After".
 
-**Expected:** The row reads "| Cell body |"; "Introduction" does not appear in `result.text`.
+**Expected:** The row reads "| Before After |", with no gap where the entries were; neither "Introduction" nor "Figure 1" appears in `result.text`.
 
 **Rationale:** Contents entries are left out wherever they appear, as in TEST-SAGE-AD-257.
 
@@ -3828,8 +3828,8 @@ lines.
 **Artifact:** `DocxAdapter.project`
 **Category:** projection, run content
 **Precondition:**
-- A one-cell table reading "first ", tab, "second".
-- A Title "Plan", tab, "2027".
+- A one-cell table reading "  first ", tab, "second  third ".
+- A Title " Plan", tab, "2027 ".
 - A Heading 1 built from a line break, "Annual ", tab, " Report", tab.
 - A decimal-numbered Heading 1 "Scope", two line breaks, "of work".
 - A body paragraph "left", column break, "right".
@@ -3837,16 +3837,16 @@ lines.
 **Expected:**
 - The title is "Plan 2027".
 - The heading texts and paths are "Annual Report" and "1 Scope of work".
-- `result.text` contains "leftright" and the row "| first second |".
+- `result.text` contains "leftright" and the row "| first second  third |".
 
-**Rationale:** In the title, headings and cells, a run of tabs and line breaks, with the spaces beside it, reads as one space, and one at either end reads as nothing, so a heading path carries no edge spaces. A column break, like a page break, has no text equivalent in python-docx.
+**Rationale:** In the title, headings and cells, a run of tabs and line breaks, with the spaces beside it, reads as one space, and one at either end reads as nothing, so a heading path carries no edge spaces. Other spacing is kept, and the title and a cell are trimmed at their edges. A column break, like a page break, has no text equivalent in python-docx.
 
 ### TEST-SAGE-AD-262: Rewriting text as one line is linear
 
 **Artifact:** `docx_adapter._single_line`
 **Category:** projection, resource bounds
-**Precondition:** "a", 40,000 spaces, "b".
+**Precondition:** "a", 40,000 spaces, "b"; and the same text after "a" and a tab.
 
-**Expected:** The text comes back unchanged in under half a second.
+**Expected:** The first comes back unchanged and the second as "a a", 40,000 spaces, "b", both within half a second.
 
 **Rationale:** A pattern that scans a run of spaces from every start does quadratic work. A document small enough to pass the package limits can hold a run of spaces long enough to stall the process.
