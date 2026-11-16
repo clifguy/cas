@@ -1,0 +1,9 @@
+classification: patch
+summary: >-
+  Describes the document projection as derived, lossy text on the MCP
+  read_projection and get_document tools and on the projection and document
+  operations of the Core API specification, and names get_document with
+  write_to_path as the read for the original bytes, including in the
+  binary_content_refused descriptions and message. Description-only; no
+  shape changes.
+for_callers: ""

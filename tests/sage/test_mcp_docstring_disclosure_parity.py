@@ -565,8 +565,10 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # parameter description.
     ("sage_core", "optimize_vault_content_store"): Pin(2, 1),
     # doc_only fell from 10 as the delivery and write_to_path rules moved into
-    # the published parameter descriptions, out of the prose body.
-    ("sage_core", "read_projection"): Pin(2, 5),
+    # the published parameter descriptions, out of the prose body. Both counts
+    # fell again once the two surfaces stated the projection's lossiness and
+    # the route to the original in the same sentences.
+    ("sage_core", "read_projection"): Pin(0, 1),
     ("sage_core", "read_section"): Pin(2, 1),
     # doc_only fell from 20 once a qualified error-mode header ended the prose
     # body: its synchronous refusal list had been read as claims.

@@ -2190,7 +2190,8 @@ class BinaryContentRefusedError(SAGEError):
     read path declines to inline those bytes so a caller cannot scan a
     binary container as though it were text and read a confident false
     negative. The readable content lives in the extracted-text projection;
-    the detail directs the caller to ``read_projection`` (CAS-ADR-039).
+    the detail directs the caller to ``read_projection`` (CAS-ADR-039), and
+    the message also names ``write_to_path`` for the original bytes.
     Distinct from ``document_not_found``: the document exists and is
     readable, only not via raw-byte delivery.
     """
@@ -2201,7 +2202,8 @@ class BinaryContentRefusedError(SAGEError):
             (
                 f"Refusing to inline raw bytes for document {document_id}: "
                 f"source type {source_type!r} is a binary container, not "
-                f"scannable text. Use read_projection for the extracted text."
+                f"scannable text. Use read_projection for the extracted text, or "
+                f"get_document with write_to_path for the original bytes."
             ),
             400,
             {
