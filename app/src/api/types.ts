@@ -533,6 +533,7 @@ export interface PendingMetadataPage {
   limit: number;
   offset: number;
   response_mode: 'light' | 'full';
+  warnings?: string[] | null;
   read_meta?: ReadMeta;
 }
 

@@ -37,6 +37,7 @@ from sage.services.deprecations import (
     DeprecatedForm,
     Deprecation,
     DeprecationRegistryError,
+    response_field_warnings,
     validate_registry,
     warnings_for,
 )
@@ -73,17 +74,60 @@ CREATED_BY_WARNING = (
 # ---------------------------------------------------------------------------
 
 
-def test_the_shipped_registry_is_valid_and_holds_the_timestamp_token_forms() -> None:
+def test_the_shipped_registry_is_valid_and_holds_its_declared_forms() -> None:
     validate_registry(deprecations.DEPRECATIONS)
-    assert {(d.operation, d.form, d.parameter, d.value) for d in deprecations.DEPRECATIONS} == {
-        ("ingest_document", DeprecatedForm.FORMAT, "expected_head_version", "timestamp"),
-        ("update_metadata", DeprecatedForm.FORMAT, "expected_version", "timestamp"),
+    assert {
+        (d.operation, d.form, d.parameter, d.value, d.field) for d in deprecations.DEPRECATIONS
+    } == {
+        ("ingest_document", DeprecatedForm.FORMAT, "expected_head_version", "timestamp", None),
+        ("update_metadata", DeprecatedForm.FORMAT, "expected_version", "timestamp", None),
+        (
+            "search",
+            DeprecatedForm.RESPONSE_FIELD,
+            None,
+            None,
+            "DocumentSummaryLight.processing_coverage",
+        ),
+        (
+            "list_pending_metadata",
+            DeprecatedForm.RESPONSE_FIELD,
+            None,
+            None,
+            "DocumentSummaryLight.processing_coverage",
+        ),
     }
 
 
 def test_every_warning_carrier_is_a_published_operation() -> None:
     assert set(WARNING_CARRIERS) <= set(SERVER_ASSIGNMENT)
-    assert {"search", "ingest_document", "update_metadata"} <= set(WARNING_CARRIERS)
+    assert {"search", "ingest_document", "update_metadata", "list_pending_metadata"} <= set(
+        WARNING_CARRIERS
+    )
+
+
+LIGHT_COVERAGE = Deprecation(
+    operation="search",
+    form=DeprecatedForm.RESPONSE_FIELD,
+    field="DocumentSummaryLight.processing_coverage",
+    replacement="coverage_summary",
+    earliest_adaptation=EARLIEST,
+)
+LIGHT_COVERAGE_WARNING = (
+    "Deprecated: the DocumentSummaryLight.processing_coverage response field is deprecated; "
+    "use coverage_summary instead. The change may ship from 2027-01-15."
+)
+
+
+def test_a_response_field_deprecation_warns_only_when_the_response_carries_it(registry) -> None:
+    """Judged on the components the response carries, never on the request."""
+    registry(LIGHT_COVERAGE)
+
+    assert response_field_warnings("search", {"DocumentSummaryLight"}) == [LIGHT_COVERAGE_WARNING]
+    assert response_field_warnings("search", {"DocumentSummary"}) == []
+    assert response_field_warnings("search", set()) == []
+    assert response_field_warnings("list_pending_metadata", {"DocumentSummaryLight"}) == []
+    # A request, whatever it asks for, never selects a response-field warning.
+    assert warnings_for("search", DiscoverRequest(mode="catalog", response_mode="light")) == []
 
 
 TOKEN_FORMAT = Deprecation(
@@ -154,6 +198,71 @@ def test_a_format_deprecation_warns_only_on_a_value_of_that_format(registry) -> 
             ),
             "takes no parameter 'expected_head_version'",
         ),
+        (
+            Deprecation("search", DeprecatedForm.RESPONSE_FIELD, "x", EARLIEST),
+            "names no response field",
+        ),
+        (
+            Deprecation(
+                "search",
+                DeprecatedForm.RESPONSE_FIELD,
+                "x",
+                EARLIEST,
+                field="processing_coverage",
+            ),
+            "names no response field",
+        ),
+        (
+            Deprecation(
+                "get_document",
+                DeprecatedForm.RESPONSE_FIELD,
+                "x",
+                EARLIEST,
+                field="Document.processing_coverage",
+            ),
+            "no warnings field",
+        ),
+        (
+            Deprecation(
+                "search",
+                DeprecatedForm.RESPONSE_FIELD,
+                "x",
+                EARLIEST,
+                field="DocumentSumaryLight.processing_coverage",
+            ),
+            "reports no DocumentSumaryLight component",
+        ),
+        (
+            Deprecation(
+                "search",
+                DeprecatedForm.RESPONSE_FIELD,
+                "x",
+                EARLIEST,
+                field="DocumentSummaryLight.coverage_sumary",
+            ),
+            "has no field 'coverage_sumary'",
+        ),
+        (
+            Deprecation(
+                "ingest_document",
+                DeprecatedForm.RESPONSE_FIELD,
+                "x",
+                EARLIEST,
+                field="DocumentSummaryLight.processing_coverage",
+            ),
+            "'ingest_document' reports no DocumentSummaryLight component",
+        ),
+        (
+            Deprecation(
+                "list_pending_metadata",
+                DeprecatedForm.FORMAT,
+                "x",
+                EARLIEST,
+                parameter="offset",
+                value="timestamp",
+            ),
+            "judges no request",
+        ),
     ],
     ids=[
         "carrier-less-operation",
@@ -163,6 +272,13 @@ def test_a_format_deprecation_warns_only_on_a_value_of_that_format(registry) -> 
         "parameter-misspelled",
         "format-unknown",
         "format-parameter-on-the-wrong-operation",
+        "response-field-unnamed",
+        "response-field-without-component",
+        "response-field-on-carrier-less-operation",
+        "response-field-component-misspelled",
+        "response-field-name-misspelled",
+        "response-field-on-an-operation-reporting-no-component",
+        "request-form-on-an-operation-judging-no-request",
     ],
 )
 def test_the_registry_refuses_a_declaration_it_cannot_honour(

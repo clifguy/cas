@@ -5432,6 +5432,10 @@ components:
         enumerations inside the MCP inline-output budget. Callers who
         need the omitted fields pass `response_mode="full"` (returns
         DocumentSummary) or fall back to `get_document` per id.
+        The full `processing_coverage` carried here is deprecated: from
+        2027-01-04 this shape may carry a bounded coverage summary in its
+        place, and every response carrying this shape warns the caller so.
+        `response_mode="full"` and `get_document` keep the full object.
       required:
         - id
         - title
@@ -5439,7 +5443,12 @@ components:
       properties:
         processing_coverage:
           $ref: '#/components/schemas/ProcessingCoverage'
-          description: System-owned achieved processing coverage; unknown evidence does not imply completeness.
+          deprecated: true
+          description: >-
+            Deprecated on this shape: from 2027-01-04 it may be replaced here
+            by a bounded coverage summary; response_mode='full' and
+            get_document keep the full object. System-owned achieved
+            processing coverage; unknown evidence does not imply completeness.
         id:
           type: string
           pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
@@ -9076,6 +9085,13 @@ components:
             The row shape this page carries. Echoes an explicit request; when
             the request named none, `light` if the page holds more than five
             rows and `full` otherwise.
+        warnings:
+          type: [array, "null"]
+          items:
+            type: string
+          description: >-
+            Caller-facing warnings about this page, such as a deprecated field
+            its rows carry; null when there are none.
         read_meta:
           $ref: "#/components/schemas/ReadMeta"
 

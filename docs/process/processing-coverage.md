@@ -32,7 +32,10 @@ than converting a stale in-progress marker into completed evidence.
 
 Passage/coverage reads use one repeatable database snapshot. Scored retrieval carries
 the snapshot's coverage with its excerpts, including across hybrid fusion. Full,
-light and automatically reduced document summaries preserve coverage. Source and
+light and automatically reduced document summaries preserve coverage. The full
+coverage object on light summaries is deprecated in favour of a bounded summary,
+and every response carrying light summaries warns so; full summaries and
+`get_document` keep the full object. Source and
 projection download recipes carry the originating coverage. Raw byte streams keep
 their existing byte-only contract; callers obtain evidence through document reads.
 

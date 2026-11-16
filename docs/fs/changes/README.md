@@ -124,6 +124,15 @@ is written `~0`, as in a JSON Pointer. For an operation listed in
 too, so a caller using it is warned in the response; another operation first
 needs a warnings field and its service wired to that module.
 
+A deprecated response field is marked `deprecated: true` on the schema property,
+and its record's pointer is that property
+(`components/schemas/<Component>/properties/<field>`). Its registry entry names
+the field as `Component.field`, and is accepted only for an operation whose
+service reports that component to `response_field_warnings`
+(`RESPONSE_FIELD_COMPONENTS` in the same module). The warning follows the
+response, not the request: a response warns exactly when it carries that
+component, including a shape the server chose itself.
+
 **Adapting.** The adaptation ships in a later release than the deprecation, and
 no sooner than 30 days after that release's date in the manifest's revision
 history, or the recorded `earliest_adaptation` if later. Its record names the

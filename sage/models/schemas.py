@@ -1018,6 +1018,11 @@ class DocumentSummary(BaseModel):
         )
 
 
+#: The earliest date the full ``processing_coverage`` may stop being carried on
+#: ``DocumentSummaryLight`` (CAS-ADR-008 clause 8).
+LIGHT_ROW_COVERAGE_ADAPTATION: date = date(2027, 1, 4)
+
+
 class DocumentSummaryLight(BaseModel):
     """Stripped DocumentSummary returned by ``search`` on a
     ``target="documents", mode="catalog"`` request, and by
@@ -1038,14 +1043,25 @@ class DocumentSummaryLight(BaseModel):
     the MCP inline-output budget. Callers who need the omitted fields
     pass ``response_mode="full"`` (returns ``DocumentSummary``) or fall
     back to ``get_document`` per id.
+
+    The full ``processing_coverage`` carried here is deprecated
+    (CAS-ADR-008): from ``LIGHT_ROW_COVERAGE_ADAPTATION`` this shape may
+    carry a bounded coverage summary in its place, and every response
+    carrying this shape warns the caller so. ``response_mode="full"`` and
+    ``get_document`` keep the full object.
     """
 
     processing_coverage: ProcessingCoverage = Field(
         default_factory=ProcessingCoverage,
         description=(
+            "Deprecated on this shape: from "
+            f"{LIGHT_ROW_COVERAGE_ADAPTATION.isoformat()} it may be replaced here by "
+            "a bounded coverage summary; response_mode='full' and get_document "
+            "keep the full object. "
             "System-owned achieved processing coverage; "
             "unknown evidence does not imply completeness."
         ),
+        json_schema_extra={"deprecated": True},
     )
     id: DocumentIdStr = Field(description="Unique document identifier.")
     title: str = Field(description="Human-readable document title.")
@@ -6972,6 +6988,13 @@ class PendingMetadataPage(BaseModel):
             "the request named none, `light` if the page holds more than five "
             "rows and `full` otherwise."
         )
+    )
+    warnings: list[str] | None = Field(
+        default=None,
+        description=(
+            "Caller-facing warnings about this page, such as a deprecated field "
+            "its rows carry; null when there are none."
+        ),
     )
     read_meta: ReadMeta = Field(
         default_factory=ReadMeta.bodiless,
