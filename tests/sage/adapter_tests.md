@@ -3709,7 +3709,7 @@ lines.
 
 **Expected:** "Payment is due within thirty days of invoice." appears in `result.text`.
 
-**Rationale:** The projection reads the document as if every pending revision were accepted, the view Word shows by default.
+**Rationale:** Within a paragraph's runs, the projection reads a tracked insertion as accepted, the view Word shows by default.
 
 ### TEST-SAGE-AD-250: Text in a tracked deletion is excluded
 
@@ -3769,21 +3769,21 @@ lines.
 
 **Artifact:** `DocxAdapter.project`
 **Category:** projection, run wrappers
-**Precondition:** "Name: " followed by an inline `w:sdt` whose content reads "Click or tap here to enter text.", in three forms: with `w:showingPlcHdr` set, with `w:showingPlcHdr w:val="0"`, and with no flag.
+**Precondition:** "Name: " followed by an inline `w:sdt` whose content reads "Click or tap here to enter text.", in eight forms: `w:showingPlcHdr` with no value and with `w:val` "1", "true" and "On"; with `w:val` "0", "false" and "OFF"; and with no flag.
 
-**Expected:** "Name:" appears in every form. The prompt is absent when the placeholder is showing and present in the other two forms.
+**Expected:** "Name:" appears in every form. The prompt is absent in the first four forms, where the placeholder is showing, and present in the other four. The on/off value is read without regard to case.
 
 **Rationale:** Word fills an unfilled control with its placeholder prompt. The prompt is not text the author wrote.
 
-### TEST-SAGE-AD-257: Table-of-contents paragraphs contribute no text
+### TEST-SAGE-AD-257: Contents and figure-list paragraphs contribute no text
 
 **Artifact:** `DocxAdapter.project`
 **Category:** projection, paragraph styles
-**Precondition:** Two entries in Word's table-of-contents styles (style id `TOC1`/`TOC2`, name "toc 1"/"toc 2"). Each holds a hyperlink to a heading's title followed by its page number. They are followed by the Heading 1 "Introduction" and a body paragraph.
+**Precondition:** Two entries in Word's table-of-contents styles (style id `TOC1`/`TOC2`, names "toc 1" and "TOC 2", so the second differs from Word's spelling only in case). Each holds a hyperlink to a heading's title followed by its page number. Then a "table of figures" entry (style id `TableofFigures`): a hyperlink "Figure 1 Site layout" followed by "7". They are followed by the Heading 1 "Introduction" and a body paragraph.
 
-**Expected:** The only heading is "Introduction"; "Introduction" appears once in `result.text`; "Scope of work" and "Introduction3" do not appear; the body paragraph does.
+**Expected:** The only heading is "Introduction"; "Introduction" appears once in `result.text`; "Scope of work", "Introduction3" and "Site layout" do not appear; the body paragraph does.
 
-**Rationale:** A table-of-contents entry repeats a heading the document already carries, fused to its page number.
+**Rationale:** A contents entry repeats a heading, and a figure-list entry a caption, that the document already carries, fused to its page number. The style name is matched without regard to case.
 
 ### TEST-SAGE-AD-258: Tabs and line breaks inside runs separate the words they divide
 
@@ -3802,3 +3802,51 @@ lines.
 - The table row reads "| first second |".
 
 **Rationale:** Body text keeps the characters python-docx's run text gives them. The title, headings and table cells are one line, so a tab or line break there reads as a single space.
+
+### TEST-SAGE-AD-259: A placeholder content control inside another wrapper contributes no text
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, run wrappers
+**Precondition:** "Owner: " followed by a `w:ins` holding two inline content controls: the first shows its placeholder "Choose an item.", the second has no flag and reads "Finance".
+
+**Expected:** `result.text` contains "Owner: Finance" and not "Choose an item.".
+
+**Rationale:** The placeholder rule applies wherever the control sits, not only directly in the paragraph.
+
+### TEST-SAGE-AD-260: Table-of-contents paragraphs in a table cell contribute no text
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, paragraph styles, tables
+**Precondition:** A one-cell table whose cell holds a "toc 1" paragraph (a hyperlink "Introduction" followed by "3") and a body paragraph "Cell body".
+
+**Expected:** The row reads "| Cell body |"; "Introduction" does not appear in `result.text`.
+
+**Rationale:** Contents entries are left out wherever they appear, as in TEST-SAGE-AD-257.
+
+### TEST-SAGE-AD-261: Where one line is expected, tabs and breaks read as one space and none at the edges
+
+**Artifact:** `DocxAdapter.project`
+**Category:** projection, run content
+**Precondition:**
+- A one-cell table reading "first ", tab, "second".
+- A Title "Plan", tab, "2027".
+- A Heading 1 built from a line break, "Annual ", tab, " Report", tab.
+- A decimal-numbered Heading 1 "Scope", two line breaks, "of work".
+- A body paragraph "left", column break, "right".
+
+**Expected:**
+- The title is "Plan 2027".
+- The heading texts and paths are "Annual Report" and "1 Scope of work".
+- `result.text` contains "leftright" and the row "| first second |".
+
+**Rationale:** In the title, headings and cells, a run of tabs and line breaks, with the spaces beside it, reads as one space, and one at either end reads as nothing, so a heading path carries no edge spaces. A column break, like a page break, has no text equivalent in python-docx.
+
+### TEST-SAGE-AD-262: Rewriting text as one line is linear
+
+**Artifact:** `docx_adapter._single_line`
+**Category:** projection, resource bounds
+**Precondition:** "a", 40,000 spaces, "b".
+
+**Expected:** The text comes back unchanged in under half a second.
+
+**Rationale:** A pattern that scans a run of spaces from every start does quadratic work. A document small enough to pass the package limits can hold a run of spaces long enough to stall the process.

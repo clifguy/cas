@@ -261,20 +261,34 @@ _TRANSPARENT_RUN_WRAPPERS = frozenset(
 # column break has no text equivalent.
 _RUN_CHARACTER_ELEMENTS = {"tab": "\t", "ptab": "\t", "cr": "\n", "noBreakHyphen": "-"}
 _FALSE_ON_OFF_VALUES = frozenset({"0", "false", "off"})
-# Word names its table-of-contents paragraph styles "toc 1" to "toc 9".
-_TABLE_OF_CONTENTS_STYLE = re.compile(r"toc [1-9]", re.IGNORECASE)
-
-
-_LINE_BREAK_OR_TAB = re.compile(r" *[\t\n][\t\n ]*")
+# Word names its table-of-contents paragraph styles "toc 1" to "toc 9", and
+# the style of a list of captions (figures, tables) "table of figures". Each
+# entry repeats a heading or caption the document carries, joined to its page
+# number.
+_CONTENTS_LIST_STYLE = re.compile(r"toc [1-9]|table of figures", re.IGNORECASE)
 
 
 def _single_line(text: str) -> str:
     """Read a paragraph's tabs and line breaks as single spaces.
 
-    Used where one line is expected: a heading, the title, a table cell.
-    Other spacing is left as the document has it.
+    Used where one line is expected: a heading, the title, a table cell. A
+    run of tabs and line breaks, with the spaces beside it, reads as one
+    space; one at either end of the text reads as nothing. Other spacing is
+    left as the document has it. The work is linear in the text's length.
     """
-    return _LINE_BREAK_OR_TAB.sub(" ", text)
+    if "\t" not in text and "\n" not in text:
+        return text
+    pieces = text.replace("\t", "\n").split("\n")
+    last = len(pieces) - 1
+    lines = []
+    for index, piece in enumerate(pieces):
+        if index > 0:
+            piece = piece.lstrip(" ")
+        if index < last:
+            piece = piece.rstrip(" ")
+        if piece:
+            lines.append(piece)
+    return " ".join(lines)
 
 
 def _extract_paragraph_text(p_elem) -> str:
@@ -305,7 +319,12 @@ def _extract_paragraph_text(p_elem) -> str:
 
 
 def _collect_run_text(container, parts: list[str]) -> None:
-    """Append the w:t text of runs in ``container``, entering run wrappers."""
+    """Append the text of runs in ``container``, entering run wrappers.
+
+    A run contributes its w:t text and the characters its tab, break,
+    carriage-return and non-breaking-hyphen elements stand for. A content
+    control showing its placeholder is passed over.
+    """
     for child in container:
         tag = etree.QName(child.tag).localname if isinstance(child.tag, str) else ""
         if tag == "r":
@@ -351,7 +370,7 @@ class DocxAdapter(SourceAdapter):
     # 0.7.0: text in runs nested in hyperlinks, tracked insertions and move
     # destinations, content controls and other run wrappers is read; tracked
     # deletions still are not. A content control showing its placeholder and a
-    # table-of-contents paragraph contribute nothing; tabs and line breaks
+    # contents or figure-list paragraph contribute nothing; tabs and line breaks
     # inside runs are read, and headings and table cells stay on one line.
     VERSION = "0.7.0"
     EXTENSIONS = [".docx", ".dotx"]
@@ -399,9 +418,8 @@ class DocxAdapter(SourceAdapter):
 
             if tag == "p":
                 style_name = self._get_style_name(element, style_id_to_name)
-                # A table-of-contents entry repeats a heading the document
-                # carries anyway, joined to its page number.
-                if style_name and _TABLE_OF_CONTENTS_STYLE.fullmatch(style_name):
+                # Contents and figure-list entries are left out.
+                if style_name and _CONTENTS_LIST_STYLE.fullmatch(style_name):
                     continue
 
                 para_text = _extract_paragraph_text(element)
@@ -465,7 +483,7 @@ class DocxAdapter(SourceAdapter):
                             first_body_para = para_text.strip()
 
             elif tag == "tbl":
-                table_text = self._render_table(element)
+                table_text = self._render_table(element, style_id_to_name)
                 if table_text:
                     current_content_lines.append(table_text)
                     text_parts.append(table_text)
@@ -950,15 +968,19 @@ class DocxAdapter(SourceAdapter):
             return ""
         return engine.next_number(num_id, ilvl)
 
-    def _render_table(self, tbl_elem) -> str:
+    def _render_table(self, tbl_elem, style_id_to_name: dict[str, str]) -> str:
         """Render a table element as pipe-delimited text rows."""
         rows: list[str] = []
         for tr in tbl_elem.findall(qn("w:tr")):
             cells: list[str] = []
             for tc in tr.findall(qn("w:tc")):
-                # Collect text from all paragraphs in the cell
+                # Collect text from the cell's paragraphs, leaving out
+                # contents and figure-list entries as the body walk does.
                 cell_parts: list[str] = []
                 for p in tc.findall(qn("w:p")):
+                    style_name = self._get_style_name(p, style_id_to_name)
+                    if style_name and _CONTENTS_LIST_STYLE.fullmatch(style_name):
+                        continue
                     cell_parts.append(_extract_paragraph_text(p))
                 cells.append(_single_line(" ".join(cell_parts)).strip())
             rows.append("| " + " | ".join(cells) + " |")
