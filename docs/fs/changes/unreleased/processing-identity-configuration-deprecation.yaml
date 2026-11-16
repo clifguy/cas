@@ -10,8 +10,8 @@ summary: >-
   served unchanged. Every operation whose response carries a configured identity
   now warns; get_document (including its download recipe),
   get_document_download_url, traverse, export_projection, read_projection,
-  read_section, list_headings and update_lifecycles gain a warnings field to
-  carry it.
+  read_section and list_headings gain a warnings field to carry it, and
+  update_lifecycles carries it in each result's existing warnings.
 for_callers: >-
   The configuration on each processing_coverage identity is deprecated. Read it
   from the coverage object's configurations block through the holder's

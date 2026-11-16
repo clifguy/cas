@@ -1360,11 +1360,18 @@ class RetrievalService:
             # the excerpt can be decided back in the mode handler.
             # Deterministic mode is an explicit single-section fetch and is
             # left alone.
-            if request.mode == RetrievalMode.CATALOG:
-                # A light page's deprecation warning is part of what it
-                # delivers, so it is attached before the measurement.
+            if request.mode in (
+                RetrievalMode.CATALOG,
+                RetrievalMode.SEMANTIC,
+                RetrievalMode.KEYWORD,
+            ):
+                # The deprecation warnings the rows owe are part of what the
+                # response delivers, so they are attached before the
+                # measurement. A scored fit cuts passages but keeps every row,
+                # so what the rows owe does not change with the fit.
                 hints = None if response.hints is None else {**response.hints}
                 response.hints = _with_light_row_warnings(hints, response.results)
+            if request.mode == RetrievalMode.CATALOG:
                 _apply_catalog_budget_policy(response, request)
             elif request.mode in (RetrievalMode.SEMANTIC, RetrievalMode.KEYWORD):
                 _apply_scored_budget_policy(response, request)

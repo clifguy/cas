@@ -8,9 +8,13 @@ identity, and stays silent otherwise.
 
 Anti-coincidental-pass discipline:
 
-* Each operation runs against a document with published evidence and against a
-  control document with only legacy unknown coverage; a service that always
-  warns fails the control arm.
+* Each read, export, catalog, pending, traverse and write operation runs against
+  a document with published evidence and against a control that carries no
+  configured identity: a document published with identity-free evidence (so it
+  has a projection to read or export), or one with only legacy unknown
+  coverage. A service that always warns fails the control arm. Ingest has no
+  wire control, because an ingested document always establishes an identity;
+  its control is the service-level arm over carried coverage alone.
 * The expected warning is a literal string, found under a ``warnings`` key of the
   response, on both surfaces.
 * The service-level arms (download URL, download recipes) build the response the
@@ -28,7 +32,7 @@ from httpx import ASGITransport, AsyncClient
 
 from sage.app import create_app
 from sage.mcp_server import build_partitioned_server
-from sage.models.coverage import ProcessingCoverage
+from sage.models.coverage import CoverageDimension, ProcessingCoverage
 from sage.services.deprecations import coverage_warnings
 from tests.sage.test_processing_coverage import _chunks, _doc, _evidence
 from tests.sage.test_validation_envelope_parity import vault_services as _shared_services
@@ -43,6 +47,7 @@ WARNING = (
 )
 COVERED = _doc(1).id
 LEGACY = _doc(2).id
+UNCONFIGURED = _doc(3).id
 
 
 def _decode(result) -> dict:
@@ -73,6 +78,18 @@ async def _seed(services) -> None:
         COVERED, attempt, _evidence(), chunks=_chunks("old")
     )
     await services.graph_store.insert_document(_doc(2))
+    # Published and projected, with no identity on any dimension.
+    await services.graph_store.insert_document(_doc(3))
+    attempt = await services.content_store.begin_processing_attempt(UNCONFIGURED)
+    chunks = _chunks("old")
+    for chunk in chunks:
+        chunk.document_id = UNCONFIGURED
+    assert await services.content_store.publish_processing(
+        UNCONFIGURED,
+        attempt,
+        {name: CoverageDimension() for name in _evidence()},
+        chunks=chunks,
+    )
 
 
 async def _both(services, tool: str, args: dict, rest) -> tuple[dict, dict]:
@@ -121,20 +138,38 @@ async def test_document_reads_warn_only_when_an_identity_is_carried(
         assert _identity_warnings(body) == [WARNING], operation
         assert body["processing_coverage"]["configurations"], operation
 
-    if operation == "read_section":
-        return  # The legacy control has no projected section to read.
-    args, rest = _document_reads(LEGACY, tmp_path)[operation]
-    try:
-        bodies = await _both(vault_services, operation, args, rest)
-    except AssertionError:
-        return  # A legacy document without a projection is refused, so carries nothing.
-    for body in bodies:
+    args, rest = _document_reads(UNCONFIGURED, tmp_path)[operation]
+    for body in await _both(vault_services, operation, args, rest):
+        assert "processing_coverage" in body, operation
         assert _identity_warnings(body) == [], operation
+
+
+async def test_a_projection_written_to_disk_warns_only_when_an_identity_is_carried(
+    vault_services,
+):
+    """The write-to-path delivery of read_projection (an MCP-only arm) warns too."""
+    await _seed(vault_services)
+    root = Path(vault_services.config.vault.storage_root).expanduser().resolve()
+    server = build_partitioned_server("sage")
+    for doc_id, expected in ((COVERED, [WARNING]), (UNCONFIGURED, [])):
+        target = root / f"projection-{doc_id}.md"
+        body = _decode(
+            await server.call_tool(
+                "read_projection",
+                {"vault_id": VAULT, "document_id": doc_id, "write_to_path": str(target)},
+            )
+        )
+        assert body.get("written_to"), body
+        assert target.exists(), doc_id
+        assert _identity_warnings(body) == expected, doc_id
 
 
 async def test_export_projection_warns(vault_services, tmp_path):
     await _seed(vault_services)
-    for name, doc_id, expected in (("covered", COVERED, [WARNING]), ("legacy", LEGACY, [])):
+    for name, doc_id, expected in (
+        ("covered", COVERED, [WARNING]),
+        ("unconfigured", UNCONFIGURED, []),
+    ):
         root = Path(vault_services.config.vault.storage_root).expanduser().resolve()
         outputs = [root / f"{name}-mcp.md", root / f"{name}-rest.md"]
         server = build_partitioned_server("sage_maint")
@@ -150,8 +185,6 @@ async def test_export_projection_warns(vault_services, tmp_path):
                 f"/sage_vaults/{VAULT}/documents/{doc_id}/export",
                 json={"output_path": str(outputs[1])},
             )
-        if doc_id == LEGACY and response.status_code != 200:
-            continue
         assert response.status_code == 200, response.text
         bodies.append(response.json())
         for body in bodies:
@@ -178,16 +211,25 @@ async def test_search_and_pending_pages_warn(vault_services):
         assert _identity_warnings(body) == [WARNING]
 
 
-async def test_search_without_identities_does_not_warn(vault_services):
+async def test_search_and_pending_pages_without_identities_do_not_warn(vault_services):
     await vault_services.graph_store.insert_document(_doc(2))
-    for body in await _both(
+    search = await _both(
         vault_services,
         "search",
         {"mode": "catalog", "response_mode": "full"},
         lambda c: c.post(
             f"/sage_vaults/{VAULT}/discover", json={"mode": "catalog", "response_mode": "full"}
         ),
-    ):
+    )
+    pending = await _both(
+        vault_services,
+        "list_pending_metadata",
+        {"response_mode": "full"},
+        lambda c: c.get(f"/sage_vaults/{VAULT}/pending-metadata", params={"response_mode": "full"}),
+    )
+    assert all(body["results"] for body in search)
+    assert all(body["items"] for body in pending)
+    for body in (*search, *pending):
         assert _identity_warnings(body) == []
 
 

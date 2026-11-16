@@ -109,6 +109,7 @@ class ProcessingIdentity(CoverageModel):
             "Deprecated: read the configuration from the coverage object's configurations "
             "block through the holder's configuration_ref. Removal may ship from 2027-01-04."
         ),
+        json_schema_extra={"deprecated": True},
     )
     tokenization: BoundedText = Field(description="Tokenization.")
 
@@ -498,10 +499,13 @@ class ProcessingCoverage(CoverageModel):
             raise ValueError("coverage summary exceeds 65536 bytes")
         return self
 
+    # Deliberately unannotated: Pydantic publishes a serializer's return
+    # annotation as the model's serialization schema, so any annotation here
+    # would replace the served coverage schema with that type.
     @model_serializer(mode="wrap")
-    def serve_shared_configurations(
+    def serve_shared_configurations(  # noqa: ANN201
         self, handler: SerializerFunctionWrapHandler, info: SerializationInfo
-    ) -> dict:
+    ):
         """Serve each effective configuration once, referenced from its holders.
 
         The block and references are computed here, from the identities as they

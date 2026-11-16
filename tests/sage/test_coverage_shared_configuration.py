@@ -228,3 +228,124 @@ def test_assignment_keeps_the_derived_fields_and_their_values():
     wire = coverage.model_dump(mode="json")
     ref = wire["abstraction_quality"]["configuration_ref"]
     assert wire["configurations"][ref] == identity.configuration
+
+
+def test_the_served_and_published_schemas_describe_the_shared_form():
+    """The served OpenAPI keeps the full coverage schema and both mark the deprecation.
+
+    A return annotation on the coverage serializer would replace the served
+    schema with that annotation's type, orphaning the dimension schemas.
+    """
+    import yaml
+
+    from sage.app import create_app
+
+    served = create_app().openapi()["components"]["schemas"]
+    published = yaml.safe_load(
+        (Path(__file__).parents[2] / "docs/fs/sage/sage_core_api.openapi.yaml").read_text()
+    )["components"]["schemas"]
+    for schemas in (served, published):
+        coverage = schemas["ProcessingCoverage"]["properties"]
+        assert {*DIMENSIONS, "abstraction_quality", "configurations"} <= set(coverage)
+        assert "configuration_ref" in schemas["CoverageDimension"]["properties"]
+        assert "configuration_ref" in schemas["AbstractionQuality"]["properties"]
+        configuration = schemas["ProcessingIdentity"]["properties"]["configuration"]
+        assert configuration.get("deprecated") is True
+
+
+def test_supplied_derived_values_never_reach_the_stored_form():
+    """Every holder's supplied reference and a supplied block are discarded on input.
+
+    A merge that re-validates a served dump (as the store's publication paths
+    do) would otherwise write the derived fields into storage.
+    """
+    stored = _stored()
+    forged_ref = "sha256:" + "1" * 64
+    stored["configurations"] = {forged_ref: {"forged": True}}
+    for name in DIMENSIONS:
+        stored[name]["configuration_ref"] = forged_ref
+    identity = stored["projection"]["identity"]
+    stored["abstraction_quality"] = {
+        **_quality(ProcessingIdentity.model_validate(identity)).model_dump(mode="json"),
+        "configuration_ref": forged_ref,
+    }
+
+    coverage = ProcessingCoverage.model_validate(stored)
+
+    assert coverage.configurations is None
+    assert coverage.abstraction_quality.configuration_ref is None
+    assert all(getattr(coverage, name).configuration_ref is None for name in DIMENSIONS)
+    kept = coverage.storage_dump()
+    assert "configurations" not in kept
+    assert "configuration_ref" not in kept["abstraction_quality"]
+    assert all("configuration_ref" not in kept[name] for name in DIMENSIONS)
+
+
+async def _raw_coverage(pg_pool, document_id: str) -> dict:
+    async with pg_pool.connection() as conn:
+        cur = await conn.execute(
+            "SELECT processing_coverage FROM documents WHERE id = %s", (document_id,)
+        )
+        (raw,) = await cur.fetchone()
+    return raw
+
+
+def _no_derived_fields(raw: dict) -> bool:
+    return "configurations" not in raw and not any(
+        "configuration_ref" in value for value in raw.values() if isinstance(value, dict)
+    )
+
+
+async def test_embedding_increments_and_rewrite_invalidation_store_no_derived_fields(
+    pg_pool, postgres_graph_store
+):
+    """The increment and invalidation writers each store the stored form.
+
+    Both read stored coverage, change it and write it back; each is checked
+    on its own raw row after a publication whose identities are configured.
+    """
+    from sage.storage.postgres.schema import EMBEDDING_DIM
+
+    doc = _doc(1)
+    await postgres_graph_store.insert_document(doc)
+    store = PostgresContentStore(pg_pool)
+    identity = ProcessingIdentity(
+        source_hash=doc.source_content_hash,
+        adapter="markdown:1",
+        policy="coverage-v1",
+        configuration={"shared": True},
+        tokenization="unknown",
+    )
+    dimension = CoverageDimension(
+        scope="limited",
+        identity=identity,
+        counts=[{"unit": "characters", "observed": 3, "represented": 3, "total": None}],
+        limitations=["inspection_unknown"],
+    )
+    attempt = await store.begin_processing_attempt(doc.id)
+    chunks = [Chunk(document_id=doc.id, heading_path="A", content="text", chunk_index=0)]
+    assert await store.publish_processing(
+        doc.id,
+        attempt,
+        {
+            "inspection": dimension,
+            "projection": dimension,
+            "keyword_indexing": dimension,
+            "passage_embeddings": dimension,
+        },
+        chunks=chunks,
+    )
+
+    vector = [1.0] + [0.0] * (EMBEDDING_DIM - 1)
+    assert await store.publish_embedding_increment(doc.id, attempt, {0: vector}, dimension)
+    raw = await _raw_coverage(pg_pool, doc.id)
+    assert raw["passage_embeddings"]["identity"]["configuration"] == {"shared": True}
+    assert _no_derived_fields(raw)
+
+    await store.index_chunks(doc.id, chunks)
+    raw = await _raw_coverage(pg_pool, doc.id)
+    assert raw["projection"]["limitations"] == ["artifact_rewritten_without_coverage_evidence"]
+    assert raw["projection"].get("identity") is None
+    # An identity survives the rewrite, so a served dump would carry the block.
+    assert raw["inspection"]["identity"]["configuration"] == {"shared": True}
+    assert _no_derived_fields(raw)
