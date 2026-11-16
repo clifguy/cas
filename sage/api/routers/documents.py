@@ -331,8 +331,8 @@ async def get_document_content(
             "`binary_content_refused` when `include_content=true` targets a "
             "binary-container source (`.docx`, `.pptx`, `.pdf`, `.xlsx`): the read "
             "path declines to inline raw container bytes and directs the "
-            "caller to `read_projection` for the extracted text "
-            "(CAS-ADR-039).",
+            "caller to `read_projection` for the extracted text, or "
+            "`write_to_path` for the original bytes (CAS-ADR-039).",
         ),
         404: {
             "model": ErrorResponse,
