@@ -1219,14 +1219,16 @@ paths:
         mode) for targeted content extraction or export_projection for
         file-based inspection. Reports `pipeline_status` cheaply, so it is
         the endpoint a caller waits on for a terminal status after an async
-        ingest call. Its content is the source as ingested;
+        ingest call. Its bytes are the retained copy: they match
+        `stored_content_hash` (if null, `source_content_hash`), which differs
+        from `source_content_hash` (the bytes ingested) where the source
+        binding rewrites the copy at rest.
         `read_projection` is the cheaper, lossy text read.
 
 
         When `include_content=true`, the response additionally contains
-        the original source file bytes (base64-encoded) and the byte
-        count. The bytes are read from the vault's internal authoritative
-        copy at `storage_root/source_path`. Supports the agentic
+        the retained source bytes (base64-encoded) and the byte count, read
+        through the vault's source binding. Supports the agentic
         read-modify-reingest round-trip: an agent fetches the file,
         edits it locally, and re-ingests with
         `predecessor_id` (see POST /documents).
@@ -1318,7 +1320,7 @@ paths:
             (`.docx`, `.pptx`, `.pdf`, `.xlsx`): the read path declines to
             inline raw container bytes and directs the caller to
             `read_projection` for the extracted text, or `write_to_path` for
-            the original bytes (CAS-ADR-039).
+            the retained source bytes (CAS-ADR-039).
 
             `invalid_vault_id`: `vault_id` is not a well-formed vault id.
 
@@ -3353,7 +3355,10 @@ paths:
         `Content-Type`, an `attachment` `Content-Disposition`,
         `X-Content-Type-Options: nosniff` and `Content-Security-Policy:
         sandbox`, so a browser saves the bytes rather than rendering them as
-        a page of the serving origin.
+        a page of the serving origin. The streamed bytes are the retained copy
+        and match `stored_content_hash` (if null, `source_content_hash`),
+        which differs from `source_content_hash` (the bytes ingested) where
+        the source binding rewrites the copy at rest.
       tags: [Document Metadata]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -8109,11 +8114,11 @@ components:
               type: [string, "null"]
               pattern: "^sha256:[0-9a-f]{64}$"
               description: >-
-                Hex digest of the vault-local source file bytes
-                (same algorithm as Document.source_content_hash).
-                Populated only when the request specified
-                `write_to_path`, for caller-side verification that the
-                on-disk bytes match the vault record.
+                SHA-256 of the delivered bytes, which are the retained
+                copy: compare it with `stored_content_hash` (if null,
+                `source_content_hash`). Populated only when the request
+                specified `write_to_path`, for caller-side verification of
+                the written file.
             written_to:
               type: [string, "null"]
               description: >-
@@ -8136,7 +8141,7 @@ components:
                 binary-container source is refused with
                 `binary_content_refused` (400), directing the caller to
                 `read_projection` for the extracted text or `write_to_path`
-                for the original bytes. Null only on responses that carry no source
+                for the retained source bytes. Null only on responses that carry no source
                 form (e.g. an error envelope). It describes the source, not the
                 response: `content`, when present, is base64 for every source, a
                 `text` source included.

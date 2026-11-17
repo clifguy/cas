@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 
 import pytest
+import yaml
 
 from scripts.sage_package import PackageError, build_package, verify_package
 
@@ -182,3 +183,60 @@ def test_export_reads_committed_blobs_after_checkout_changes(source, tmp_path):
     assert (export / "skills/sage/SKILL.md").read_bytes() == expected
     package = tmp_path / "package"
     assert build_package(export, package, revision, "fixture")["source_commit"] == revision
+
+
+def _frontmatter(path: Path) -> dict:
+    text = path.read_text()
+    assert text.startswith("---\n")
+    return yaml.safe_load(text.split("---\n", 2)[1])
+
+
+@pytest.mark.parametrize("release", ["v3.9.0-2-g5d8b8a21", "v3.9.0: odd #release"])
+def test_packaged_skill_reports_build_version(source, tmp_path, release):
+    """The built entry point names the CAS release and commit it was sealed from."""
+    out = tmp_path / "package"
+    manifest = build_package(source, out, REV, release)
+    built = _frontmatter(out / "sage/SKILL.md")
+    original = _frontmatter(source / "skills/sage/SKILL.md")
+    assert built["metadata"] == {"version": release, "source_commit": REV}
+    assert {k: v for k, v in built.items() if k != "metadata"} == original
+    assert verify_package(out) == manifest
+
+
+def test_build_leaves_source_skill_unversioned(source, tmp_path):
+    """The stamp lands in the package only; the repository source stays unversioned."""
+    entry = source / "skills/sage/SKILL.md"
+    before = entry.read_bytes()
+    build_package(source, tmp_path / "package", REV, "v3.9.0")
+    assert entry.read_bytes() == before
+    assert "metadata" not in _frontmatter(entry)
+
+
+@pytest.mark.parametrize(
+    "authored",
+    [
+        "metadata:\n  version: 1.0.0",
+        "version: 1.0.0",
+        '"metadata":\n  version: 1.0.0',
+        "metadata :\n  version: 1.0.0",
+    ],
+)
+def test_hand_versioned_source_refused(source, tmp_path, authored):
+    """A version written by hand into the source would compete with the build stamp."""
+    entry = source / "skills/sage/SKILL.md"
+    head, body = entry.read_text().split("\n---\n", 1)
+    entry.write_text(head + "\n" + authored + "\n---\n" + body)
+    out = tmp_path / "package"
+    with pytest.raises(PackageError, match="only name and description"):
+        build_package(source, out, REV, "v3.9.0")
+    assert not out.exists()
+
+
+def test_source_without_frontmatter_refused(source, tmp_path):
+    """The version stamp has nowhere to go in an entry point without frontmatter."""
+    entry = source / "skills/sage/SKILL.md"
+    entry.write_text(entry.read_text().split("\n---\n", 1)[1].replace("\n", "\nname: sage\n", 1))
+    out = tmp_path / "package"
+    with pytest.raises(PackageError, match="frontmatter"):
+        build_package(source, out, REV, "v3.9.0")
+    assert not out.exists()

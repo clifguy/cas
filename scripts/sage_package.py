@@ -42,13 +42,37 @@ def inventory(root: Path) -> dict:
     return result
 
 
-def validate_skill(root: Path) -> None:
+def _frontmatter(text: str) -> str:
+    match = re.match(r"---\n(.*?\n)---\n", text, re.S)
+    if not match:
+        raise PackageError("SAGE entry point lacks frontmatter")
+    return match.group(1)
+
+
+def stamp_version(entry: Path, release: str, commit: str) -> None:
+    """Record the sealing CAS release and commit in the packaged entry point's frontmatter."""
+    text = entry.read_text()
+    front = _frontmatter(text)
+    # JSON string literals are valid YAML double-quoted scalars, whatever the release holds.
+    stamp = f"metadata:\n  version: {json.dumps(release)}\n  source_commit: {json.dumps(commit)}\n"
+    entry.write_text("---\n" + front + stamp + text[len("---\n" + front) :])
+
+
+def validate_skill(root: Path, *, source: bool = False) -> None:
     entry = root / "SKILL.md"
     if not entry.is_file() or entry.is_symlink():
         raise PackageError("Missing SAGE entry point")
     text = entry.read_text()
     if not re.search(r"^name: sage$", text, re.M):
         raise PackageError("Expected skill name sage")
+    if source:
+        keys = re.findall(r"^([^\s#][^:]*):", _frontmatter(text), re.M)
+        extra = sorted({k.strip().strip("'\"") for k in keys} - {"name", "description"})
+        if extra:
+            raise PackageError(
+                f"Source frontmatter declares {extra}; only name and description are "
+                "authored, and the build stamps metadata"
+            )
     # Both Markdown links and the inherited backtick reference style are used.
     for path in root.rglob("*.md"):
         text = path.read_text()
@@ -124,7 +148,7 @@ def build_package(source: Path, output: Path, commit: str, release: str) -> dict
         raise PackageError("Exact canonical commit and CAS release identity required")
     if os.path.lexists(output):
         raise PackageError("Output already exists")
-    validate_skill(source / "skills/sage")
+    validate_skill(source / "skills/sage", source=True)
     inventory(source / "skills/sage")
     verify_engine(source / "scripts/sage_installer")
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -136,6 +160,7 @@ def build_package(source: Path, output: Path, commit: str, release: str) -> dict
         # The adapter is part of the verified distribution, not the installed skill.
         shutil.copy2(source / "scripts/sage_package.py", stage / "support/sage_package.py")
         shutil.copy2(source / "scripts/install_sage_skill.py", stage / "installer.py")
+        stamp_version(stage / "sage/SKILL.md", release, commit)
         for p in stage.rglob("*"):
             p.chmod(0o755 if p.is_dir() else 0o644)
         manifest = {

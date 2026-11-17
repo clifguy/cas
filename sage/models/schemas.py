@@ -1842,10 +1842,10 @@ class DocumentWithContent(Document):
     content_hash: Sha256Str | None = Field(
         default=None,
         description=(
-            "Hex digest of the vault-local source file bytes (same algorithm "
-            "as Document.source_content_hash). Populated only when the request "
-            "specified `write_to_path`, for caller-side verification that the "
-            "on-disk bytes match the vault record."
+            "SHA-256 of the delivered bytes, which are the retained copy: "
+            "compare it with `stored_content_hash` (if null, "
+            "`source_content_hash`). Populated only when the request specified "
+            "`write_to_path`, for caller-side verification of the written file."
         ),
     )
     written_to: str | None = Field(
@@ -1880,7 +1880,7 @@ class DocumentWithContent(Document):
             "`include_content=true` against a binary-container source is "
             "refused with `binary_content_refused` (400), directing the caller "
             "to `read_projection` for the extracted text or `write_to_path` "
-            "for the original bytes. Null only on responses that carry no source "
+            "for the retained source bytes. Null only on responses that carry no source "
             "form (e.g. an error envelope). It describes the source, not the "
             "response: `content`, when present, is base64 for every source, a "
             "`text` source included."

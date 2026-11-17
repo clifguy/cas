@@ -15,7 +15,10 @@ from static content and reference verification.
 
 ## Reproducible package
 
-The supported build command requires a clean exact source revision:
+The supported build command requires a clean exact source revision. The build
+stamps that revision's CAS release (`git describe --tags`) and commit into the
+packaged `SKILL.md` frontmatter as `metadata.version` and `metadata.source_commit`;
+the source frontmatter carries only `name` and `description`.
 
 ```sh
 .venv/bin/python scripts/sage_package.py build --source "$PWD" --output /absolute/new-package

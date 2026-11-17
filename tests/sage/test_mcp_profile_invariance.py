@@ -870,3 +870,34 @@ def test_mpi_007_path_parameter_docstrings_state_server_local_contract():
         # docstring happens to wrap.
         doc = " ".join(published_text(tool_name_of(tool)).split())
         assert contract in doc, f"{tool.__name__} does not publish the server-local path contract"
+
+
+@requires_docx
+async def test_mpi_020_binary_download_matches_the_stored_hash(mpi_vault, tmp_path):
+    """MPI-020: delivered bytes are the retained copy, so a download verifies
+    against ``stored_content_hash``; on a binding that rewrites Office packages
+    at rest it does not match ``source_content_hash``."""
+    services, _config, handle = mpi_vault
+    src = _write_office_file(tmp_path, "probe_omega.docx", "Omega")
+    ingest = _parse(await ingest_document(_VAULT_ID, str(src), "docx"))
+    assert "error" not in ingest, ingest
+    doc = await services.graph_store.get_document(ingest["id"])
+    target = tmp_path / "caller_out" / "omega_export.docx"
+    target.parent.mkdir()
+
+    result = _parse(await get_document(_VAULT_ID, ingest["id"], write_to_path=str(target)))
+
+    assert "error" not in result, result
+    downloaded = _sha256(target.read_bytes())
+    assert result["content_hash"] == downloaded
+    assert downloaded == doc.stored_content_hash
+    delivery = await services.documents_service.get_document_content(ingest["id"])
+    assert _sha256(b"".join(delivery.chunks)) == doc.stored_content_hash
+    if handle.fake_client is not None:
+        assert handle.fake_client.stamped_uploads >= 1, (
+            "the document store must have rewritten the upload; without a real "
+            "divergence this test asserts nothing"
+        )
+        assert downloaded != doc.source_content_hash
+    else:
+        assert downloaded == doc.source_content_hash
