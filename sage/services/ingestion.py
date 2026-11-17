@@ -60,6 +60,7 @@ from sage.api.errors import (
     ExpectedHeadVersionRequiresPredecessorError,
     ForceReingestPathMismatchError,
     ForceReingestPinMismatchError,
+    ForceReingestRetainedCopyError,
     IdenticalContentSupersedeError,
     InvalidDocTypeError,
     InvalidLifecycleTransitionError,
@@ -1919,8 +1920,8 @@ class IngestionService:
         # Hash of the bytes the caller delivered, taken from the local file
         # before it is retained. This is the document's provenance hash: it
         # identifies the content the caller handed over, so a caller holding the
-        # original can match it and duplicate detection is keyed to content
-        # identity. It cannot be read back off the store instead -- a binding may
+        # original can match it whatever the store did to its copy. It cannot
+        # be read back off the store instead -- a binding may
         # rewrite its copy at rest (CAS-ADR-043), and such a rewrite is not
         # reproducible, so the delivered digest is recoverable only here, while
         # the caller's file is still in hand. None when there is no delivered
@@ -3903,8 +3904,9 @@ class IngestionService:
         retained path is reused and the retain is skipped: re-delivering an
         unchanged source leaves the store exactly as it was.
 
-        Keyed on the delivered digest rather than on where this source would
-        land, because the two answer different questions. A path-keyed check sees
+        Keyed on content -- the delivered digest, or a retained copy's, through
+        the lookup the duplicate refusal asks -- rather than on where this source
+        would land, because the two answer different questions. A path-keyed check sees
         only the un-disambiguated destination, so it misses a document that a
         name collision moved aside -- and re-delivering *that* document's bytes
         would fall through to a retain that rewrites its copy while duplicate
@@ -3913,10 +3915,10 @@ class IngestionService:
         the document wherever its bytes were actually put.
 
         This is the filesystem binding's own identical-content rule -- same
-        content, reuse -- resolved against recorded provenance instead of against
-        the retained bytes. Only recorded provenance can answer it for a binding
-        that rewrites its copy at rest (CAS-ADR-043), where the retained bytes no
-        longer hash to what produced them.
+        content, reuse -- resolved against the recorded digests instead of
+        against the retained bytes. Only recorded digests can answer it for a
+        binding that rewrites its copy at rest (CAS-ADR-043), where the retained
+        bytes no longer hash to what produced them.
 
         Falls through to ``retain_source`` whenever reuse is not certain -- no
         document with these bytes, or one whose stored copy has since gone
@@ -4184,11 +4186,27 @@ class IngestionService:
         refused, whether or not anything else holds the bytes: honoring the
         call any other way would write to a record the caller did not name.
         The representative is looked up only to name it in the refusal.
+
+        A record the re-ingest would reuse -- the pinned one, or else the
+        lookup's representative -- that holds these bytes only as its
+        retained copy is refused too: its provenance names other bytes, and
+        reprocessing the copy under it is a scope change the pipeline's
+        allowance refuses without an explicit reprocessing decision.
         """
-        if not request.force or request.document_id is None:
+        if not request.force:
+            return None
+        if request.document_id is None:
+            matches = await self._store.find_documents_by_hashes(
+                [provenance_hash],
+                prefer_lifecycle_statuses=self._config.lifecycle.supersession_surviving_states(),
+            )
+            target_id = matches.get(provenance_hash)
+            target = await self._store.get_document(target_id) if target_id else None
+            self._refuse_retained_copy_reingest(target, provenance_hash)
             return None
         pinned = await self._store.get_document(request.document_id)
         if pinned is not None and _carries_hash(pinned, provenance_hash):
+            self._refuse_retained_copy_reingest(pinned, provenance_hash)
             return pinned.id
         hash_matches = await self._store.find_documents_by_hashes(
             [provenance_hash],
@@ -4200,6 +4218,12 @@ class IngestionService:
             content_hash=provenance_hash,
             resolved_id=hash_matches.get(provenance_hash),
         )
+
+    @staticmethod
+    def _refuse_retained_copy_reingest(target: Document | None, provenance_hash: str) -> None:
+        """Refuse reusing ``target`` when it holds the bytes only as its copy."""
+        if target is not None and target.source_content_hash != provenance_hash:
+            raise ForceReingestRetainedCopyError(target.id, provenance_hash)
 
     def _validate_relocation_provenance(
         self,

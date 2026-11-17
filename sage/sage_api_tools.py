@@ -866,27 +866,25 @@ def register_sage_tools(
         - ``vault_not_found`` (404)
         - 400: ``invalid_vault_id``, ``invalid_document_id``,
           ``invalid_document_date``, ``invalid_sha256``, ``misplaced_metadata``,
-          ``misplaced_top_level_field``, ``undeclared_key``,
-          ``source_type_unresolved``, ``adapter_not_found``,
-          ``adapter_config_invalid``, ``source_unreadable``,
-          ``source_digest_mismatch``, ``vault_source_path_refused``,
-          ``relocated_from_provenance_mismatch``,
+          ``misplaced_top_level_field``, ``undeclared_key``, ``invalid_doc_type``,
+          ``source_type_unresolved``, ``adapter_not_found``, ``source_unreadable``,
+          ``adapter_config_invalid``, ``source_digest_mismatch``,
+          ``vault_source_path_refused``, ``relocated_from_provenance_mismatch``,
           ``relocation_source_undelivered``, ``ambiguous_ingest_source``,
-          ``missing_ingest_source``,
-          ``expected_head_version_requires_predecessor``, ``invalid_doc_type``,
-          ``tier3_schema_violation``
+          ``missing_ingest_source``, ``tier3_schema_violation``,
+          ``expected_head_version_requires_predecessor``
         - 404: ``source_file_not_found``, ``document_not_found``
         - 409: ``duplicate_content``, ``force_reingest_path_mismatch``,
-          ``force_reingest_pin_mismatch``, ``lifecycle_state_not_applicable``,
-          ``supersede_target_not_active``, ``identical_content_supersede``,
-          ``stale_chain_head``, ``tier3_unique_constraint_inactive``,
-          ``tier3_unique_constraint_violation``,
-          ``transfer_not_staged``, ``reserved_transition``,
+          ``force_reingest_pin_mismatch``, ``force_reingest_retained_copy``,
+          ``lifecycle_state_not_applicable``, ``supersede_target_not_active``,
+          ``identical_content_supersede``, ``stale_chain_head``,
+          ``tier3_unique_constraint_inactive``, ``transfer_not_staged``,
+          ``tier3_unique_constraint_violation``, ``reserved_transition``,
           ``vault_migration_in_flight``
         - 410: ``transfer_token_invalid``
         - 422: ``invalid_parameter``
         - 500: ``transfer_endpoint_not_configured``
-        - 502 / 503: ``vault_source_store_refused`` / ``vault_source_store_unavailable``
+        - 502/503: ``vault_source_store_refused``/``vault_source_store_unavailable``
         """
         try:
             # First, before any validation or vault work: a misplaced

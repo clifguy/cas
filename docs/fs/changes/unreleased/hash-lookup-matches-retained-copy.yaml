@@ -4,7 +4,7 @@ summary: >-
   Every lookup that asks whether a vault already holds some bytes now matches a
   document's stored_content_hash as well as its source_content_hash: the ingest
   duplicate refusal, the dry-run preview's duplicate verdict, batch ingest, the
-  force re-ingest pin check, the identical-content supersede refusal, the
+  force re-ingest resolution, the identical-content supersede refusal, the
   hash-check operation (verify_hashes) and the directory scan. Where several
   documents carry a hash, a surviving lifecycle state still ranks first, then a
   delivered-digest match over a retained-copy one, then the lowest id. The
@@ -14,6 +14,11 @@ summary: >-
   get_document descriptions say so, and the get_document descriptions add that
   formats kept verbatim carry equal hashes. A storage index on
   stored_content_hash is created idempotently at vault open; no operator step.
+  A force re-ingest whose bytes the record it would reuse holds only as its
+  retained copy is refused with the new 409 force_reingest_retained_copy
+  (ForceReingestRetainedCopyError in both specifications, the generated error
+  contract and the ingest tools' error lists): reprocessing the copy under the
+  record's provenance is a scope change the processing allowance refuses.
   It ships under the data-integrity exemption, without a deprecation: the old
   match let a downloaded copy be written as a second document, and the
   refusal, its required matched_hash_field and the hash check share one
@@ -25,8 +30,9 @@ for_callers: >-
   second one. verify_hashes and the directory scan report it as already held.
   The duplicate_content detail carries matched_hash_field, source_content_hash
   or stored_content_hash, saying which of the document's digests matched. A
-  force re-ingest may pin the document whose retained copy the bytes are, and
-  superseding a document with its own retained copy is refused as
+  force re-ingest of a document's retained copy, pinned or not, is refused as
+  force_reingest_retained_copy; use recompute_pipeline on the document to
+  re-run it. Superseding a document with its own retained copy is refused as
   identical_content_supersede. These ship without a deprecation under the
   data-integrity exemption, because the old match let a downloaded copy be
   written as a second document.

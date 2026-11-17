@@ -27,6 +27,7 @@ import pytest
 from sage.api.errors import (
     DuplicateContentError,
     ForceReingestPinMismatchError,
+    ForceReingestRetainedCopyError,
     IdenticalContentSupersedeError,
     InvalidActionError,
     InvalidDocTypeError,
@@ -783,6 +784,36 @@ async def test_dry_run_refuses_superseding_a_document_with_its_own_retained_copy
                 source=str(copy),
                 source_type=SourceType.MARKDOWN,
                 predecessor_id=pred.document.id,
+                dry_run=True,
+            )
+        )
+
+
+async def test_dry_run_refuses_a_force_reingest_of_a_retained_copy(
+    tmp_vault_dir, graph_store, dry_ingestion_service
+):
+    """The preview refuses a force re-ingest of a document's retained copy,
+    as the run it previews does, rather than reporting a re-ingest.
+
+    Trap: a preview that resolves the reused record without the check
+    reports ``would_create=true`` for a call the real run refuses.
+    """
+    original = _write(tmp_vault_dir, "held.md", "# Held\n\nDelivered bytes.")
+    held = await dry_ingestion_service.ingest(
+        IngestRequest(
+            source=str(original), source_type=SourceType.MARKDOWN, metadata={"doc_type": "misc"}
+        )
+    )
+    copy = _write(tmp_vault_dir, "held_copy.md", "# Held\n\nThe store's rewritten copy.")
+    await graph_store.update_document(held.document.id, {"stored_content_hash": hash_file(copy)})
+
+    with pytest.raises(ForceReingestRetainedCopyError):
+        await dry_ingestion_service.ingest(
+            IngestRequest(
+                source=str(copy),
+                source_type=SourceType.MARKDOWN,
+                force=True,
+                document_id=held.document.id,
                 dry_run=True,
             )
         )

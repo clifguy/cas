@@ -22,6 +22,7 @@ from sage.api.errors import (
     DuplicateContentError,
     ForceReingestPathMismatchError,
     ForceReingestPinMismatchError,
+    ForceReingestRetainedCopyError,
     IdenticalContentSupersedeError,
 )
 from sage.config import STORED_CONFIG_CONTEXT, VaultConfig
@@ -171,22 +172,92 @@ async def test_reingesting_a_downloaded_retained_copy_is_refused_as_a_duplicate(
     assert err.detail["matched_hash_field"] == "stored_content_hash"
 
 
-async def test_force_reingest_pin_on_the_retained_copys_holder_is_honored(
+async def test_duplicate_refusal_names_the_delivered_digest_when_the_holder_vanishes(
+    tmp_vault_dir, graph_store, ingestion_service, monkeypatch
+):
+    """A holder removed between the lookup and its read is reported as a
+    delivered-digest match rather than failing the refusal.
+
+    The matched field is read off the holder only to say which digest
+    matched; with nothing to read, the refusal still names the id the lookup
+    returned, and calls the match the delivered digest, the only one this
+    call can vouch for.
+    """
+    holder = await _ingest_rewritten_holder(tmp_vault_dir, graph_store, ingestion_service)
+    real_get = graph_store.get_document
+
+    async def vanished(document_id):
+        return None if document_id == holder.id else await real_get(document_id)
+
+    monkeypatch.setattr(graph_store, "get_document", vanished)
+
+    with pytest.raises(DuplicateContentError) as exc_info:
+        await ingestion_service.ingest(
+            IngestRequest(source="downloads/copy.md", source_type=SourceType.MARKDOWN)
+        )
+
+    assert exc_info.value.detail["existing_document_id"] == holder.id
+    assert exc_info.value.detail["matched_hash_field"] == "source_content_hash"
+
+
+@pytest.mark.parametrize("pinned", [True, False], ids=["pinned", "unpinned"])
+async def test_force_reingest_of_a_retained_copy_is_refused_before_any_write(
+    tmp_vault_dir, graph_store, ingestion_service, pinned
+):
+    """A force re-ingest of the bytes a document keeps as its copy is refused.
+
+    The bytes resolve to the document only through its retained digest, so
+    reprocessing them under its provenance inspects other bytes than its
+    processing allowance was measured on. Accepted, the run reuses the
+    record and then never completes: it sits in progress with no error. The
+    refusal must land before the record is touched, in both the pinned and
+    the unpinned form.
+    """
+    holder = await _ingest_rewritten_holder(tmp_vault_dir, graph_store, ingestion_service)
+    if pinned:
+        source = "downloads/copy.md"
+    else:
+        # Unpinned reuse is keyed to the holder's own path, so the download
+        # lands where the original was.
+        source = "reports/original.md"
+        _create_test_file(tmp_vault_dir, source, _DOWNLOADED_BODY)
+
+    with pytest.raises(ForceReingestRetainedCopyError) as exc_info:
+        await ingestion_service.ingest(
+            IngestRequest(
+                source=source,
+                source_type=SourceType.MARKDOWN,
+                force=True,
+                document_id=holder.id if pinned else None,
+            )
+        )
+
+    err = exc_info.value
+    assert err.code == "force_reingest_retained_copy"
+    assert err.status_code == 409
+    assert err.detail == {
+        "document_id": holder.id,
+        "source_content_hash": holder.stored_content_hash,
+    }
+    unchanged = await graph_store.get_document(holder.id)
+    assert unchanged.model_dump() == holder.model_dump()
+    assert len(await graph_store.list_all_documents()) == 1
+
+
+async def test_force_reingest_of_the_original_still_matches_a_holder_whose_copy_differs(
     tmp_vault_dir, graph_store, ingestion_service
 ):
-    """A force re-ingest pinned to the document whose copy these bytes are
-    reuses it, and leaves its delivered digest alone.
+    """Control for the delivered-digest arm: re-delivering the original bytes
+    to a document whose retained copy differs reuses it and completes.
 
-    The pin check compares the pinned document's own digest with the bytes;
-    comparing only the delivered digest refuses the one document that holds
-    them. The provenance hash must survive: it identifies what was delivered
-    at ingest, and the re-ingest delivered the copy, not the original.
+    A match on the retained digest alone refuses this pin, because the
+    pinned record's stored digest names other bytes.
     """
     holder = await _ingest_rewritten_holder(tmp_vault_dir, graph_store, ingestion_service)
 
     result = await ingestion_service.ingest(
         IngestRequest(
-            source="downloads/copy.md",
+            source="reports/original.md",
             source_type=SourceType.MARKDOWN,
             force=True,
             document_id=holder.id,
@@ -195,7 +266,28 @@ async def test_force_reingest_pin_on_the_retained_copys_holder_is_honored(
 
     assert result.document.id == holder.id
     reused = await graph_store.get_document(holder.id)
-    assert reused.source_content_hash == holder.source_content_hash
+    assert reused.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+
+
+async def test_superseding_a_document_with_its_original_bytes_is_identical_when_its_copy_differs(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    """Control for the delivered-digest arm of the identical-content check.
+
+    The holder's retained digest names other bytes, so a check on the
+    retained digest alone lets the unchanged original through as a new
+    version.
+    """
+    holder = await _ingest_rewritten_holder(tmp_vault_dir, graph_store, ingestion_service)
+
+    with pytest.raises(IdenticalContentSupersedeError):
+        await ingestion_service.ingest(
+            IngestRequest(
+                source="reports/original.md",
+                source_type=SourceType.MARKDOWN,
+                predecessor_id=holder.id,
+            )
+        )
 
 
 async def test_superseding_a_document_with_its_own_retained_copy_is_an_identical_supersede(

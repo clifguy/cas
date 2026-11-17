@@ -462,6 +462,49 @@
                 ],
                 "type": "object"
               },
+              "ForceReingestRetainedCopyError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/ForceReingestRetainedCopyErrorDetail"
+                  },
+                  "error": {
+                    "const": "force_reingest_retained_copy",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "ForceReingestRetainedCopyErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "document_id": {
+                    "description": "Document id.",
+                    "type": "string"
+                  },
+                  "source_content_hash": {
+                    "description": "Source content hash.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "document_id",
+                  "source_content_hash"
+                ],
+                "type": "object"
+              },
               "IdenticalContentSupersedeError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -2603,6 +2646,7 @@
                 "expected_head_version_requires_predecessor": "#/$defs/ExpectedHeadVersionRequiresPredecessorError",
                 "force_reingest_path_mismatch": "#/$defs/ForceReingestPathMismatchError",
                 "force_reingest_pin_mismatch": "#/$defs/ForceReingestPinMismatchError",
+                "force_reingest_retained_copy": "#/$defs/ForceReingestRetainedCopyError",
                 "identical_content_supersede": "#/$defs/IdenticalContentSupersedeError",
                 "internal_error": "#/$defs/InternalErrorError",
                 "invalid_action": "#/$defs/InvalidActionError",
@@ -2683,6 +2727,9 @@
               },
               {
                 "$ref": "#/$defs/ForceReingestPinMismatchError"
+              },
+              {
+                "$ref": "#/$defs/ForceReingestRetainedCopyError"
               },
               {
                 "$ref": "#/$defs/IdenticalContentSupersedeError"
@@ -6986,6 +7033,49 @@
                 ],
                 "type": "object"
               },
+              "ForceReingestRetainedCopyError": {
+                "additionalProperties": false,
+                "description": "The refusal envelope for this error code.",
+                "properties": {
+                  "detail": {
+                    "$ref": "#/$defs/ForceReingestRetainedCopyErrorDetail"
+                  },
+                  "error": {
+                    "const": "force_reingest_retained_copy",
+                    "description": "Machine-readable error code selecting this envelope.",
+                    "type": "string"
+                  },
+                  "message": {
+                    "description": "Human-readable error description.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "error",
+                  "message",
+                  "detail"
+                ],
+                "type": "object"
+              },
+              "ForceReingestRetainedCopyErrorDetail": {
+                "additionalProperties": false,
+                "description": "Additional context for this refusal.",
+                "properties": {
+                  "document_id": {
+                    "description": "Document id.",
+                    "type": "string"
+                  },
+                  "source_content_hash": {
+                    "description": "Source content hash.",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "document_id",
+                  "source_content_hash"
+                ],
+                "type": "object"
+              },
               "IdenticalContentSupersedeError": {
                 "additionalProperties": false,
                 "description": "The refusal envelope for this error code.",
@@ -9243,6 +9333,7 @@
                 "expected_head_version_requires_predecessor": "#/$defs/ExpectedHeadVersionRequiresPredecessorError",
                 "force_reingest_path_mismatch": "#/$defs/ForceReingestPathMismatchError",
                 "force_reingest_pin_mismatch": "#/$defs/ForceReingestPinMismatchError",
+                "force_reingest_retained_copy": "#/$defs/ForceReingestRetainedCopyError",
                 "identical_content_supersede": "#/$defs/IdenticalContentSupersedeError",
                 "internal_error": "#/$defs/InternalErrorError",
                 "invalid_action": "#/$defs/InvalidActionError",
@@ -9322,6 +9413,9 @@
               },
               {
                 "$ref": "#/$defs/ForceReingestPinMismatchError"
+              },
+              {
+                "$ref": "#/$defs/ForceReingestRetainedCopyError"
               },
               {
                 "$ref": "#/$defs/IdenticalContentSupersedeError"
@@ -9478,7 +9572,7 @@
           "openWorldHint": false,
           "readOnlyHint": false
         },
-        "description": "Ingest a source file into SAGE, running the projection ->\nindexing -> abstraction pipeline.\n\nStages 2-3 (indexing, abstraction) run in the background; a\nrequested supersede runs synchronously, so the version chain is\ncomplete on return. The document can at once be read, patched,\nlinked and superseded. Only passage search waits on indexing, and\nthe abstract on abstraction, so wait for a terminal\n``pipeline_status`` only when the next step needs one, else once per\nbatch, bounded: ``abstraction_complete``,\n``abstraction_skipped``, ``failed`` (sets ``pipeline_error``) or\n``abstraction_interrupted`` (re-run at the next server start).\n\nMetadata is caller-authoritative. ``dry_run=true`` previews the\ncall and the doc_type's requirements, persisting nothing.\n\nError modes:\n- ``vault_not_found`` (404)\n- 400: ``invalid_vault_id``, ``invalid_document_id``,\n  ``invalid_document_date``, ``invalid_sha256``, ``misplaced_metadata``,\n  ``misplaced_top_level_field``, ``undeclared_key``,\n  ``source_type_unresolved``, ``adapter_not_found``,\n  ``adapter_config_invalid``, ``source_unreadable``,\n  ``source_digest_mismatch``, ``vault_source_path_refused``,\n  ``relocated_from_provenance_mismatch``,\n  ``relocation_source_undelivered``, ``ambiguous_ingest_source``,\n  ``missing_ingest_source``,\n  ``expected_head_version_requires_predecessor``, ``invalid_doc_type``,\n  ``tier3_schema_violation``\n- 404: ``source_file_not_found``, ``document_not_found``\n- 409: ``duplicate_content``, ``force_reingest_path_mismatch``,\n  ``force_reingest_pin_mismatch``, ``lifecycle_state_not_applicable``,\n  ``supersede_target_not_active``, ``identical_content_supersede``,\n  ``stale_chain_head``, ``tier3_unique_constraint_inactive``,\n  ``tier3_unique_constraint_violation``,\n  ``transfer_not_staged``, ``reserved_transition``,\n  ``vault_migration_in_flight``\n- 410: ``transfer_token_invalid``\n- 422: ``invalid_parameter``\n- 500: ``transfer_endpoint_not_configured``\n- 502 / 503: ``vault_source_store_refused`` / ``vault_source_store_unavailable``\n",
+        "description": "Ingest a source file into SAGE, running the projection ->\nindexing -> abstraction pipeline.\n\nStages 2-3 (indexing, abstraction) run in the background; a\nrequested supersede runs synchronously, so the version chain is\ncomplete on return. The document can at once be read, patched,\nlinked and superseded. Only passage search waits on indexing, and\nthe abstract on abstraction, so wait for a terminal\n``pipeline_status`` only when the next step needs one, else once per\nbatch, bounded: ``abstraction_complete``,\n``abstraction_skipped``, ``failed`` (sets ``pipeline_error``) or\n``abstraction_interrupted`` (re-run at the next server start).\n\nMetadata is caller-authoritative. ``dry_run=true`` previews the\ncall and the doc_type's requirements, persisting nothing.\n\nError modes:\n- ``vault_not_found`` (404)\n- 400: ``invalid_vault_id``, ``invalid_document_id``,\n  ``invalid_document_date``, ``invalid_sha256``, ``misplaced_metadata``,\n  ``misplaced_top_level_field``, ``undeclared_key``, ``invalid_doc_type``,\n  ``source_type_unresolved``, ``adapter_not_found``, ``source_unreadable``,\n  ``adapter_config_invalid``, ``source_digest_mismatch``,\n  ``vault_source_path_refused``, ``relocated_from_provenance_mismatch``,\n  ``relocation_source_undelivered``, ``ambiguous_ingest_source``,\n  ``missing_ingest_source``, ``tier3_schema_violation``,\n  ``expected_head_version_requires_predecessor``\n- 404: ``source_file_not_found``, ``document_not_found``\n- 409: ``duplicate_content``, ``force_reingest_path_mismatch``,\n  ``force_reingest_pin_mismatch``, ``force_reingest_retained_copy``,\n  ``lifecycle_state_not_applicable``, ``supersede_target_not_active``,\n  ``identical_content_supersede``, ``stale_chain_head``,\n  ``tier3_unique_constraint_inactive``, ``transfer_not_staged``,\n  ``tier3_unique_constraint_violation``, ``reserved_transition``,\n  ``vault_migration_in_flight``\n- 410: ``transfer_token_invalid``\n- 422: ``invalid_parameter``\n- 500: ``transfer_endpoint_not_configured``\n- 502/503: ``vault_source_store_refused``/``vault_source_store_unavailable``\n",
         "inputSchema": {
           "additionalProperties": false,
           "properties": {
@@ -9529,7 +9623,7 @@
             },
             "force": {
               "default": false,
-              "description": "When true, bypasses duplicate content detection and re-runs the full pipeline on the existing document record (if one exists carrying the same content hash, as delivered or as retained; a refusal's matched_hash_field says which). Returns 200 (re-processed) instead of 201 (new). The document ID is preserved. Use for pipeline failure recovery.",
+              "description": "When true, bypasses duplicate content detection and re-runs the full pipeline on the existing document record (if one exists carrying the same content hash, as delivered or as retained). Returns 200 (re-processed) instead of 201 (new). The document ID is preserved. Use for pipeline failure recovery.",
               "type": "boolean"
             },
             "metadata": {

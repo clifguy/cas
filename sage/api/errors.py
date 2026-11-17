@@ -303,6 +303,34 @@ class ForceReingestPinMismatchError(SAGEError):
         )
 
 
+class ForceReingestRetainedCopyError(SAGEError):
+    """409: a force-reingest delivered the bytes a document keeps as its
+    retained copy, not the bytes delivered at its ingest.
+
+    A store that rewrites its copy at rest leaves the copy's digest
+    (``stored_content_hash``) different from the delivered one
+    (``source_content_hash``), so these bytes resolve to the document only
+    through the copy. Reprocessing them under the document's provenance
+    would inspect bytes its processing allowance was not measured on, a
+    scope change that needs an explicit reprocessing decision; recompute
+    the document's pipeline from its retained copy instead.
+    """
+
+    def __init__(self, document_id: str, content_hash: str) -> None:
+        super().__init__(
+            "force_reingest_retained_copy",
+            (
+                "Force re-ingest delivered a document's retained copy; "
+                "recompute that document's pipeline instead."
+            ),
+            409,
+            {
+                "document_id": document_id,
+                "source_content_hash": content_hash,
+            },
+        )
+
+
 class MissingFieldError(SAGEError):
     """400: required field missing from request."""
 
