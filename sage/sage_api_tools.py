@@ -1046,8 +1046,8 @@ def register_sage_tools(
         Its bytes are the retained copy: they match ``stored_content_hash``
         (if null, ``source_content_hash``), which differs from
         ``source_content_hash`` (the bytes ingested) where the source binding
-        rewrites the copy at rest. ``read_projection`` is
-        the cheaper, lossy text read.
+        rewrites the copy at rest; text formats, kept verbatim, have equal
+        hashes. ``read_projection`` is the cheaper, lossy text read.
 
         include_content and write_to_path are mutually exclusive.
 
@@ -2298,15 +2298,13 @@ def register_sage_tools(
         ``document_id``. Used by the scan-and-batch-ingest flow to identify
         already-ingested files without re-hashing on the SAGE side. Where
         several documents carry one hash, the one named is a version a
-        supersession has not retired, lowest document id among equals, so
-        the same request names the same document every time.
+        supersession has not retired, then a delivered-digest match over a
+        retained-copy one, lowest document id among equals,
+        so the same request names the same document every time.
 
-        Matches on provenance: a document's ``source_content_hash`` is the
-        SHA-256 of the bytes that were delivered at ingest, so the digest a
-        caller computes over its own local file is the right thing to send
-        here. That holds however the vault retains its copy -- a store that
-        rewrites what it keeps records the rewritten digest separately, and
-        this lookup does not consult it.
+        Matches either recorded digest, ``source_content_hash`` (the bytes
+        delivered at ingest) or ``stored_content_hash`` (the retained copy,
+        which some stores rewrite), so originals and downloads both match.
 
         Hash format: every hash is normalized to the canonical
         ``sha256:<64 lowercase hex>`` before lookup, so the canonical form,

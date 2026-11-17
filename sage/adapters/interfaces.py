@@ -1423,15 +1423,25 @@ class GraphStore(ABC):
     async def find_documents_by_hashes(
         self, hashes: list[str], *, prefer_lifecycle_statuses: frozenset[str]
     ) -> dict[str, str]:
-        """Map source content hashes to the id of one document carrying each.
+        """Map content hashes to the id of one document carrying each.
+
+        A document carries a hash when it is either its ``source_content_hash``
+        (the bytes delivered at ingest) or its ``stored_content_hash`` (the
+        retained copy). The two differ where the vault-source binding rewrites
+        its copy at rest (CAS-ADR-043), and bytes downloaded from such a vault
+        hash to the stored one, so a caller asking whether the vault already
+        holds some bytes needs both.
 
         Hashes no document carries are absent from the mapping. Several
-        documents may carry one hash -- identical bytes at another path, or a
-        predecessor a supersession retired -- and one of them represents the
+        documents may carry one hash -- identical bytes at another path, a
+        predecessor a supersession retired, or one document's delivered bytes
+        that are another's retained copy -- and one of them represents the
         hash, so the answer does not depend on storage order. Which one is
         stated here: a document whose lifecycle status is in
-        ``prefer_lifecycle_statuses`` outranks one whose status is not, and
-        among equals the lowest document id by byte value wins. Byte value,
+        ``prefer_lifecycle_statuses`` outranks one whose status is not; among
+        equals, a document carrying the hash as its ``source_content_hash``
+        outranks one carrying it only as its ``stored_content_hash``; and
+        among those the lowest document id by byte value wins. Byte value,
         not a locale's ordering: a collation that sorts punctuation by its own
         rules would make the answer depend on where the store runs, and would
         put two bindings of this port at odds on the same vault.

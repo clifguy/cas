@@ -1,0 +1,40 @@
+classification: minor
+category: [capability, caller-adaptation]
+summary: >-
+  Every lookup that asks whether a vault already holds some bytes now matches a
+  document's stored_content_hash as well as its source_content_hash: the ingest
+  duplicate refusal, the dry-run preview's duplicate verdict, batch ingest, the
+  force re-ingest pin check, the identical-content supersede refusal, the
+  hash-check operation (verify_hashes) and the directory scan. Where several
+  documents carry a hash, a surviving lifecycle state still ranks first, then a
+  delivered-digest match over a retained-copy one, then the lowest id. The
+  duplicate_content detail gains a required matched_hash_field naming which
+  digest matched (DuplicateContentErrorDetail in both OpenAPI specifications,
+  the generated error contract and the MCP catalog). The hash-check, ingest and
+  get_document descriptions say so, and the get_document descriptions add that
+  formats kept verbatim carry equal hashes. A storage index on
+  stored_content_hash is created idempotently at vault open; no operator step.
+  It ships under the data-integrity exemption, without a deprecation: the old
+  match let a downloaded copy be written as a second document, and the
+  refusal, its required matched_hash_field and the hash check share one
+  answer, so the two forms cannot be served side by side.
+for_callers: >-
+  A file downloaded from a vault whose store rewrites its copy at rest (for
+  example DOCX, PPTX and XLSX in a SharePoint-backed vault) is now refused on
+  re-ingest as a duplicate of its document, instead of being ingested as a
+  second one. verify_hashes and the directory scan report it as already held.
+  The duplicate_content detail carries matched_hash_field, source_content_hash
+  or stored_content_hash, saying which of the document's digests matched. A
+  force re-ingest may pin the document whose retained copy the bytes are, and
+  superseding a document with its own retained copy is refused as
+  identical_content_supersede. These ship without a deprecation under the
+  data-integrity exemption, because the old match let a downloaded copy be
+  written as a second document.
+exemption:
+  kind: data-integrity
+  reason: >-
+    The old lookup matched the delivered digest only, so bytes downloaded from
+    a store that rewrites its copy at rest were ingested as a second document
+    holding the same content, and verify_hashes reported them as new. Serving
+    that answer beside the widened one would let callers keep writing the
+    duplicate; the refusal and its matched_hash_field are one answer.

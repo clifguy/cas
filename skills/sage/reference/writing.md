@@ -49,6 +49,16 @@ Re-ingesting genuinely unchanged content is safe and is refused by hash, with
 the refusal naming the document that already holds those bytes. Treat that
 refusal as a skip signal, not as a failure.
 
+A file downloaded from a vault is not always the file that was ingested. Where
+the source binding rewrites its copy at rest (SharePoint does this to DOCX,
+PPTX and XLSX), the download hashes to the document's `stored_content_hash`,
+not its `source_content_hash`. Rely on the hash refusal for such a file only
+where the served `ingest_document` description says the duplicate check
+matches the retained copy; the refusal's `matched_hash_field` then says which
+digest matched. Otherwise, and whenever you hold bytes of unknown origin, find
+the existing document by identity (title, typed metadata, the predecessor
+search above) before ingesting.
+
 Ingest data files as they are. JSON, JSON Lines, YAML, TOML, XML, CSV and TSV
 are a source format of their own, so do not convert one to Markdown first; the ingest
 tool's source-type description lists every format with the extensions it is

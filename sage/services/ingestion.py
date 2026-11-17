@@ -596,6 +596,16 @@ _PATH_BOUND_READ_FAULTS: tuple[type[OSError], ...] = (
 )
 
 
+def _carries_hash(doc: Document, content_hash: str) -> bool:
+    """Whether a document holds these bytes, as delivered or as its retained copy.
+
+    The two digests differ where the vault-source binding rewrites its copy at
+    rest (CAS-ADR-043), and bytes downloaded from such a vault hash to the
+    stored one. The same rule the bulk hash lookup answers under.
+    """
+    return content_hash in (doc.source_content_hash, doc.stored_content_hash)
+
+
 def _is_momentary_read_fault(exc: BaseException) -> bool:
     """Whether a failed source read may succeed on a later attempt.
 
@@ -2150,7 +2160,7 @@ class IngestionService:
         # error code signalling "no-op edit" rather than "already ingested
         # somewhere in the vault". Only applies when a supersede target
         # was provided and its hash matches the new file's hash.
-        if predecessor is not None and (predecessor.source_content_hash == provenance_hash):
+        if predecessor is not None and _carries_hash(predecessor, provenance_hash):
             raise IdenticalContentSupersedeError(predecessor.id, provenance_hash)
 
         # Duplicate detection (BH-018, BH-019, BH-066, BH-067). Several
@@ -2174,7 +2184,16 @@ class IngestionService:
         if hash_matches and not request.force:
             # Hash-only check: identical content already in vault (BH-066)
             existing_id = next(iter(hash_matches.values()))
-            raise DuplicateContentError(existing_id, provenance_hash)
+            existing = await self._store.get_document(existing_id)
+            # The lookup answers on either digest; the refusal says which, so
+            # a caller can tell a downloaded retained copy from a re-delivered
+            # original. Read only on this refusal path.
+            matched_field = (
+                "stored_content_hash"
+                if existing is not None and existing.source_content_hash != provenance_hash
+                else "source_content_hash"
+            )
+            raise DuplicateContentError(existing_id, provenance_hash, matched_field)
 
         # Branch detection: force-reingest reuses an existing record;
         # otherwise this is a new-doc insert (with or without predecessor).
@@ -2270,8 +2289,10 @@ class IngestionService:
                 **modifier_fields(writer),
             }
             if retained:
-                # The record is reused because the delivered bytes matched, so
-                # source_content_hash is unchanged by definition -- but this call
+                # The record is reused because the delivered bytes matched one of
+                # its digests. source_content_hash is left as it is: it records
+                # what was delivered at the original ingest, and a re-delivered
+                # retained copy is not that -- but this call
                 # wrote the source again, and a binding that rewrites its copy at
                 # rest produced a fresh one, so the as-stored digest is re-read
                 # from this projection rather than left describing the previous
@@ -2669,7 +2690,7 @@ class IngestionService:
         duplicate_of: str | None = None
         reused: Document | None = None
         if provenance_hash is not None:
-            if predecessor is not None and predecessor.source_content_hash == provenance_hash:
+            if predecessor is not None and _carries_hash(predecessor, provenance_hash):
                 raise IdenticalContentSupersedeError(predecessor.id, provenance_hash)
             # The same rule the refusal asks under, so a preview and the run
             # it previews name the same document.
@@ -4167,7 +4188,7 @@ class IngestionService:
         if not request.force or request.document_id is None:
             return None
         pinned = await self._store.get_document(request.document_id)
-        if pinned is not None and pinned.source_content_hash == provenance_hash:
+        if pinned is not None and _carries_hash(pinned, provenance_hash):
             return pinned.id
         hash_matches = await self._store.find_documents_by_hashes(
             [provenance_hash],

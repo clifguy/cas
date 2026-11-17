@@ -1377,7 +1377,8 @@ class IngestRequest(BaseModel):
         description=(
             "When true, bypasses duplicate content detection and re-runs the "
             "full pipeline on the existing document record (if one exists "
-            "carrying the same source_content_hash). Returns 200 "
+            "carrying the same content hash, as delivered or as retained; "
+            "a refusal's matched_hash_field says which). Returns 200 "
             "(re-processed) instead of 201 (new). The document ID is "
             "preserved. Use for pipeline failure recovery."
         ),
@@ -6702,7 +6703,9 @@ class HashCheckMatch(BaseModel):
         description=(
             "Document id when exists=true; null otherwise. Where several "
             "documents carry the hash, the one named is a version a "
-            "supersession has not retired, lowest document id among equals."
+            "supersession has not retired, then one delivered as these "
+            "bytes over one keeping them as its retained copy, lowest "
+            "document id among equals."
         ),
     )
 

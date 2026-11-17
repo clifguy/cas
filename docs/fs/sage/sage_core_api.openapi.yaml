@@ -872,11 +872,18 @@ paths:
 
 
             `duplicate_content`: a document already carries this content
-            hash. The key is the hash alone, so identical bytes at a
+            hash, as the bytes delivered at its ingest
+            (`source_content_hash`) or as its retained copy
+            (`stored_content_hash`); detail's `matched_hash_field` says
+            which. A file downloaded from a vault whose source binding
+            rewrites its copy at rest therefore refuses as its document's
+            duplicate. The key is the hash alone, so identical bytes at a
             path the vault has never seen refuse too. Where several
             documents carry it, the refusal names a version a
-            supersession has not retired, lowest document id among
-            equals, so re-running the same call names the same document.
+            supersession has not retired, then one that was delivered as
+            these bytes over one keeping them as its copy, lowest document
+            id among equals, so re-running the same call names the same
+            document.
             Use `force: true` to bypass detection and re-run the
             pipeline.
 
@@ -1222,7 +1229,9 @@ paths:
         ingest call. Its bytes are the retained copy: they match
         `stored_content_hash` (if null, `source_content_hash`), which differs
         from `source_content_hash` (the bytes ingested) where the source
-        binding rewrites the copy at rest.
+        binding rewrites the copy at rest, as a document store can for
+        Office formats; a copy kept verbatim, as text formats are, carries
+        equal hashes.
         `read_projection` is the cheaper, lossy text read.
 
 
@@ -2553,10 +2562,14 @@ paths:
         existing document and, if so, the matching document's
         `document_id`. Used during the directory-scan flow to
         differentiate new files from already-ingested ones before
-        showing per-file ingestion decisions to the user. Where several
-        documents carry one hash, the one named is a version a
-        supersession has not retired, lowest document id among equals,
-        so the same request names the same document every time.
+        showing per-file ingestion decisions to the user. Matches either
+        recorded digest, `source_content_hash` (the bytes delivered at
+        ingest) or `stored_content_hash` (the retained copy, which some
+        stores rewrite), so originals and downloads both match. Where
+        several documents carry one hash, the one named is a version a
+        supersession has not retired, then a delivered-digest match
+        over a retained-copy one, lowest document id among equals, so
+        the same request names the same document every time.
 
 
         Every hash is normalized to the canonical
@@ -3358,7 +3371,8 @@ paths:
         a page of the serving origin. The streamed bytes are the retained copy
         and match `stored_content_hash` (if null, `source_content_hash`),
         which differs from `source_content_hash` (the bytes ingested) where
-        the source binding rewrites the copy at rest.
+        the source binding rewrites the copy at rest; a copy kept verbatim,
+        as text formats are, carries equal hashes.
       tags: [Document Metadata]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -6233,7 +6247,8 @@ components:
           description: >-
             When true, bypasses duplicate content detection and re-runs
             the full pipeline on the existing document record (if one
-            exists carrying the same source_content_hash). Returns 200
+            exists carrying the same content hash, as delivered or as
+            retained; a refusal's matched_hash_field says which). Returns 200
             (re-processed) instead of 201 (new). The document ID is
             preserved. Use for pipeline failure recovery.
         needs_review:
@@ -8922,8 +8937,9 @@ components:
           description: >-
             Document id when exists=true; null otherwise. Where several
             documents carry the hash, the one named is a version a
-            supersession has not retired, lowest document id among
-            equals.
+            supersession has not retired, then one delivered as these
+            bytes over one keeping them as its retained copy, lowest
+            document id among equals.
 
     HashCheckResponse:
       type: object
@@ -11637,6 +11653,7 @@ components:
       required:
       - existing_document_id
       - source_content_hash
+      - matched_hash_field
       properties:
         existing_document_id:
           type: string
@@ -11644,6 +11661,12 @@ components:
         source_content_hash:
           type: string
           description: Source content hash.
+        matched_hash_field:
+          type: string
+          enum:
+          - source_content_hash
+          - stored_content_hash
+          description: Which of the existing document's digests the delivered bytes matched.
       description: Additional context for this refusal.
     DuplicateContentError:
       type: object

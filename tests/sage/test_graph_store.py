@@ -1107,6 +1107,103 @@ async def test_find_documents_by_hashes_finds_a_retired_document_when_it_is_the_
     assert result == {archived.source_content_hash: archived.id}
 
 
+async def test_find_documents_by_hashes_matches_the_retained_copys_digest(graph_store):
+    """Bytes equal to a document's retained copy are found, not reported novel.
+
+    A store that rewrites its copy at rest leaves the record carrying two
+    digests, and a download from SAGE hashes to the stored one. Asked by that
+    digest, the lookup must name the document. Trap: match on the source
+    column alone and this returns ``{}`` -- the second-document-on-re-ingest
+    defect. The source and stored digests are distinct on purpose; were they
+    equal, a source-only lookup would pass.
+    """
+    rewritten = _make_doc(_id("bulk_hash_rewritten")).model_copy(
+        update={"stored_content_hash": _sha("bulk_hash_rewritten_stored")}
+    )
+    assert rewritten.stored_content_hash != rewritten.source_content_hash
+    await graph_store.insert_document(rewritten)
+
+    result = await graph_store.find_documents_by_hashes(
+        [rewritten.stored_content_hash], prefer_lifecycle_statuses=_SURVIVING_STATES
+    )
+
+    assert result == {rewritten.stored_content_hash: rewritten.id}
+
+
+async def test_find_documents_by_hashes_prefers_a_source_match_over_a_stored_match(graph_store):
+    """Where one digest is a document's source and another's retained copy,
+    the document it was delivered as wins.
+
+    Both are active, so the lifecycle rank ties and the match rank decides.
+    The source holder carries the *higher* id: under the id tie-break alone the
+    stored holder would win. Trap: omit the match rank, or invert it, and the
+    stored holder is named.
+    """
+    shared = _sha("bulk_hash_match_rank")
+    stored_holder = _make_doc_with_hash(
+        "00000001_hash_rank_stored",
+        _sha("bulk_hash_match_rank_source"),
+        stored_content_hash=shared,
+    )
+    source_holder = _make_doc_with_hash("00000002_hash_rank_source", shared)
+    await graph_store.insert_document(stored_holder)
+    await graph_store.insert_document(source_holder)
+
+    result = await graph_store.find_documents_by_hashes(
+        [shared], prefer_lifecycle_statuses=_SURVIVING_STATES
+    )
+
+    assert result == {shared: source_holder.id}
+
+
+async def test_find_documents_by_hashes_ranks_lifecycle_before_match_kind(graph_store):
+    """A surviving stored match outranks a retired source match.
+
+    The rank order is lifecycle, then match kind, then id. Here the retired
+    document is the source holder and carries the lower id, so it wins under
+    either the match rank or the id alone; only the lifecycle rank, applied
+    first, names the surviving one. Trap: put the match rank ahead of the
+    lifecycle rank.
+    """
+    shared = _sha("bulk_hash_rank_order")
+    retired_source = _make_doc_with_hash(
+        "00000001_hash_order_retired", shared, lifecycle_status="archived"
+    )
+    surviving_stored = _make_doc_with_hash(
+        "00000002_hash_order_surviving",
+        _sha("bulk_hash_rank_order_source"),
+        stored_content_hash=shared,
+    )
+    await graph_store.insert_document(surviving_stored)
+    await graph_store.insert_document(retired_source)
+
+    result = await graph_store.find_documents_by_hashes(
+        [shared], prefer_lifecycle_statuses=_SURVIVING_STATES
+    )
+
+    assert result == {shared: surviving_stored.id}
+
+
+async def test_find_documents_by_hashes_finds_a_record_without_a_stored_digest_by_source(
+    graph_store,
+):
+    """A record that predates the stored digest is still found by its source.
+
+    Control for the widened match: a NULL stored column neither matches
+    anything nor stops the source column from matching.
+    """
+    legacy = _make_doc(_id("bulk_hash_legacy_null_stored"))
+    assert legacy.stored_content_hash is None
+    await graph_store.insert_document(legacy)
+
+    result = await graph_store.find_documents_by_hashes(
+        [legacy.source_content_hash, _sha("bulk_hash_legacy_absent")],
+        prefer_lifecycle_statuses=_SURVIVING_STATES,
+    )
+
+    assert result == {legacy.source_content_hash: legacy.id}
+
+
 # ---------------------------------------------------------------------------
 # Document facet aggregation via query_document_facets
 # ---------------------------------------------------------------------------

@@ -203,13 +203,20 @@ class DuplicateContentError(SAGEError):
     """409: a document already carries this content hash (BH-018, BH-066).
 
     Keyed on the hash alone, so identical bytes at a path the vault has
-    never seen refuse too. ``existing_document_id`` names one holder:
-    where several carry the hash, a version a supersession has not
-    retired outranks one it has, and the lowest document id decides
-    among equals.
+    never seen refuse too. The hash matches a document's delivered digest
+    or its retained copy's, and ``matched_hash_field`` says which.
+    ``existing_document_id`` names one holder: where several carry the
+    hash, a version a supersession has not retired outranks one it has, a
+    delivered-digest match outranks a retained-copy one, and the lowest
+    document id decides among equals.
     """
 
-    def __init__(self, existing_document_id: str, source_content_hash: str) -> None:
+    def __init__(
+        self,
+        existing_document_id: str,
+        source_content_hash: str,
+        matched_hash_field: typing.Literal["source_content_hash", "stored_content_hash"],
+    ) -> None:
         super().__init__(
             "duplicate_content",
             "Duplicate content detected",
@@ -217,6 +224,7 @@ class DuplicateContentError(SAGEError):
             {
                 "existing_document_id": existing_document_id,
                 "source_content_hash": source_content_hash,
+                "matched_hash_field": matched_hash_field,
             },
         )
 

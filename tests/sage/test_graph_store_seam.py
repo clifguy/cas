@@ -441,3 +441,55 @@ async def test_hash_lookup_tie_break_agrees_on_ids_the_two_comparators_order_dif
     assert from_stub == from_concrete
     # "2" (0x32) sorts below "_" (0x5f), so the digit-bearing id is lowest.
     assert from_concrete == {under.source_content_hash: digit.id}
+
+
+def _sha_of(name: str) -> str:
+    return f"sha256:{hashlib.sha256(name.encode()).hexdigest()}"
+
+
+async def test_hash_lookup_ranks_stored_matches_alike_in_both_bindings(graph_store):
+    """T8d: both bindings match the retained copy's digest and rank it alike.
+
+    Three hashes, one rule each: a digest held only as a retained copy; a
+    digest one active document was delivered as while another keeps it as its
+    copy (the source holder carries the higher id, so only the match rank
+    names it); and a digest a retired document was delivered as while a
+    surviving one keeps it as its copy (the retired one carries the lower id,
+    so only the lifecycle rank, applied before the match rank, names the
+    survivor). Agreement alone would pass with both bindings broken alike, so
+    the expected ids are pinned too.
+    """
+    only_stored = _seam_doc("00000001_seam_only_stored", "seam_s_src").model_copy(
+        update={"stored_content_hash": _sha_of("seam_s1")}
+    )
+    stored_holder = _seam_doc("00000002_seam_rank_stored", "seam_s_src2").model_copy(
+        update={"stored_content_hash": _sha_of("seam_s2")}
+    )
+    source_holder = _seam_doc("00000003_seam_rank_source", "seam_s2")
+    retired_source = _seam_doc(
+        "00000004_seam_order_retired", "seam_s3", lifecycle_status="archived"
+    )
+    surviving_stored = _seam_doc("00000005_seam_order_surviving", "seam_s_src3").model_copy(
+        update={"stored_content_hash": _sha_of("seam_s3")}
+    )
+    corpus = [surviving_stored, source_holder, only_stored, retired_source, stored_holder]
+
+    stub = StubGraphStore()
+    for doc in corpus:
+        await stub.insert_document(doc)
+        await graph_store.insert_document(doc)
+
+    hashes = [_sha_of("seam_s1"), _sha_of("seam_s2"), _sha_of("seam_s3")]
+    from_stub = await stub.find_documents_by_hashes(
+        hashes, prefer_lifecycle_statuses=_SEAM_SURVIVING_STATES
+    )
+    from_concrete = await graph_store.find_documents_by_hashes(
+        hashes, prefer_lifecycle_statuses=_SEAM_SURVIVING_STATES
+    )
+
+    assert from_stub == from_concrete
+    assert from_concrete == {
+        _sha_of("seam_s1"): only_stored.id,
+        _sha_of("seam_s2"): source_holder.id,
+        _sha_of("seam_s3"): surviving_stored.id,
+    }

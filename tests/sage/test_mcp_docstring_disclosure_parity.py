@@ -602,7 +602,7 @@ UNENROLLED_PAIRS: Final[dict[tuple[str, str], Pin]] = {
     # side credits, in the wording the operation already used.
     ("sage_core", "update_metadata"): Pin(6, 4),
     ("sage_core", "update_vault_config"): Pin(6, 3),
-    ("sage_core", "verify_hashes"): Pin(2, 4),
+    ("sage_core", "verify_hashes"): Pin(2, 2),
     # doc_only fell from 7 as the operation's 400 gained the boundary-refusal
     # sentence every vault-scoped operation now declares. The claim that came
     # covered is "data_quality is a flag, not a drift signal", and the sentence

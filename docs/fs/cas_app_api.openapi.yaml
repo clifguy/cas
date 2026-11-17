@@ -1800,6 +1800,7 @@ components:
       required:
       - existing_document_id
       - source_content_hash
+      - matched_hash_field
       properties:
         existing_document_id:
           type: string
@@ -1807,6 +1808,12 @@ components:
         source_content_hash:
           type: string
           description: Source content hash.
+        matched_hash_field:
+          type: string
+          enum:
+          - source_content_hash
+          - stored_content_hash
+          description: Which of the existing document's digests the delivered bytes matched.
       description: Additional context for this refusal.
     DuplicateContentError:
       type: object

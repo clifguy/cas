@@ -456,6 +456,31 @@ async def test_bootstrap_provisions_schema(pg_dsn):
             await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')  # noqa: S608
 
 
+async def test_bootstrap_indexes_the_retained_copy_digest(pg_dsn):
+    """The retained copy's digest is indexed alongside the delivered one.
+
+    Every bytes-already-held lookup matches either digest, so without this
+    index the stored-digest arm of that lookup scans the documents table.
+    """
+    import psycopg
+
+    from sage.storage.postgres.schema import assert_disposable_target, bootstrap_schema
+
+    schema = assert_disposable_target("sage_test_stored_hash_idx_" + os.urandom(3).hex())
+    async with await psycopg.AsyncConnection.connect(pg_dsn, autocommit=True) as conn:
+        try:
+            await bootstrap_schema(conn, schema=schema, extensions=["vector", "pgstattuple"])
+            cur = await conn.execute(
+                "SELECT indexdef FROM pg_indexes WHERE schemaname = %s AND indexname = %s",
+                (schema, "idx_documents_stored_hash"),
+            )
+            row = await cur.fetchone()
+            assert row is not None
+            assert "(stored_content_hash)" in row[0]
+        finally:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')  # noqa: S608
+
+
 async def test_bootstrap_is_idempotent(pg_dsn):
     """Running the bootstrap twice on one schema raises nothing and leaves the
     same six tables -- the headline idempotency acceptance criterion."""

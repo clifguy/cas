@@ -888,6 +888,14 @@ SCHEMAS = json.loads(
         "description": "Existing document id.",
         "type": "string"
       },
+      "matched_hash_field": {
+        "description": "Which of the existing document's digests the delivered bytes matched.",
+        "enum": [
+          "source_content_hash",
+          "stored_content_hash"
+        ],
+        "type": "string"
+      },
       "source_content_hash": {
         "description": "Source content hash.",
         "type": "string"
@@ -895,7 +903,8 @@ SCHEMAS = json.loads(
     },
     "required": [
       "existing_document_id",
-      "source_content_hash"
+      "source_content_hash",
+      "matched_hash_field"
     ],
     "type": "object"
   },
