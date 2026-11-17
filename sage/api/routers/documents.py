@@ -305,9 +305,9 @@ async def get_document_content(
     raised once the bytes are already flowing ends the body short of the
     promised Content-Length instead. The bytes are delivered as an attachment
     that a browser may neither sniff nor render as a page of this origin.
-    They are the retained copy and match ``stored_content_hash``, which
-    differs from ``source_content_hash`` where the vault's source binding
-    rewrites the copy at rest.
+    They are the retained copy and match ``stored_content_hash`` (if null,
+    ``source_content_hash``), which differs from ``source_content_hash`` (the
+    bytes ingested) where the source binding rewrites the copy at rest.
     """
     delivery = await service.get_document_content(document_id)
     return StreamingResponse(

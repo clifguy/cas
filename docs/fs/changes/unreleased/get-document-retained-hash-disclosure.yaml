@@ -8,6 +8,8 @@ summary: >-
   delivery-mode note to the exclusivity rule its parameters already detail.
   The binary_content_refused message and descriptions and the body_form field
   now name write_to_path for the retained source bytes rather than the
-  original bytes.
+  original bytes. The content_hash field returned with write_to_path is
+  described as the digest of the retained copy, to compare with
+  stored_content_hash.
   Description-only; no shape changes.
 for_callers: ""

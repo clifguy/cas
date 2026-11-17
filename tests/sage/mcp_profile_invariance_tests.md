@@ -485,11 +485,14 @@ skip would not notice an implementation that refused every relative source.
 caller-local absolute path. An Office package, because that is the format a
 document store rewrites at rest.
 
-**Input:** `get_document(vault_id, document_id, write_to_path=<absolute target>)`.
+**Input:** `get_document(vault_id, document_id, write_to_path=<absolute target>)`,
+then the raw-content stream (`DocumentsService.get_document_content`, the one
+service call behind `GET …/documents/{document_id}/content`).
 
 **Expected:**
-- On **both** legs, the returned `content_hash` and the SHA-256 of the written
-  file equal the record's `stored_content_hash`. This is the hash the published
+- On **both** legs, the returned `content_hash`, the SHA-256 of the written
+  file and the SHA-256 of the streamed bytes equal the record's
+  `stored_content_hash`. This is the hash the published
   `get_document` description tells a caller to verify a download against.
 - Document-store leg: the download does not match `source_content_hash`.
 - Filesystem leg: it matches `source_content_hash` too.

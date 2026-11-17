@@ -35,8 +35,8 @@ Rebuild it from a clone that carries the release tags: the manifest records
 `git describe --tags`, so a tagless clone of the same commit yields a different
 digest. The build also stamps that release and the source commit into the packaged
 `SKILL.md` frontmatter as `metadata.version` and `metadata.source_commit`, so an installed
-copy names what it was sealed from; the repository source carries no version and a
-hand-written one is refused. Verify the complete package before building. The trusted digest comes from this
+copy names what it was sealed from. The repository source frontmatter carries only
+`name` and `description`; any other key, a hand-written version included, is refused. Verify the complete package before building. The trusted digest comes from this
 reviewed declaration, never from an untrusted destination manifest.
 
 From the compatible shared source, with absolute paths supplied explicitly:

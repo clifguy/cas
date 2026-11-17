@@ -1227,9 +1227,8 @@ paths:
 
 
         When `include_content=true`, the response additionally contains
-        the retained source bytes (base64-encoded), which match
-        `stored_content_hash`, and the byte count. The bytes are read from the vault's internal authoritative
-        copy at `storage_root/source_path`. Supports the agentic
+        the retained source bytes (base64-encoded) and the byte count, read
+        through the vault's source binding. Supports the agentic
         read-modify-reingest round-trip: an agent fetches the file,
         edits it locally, and re-ingests with
         `predecessor_id` (see POST /documents).
@@ -3357,9 +3356,9 @@ paths:
         `X-Content-Type-Options: nosniff` and `Content-Security-Policy:
         sandbox`, so a browser saves the bytes rather than rendering them as
         a page of the serving origin. The streamed bytes are the retained copy
-        and match `stored_content_hash`, which differs from
-        `source_content_hash` where the vault's source binding rewrites the
-        copy at rest.
+        and match `stored_content_hash` (if null, `source_content_hash`),
+        which differs from `source_content_hash` (the bytes ingested) where
+        the source binding rewrites the copy at rest.
       tags: [Document Metadata]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -8115,11 +8114,11 @@ components:
               type: [string, "null"]
               pattern: "^sha256:[0-9a-f]{64}$"
               description: >-
-                Hex digest of the vault-local source file bytes
-                (same algorithm as Document.source_content_hash).
-                Populated only when the request specified
-                `write_to_path`, for caller-side verification that the
-                on-disk bytes match the vault record.
+                SHA-256 of the delivered bytes, which are the retained
+                copy: compare it with `stored_content_hash` (if null,
+                `source_content_hash`). Populated only when the request
+                specified `write_to_path`, for caller-side verification of
+                the written file.
             written_to:
               type: [string, "null"]
               description: >-

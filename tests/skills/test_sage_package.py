@@ -212,13 +212,22 @@ def test_build_leaves_source_skill_unversioned(source, tmp_path):
     assert "metadata" not in _frontmatter(entry)
 
 
-def test_hand_versioned_source_refused(source, tmp_path):
+@pytest.mark.parametrize(
+    "authored",
+    [
+        "metadata:\n  version: 1.0.0",
+        "version: 1.0.0",
+        '"metadata":\n  version: 1.0.0',
+        "metadata :\n  version: 1.0.0",
+    ],
+)
+def test_hand_versioned_source_refused(source, tmp_path, authored):
     """A version written by hand into the source would compete with the build stamp."""
     entry = source / "skills/sage/SKILL.md"
     head, body = entry.read_text().split("\n---\n", 1)
-    entry.write_text(head + "\nmetadata:\n  version: 1.0.0\n---\n" + body)
+    entry.write_text(head + "\n" + authored + "\n---\n" + body)
     out = tmp_path / "package"
-    with pytest.raises(PackageError, match="metadata"):
+    with pytest.raises(PackageError, match="only name and description"):
         build_package(source, out, REV, "v3.9.0")
     assert not out.exists()
 

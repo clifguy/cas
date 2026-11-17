@@ -115,4 +115,7 @@ def test_rest_get_document_names_the_hash_its_bytes_match():
 def test_rest_content_route_names_the_stored_hash():
     """The raw byte channel says which recorded hash its stream matches."""
     text = _rest_description("/sage_vaults/{vault_id}/documents/{document_id}/content")
-    assert "`stored_content_hash`" in text
+    assert (
+        "match `stored_content_hash` (if null, `source_content_hash`), which differs from "
+        "`source_content_hash` (the bytes ingested) where the source binding rewrites"
+    ) in text

@@ -891,6 +891,8 @@ async def test_mpi_020_binary_download_matches_the_stored_hash(mpi_vault, tmp_pa
     downloaded = _sha256(target.read_bytes())
     assert result["content_hash"] == downloaded
     assert downloaded == doc.stored_content_hash
+    delivery = await services.documents_service.get_document_content(ingest["id"])
+    assert _sha256(b"".join(delivery.chunks)) == doc.stored_content_hash
     if handle.fake_client is not None:
         assert handle.fake_client.stamped_uploads >= 1, (
             "the document store must have rewritten the upload; without a real "

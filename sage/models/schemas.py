@@ -1842,10 +1842,10 @@ class DocumentWithContent(Document):
     content_hash: Sha256Str | None = Field(
         default=None,
         description=(
-            "Hex digest of the vault-local source file bytes (same algorithm "
-            "as Document.source_content_hash). Populated only when the request "
-            "specified `write_to_path`, for caller-side verification that the "
-            "on-disk bytes match the vault record."
+            "SHA-256 of the delivered bytes, which are the retained copy: "
+            "compare it with `stored_content_hash` (if null, "
+            "`source_content_hash`). Populated only when the request specified "
+            "`write_to_path`, for caller-side verification of the written file."
         ),
     )
     written_to: str | None = Field(

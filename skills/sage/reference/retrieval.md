@@ -53,8 +53,9 @@ extraction defect. A binary document's projection without formatting or link tar
 is working as designed. Source text missing from a projection is at most a suspected
 extraction defect. Report the document ID, its `source_content_hash`, the SHA-256 of
 the projection text as served, the adapter version from
-`processing_coverage.projection.identity.adapter`, the missing text, and whether the
-served description documents that kind of loss for the format.
+`processing_coverage.projection.identity.adapter` (or the record's `adapter_version`
+where projection coverage is unknown), the missing text, and whether the served
+description documents that kind of loss for the format.
 
 REST inline content can refuse binary formats with `binary_content_refused`; use
 that deployment's raw content route (currently `/documents/{id}/content` under its

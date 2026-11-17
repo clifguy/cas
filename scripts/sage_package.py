@@ -65,8 +65,14 @@ def validate_skill(root: Path, *, source: bool = False) -> None:
     text = entry.read_text()
     if not re.search(r"^name: sage$", text, re.M):
         raise PackageError("Expected skill name sage")
-    if source and re.search(r"^metadata:", _frontmatter(text), re.M):
-        raise PackageError("Source frontmatter declares metadata; the build stamps the version")
+    if source:
+        keys = re.findall(r"^([^\s#][^:]*):", _frontmatter(text), re.M)
+        extra = sorted({k.strip().strip("'\"") for k in keys} - {"name", "description"})
+        if extra:
+            raise PackageError(
+                f"Source frontmatter declares {extra}; only name and description are "
+                "authored, and the build stamps metadata"
+            )
     # Both Markdown links and the inherited backtick reference style are used.
     for path in root.rglob("*.md"):
         text = path.read_text()
