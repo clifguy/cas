@@ -1639,26 +1639,36 @@ class PostgresGraphStore(GraphStore):
             # differently from a byte comparison -- so the answer would depend
             # on where the database happens to run, and would disagree with
             # the in-memory binding, which compares ids as Python strings.
+            #
+            # Either digest answers: bytes downloaded from a binding that
+            # rewrites its copy at rest hash to the stored digest, not the
+            # delivered one (CAS-ADR-043). The two arms are a UNION rather
+            # than one OR'd join so each keeps its own index. Within the
+            # lifecycle rank a delivered-digest match outranks a stored one,
+            # naming the document the bytes were delivered as.
+            lifecycle_rank = (
+                "CASE WHEN m.lifecycle_status = ANY(%s) THEN 0 ELSE 1 END, "
+                if prefer_lifecycle_statuses
+                else ""
+            )
+            # An empty preference is a real choice -- no preference -- and
+            # not a clause to pay for, on the same reasoning as an empty
+            # exclude_lifecycle_statuses above.
+            sql = (
+                "SELECT DISTINCT ON (m.hash) m.hash, m.id FROM ("  # noqa: S608 -- the only interpolation is a constant CASE fragment; values are %s
+                "SELECT source_content_hash AS hash, id, lifecycle_status, 0 AS match_rank "
+                "FROM documents WHERE source_content_hash = ANY(%s) "
+                "UNION ALL "
+                "SELECT stored_content_hash AS hash, id, lifecycle_status, 1 AS match_rank "
+                "FROM documents WHERE stored_content_hash = ANY(%s)"
+                ") AS m "
+                f'ORDER BY m.hash, {lifecycle_rank}m.match_rank, m.id COLLATE "C"'
+            )
+            params: list[object] = [hashes, hashes]
             if prefer_lifecycle_statuses:
-                sql = (
-                    "SELECT DISTINCT ON (source_content_hash) source_content_hash, id "
-                    "FROM documents WHERE source_content_hash = ANY(%s) "
-                    "ORDER BY source_content_hash, "
-                    'CASE WHEN lifecycle_status = ANY(%s) THEN 0 ELSE 1 END, id COLLATE "C"'
-                )
-                params: list[object] = [hashes, sorted(prefer_lifecycle_statuses)]
-            else:
-                # An empty preference is a real choice -- no preference -- and
-                # not a clause to pay for, on the same reasoning as an empty
-                # exclude_lifecycle_statuses above.
-                sql = (
-                    "SELECT DISTINCT ON (source_content_hash) source_content_hash, id "
-                    "FROM documents WHERE source_content_hash = ANY(%s) "
-                    'ORDER BY source_content_hash, id COLLATE "C"'
-                )
-                params = [hashes]
+                params.append(sorted(prefer_lifecycle_statuses))
             rows = await self._fetch_rows(sql, params)
-            return {row["source_content_hash"]: row["id"] for row in rows}
+            return {row["hash"]: row["id"] for row in rows}
 
     async def find_documents_by_source_paths(self, source_paths: list[str]) -> dict[str, str]:
         with self._query_timer.measure("find_documents_by_source_paths"):

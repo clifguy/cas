@@ -434,6 +434,53 @@ async def test_scan_states_the_vaults_surviving_states_to_the_hash_lookup(extend
     assert store.hash_preferences == [extended_config.lifecycle.supersession_surviving_states()]
 
 
+async def test_scan_reports_a_downloaded_retained_copy_as_already_held(minimal_config):
+    """A file whose bytes equal a document's retained copy is not ``new``.
+
+    Runs against the real in-memory store rather than this module's preset
+    fake, because the point is the store's matching rule: the document was
+    delivered as other bytes and keeps these only as its rewritten copy, at
+    another path. Trap: a lookup on the delivered digest alone reports ``new``,
+    and a batch ingest built on the scan offers the file for a second document.
+    """
+    from datetime import datetime, timezone
+
+    from sage.adapters.stubs import StubGraphStore
+    from sage.models.enums import SourceType
+    from sage.models.schemas import Document
+
+    scan_dir = _vault_imports(minimal_config)
+    (scan_dir / "downloaded.md").write_text("# Downloaded copy")
+    now = datetime.now(timezone.utc)
+    store = StubGraphStore()
+    await store.insert_document(
+        Document(
+            id="00000001_rewritten_holder",
+            title="Rewritten holder",
+            source_type=SourceType.MARKDOWN,
+            source_path="imports/original.md",
+            lifecycle_status="active",
+            source_content_hash=_hash_of("# Delivered original"),
+            stored_content_hash=_hash_of("# Downloaded copy"),
+            adapter_version="1.0",
+            created_by="test",
+            created_at=now,
+            last_modified_by="test",
+            updated_at=now,
+        )
+    )
+
+    results, _warnings, _truncated = await scan_directory(
+        directory=scan_dir,
+        vault_config=minimal_config,
+        graph_store=store,
+        extension_map=EXT_MAP,
+    )
+
+    assert len(results) == 1
+    assert results[0].sage_status == "unchanged"
+
+
 async def test_scan_hash_match_wins_over_path_match(minimal_config):
     """A file matching on both hash and path is ``unchanged``, not
     ``modified``.

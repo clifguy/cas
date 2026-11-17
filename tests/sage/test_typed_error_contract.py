@@ -116,6 +116,8 @@ def emitted_errors() -> Iterator[Any]:
 
     def sample(annotation: Any) -> Any:
         origin = typing.get_origin(annotation)
+        if origin is typing.Literal:
+            return typing.get_args(annotation)[0]
         if origin in (typing.Union, types.UnionType):
             return sample(next(a for a in typing.get_args(annotation) if a is not type(None)))
         if origin in (list, set, Iterable):

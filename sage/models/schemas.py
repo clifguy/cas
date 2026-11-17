@@ -590,10 +590,11 @@ class Document(BaseModel):
     )
     source_content_hash: Sha256Str = Field(
         description=(
-            "Hash of source file content at last ingestion (provenance). The "
-            "SHA-256 of the bytes the caller delivered, so a caller holding the "
-            "original can match it and duplicate detection is keyed to content "
-            "identity rather than to how any store chose to retain it."
+            "Hash of the source file content delivered at ingest "
+            "(provenance). The SHA-256 of the bytes the caller delivered, so a "
+            "caller holding the original can match it whatever the store did "
+            "to its copy; duplicate detection matches it or "
+            "stored_content_hash."
         )
     )
     stored_content_hash: Sha256Str | None = Field(
@@ -1376,10 +1377,11 @@ class IngestRequest(BaseModel):
         default=False,
         description=(
             "When true, bypasses duplicate content detection and re-runs the "
-            "full pipeline on the existing document record (if one exists "
-            "carrying the same source_content_hash). Returns 200 "
-            "(re-processed) instead of 201 (new). The document ID is "
-            "preserved. Use for pipeline failure recovery."
+            "full pipeline on the existing document record (if one was "
+            "delivered these bytes; detection also matches a retained copy, "
+            "whose re-ingest is refused). Returns 200 "
+            "(re-processed) instead of 201 (new). Use for pipeline failure "
+            "recovery."
         ),
     )
     needs_review: bool = Field(
@@ -1485,13 +1487,13 @@ class IngestRequest(BaseModel):
             "source_path, the hash match may be an unrelated document. To "
             "protect that document's identity, a different-path collision is "
             "rejected with 409 `force_reingest_path_mismatch` unless this "
-            "field names the record the caller intends to overwrite (for "
-            "example, re-ingesting a document whose file legitimately moved). "
-            "Where several documents carry the delivered content hash, this "
-            "field selects any one of them, not only the one a duplicate "
-            "refusal would name. A value naming a document that does not "
-            "carry the delivered content hash, or no document at all, is "
-            "rejected with 409 `force_reingest_pin_mismatch`. Consulted only "
+            "field names the record the caller intends to overwrite. "
+            "Where several documents were delivered these bytes, this field "
+            "selects any one of them, not only the one a duplicate refusal "
+            "would name. A value naming a document that does not carry the "
+            "delivered content hash, or no document at all, is rejected with "
+            "409 `force_reingest_pin_mismatch`; one holding it only as its "
+            "copy, with 409 `force_reingest_retained_copy`. Consulted only "
             "when `force=true`; ignored otherwise."
         ),
     )
@@ -2892,11 +2894,13 @@ class IngestPreview(BaseModel):
     )
     duplicate_of: DocumentIdStr | None = Field(
         description=(
-            "Identifier of the document already holding these bytes, or "
-            "null when none does. Where several hold them, the one named is "
-            "a version a supersession has not retired, lowest document id "
-            "among equals, so the same call names the same document every "
-            "time. Null is also reported, unevaluated, when "
+            "Identifier of the document already holding these bytes, as "
+            "delivered or as its retained copy, or null when none does. "
+            "Where several hold them, the one named is a version a "
+            "supersession has not retired, then one delivered as these bytes "
+            "over one keeping them as its copy, lowest document id among "
+            "equals, so the same call names the same document every time. "
+            "Null is also reported, unevaluated, when "
             "`source_content_hash` is null."
         )
     )
@@ -6702,7 +6706,9 @@ class HashCheckMatch(BaseModel):
         description=(
             "Document id when exists=true; null otherwise. Where several "
             "documents carry the hash, the one named is a version a "
-            "supersession has not retired, lowest document id among equals."
+            "supersession has not retired, then one delivered as these "
+            "bytes over one keeping them as its retained copy, lowest "
+            "document id among equals."
         ),
     )
 

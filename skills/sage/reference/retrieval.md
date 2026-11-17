@@ -55,7 +55,9 @@ extraction defect. Report the document ID, its `source_content_hash`, the SHA-25
 the projection text as served, the adapter version from
 `processing_coverage.projection.identity.adapter` (or the record's `adapter_version`
 where projection coverage is unknown), the missing text, and whether the served
-description documents that kind of loss for the format.
+description documents that kind of loss for the format. Anything else you note
+alongside such a report, such as a missing footer or header, either carries the
+same fields as its own suspected-defect report or is left out of the report.
 
 REST inline content can refuse binary formats with `binary_content_refused`; use
 that deployment's raw content route (currently `/documents/{id}/content` under its

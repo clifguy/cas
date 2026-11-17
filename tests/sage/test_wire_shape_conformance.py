@@ -1683,6 +1683,8 @@ def _error_schema_sentinel(schema: dict, definitions: dict) -> Any:
         return _error_schema_sentinel(definitions[schema["$ref"].rsplit("/", 1)[-1]], definitions)
     if "const" in schema:
         return schema["const"]
+    if "enum" in schema:
+        return schema["enum"][0]
     for keyword in ("oneOf", "anyOf"):
         if keyword in schema:
             choices = schema[keyword]

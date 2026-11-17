@@ -7,6 +7,7 @@ source file provenance (source_modified_at), and document date metadata
 (document_date).
 """
 
+import asyncio
 import hashlib
 import os
 import re
@@ -22,6 +23,8 @@ from sage.api.errors import (
     DuplicateContentError,
     ForceReingestPathMismatchError,
     ForceReingestPinMismatchError,
+    ForceReingestRetainedCopyError,
+    IdenticalContentSupersedeError,
 )
 from sage.config import STORED_CONFIG_CONTEXT, VaultConfig
 from sage.models.enums import PipelineStatus, SourceType
@@ -115,6 +118,418 @@ async def test_bh_018_duplicate_content_409(tmp_vault_dir, graph_store, ingestio
     assert err.status_code == 409
     assert err.code == "duplicate_content"
     assert err.detail["existing_document_id"] == doc.id
+    # A text source is kept verbatim, so the delivered digest is what matched.
+    assert err.detail["matched_hash_field"] == "source_content_hash"
+
+
+_ORIGINAL_BODY = "# Delivered\n\nThe bytes the caller handed over."
+_DOWNLOADED_BODY = "# Delivered\n\nThe bytes the store kept after rewriting them."
+
+
+async def _ingest_rewritten_holder(tmp_vault_dir, graph_store, ingestion_service) -> Document:
+    """A document whose retained copy differs from what was delivered.
+
+    Ingests ``_ORIGINAL_BODY``, then records the digest of
+    ``_DOWNLOADED_BODY`` as the retained copy's -- the state a store that
+    rewrites at rest leaves behind -- and writes those bytes where a caller
+    who downloaded the copy would hold them. The local binding keeps copies
+    verbatim, so the rewrite is set on the record rather than produced.
+    """
+    _create_test_file(tmp_vault_dir, "reports/original.md", _ORIGINAL_BODY)
+    holder = (
+        await ingestion_service.ingest(
+            IngestRequest(source="reports/original.md", source_type=SourceType.MARKDOWN)
+        )
+    ).document
+    downloaded = _create_test_file(tmp_vault_dir, "downloads/copy.md", _DOWNLOADED_BODY)
+    stored = "sha256:" + hashlib.sha256(downloaded.read_bytes()).hexdigest()
+    assert stored != holder.source_content_hash
+    await graph_store.update_document(holder.id, {"stored_content_hash": stored})
+    return await graph_store.get_document(holder.id)
+
+
+async def test_reingesting_a_downloaded_retained_copy_is_refused_as_a_duplicate(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    """Bytes equal to a document's retained copy are refused, naming it.
+
+    A download from a store that rewrites at rest hashes to the stored digest.
+    Matched on the delivered digest alone, its re-ingest lands as a second
+    active document with nothing linking it to the first. The refusal also
+    says which digest matched, so a caller can tell a round-tripped download
+    from a re-delivered original.
+    """
+    holder = await _ingest_rewritten_holder(tmp_vault_dir, graph_store, ingestion_service)
+
+    with pytest.raises(DuplicateContentError) as exc_info:
+        await ingestion_service.ingest(
+            IngestRequest(source="downloads/copy.md", source_type=SourceType.MARKDOWN)
+        )
+
+    err = exc_info.value
+    assert err.code == "duplicate_content"
+    assert err.detail["existing_document_id"] == holder.id
+    assert err.detail["source_content_hash"] == holder.stored_content_hash
+    assert err.detail["matched_hash_field"] == "stored_content_hash"
+
+
+async def test_duplicate_refusal_names_the_delivered_digest_when_the_holder_vanishes(
+    tmp_vault_dir, graph_store, ingestion_service, monkeypatch
+):
+    """A holder removed between the lookup and its read is reported as a
+    delivered-digest match rather than failing the refusal.
+
+    The matched field is read off the holder only to say which digest
+    matched; with nothing to read, the refusal still names the id the lookup
+    returned, and calls the match the delivered digest, the only one this
+    call can vouch for.
+    """
+    holder = await _ingest_rewritten_holder(tmp_vault_dir, graph_store, ingestion_service)
+    real_get = graph_store.get_document
+
+    async def vanished(document_id):
+        return None if document_id == holder.id else await real_get(document_id)
+
+    monkeypatch.setattr(graph_store, "get_document", vanished)
+
+    with pytest.raises(DuplicateContentError) as exc_info:
+        await ingestion_service.ingest(
+            IngestRequest(source="downloads/copy.md", source_type=SourceType.MARKDOWN)
+        )
+
+    assert exc_info.value.detail["existing_document_id"] == holder.id
+    assert exc_info.value.detail["matched_hash_field"] == "source_content_hash"
+
+
+@pytest.mark.parametrize("pinned", [True, False], ids=["pinned", "unpinned"])
+async def test_force_reingest_of_a_retained_copy_is_refused_before_any_write(
+    tmp_vault_dir, graph_store, ingestion_service, pinned
+):
+    """A force re-ingest of the bytes a document keeps as its copy is refused.
+
+    The bytes resolve to the document only through its retained digest, so
+    reprocessing them under its provenance inspects other bytes than its
+    processing allowance was measured on. Accepted, the run reuses the
+    record and then never completes: it sits in progress with no error. The
+    refusal must land before the record is touched, in both the pinned and
+    the unpinned form.
+    """
+    holder = await _ingest_rewritten_holder(tmp_vault_dir, graph_store, ingestion_service)
+    if pinned:
+        source = "downloads/copy.md"
+    else:
+        # Unpinned reuse is keyed to the holder's own path, so the download
+        # lands where the original was.
+        source = "reports/original.md"
+        _create_test_file(tmp_vault_dir, source, _DOWNLOADED_BODY)
+
+    with pytest.raises(ForceReingestRetainedCopyError) as exc_info:
+        await ingestion_service.ingest(
+            IngestRequest(
+                source=source,
+                source_type=SourceType.MARKDOWN,
+                force=True,
+                document_id=holder.id if pinned else None,
+            )
+        )
+
+    err = exc_info.value
+    assert err.code == "force_reingest_retained_copy"
+    assert err.status_code == 409
+    assert err.detail == {
+        "document_id": holder.id,
+        "source_content_hash": holder.stored_content_hash,
+    }
+    unchanged = await graph_store.get_document(holder.id)
+    assert unchanged.model_dump() == holder.model_dump()
+    assert len(await graph_store.list_all_documents()) == 1
+
+
+async def _ingest_retired_delivered_holder_beside_a_copy_holder(
+    tmp_vault_dir, graph_store, ingestion_service
+) -> tuple[Document, Document]:
+    """A retired document made from ``_ORIGINAL_BODY`` and a surviving one
+    keeping those bytes as its retained copy.
+
+    The lookup ranks a surviving version first, so its representative for the
+    original bytes is the copy holder, while the record made from them is the
+    retired one: the state in which every site choosing a force re-ingest's
+    record must still reach the delivered holder.
+    """
+    _create_test_file(tmp_vault_dir, "reports/delivered.md", _ORIGINAL_BODY)
+    delivered_holder = (
+        await ingestion_service.ingest(
+            IngestRequest(source="reports/delivered.md", source_type=SourceType.MARKDOWN)
+        )
+    ).document
+    _create_test_file(tmp_vault_dir, "reports/other.md", _DOWNLOADED_BODY)
+    copy_holder = (
+        await ingestion_service.ingest(
+            IngestRequest(source="reports/other.md", source_type=SourceType.MARKDOWN)
+        )
+    ).document
+    await graph_store.update_document(
+        copy_holder.id, {"stored_content_hash": delivered_holder.source_content_hash}
+    )
+    await graph_store.update_document(delivered_holder.id, {"lifecycle_status": "archived"})
+    return (
+        await graph_store.get_document(delivered_holder.id),
+        await graph_store.get_document(copy_holder.id),
+    )
+
+
+@pytest.mark.parametrize("pinned", [False, True], ids=["unpinned", "pinned"])
+@pytest.mark.parametrize("external", [False, True], ids=["vault_relative", "external"])
+async def test_force_reingest_reuses_a_retired_delivered_holder_over_a_copy_holder(
+    tmp_vault_dir, graph_store, ingestion_service, tmp_path, external, pinned
+):
+    """A force re-ingest of the original bytes reuses the document they were
+    delivered to, even when a surviving document keeps them as its copy.
+
+    Refusing on the lookup's representative calls the caller's own original
+    a "retained copy". Reusing the copy holder's retained file for the
+    delivered holder -- the reuse an external delivery takes -- either
+    refuses the call as a path mismatch or, pinned, moves the delivered
+    holder's ``source_path`` onto the other document's file. Every
+    combination of source kind and pin must reach the delivered holder and
+    leave both records' paths where they were.
+    """
+    delivered_holder, copy_holder = await _ingest_retired_delivered_holder_beside_a_copy_holder(
+        tmp_vault_dir, graph_store, ingestion_service
+    )
+    if external:
+        source = tmp_path / "caller" / "delivered.md"
+        source.parent.mkdir()
+        source.write_text(_ORIGINAL_BODY)
+        source = str(source)
+    else:
+        source = "reports/delivered.md"
+
+    result = await ingestion_service.ingest(
+        IngestRequest(
+            source=source,
+            source_type=SourceType.MARKDOWN,
+            force=True,
+            document_id=delivered_holder.id if pinned else None,
+        )
+    )
+
+    assert result.document.id == delivered_holder.id
+    reused = await graph_store.get_document(delivered_holder.id)
+    assert reused.source_path == delivered_holder.source_path
+    assert reused.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+    assert (await graph_store.get_document(copy_holder.id)).model_dump() == (
+        copy_holder.model_dump()
+    )
+    assert len(await graph_store.list_all_documents()) == 2
+
+
+async def test_force_reingest_resolves_a_holder_that_appears_after_the_first_resolution(
+    tmp_vault_dir, graph_store, ingestion_service, monkeypatch
+):
+    """A holder that the run's lookup finds after the force resolution found
+    none is resolved by the same rules, not reused as the lookup names it.
+
+    Taken straight from the lookup, a record keeping these bytes only as its
+    retained copy is reused and its pipeline re-run against bytes it was never
+    delivered -- the run the retained-copy refusal exists to stop.
+    """
+    holder = await _ingest_rewritten_holder(tmp_vault_dir, graph_store, ingestion_service)
+    real_lookup = graph_store.find_documents_by_hashes
+    calls = 0
+
+    async def first_call_empty(hashes, **kwargs):
+        nonlocal calls
+        calls += 1
+        return {} if calls == 1 else await real_lookup(hashes, **kwargs)
+
+    monkeypatch.setattr(graph_store, "find_documents_by_hashes", first_call_empty)
+
+    with pytest.raises(ForceReingestRetainedCopyError):
+        await asyncio.wait_for(
+            ingestion_service.ingest(
+                IngestRequest(
+                    source="downloads/copy.md", source_type=SourceType.MARKDOWN, force=True
+                )
+            ),
+            timeout=30,
+        )
+
+    assert calls >= 2
+    assert (await graph_store.get_document(holder.id)).model_dump() == holder.model_dump()
+
+
+async def test_unpinned_force_reingest_prefers_a_surviving_delivered_holder(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    """Of two documents delivered the same bytes, an unpinned force re-ingest
+    reuses the surviving one, as the duplicate refusal names it, even when a
+    retired one sorts first by id.
+
+    Asking without the lifecycle preference whenever no pin is given ranks the
+    retired holder first, and the call is then refused as a path mismatch
+    against a document the caller never meant.
+    """
+    _create_test_file(tmp_vault_dir, "reports/surviving.md", _ORIGINAL_BODY)
+    surviving = (
+        await ingestion_service.ingest(
+            IngestRequest(source="reports/surviving.md", source_type=SourceType.MARKDOWN)
+        )
+    ).document
+    _create_test_file(tmp_vault_dir, "reports/retired.md", _ORIGINAL_BODY)
+    retired = surviving.model_copy(
+        update={
+            "id": "00000000_retired_delivered_holder",
+            "source_path": "reports/retired.md",
+            "lifecycle_status": "archived",
+        }
+    )
+    await graph_store.insert_document(retired)
+    retired = await graph_store.get_document(retired.id)
+    assert retired.id < surviving.id
+
+    result = await ingestion_service.ingest(
+        IngestRequest(source="reports/surviving.md", source_type=SourceType.MARKDOWN, force=True)
+    )
+
+    assert result.document.id == surviving.id
+    assert (await graph_store.get_document(retired.id)).model_dump() == retired.model_dump()
+
+
+async def test_pinned_external_force_reingest_keeps_the_pinned_records_path(
+    tmp_vault_dir, graph_store, ingestion_service, tmp_path
+):
+    """A pin on one of two documents delivered the same bytes keeps that
+    document's own retained file when the bytes arrive from outside the vault.
+
+    Reuse looked up by content alone hands back the representative's file, and
+    the pinned record is then rewritten to point at it: two records sharing one
+    retained copy, and the pinned record's own file orphaned.
+    """
+    _create_test_file(tmp_vault_dir, "reports/held.md", _ORIGINAL_BODY)
+    held = (
+        await ingestion_service.ingest(
+            IngestRequest(source="reports/held.md", source_type=SourceType.MARKDOWN)
+        )
+    ).document
+    _create_test_file(tmp_vault_dir, "reports/sibling.md", _ORIGINAL_BODY)
+    sibling = held.model_copy(
+        update={"id": "ffffffff_pinned_sibling", "source_path": "reports/sibling.md"}
+    )
+    await graph_store.insert_document(sibling)
+    source = tmp_path / "caller" / "held.md"
+    source.parent.mkdir()
+    source.write_text(_ORIGINAL_BODY)
+
+    result = await ingestion_service.ingest(
+        IngestRequest(
+            source=str(source),
+            source_type=SourceType.MARKDOWN,
+            force=True,
+            document_id=sibling.id,
+        )
+    )
+
+    assert result.document.id == sibling.id
+    assert (await graph_store.get_document(sibling.id)).source_path == "reports/sibling.md"
+    assert (await graph_store.get_document(held.id)).source_path == "reports/held.md"
+
+
+async def test_external_download_refusal_retains_no_second_copy(
+    tmp_vault_dir, graph_store, ingestion_service, tmp_path
+):
+    """A downloaded retained copy delivered from outside the vault is refused
+    without a second copy of it landing in the store.
+
+    Retention reuses the file of a document holding the delivered bytes,
+    asked by either digest. Asked by the delivered digest alone it finds
+    nothing, retains the download as a new file, and the duplicate refusal
+    then leaves that file with no record.
+    """
+    holder = await _ingest_rewritten_holder(tmp_vault_dir, graph_store, ingestion_service)
+    source = tmp_path / "caller" / "copy.md"
+    source.parent.mkdir()
+    source.write_text(_DOWNLOADED_BODY)
+    before = sorted(p.relative_to(tmp_vault_dir) for p in tmp_vault_dir.rglob("*") if p.is_file())
+
+    with pytest.raises(DuplicateContentError) as exc_info:
+        await ingestion_service.ingest(
+            IngestRequest(source=str(source), source_type=SourceType.MARKDOWN)
+        )
+
+    after = sorted(p.relative_to(tmp_vault_dir) for p in tmp_vault_dir.rglob("*") if p.is_file())
+    assert exc_info.value.detail["existing_document_id"] == holder.id
+    assert after == before
+
+
+async def test_force_reingest_of_the_original_still_matches_a_holder_whose_copy_differs(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    """Control for the delivered-digest arm: re-delivering the original bytes
+    to a document whose retained copy differs reuses it and completes.
+
+    A match on the retained digest alone refuses this pin, because the
+    pinned record's stored digest names other bytes.
+    """
+    holder = await _ingest_rewritten_holder(tmp_vault_dir, graph_store, ingestion_service)
+
+    result = await ingestion_service.ingest(
+        IngestRequest(
+            source="reports/original.md",
+            source_type=SourceType.MARKDOWN,
+            force=True,
+            document_id=holder.id,
+        )
+    )
+
+    assert result.document.id == holder.id
+    reused = await graph_store.get_document(holder.id)
+    assert reused.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+
+
+async def test_superseding_a_document_with_its_original_bytes_is_identical_when_its_copy_differs(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    """Control for the delivered-digest arm of the identical-content check.
+
+    The holder's retained digest names other bytes, so a check on the
+    retained digest alone lets the unchanged original through as a new
+    version.
+    """
+    holder = await _ingest_rewritten_holder(tmp_vault_dir, graph_store, ingestion_service)
+
+    with pytest.raises(IdenticalContentSupersedeError):
+        await ingestion_service.ingest(
+            IngestRequest(
+                source="reports/original.md",
+                source_type=SourceType.MARKDOWN,
+                predecessor_id=holder.id,
+            )
+        )
+
+
+async def test_superseding_a_document_with_its_own_retained_copy_is_an_identical_supersede(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    """A successor made of the predecessor's own downloaded copy is a no-op.
+
+    The identical-content check compares only the delivered digest, so it
+    misses the copy; the generic duplicate refusal would then name the same
+    document under a code that reads as "already somewhere in the vault"
+    rather than "this edit changes nothing".
+    """
+    holder = await _ingest_rewritten_holder(tmp_vault_dir, graph_store, ingestion_service)
+
+    with pytest.raises(IdenticalContentSupersedeError) as exc_info:
+        await ingestion_service.ingest(
+            IngestRequest(
+                source="downloads/copy.md",
+                source_type=SourceType.MARKDOWN,
+                predecessor_id=holder.id,
+            )
+        )
+
+    assert exc_info.value.code == "identical_content_supersede"
 
 
 async def test_duplicate_content_names_the_surviving_document_when_several_hold_the_bytes(

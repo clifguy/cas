@@ -624,9 +624,9 @@ _INGEST_DRY_RUN = _ingest_param(
         "would_create: false, not duplicate_content. Unchecked, because each "
         "turns on state only the real write reaches: "
         "tier3_unique_constraint_violation, "
-        "force_reingest_path_mismatch, stale_chain_head, and a "
-        "force_reingest_pin_mismatch for a store-resident source with no "
-        "prior document record. A clean preview is not a promise that the "
+        "force_reingest_path_mismatch, stale_chain_head, and, for a "
+        "store-resident source with no record, force_reingest_pin_mismatch "
+        "and force_reingest_retained_copy. A clean preview is not a promise that the "
         "real run commits. For an upload, the checks that need the bytes "
         "wait for the call repeated with the transfer token."
     ),
@@ -866,27 +866,25 @@ def register_sage_tools(
         - ``vault_not_found`` (404)
         - 400: ``invalid_vault_id``, ``invalid_document_id``,
           ``invalid_document_date``, ``invalid_sha256``, ``misplaced_metadata``,
-          ``misplaced_top_level_field``, ``undeclared_key``,
-          ``source_type_unresolved``, ``adapter_not_found``,
-          ``adapter_config_invalid``, ``source_unreadable``,
-          ``source_digest_mismatch``, ``vault_source_path_refused``,
-          ``relocated_from_provenance_mismatch``,
+          ``misplaced_top_level_field``, ``undeclared_key``, ``invalid_doc_type``,
+          ``source_type_unresolved``, ``adapter_not_found``, ``source_unreadable``,
+          ``adapter_config_invalid``, ``source_digest_mismatch``,
+          ``vault_source_path_refused``, ``relocated_from_provenance_mismatch``,
           ``relocation_source_undelivered``, ``ambiguous_ingest_source``,
-          ``missing_ingest_source``,
-          ``expected_head_version_requires_predecessor``, ``invalid_doc_type``,
-          ``tier3_schema_violation``
+          ``missing_ingest_source``, ``tier3_schema_violation``,
+          ``expected_head_version_requires_predecessor``
         - 404: ``source_file_not_found``, ``document_not_found``
         - 409: ``duplicate_content``, ``force_reingest_path_mismatch``,
-          ``force_reingest_pin_mismatch``, ``lifecycle_state_not_applicable``,
-          ``supersede_target_not_active``, ``identical_content_supersede``,
-          ``stale_chain_head``, ``tier3_unique_constraint_inactive``,
-          ``tier3_unique_constraint_violation``,
-          ``transfer_not_staged``, ``reserved_transition``,
+          ``force_reingest_pin_mismatch``, ``force_reingest_retained_copy``,
+          ``lifecycle_state_not_applicable``, ``supersede_target_not_active``,
+          ``identical_content_supersede``, ``stale_chain_head``,
+          ``tier3_unique_constraint_inactive``, ``transfer_not_staged``,
+          ``tier3_unique_constraint_violation``, ``reserved_transition``,
           ``vault_migration_in_flight``
         - 410: ``transfer_token_invalid``
         - 422: ``invalid_parameter``
         - 500: ``transfer_endpoint_not_configured``
-        - 502 / 503: ``vault_source_store_refused`` / ``vault_source_store_unavailable``
+        - 502/503: ``vault_source_store_refused``/``vault_source_store_unavailable``
         """
         try:
             # First, before any validation or vault work: a misplaced
@@ -1046,8 +1044,8 @@ def register_sage_tools(
         Its bytes are the retained copy: they match ``stored_content_hash``
         (if null, ``source_content_hash``), which differs from
         ``source_content_hash`` (the bytes ingested) where the source binding
-        rewrites the copy at rest. ``read_projection`` is
-        the cheaper, lossy text read.
+        rewrites the copy at rest; text formats, kept verbatim, have equal
+        hashes. ``read_projection`` is the cheaper, lossy text read.
 
         include_content and write_to_path are mutually exclusive.
 
@@ -2298,15 +2296,13 @@ def register_sage_tools(
         ``document_id``. Used by the scan-and-batch-ingest flow to identify
         already-ingested files without re-hashing on the SAGE side. Where
         several documents carry one hash, the one named is a version a
-        supersession has not retired, lowest document id among equals, so
-        the same request names the same document every time.
+        supersession has not retired, then a delivered-digest match over a
+        retained-copy one, lowest document id among equals,
+        so the same request names the same document every time.
 
-        Matches on provenance: a document's ``source_content_hash`` is the
-        SHA-256 of the bytes that were delivered at ingest, so the digest a
-        caller computes over its own local file is the right thing to send
-        here. That holds however the vault retains its copy -- a store that
-        rewrites what it keeps records the rewritten digest separately, and
-        this lookup does not consult it.
+        Matches either recorded digest, ``source_content_hash`` (the bytes
+        delivered at ingest) or ``stored_content_hash`` (the retained copy,
+        which some stores rewrite), so originals and downloads both match.
 
         Hash format: every hash is normalized to the canonical
         ``sha256:<64 lowercase hex>`` before lookup, so the canonical form,

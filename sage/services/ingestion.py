@@ -60,6 +60,7 @@ from sage.api.errors import (
     ExpectedHeadVersionRequiresPredecessorError,
     ForceReingestPathMismatchError,
     ForceReingestPinMismatchError,
+    ForceReingestRetainedCopyError,
     IdenticalContentSupersedeError,
     InvalidDocTypeError,
     InvalidLifecycleTransitionError,
@@ -594,6 +595,16 @@ _PATH_BOUND_READ_FAULTS: tuple[type[OSError], ...] = (
     IsADirectoryError,
     NotADirectoryError,
 )
+
+
+def _carries_hash(doc: Document, content_hash: str) -> bool:
+    """Whether a document holds these bytes, as delivered or as its retained copy.
+
+    The two digests differ where the vault-source binding rewrites its copy at
+    rest (CAS-ADR-043), and bytes downloaded from such a vault hash to the
+    stored one. The same rule the bulk hash lookup answers under.
+    """
+    return content_hash in (doc.source_content_hash, doc.stored_content_hash)
 
 
 def _is_momentary_read_fault(exc: BaseException) -> bool:
@@ -1537,8 +1548,12 @@ class IngestionService:
                 overwriting an unrelated byte-identical document.
             ForceReingestPinMismatchError: ``force=True`` and ``document_id``
                 names a document that does not carry the delivered content
-                hash, or no document at all. A pin may select any holder of
-                the hash, never a record holding other bytes.
+                hash, or no document at all. A pin may select any document
+                delivered these bytes, never a record holding other bytes.
+            ForceReingestRetainedCopyError: ``force=True`` and the delivered
+                bytes resolve only to a retained copy: the pinned record
+                holds them only as its copy, or, unpinned, no record was
+                delivered them and one keeps them as its copy.
             SourceTypeUnresolvedError: ``request.source_type`` is omitted and
                 no registered adapter claims the source's extension; raised
                 before anything is read or retained, and by a dry run.
@@ -1804,13 +1819,17 @@ class IngestionService:
         """
         request, _adapter, predecessor, ran = await self._validate_without_bytes(request)
         ran.insert(0, DryRunValidator.REQUEST_SHAPE)
-        # A declared digest stands for the bytes, so a force pin is held to it
-        # here exactly as the run holds it to the delivered hash, and a pin
-        # naming no document or another document's bytes is refused before
-        # the upload. Without a digest the refusal waits for the bytes: it
-        # reports the hash the pin failed to match.
+        # A declared digest stands for the bytes, so the record a force
+        # re-ingest acts on is resolved from it here exactly as the run
+        # resolves it from the delivered hash: a pin naming no document or
+        # another document's bytes, and a record holding them only as its
+        # retained copy, are refused before the upload. Without a digest the
+        # refusal waits for the bytes: it reports the hash the pin failed to
+        # match.
+        force_target: Document | None = None
         if request.force and request.sha256 is not None:
-            if await self._resolve_force_pin(request, request.sha256) is not None:
+            force_target = await self._resolve_force_target(request, request.sha256)
+            if request.document_id is not None:
                 ran.append(DryRunValidator.FORCE_PIN)
         if request.tier3_metadata is not None:
             parsed = (
@@ -1823,22 +1842,15 @@ class IngestionService:
             reused: Document | None = None
             caller_doc_type = (request.metadata or {}).get("doc_type")
             if request.force and not caller_doc_type and not (parsed and parsed.doc_type):
-                if request.document_id is not None:
+                if request.sha256 is not None:
+                    reused = force_target
+                elif request.document_id is not None:
                     reused = await self._store.get_document(request.document_id)
                     if reused is None:
                         # Reached only without a digest, which the refusal
                         # above needs; the run refuses this pin once the
                         # bytes arrive, and there is nothing to resolve.
                         return ran
-                elif request.sha256 is not None:
-                    matches = await self._store.find_documents_by_hashes(
-                        [request.sha256],
-                        prefer_lifecycle_statuses=(
-                            self._config.lifecycle.supersession_surviving_states()
-                        ),
-                    )
-                    if matches:
-                        reused = await self._store.get_document(next(iter(matches.values())))
                 else:
                     return ran
             resolved_doc_type = self._resolve_ingest_doc_type(
@@ -1909,8 +1921,8 @@ class IngestionService:
         # Hash of the bytes the caller delivered, taken from the local file
         # before it is retained. This is the document's provenance hash: it
         # identifies the content the caller handed over, so a caller holding the
-        # original can match it and duplicate detection is keyed to content
-        # identity. It cannot be read back off the store instead -- a binding may
+        # original can match it whatever the store did to its copy. It cannot
+        # be read back off the store instead -- a binding may
         # rewrite its copy at rest (CAS-ADR-043), and such a rewrite is not
         # reproducible, so the delivered digest is recoverable only here, while
         # the caller's file is still in hand. None when there is no delivered
@@ -2018,14 +2030,15 @@ class IngestionService:
 
             self._validate_relocation_provenance(request, delivered_hash, reported_source)
             self._validate_declared_digest(request, delivered_hash, reported_source)
-            # Above retention for the reason the relocation guard is: the pin
-            # is judged against the digest of the caller's own bytes, and bytes
-            # no document holds would otherwise be copied in and then refused,
-            # leaving a retained file with no row. With nothing delivered there
-            # is no digest yet and nothing to retain, so the check waits for
-            # the projection's.
-            pinned_id = (
-                await self._resolve_force_pin(request, canonicalize_sha256(delivered_hash))
+            # Above retention for the reason the relocation guard is: the
+            # record a force re-ingest acts on is judged against the digest of
+            # the caller's own bytes, and bytes no document holds would
+            # otherwise be copied in and then refused, leaving a retained file
+            # with no row. Retention then reuses that record's own file. With
+            # nothing delivered there is no digest yet and nothing to retain,
+            # so the resolution waits for the projection's.
+            force_target = (
+                await self._resolve_force_target(request, canonicalize_sha256(delivered_hash))
                 if delivered_hash is not None
                 else None
             )
@@ -2036,7 +2049,11 @@ class IngestionService:
                 pass
             elif source_input.is_absolute():
                 vault_relative, retained = await self._retain_or_reuse(
-                    vault_source_store, storage_root, source_path, delivered_hash
+                    vault_source_store,
+                    storage_root,
+                    source_path,
+                    delivered_hash,
+                    force_target=force_target,
                 )
             else:
                 # Retained without consulting the reuse short-circuit. A
@@ -2150,7 +2167,7 @@ class IngestionService:
         # error code signalling "no-op edit" rather than "already ingested
         # somewhere in the vault". Only applies when a supersede target
         # was provided and its hash matches the new file's hash.
-        if predecessor is not None and (predecessor.source_content_hash == provenance_hash):
+        if predecessor is not None and _carries_hash(predecessor, provenance_hash):
             raise IdenticalContentSupersedeError(predecessor.id, provenance_hash)
 
         # Duplicate detection (BH-018, BH-019, BH-066, BH-067). Several
@@ -2174,23 +2191,33 @@ class IngestionService:
         if hash_matches and not request.force:
             # Hash-only check: identical content already in vault (BH-066)
             existing_id = next(iter(hash_matches.values()))
-            raise DuplicateContentError(existing_id, provenance_hash)
+            existing = await self._store.get_document(existing_id)
+            # The lookup answers on either digest; the refusal says which, so
+            # a caller can tell a downloaded retained copy from a re-delivered
+            # original. Read only on this refusal path.
+            matched_field = (
+                "stored_content_hash"
+                if existing is not None and existing.source_content_hash != provenance_hash
+                else "source_content_hash"
+            )
+            raise DuplicateContentError(existing_id, provenance_hash, matched_field)
 
         # Branch detection: force-reingest reuses an existing record;
         # otherwise this is a new-doc insert (with or without predecessor).
         # `existing_doc is not None` is the canonical narrowing predicate
         # for the force-reingest branch from this point forward.
         existing_doc: Document | None = None
-        # A pin selects which holder of the delivered hash to reuse -- any of
-        # them, not only the representative the lookup collapsed them to. A
-        # pin naming a document without these bytes was refused above
-        # retention when bytes were delivered, and is refused here otherwise,
-        # before any branch can fall back to a record the caller did not name.
-        if delivered_hash is None:
-            pinned_id = await self._resolve_force_pin(request, provenance_hash)
-        if hash_matches and request.force:
-            existing_id = pinned_id or next(iter(hash_matches.values()))
-            existing_doc = await self._store.get_document(existing_id)
+        # The record a force re-ingest acts on was resolved above retention
+        # when bytes were delivered, and is resolved here otherwise, before
+        # any branch can fall back to a record the caller did not name. A
+        # holder that appeared since the earlier resolution found none is
+        # resolved again rather than taken from the lookup, so it is held to
+        # the same rules: a record keeping these bytes only as its copy is
+        # refused here too.
+        if delivered_hash is None or (hash_matches and request.force and force_target is None):
+            force_target = await self._resolve_force_target(request, provenance_hash)
+        if hash_matches and request.force and force_target is not None:
+            existing_doc = await self._store.get_document(force_target.id)
             # Cross-document collision guard: force-reingest keys its target by
             # content hash alone, so a hash match stored at a *different* path
             # may be an unrelated document that merely shares content bytes.
@@ -2270,8 +2297,10 @@ class IngestionService:
                 **modifier_fields(writer),
             }
             if retained:
-                # The record is reused because the delivered bytes matched, so
-                # source_content_hash is unchanged by definition -- but this call
+                # The record is reused because the delivered bytes matched one of
+                # its digests. source_content_hash is left as it is: it records
+                # what was delivered at the original ingest, and a re-delivered
+                # retained copy is not that -- but this call
                 # wrote the source again, and a binding that rewrites its copy at
                 # rest produced a fresh one, so the as-stored digest is re-read
                 # from this projection rather than left describing the previous
@@ -2669,7 +2698,7 @@ class IngestionService:
         duplicate_of: str | None = None
         reused: Document | None = None
         if provenance_hash is not None:
-            if predecessor is not None and predecessor.source_content_hash == provenance_hash:
+            if predecessor is not None and _carries_hash(predecessor, provenance_hash):
                 raise IdenticalContentSupersedeError(predecessor.id, provenance_hash)
             # The same rule the refusal asks under, so a preview and the run
             # it previews name the same document.
@@ -2679,12 +2708,10 @@ class IngestionService:
             )
             if hash_matches:
                 duplicate_of = next(iter(hash_matches.values()))
-            # Refused here exactly as the real run refuses it. A valid pin
-            # changes which record a re-ingest reuses, not which document
+            # Resolved, and refused, exactly as the real run resolves it. The
+            # record a re-ingest acts on can differ from the document that
             # represents the bytes, so ``duplicate_of`` is left as resolved.
-            pinned_id = await self._resolve_force_pin(request, provenance_hash)
-            if duplicate_of is not None and request.force:
-                reused = await self._store.get_document(pinned_id or duplicate_of)
+            reused = await self._resolve_force_target(request, provenance_hash)
 
         # One resolution serves the reported field, the tier3 check and the
         # retype guard, so none of them can answer for a different doc_type
@@ -3874,16 +3901,25 @@ class IngestionService:
         storage_root: Path,
         source_path: Path,
         delivered_hash: str,
+        *,
+        force_target: Document | None = None,
     ) -> tuple[str, bool]:
         """Retain a delivered source, or reuse the copy already holding those bytes.
 
-        Asks the graph store whether any document was made from the bytes now in
-        hand. If one was, and the store still holds its copy, that document's
+        Asks the graph store whether any document holds the bytes now in hand.
+        If one does, and the store still holds its copy, that document's
         retained path is reused and the retain is skipped: re-delivering an
         unchanged source leaves the store exactly as it was.
 
-        Keyed on the delivered digest rather than on where this source would
-        land, because the two answer different questions. A path-keyed check sees
+        A force re-ingest has already resolved the record it acts on, and
+        that record's own copy is the one reused. Asking the lookup again
+        could name a different holder of the same bytes, and the re-ingest
+        would then either be refused for a path that is not its record's, or
+        move its record onto another document's file.
+
+        Keyed on content -- the delivered digest, or a retained copy's, through
+        the lookup the duplicate refusal asks -- rather than on where this source
+        would land, because the two answer different questions. A path-keyed check sees
         only the un-disambiguated destination, so it misses a document that a
         name collision moved aside -- and re-delivering *that* document's bytes
         would fall through to a retain that rewrites its copy while duplicate
@@ -3892,10 +3928,10 @@ class IngestionService:
         the document wherever its bytes were actually put.
 
         This is the filesystem binding's own identical-content rule -- same
-        content, reuse -- resolved against recorded provenance instead of against
-        the retained bytes. Only recorded provenance can answer it for a binding
-        that rewrites its copy at rest (CAS-ADR-043), where the retained bytes no
-        longer hash to what produced them.
+        content, reuse -- resolved against the recorded digests instead of
+        against the retained bytes. Only recorded digests can answer it for a
+        binding that rewrites its copy at rest (CAS-ADR-043), where the retained
+        bytes no longer hash to what produced them.
 
         Falls through to ``retain_source`` whenever reuse is not certain -- no
         document with these bytes, or one whose stored copy has since gone
@@ -3937,18 +3973,25 @@ class IngestionService:
         and disambiguates to a second path rather than overwriting.
         """
         vault_id = self._config.vault.id
-        # Reuse follows the same rule the duplicate refusal asks under, so
-        # both name the same record. It resolves to one holder rather than
-        # scanning them all: a retired sibling whose retained copy survives
-        # while the surviving record's is missing is not reused, and this
-        # falls through to a fresh retain -- the fall-through-when-not-certain
-        # discipline the rest of this method already follows.
+        # Otherwise reuse follows the same rule the duplicate refusal asks
+        # under, so both name the same record. It resolves to one holder
+        # rather than scanning them all: a retired sibling whose retained copy
+        # survives while the surviving record's is missing is not reused, and
+        # this falls through to a fresh retain -- the
+        # fall-through-when-not-certain discipline the rest of this method
+        # already follows.
         existing_id = (
-            await self._store.find_documents_by_hashes(
-                [delivered_hash],
-                prefer_lifecycle_statuses=self._config.lifecycle.supersession_surviving_states(),
-            )
-        ).get(delivered_hash)
+            force_target.id
+            if force_target is not None
+            else (
+                await self._store.find_documents_by_hashes(
+                    [delivered_hash],
+                    prefer_lifecycle_statuses=(
+                        self._config.lifecycle.supersession_surviving_states()
+                    ),
+                )
+            ).get(delivered_hash)
+        )
         if existing_id is not None:
             existing = await self._store.get_document(existing_id)
             if (
@@ -4151,34 +4194,77 @@ class IngestionService:
                 existing.lifecycle_status, new_doc_type, state_scope
             )
 
-    async def _resolve_force_pin(self, request: IngestRequest, provenance_hash: str) -> str | None:
-        """Return the force-reingest pin when it names a holder of the hash.
+    async def _resolve_force_target(
+        self, request: IngestRequest, provenance_hash: str
+    ) -> Document | None:
+        """Return the record a force re-ingest of these bytes acts on.
 
-        None when no pin applies: without ``force`` the pin is not consulted,
-        and without a pin the hash lookup's representative stands. The pin is
-        checked against the pinned document's own hash rather than against
-        that lookup, which collapses several holders of one hash to a single
-        representative and so cannot confirm any other holder. A pin naming a
-        document that does not carry the hash -- or no document at all -- is
-        refused, whether or not anything else holds the bytes: honoring the
-        call any other way would write to a record the caller did not name.
-        The representative is looked up only to name it in the refusal.
+        The one answer every site of a force re-ingest uses -- the check made
+        before an upload, the preview, retention and the run -- so none of
+        them can reuse, validate against or retain for a different record
+        than another. None when the call is not forced, or when no document
+        carries the hash and the re-ingest creates one.
+
+        A pin names the record. It is checked against the pinned document's
+        own digests rather than against the hash lookup, which collapses
+        several holders of one hash to a single representative and so cannot
+        confirm any other holder. A pin naming a document that does not carry
+        the hash -- or no document at all -- is refused, whether or not
+        anything else holds the bytes: honoring the call any other way would
+        write to a record the caller did not name. The representative is
+        looked up only to name it in that refusal.
+
+        Without a pin, the record is the lookup's representative when it was
+        delivered these bytes. The lookup ranks a surviving version first, so
+        the representative can instead be a record keeping these bytes only
+        as its retained copy while another, retired, record was made from
+        them; asked again without the lifecycle preference, the lookup ranks
+        delivered-digest matches first, and a record found there is the one
+        reused.
+
+        A record holding the bytes only as its retained copy is never
+        reused, pinned or not: its provenance names other bytes, and
+        reprocessing the copy under it is a scope change the pipeline's
+        allowance refuses without an explicit reprocessing decision.
         """
-        if not request.force or request.document_id is None:
+        if not request.force:
             return None
-        pinned = await self._store.get_document(request.document_id)
-        if pinned is not None and pinned.source_content_hash == provenance_hash:
-            return pinned.id
-        hash_matches = await self._store.find_documents_by_hashes(
+        if request.document_id is not None:
+            pinned = await self._store.get_document(request.document_id)
+            if pinned is None or not _carries_hash(pinned, provenance_hash):
+                hash_matches = await self._store.find_documents_by_hashes(
+                    [provenance_hash],
+                    prefer_lifecycle_statuses=(
+                        self._config.lifecycle.supersession_surviving_states()
+                    ),
+                )
+                raise ForceReingestPinMismatchError(
+                    pinned_id=request.document_id,
+                    pinned_content_hash=pinned.source_content_hash if pinned is not None else None,
+                    content_hash=provenance_hash,
+                    resolved_id=hash_matches.get(provenance_hash),
+                )
+            if pinned.source_content_hash != provenance_hash:
+                raise ForceReingestRetainedCopyError(pinned.id, provenance_hash)
+            return pinned
+        matches = await self._store.find_documents_by_hashes(
             [provenance_hash],
             prefer_lifecycle_statuses=self._config.lifecycle.supersession_surviving_states(),
         )
-        raise ForceReingestPinMismatchError(
-            pinned_id=request.document_id,
-            pinned_content_hash=pinned.source_content_hash if pinned is not None else None,
-            content_hash=provenance_hash,
-            resolved_id=hash_matches.get(provenance_hash),
+        representative_id = matches.get(provenance_hash)
+        representative = (
+            await self._store.get_document(representative_id) if representative_id else None
         )
+        if representative is None or representative.source_content_hash == provenance_hash:
+            return representative
+        delivered = await self._store.find_documents_by_hashes(
+            [provenance_hash], prefer_lifecycle_statuses=frozenset()
+        )
+        holder_id = delivered.get(provenance_hash)
+        holder = await self._store.get_document(holder_id) if holder_id else None
+        if holder is not None and holder.source_content_hash == provenance_hash:
+            return holder
+        raise ForceReingestRetainedCopyError(representative.id, provenance_hash)
 
     def _validate_relocation_provenance(
         self,

@@ -1331,12 +1331,19 @@ class StubGraphStore(GraphStore):
         # strings by code point, which is the byte ordering the durable
         # store pins with COLLATE "C"; the two agree by construction rather
         # than by coincidence.
-        for d in sorted(
-            self._docs.values(),
-            key=lambda doc: (doc.lifecycle_status not in prefer_lifecycle_statuses, doc.id),
-        ):
-            if d.source_content_hash in wanted and d.source_content_hash not in found:
-                found[d.source_content_hash] = d.id
+        #
+        # Either digest answers, a delivered-digest match outranking a stored
+        # one within the lifecycle rank, as in the durable store.
+        candidates = sorted(
+            (
+                (doc.lifecycle_status not in prefer_lifecycle_statuses, match_rank, doc.id, h)
+                for doc in self._docs.values()
+                for match_rank, h in ((0, doc.source_content_hash), (1, doc.stored_content_hash))
+                if h is not None and h in wanted
+            ),
+        )
+        for _retired, _match_rank, doc_id, h in candidates:
+            found.setdefault(h, doc_id)
         return found
 
     async def find_documents_by_source_paths(self, source_paths: list[str]) -> dict[str, str]:

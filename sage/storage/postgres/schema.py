@@ -334,6 +334,7 @@ CREATE TABLE IF NOT EXISTS document_surface (
 GRAPH_INDEXES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_documents_source_path ON documents(source_path);",
     "CREATE INDEX IF NOT EXISTS idx_documents_source_hash ON documents(source_content_hash);",
+    "CREATE INDEX IF NOT EXISTS idx_documents_stored_hash ON documents(stored_content_hash);",
     "CREATE INDEX IF NOT EXISTS idx_documents_lifecycle ON documents(lifecycle_status);",
     "CREATE INDEX IF NOT EXISTS idx_documents_pipeline ON documents(pipeline_status);",
     "CREATE INDEX IF NOT EXISTS idx_documents_metadata_confirmed ON documents(metadata_confirmed);",

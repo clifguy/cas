@@ -203,13 +203,20 @@ class DuplicateContentError(SAGEError):
     """409: a document already carries this content hash (BH-018, BH-066).
 
     Keyed on the hash alone, so identical bytes at a path the vault has
-    never seen refuse too. ``existing_document_id`` names one holder:
-    where several carry the hash, a version a supersession has not
-    retired outranks one it has, and the lowest document id decides
-    among equals.
+    never seen refuse too. The hash matches a document's delivered digest
+    or its retained copy's, and ``matched_hash_field`` says which.
+    ``existing_document_id`` names one holder: where several carry the
+    hash, a version a supersession has not retired outranks one it has, a
+    delivered-digest match outranks a retained-copy one, and the lowest
+    document id decides among equals.
     """
 
-    def __init__(self, existing_document_id: str, source_content_hash: str) -> None:
+    def __init__(
+        self,
+        existing_document_id: str,
+        source_content_hash: str,
+        matched_hash_field: typing.Literal["source_content_hash", "stored_content_hash"],
+    ) -> None:
         super().__init__(
             "duplicate_content",
             "Duplicate content detected",
@@ -217,6 +224,7 @@ class DuplicateContentError(SAGEError):
             {
                 "existing_document_id": existing_document_id,
                 "source_content_hash": source_content_hash,
+                "matched_hash_field": matched_hash_field,
             },
         )
 
@@ -291,6 +299,34 @@ class ForceReingestPinMismatchError(SAGEError):
                 "pinned_source_content_hash": pinned_content_hash,
                 "source_content_hash": content_hash,
                 "existing_document_id": resolved_id,
+            },
+        )
+
+
+class ForceReingestRetainedCopyError(SAGEError):
+    """409: a force-reingest delivered the bytes a document keeps as its
+    retained copy, not the bytes delivered at its ingest.
+
+    A store that rewrites its copy at rest leaves the copy's digest
+    (``stored_content_hash``) different from the delivered one
+    (``source_content_hash``), so these bytes resolve to the document only
+    through the copy. Reprocessing them under the document's provenance
+    would inspect bytes its processing allowance was not measured on, a
+    scope change that needs an explicit reprocessing decision; recompute
+    the document's pipeline from its retained copy instead.
+    """
+
+    def __init__(self, document_id: str, content_hash: str) -> None:
+        super().__init__(
+            "force_reingest_retained_copy",
+            (
+                "Force re-ingest delivered a document's retained copy; "
+                "recompute that document's pipeline instead."
+            ),
+            409,
+            {
+                "document_id": document_id,
+                "source_content_hash": content_hash,
             },
         )
 

@@ -27,6 +27,7 @@ import pytest
 from sage.api.errors import (
     DuplicateContentError,
     ForceReingestPinMismatchError,
+    ForceReingestRetainedCopyError,
     IdenticalContentSupersedeError,
     InvalidActionError,
     InvalidDocTypeError,
@@ -363,6 +364,39 @@ async def test_dry_run_ingest_runs_no_pipeline(
 # ---------------------------------------------------------------------------
 # (B) Verdicts
 # ---------------------------------------------------------------------------
+
+
+async def test_dry_run_reports_a_downloaded_retained_copy_as_a_duplicate(
+    tmp_vault_dir, graph_store, dry_ingestion_service
+):
+    """The preview's duplicate verdict matches the retained copy's digest too.
+
+    The preview runs the same lookup the real run refuses under, so bytes
+    equal only to a document's rewritten copy must preview as held. Trap: a
+    preview matching the delivered digest alone reports ``would_create=true``
+    and the real run then refuses, or, before the guard matched either digest,
+    lands a second document.
+    """
+    original = _write(tmp_vault_dir, "original.md", "# Original\n\nDelivered bytes.")
+    held = await dry_ingestion_service.ingest(
+        IngestRequest(
+            source=str(original), source_type=SourceType.MARKDOWN, metadata={"doc_type": "misc"}
+        )
+    )
+    copy = _write(tmp_vault_dir, "copy.md", "# Original\n\nThe store's rewritten copy.")
+    await graph_store.update_document(held.document.id, {"stored_content_hash": hash_file(copy)})
+
+    preview = await dry_ingestion_service.ingest(
+        IngestRequest(
+            source=str(copy),
+            source_type=SourceType.MARKDOWN,
+            metadata={"doc_type": "misc"},
+            dry_run=True,
+        )
+    )
+
+    assert preview.would_create is False
+    assert preview.duplicate_of == held.document.id
 
 
 async def test_dry_run_reports_duplicate_verdict(tmp_vault_dir, dry_ingestion_service):
@@ -721,6 +755,126 @@ async def test_dry_run_refuses_an_identical_content_supersede(tmp_vault_dir, dry
                 dry_run=True,
             )
         )
+
+
+async def test_dry_run_refuses_superseding_a_document_with_its_own_retained_copy(
+    tmp_vault_dir, graph_store, dry_ingestion_service
+):
+    """The preview refuses a supersede whose bytes are the predecessor's
+    retained copy, as the run it previews does.
+
+    Trap: a preview comparing the delivered digest alone passes this step as
+    a distinct version, so the preview and the run disagree. The copy's bytes
+    differ from the delivered ones on purpose; were they equal, a
+    delivered-digest comparison would refuse too.
+    """
+    original = _write(tmp_vault_dir, "kept.md", "# Kept\n\nDelivered bytes.")
+    pred = await dry_ingestion_service.ingest(
+        IngestRequest(
+            source=str(original), source_type=SourceType.MARKDOWN, metadata={"doc_type": "misc"}
+        )
+    )
+    copy = _write(tmp_vault_dir, "kept_copy.md", "# Kept\n\nThe store's rewritten copy.")
+    await graph_store.update_document(pred.document.id, {"stored_content_hash": hash_file(copy)})
+    assert hash_file(copy) != pred.document.source_content_hash
+
+    with pytest.raises(IdenticalContentSupersedeError):
+        await dry_ingestion_service.ingest(
+            IngestRequest(
+                source=str(copy),
+                source_type=SourceType.MARKDOWN,
+                predecessor_id=pred.document.id,
+                dry_run=True,
+            )
+        )
+
+
+async def test_dry_run_refuses_a_force_reingest_of_a_retained_copy(
+    tmp_vault_dir, graph_store, dry_ingestion_service
+):
+    """The preview refuses a force re-ingest of a document's retained copy,
+    as the run it previews does, rather than reporting a re-ingest.
+
+    Trap: a preview that resolves the reused record without the check
+    reports ``would_create=true`` for a call the real run refuses.
+    """
+    original = _write(tmp_vault_dir, "held.md", "# Held\n\nDelivered bytes.")
+    held = await dry_ingestion_service.ingest(
+        IngestRequest(
+            source=str(original), source_type=SourceType.MARKDOWN, metadata={"doc_type": "misc"}
+        )
+    )
+    copy = _write(tmp_vault_dir, "held_copy.md", "# Held\n\nThe store's rewritten copy.")
+    await graph_store.update_document(held.document.id, {"stored_content_hash": hash_file(copy)})
+
+    with pytest.raises(ForceReingestRetainedCopyError):
+        await dry_ingestion_service.ingest(
+            IngestRequest(
+                source=str(copy),
+                source_type=SourceType.MARKDOWN,
+                force=True,
+                document_id=held.document.id,
+                dry_run=True,
+            )
+        )
+
+
+async def _seed_retired_delivered_holder_beside_a_copy_holder(
+    service, graph_store, tmp_vault_dir, name
+):
+    """A retired ``loose_record`` made from the source's bytes, beside a
+    surviving ``bare_record`` keeping those bytes as its retained copy.
+
+    The lookup's representative for the bytes is the copy holder, which a
+    force re-ingest refuses to reuse; the record it reuses is the delivered
+    holder. The two carry different doc_types, so a check resolving the
+    reused record from the representative names the wrong one: ``bare_record``
+    refuses every payload ``loose_record`` admits.
+    """
+    source, delivered_holder = await _seed(service, tmp_vault_dir, name, "loose_record")
+    _other, copy_holder = await _seed(service, tmp_vault_dir, f"copy_{name}", "bare_record")
+    await graph_store.update_document(
+        copy_holder.id, {"stored_content_hash": delivered_holder.source_content_hash}
+    )
+    await graph_store.update_document(delivered_holder.id, {"lifecycle_status": "archived"})
+    return source, delivered_holder
+
+
+async def test_force_reingest_resolves_the_delivered_holder_in_every_check(
+    tmp_vault_dir, graph_store, dry_ingestion_service
+):
+    """The no-bytes check, the preview and the run each resolve an unpinned
+    force re-ingest to the delivered holder, not the copy holder the lookup
+    ranks first.
+
+    A check that resolves its own record answers for a different doc_type
+    than the run writes: here the no-bytes check would refuse a payload the
+    preview and the run accept. And without a pin, the no-bytes receipt must
+    not claim the pin check ran.
+    """
+    source, delivered_holder = await _seed_retired_delivered_holder_beside_a_copy_holder(
+        dry_ingestion_service, graph_store, tmp_vault_dir, "pair.md"
+    )
+    request = {
+        "source": str(source),
+        "source_type": SourceType.MARKDOWN,
+        "force": True,
+        "tier3_metadata": {"ticket_id": "fixture-pair"},
+    }
+
+    ran = await dry_ingestion_service.validate_without_bytes(
+        IngestRequest(**request, dry_run=True, sha256=delivered_holder.source_content_hash)
+    )
+    preview = await dry_ingestion_service.ingest(IngestRequest(**request, dry_run=True))
+    result = await dry_ingestion_service.ingest(IngestRequest(**request))
+
+    assert DryRunValidator.TIER3_METADATA in ran
+    assert DryRunValidator.FORCE_PIN not in ran
+    assert preview.resolved_doc_type == "loose_record"
+    assert result.document.id == delivered_holder.id
+    assert (await graph_store.get_document(delivered_holder.id)).tier3_metadata == {
+        "ticket_id": "fixture-pair"
+    }
 
 
 async def test_dry_run_with_force_would_create_over_a_duplicate(

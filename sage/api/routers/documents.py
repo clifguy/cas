@@ -307,7 +307,8 @@ async def get_document_content(
     that a browser may neither sniff nor render as a page of this origin.
     They are the retained copy and match ``stored_content_hash`` (if null,
     ``source_content_hash``), which differs from ``source_content_hash`` (the
-    bytes ingested) where the source binding rewrites the copy at rest.
+    bytes ingested) where the source binding rewrites the copy at rest; a copy
+    kept verbatim, as text formats are, carries equal hashes.
     """
     delivery = await service.get_document_content(document_id)
     return StreamingResponse(

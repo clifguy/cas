@@ -1081,11 +1081,13 @@ components:
           type: [string, "null"]
           pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
-            Identifier of the document already holding these bytes, or
-            null when none does. Where several hold them, the one named
-            is a version a supersession has not retired, lowest document
-            id among equals, so the same call names the same document
-            every time. Null is also reported, unevaluated, when
+            Identifier of the document already holding these bytes, as
+            delivered or as its retained copy, or null when none does.
+            Where several hold them, the one named is a version a
+            supersession has not retired, then one delivered as these
+            bytes over one keeping them as its copy, lowest document id
+            among equals, so the same call names the same document every
+            time. Null is also reported, unevaluated, when
             `source_content_hash` is null.
         predecessor_id:
           type: [string, "null"]
@@ -1800,6 +1802,7 @@ components:
       required:
       - existing_document_id
       - source_content_hash
+      - matched_hash_field
       properties:
         existing_document_id:
           type: string
@@ -1807,6 +1810,12 @@ components:
         source_content_hash:
           type: string
           description: Source content hash.
+        matched_hash_field:
+          type: string
+          enum:
+          - source_content_hash
+          - stored_content_hash
+          description: Which of the existing document's digests the delivered bytes matched.
       description: Additional context for this refusal.
     DuplicateContentError:
       type: object
@@ -2033,6 +2042,40 @@ components:
           $ref: '#/components/schemas/ReadMeta'
         detail:
           $ref: '#/components/schemas/ForceReingestPinMismatchErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    ForceReingestRetainedCopyErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_id
+      - source_content_hash
+      properties:
+        document_id:
+          type: string
+          description: Document id.
+        source_content_hash:
+          type: string
+          description: Source content hash.
+      description: Additional context for this refusal.
+    ForceReingestRetainedCopyError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: force_reingest_retained_copy
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/ForceReingestRetainedCopyErrorDetail'
       additionalProperties: false
       description: The refusal envelope for this error code.
     HeadingNotFoundErrorDetail:
@@ -5618,6 +5661,7 @@ components:
             - expected_head_version_requires_predecessor
             - force_reingest_path_mismatch
             - force_reingest_pin_mismatch
+            - force_reingest_retained_copy
             - heading_not_found
             - http_error
             - identical_content_supersede
@@ -5748,6 +5792,7 @@ components:
         - expected_head_version_requires_predecessor
         - force_reingest_path_mismatch
         - force_reingest_pin_mismatch
+        - force_reingest_retained_copy
         - identical_content_supersede
         - internal_error
         - invalid_action
@@ -5920,6 +5965,7 @@ components:
         - expected_head_version_requires_predecessor
         - force_reingest_path_mismatch
         - force_reingest_pin_mismatch
+        - force_reingest_retained_copy
         - identical_content_supersede
         - internal_error
         - invalid_action
@@ -6354,6 +6400,7 @@ components:
       - $ref: '#/components/schemas/ExpectedHeadVersionRequiresPredecessorError'
       - $ref: '#/components/schemas/ForceReingestPathMismatchError'
       - $ref: '#/components/schemas/ForceReingestPinMismatchError'
+      - $ref: '#/components/schemas/ForceReingestRetainedCopyError'
       - $ref: '#/components/schemas/HeadingNotFoundError'
       - $ref: '#/components/schemas/HttpErrorError'
       - $ref: '#/components/schemas/IdenticalContentSupersedeError'
@@ -6488,6 +6535,7 @@ components:
           expected_head_version_requires_predecessor: '#/components/schemas/ExpectedHeadVersionRequiresPredecessorError'
           force_reingest_path_mismatch: '#/components/schemas/ForceReingestPathMismatchError'
           force_reingest_pin_mismatch: '#/components/schemas/ForceReingestPinMismatchError'
+          force_reingest_retained_copy: '#/components/schemas/ForceReingestRetainedCopyError'
           heading_not_found: '#/components/schemas/HeadingNotFoundError'
           http_error: '#/components/schemas/HttpErrorError'
           identical_content_supersede: '#/components/schemas/IdenticalContentSupersedeError'

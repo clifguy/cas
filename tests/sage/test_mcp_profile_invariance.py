@@ -901,3 +901,52 @@ async def test_mpi_020_binary_download_matches_the_stored_hash(mpi_vault, tmp_pa
         assert downloaded != doc.source_content_hash
     else:
         assert downloaded == doc.source_content_hash
+
+
+@requires_docx
+async def test_mpi_021_a_downloaded_copy_round_trips_to_its_document(mpi_vault, tmp_path):
+    """MPI-021: a file downloaded from the vault and offered back resolves to
+    the document it came from, under either binding.
+
+    Re-ingested, it is refused as that document's duplicate; the refusal's
+    ``matched_hash_field`` names the stored digest where the binding rewrote
+    the copy and the delivered one where it did not. A force re-ingest,
+    unpinned or pinned to the document, is refused as a retained copy where
+    the copy differs, and re-runs the document where the copy is the
+    delivered bytes.
+    """
+    services, _config, handle = mpi_vault
+    src = _write_office_file(tmp_path, "probe_sigma.docx", "Sigma")
+    ingest = _parse(await ingest_document(_VAULT_ID, str(src), "docx"))
+    assert "error" not in ingest, ingest
+    await await_pipeline_idle(
+        services.graph_store, ingest["id"], service=services.ingestion_service
+    )
+    target = tmp_path / "caller_out" / "sigma_export.docx"
+    target.parent.mkdir()
+    downloaded = _parse(await get_document(_VAULT_ID, ingest["id"], write_to_path=str(target)))
+    assert "error" not in downloaded, downloaded
+
+    again = _parse(await ingest_document(_VAULT_ID, str(target), "docx"))
+    unpinned = _parse(await ingest_document(_VAULT_ID, str(target), "docx", force=True))
+    forced = _parse(
+        await ingest_document(_VAULT_ID, str(target), "docx", force=True, document_id=ingest["id"])
+    )
+
+    assert again.get("error") == "duplicate_content", again
+    assert again["detail"]["existing_document_id"] == ingest["id"]
+    assert len(await services.graph_store.list_all_documents()) == 1
+    if handle.fake_client is not None:
+        assert handle.fake_client.stamped_uploads >= 1, (
+            "the document store must have rewritten the upload; without a real "
+            "divergence this test asserts nothing"
+        )
+        assert again["detail"]["matched_hash_field"] == "stored_content_hash"
+        for refused in (unpinned, forced):
+            assert refused.get("error") == "force_reingest_retained_copy", refused
+            assert refused["detail"]["document_id"] == ingest["id"]
+    else:
+        assert again["detail"]["matched_hash_field"] == "source_content_hash"
+        for rerun in (unpinned, forced):
+            assert "error" not in rerun, rerun
+            assert rerun["id"] == ingest["id"]

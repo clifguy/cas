@@ -503,3 +503,32 @@ equality cannot be satisfied by a store that kept the delivered bytes. The
 filesystem leg asserts the opposite relation to the provenance hash instead of
 skipping, so an implementation that recorded the delivered digest as the stored
 one fails on the leg where they should differ.
+
+## MPI-021: a downloaded copy round-trips to its document
+
+**Artifact:** `sage/storage/postgres/graph_store.py` and `sage/adapters/stubs.py`
+(`find_documents_by_hashes`), `sage/services/ingestion.py` (duplicate refusal,
+force resolution)
+**Category:** mcp_tool, profile_invariance, import, provenance
+
+**Precondition:** One registered vault; a fresh `.docx` ingested from a
+caller-local absolute path, then downloaded with `get_document(...,
+write_to_path=...)`.
+
+**Input:** `ingest_document` of the downloaded file, then the same call with
+`force: true`, once unpinned and once with `document_id` naming the document.
+
+**Expected:**
+- On **both** legs the plain re-ingest is refused as `duplicate_content`
+  naming the document, and no second document exists.
+- Document-store leg: `matched_hash_field` is `stored_content_hash`, and both
+  forced calls are refused as `force_reingest_retained_copy` naming the document.
+- Filesystem leg: `matched_hash_field` is `source_content_hash`, and both
+  forced calls re-run the document.
+
+**Anti-coincidental-pass:** the document-store leg asserts
+`fake.stamped_uploads >= 1`, so the download genuinely differs from the
+delivered bytes; with a store that kept them verbatim, a lookup on the
+delivered digest alone would pass. The filesystem leg asserts the opposite
+outcome for both calls rather than skipping, so a refusal keyed on anything
+but a real divergence fails there.

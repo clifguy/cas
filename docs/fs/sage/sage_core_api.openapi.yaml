@@ -689,9 +689,10 @@ paths:
         false when the caller supplied none, and a real run may still
         refuse. Unchecked, because each turns on state only the real
         write reaches: `tier3_unique_constraint_violation`,
-        `force_reingest_path_mismatch`, `stale_chain_head`, and a
-        `force_reingest_pin_mismatch` for a store-resident source with
-        no prior document record. A clean preview is not a promise
+        `force_reingest_path_mismatch`, `stale_chain_head`, and, for a
+        store-resident source with no record,
+        `force_reingest_pin_mismatch` and
+        `force_reingest_retained_copy`. A clean preview is not a promise
         that the real run commits. When `source` is an absolute path the
         server cannot read,
         a dry run first runs every validator that reads no bytes and then
@@ -872,13 +873,21 @@ paths:
 
 
             `duplicate_content`: a document already carries this content
-            hash. The key is the hash alone, so identical bytes at a
+            hash, as the bytes delivered at its ingest
+            (`source_content_hash`) or as its retained copy
+            (`stored_content_hash`); detail's `matched_hash_field` says
+            which. A file downloaded from a vault whose source binding
+            rewrites its copy at rest therefore refuses as its document's
+            duplicate. The key is the hash alone, so identical bytes at a
             path the vault has never seen refuse too. Where several
             documents carry it, the refusal names a version a
-            supersession has not retired, lowest document id among
-            equals, so re-running the same call names the same document.
+            supersession has not retired, then one that was delivered as
+            these bytes over one keeping them as its copy, lowest document
+            id among equals, so re-running the same call names the same
+            document.
             Use `force: true` to bypass detection and re-run the
-            pipeline.
+            pipeline on a document delivered these bytes; a retained
+            copy is refused as `force_reingest_retained_copy`.
 
 
             `force_reingest_path_mismatch`: `force: true` and the
@@ -897,10 +906,21 @@ paths:
             delivered content hash, or no document at all. A pin may
             select any document holding these bytes, never a record
             holding other bytes, and is refused whether or not another
-            document holds them. Detail carries `document_id`,
-            `pinned_source_content_hash` (null when no document has that
+            document holds them; one holding them only as its retained
+            copy is refused as `force_reingest_retained_copy`. Detail
+            carries `document_id`, `pinned_source_content_hash` (null when no document has that
             id), `source_content_hash`, and `existing_document_id` (null
             when no document holds the hash).
+
+
+            `force_reingest_retained_copy`: `force: true` and the bytes
+            resolve only to a retained copy (`stored_content_hash`): the
+            document `document_id` pins holds them only as its copy, or,
+            unpinned, no document was delivered them and one keeps them
+            as its copy, as a file downloaded from a vault whose source
+            binding rewrites its copy at rest is kept. Reprocessing the copy under the record's provenance is a
+            scope change; recompute the document's pipeline instead.
+            Detail carries `document_id` and `source_content_hash`.
 
 
             `lifecycle_state_not_applicable`: `force: true` would change
@@ -1222,7 +1242,9 @@ paths:
         ingest call. Its bytes are the retained copy: they match
         `stored_content_hash` (if null, `source_content_hash`), which differs
         from `source_content_hash` (the bytes ingested) where the source
-        binding rewrites the copy at rest.
+        binding rewrites the copy at rest, as a document store can for
+        Office formats; a copy kept verbatim, as text formats are, carries
+        equal hashes.
         `read_projection` is the cheaper, lossy text read.
 
 
@@ -2553,10 +2575,14 @@ paths:
         existing document and, if so, the matching document's
         `document_id`. Used during the directory-scan flow to
         differentiate new files from already-ingested ones before
-        showing per-file ingestion decisions to the user. Where several
-        documents carry one hash, the one named is a version a
-        supersession has not retired, lowest document id among equals,
-        so the same request names the same document every time.
+        showing per-file ingestion decisions to the user. Matches either
+        recorded digest, `source_content_hash` (the bytes delivered at
+        ingest) or `stored_content_hash` (the retained copy, which some
+        stores rewrite), so originals and downloads both match. Where
+        several documents carry one hash, the one named is a version a
+        supersession has not retired, then a delivered-digest match
+        over a retained-copy one, lowest document id among equals, so
+        the same request names the same document every time.
 
 
         Every hash is normalized to the canonical
@@ -3358,7 +3384,8 @@ paths:
         a page of the serving origin. The streamed bytes are the retained copy
         and match `stored_content_hash` (if null, `source_content_hash`),
         which differs from `source_content_hash` (the bytes ingested) where
-        the source binding rewrites the copy at rest.
+        the source binding rewrites the copy at rest; a copy kept verbatim,
+        as text formats are, carries equal hashes.
       tags: [Document Metadata]
       parameters:
         - $ref: "#/components/parameters/VaultId"
@@ -5127,10 +5154,11 @@ components:
           type: string
           pattern: "^sha256:[0-9a-f]{64}$"
           description: >-
-            Hash of source file content at last ingestion (provenance). The
-            SHA-256 of the bytes the caller delivered, so a caller holding the
-            original can match it and duplicate detection is keyed to content
-            identity rather than to how any store chose to retain it.
+            Hash of the source file content delivered at ingest
+            (provenance). The SHA-256 of the bytes the caller delivered, so a
+            caller holding the original can match it whatever the store did
+            to its copy; duplicate detection matches it or
+            stored_content_hash.
         stored_content_hash:
           type: [string, "null"]
           pattern: "^sha256:[0-9a-f]{64}$"
@@ -6233,9 +6261,10 @@ components:
           description: >-
             When true, bypasses duplicate content detection and re-runs
             the full pipeline on the existing document record (if one
-            exists carrying the same source_content_hash). Returns 200
-            (re-processed) instead of 201 (new). The document ID is
-            preserved. Use for pipeline failure recovery.
+            was delivered these bytes; detection also matches a retained
+            copy, whose re-ingest is refused). Returns 200
+            (re-processed) instead of 201 (new). Use for pipeline failure
+            recovery.
         needs_review:
           type: boolean
           default: false
@@ -6342,14 +6371,15 @@ components:
             document. To protect that document's identity, a
             different-path collision is rejected with 409
             `force_reingest_path_mismatch` unless this field names the
-            record the caller intends to overwrite (for example,
-            re-ingesting a document whose file legitimately moved).
-            Where several documents carry the delivered content hash,
-            this field selects any one of them, not only the one a
-            duplicate refusal would name. A value naming a document that
-            does not carry the delivered content hash, or no document at
-            all, is rejected with 409 `force_reingest_pin_mismatch`.
-            Consulted only when `force=true`; ignored otherwise.
+            record the caller intends to overwrite.
+            Where several documents were delivered these bytes, this
+            field selects any one of them, not only the one a duplicate
+            refusal would name. A value naming a document that does not
+            carry the delivered content hash, or no document at all, is
+            rejected with 409 `force_reingest_pin_mismatch`; one holding
+            it only as its copy, with 409
+            `force_reingest_retained_copy`. Consulted only when
+            `force=true`; ignored otherwise.
         dry_run:
           type: boolean
           default: false
@@ -7973,11 +8003,13 @@ components:
           type: [string, "null"]
           pattern: "^[0-9a-f]{8}_[a-z0-9_]+$"
           description: >-
-            Identifier of the document already holding these bytes, or
-            null when none does. Where several hold them, the one named
-            is a version a supersession has not retired, lowest document
-            id among equals, so the same call names the same document
-            every time. Null is also reported, unevaluated, when
+            Identifier of the document already holding these bytes, as
+            delivered or as its retained copy, or null when none does.
+            Where several hold them, the one named is a version a
+            supersession has not retired, then one delivered as these
+            bytes over one keeping them as its copy, lowest document id
+            among equals, so the same call names the same document every
+            time. Null is also reported, unevaluated, when
             `source_content_hash` is null.
         predecessor_id:
           type: [string, "null"]
@@ -8922,8 +8954,9 @@ components:
           description: >-
             Document id when exists=true; null otherwise. Where several
             documents carry the hash, the one named is a version a
-            supersession has not retired, lowest document id among
-            equals.
+            supersession has not retired, then one delivered as these
+            bytes over one keeping them as its retained copy, lowest
+            document id among equals.
 
     HashCheckResponse:
       type: object
@@ -11637,6 +11670,7 @@ components:
       required:
       - existing_document_id
       - source_content_hash
+      - matched_hash_field
       properties:
         existing_document_id:
           type: string
@@ -11644,6 +11678,12 @@ components:
         source_content_hash:
           type: string
           description: Source content hash.
+        matched_hash_field:
+          type: string
+          enum:
+          - source_content_hash
+          - stored_content_hash
+          description: Which of the existing document's digests the delivered bytes matched.
       description: Additional context for this refusal.
     DuplicateContentError:
       type: object
@@ -11870,6 +11910,40 @@ components:
           $ref: '#/components/schemas/ReadMeta'
         detail:
           $ref: '#/components/schemas/ForceReingestPinMismatchErrorDetail'
+      additionalProperties: false
+      description: The refusal envelope for this error code.
+    ForceReingestRetainedCopyErrorDetail:
+      type: object
+      additionalProperties: false
+      required:
+      - document_id
+      - source_content_hash
+      properties:
+        document_id:
+          type: string
+          description: Document id.
+        source_content_hash:
+          type: string
+          description: Source content hash.
+      description: Additional context for this refusal.
+    ForceReingestRetainedCopyError:
+      type: object
+      required:
+      - code
+      - message
+      - detail
+      properties:
+        code:
+          type: string
+          const: force_reingest_retained_copy
+          description: Machine-readable error code selecting this envelope.
+        message:
+          type: string
+          description: Human-readable error description.
+        read_meta:
+          $ref: '#/components/schemas/ReadMeta'
+        detail:
+          $ref: '#/components/schemas/ForceReingestRetainedCopyErrorDetail'
       additionalProperties: false
       description: The refusal envelope for this error code.
     HeadingNotFoundErrorDetail:
@@ -15455,6 +15529,7 @@ components:
             - expected_head_version_requires_predecessor
             - force_reingest_path_mismatch
             - force_reingest_pin_mismatch
+            - force_reingest_retained_copy
             - heading_not_found
             - http_error
             - identical_content_supersede
@@ -15585,6 +15660,7 @@ components:
         - expected_head_version_requires_predecessor
         - force_reingest_path_mismatch
         - force_reingest_pin_mismatch
+        - force_reingest_retained_copy
         - identical_content_supersede
         - internal_error
         - invalid_action
@@ -15757,6 +15833,7 @@ components:
         - expected_head_version_requires_predecessor
         - force_reingest_path_mismatch
         - force_reingest_pin_mismatch
+        - force_reingest_retained_copy
         - identical_content_supersede
         - internal_error
         - invalid_action
@@ -16191,6 +16268,7 @@ components:
       - $ref: '#/components/schemas/ExpectedHeadVersionRequiresPredecessorError'
       - $ref: '#/components/schemas/ForceReingestPathMismatchError'
       - $ref: '#/components/schemas/ForceReingestPinMismatchError'
+      - $ref: '#/components/schemas/ForceReingestRetainedCopyError'
       - $ref: '#/components/schemas/HeadingNotFoundError'
       - $ref: '#/components/schemas/HttpErrorError'
       - $ref: '#/components/schemas/IdenticalContentSupersedeError'
@@ -16325,6 +16403,7 @@ components:
           expected_head_version_requires_predecessor: '#/components/schemas/ExpectedHeadVersionRequiresPredecessorError'
           force_reingest_path_mismatch: '#/components/schemas/ForceReingestPathMismatchError'
           force_reingest_pin_mismatch: '#/components/schemas/ForceReingestPinMismatchError'
+          force_reingest_retained_copy: '#/components/schemas/ForceReingestRetainedCopyError'
           heading_not_found: '#/components/schemas/HeadingNotFoundError'
           http_error: '#/components/schemas/HttpErrorError'
           identical_content_supersede: '#/components/schemas/IdenticalContentSupersedeError'

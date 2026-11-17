@@ -522,9 +522,10 @@ def _check_provenance(ctx: _Context) -> tuple[str, str]:
        as a consequence of this one and the first: the retained bytes are not
        the delivered bytes, and each digest is pinned to its own set.
     4. Re-delivering the identical bytes is refused as a duplicate naming this
-       same document. Duplicate detection keys on provenance; keyed to the
-       as-stored digest instead it could never fire for a rewritten format,
-       because the rewrite is not reproducible.
+       same document. Duplicate detection matches provenance as well as the
+       as-stored digest; keyed to the as-stored digest alone it could never
+       fire for a re-delivered original of a rewritten format, because the
+       rewrite is not reproducible.
 
     Three of those four only bite when the store actually rewrote, so a
     deployment that quietly stopped rewriting would take most of this check's

@@ -888,6 +888,14 @@ SCHEMAS = json.loads(
         "description": "Existing document id.",
         "type": "string"
       },
+      "matched_hash_field": {
+        "description": "Which of the existing document's digests the delivered bytes matched.",
+        "enum": [
+          "source_content_hash",
+          "stored_content_hash"
+        ],
+        "type": "string"
+      },
       "source_content_hash": {
         "description": "Source content hash.",
         "type": "string"
@@ -895,7 +903,8 @@ SCHEMAS = json.loads(
     },
     "required": [
       "existing_document_id",
-      "source_content_hash"
+      "source_content_hash",
+      "matched_hash_field"
     ],
     "type": "object"
   },
@@ -1060,6 +1069,7 @@ SCHEMAS = json.loads(
         "expected_head_version_requires_predecessor": "#/components/schemas/ExpectedHeadVersionRequiresPredecessorError",
         "force_reingest_path_mismatch": "#/components/schemas/ForceReingestPathMismatchError",
         "force_reingest_pin_mismatch": "#/components/schemas/ForceReingestPinMismatchError",
+        "force_reingest_retained_copy": "#/components/schemas/ForceReingestRetainedCopyError",
         "heading_not_found": "#/components/schemas/HeadingNotFoundError",
         "http_error": "#/components/schemas/HttpErrorError",
         "identical_content_supersede": "#/components/schemas/IdenticalContentSupersedeError",
@@ -1247,6 +1257,9 @@ SCHEMAS = json.loads(
       },
       {
         "$ref": "#/components/schemas/ForceReingestPinMismatchError"
+      },
+      {
+        "$ref": "#/components/schemas/ForceReingestRetainedCopyError"
       },
       {
         "$ref": "#/components/schemas/HeadingNotFoundError"
@@ -1599,6 +1612,7 @@ SCHEMAS = json.loads(
         "expected_head_version_requires_predecessor",
         "force_reingest_path_mismatch",
         "force_reingest_pin_mismatch",
+        "force_reingest_retained_copy",
         "identical_content_supersede",
         "internal_error",
         "invalid_action",
@@ -1783,6 +1797,7 @@ SCHEMAS = json.loads(
         "expected_head_version_requires_predecessor",
         "force_reingest_path_mismatch",
         "force_reingest_pin_mismatch",
+        "force_reingest_retained_copy",
         "identical_content_supersede",
         "internal_error",
         "invalid_action",
@@ -2283,6 +2298,7 @@ SCHEMAS = json.loads(
             "expected_head_version_requires_predecessor",
             "force_reingest_path_mismatch",
             "force_reingest_pin_mismatch",
+            "force_reingest_retained_copy",
             "heading_not_found",
             "http_error",
             "identical_content_supersede",
@@ -2535,6 +2551,52 @@ SCHEMAS = json.loads(
       "pinned_source_content_hash",
       "source_content_hash",
       "existing_document_id"
+    ],
+    "type": "object"
+  },
+  "ForceReingestRetainedCopyError": {
+    "additionalProperties": false,
+    "description": "The refusal envelope for this error code.",
+    "properties": {
+      "code": {
+        "const": "force_reingest_retained_copy",
+        "description": "Machine-readable error code selecting this envelope.",
+        "type": "string"
+      },
+      "detail": {
+        "$ref": "#/components/schemas/ForceReingestRetainedCopyErrorDetail"
+      },
+      "message": {
+        "description": "Human-readable error description.",
+        "type": "string"
+      },
+      "read_meta": {
+        "$ref": "#/components/schemas/ReadMeta"
+      }
+    },
+    "required": [
+      "code",
+      "message",
+      "detail"
+    ],
+    "type": "object"
+  },
+  "ForceReingestRetainedCopyErrorDetail": {
+    "additionalProperties": false,
+    "description": "Additional context for this refusal.",
+    "properties": {
+      "document_id": {
+        "description": "Document id.",
+        "type": "string"
+      },
+      "source_content_hash": {
+        "description": "Source content hash.",
+        "type": "string"
+      }
+    },
+    "required": [
+      "document_id",
+      "source_content_hash"
     ],
     "type": "object"
   },

@@ -250,6 +250,27 @@ async def test_empty_list_short_circuits_without_consulting_the_store():
     assert store.calls == []
 
 
+async def test_hash_check_finds_bytes_equal_to_a_documents_retained_copy():
+    """A digest the vault holds only as a retained copy reports ``exists``.
+
+    A download from a store that rewrites its copy at rest hashes to the
+    stored digest, not the delivered one. Checked before re-ingest, it must
+    name the document rather than report the bytes novel. The document's
+    delivered digest differs on purpose, so a match can only come through the
+    stored one.
+    """
+    rewritten = _document(_STORED_DOC_ID, "sha256:" + "0" * 64).model_copy(
+        update={"stored_content_hash": _CANONICAL}
+    )
+    service, store = await _service()
+    await store.insert_document(rewritten)
+
+    result = await _matches(service, HashCheckRequest(hashes=[_CANONICAL]))
+
+    assert result[_CANONICAL].exists is True
+    assert result[_CANONICAL].document_id == _STORED_DOC_ID
+
+
 async def test_hash_check_names_the_surviving_document_when_several_carry_the_hash():
     """Among several documents on one hash, the named one is the survivor.
 
