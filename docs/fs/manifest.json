@@ -2,7 +2,7 @@
   "title": "CAS Formal Substrate Manifest",
   "description": "Inventory and version tracking for the CAS Formal Substrate (CAS-ADR-008). Each artifact's version is the release MAJOR.MINOR in which it last changed, or null until a release first publishes it; no counter is assigned when a change is authored. revision_history is assembled per release: a change adds a numberless change record under changes/unreleased/, and the release step folds every unreleased record into one entry for the new release, newest first. Entries written before this scheme, which carry a substrate counter in their version field, follow the release entries and are kept verbatim.",
   "manifest_version": "1.0",
-  "manifest_date": "2026-11-13",
+  "manifest_date": "2026-11-16",
   "json_schema_dialect": "https://json-schema.org/draft/2020-12/schema",
   "organization": {
     "description": "The formal substrate is organized by component (SAGE, ROOT Harness) with domain-specific configuration files produced by domain instantiation documents. Each component directory contains configuration schemas (JSON Schema), API operation contracts (OpenAPI 3.1.0), and data model schemas (JSON Schema) as appropriate.",
@@ -84,7 +84,7 @@
       "path": "sage/sage_core_api.openapi.yaml",
       "title": "SAGE Core API",
       "status": "draft",
-      "version": "3.8",
+      "version": "3.9",
       "role": "OpenAPI 3.1.0 specification for the SAGE Core API. Defines the REST surface for discovery, ingestion, lifecycle management, graph operations, access control, utilities, and the token-gated transfer endpoints (the byte legs of the caller-local transfer channel), plus the transfer recipe schemas the MCP tools return. Consumed by the ROOT Harness Integration Layer, MCP adapter, and CAS Application. Source authority: SAGE Architecture Reference Section 7.",
       "instantiation_checklist_items": []
     },
@@ -92,7 +92,7 @@
       "path": "cas_app_api.openapi.yaml",
       "title": "CAS Application API",
       "status": "draft",
-      "version": "3.8",
+      "version": "3.9",
       "role": "OpenAPI 3.1.0 specification for the CAS Application backend HTTP surface (mounted at the /app prefix). Defines directory scan and batch-ingest endpoints used by the CAS Application UI. Architecturally distinct from the SAGE Core API; the two specs are validated together by tests/sage/test_openapi_conformance.py and must respect URL-prefix boundaries (sage_core_api owns /sage_vaults/*, cas_app_api owns /app/*).",
       "instantiation_checklist_items": []
     },
@@ -100,7 +100,7 @@
       "path": "sage/sage_mcp_tools.catalog.json",
       "title": "SAGE MCP Tool Catalog",
       "status": "draft",
-      "version": "3.8",
+      "version": "3.9",
       "role": "The tools the SAGE MCP surfaces publish through tools/list: name, input and output schemas, annotations, and description, for the ordinary surface (/mcp) and the maintenance surface (/mcp_maint). Generated from the servers by scripts/dump_mcp_catalog.py and held to them by a test gate; the contract comparison reads it as the MCP half of the published contract.",
       "instantiation_checklist_items": []
     },
@@ -197,6 +197,51 @@
   ],
   "deferred": [],
   "revision_history": [
+    {
+      "release": "3.9",
+      "date": "2026-11-16",
+      "changes": [
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation"
+          ],
+          "summary": "Deprecates the full processing_coverage carried on DocumentSummaryLight, the light catalog row that search and list_pending_metadata return. The field is still served unchanged and is marked deprecated in the Core API specification. The deprecation registry gains a response-field form, judged on the rows a response actually carries, so an unset-mode catalog response the inline budget degrades to light rows warns too. PendingMetadataPage gains a warnings list to carry the warning; search carries it in hints.warnings.",
+          "for_callers": "The processing_coverage object on light document rows (search in catalog mode with response_mode light, or an unset mode degraded to light, and light list_pending_metadata pages) is deprecated. From 2027-01-04 light rows may carry a bounded coverage summary in its place. Read the full object with get_document, or with response_mode full on a smaller page. Responses carrying light rows now warn so, in hints.warnings for search and in the new warnings field for list_pending_metadata.",
+          "deprecates": [
+            {
+              "surface": "sage_core_api",
+              "pointer": "components/schemas/DocumentSummaryLight/properties/processing_coverage",
+              "replacement": "get_document, or response_mode full on a smaller page, for the full object",
+              "earliest_adaptation": "2027-01-04"
+            }
+          ]
+        },
+        {
+          "classification": "minor",
+          "category": [
+            "capability",
+            "caller-adaptation"
+          ],
+          "summary": "Serves each distinct effective configuration once per processing_coverage object, in a configurations block keyed by its canonical configuration hash, and gives each coverage dimension and abstraction_quality a configuration_ref into it. The block and references are derived on every read and never stored, so stored coverage and the hashes keyed on a whole identity are unchanged. Deprecates the per-dimension ProcessingIdentity.configuration, which is still served unchanged. Every operation whose response carries a configured identity now warns; get_document (including its download recipe), get_document_download_url, traverse, export_projection, read_projection, read_section and list_headings gain a warnings field to carry it, and update_lifecycles carries it in each result's existing warnings.",
+          "for_callers": "The configuration on each processing_coverage identity is deprecated. Read it from the coverage object's configurations block through the holder's configuration_ref instead; the block holds each distinct configuration once. From 2027-01-04 identities may stop carrying configuration. Responses carrying a configured identity now warn so, in hints.warnings for search and in the response's warnings field elsewhere; bulk update_metadata and update_lifecycles warn on each result.",
+          "deprecates": [
+            {
+              "surface": "sage_core_api",
+              "pointer": "components/schemas/ProcessingIdentity/properties/configuration",
+              "replacement": "the processing_coverage configurations block, through each identity holder's configuration_ref",
+              "earliest_adaptation": "2027-01-04"
+            }
+          ]
+        },
+        {
+          "classification": "patch",
+          "summary": "Describes the document projection as derived, lossy text on the MCP read_projection and get_document tools and on the projection and document operations of the Core API specification, and names get_document with write_to_path as the read for the original bytes, including in the binary_content_refused descriptions and message. Description-only; no shape changes.",
+          "for_callers": ""
+        }
+      ]
+    },
     {
       "release": "3.8",
       "date": "2026-11-13",
