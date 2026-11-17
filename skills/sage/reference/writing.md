@@ -58,8 +58,9 @@ matches the retained copy; the refusal's `matched_hash_field` then says which
 digest matched. Otherwise, and whenever you hold bytes of unknown origin, find
 the existing document by identity (title, typed metadata, the predecessor
 search above) before ingesting. A `force` re-ingest of such a download is
-refused as `force_reingest_retained_copy`; to re-run the document's pipeline,
-use `recompute_pipeline` on it instead.
+refused as `force_reingest_retained_copy` unless some document was delivered
+those exact bytes; to re-run the document's pipeline, use `recompute_pipeline`
+on it instead.
 
 Ingest data files as they are. JSON, JSON Lines, YAML, TOML, XML, CSV and TSV
 are a source format of their own, so do not convert one to Markdown first; the ingest

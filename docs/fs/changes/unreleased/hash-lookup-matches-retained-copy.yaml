@@ -14,8 +14,9 @@ summary: >-
   get_document descriptions say so, and the get_document descriptions add that
   formats kept verbatim carry equal hashes. A storage index on
   stored_content_hash is created idempotently at vault open; no operator step.
-  A force re-ingest whose bytes the record it would reuse holds only as its
-  retained copy is refused with the new 409 force_reingest_retained_copy
+  A force re-ingest whose bytes resolve only to a retained copy (a pinned
+  record holding them only as its copy, or, unpinned, no record delivered
+  them) is refused with the new 409 force_reingest_retained_copy
   (ForceReingestRetainedCopyError in both specifications, the generated error
   contract and the ingest tools' error lists): reprocessing the copy under the
   record's provenance is a scope change the processing allowance refuses.
@@ -30,9 +31,10 @@ for_callers: >-
   second one. verify_hashes and the directory scan report it as already held.
   The duplicate_content detail carries matched_hash_field, source_content_hash
   or stored_content_hash, saying which of the document's digests matched. A
-  force re-ingest of a document's retained copy, pinned or not, is refused as
-  force_reingest_retained_copy; use recompute_pipeline on the document to
-  re-run it. Superseding a document with its own retained copy is refused as
+  force re-ingest of a document's retained copy is refused as
+  force_reingest_retained_copy, pinned to that document or unpinned, unless
+  some document was delivered those exact bytes, which is then the one
+  re-run; use recompute_pipeline on the document to re-run it. Superseding a document with its own retained copy is refused as
   identical_content_supersede. These ship without a deprecation under the
   data-integrity exemption, because the old match let a downloaded copy be
   written as a second document.

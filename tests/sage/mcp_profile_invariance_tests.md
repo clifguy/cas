@@ -516,15 +516,15 @@ caller-local absolute path, then downloaded with `get_document(...,
 write_to_path=...)`.
 
 **Input:** `ingest_document` of the downloaded file, then the same call with
-`force: true` and `document_id` naming the document.
+`force: true`, once unpinned and once with `document_id` naming the document.
 
 **Expected:**
 - On **both** legs the plain re-ingest is refused as `duplicate_content`
   naming the document, and no second document exists.
-- Document-store leg: `matched_hash_field` is `stored_content_hash`, and the
-  forced call is refused as `force_reingest_retained_copy` naming the document.
-- Filesystem leg: `matched_hash_field` is `source_content_hash`, and the
-  forced call re-runs the document.
+- Document-store leg: `matched_hash_field` is `stored_content_hash`, and both
+  forced calls are refused as `force_reingest_retained_copy` naming the document.
+- Filesystem leg: `matched_hash_field` is `source_content_hash`, and both
+  forced calls re-run the document.
 
 **Anti-coincidental-pass:** the document-store leg asserts
 `fake.stamped_uploads >= 1`, so the download genuinely differs from the

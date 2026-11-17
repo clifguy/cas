@@ -910,9 +910,10 @@ async def test_mpi_021_a_downloaded_copy_round_trips_to_its_document(mpi_vault, 
 
     Re-ingested, it is refused as that document's duplicate; the refusal's
     ``matched_hash_field`` names the stored digest where the binding rewrote
-    the copy and the delivered one where it did not. A force re-ingest pinned
-    to the document is refused as a retained copy where the copy differs, and
-    re-runs the document where the copy is the delivered bytes.
+    the copy and the delivered one where it did not. A force re-ingest,
+    unpinned or pinned to the document, is refused as a retained copy where
+    the copy differs, and re-runs the document where the copy is the
+    delivered bytes.
     """
     services, _config, handle = mpi_vault
     src = _write_office_file(tmp_path, "probe_sigma.docx", "Sigma")
@@ -927,6 +928,7 @@ async def test_mpi_021_a_downloaded_copy_round_trips_to_its_document(mpi_vault, 
     assert "error" not in downloaded, downloaded
 
     again = _parse(await ingest_document(_VAULT_ID, str(target), "docx"))
+    unpinned = _parse(await ingest_document(_VAULT_ID, str(target), "docx", force=True))
     forced = _parse(
         await ingest_document(_VAULT_ID, str(target), "docx", force=True, document_id=ingest["id"])
     )
@@ -940,9 +942,11 @@ async def test_mpi_021_a_downloaded_copy_round_trips_to_its_document(mpi_vault, 
             "divergence this test asserts nothing"
         )
         assert again["detail"]["matched_hash_field"] == "stored_content_hash"
-        assert forced.get("error") == "force_reingest_retained_copy", forced
-        assert forced["detail"]["document_id"] == ingest["id"]
+        for refused in (unpinned, forced):
+            assert refused.get("error") == "force_reingest_retained_copy", refused
+            assert refused["detail"]["document_id"] == ingest["id"]
     else:
         assert again["detail"]["matched_hash_field"] == "source_content_hash"
-        assert "error" not in forced, forced
-        assert forced["id"] == ingest["id"]
+        for rerun in (unpinned, forced):
+            assert "error" not in rerun, rerun
+            assert rerun["id"] == ingest["id"]
