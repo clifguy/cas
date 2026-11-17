@@ -32,9 +32,10 @@ for_callers: >-
   The duplicate_content detail carries matched_hash_field, source_content_hash
   or stored_content_hash, saying which of the document's digests matched. A
   force re-ingest of a document's retained copy is refused as
-  force_reingest_retained_copy, pinned to that document or unpinned, unless
-  some document was delivered those exact bytes, which is then the one
-  re-run; use recompute_pipeline on the document to re-run it. Superseding a document with its own retained copy is refused as
+  force_reingest_retained_copy when pinned to that document, and unpinned
+  unless some document was delivered those exact bytes, which is then the
+  one re-run; use recompute_pipeline on the document to re-run it.
+  Superseding a document with its own retained copy is refused as
   identical_content_supersede. These ship without a deprecation under the
   data-integrity exemption, because the old match let a downloaded copy be
   written as a second document.

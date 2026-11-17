@@ -1548,8 +1548,8 @@ class IngestionService:
                 overwriting an unrelated byte-identical document.
             ForceReingestPinMismatchError: ``force=True`` and ``document_id``
                 names a document that does not carry the delivered content
-                hash, or no document at all. A pin may select any holder of
-                the hash, never a record holding other bytes.
+                hash, or no document at all. A pin may select any document
+                delivered these bytes, never a record holding other bytes.
             ForceReingestRetainedCopyError: ``force=True`` and the delivered
                 bytes resolve only to a retained copy: the pinned record
                 holds them only as its copy, or, unpinned, no record was
@@ -2209,14 +2209,15 @@ class IngestionService:
         existing_doc: Document | None = None
         # The record a force re-ingest acts on was resolved above retention
         # when bytes were delivered, and is resolved here otherwise, before
-        # any branch can fall back to a record the caller did not name.
-        if delivered_hash is None:
+        # any branch can fall back to a record the caller did not name. A
+        # holder that appeared since the earlier resolution found none is
+        # resolved again rather than taken from the lookup, so it is held to
+        # the same rules: a record keeping these bytes only as its copy is
+        # refused here too.
+        if delivered_hash is None or (hash_matches and request.force and force_target is None):
             force_target = await self._resolve_force_target(request, provenance_hash)
-        if hash_matches and request.force:
-            existing_id = (
-                force_target.id if force_target is not None else next(iter(hash_matches.values()))
-            )
-            existing_doc = await self._store.get_document(existing_id)
+        if hash_matches and request.force and force_target is not None:
+            existing_doc = await self._store.get_document(force_target.id)
             # Cross-document collision guard: force-reingest keys its target by
             # content hash alone, so a hash match stored at a *different* path
             # may be an unrelated document that merely shares content bytes.

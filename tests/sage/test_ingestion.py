@@ -7,6 +7,7 @@ source file provenance (source_modified_at), and document date metadata
 (document_date).
 """
 
+import asyncio
 import hashlib
 import os
 import re
@@ -321,6 +322,78 @@ async def test_force_reingest_reuses_a_retired_delivered_holder_over_a_copy_hold
         copy_holder.model_dump()
     )
     assert len(await graph_store.list_all_documents()) == 2
+
+
+async def test_force_reingest_resolves_a_holder_that_appears_after_the_first_resolution(
+    tmp_vault_dir, graph_store, ingestion_service, monkeypatch
+):
+    """A holder that the run's lookup finds after the force resolution found
+    none is resolved by the same rules, not reused as the lookup names it.
+
+    Taken straight from the lookup, a record keeping these bytes only as its
+    retained copy is reused and its pipeline re-run against bytes it was never
+    delivered -- the run the retained-copy refusal exists to stop.
+    """
+    holder = await _ingest_rewritten_holder(tmp_vault_dir, graph_store, ingestion_service)
+    real_lookup = graph_store.find_documents_by_hashes
+    calls = 0
+
+    async def first_call_empty(hashes, **kwargs):
+        nonlocal calls
+        calls += 1
+        return {} if calls == 1 else await real_lookup(hashes, **kwargs)
+
+    monkeypatch.setattr(graph_store, "find_documents_by_hashes", first_call_empty)
+
+    with pytest.raises(ForceReingestRetainedCopyError):
+        await asyncio.wait_for(
+            ingestion_service.ingest(
+                IngestRequest(
+                    source="downloads/copy.md", source_type=SourceType.MARKDOWN, force=True
+                )
+            ),
+            timeout=30,
+        )
+
+    assert calls >= 2
+    assert (await graph_store.get_document(holder.id)).model_dump() == holder.model_dump()
+
+
+async def test_unpinned_force_reingest_prefers_a_surviving_delivered_holder(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    """Of two documents delivered the same bytes, an unpinned force re-ingest
+    reuses the surviving one, as the duplicate refusal names it, even when a
+    retired one sorts first by id.
+
+    Asking without the lifecycle preference whenever no pin is given ranks the
+    retired holder first, and the call is then refused as a path mismatch
+    against a document the caller never meant.
+    """
+    _create_test_file(tmp_vault_dir, "reports/surviving.md", _ORIGINAL_BODY)
+    surviving = (
+        await ingestion_service.ingest(
+            IngestRequest(source="reports/surviving.md", source_type=SourceType.MARKDOWN)
+        )
+    ).document
+    _create_test_file(tmp_vault_dir, "reports/retired.md", _ORIGINAL_BODY)
+    retired = surviving.model_copy(
+        update={
+            "id": "00000000_retired_delivered_holder",
+            "source_path": "reports/retired.md",
+            "lifecycle_status": "archived",
+        }
+    )
+    await graph_store.insert_document(retired)
+    retired = await graph_store.get_document(retired.id)
+    assert retired.id < surviving.id
+
+    result = await ingestion_service.ingest(
+        IngestRequest(source="reports/surviving.md", source_type=SourceType.MARKDOWN, force=True)
+    )
+
+    assert result.document.id == surviving.id
+    assert (await graph_store.get_document(retired.id)).model_dump() == retired.model_dump()
 
 
 async def test_pinned_external_force_reingest_keeps_the_pinned_records_path(
