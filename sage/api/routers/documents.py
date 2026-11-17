@@ -305,6 +305,9 @@ async def get_document_content(
     raised once the bytes are already flowing ends the body short of the
     promised Content-Length instead. The bytes are delivered as an attachment
     that a browser may neither sniff nor render as a page of this origin.
+    They are the retained copy and match ``stored_content_hash``, which
+    differs from ``source_content_hash`` where the vault's source binding
+    rewrites the copy at rest.
     """
     delivery = await service.get_document_content(document_id)
     return StreamingResponse(
@@ -332,7 +335,7 @@ async def get_document_content(
             "binary-container source (`.docx`, `.pptx`, `.pdf`, `.xlsx`): the read "
             "path declines to inline raw container bytes and directs the "
             "caller to `read_projection` for the extracted text, or "
-            "`write_to_path` for the original bytes (CAS-ADR-039).",
+            "`write_to_path` for the retained source bytes (CAS-ADR-039).",
         ),
         404: {
             "model": ErrorResponse,

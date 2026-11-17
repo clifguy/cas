@@ -86,3 +86,33 @@ def test_rest_projection_operation_does_not_claim_the_full_document():
     assert "binary formats (docx, pdf, pptx, xlsx) can lose" in description
     assert "Absence from the projection is not absence from the document." in description
     assert "Read the original with `get_document`, using `write_to_path`" in description
+
+
+def _rest_description(path: str, method: str = "get") -> str:
+    spec = yaml.safe_load(_SPEC.read_text(encoding="utf-8"))
+    return " ".join(spec["paths"][path][method]["description"].split())
+
+
+def test_get_document_names_the_hash_its_bytes_match(descriptions: dict[str, str]):
+    """Delivered bytes are the retained copy, which a rewriting binding changes at rest."""
+    text = descriptions["get_document"]
+    assert "they match ``stored_content_hash`` (if null, ``source_content_hash``)" in text
+    assert "``source_content_hash`` (the bytes ingested)" in text
+    assert "rewrites the copy at rest" in text
+    assert "source as ingested" not in text
+
+
+def test_rest_get_document_names_the_hash_its_bytes_match():
+    """The HTTP operation makes the same hash claims as the tool."""
+    text = _rest_description("/sage_vaults/{vault_id}/documents/{document_id}")
+    assert "they match `stored_content_hash` (if null, `source_content_hash`)" in text
+    assert "`source_content_hash` (the bytes ingested)" in text
+    assert "rewrites the copy at rest" in text
+    assert "source as ingested" not in text
+    assert "original source file bytes" not in text
+
+
+def test_rest_content_route_names_the_stored_hash():
+    """The raw byte channel says which recorded hash its stream matches."""
+    text = _rest_description("/sage_vaults/{vault_id}/documents/{document_id}/content")
+    assert "`stored_content_hash`" in text

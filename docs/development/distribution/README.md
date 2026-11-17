@@ -33,7 +33,10 @@ CAS package from `1bd459c060f9a369f45b952a9d11c0000632cdbd`, whose manifest
 SHA-256 is `e3b592c401a4d420966577a3fa4330b5b49056bc7dbda7d453c02743a16881ee`.
 Rebuild it from a clone that carries the release tags: the manifest records
 `git describe --tags`, so a tagless clone of the same commit yields a different
-digest. Verify the complete package before building. The trusted digest comes from this
+digest. The build also stamps that release and the source commit into the packaged
+`SKILL.md` frontmatter as `metadata.version` and `metadata.source_commit`, so an installed
+copy names what it was sealed from; the repository source carries no version and a
+hand-written one is refused. Verify the complete package before building. The trusted digest comes from this
 reviewed declaration, never from an untrusted destination manifest.
 
 From the compatible shared source, with absolute paths supplied explicitly:

@@ -1880,7 +1880,7 @@ class DocumentWithContent(Document):
             "`include_content=true` against a binary-container source is "
             "refused with `binary_content_refused` (400), directing the caller "
             "to `read_projection` for the extracted text or `write_to_path` "
-            "for the original bytes. Null only on responses that carry no source "
+            "for the retained source bytes. Null only on responses that carry no source "
             "form (e.g. an error envelope). It describes the source, not the "
             "response: `content`, when present, is base64 for every source, a "
             "`text` source included."

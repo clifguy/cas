@@ -474,3 +474,29 @@ wrong bytes. Placing the bytes out of band is what makes the branch reachable:
 an ordinary ingest would leave a record whose provenance the call would inherit.
 The filesystem leg asserts the opposite outcome rather than skipping, because a
 skip would not notice an implementation that refused every relative source.
+
+## MPI-020: a binary download matches the stored hash, not the provenance hash
+
+**Artifact:** `sage/services/documents.py` (`get_document_with_content`),
+`sage/services/ingestion.py` (as-stored hash capture)
+**Category:** mcp_tool, profile_invariance, export, provenance
+
+**Precondition:** One registered vault; a fresh `.docx` ingested from a
+caller-local absolute path. An Office package, because that is the format a
+document store rewrites at rest.
+
+**Input:** `get_document(vault_id, document_id, write_to_path=<absolute target>)`.
+
+**Expected:**
+- On **both** legs, the returned `content_hash` and the SHA-256 of the written
+  file equal the record's `stored_content_hash`. This is the hash the published
+  `get_document` description tells a caller to verify a download against.
+- Document-store leg: the download does not match `source_content_hash`.
+- Filesystem leg: it matches `source_content_hash` too.
+
+**Anti-coincidental-pass:** the document-store leg asserts
+`fake.stamped_uploads >= 1` and that the two recorded hashes differ, so the
+equality cannot be satisfied by a store that kept the delivered bytes. The
+filesystem leg asserts the opposite relation to the provenance hash instead of
+skipping, so an implementation that recorded the delivered digest as the stored
+one fails on the leg where they should differ.

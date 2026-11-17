@@ -51,15 +51,22 @@ absent from the document. Read the retained source before you audit a document's
 formatting, links or images, report that it is missing content, or report an
 extraction defect. A binary document's projection without formatting or link targets
 is working as designed. Source text missing from a projection is at most a suspected
-extraction defect: report the document ID, its source hash and the missing text, and
-say whether the served description documents that loss for the format.
+extraction defect. Report the document ID, its `source_content_hash`, the SHA-256 of
+the projection text as served, the adapter version from
+`processing_coverage.projection.identity.adapter`, the missing text, and whether the
+served description documents that kind of loss for the format.
 
 REST inline content can refuse binary formats with `binary_content_refused`; use
 that deployment's raw content route (currently `/documents/{id}/content` under its
 vault route) or its supported download recipe. Do not decode a projection as DOCX,
-PDF, PPTX or XLSX. Verify with actual binary bytes and their original digest; success
-on Markdown establishes nothing about binary retrieval. MCP and REST delivery
-shapes may differ. Discover the route from the served contract, not this example.
+PDF, PPTX or XLSX. Verify actual binary bytes against `stored_content_hash`, or against
+`source_content_hash` where the stored hash is null; success on Markdown establishes
+nothing about binary retrieval. `source_content_hash` identifies the bytes delivered at
+ingest and `stored_content_hash` the retained copy. They differ where the source
+binding rewrites the copy at rest, as SharePoint does for DOCX, PPTX and XLSX, so a
+download that matches the stored hash but not the source hash is not an integrity
+failure. MCP and REST delivery shapes may differ. Discover the route from the served
+contract, not this example.
 
 Facet counts establish observed vocabulary, not schema or uniqueness. Free-form tags
 can exceed result limits: narrow the query and label the vocabulary slice. Under

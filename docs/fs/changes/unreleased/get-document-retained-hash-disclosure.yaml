@@ -1,0 +1,13 @@
+classification: patch
+summary: >-
+  Says on the MCP get_document tool and on the Core API document and raw-content
+  operations that delivered bytes are the retained copy and match
+  stored_content_hash, which differs from source_content_hash (the bytes
+  ingested) where the source binding rewrites the copy at rest. Replaces the
+  claim that the content is the source as ingested, and shortens the tool's
+  delivery-mode note to the exclusivity rule its parameters already detail.
+  The binary_content_refused message and descriptions and the body_form field
+  now name write_to_path for the retained source bytes rather than the
+  original bytes.
+  Description-only; no shape changes.
+for_callers: ""
