@@ -29,9 +29,9 @@ live deployment/cohort/service acceptance. Packaging alone proves none of those.
 
 New CAS consumer packages select the shared personal dependency contract. Use the
 reviewed shared source at `e7d8091b72edbd3b0a898ab5cd101a93b85a87d0` and the
-CAS package from `b6740f10902011991dc8cdcc32bf20b7d18fa2bc`, whose manifest
-SHA-256 is `a848784d8ac844c6f2e2c43de6f6a37556242a3f3532ff7c6589d1baf8415772`
-and whose recorded `cas_release` is `v3.9.0-1-gb6740f10`.
+CAS package from `90a29042bdc1ac5cb284dbf286f284aafd4e65fd`, whose manifest
+SHA-256 is `6a9417d7b9f455b538864eb90e7c9b873a316ed210010759122864dff509ba0c`
+and whose recorded `cas_release` is `v3.9.0-3-g90a29042`.
 Rebuild it from a clone that carries the release tags: the manifest records
 `git describe --tags`, so a tagless clone of the same commit, or a git configured
 for a different commit-abbreviation length (`core.abbrev`), yields a different
@@ -47,7 +47,7 @@ From the compatible shared source, with absolute paths supplied explicitly:
 python scripts/package_workflow_bundle.py "$OUTPUT" --platform codex \
   --declaration "$CAS/docs/development/distribution/composition.json" \
   --source "cas=$CAS" --sage-personal-manifest "$SAGE_PACKAGE/manifest.json" \
-  --sage-manifest-sha256 a848784d8ac844c6f2e2c43de6f6a37556242a3f3532ff7c6589d1baf8415772
+  --sage-manifest-sha256 6a9417d7b9f455b538864eb90e7c9b873a316ed210010759122864dff509ba0c
 python scripts/package_workflow_bundle.py "$OUTPUT" --verify
 ```
 
