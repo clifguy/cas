@@ -1550,6 +1550,9 @@ class IngestionService:
                 names a document that does not carry the delivered content
                 hash, or no document at all. A pin may select any holder of
                 the hash, never a record holding other bytes.
+            ForceReingestRetainedCopyError: ``force=True`` and the record the
+                re-ingest would reuse holds the delivered bytes only as its
+                retained copy, and no record was delivered them.
             SourceTypeUnresolvedError: ``request.source_type`` is omitted and
                 no registered adapter claims the source's extension; raised
                 before anything is read or retained, and by a dry run.
@@ -4202,6 +4205,20 @@ class IngestionService:
             )
             target_id = matches.get(provenance_hash)
             target = await self._store.get_document(target_id) if target_id else None
+            if target is None or target.source_content_hash == provenance_hash:
+                return None
+            # The representative ranks a surviving version first, so it can
+            # be a record keeping these bytes only as its copy while another,
+            # retired, record was made from them. Without the lifecycle
+            # preference the lookup ranks delivered-digest matches first: one
+            # found there is the record this re-ingest reuses.
+            delivered = await self._store.find_documents_by_hashes(
+                [provenance_hash], prefer_lifecycle_statuses=frozenset()
+            )
+            holder_id = delivered.get(provenance_hash)
+            holder = await self._store.get_document(holder_id) if holder_id else None
+            if holder is not None and holder.source_content_hash == provenance_hash:
+                return holder.id
             self._refuse_retained_copy_reingest(target, provenance_hash)
             return None
         pinned = await self._store.get_document(request.document_id)

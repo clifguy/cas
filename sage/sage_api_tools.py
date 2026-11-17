@@ -624,9 +624,9 @@ _INGEST_DRY_RUN = _ingest_param(
         "would_create: false, not duplicate_content. Unchecked, because each "
         "turns on state only the real write reaches: "
         "tier3_unique_constraint_violation, "
-        "force_reingest_path_mismatch, stale_chain_head, and a "
-        "force_reingest_pin_mismatch for a store-resident source with no "
-        "prior document record. A clean preview is not a promise that the "
+        "force_reingest_path_mismatch, stale_chain_head, and, for a "
+        "store-resident source with no record, force_reingest_pin_mismatch "
+        "and force_reingest_retained_copy. A clean preview is not a promise that the "
         "real run commits. For an upload, the checks that need the bytes "
         "wait for the call repeated with the transfer token."
     ),

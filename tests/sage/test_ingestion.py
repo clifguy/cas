@@ -244,6 +244,47 @@ async def test_force_reingest_of_a_retained_copy_is_refused_before_any_write(
     assert len(await graph_store.list_all_documents()) == 1
 
 
+async def test_unpinned_force_reingest_reuses_a_retired_delivered_holder_over_a_copy_holder(
+    tmp_vault_dir, graph_store, ingestion_service
+):
+    """An unpinned force re-ingest reuses the document the bytes were
+    delivered to, even when a surviving document keeps them as its copy.
+
+    The lookup ranks a surviving version first, so its representative here
+    is the copy holder. Refusing on that representative calls the caller's
+    own original a "retained copy"; the re-ingest must instead reach the
+    record that was made from these bytes, as it did before the lookup
+    learned the retained digest.
+    """
+    original = _create_test_file(tmp_vault_dir, "reports/delivered.md", _ORIGINAL_BODY)
+    delivered_holder = (
+        await ingestion_service.ingest(
+            IngestRequest(source="reports/delivered.md", source_type=SourceType.MARKDOWN)
+        )
+    ).document
+    _create_test_file(tmp_vault_dir, "reports/other.md", _DOWNLOADED_BODY)
+    copy_holder = (
+        await ingestion_service.ingest(
+            IngestRequest(source="reports/other.md", source_type=SourceType.MARKDOWN)
+        )
+    ).document
+    await graph_store.update_document(
+        copy_holder.id, {"stored_content_hash": delivered_holder.source_content_hash}
+    )
+    await graph_store.update_document(delivered_holder.id, {"lifecycle_status": "archived"})
+    assert "sha256:" + hashlib.sha256(original.read_bytes()).hexdigest() == (
+        delivered_holder.source_content_hash
+    )
+
+    result = await ingestion_service.ingest(
+        IngestRequest(source="reports/delivered.md", source_type=SourceType.MARKDOWN, force=True)
+    )
+
+    assert result.document.id == delivered_holder.id
+    reused = await graph_store.get_document(delivered_holder.id)
+    assert reused.pipeline_status == PipelineStatus.ABSTRACTION_COMPLETE
+
+
 async def test_force_reingest_of_the_original_still_matches_a_holder_whose_copy_differs(
     tmp_vault_dir, graph_store, ingestion_service
 ):
