@@ -3,7 +3,7 @@ name = "security-checkov"
 version = "0"
 requires-python = "==3.14.*"
 dependencies = [
-    "checkov==3.4.5",
+    "checkov==3.4.6",
     # Reject submodule metadata destinations before filesystem mutation.
     "gitpython>=3.2.1",
 ]
